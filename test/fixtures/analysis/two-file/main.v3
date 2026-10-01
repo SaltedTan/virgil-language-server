@@ -1,0 +1,8 @@
+// Uses declarations from shapes.v3.
+component Main {
+	def main() -> int {
+		var r = Shapes.square(3);
+		var total = r.area();
+		return total + r.width;
+	}
+}

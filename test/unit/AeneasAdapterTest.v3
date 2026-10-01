@@ -6,6 +6,15 @@ def X = [
 	T("AeneasAdapter:parse_clean", test_parse_clean),
 	T("AeneasAdapter:parse_error_location", test_parse_error_location),
 	T("AeneasAdapter:parse_tab_columns", test_parse_tab_columns),
+	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
+	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
+	T("AeneasAdapter:analyze_type_error", test_analyze_type_error),
+	T("AeneasAdapter:analyze_syntax_error_skips_verify", test_analyze_syntax_error_skips_verify),
+	T("AeneasAdapter:analyze_in_memory_only", test_analyze_in_memory_only),
+	T("AeneasAdapter:analyze_runs_no_initializers", test_analyze_runs_no_initializers),
+	T("AeneasAdapter:binding_lookup", test_binding_lookup),
+	T("AeneasAdapter:binding_after_semantic_error", test_binding_after_semantic_error),
+	T("AeneasAdapter:repeat_analysis_equal", test_repeat_analysis_equal),
 	()
 ];
 
@@ -31,4 +40,157 @@ def test_parse_tab_columns(t: Tester) {
 	var d = r.diagnostics[0];
 	t.asserti(2, d.beginLine);
 	t.assert(d.beginColumn > 9, "expected a tab-expanded column");
+}
+
+// Whole-program fixtures, loaded relative to the repository root, where
+// `make test` runs the unit tests.
+def SHAPES = "test/fixtures/analysis/two-file/shapes.v3";
+def MAIN = "test/fixtures/analysis/two-file/main.v3";
+def UNRESOLVED = "test/fixtures/analysis/unresolved/main.v3";
+def TYPE_ERROR = "test/fixtures/analysis/type-error/main.v3";
+def SYNTAX_ERROR = "test/fixtures/analysis/syntax-error/main.v3";
+
+def analyzeFiles(t: Tester, paths: Array<string>) -> ProgramAnalysis {
+	var sources = Array<AnalysisSource>.new(paths.length);
+	for (i < paths.length) {
+		var input = System.fileLoad(paths[i]);
+		if (input == null) {
+			t.fail1("cannot read %s; run the unit tests from the repository root", paths[i]);
+			return null;
+		}
+		sources[i] = AnalysisSource.new(paths[i], input);
+	}
+	return AeneasAdapter.analyzeProgram(sources);
+}
+def assertDiagnostic(t: Tester, a: ProgramAnalysis, kind: string, path: string, line: int, column: int) {
+	if (a.diagnostics.length == 0) return t.fail1("expected a %s diagnostic", kind);
+	var d = a.diagnostics[0];
+	t.assert_string(kind, d.kind);
+	t.assert_string(path, d.path);
+	t.asserti(line, d.beginLine);
+	t.asserti(column, d.beginColumn);
+}
+def assertDefinition(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int,
+		kind: AnalysisDeclKind, name: string, declPath: string, declLine: int, declColumn: int) {
+	var d = a.definitionAt(path, line, column);
+	if (d == null) return t.fail3("no definition at %s:%d:%d", path, line, column);
+	if (d.kind != kind) return t.fail2("expected a %s, got a %s", kind.name, d.kind.name);
+	t.assert_string(name, d.name);
+	t.assert_string(declPath, d.range.path);
+	t.asserti(declLine, d.range.beginLine);
+	t.asserti(declColumn, d.range.beginColumn);
+	t.asserti(declColumn + name.length, d.range.endColumn);
+}
+// Everything an analysis reports, for comparing runs.
+def renderAnalysis(a: ProgramAnalysis, paths: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	buf.put2("parsed=%z verified=%z\n", a.parsed, a.verified);
+	for (d in a.diagnostics) buf.puts(d.toString()).ln();
+	for (p in paths) {
+		for (o in a.occurrences(p)) buf.puts(o.toString()).ln();
+	}
+	return buf.toString();
+}
+
+def test_analyze_clean_two_files(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, MAIN]);
+	if (a == null) return;
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.parsed);
+	t.assertz(true, a.verified);
+}
+
+def test_analyze_unresolved_name(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, UNRESOLVED]);
+	if (a == null) return;
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	assertDiagnostic(t, a, "UnresolvedIdentifier", UNRESOLVED, 6, 35);
+	t.assert_string("identifier \"missing\" cannot be found", a.diagnostics[0].message);
+}
+
+def test_analyze_type_error(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, TYPE_ERROR]);
+	if (a == null) return;
+	t.assertz(false, a.verified);
+	t.asserti(1, a.diagnostics.length);
+	assertDiagnostic(t, a, "TypeError", TYPE_ERROR, 4, 30);
+	t.assert_string("expected int in var initialization, got Rect", a.diagnostics[0].message);
+}
+
+// The parser stops at the first error in a file, so the adapter does not
+// verify the truncated program, just as Compilation.compile() would not.
+def test_analyze_syntax_error_skips_verify(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, SYNTAX_ERROR]);
+	if (a == null) return;
+	t.assertz(false, a.parsed);
+	t.assertz(false, a.verified);
+	t.asserti(1, a.diagnostics.length);
+	assertDiagnostic(t, a, "ParseError", SYNTAX_ERROR, 5, 25);
+	t.asserti(0, a.occurrences(SHAPES).length);
+}
+
+// Paths that do not exist on disk: the adapter must use only the given bytes.
+// A null input counts as an empty file rather than a request to read the disk.
+def test_analyze_in_memory_only(t: Tester) {
+	var a = AeneasAdapter.analyzeProgram([
+		AnalysisSource.new("no/such/dir/a.v3", "component A { def f() -> int { return B.new().g(); } }\n"),
+		AnalysisSource.new("no/such/dir/b.v3", "class B { def g() -> int { return 1; } }\n"),
+		AnalysisSource.new("no/such/dir/empty.v3", null)
+	]);
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.verified);
+	assertDefinition(t, a, "no/such/dir/a.v3", 1, 39, AnalysisDeclKind.CLASS, "B", "no/such/dir/b.v3", 1, 7);
+}
+
+// Initializing this component divides by zero. Aeneas would report
+// ExceptionInInitialization if the adapter ran Compilation.init().
+def test_analyze_runs_no_initializers(t: Tester) {
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("init.v3",
+		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")]);
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.verified);
+}
+
+// Columns are tab-expanded compiler columns; the fixtures are tab-indented.
+def test_binding_lookup(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, MAIN]);
+	if (a == null) return;
+	// main.v3:4	var r = Shapes.square(3);
+	assertDefinition(t, a, MAIN, 4, 25, AnalysisDeclKind.COMPONENT, "Shapes", SHAPES, 8, 11);
+	assertDefinition(t, a, MAIN, 4, 37, AnalysisDeclKind.METHOD, "square", SHAPES, 9, 13);
+	// main.v3:6	return total + r.width;
+	assertDefinition(t, a, MAIN, 6, 24, AnalysisDeclKind.LOCAL, "total", MAIN, 5, 21);
+	assertDefinition(t, a, MAIN, 6, 32, AnalysisDeclKind.LOCAL, "r", MAIN, 4, 21);
+	assertDefinition(t, a, MAIN, 6, 34, AnalysisDeclKind.FIELD, "width", SHAPES, 3, 12);
+	// shapes.v3:10	return Rect.new(side, side);
+	assertDefinition(t, a, SHAPES, 10, 24, AnalysisDeclKind.CLASS, "Rect", SHAPES, 3, 7);
+	assertDefinition(t, a, SHAPES, 10, 39, AnalysisDeclKind.PARAMETER, "side", SHAPES, 9, 20);
+	// Whitespace, operators, and declarations themselves are not uses.
+	t.assert(a.definitionAt(MAIN, 6, 30) == null, "no definition expected at an operator");
+	t.assert(a.definitionAt(MAIN, 4, 21) == null, "no definition expected at a declaration");
+	t.asserti(7, a.occurrences(MAIN).length);
+}
+
+// Bindings that the verifier resolved stay available when other code has errors.
+def test_binding_after_semantic_error(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, UNRESOLVED]);
+	if (a == null) return;
+	assertDefinition(t, a, UNRESOLVED, 6, 24, AnalysisDeclKind.LOCAL, "r", UNRESOLVED, 5, 21);
+	assertDefinition(t, a, UNRESOLVED, 6, 27, AnalysisDeclKind.METHOD, "area", SHAPES, 4, 13);
+	t.assert(a.definitionAt(UNRESOLVED, 6, 35) == null, "an unresolved name has no definition");
+}
+
+// The same inputs give the same diagnostics and bindings, including after
+// analyzing a different program in between.
+def test_repeat_analysis_equal(t: Tester) {
+	var clean = [SHAPES, MAIN], broken = [SHAPES, UNRESOLVED];
+	var first = analyzeFiles(t, clean), firstBroken = analyzeFiles(t, broken);
+	if (first == null || firstBroken == null) return;
+	var expected = renderAnalysis(first, clean), expectedBroken = renderAnalysis(firstBroken, broken);
+	for (i < 3) {
+		t.assert_string(expected, renderAnalysis(analyzeFiles(t, clean), clean));
+		t.assert_string(expectedBroken, renderAnalysis(analyzeFiles(t, broken), broken));
+	}
+	t.assert(first.occurrences(MAIN).length > 0, "expected bindings to compare");
 }

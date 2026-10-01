@@ -6,7 +6,7 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: pre-alpha (milestone M0).** The repository builds an executable that links the Aeneas front end and can report syntax errors from the command line. It does **not** speak LSP yet. See [ROADMAP.md](ROADMAP.md) for the plan.
+> **Status: pre-alpha (milestone M0).** The repository builds an executable that links the Aeneas front end. From the command line it can report syntax and type errors for a set of files, and follow a name to its declaration. It does **not** speak LSP yet. See [ROADMAP.md](ROADMAP.md) for the plan.
 
 ## Why
 
@@ -53,6 +53,7 @@ Try the current development command:
 ```sh
 build/virgil-lsp --version
 build/virgil-lsp parse test/fixtures/syntax/tab-error.v3
+build/virgil-lsp analyze --bindings test/fixtures/analysis/two-file/*.v3
 ```
 
 See [docs/development.md](docs/development.md) for details.

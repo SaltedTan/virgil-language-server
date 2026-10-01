@@ -55,5 +55,24 @@ expect "parse clean file" 0 'ok, 2 top-level declarations' "" -- parse "$FIXTURE
 expect "parse reports tab-expanded column" 1 'tab-error\.v3:3:17: ParseError' "" -- parse "$FIXTURES/syntax/tab-error.v3"
 expect "parse missing file" 1 "" "cannot read file" -- parse "$TMP/missing.v3"
 
+A=$FIXTURES/analysis
+expect "analyze clean two-file program" 0 '^ok: 2 files parsed and verified$' "" -- \
+    analyze "$A/two-file/shapes.v3" "$A/two-file/main.v3"
+expect "analyze reports unresolved name" 1 'unresolved/main\.v3:6:35: UnresolvedIdentifier' "" -- \
+    analyze "$A/two-file/shapes.v3" "$A/unresolved/main.v3"
+expect "analyze reports type error" 1 'type-error/main\.v3:4:30: TypeError: expected int in var initialization, got Rect' "" -- \
+    analyze "$A/two-file/shapes.v3" "$A/type-error/main.v3"
+expect "analyze reports syntax error" 1 'syntax-error/main\.v3:5:25: ParseError' "" -- \
+    analyze "$A/two-file/shapes.v3" "$A/syntax-error/main.v3"
+expect "analyze follows a binding across files" 0 'main\.v3:4:25-4:31 -> COMPONENT Shapes @ .*two-file/shapes\.v3:8:11-8:17' "" -- \
+    analyze --bindings "$A/two-file/shapes.v3" "$A/two-file/main.v3"
+expect "analyze repeats with identical results" 0 '^ok: 2 files' "" -- \
+    analyze --repeat=3 --bindings "$A/two-file/shapes.v3" "$A/two-file/main.v3"
+expect "analyze stats go to stderr" 0 '^ok: 2 files' 'analysis 1: parse [0-9]+ us, verify [0-9]+ us' -- \
+    analyze --stats "$A/two-file/shapes.v3" "$A/two-file/main.v3"
+expect "analyze missing file" 1 "" "cannot read file" -- analyze "$TMP/missing.v3"
+expect "analyze rejects a bad repeat count" 2 "" "invalid option" -- analyze --repeat=0 "$A/two-file/main.v3"
+expect "analyze rejects unknown options" 2 "" "unknown option" -- analyze --bogus "$A/two-file/main.v3"
+
 echo "cli: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
