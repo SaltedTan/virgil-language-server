@@ -28,7 +28,15 @@ The build is a single Aeneas invocation (see `Makefile` and [architecture.md](ar
 ```sh
 build/virgil-lsp --version
 build/virgil-lsp parse path/to/file.v3    # development command: syntax diagnostics
+build/virgil-lsp analyze a.v3 b.v3        # development command: parse and verify as one program
 build/virgil-lsp --stdio                  # LSP transport (not implemented until M1)
+```
+
+`analyze` runs the compiler spike: the files are parsed and verified together, from in-memory copies, and semantic diagnostics are printed. `--bindings` also prints each use and the declaration it resolves to. `--stats` prints timing and compiler global-state counters to stderr. `--repeat=<n>` runs the analysis n times in one process and fails if any run differs. For example:
+
+```sh
+build/virgil-lsp analyze --bindings test/fixtures/analysis/two-file/*.v3
+scripts/bench-analysis.sh        # parse and verify timings: small fixture and the Aeneas sources
 ```
 
 ## Tests

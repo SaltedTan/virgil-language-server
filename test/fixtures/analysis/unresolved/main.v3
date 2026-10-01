@@ -1,0 +1,8 @@
+// Analyzed together with ../two-file/shapes.v3. Refers to a name that
+// neither file declares.
+component Main {
+	def main() -> int {
+		var r = Shapes.square(3);
+		return r.area() + missing;
+	}
+}
