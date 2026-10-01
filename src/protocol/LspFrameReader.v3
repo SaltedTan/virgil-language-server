@@ -38,8 +38,8 @@ type LspFrame {
 // - A payload longer than {maxPayload} bytes is skipped without being buffered.
 // - Unknown header fields are ignored.
 // - A header is malformed if it contains a byte that isn't printable ASCII, a
-//   space, or a tab (apart from the CR LF line ends), has a line without a
-//   colon, a CR or LF outside a CR LF pair, or an invalid field name, has no
+//   space, or a tab (apart from the CR LF line ends), has a CR or LF outside a
+//   CR LF pair, has a line without a colon or with an invalid field name, has no
 //   valid Content-Length, repeats Content-Length or Content-Type, or is longer
 //   than {LspFraming.MAX_HEADER_BYTES}.
 class LspFrameReader(maxPayload: int) {
@@ -105,8 +105,9 @@ class LspFrameReader(maxPayload: int) {
 		return failure == null && (payload != null || skipReason != null || limit > pos);
 	}
 
-	// Looks for the end of the header, checking each byte on the way. Parses
-	// the header and returns true once the end has been found.
+	// Looks for the end of the header, checking each byte on the way, so that
+	// a bad header fails as soon as the byte that proves it arrives. Parses the
+	// header and returns true once the end has been found.
 	private def readHeader() -> bool {
 		var max = LspFraming.MAX_HEADER_BYTES;
 		for (i = pos + scanned; i < limit; i++) {
@@ -114,6 +115,11 @@ class LspFrameReader(maxPayload: int) {
 			if (b >= 0x7F || (b < ' ' && b != '\t' && b != '\r' && b != '\n')) {
 				return fail(Strings.format1("header contains byte 0x%x", b));
 			}
+			// Header bytes stay buffered until the header ends, so the byte
+			// before {i} is still there, even if it came in an earlier chunk.
+			var afterCr = i > pos && input[i - 1] == '\r';
+			if (b == '\n' && !afterCr) return fail("header has an LF without a CR before it");
+			if (b != '\n' && afterCr) return fail("header has a CR without an LF after it");
 			var length = i + 1 - pos;
 			// An empty first line ends a header that has no fields.
 			if (length == 2 && b == '\n' && input[pos] == '\r') return parseHeader(pos, i + 1);
@@ -126,16 +132,14 @@ class LspFrameReader(maxPayload: int) {
 		return false;
 	}
 	// Parses the header in input[start ... end), which ends with an empty line,
-	// and consumes it.
+	// and consumes it. {readHeader} has checked that every CR and LF in it is
+	// part of a CR LF pair.
 	private def parseHeader(start: int, end: int) -> bool {
 		var contentLength = -1L, contentType: string;
 		var i = start, last = end - 2;	// the empty line starts at {last}
 		while (i < last) {
 			var eol = i;
-			while (input[eol] != '\r' || input[eol + 1] != '\n') {
-				if (input[eol] == '\r' || input[eol] == '\n') return fail("header line contains a CR or LF outside a CR LF pair");
-				eol++;
-			}
+			while (input[eol] != '\r') eol++;
 			var colon = i;
 			while (colon < eol && input[colon] != ':') colon++;
 			if (colon == eol) return fail("header line has no colon");
