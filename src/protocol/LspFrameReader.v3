@@ -1,0 +1,246 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Limits of the LSP base protocol framing. See {LspFrameReader}.
+component LspFraming {
+	// The longest header section accepted, including the empty line that ends it.
+	def MAX_HEADER_BYTES = 8192;
+	// The default limit on the payload of one incoming message.
+	def DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
+}
+
+// One result of reading the client's byte stream. See {LspFrameReader.next}.
+type LspFrame {
+	// More input is needed to finish the next message.
+	case Incomplete;
+	// The payload of one message: exactly Content-Length bytes.
+	case Message(payload: Array<byte>);
+	// A message that was read and discarded, because its payload is too long or
+	// not in UTF-8. Its length was known, so the stream stays in sync.
+	// {reason} is for logging.
+	case Skipped(reason: string);
+	// A header that can't be read. Without its Content-Length, the start of the
+	// next message can't be found, so no further messages are read and every
+	// later call returns this frame again. {reason} is for logging.
+	case Malformed(reason: string);
+}
+
+// Splits the client's byte stream into message payloads, following the LSP
+// base protocol: a header of "Name: value" fields, each ending with CR LF,
+// then an empty line, then exactly Content-Length bytes of payload. It does no
+// I/O: the caller feeds in the bytes it reads, in chunks of any size, and takes
+// out frames. Where the chunks split the input never changes the result.
+//
+// - Content-Length counts bytes and is required. Field names are
+//   case-insensitive, and spaces and tabs around a value are ignored.
+// - Content-Type is optional. Its media type isn't checked. A charset other
+//   than utf-8 (or utf8) skips the message.
+// - A payload longer than {maxPayload} bytes is skipped without being buffered.
+// - Unknown header fields are ignored.
+// - A header is malformed if it contains a byte that isn't printable ASCII, a
+//   space, or a tab (apart from the CR LF line ends), has a line without a
+//   colon, a CR or LF outside a CR LF pair, or an invalid field name, has no
+//   valid Content-Length, repeats Content-Length or Content-Type, or is longer
+//   than {LspFraming.MAX_HEADER_BYTES}.
+class LspFrameReader(maxPayload: int) {
+	private var input = Array<byte>.new(4096);
+	private var pos: int;		// start of the unread input
+	private var limit: int;		// end of the unread input
+	private var scanned: int;	// header bytes after {pos} already checked
+	private var payload: Array<byte>;	// the payload being read, if any
+	private var filled: int;	// bytes of {payload} read so far
+	private var skipReason: string;	// set while a message is being skipped
+	private var skipRemaining: long;	// payload bytes left to skip
+	private var failure: string;	// set once the header is malformed
+
+	// Appends {data} to the unread input. Ignored once the stream is malformed.
+	def feed(data: Range<byte>) -> this {
+		if (failure != null) return;
+		var n = data.length, live = limit - pos;
+		if (limit + n > input.length) {
+			// Move the unread input to the front, growing the buffer if needed.
+			var dest = input;
+			if (live + n > input.length) dest = Array<byte>.new(if(live + n > 2 * input.length, live + n, 2 * input.length));
+			for (i < live) dest[i] = input[pos + i];
+			input = dest;
+			pos = 0;
+			limit = live;
+		}
+		var to = input[limit ..+ n];
+		for (i < n) to[i] = data[i];
+		limit += n;
+	}
+	// Reads the next frame from the unread input. Returns {LspFrame.Incomplete}
+	// if more input is needed.
+	def next() -> LspFrame {
+		if (failure != null) return LspFrame.Malformed(failure);
+		if (payload == null && skipReason == null && !readHeader()) {
+			if (failure != null) return LspFrame.Malformed(failure);
+			return LspFrame.Incomplete;
+		}
+		var available = limit - pos;
+		if (skipReason != null) {
+			var n = if(skipRemaining < available, int.view(skipRemaining), available);
+			pos += n;
+			skipRemaining -= n;
+			if (skipRemaining > 0) return LspFrame.Incomplete;
+			var reason = skipReason;
+			skipReason = null;
+			return LspFrame.Skipped(reason);
+		}
+		var n = payload.length - filled;
+		if (n > available) n = available;
+		var to = payload[filled ..+ n];
+		for (i < n) to[i] = input[pos + i];
+		pos += n;
+		filled += n;
+		if (filled < payload.length) return LspFrame.Incomplete;
+		var result = payload;
+		payload = null;
+		return LspFrame.Message(result);
+	}
+	// Returns true if part of a message has been fed in but not yet returned,
+	// so that the end of the input would cut that message short.
+	def midMessage() -> bool {
+		return failure == null && (payload != null || skipReason != null || limit > pos);
+	}
+
+	// Looks for the end of the header, checking each byte on the way. Parses
+	// the header and returns true once the end has been found.
+	private def readHeader() -> bool {
+		var max = LspFraming.MAX_HEADER_BYTES;
+		for (i = pos + scanned; i < limit; i++) {
+			var b = input[i];
+			if (b >= 0x7F || (b < ' ' && b != '\t' && b != '\r' && b != '\n')) {
+				return fail(Strings.format1("header contains byte 0x%x", b));
+			}
+			var length = i + 1 - pos;
+			// An empty first line ends a header that has no fields.
+			if (length == 2 && b == '\n' && input[pos] == '\r') return parseHeader(pos, i + 1);
+			if (length >= 4 && b == '\n' && input[i - 1] == '\r' && input[i - 2] == '\n' && input[i - 3] == '\r') {
+				return parseHeader(pos, i + 1);
+			}
+			if (length >= max) return fail(Strings.format1("header is longer than %d bytes", max));
+		}
+		scanned = limit - pos;
+		return false;
+	}
+	// Parses the header in input[start ... end), which ends with an empty line,
+	// and consumes it.
+	private def parseHeader(start: int, end: int) -> bool {
+		var contentLength = -1L, contentType: string;
+		var i = start, last = end - 2;	// the empty line starts at {last}
+		while (i < last) {
+			var eol = i;
+			while (input[eol] != '\r' || input[eol + 1] != '\n') {
+				if (input[eol] == '\r' || input[eol] == '\n') return fail("header line contains a CR or LF outside a CR LF pair");
+				eol++;
+			}
+			var colon = i;
+			while (colon < eol && input[colon] != ':') colon++;
+			if (colon == eol) return fail("header line has no colon");
+			if (colon == i || !isFieldName(i, colon)) return fail("header field name is invalid");
+			var value = trimmed(colon + 1, eol);
+			if (nameIs(i, colon, "content-length")) {
+				if (contentLength >= 0) return fail("header repeats Content-Length");
+				contentLength = parseLength(value);
+				if (contentLength < 0) return fail(Strings.format1("Content-Length is invalid: \"%s\"", value));
+			} else if (nameIs(i, colon, "content-type")) {
+				if (contentType != null) return fail("header repeats Content-Type");
+				contentType = value;
+			}
+			i = eol + 2;
+		}
+		if (contentLength < 0) return fail("header has no Content-Length");
+		pos = end;
+		scanned = 0;
+		if (contentLength > maxPayload) {
+			var buf = StringBuilder.new().puts("payload of ").putd(contentLength);
+			skip(buf.put1(" bytes is longer than the limit of %d bytes", maxPayload).toString(), contentLength);
+			return true;
+		}
+		var charset = if(contentType != null, charsetOf(contentType));
+		if (charset != null && !isUtf8(charset)) {
+			skip(Strings.format1("payload charset \"%s\" is not utf-8", charset), contentLength);
+			return true;
+		}
+		payload = Array<byte>.new(int.view(contentLength));
+		filled = 0;
+		return true;
+	}
+	private def skip(reason: string, length: long) {
+		skipReason = reason;
+		skipRemaining = length;
+	}
+	private def fail(reason: string) -> bool {
+		failure = reason;
+		input = null;
+		return false;
+	}
+	// Returns true if input[start ... end) is an HTTP token, which field names are.
+	private def isFieldName(start: int, end: int) -> bool {
+		for (i = start; i < end; i++) {
+			var b = input[i];
+			if (b <= ' ' || b >= 0x7F) return false;
+			match (b) {
+				'(', ')', ',', '/', ':', ';', '<', '=', '>', '?', '@', '[', '\\', ']', '{', '}', '\"' => return false;
+				_ => ;
+			}
+		}
+		return true;
+	}
+	// Returns true if input[start ... end) equals {lower}, ignoring ASCII case.
+	private def nameIs(start: int, end: int, lower: string) -> bool {
+		if (end - start != lower.length) return false;
+		for (i < lower.length) {
+			if (toLower(input[start + i]) != lower[i]) return false;
+		}
+		return true;
+	}
+	// Returns input[start ... end) without leading and trailing spaces and tabs.
+	private def trimmed(start: int, end: int) -> string {
+		while (start < end && isSpace(input[start])) start++;
+		while (end > start && isSpace(input[end - 1])) end--;
+		return Arrays.range(input, start, end);
+	}
+}
+
+// Parses a Content-Length value: one or more decimal digits. Returns -1 if it
+// is invalid or longer than 15 digits, which no message could reach.
+def parseLength(s: string) -> long {
+	if (s.length == 0 || s.length > 15) return -1;
+	var n = 0L;
+	for (c in s) {
+		if (c < '0' || c > '9') return -1;
+		n = n * 10 + (c - '0');
+	}
+	return n;
+}
+// Returns the charset parameter of a Content-Type value, without quotes, or
+// null if it has none. The media type and other parameters are ignored.
+def charsetOf(contentType: string) -> string {
+	var params = Strings.split(contentType, ";", -1);
+	for (i = 1; i < params.length; i++) {
+		var p = params[i], eq = 0;
+		while (eq < p.length && p[eq] != '=') eq++;
+		if (eq == p.length) continue;
+		if (!Strings.equal(lowered(Strings.strip(Arrays.range(p, 0, eq))), "charset")) continue;
+		var v = Strings.strip(Arrays.range(p, eq + 1, p.length));
+		if (v.length >= 2 && v[0] == '\"' && v[v.length - 1] == '\"') v = Arrays.range(v, 1, v.length - 1);
+		return v;
+	}
+	return null;
+}
+def isUtf8(charset: string) -> bool {
+	var c = lowered(charset);
+	return Strings.equal(c, "utf-8") || Strings.equal(c, "utf8");
+}
+def lowered(s: string) -> string {
+	return Arrays.map(s, toLower);
+}
+def toLower(b: byte) -> byte {
+	return if(b >= 'A' && b <= 'Z', byte.view(b + ('a' - 'A')), b);
+}
+def isSpace(b: byte) -> bool {
+	return b == ' ' || b == '\t';
+}
