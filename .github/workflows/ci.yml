@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test (pinned Virgil, linux x86-64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0 # full history so --version reports a described revision
+      - name: Show pinned Virgil revision
+        run: git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Build and test
+        run: make test
+      - name: Version
+        run: build/virgil-lsp --version

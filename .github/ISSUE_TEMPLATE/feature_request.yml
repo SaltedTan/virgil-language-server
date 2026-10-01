@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new capability or an improvement.
+labels: ["type/feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [ROADMAP.md](https://github.com/SaltedTan/virgil-language-server/blob/main/ROADMAP.md) first;
+        many features are already planned for a specific milestone. Larger design questions fit better in Discussions.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that is difficult or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it behave? Include a small Virgil example if it helps.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to help implement or test this.

@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in the server or an editor integration does not work.
+labels: ["type/bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! A minimal reproduction makes bugs much faster to fix.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Include the smallest `.v3` file(s) and `.virgil-lsp.json` that show the problem,
+        and the editor actions you took.
+      placeholder: |
+        1. Open `example.v3` containing ...
+        2. Hover over ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Server version
+      description: Paste the output of `virgil-lsp --version`.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: editor
+    attributes:
+      label: Editor
+      options:
+        - Neovim / LazyVim
+        - VS Code
+        - Other
+        - Not editor-specific (command line)
+    validations:
+      required: true
+  - type: input
+    id: editor-version
+    attributes:
+      label: Editor and extension versions
+      placeholder: "e.g. Neovim 0.11.4, LazyVim 15.x; or VS Code 1.105, extension 0.1.0"
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      placeholder: "e.g. Ubuntu 24.04 x86-64, macOS 15 (Intel), Windows 11 + WSL2"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Server stderr or the LSP log. In Neovim, `:LspLog`. In VS Code, the "Virgil Language Server" output channel.
+        Remove anything private before pasting.
+      render: text

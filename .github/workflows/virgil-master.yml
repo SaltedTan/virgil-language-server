@@ -1,0 +1,30 @@
+name: Virgil master (advisory)
+
+# Builds against the current upstream Virgil master to detect compiler API
+# changes before the pinned revision is updated. Failures here do not block
+# merges; they signal that a `dependency/virgil` pin update needs attention.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # weekly, Monday 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test (Virgil master, linux x86-64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Move Virgil to upstream master
+        run: |
+          git -C vendor/virgil fetch --depth=1 origin master
+          git -C vendor/virgil checkout --detach FETCH_HEAD
+          git -C vendor/virgil log -1 --format='Testing Virgil %H %cs %s'
+      - name: Build and test
+        run: make test

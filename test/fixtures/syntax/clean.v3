@@ -1,0 +1,7 @@
+// A syntactically valid file with two top-level declarations.
+component Greeter {
+	def greet(name: string) -> string {
+		return name;
+	}
+}
+class Point(x: int, y: int) { }

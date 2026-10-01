@@ -1,0 +1,65 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Command-line entry point for the {virgil-lsp} executable.
+// This file must be the first source passed to the compiler so that
+// {VirgilLsp.main} is selected as the program entry point.
+component VirgilLsp {
+	def main(args: Array<string>) -> int {
+		if (args.length == 0) return usage(2);
+		var cmd = args[0];
+		if (Strings.equal(cmd, "--version")) return version();
+		if (Strings.equal(cmd, "--help") || Strings.equal(cmd, "-h")) return usage(0);
+		if (Strings.equal(cmd, "--stdio")) return stdio();
+		if (Strings.equal(cmd, "parse")) return parse(Arrays.range(args, 1, args.length));
+		Log.error2("unknown argument '%s'; run '%s --help'", cmd, BuildInfo.NAME);
+		return 2;
+	}
+	def usage(code: int) -> int {
+		var buf = StringBuilder.new();
+		buf.put1("Usage: %s <command>\n\n", BuildInfo.NAME);
+		buf.puts("Commands:\n");
+		buf.puts("  --stdio            Run the language server over standard input/output.\n");
+		buf.puts("  --version          Print the server version and pinned Virgil revision.\n");
+		buf.puts("  --help             Print this summary.\n\n");
+		buf.puts("Development commands (unstable):\n");
+		buf.puts("  parse <file.v3>... Parse files with Aeneas and print syntax diagnostics.\n");
+		// Usage goes to stderr when invoked incorrectly so that stdout stays clean.
+		if (code == 0) System.puts(buf.toString());
+		else Log.raw(buf.toString());
+		return code;
+	}
+	def version() -> int {
+		var buf = StringBuilder.new();
+		buf.put2("%s %s\n", BuildInfo.NAME, BuildInfo.VERSION);
+		buf.put1("  source revision: %s\n", BuildInfo.REVISION);
+		buf.put1("  virgil revision: %s\n", BuildInfo.VIRGIL_REVISION);
+		System.puts(buf.toString());
+		return 0;
+	}
+	def stdio() -> int {
+		// The JSON-RPC/LSP core is milestone M1; see ROADMAP.md.
+		Log.error("the --stdio transport is not implemented yet");
+		return 3;
+	}
+	def parse(paths: Array<string>) -> int {
+		if (paths.length == 0) return usage(2);
+		var failed = false;
+		for (path in paths) {
+			var input = System.fileLoad(path);
+			if (input == null) {
+				Log.error1("cannot read file '%s'", path);
+				failed = true;
+				continue;
+			}
+			var result = AeneasAdapter.parseFile(path, input);
+			for (d in result.diagnostics) {
+				System.puts(d.toString());
+				System.ln();
+			}
+			if (result.diagnostics.length > 0) failed = true;
+			else System.puts(Strings.format2("%s: ok, %d top-level declarations\n", path, result.declarationCount));
+		}
+		return if(failed, 1, 0);
+	}
+}

@@ -1,0 +1,8 @@
+/build/
+*.vsix
+node_modules/
+out/
+.vscode-test/
+.DS_Store
+tags
+TAGS

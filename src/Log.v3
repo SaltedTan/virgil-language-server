@@ -1,0 +1,21 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Diagnostic logging for the server process. Standard output is reserved for
+// protocol bytes, so every log line is written to standard error.
+component Log {
+	def STDERR = 2;
+
+	def raw(msg: string) {
+		System.fileWriteK(STDERR, msg, 0, msg.length);
+	}
+	def error(msg: string) {
+		raw(Strings.format2("%s: error: %s\n", BuildInfo.NAME, msg));
+	}
+	def error1<A>(fmt: string, a: A) {
+		error(Strings.format1(fmt, a));
+	}
+	def error2<A, B>(fmt: string, a: A, b: B) {
+		error(Strings.format2(fmt, a, b));
+	}
+}

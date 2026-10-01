@@ -1,0 +1,49 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The compiler adapter boundary (see docs/decisions/0002-pinned-virgil-adapter-boundary.md).
+// This directory is the only place allowed to reference Aeneas internals such as
+// {Parser}, {VstFile}, {ErrorGen}, or {Compilation}. Everything it returns is
+// expressed in server-owned types so that compiler changes stay contained here.
+
+// A compiler diagnostic in compiler coordinates: one-based lines and
+// one-based, tab-expanded display columns. Conversion to LSP positions is the
+// job of the position-mapping module, not of the adapter.
+class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
+		endLine: int, endColumn: int, kind: string, message: string) {
+	def toString() -> string {
+		var buf = StringBuilder.new();
+		buf.put3("%s:%d:%d: ", path, beginLine, beginColumn);
+		if (kind != null) buf.puts(kind).puts(": ");
+		buf.puts(Strings.nonnull(message));
+		return buf.toString();
+	}
+}
+
+// The result of parsing a single file.
+class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, declarationCount: int) { }
+
+component AeneasAdapter {
+	def MAX_ERRORS = 100;
+
+	// Parse one file in isolation. Does not verify, initialize, or generate code.
+	def parseFile(path: string, input: Array<byte>) -> FileParseResult {
+		var errors = ErrorGen.new(MAX_ERRORS);
+		var file = Parser.parseFile(path, input, errors, TypeCache.new());
+		var decls = file.classes.length + file.components.length + file.enums.length
+			+ file.layouts.length + file.packings.length;
+		return FileParseResult.new(path, convertErrors(path, errors), decls);
+	}
+	private def convertErrors(path: string, errors: ErrorGen) -> Array<AnalysisDiagnostic> {
+		var result = Vector<AnalysisDiagnostic>.new();
+		for (l = Lists.reverse(errors.errors); l != null; l = l.tail) {
+			var e = l.head, r = e.range;
+			var d = if(r == null,
+				AnalysisDiagnostic.new(path, 0, 0, 0, 0, e.error, e.description),
+				AnalysisDiagnostic.new(Strings.nonnull(r.fileName), r.beginLine, r.beginColumn,
+					r.endLine, r.endColumn, e.error, e.description));
+			result.put(d);
+		}
+		return result.extract();
+	}
+}

@@ -1,0 +1,24 @@
+name: Work item
+description: A scoped piece of planned work (mainly for maintainers and roadmap tasks).
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What needs to be done, and which roadmap milestone it belongs to.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] Tests cover ...
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes and dependencies
+      description: Related issues, ADRs, upstream Virgil code, or links to the LSP specification.

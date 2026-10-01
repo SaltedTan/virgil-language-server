@@ -1,0 +1,9 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Entry point for the unit test executable. Must be the first test source.
+component UnitTestMain {
+	def main(args: Array<string>) -> int {
+		return UnitTests.run(args);
+	}
+}
