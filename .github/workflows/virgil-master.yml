@@ -14,13 +14,24 @@ permissions:
 
 jobs:
   test:
-    name: Build and test (Virgil master, linux x86-64)
-    runs-on: ubuntu-24.04
+    name: Build and test (Virgil master, ${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux x86-64
+            os: ubuntu-24.04
+          - platform: macOS Apple Silicon via Rosetta 2
+            os: macos-15
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Install Rosetta 2
+        if: runner.os == 'macOS'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
       - name: Move Virgil to upstream master
         run: |
           git -C vendor/virgil fetch --depth=1 origin master

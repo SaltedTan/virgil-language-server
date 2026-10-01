@@ -29,6 +29,10 @@ if [ -z "${V3C_TARGET:-}" ]; then
 fi
 if [ -z "${V3C_TARGET:-}" ] || [ ! -x "$VIRGIL/bin/v3c-$V3C_TARGET" ]; then
     echo "error: no supported Virgil target for this host (detected:${HOSTS:- none})" >&2
+    if [ "$(uname -sm)" = "Darwin arm64" ]; then
+        echo "       Apple Silicon needs Rosetta 2 until Virgil supports arm64-darwin:" >&2
+        echo "       softwareupdate --install-rosetta --agree-to-license" >&2
+    fi
     echo "       see docs/compatibility.md for supported platforms" >&2
     exit 1
 fi

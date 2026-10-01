@@ -7,6 +7,7 @@ This will be a thin TypeScript extension built on `vscode-languageclient/node`. 
 - contribute the `virgil` language ID for `.v3` files, with comment/bracket configuration and a TextMate grammar;
 - launch `virgil-lsp --stdio`, from the `virgil.server.path` setting during development;
 - expose `virgil.server.path`, `virgil.project.config`, and trace/log settings;
-- report startup and configuration errors in a "Virgil Language Server" output channel.
+- report startup and configuration errors in a "Virgil Language Server" output channel;
+- run on the workspace side (`extensionKind: ["workspace"]`), so that with Remote-SSH and Remote-WSL the server starts on the remote machine, next to the files ([ADR-0003](../../docs/decisions/0003-supported-platforms.md)).
 
 It will be written from the official VS Code API documentation. Code from repositories without an explicit license must not be copied.

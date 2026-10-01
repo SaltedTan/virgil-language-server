@@ -52,7 +52,7 @@ A user can install one server binary, open a configured Virgil project in either
 - hover text containing declaration signatures and inferred types;
 - reliable startup, shutdown, logging, and recovery from malformed requests;
 - a project configuration that describes the source files Aeneas must analyze;
-- documented Linux and macOS installation, with Windows initially supported through VS Code Remote–WSL if native execution is unavailable.
+- documented installation for the supported platforms: Linux x86-64 (including remote use over SSH), Windows through WSL 2, and Apple Silicon macOS ([ADR-0003](docs/decisions/0003-supported-platforms.md)).
 
 ### Later releases
 
@@ -319,7 +319,7 @@ Do not promise “incremental compilation” until measurements identify the bot
 Deliverables:
 
 - GitHub releases containing supported host binaries and SHA-256 checksums.
-- A clear support matrix. A sensible first matrix is Linux x86-64 and supported macOS hosts, with Windows documented through Remote–WSL until a native or JVM distribution is validated.
+- A clear support matrix: Linux x86-64 (also used by WSL 2 and SSH remotes) and Apple Silicon macOS, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
 - VS Code extension setting for an external server path during development.
 - Later, platform-specific VSIX packages or verified binary download/install logic.
 - Marketplace README, changelog, privacy statement, and troubleshooting guide.
@@ -613,7 +613,7 @@ At day 30, review the architecture, contributor setup, and dependency/licensing 
 
 - The license, contribution guide, code of conduct, security policy, roadmap, and third-party notices are present.
 - Every third-party dependency or adapted asset has a compatible license and recorded attribution.
-- Linux and at least one supported macOS path build from a clean checkout.
+- Linux x86-64 and Apple Silicon macOS build and pass tests from a clean checkout, with both CI checks required.
 - Both editors pass lifecycle and feature smoke tests with the same executable.
 - Full text sync, syntax/semantic diagnostics, document symbols, definition, and hover work on unsaved multi-file fixtures.
 - Tabs and Unicode have explicit position tests.

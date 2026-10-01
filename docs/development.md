@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Linux or macOS on x86-64
+- Linux x86-64 (including WSL 2), or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`)
 - `git`, `make`, `bash`
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 

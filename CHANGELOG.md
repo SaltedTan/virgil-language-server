@@ -13,3 +13,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Pinned Virgil submodule at `9945e430` and a `make`-based build that compiles against it.
 - `virgil-lsp` executable with `--version`, `--help`, and a development `parse` command that reports Aeneas syntax diagnostics.
 - Unit tests for the Aeneas adapter and command-line smoke tests.
+- ADR-0003: supported platforms are Linux x86-64 (including WSL 2) and macOS on Apple Silicon (Rosetta 2 for now).
+- macOS CI job on an Apple Silicon runner, and macOS in the weekly Virgil-master check.
