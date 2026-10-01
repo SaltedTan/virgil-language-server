@@ -1,0 +1,208 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Walks one verified file and records every {VarExpr} whose {varbind} leads to
+// a declaration in the program source. Uses that resolve to built-in
+// operators, constants, or the synthetic System component are skipped.
+// This is the seed of the occurrence index described in docs/architecture.md.
+class OccurrenceCollector extends VstVisitor<void, void> {
+	private def result = Vector<AnalysisOccurrence>.new();
+	private var fileName: string;
+
+	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
+		fileName = file.fileName;
+		for (i < file.components.length) visitCompound(file.components[i]);
+		for (i < file.classes.length) visitCompound(file.classes[i]);
+		for (i < file.enums.length) visitCompound(file.enums[i]);
+		for (i < file.exports.length) expr(file.exports[i].expr);
+		var a = result.extract();
+		return Arrays.sort(a, 0, a.length, before);
+	}
+	private def before(a: AnalysisOccurrence, b: AnalysisOccurrence) -> bool {
+		var x = a.range, y = b.range;
+		return x.beginLine < y.beginLine || (x.beginLine == y.beginLine && x.beginColumn < y.beginColumn);
+	}
+	private def visitCompound(decl: VstCompound) {
+		if (decl.superclause != null) expr(decl.superclause.args);
+		for (l = decl.members; l != null; l = l.tail) {
+			match (l.head) {
+				x: VstNew => {
+					if (x.superclause != null) expr(x.superclause.args);
+					stmt(x.func.body);
+				}
+				x: VstMethod => stmt(x.func.body);
+				x: VstField => expr(x.init);
+				x: VstEnumCase => exprs(x.args);
+			}
+		}
+	}
+	private def stmt(s: Stmt) {
+		if (s != null) s.accept(this, ());
+	}
+	private def expr(e: Expr) {
+		if (e != null) e.accept(this, ());
+	}
+	private def exprs(list: VstList<Expr>) {
+		if (list == null) return;
+		for (l = list.list; l != null; l = l.tail) expr(l.head);
+	}
+	private def varDecl(v: VarDecl) {
+		if (v != null) expr(v.init);
+	}
+
+	def visitIf(s: IfStmt, env: void) {
+		expr(s.cond);
+		stmt(s.tbranch);
+		stmt(s.fbranch);
+	}
+	def visitBlock(s: BlockStmt, env: void) {
+		for (l = s.stmts.list; l != null; l = l.tail) stmt(l.head);
+	}
+	def visitWhile(s: WhileStmt, env: void) {
+		expr(s.cond);
+		stmt(s.body);
+	}
+	def visitFor(s: ForStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.cond);
+		expr(s.update);
+		stmt(s.body);
+	}
+	def visitForeach(s: ForeachStmt, env: void) {
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitForLess(s: ForLessStmt, env: void) {
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitLocal(s: LocalStmt, env: void) {
+		for (l = s.vars; l != null; l = l.tail) varDecl(l.head);
+	}
+	def visitBreak(s: BreakStmt, env: void) { }
+	def visitContinue(s: ContinueStmt, env: void) { }
+	def visitExpr(s: ExprStmt, env: void) {
+		expr(s.expr);
+	}
+	def visitMatch(s: MatchStmt, env: void) {
+		expr(s.expr);
+		for (l = s.cases.list; l != null; l = l.tail) matchCase(l.head);
+		if (s.defcase != null) matchCase(s.defcase);
+	}
+	private def matchCase(c: MatchCase) {
+		for (l = c.patterns.list; l != null; l = l.tail) expr(l.head.expr);
+		stmt(c.stmt);
+	}
+	def visitEmpty(s: EmptyStmt, env: void) { }
+	def visitReturn(s: ReturnStmt, env: void) {
+		expr(s.expr);
+	}
+
+	def visitTuple(e: TupleExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitParamExpr(e: ParamExpr, env: void) { }
+	def visitAutoExpr(e: AutoExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitArray(e: ArrayExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitVar(e: VarExpr, env: void) {
+		expr(e.expr);
+		var decl = declarationOf(e.varbind);
+		if (decl == null) return;
+		var token = e.ident.name;
+		if (token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
+		result.put(AnalysisOccurrence.new(rangeOf(token), decl));
+	}
+	def visitLiteral(e: Literal, env: void) { }
+	def visitString(e: StringExpr, env: void) { }
+	def visitApp(e: AppExpr, env: void) {
+		expr(e.func);
+		expr(e.args);
+	}
+	def visitIndex(e: IndexExpr, env: void) {
+		expr(e.expr);
+		exprs(e.exprs);
+	}
+	def visitRange(e: RangeExpr, env: void) {
+		expr(e.expr);
+		expr(e.start);
+		expr(e.end);
+	}
+	def visitNot(e: NotExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitNeg(e: NegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitBitwiseNeg(e: BitwiseNegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitAssign(e: AssignExpr, env: void) {
+		expr(e.target);
+		expr(e.expr);
+	}
+	def visitBinOp(e: BinOpExpr, env: void) {
+		expr(e.left);
+		expr(e.right);
+	}
+	def visitIfExpr(e: IfExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitFunExpr(e: FunExpr, env: void) {
+		stmt(e.func.body);
+	}
+
+	// Follows a verifier binding to the declaration it names, if that
+	// declaration comes from program source.
+	private def declarationOf(b: VarBinding) -> AnalysisDeclaration {
+		match (b) {
+			Local(decl) => return make(if(ParamDecl.?(decl), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), decl);
+			ObjectField(receiver, member) => return make(AnalysisDeclKind.FIELD, member);
+			ComponentField(member) => return make(AnalysisDeclKind.FIELD, member);
+			ClassField(receiver, member) => return make(AnalysisDeclKind.FIELD, member);
+			VariantField(receiver, member) => return make(AnalysisDeclKind.FIELD, member);
+			ObjectMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
+			ClassMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
+			ComponentMethod(member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
+			ClassNew(receiver, member, funcType) => return make(AnalysisDeclKind.CONSTRUCTOR, member);
+			VariantCase(receiver, member) => return make(AnalysisDeclKind.VARIANT_CASE, member);
+			EnumConst(member) => return make(AnalysisDeclKind.ENUM_CASE, member);
+			Type(t) => return typeDeclaration(t);
+			LayoutDecl(decl) => return make(AnalysisDeclKind.LAYOUT, decl);
+			LayoutFieldDecl(decl) => return make(AnalysisDeclKind.LAYOUT_FIELD, decl);
+			RefLayoutField(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			LayoutField(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			LayoutNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			LayoutRepeatedField(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			LayoutRepeatedNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			RefLayoutRepeatedField(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			RefLayoutNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			RefLayoutRepeatedNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
+			_ => return null; // operators, constants, and other built-in bindings
+		}
+	}
+	private def typeDeclaration(t: Type) -> AnalysisDeclaration {
+		match (t) {
+			x: ClassType => return make(AnalysisDeclKind.CLASS, x.classDecl);
+			x: EnumType => return make(AnalysisDeclKind.ENUM, x.enumDecl);
+			x: RefType => return make(AnalysisDeclKind.LAYOUT, x.layoutDecl);
+		}
+		if (V3Component_TypeCon.?(t.typeCon)) {
+			return make(AnalysisDeclKind.COMPONENT, V3Component_TypeCon.!(t.typeCon).componentDecl);
+		}
+		return null;
+	}
+	private def make(kind: AnalysisDeclKind, decl: Decl) -> AnalysisDeclaration {
+		if (decl == null) return null;
+		var token = decl.token;
+		if (token == null || token.beginLine <= 0) return null; // synthesized by the compiler
+		return AnalysisDeclaration.new(kind, token.image, rangeOf(token));
+	}
+	private def rangeOf(token: Token) -> AnalysisRange {
+		var r = token.range();
+		return AnalysisRange.new(r.fileName, r.beginLine, r.beginColumn, r.endLine, r.endColumn);
+	}
+}

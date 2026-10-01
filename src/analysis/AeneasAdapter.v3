@@ -8,12 +8,13 @@
 
 // A compiler diagnostic in compiler coordinates: one-based lines and
 // one-based, tab-expanded display columns. Conversion to LSP positions is the
-// job of the position-mapping module, not of the adapter.
+// job of the position-mapping module, not of the adapter. {path} is null for
+// diagnostics that are not attached to a source file.
 class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
 		endLine: int, endColumn: int, kind: string, message: string) {
 	def toString() -> string {
 		var buf = StringBuilder.new();
-		buf.put3("%s:%d:%d: ", path, beginLine, beginColumn);
+		buf.put3("%s:%d:%d: ", if(path == null, "<program>", path), beginLine, beginColumn);
 		if (kind != null) buf.puts(kind).puts(": ");
 		buf.puts(Strings.nonnull(message));
 		return buf.toString();
@@ -22,6 +23,89 @@ class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
 
 // The result of parsing a single file.
 class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, declarationCount: int) { }
+
+// One source file of a program, supplied as in-memory bytes. Whole-program
+// analysis never reads its inputs from disk.
+class AnalysisSource(path: string, input: Array<byte>) { }
+
+// A source range in compiler coordinates (see {AnalysisDiagnostic}). The end
+// column is exclusive.
+class AnalysisRange(path: string, beginLine: int, beginColumn: int, endLine: int, endColumn: int) {
+	def contains(line: int, column: int) -> bool {
+		if (line < beginLine || line > endLine) return false;
+		if (line == beginLine && column < beginColumn) return false;
+		if (line == endLine && column >= endColumn) return false;
+		return true;
+	}
+	def render(buf: StringBuilder) -> StringBuilder {
+		buf.put3("%s:%d:%d", path, beginLine, beginColumn);
+		return buf.put2("-%d:%d", endLine, endColumn);
+	}
+}
+
+// The kinds of declaration a use can resolve to.
+enum AnalysisDeclKind {
+	LOCAL, PARAMETER, FIELD, METHOD, CONSTRUCTOR, CLASS, COMPONENT, ENUM,
+	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD
+}
+
+// A declaration in the program. {range} covers the declaration's name token;
+// the syntax tree does not record where a whole declaration ends.
+class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisRange) {
+	def render(buf: StringBuilder) -> StringBuilder {
+		buf.puts(kind.name).putc(' ').puts(name).puts(" @ ");
+		return range.render(buf);
+	}
+}
+
+// A use of a name that verification bound to a declaration in the program.
+// {range} covers the identifier at the use site.
+class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration) {
+	def toString() -> string {
+		var buf = StringBuilder.new();
+		range.render(buf).puts(" -> ");
+		return declaration.render(buf).toString();
+	}
+}
+
+// Measurements of one whole-program analysis.
+class AnalysisStats(parseUs: int, verifyUs: int, uidsUsed: int, globalTypesAdded: int) { }
+
+// The result of parsing and verifying a whole program. It keeps the verified
+// syntax tree so that binding queries can be answered after the analysis.
+class ProgramAnalysis {
+	def diagnostics: Array<AnalysisDiagnostic>;
+	def stats: AnalysisStats;
+	def parsed: bool;	// parsing reported no errors, so verification ran
+	def verified: bool;	// parsing and verification both reported no errors
+	private def prog: Program;
+
+	new(diagnostics, stats, parsed, verified, prog) { }
+
+	// Every use in {path} that verification bound to a source declaration, in
+	// source order. Empty if parsing failed, because verification did not run.
+	// After semantic errors the result covers whatever the verifier bound.
+	def occurrences(path: string) -> Array<AnalysisOccurrence> {
+		var file = findFile(path);
+		if (file == null) return [];
+		return OccurrenceCollector.new().collect(file);
+	}
+	// The declaration that the identifier at compiler coordinates
+	// ({line}, {column}) in {path} resolves to, or null if there is none.
+	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
+		for (o in occurrences(path)) {
+			if (o.range.contains(line, column)) return o.declaration;
+		}
+		return null;
+	}
+	private def findFile(path: string) -> VstFile {
+		if (!parsed) return null;
+		for (f in prog.vst.files) {
+			if (f != null && Strings.equal(f.fileName, path)) return f;
+		}
+		return null;
+	}
+}
 
 component AeneasAdapter {
 	def MAX_ERRORS = 100;
@@ -33,6 +117,54 @@ component AeneasAdapter {
 		var decls = file.classes.length + file.components.length + file.enums.length
 			+ file.layouts.length + file.packings.length;
 		return FileParseResult.new(path, convertErrors(path, errors), decls);
+	}
+	// Parse and verify a whole program from in-memory sources, in the given
+	// order. Builds a fresh {Program} each time and runs only
+	// {Compilation.parse()} and, if parsing succeeded, {Compilation.verify()}.
+	// Never initializes, runs reachability, or generates code.
+	def analyzeProgram(sources: Array<AnalysisSource>) -> ProgramAnalysis {
+		var uidBefore = UID.next, globalBefore = globalTypeCount();
+		var prog = Program.new();
+		// Without a target, Aeneas provides a synthetic System component, as
+		// it does for the interpreter (see Aeneas.makeProgram).
+		SystemCalls.install(prog);
+		prog.files = Array<string>.new(sources.length);
+		prog.inputs = Array<Array<byte>>.new(sources.length);
+		for (i < sources.length) {
+			prog.files[i] = sources[i].path;
+			// A null input would make Compilation.parse() read the file from disk.
+			var input = sources[i].input;
+			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
+		}
+		var compilation = Compilation.new(Compiler.new(null), prog);
+		var t0 = System.ticksUs();
+		var parsed = compilation.parse();
+		var t1 = System.ticksUs();
+		// Compilation.compile() skips verification after a parse error, and so
+		// does the adapter: the parser stops at the first error in a file, and
+		// verifying the truncated tree would report spurious errors.
+		var verified = parsed && compilation.verify();
+		var t2 = System.ticksUs();
+		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
+			globalTypeCount() - globalBefore);
+		return ProgramAnalysis.new(convertErrors(null, prog.ERROR), stats, parsed, verified, prog);
+	}
+	// The next value of Aeneas's process-wide UID counter. It never resets, so
+	// it measures how many IDs analyses have consumed.
+	def uidCounter() -> int {
+		return UID.next;
+	}
+	// The number of types interned in Aeneas's process-wide type cache.
+	def globalTypeCount() -> int {
+		var cache = TypeUtil.globalCache;
+		return countChains(cache.singleBuckets) + countChains(cache.multiBuckets);
+	}
+	private def countChains(buckets: Array<Type>) -> int {
+		var count = 0;
+		for (b in buckets) {
+			for (t = b; t != null; t = t.link) count++;
+		}
+		return count;
 	}
 	private def convertErrors(path: string, errors: ErrorGen) -> Array<AnalysisDiagnostic> {
 		var result = Vector<AnalysisDiagnostic>.new();

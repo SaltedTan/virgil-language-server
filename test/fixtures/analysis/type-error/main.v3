@@ -1,0 +1,7 @@
+// Analyzed together with ../two-file/shapes.v3. Assigns a Rect to an int.
+component Main {
+	def main() -> int {
+		var n: int = Shapes.square(3);
+		return n;
+	}
+}

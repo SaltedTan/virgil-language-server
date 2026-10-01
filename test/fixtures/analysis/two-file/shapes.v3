@@ -1,0 +1,12 @@
+// Declarations used from main.v3. Tab-indented on purpose: columns are
+// tab-expanded compiler columns.
+class Rect(width: int, height: int) {
+	def area() -> int {
+		return width * height;
+	}
+}
+component Shapes {
+	def square(side: int) -> Rect {
+		return Rect.new(side, side);
+	}
+}

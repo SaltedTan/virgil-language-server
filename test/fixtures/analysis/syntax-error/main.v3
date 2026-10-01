@@ -1,0 +1,8 @@
+// Analyzed together with ../two-file/shapes.v3. The parser stops at the
+// missing expression, so verification does not run.
+component Main {
+	def main() -> int {
+		var r = ;
+		return 0;
+	}
+}

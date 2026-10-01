@@ -44,10 +44,23 @@ Aeneas has its own `main`, but it comes later on the command line, so it isn't s
 The adapter (`src/analysis/AeneasAdapter.v3`) exposes compiler functionality in server-owned types:
 
 - `parseFile(path, bytes)` runs `Parser.parseFile` on in-memory bytes and returns `AnalysisDiagnostic`s and a declaration count. *(present)*
-- Whole-program analysis builds a fresh `Program` from disk sources plus open overlays, then runs `Compilation.parse()` and `Compilation.verify()` only. *(planned, M3)*
-- Binding queries walk the verified VST for `VarExpr.varbind`, `AppExpr.appbind`, `NamedTypeRef.binding`, and expression types. *(planned, M4)*
+- `analyzeProgram(sources)` builds a fresh `Program` from in-memory `AnalysisSource`s and runs `Compilation.parse()`, then `Compilation.verify()` if parsing succeeded. It returns a `ProgramAnalysis` with diagnostics and timing. Nothing is read from disk. Without a target, Aeneas supplies a synthetic `System` component, as it does for its interpreter. *(present; disk sources plus overlays come with the project model in M3)*
+- `ProgramAnalysis.occurrences(path)` walks one verified file and follows each `VarExpr.varbind` to its source declaration (`AnalysisOccurrence`, `AnalysisDeclaration`). `definitionAt(path, line, column)` looks up the use at a compiler position. *(present for `VarExpr`)* `AppExpr.appbind`, `NamedTypeRef.binding`, and expression types follow in M4.
 
 The adapter never runs initializers, reachability analysis, or code generation.
+
+`build/virgil-lsp analyze [--bindings] [--stats] [--repeat=n] <file.v3>...` exercises this path from the command line.
+
+### Known constraints of the compiler front end
+
+The M0 spike (issue #1) measured these. They shape the analysis snapshot design below.
+
+- **Aeneas keeps every analyzed program reachable.** `TypeCon.create` interns a composite type in the cache of a nested type's *constructor*, not in the cache that holds the nested type. Tuple, function, and array constructors are global, so types such as `(A, B) -> void` or `Array<(A, B)>` land in the process-wide `TypeUtil.globalCache` even when `A` and `B` are program classes. So does every composite type over an enum, because enum constructors also use the global cache. Each such type pins the whole `Program`. Each analysis of the Aeneas sources retains about 70 MB more. With the default 200 MB semispace heap, the second analysis in one process fails with `HeapOverflow`. Removing program-dependent entries from the global cache after an analysis stops the growth in an experiment, but one further, still unidentified root keeps the most recent large program reachable.
+- **The UID counter never resets.** `UID.next` is global, and type hashes are raw UIDs. Once it passes 2^29, non-generic class types look "open", and verification crashes with `TypeCheckException` in `Type.substitute()`. One analysis of the Aeneas sources uses about 32,500 UIDs, so the limit is about 16,500 such analyses per process.
+- **Verification can kill or hang the process.** Virgil has no exception handling, so a trap inside Aeneas ends the server. Inputs that are easy to produce while editing reach such traps: `def x: i32 = 0i;` (null dereference), `enum E { A(6) }` (null dereference), and `class S extends S { def f() { me; } }` (infinite loop). Valid-looking generic code can overflow the stack. A file whose last byte is `#` crashes the parser. Verifying a tree that failed to parse reaches many more traps, which is why the adapter verifies only after a clean parse.
+- **Global options.** The parser and type system read `CLOptions` (language flags such as `-fun-exprs`, `-legacy-infer`). The adapter uses the defaults. Per-project compiler flags would mean setting process-wide state before each analysis.
+- **At most 15 errors.** `Program.ERROR` is created with a limit of 15, and verification stops once it is reached.
+- **Timing.** Parse plus verify takes about 0.1 ms for the two-file fixture and about 86 ms for the 198 Aeneas source files (80k lines) on a 2023 desktop CPU (`scripts/bench-analysis.sh`). Collecting all 161k bindings takes 29 ms with a large heap, but 240 ms with the default 200 MB heap because of GC pressure.
 
 ## Coordinates
 
