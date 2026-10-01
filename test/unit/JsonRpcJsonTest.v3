@@ -22,6 +22,9 @@ def X = [
 	T("JsonRpcJson:parse_trailing_data", test_parse_trailing_data),
 	T("JsonRpcJson:parse_nesting_limit", test_parse_nesting_limit),
 	T("JsonRpcJson:parse_deep_nesting", test_parse_deep_nesting),
+	T("JsonRpcJson:measure", test_measure),
+	T("JsonRpcJson:parse_value_limit", test_parse_value_limit),
+	T("JsonRpcJson:parse_default_value_limit", test_parse_default_value_limit),
 	T("JsonRpcJson:round_trip", test_json_round_trip),
 	()
 ];
@@ -245,6 +248,69 @@ def test_parse_deep_nesting(t: Tester) {
 	var open = Array<byte>.new(100000);
 	for (i < open.length) open[i] = '{';
 	parseFails(t, open);
+}
+
+def expectMeasure(t: Tester, text: string, depth: int, values: int) {
+	var got = JsonRpcJson.measure(text);
+	if (got.0 != depth || got.1 != values) {
+		t.fail(StringBuilder.new().puts(text).put2(": expected depth %d and %d values, got ", depth, values)
+			.put2("depth %d and %d values", got.0, got.1).toString());
+	}
+}
+def test_measure(t: Tester) {
+	expectMeasure(t, "", 0, 0);
+	expectMeasure(t, "0", 0, 1);
+	expectMeasure(t, "[]", 1, 1);
+	expectMeasure(t, "{}", 1, 1);
+	expectMeasure(t, "[1,-2,3.5e-7,-0.5E+2,true,false,null,\"x\"]", 1, 9);
+	// Object keys count as values.
+	expectMeasure(t, "{\"a\":1,\"b\":[{}]}", 3, 6);
+	expectMeasure(t, " [ 1 ,\t2\r\n] ", 1, 3);
+	// Nothing inside a string counts, including after escaped quotes.
+	expectMeasure(t, "[\"[1,{t:f}]\\\"[n\", 5]", 1, 3);
+	expectMeasure(t, "\"\\\\\"", 0, 1);
+	expectMeasure(t, "[\"\xC3\xA9\",\"\\u00e9\"]", 1, 3);
+	expectMeasure(t, "[[[]],[]]", 3, 4);
+}
+// Parses {text} with a limit of {max} values and checks whether it is accepted.
+def expectWithinLimit(t: Tester, text: string, max: int, ok: bool) {
+	var p = JsonRpcJsonParser.new(text);
+	p.maxValues = max;
+	p.parseDocument();
+	if (ok && !p.ok) t.fail2("%s: expected to parse, got %s", text, p.error_msg);
+	if (!ok && p.ok) t.fail1("%s: expected too many values", text);
+	if (!ok && !p.ok) t.assert_string(Strings.format1("more than %d values", max), p.error_msg);
+}
+def test_parse_value_limit(t: Tester) {
+	// Arrays, objects (keys count), strings, literals, and nesting all count.
+	expectWithinLimit(t, "[1,2]", 3, true);
+	expectWithinLimit(t, "[1,2,3]", 3, false);
+	expectWithinLimit(t, "{\"a\":1}", 3, true);
+	expectWithinLimit(t, "{\"a\":1,\"b\":2}", 3, false);
+	expectWithinLimit(t, "[\"a\",\"b\"]", 3, true);
+	expectWithinLimit(t, "[\"a\",\"b\",\"c\"]", 3, false);
+	expectWithinLimit(t, "[true,false,null]", 3, false);
+	expectWithinLimit(t, "[[],[],[]]", 3, false);
+	expectWithinLimit(t, "[{},{}]", 3, true);
+	// Long strings are one value each; their size is bounded by the message limit.
+	var long = Array<byte>.new(100000);
+	for (i < long.length) long[i] = 'a';
+	expectWithinLimit(t, StringBuilder.new().puts("[\"").puts(long).puts("\"]").toString(), 2, true);
+}
+def test_parse_default_value_limit(t: Tester) {
+	var max = JsonRpcJson.MAX_VALUES;
+	// An array of max - 1 zeros is max values, counting the array.
+	var zeros = Array<byte>.new(2 * (max - 1) - 1);
+	for (i < zeros.length) zeros[i] = if(i % 2 == 0, '0', ',');
+	var atLimit = StringBuilder.new().putc('[').puts(zeros).putc(']').extract();
+	var p = JsonRpcJsonParser.new(atLimit);
+	p.parseDocument();
+	if (!p.ok) t.fail2("expected %d values to parse, got %s", max, p.error_msg);
+	var over = StringBuilder.new().putc('[').puts(zeros).puts(",0]").extract();
+	p = JsonRpcJsonParser.new(over);
+	p.parseDocument();
+	t.assertz(false, p.ok);
+	t.assert_string(Strings.format1("more than %d values", max), p.error_msg);
 }
 
 def test_json_round_trip(t: Tester) {

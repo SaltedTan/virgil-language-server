@@ -13,6 +13,7 @@ def X = [
 	T("JsonRpcDispatcher:notification_not_answered", test_notification_not_answered),
 	T("JsonRpcDispatcher:kinds_are_separate", test_kinds_are_separate),
 	T("JsonRpcDispatcher:parse_error", test_dispatch_parse_error),
+	T("JsonRpcDispatcher:too_many_values", test_dispatch_too_many_values),
 	T("JsonRpcDispatcher:invalid_request", test_dispatch_invalid_request),
 	T("JsonRpcDispatcher:responses_not_answered", test_responses_not_answered),
 	T("JsonRpcDispatcher:unsupported_numbers", test_dispatch_unsupported_numbers),
@@ -175,6 +176,21 @@ def test_dispatch_parse_error(t: Tester) {
 	expectError(t, d, "\x01\xFF", "null", JsonRpcErrorCode.PARSE_ERROR);
 	expectError(t, d, null, "null", JsonRpcErrorCode.PARSE_ERROR);
 	t.asserti(0, rec.requests);
+}
+
+def test_dispatch_too_many_values(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	var max = JsonRpcJson.MAX_VALUES;
+	var zeros = Array<byte>.new(2 * max - 1);
+	for (i < zeros.length) zeros[i] = if(i % 2 == 0, '0', ',');
+	var request = StringBuilder.new().puts("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/hover\",\"params\":[")
+		.puts(zeros).puts("]}").extract();
+	// The request can't be read, so its ID is unknown and the reply has a null ID.
+	expectReply(t, d, request, Strings.format1(
+		"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"invalid JSON at byte 0: more than %d values\"}}", max));
+	t.asserti(0, rec.requests);
+	// The next message is handled as usual.
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\"}", "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":42}");
 }
 
 def test_dispatch_invalid_request(t: Tester) {
