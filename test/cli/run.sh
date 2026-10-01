@@ -146,6 +146,18 @@ frame "$(not_found 1 a)" > "$TMP/want"
 expect_stdio "stdio stops at a malformed header" 1 "$TMP/want" \
     'error: malformed message header: Content-Length is invalid' -- < "$TMP/in"
 
+# A bare LF proves the header is malformed, so the server must stop while the
+# client still holds the pipe open. If it waited for more input instead, it
+# would report the input ending inside a message once the pipe closed.
+held_open() {
+    frame "$(request 1 a)"
+    printf 'Content-Length: 2\n\n{}'
+    sleep 3
+}
+frame "$(not_found 1 a)" > "$TMP/want"
+expect_stdio "stdio stops at a bare LF without waiting for more input" 1 "$TMP/want" \
+    'error: malformed message header: header has an LF without a CR before it' -- < <(held_open)
+
 printf 'Content-Length: 10\r\n\r\n{' > "$TMP/in"
 expect_stdio "stdio fails when the input ends inside a message" 1 "$TMP/empty" \
     'error: input ended in the middle of a message' -- < "$TMP/in"

@@ -16,6 +16,8 @@ def X = [
 	T("LspFrameReader:invalid_content_length", test_invalid_content_length),
 	T("LspFrameReader:malformed_lines", test_malformed_lines),
 	T("LspFrameReader:invalid_bytes", test_invalid_bytes),
+	T("LspFrameReader:bare_cr_lf_fail_early", test_bare_cr_lf_fail_early),
+	T("LspFrameReader:split_cr_lf", test_split_cr_lf),
 	T("LspFrameReader:header_limit", test_header_limit),
 	T("LspFrameReader:malformed_is_final", test_malformed_is_final),
 	T("LspFrameReader:mid_message", test_mid_message),
@@ -171,9 +173,9 @@ def test_malformed_lines(t: Tester) {
 	expectMessages(t, ": 2\r\nContent-Length: 2\r\n\r\n{}", "bad:header field name is invalid");
 	expectMessages(t, "Content Length: 2\r\n\r\n{}", "bad:header field name is invalid");
 	expectMessages(t, "Content-Length : 2\r\n\r\n{}", "bad:header field name is invalid");
-	expectMessages(t, "Content-Length: 2\n\r\n\r\n{}", "bad:header line contains a CR or LF outside a CR LF pair");
-	expectMessages(t, "Content-Length: 2\r\r\n\r\n{}", "bad:header line contains a CR or LF outside a CR LF pair");
-	expectMessages(t, "Content-Length: 2\n\n{}\r\n\r\n", "bad:header line contains a CR or LF outside a CR LF pair");
+	expectMessages(t, "Content-Length: 2\n\r\n\r\n{}", "bad:header has an LF without a CR before it");
+	expectMessages(t, "Content-Length: 2\r\r\n\r\n{}", "bad:header has a CR without an LF after it");
+	expectMessages(t, "Content-Length: 2\n\n{}\r\n\r\n", "bad:header has an LF without a CR before it");
 }
 def test_invalid_bytes(t: Tester) {
 	// These fail as soon as the byte arrives, without waiting for the header to end.
@@ -181,6 +183,37 @@ def test_invalid_bytes(t: Tester) {
 	expectMessages(t, "Content-Length: \x002", "bad:header contains byte 0x00");
 	expectMessages(t, "\x7F", "bad:header contains byte 0x7F");
 	expectMessages(t, "Content-Length: \x1B", "bad:header contains byte 0x1B");
+}
+def test_bare_cr_lf_fail_early(t: Tester) {
+	// No valid header end follows, so these must fail without waiting for one.
+	var bareLf = "bad:header has an LF without a CR before it", bareCr = "bad:header has a CR without an LF after it";
+	expectMessages(t, "Content-Length: 2\n\n{}", bareLf);
+	expectMessages(t, "\n", bareLf);
+	expectMessages(t, "Content-Length: 2\r\n\n", bareLf);
+	expectMessages(t, "Content-Length: 2\r\nX: 1\n", bareLf);
+	expectMessages(t, "Content-Length: 2\rX", bareCr);
+	expectMessages(t, "\r\r", bareCr);
+	expectMessages(t, "Content-Length: 2\r\n\r\t", bareCr);
+	// Earlier messages are still returned.
+	expectMessages(t, concat([frame("{}"), "Content-Length: 2\n\n{}"]), Strings.format1("msg:{} | %s", bareLf));
+	// A CR at the end of the input waits for the byte after it.
+	expectMessages(t, "Content-Length: 2\r", "");
+	var r = LspFrameReader.new(LspFraming.DEFAULT_MAX_PAYLOAD);
+	r.feed("Content-Length: 2\r");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
+	r.feed("X");
+	t.assert_string(bareCr, renderFrame(r.next()));
+}
+def test_split_cr_lf(t: Tester) {
+	// Valid CR LF pairs split between chunks, fed by hand at each split point.
+	var r = LspFrameReader.new(LspFraming.DEFAULT_MAX_PAYLOAD);
+	for (part in ["Content-Length: 2\r", "\nX: 1\r", "\n\r", "\n{}"]) {
+		t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+		r.feed(part);
+	}
+	t.assert_string("msg:{}", renderFrame(r.next()));
+	t.assertz(false, r.midMessage());
 }
 def test_header_limit(t: Tester) {
 	var max = LspFraming.MAX_HEADER_BYTES;

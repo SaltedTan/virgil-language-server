@@ -123,7 +123,7 @@ Each call returns one frame:
 | `Skipped(reason)` | The payload is longer than the limit or not UTF-8. It is discarded as it arrives, without being buffered. | Continues: the length was known, so the next message is found |
 | `Malformed(reason)` | The header has no valid `Content-Length`, repeats `Content-Length` or `Content-Type`, has a line without a colon, an invalid field name, a CR or LF outside a CR LF pair, a byte that isn't printable ASCII, a space, or a tab, or is longer than the header limit | Ends: without a length, the start of the next message can't be found. Every later call returns the same frame. |
 
-A byte that can't appear in a header fails as soon as it arrives, so input without a header, such as bare JSON with non-ASCII text, doesn't wait for a header end that never comes. Header lines must end with CR LF; a lone LF is malformed. `midMessage()` reports whether part of a message has been read, so that the end of the input can be told apart from a message cut short.
+Header bytes are checked as they arrive, so a header fails as soon as the byte that proves it bad comes in, and doesn't wait for a header end that may never come. That covers a byte that can't appear in a header (for example bare JSON with non-ASCII text), an LF without a CR before it, and a CR followed by anything but LF. A CR at the end of the input waits for the next byte. Header lines must end with CR LF; a lone LF is malformed, as the specification requires. `midMessage()` reports whether part of a message has been read, so that the end of the input can be told apart from a message cut short.
 
 ### Stdio transport
 

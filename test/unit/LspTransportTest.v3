@@ -144,7 +144,7 @@ def test_malformed_header(t: Tester) {
 	var w = WriteRecorder.new(0, -1), r = WarningRecorder.new();
 	var transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
 	t.assertz(false, transport.receive(joined([framed(request(1, "echo")), "Content-Length: 2\n\n{}", framed(request(2, "echo"))])));
-	t.assert_string("malformed message header: header line contains a CR or LF outside a CR LF pair", transport.failure);
+	t.assert_string("malformed message header: header has an LF without a CR before it", transport.failure);
 	// Replies to messages before the bad header were sent; nothing after it is read.
 	t.assert_string(framed(result(1)), w.text());
 	t.assertz(false, transport.receive(framed(request(3, "echo"))));
