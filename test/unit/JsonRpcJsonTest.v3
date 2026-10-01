@@ -1,0 +1,253 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("JsonRpcJson:upstream_render_escaping", test_upstream_render_escaping),
+	T("JsonRpcJson:upstream_parse_escapes", test_upstream_parse_escapes),
+	T("JsonRpcJson:render_escapes", test_render_escapes),
+	T("JsonRpcJson:render_control_characters", test_render_control_characters),
+	T("JsonRpcJson:render_utf8", test_render_utf8),
+	T("JsonRpcJson:render_values", test_render_values),
+	T("JsonRpcJson:render_null_references", test_render_null_references),
+	T("JsonRpcJson:parse_string_escapes", test_parse_string_escapes),
+	T("JsonRpcJson:parse_unicode_escapes", test_parse_unicode_escapes),
+	T("JsonRpcJson:parse_lone_surrogates", test_parse_lone_surrogates),
+	T("JsonRpcJson:parse_invalid_strings", test_parse_invalid_strings),
+	T("JsonRpcJson:parse_object_keys", test_parse_object_keys),
+	T("JsonRpcJson:parse_whitespace", test_parse_whitespace),
+	T("JsonRpcJson:parse_integers", test_parse_integers),
+	T("JsonRpcJson:parse_unsupported_numbers", test_parse_unsupported_numbers),
+	T("JsonRpcJson:parse_invalid_numbers", test_parse_invalid_numbers),
+	T("JsonRpcJson:parse_trailing_data", test_parse_trailing_data),
+	T("JsonRpcJson:parse_nesting_limit", test_parse_nesting_limit),
+	T("JsonRpcJson:parse_deep_nesting", test_parse_deep_nesting),
+	T("JsonRpcJson:round_trip", test_json_round_trip),
+	()
+];
+
+def renderJson(v: JsonValue) -> string {
+	return JsonRpcJson.render(StringBuilder.new(), v).extract();
+}
+def renderUpstream(v: JsonValue) -> string {
+	return v.render(StringBuilder.new()).extract();
+}
+// Parses {text}, failing {t} if it is not valid, and returns the value.
+def parseOk(t: Tester, text: string) -> JsonValue {
+	var p = JsonRpcJsonParser.new(text);
+	var v = p.parseDocument();
+	if (!p.ok) t.fail(Strings.format2("parsing %s failed: %s", text, p.error_msg));
+	else if (p.unsupportedNumbers != 0) t.fail1("unexpected unsupported numbers in %s", text);
+	return v;
+}
+// Checks that parsing {text} fails cleanly.
+def parseFails(t: Tester, text: string) {
+	var p = JsonRpcJsonParser.new(text);
+	p.parseDocument();
+	if (p.ok) t.fail1("expected a parse error for %s", text);
+}
+// Parses a JSON string literal, failing {t} if it does not produce a string.
+def parseStringOk(t: Tester, text: string) -> string {
+	var v = parseOk(t, text);
+	if (!JsonValue.String.?(v)) {
+		t.fail1("expected a string from %s", text);
+		return "";
+	}
+	return JsonValue.String.!(v).v;
+}
+// Returns {inner} wrapped in {depth} levels of {open} and {close}.
+def nested(open: string, inner: string, close: string, depth: int) -> string {
+	var buf = StringBuilder.new();
+	for (i < depth) buf.puts(open);
+	buf.puts(inner);
+	for (i < depth) buf.puts(close);
+	return buf.extract();
+}
+
+// The pinned upstream renderer writes Virgil string literals, not JSON. If
+// this test fails after a Virgil update, check whether JsonValue.render now
+// writes valid JSON and JsonRpcJson.render can be retired.
+def test_upstream_render_escaping(t: Tester) {
+	t.assert_string("\"it\\'s\"", renderUpstream(JsonValue.String("it's")));
+	t.assert_string("\"\x01\"", renderUpstream(JsonValue.String("\x01")));
+}
+
+// The pinned upstream parser keeps escapes undecoded and rejects valid JSON
+// escapes. If this test fails after a Virgil update, revisit
+// JsonRpcJsonParser.parseString.
+def test_upstream_parse_escapes(t: Tester) {
+	var p = JsonParser.new("\"a\\nb\"");
+	var v = p.parseValue();
+	t.assert(p.ok && JsonValue.String.?(v), "upstream parses \\n");
+	if (JsonValue.String.?(v)) t.assert_string("a\\nb", JsonValue.String.!(v).v);
+	p = JsonParser.new("\"\\/\"");
+	p.parseValue();
+	t.assert(!p.ok, "upstream rejects \\/");
+}
+
+def test_render_escapes(t: Tester) {
+	t.assert_string("\"\\\"\"", renderJson(JsonValue.String("\"")));
+	t.assert_string("\"\\\\\"", renderJson(JsonValue.String("\\")));
+	t.assert_string("\"it's\"", renderJson(JsonValue.String("it's")));
+	t.assert_string("\"a/b\"", renderJson(JsonValue.String("a/b")));
+	t.assert_string("\"\\b\\f\\n\\r\\t\"", renderJson(JsonValue.String("\x08\x0C\n\r\t")));
+	t.assert_string("\"\\\\\\\"x\\\\n\"", renderJson(JsonValue.String("\\\"x\\n")));
+}
+
+def test_render_control_characters(t: Tester) {
+	t.assert_string("\"\\u0000\\u0001\\u001b\\u001f\"", renderJson(JsonValue.String("\x00\x01\x1B\x1F")));
+	t.assert_string("\" ~\x7F\"", renderJson(JsonValue.String(" ~\x7F")));
+}
+
+def test_render_utf8(t: Tester) {
+	// Valid UTF-8 passes through unchanged.
+	t.assert_string("\"\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80\"", renderJson(JsonValue.String("\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80")));
+	// Each byte of an invalid sequence becomes U+FFFD.
+	t.assert_string("\"a\\ufffdb\"", renderJson(JsonValue.String("a\xFFb")));
+	t.assert_string("\"\\ufffd\"", renderJson(JsonValue.String("\x80")));
+	t.assert_string("\"x\\ufffd\"", renderJson(JsonValue.String("x\xC3")));
+	t.assert_string("\"\\ufffd\\ufffd\\ufffd\"", renderJson(JsonValue.String("\xED\xA0\x80")));
+}
+
+def test_render_values(t: Tester) {
+	var map = Strings.newMap<JsonValue>();
+	map["b"] = JsonValue.Int(1);
+	map["a"] = JsonValue.JArray([JsonValue.Bool(true), JsonValue.Bool(false), JsonValue.Null, JsonValue.Int(-5)]);
+	map["c"] = Jsons.empty();
+	map["d"] = Jsons.emptyArray();
+	t.assert_string("{\"a\":[true,false,null,-5],\"b\":1,\"c\":{},\"d\":[]}", renderJson(JsonValue.JObject(map)));
+	t.assert_string("2147483647", renderJson(JsonValue.Int(int.max)));
+	t.assert_string("-2147483648", renderJson(JsonValue.Int(int.min)));
+}
+
+def test_render_null_references(t: Tester) {
+	var missing: JsonValue; // the default value is JsonValue.String(null)
+	t.assert_string("null", renderJson(missing));
+	t.assert_string("null", renderJson(JsonValue.String(null)));
+	t.assert_string("null", renderJson(JsonValue.JArray(null)));
+	t.assert_string("null", renderJson(JsonValue.JObject(null)));
+	t.assert_string("[null]", renderJson(JsonValue.JArray([missing])));
+}
+
+def test_parse_string_escapes(t: Tester) {
+	t.assert_string("\"\\/\x08\x0C\n\r\t", parseStringOk(t, "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\""));
+	t.assert_string("it's", parseStringOk(t, "\"it's\""));
+	t.assert_string("", parseStringOk(t, "\"\""));
+}
+
+def test_parse_unicode_escapes(t: Tester) {
+	t.assert_string("A\xC3\xA9\xE2\x82\xAC", parseStringOk(t, "\"\\u0041\\u00e9\\u20AC\""));
+	t.assert_string("\xF0\x9F\x98\x80", parseStringOk(t, "\"\\ud83d\\ude00\""));
+	var nul = parseStringOk(t, "\"\\u0000\"");
+	t.asserti(1, nul.length);
+	if (nul.length == 1) t.asserti(0, nul[0]);
+	// Raw UTF-8 is kept as is.
+	t.assert_string("\xC3\xA9", parseStringOk(t, "\"\xC3\xA9\""));
+}
+
+def test_parse_lone_surrogates(t: Tester) {
+	t.assert_string("\xEF\xBF\xBD", parseStringOk(t, "\"\\ud800\""));
+	t.assert_string("\xEF\xBF\xBD", parseStringOk(t, "\"\\udc00\""));
+	t.assert_string("\xEF\xBF\xBDx", parseStringOk(t, "\"\\ud800x\""));
+	t.assert_string("\xEF\xBF\xBDA", parseStringOk(t, "\"\\ud800\\u0041\""));
+	t.assert_string("\xEF\xBF\xBD\xEF\xBF\xBD", parseStringOk(t, "\"\\udc00\\ud800\""));
+}
+
+def test_parse_invalid_strings(t: Tester) {
+	parseFails(t, "\"a\nb\"");		// raw control character
+	parseFails(t, "\"a\x01\"");
+	parseFails(t, "\"\\'\"");		// Virgil escapes that JSON lacks
+	parseFails(t, "\"\\x41\"");
+	parseFails(t, "\"\\u12G4\"");
+	parseFails(t, "\"\\u12\"");
+	parseFails(t, "\"\\u");
+	parseFails(t, "\"abc");		// unterminated
+	parseFails(t, "\"\\");
+	parseFails(t, "\"\xFF\"");		// invalid UTF-8
+	parseFails(t, "\"\xC3\"");
+	parseFails(t, "'a'");
+}
+
+def test_parse_object_keys(t: Tester) {
+	// Keys go through the upstream object parser, which casts the result of
+	// parseString; they must be decoded like any other string.
+	var v = parseOk(t, "{\"a\\\"b\": 1, \"\\u0063\": 2}");
+	if (!JsonValue.JObject.?(v)) return t.fail("expected an object");
+	var map = JsonValue.JObject.!(v).v;
+	t.assert(map.has("a\"b"), "escaped key");
+	t.assert(map.has("c"), "unicode-escaped key");
+	parseFails(t, "{a: 1}");
+	parseFails(t, "{1: 1}");
+	parseFails(t, "{\"a\" 1}");
+	parseFails(t, "{\"a\": 1,}");
+}
+
+def test_parse_whitespace(t: Tester) {
+	var v = parseOk(t, " \t\r\n{ \"a\" :\r\n [ 1 ,\t2 ] }\r\n");
+	t.assert_string("{\"a\":[1,2]}", renderJson(v));
+	parseFails(t, "");
+	parseFails(t, " \r\n");
+	parseFails(t, "\x0C{}");	// form feed is not JSON whitespace
+}
+
+def test_parse_integers(t: Tester) {
+	t.assert_string("[0,0,7,-7,2147483647,-2147483648]",
+		renderJson(parseOk(t, "[0, -0, 7, -7, 2147483647, -2147483648]")));
+}
+
+def test_parse_unsupported_numbers(t: Tester) {
+	var inputs = ["2147483648", "-2147483649", "99999999999999999999", "1.5", "-0.5",
+		"1.0", "1e3", "1E+2", "2e-1", "0.0"];
+	for (text in inputs) {
+		var p = JsonRpcJsonParser.new(text);
+		var v = p.parseDocument();
+		t.assert(p.ok, text);
+		t.asserti(1, p.unsupportedNumbers);
+		t.assert(JsonValue.Null.?(v), text);
+	}
+	var p = JsonRpcJsonParser.new("{\"a\": [1.5, 2, 3e10], \"b\": 4294967296}");
+	var v = p.parseDocument();
+	t.assert(p.ok, "numbers inside containers");
+	t.asserti(3, p.unsupportedNumbers);
+	t.assert_string("{\"a\":[null,2,null],\"b\":null}", renderJson(v));
+}
+
+def test_parse_invalid_numbers(t: Tester) {
+	var inputs = ["01", "-", "1.", ".5", "+1", "1e", "1e+", "--1", "0x10", "-a", "[1.]", "[-]", "1.5.2"];
+	for (text in inputs) parseFails(t, text);
+}
+
+def test_parse_trailing_data(t: Tester) {
+	parseFails(t, "{} {}");
+	parseFails(t, "1 2");
+	parseFails(t, "nullx");
+	parseFails(t, "{}]");
+	parseFails(t, "{}\x00");
+	parseOk(t, "{} \r\n");
+}
+
+def test_parse_nesting_limit(t: Tester) {
+	var max = JsonRpcJson.MAX_DEPTH;
+	parseOk(t, nested("[", "", "]", max));
+	parseFails(t, nested("[", "", "]", max + 1));
+	parseOk(t, nested("{\"a\":", "1", "}", max));
+	parseFails(t, nested("{\"a\":", "1", "}", max + 1));
+	// Brackets inside strings, including after escaped quotes, do not count.
+	var s = StringBuilder.new().puts("[\"\\\"");
+	for (i < max + 10) s.puts("[{");
+	parseOk(t, s.puts("\"]").extract());
+}
+
+// Without the depth limit, the upstream recursive-descent parser overflows the
+// stack on this input, which kills the process.
+def test_parse_deep_nesting(t: Tester) {
+	parseFails(t, nested("[", "", "]", 100000));
+	var open = Array<byte>.new(100000);
+	for (i < open.length) open[i] = '{';
+	parseFails(t, open);
+}
+
+def test_json_round_trip(t: Tester) {
+	var text = "{\"id\":\"a\\\"b\\\\c\",\"list\":[1,-2,true,false,null,\"\"],\"text\":\"x\\ny\\u0001'\xC3\xA9\"}";
+	t.assert_string(text, renderJson(parseOk(t, text)));
+}

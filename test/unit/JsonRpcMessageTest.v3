@@ -1,0 +1,371 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("JsonRpcMessage:request_int_id", test_request_int_id),
+	T("JsonRpcMessage:request_string_id", test_request_string_id),
+	T("JsonRpcMessage:request_id_range", test_request_id_range),
+	T("JsonRpcMessage:notification", test_notification),
+	T("JsonRpcMessage:params_shapes", test_params_shapes),
+	T("JsonRpcMessage:params_invalid", test_params_invalid),
+	T("JsonRpcMessage:response", test_response),
+	T("JsonRpcMessage:error_response", test_error_response),
+	T("JsonRpcMessage:invalid_responses_dropped", test_invalid_responses_dropped),
+	T("JsonRpcMessage:parse_error", test_parse_error),
+	T("JsonRpcMessage:invalid_requests", test_invalid_requests),
+	T("JsonRpcMessage:invalid_request_keeps_id", test_invalid_request_keeps_id),
+	T("JsonRpcMessage:unsupported_numbers", test_unsupported_numbers),
+	T("JsonRpcMessage:extra_members_ignored", test_extra_members_ignored),
+	T("JsonRpcMessage:encode_shapes", test_encode_shapes),
+	T("JsonRpcMessage:round_trip", test_message_round_trip),
+	T("JsonRpcMessage:id_equal", test_id_equal),
+	()
+];
+
+def NO_MESSAGE = JsonRpcMessage.Notification("<none>", JsonRpcParams.Absent);
+
+// Decodes {text}, failing {t} unless it is a valid message without
+// unsupported numbers.
+def decodeValid(t: Tester, text: string) -> JsonRpcMessage {
+	match (JsonRpcDecoder.decode(text)) {
+		Valid(msg, unsupportedNumbers) => {
+			if (unsupportedNumbers) t.fail1("unexpected unsupported numbers in %s", text);
+			return msg;
+		}
+		Rejected(id, error) => t.fail2("%s was rejected: %s", text, error.message);
+		Dropped(reason) => t.fail2("%s was dropped: %s", text, reason);
+	}
+	return NO_MESSAGE;
+}
+def decodeRequest(t: Tester, text: string) -> JsonRpcMessage.Request {
+	var msg = decodeValid(t, text);
+	if (JsonRpcMessage.Request.?(msg)) return JsonRpcMessage.Request.!(msg);
+	t.fail1("expected a request from %s", text);
+	return JsonRpcMessage.Request(JsonRpcId.Null, "<none>", JsonRpcParams.Absent);
+}
+def decodeNotification(t: Tester, text: string) -> JsonRpcMessage.Notification {
+	var msg = decodeValid(t, text);
+	if (JsonRpcMessage.Notification.?(msg)) return JsonRpcMessage.Notification.!(msg);
+	t.fail1("expected a notification from %s", text);
+	return JsonRpcMessage.Notification("<none>", JsonRpcParams.Absent);
+}
+// Checks that {text} is rejected with {code}, and returns the encoded reply.
+def decodeRejected(t: Tester, text: string, code: int) -> string {
+	match (JsonRpcDecoder.decode(text)) {
+		Rejected(id, error) => {
+			if (error.code != code) t.fail3("%s: expected code %d, got %d", text, code, error.code);
+			return JsonRpcMessage.ErrorResponse(id, error).encode();
+		}
+		_ => t.fail1("expected %s to be rejected", text);
+	}
+	return "";
+}
+def decodeDropped(t: Tester, text: string) {
+	if (!JsonRpcInput.Dropped.?(JsonRpcDecoder.decode(text))) t.fail1("expected %s to be dropped", text);
+}
+def idOf(msg: JsonRpcMessage) -> JsonRpcId {
+	match (msg) {
+		Request(id, method, params) => return id;
+		Response(id, result) => return id;
+		ErrorResponse(id, error) => return id;
+		_ => return JsonRpcId.Null;
+	}
+}
+def assertId(t: Tester, expected: JsonRpcId, got: JsonRpcId) {
+	if (!expected.equal(got)) {
+		t.fail2("expected id %s, got %s", expected.render(StringBuilder.new()).extract(),
+			got.render(StringBuilder.new()).extract());
+	}
+}
+// Returns the case name of {p}, for compact assertions.
+def paramsShape(p: JsonRpcParams) -> string {
+	match (p) {
+		Absent => return "absent";
+		Null => return "null";
+		ByName(v) => return "object";
+		ByPosition(v) => return "array";
+	}
+}
+
+def test_request_int_id(t: Tester) {
+	var r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/hover\",\"params\":{\"x\":1}}");
+	assertId(t, JsonRpcId.Int(7), r.id);
+	t.assert_string("textDocument/hover", r.method);
+	t.assert_string("object", paramsShape(r.params));
+}
+
+def test_request_string_id(t: Tester) {
+	var r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"shutdown\"}");
+	assertId(t, JsonRpcId.String("abc"), r.id);
+	r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":\"\",\"method\":\"shutdown\"}");
+	assertId(t, JsonRpcId.String(""), r.id);
+	// The ID is decoded, so escapes in it are resolved.
+	r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":\"a\\\"b\\u00e9\",\"method\":\"shutdown\"}");
+	assertId(t, JsonRpcId.String("a\"b\xC3\xA9"), r.id);
+	// A numeric string stays a string.
+	r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"shutdown\"}");
+	assertId(t, JsonRpcId.String("1"), r.id);
+}
+
+def test_request_id_range(t: Tester) {
+	var ids = [0, -1, 2147483647, -2147483648];
+	for (n in ids) {
+		var text = Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"m\"}", n);
+		assertId(t, JsonRpcId.Int(n), decodeRequest(t, text).id);
+	}
+}
+
+def test_notification(t: Tester) {
+	var n = decodeNotification(t, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}");
+	t.assert_string("initialized", n.method);
+	t.assert_string("object", paramsShape(n.params));
+	n = decodeNotification(t, "{\"method\":\"$/cancelRequest\",\"params\":{\"id\":1},\"jsonrpc\":\"2.0\"}");
+	t.assert_string("$/cancelRequest", n.method);
+}
+
+def test_params_shapes(t: Tester) {
+	var shapes = [
+		("", "absent"),
+		(",\"params\":null", "null"),
+		(",\"params\":{}", "object"),
+		(",\"params\":{\"a\":[1]}", "object"),
+		(",\"params\":[]", "array"),
+		(",\"params\":[1,\"x\",null]", "array")
+	];
+	for (s in shapes) {
+		var r = decodeRequest(t, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\"%s}", s.0));
+		t.assert_string(s.1, paramsShape(r.params));
+		var n = decodeNotification(t, Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"m\"%s}", s.0));
+		t.assert_string(s.1, paramsShape(n.params));
+	}
+	var r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\",\"params\":[1,\"x\",null]}");
+	match (r.params) {
+		ByPosition(v) => t.asserti(3, v.length);
+		_ => t.fail("expected by-position params");
+	}
+	r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\",\"params\":{\"uri\":\"file:\\/\\/\\/a.v3\"}}");
+	match (r.params) {
+		ByName(v) => {
+			t.assert(v.has("uri"), "params has uri");
+			if (v.has("uri")) t.assert_string("\"file:///a.v3\"", JsonRpcJson.render(StringBuilder.new(), v["uri"]).extract());
+		}
+		_ => t.fail("expected by-name params");
+	}
+}
+
+def test_params_invalid(t: Tester) {
+	var bad = ["1", "\"x\"", "true", "false"];
+	for (p in bad) {
+		var reply = decodeRejected(t, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"m\",\"params\":%s}", p),
+			JsonRpcErrorCode.INVALID_REQUEST);
+		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":4,\"error\":"), reply);
+		reply = decodeRejected(t, Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":%s}", p),
+			JsonRpcErrorCode.INVALID_REQUEST);
+		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"), reply);
+	}
+}
+
+def test_response(t: Tester) {
+	var msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":null}");
+	match (msg) {
+		Response(id, result) => {
+			assertId(t, JsonRpcId.Int(3), id);
+			t.assert(JsonValue.Null.?(result), "null result");
+		}
+		_ => t.fail("expected a response");
+	}
+	msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"result\":{\"applied\":true}}");
+	match (msg) {
+		Response(id, result) => {
+			assertId(t, JsonRpcId.String("r1"), id);
+			t.assert(JsonValue.JObject.?(result), "object result");
+		}
+		_ => t.fail("expected a response");
+	}
+	msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":[]}");
+	t.assert(JsonRpcMessage.Response.?(msg), "array result");
+}
+
+def test_error_response(t: Tester) {
+	var msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32601,\"message\":\"nope\"}}");
+	match (msg) {
+		ErrorResponse(id, error) => {
+			assertId(t, JsonRpcId.Int(5), id);
+			t.asserti(JsonRpcErrorCode.METHOD_NOT_FOUND, error.code);
+			t.assert_string("nope", error.message);
+			t.assert(!error.hasData, "no data");
+		}
+		_ => t.fail("expected an error response");
+	}
+	msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"bad\",\"data\":{\"retry\":false}}}");
+	match (msg) {
+		ErrorResponse(id, error) => {
+			assertId(t, JsonRpcId.Null, id);
+			t.asserti(JsonRpcErrorCode.PARSE_ERROR, error.code);
+			t.assert(error.hasData, "has data");
+			t.assert_string("{\"retry\":false}", JsonRpcJson.render(StringBuilder.new(), error.data).extract());
+		}
+		_ => t.fail("expected an error response");
+	}
+	msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":\"e\",\"error\":{\"code\":1,\"message\":\"\",\"data\":null}}");
+	match (msg) {
+		ErrorResponse(id, error) => t.assert(error.hasData && JsonValue.Null.?(error.data), "null data is present");
+		_ => t.fail("expected an error response");
+	}
+}
+
+def test_invalid_responses_dropped(t: Tester) {
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1,\"error\":{\"code\":1,\"message\":\"x\"}}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"result\":1}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":1}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":true,\"result\":1}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":[1],\"error\":{\"code\":1,\"message\":\"x\"}}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"x\"}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":null}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"x\"}}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":\"1\",\"message\":\"x\"}}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1.5,\"message\":\"x\"}}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1}}");
+	decodeDropped(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":2}}");
+	decodeDropped(t, "{\"id\":1,\"result\":1}");
+	decodeDropped(t, "{\"jsonrpc\":\"1.0\",\"id\":1,\"result\":1}");
+}
+
+def test_parse_error(t: Tester) {
+	var inputs = ["{", "{\"jsonrpc\":\"2.0\",}", "Content-Length: 2", "", "{\"a\":1}}", "\xFF"];
+	for (text in inputs) {
+		var reply = decodeRejected(t, text, JsonRpcErrorCode.PARSE_ERROR);
+		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,"), reply);
+	}
+	match (JsonRpcDecoder.decode(null)) {
+		Rejected(id, error) => t.asserti(JsonRpcErrorCode.PARSE_ERROR, error.code);
+		_ => t.fail("expected a null payload to be rejected");
+	}
+}
+
+def test_invalid_requests(t: Tester) {
+	var inputs = [
+		"[]",
+		"[{\"jsonrpc\":\"2.0\",\"method\":\"m\"}]",	// batch
+		"1",
+		"\"m\"",
+		"null",
+		"{}",
+		"{\"method\":\"m\"}",
+		"{\"jsonrpc\":\"1.0\",\"method\":\"m\"}",
+		"{\"jsonrpc\":2,\"method\":\"m\"}",
+		"{\"jsonrpc\":\"2.0\"}",
+		"{\"jsonrpc\":\"2.0\",\"method\":1}",
+		"{\"jsonrpc\":\"2.0\",\"method\":null}",
+		"{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"m\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"m\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"m\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":[1],\"method\":\"m\"}"
+	];
+	for (text in inputs) {
+		var reply = decodeRejected(t, text, JsonRpcErrorCode.INVALID_REQUEST);
+		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,"), reply);
+	}
+}
+
+def test_invalid_request_keeps_id(t: Tester) {
+	var inputs = [
+		"{\"jsonrpc\":\"1.0\",\"id\":9,\"method\":\"m\"}",
+		"{\"id\":9,\"method\":\"m\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":9}",
+		"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":[]}",
+		"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"m\",\"result\":1}",
+		"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"m\",\"error\":{\"code\":1,\"message\":\"x\"}}",
+		"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"m\",\"params\":7}"
+	];
+	for (text in inputs) {
+		var reply = decodeRejected(t, text, JsonRpcErrorCode.INVALID_REQUEST);
+		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32600,"), reply);
+	}
+	var reply = decodeRejected(t, "{\"id\":\"s\\\"1\",\"method\":\"m\"}", JsonRpcErrorCode.INVALID_REQUEST);
+	t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":\"s\\\"1\",\"error\":"), reply);
+}
+
+def test_unsupported_numbers(t: Tester) {
+	// An ID that JsonValue cannot hold can't be echoed, so the reply has a null ID.
+	var ids = ["1.5", "2147483648", "-2147483649", "1e2", "1.0"];
+	for (id in ids) {
+		var reply = decodeRejected(t, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":%s,\"method\":\"m\"}", id),
+			JsonRpcErrorCode.INVALID_REQUEST);
+		t.assert(Strings.startsWith(reply, "{\"jsonrpc\":\"2.0\",\"id\":null,"), reply);
+	}
+	decodeRejected(t, "{\"jsonrpc\":2.0,\"id\":1,\"method\":\"m\"}", JsonRpcErrorCode.INVALID_REQUEST);
+	// Elsewhere, the envelope is intact and the message is flagged.
+	var flagged = [
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\",\"params\":{\"x\":1.5}}",
+		"{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":[3e10]}",
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":0.5}",
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"x\",\"data\":2147483648}}"
+	];
+	for (text in flagged) {
+		match (JsonRpcDecoder.decode(text)) {
+			Valid(msg, unsupportedNumbers) => t.assert(unsupportedNumbers, text);
+			_ => t.fail1("expected %s to decode", text);
+		}
+	}
+	match (JsonRpcDecoder.decode(flagged[0])) {
+		Valid(msg, unsupportedNumbers) => assertId(t, JsonRpcId.Int(1), idOf(msg));
+		_ => ;
+	}
+}
+
+def test_extra_members_ignored(t: Tester) {
+	var r = decodeRequest(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\",\"extra\":{\"a\":[true]}}");
+	t.assert_string("m", r.method);
+	var n = decodeNotification(t, "{\"jsonrpc\":\"2.0\",\"method\":\"n\",\"extra\":null}");
+	t.assert_string("n", n.method);
+	var msg = decodeValid(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1,\"extra\":2}");
+	t.assert(JsonRpcMessage.Response.?(msg), "response with an extra member");
+}
+
+def test_encode_shapes(t: Tester) {
+	var byName = Strings.newMap<JsonValue>();
+	byName["a"] = JsonValue.Int(1);
+	var cases = [
+		(JsonRpcMessage.Request(JsonRpcId.Int(1), "m", JsonRpcParams.Absent),
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\"}"),
+		(JsonRpcMessage.Request(JsonRpcId.String("x\"y"), "m", JsonRpcParams.ByPosition([JsonValue.Int(1)])),
+			"{\"jsonrpc\":\"2.0\",\"id\":\"x\\\"y\",\"method\":\"m\",\"params\":[1]}"),
+		(JsonRpcMessage.Notification("n", JsonRpcParams.Null),
+			"{\"jsonrpc\":\"2.0\",\"method\":\"n\",\"params\":null}"),
+		(JsonRpcMessage.Notification("n", JsonRpcParams.ByName(byName)),
+			"{\"jsonrpc\":\"2.0\",\"method\":\"n\",\"params\":{\"a\":1}}"),
+		(JsonRpcMessage.Response(JsonRpcId.Int(-2147483648), JsonValue.Null),
+			"{\"jsonrpc\":\"2.0\",\"id\":-2147483648,\"result\":null}"),
+		(JsonRpcMessage.ErrorResponse(JsonRpcId.Null, JsonRpcError.new(JsonRpcErrorCode.PARSE_ERROR, "bad")),
+			"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"bad\"}}"),
+		(JsonRpcMessage.ErrorResponse(JsonRpcId.String("e"), JsonRpcError.new(-32803, "it's").withData(JsonValue.Bool(false))),
+			"{\"jsonrpc\":\"2.0\",\"id\":\"e\",\"error\":{\"code\":-32803,\"message\":\"it's\",\"data\":false}}"),
+		(JsonRpcMessage.ErrorResponse(JsonRpcId.Int(2), JsonRpcError.new(1, null)),
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":1,\"message\":\"\"}}"),
+		(JsonRpcMessage.ErrorResponse(JsonRpcId.Int(3), null),
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32603,\"message\":\"missing error\"}}")
+	];
+	for (c in cases) t.assert_string(c.1, c.0.encode());
+}
+
+def test_message_round_trip(t: Tester) {
+	var texts = [
+		"{\"jsonrpc\":\"2.0\",\"id\":\"a\\\\b\\\"c\",\"method\":\"textDocument/definition\",\"params\":{\"position\":{\"character\":4,\"line\":0}}}",
+		"{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+		"{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":[null,[],{}]}",
+		"{\"jsonrpc\":\"2.0\",\"id\":2147483647,\"result\":{\"capabilities\":{}}}",
+		"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"x\",\"data\":[1]}}"
+	];
+	for (text in texts) t.assert_string(text, decodeValid(t, text).encode());
+}
+
+def test_id_equal(t: Tester) {
+	t.assert(JsonRpcId.Int(1).equal(JsonRpcId.Int(1)), "int == int");
+	t.assert(!JsonRpcId.Int(1).equal(JsonRpcId.String("1")), "int != string");
+	t.assert(JsonRpcId.String("a").equal(JsonRpcId.String(Arrays.dup("a"))), "string == string");
+	t.assert(!JsonRpcId.String("a").equal(JsonRpcId.String("b")), "string != string");
+	t.assert(JsonRpcId.Null.equal(JsonRpcId.Null), "null == null");
+	t.assert(!JsonRpcId.Null.equal(JsonRpcId.Int(0)), "null != 0");
+}

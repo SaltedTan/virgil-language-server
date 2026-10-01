@@ -1,0 +1,116 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The JSON-RPC 2.0 message model. A message is the JSON payload of one framed
+// LSP message; framing is handled elsewhere. See docs/architecture.md.
+
+// Standard JSON-RPC 2.0 error codes.
+component JsonRpcErrorCode {
+	def PARSE_ERROR = -32700;	// the payload is not valid JSON
+	def INVALID_REQUEST = -32600;	// valid JSON, but not a valid message
+	def METHOD_NOT_FOUND = -32601;	// no handler for the request's method
+	def INVALID_PARAMS = -32602;	// the params are not valid for the method
+	def INTERNAL_ERROR = -32603;	// the server failed while handling the request
+}
+
+// A request ID. LSP allows 32-bit integers and strings. {Null} appears only in
+// error responses to messages whose ID could not be determined.
+type JsonRpcId {
+	case Int(v: int);
+	case String(v: string);
+	case Null;
+
+	def equal(that: JsonRpcId) -> bool {
+		match (this) {
+			Int(v) => return JsonRpcId.Int.?(that) && JsonRpcId.Int.!(that).v == v;
+			String(v) => return JsonRpcId.String.?(that) && Strings.equal(JsonRpcId.String.!(that).v, v);
+			Null => return JsonRpcId.Null.?(that);
+		}
+	}
+	def render(buf: StringBuilder) -> StringBuilder {
+		match (this) {
+			Int(v) => buf.putd(v);
+			String(v) => JsonRpcJson.renderString(buf, v);
+			Null => buf.puts("null");
+		}
+		return buf;
+	}
+}
+
+// The params of a request or notification: absent, null, an object (by name),
+// or an array (by position).
+type JsonRpcParams {
+	case Absent;
+	case Null;
+	case ByName(v: HashMap<string, JsonValue>);
+	case ByPosition(v: Array<JsonValue>);
+
+	// Renders the params member with a leading comma, or nothing if absent.
+	def renderMember(buf: StringBuilder) -> StringBuilder {
+		match (this) {
+			Absent => return buf;
+			Null => return buf.puts(",\"params\":null");
+			ByName(v) => return JsonRpcJson.render(buf.puts(",\"params\":"), JsonValue.JObject(v));
+			ByPosition(v) => return JsonRpcJson.render(buf.puts(",\"params\":"), JsonValue.JArray(v));
+		}
+	}
+}
+
+// The error object of an error response. {data} is rendered only if {hasData}.
+class JsonRpcError(code: int, message: string) {
+	var data: JsonValue;
+	var hasData: bool;
+
+	def withData(v: JsonValue) -> this {
+		data = v;
+		hasData = true;
+	}
+	def render(buf: StringBuilder) -> StringBuilder {
+		buf.put1("{\"code\":%d,\"message\":", code);
+		JsonRpcJson.renderString(buf, if(message == null, "", message));
+		if (hasData) JsonRpcJson.render(buf.puts(",\"data\":"), data);
+		return buf.putc('}');
+	}
+}
+
+// One JSON-RPC message. The four shapes are distinct: a request has an ID and a
+// method; a notification has a method and no ID, and is never answered; a
+// response has an ID and a result; an error response has an ID, which may be
+// null, and an error.
+type JsonRpcMessage {
+	case Request(id: JsonRpcId, method: string, params: JsonRpcParams);
+	case Notification(method: string, params: JsonRpcParams);
+	case Response(id: JsonRpcId, result: JsonValue);
+	case ErrorResponse(id: JsonRpcId, error: JsonRpcError);
+
+	// Renders this message as compact JSON with members in a fixed order.
+	def render(buf: StringBuilder) -> StringBuilder {
+		buf.puts("{\"jsonrpc\":\"2.0\"");
+		match (this) {
+			Request(id, method, params) => {
+				id.render(buf.puts(",\"id\":"));
+				JsonRpcJson.renderString(buf.puts(",\"method\":"), method);
+				params.renderMember(buf);
+			}
+			Notification(method, params) => {
+				JsonRpcJson.renderString(buf.puts(",\"method\":"), method);
+				params.renderMember(buf);
+			}
+			Response(id, result) => {
+				id.render(buf.puts(",\"id\":"));
+				JsonRpcJson.render(buf.puts(",\"result\":"), result);
+			}
+			ErrorResponse(id, error) => {
+				id.render(buf.puts(",\"id\":"));
+				var e = error;
+				if (e == null) e = JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "missing error");
+				e.render(buf.puts(",\"error\":"));
+			}
+		}
+		return buf.putc('}');
+	}
+	// Returns the encoded payload of this message.
+	def encode() -> Array<byte> {
+		return render(StringBuilder.new()).extract();
+	}
+}
