@@ -22,7 +22,7 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, lifecycle state machine | Message model present; framing and lifecycle planned (M1) |
+| `src/protocol/` | Byte framing, JSON-RPC message model, lifecycle state machine | Message model and frame reader present; stdio transport and lifecycle planned (M1) |
 | `src/documents/` | URIs, versioned text, `PositionMap` | Planned (M2) |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
@@ -72,7 +72,7 @@ Each analysis produces an immutable snapshot containing: the configuration revis
 
 ## JSON-RPC messages
 
-`src/protocol/` models JSON-RPC 2.0 messages. It works on the JSON payload of one message and does no I/O; framing comes later in M1.
+`src/protocol/` models JSON-RPC 2.0 messages. It works on the JSON payload of one message and does no I/O. [Framing](#framing) splits the input stream into payloads.
 
 | File | Contents |
 | --- | --- |
@@ -106,10 +106,29 @@ The pinned `lib/file/json` differs from RFC 8259 in ways that matter for LSP tra
 - **Nesting.** The recursive-descent parser overflows the stack, which kills the process. In a probe of the pinned parser, 30,000 levels of nesting still parsed and 50,000 crashed. Input that nests arrays and objects more than 256 levels deep is rejected as a `ParseError` before parsing starts.
 - **Rendering.** `JsonValue.render` writes Virgil string literals: it escapes `'` as `\'` and leaves control characters raw, which produces invalid JSON. `JsonRpcJson.render` escapes quotes, backslashes, and all control characters, and replaces bytes that aren't valid UTF-8 with `\ufffd`, so output is always valid JSON. Output is compact, and object members are sorted by key, so it's deterministic.
 
+## Framing
+
+`LspFrameReader` (`src/protocol/LspFrameReader.v3`) splits the client's byte stream into message payloads, following the LSP base protocol: header fields of the form `Name: value`, each ending with CR LF, then an empty line, then exactly `Content-Length` bytes of payload. Like the dispatcher, it does no I/O. The caller feeds in bytes in chunks of any size and takes out frames, and the way the input is split into chunks never changes the frames. The unit tests feed every input in several chunk sizes, down to one byte at a time, to check this.
+
+- `Content-Length` counts bytes, not characters, and is required. Field names are case-insensitive. Spaces and tabs around a value are ignored, and unknown fields are ignored.
+- `Content-Type` is optional. Its media type isn't checked, but a `charset` parameter must be `utf-8` (or `utf8`, which LSP accepts for backward compatibility).
+- The payload limit is set when the reader is created. `LspFraming.DEFAULT_MAX_PAYLOAD` is 16 MiB. The header may be at most `LspFraming.MAX_HEADER_BYTES` (8 KiB) long.
+
+Each call returns one frame:
+
+| Frame | When | Stream |
+| --- | --- | --- |
+| `Message(payload)` | A complete message | Continues |
+| `Incomplete` | More input is needed | Continues |
+| `Skipped(reason)` | The payload is longer than the limit or not UTF-8. It is discarded as it arrives, without being buffered. | Continues: the length was known, so the next message is found |
+| `Malformed(reason)` | The header has no valid `Content-Length`, repeats `Content-Length` or `Content-Type`, has a line without a colon, an invalid field name, a CR or LF outside a CR LF pair, a byte that isn't printable ASCII, a space, or a tab, or is longer than the header limit | Ends: without a length, the start of the next message can't be found. Every later call returns the same frame. |
+
+A byte that can't appear in a header fails as soon as it arrives, so input without a header, such as bare JSON with non-ASCII text, doesn't wait for a header end that never comes. Header lines must end with CR LF; a lone LF is malformed. `midMessage()` reports whether part of a message has been read, so that the end of the input can be told apart from a message cut short.
+
 ## Protocol invariants
 
 - Each request receives exactly one response, carrying the request's original `id` (integer or string). *(present)*
 - Notifications never receive a response. Unknown notifications are ignored. Unknown requests receive `MethodNotFound`. *(present)*
-- `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are rejected. *(planned, M1)*
+- `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are rejected. *(frame reader present; stdio transport planned, M1)*
 - Standard output carries protocol bytes only.
 - Advertised capabilities exactly match implemented handlers.

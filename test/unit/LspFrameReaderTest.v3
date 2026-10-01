@@ -1,0 +1,225 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspFrameReader:one_message", test_one_message),
+	T("LspFrameReader:consecutive_messages", test_consecutive_messages),
+	T("LspFrameReader:length_counts_bytes", test_length_counts_bytes),
+	T("LspFrameReader:empty_payload", test_empty_payload),
+	T("LspFrameReader:field_names_and_spaces", test_field_names_and_spaces),
+	T("LspFrameReader:unknown_fields", test_unknown_fields),
+	T("LspFrameReader:content_type", test_content_type),
+	T("LspFrameReader:unsupported_charset", test_unsupported_charset),
+	T("LspFrameReader:payload_limit", test_payload_limit),
+	T("LspFrameReader:large_payload", test_large_payload),
+	T("LspFrameReader:invalid_content_length", test_invalid_content_length),
+	T("LspFrameReader:malformed_lines", test_malformed_lines),
+	T("LspFrameReader:invalid_bytes", test_invalid_bytes),
+	T("LspFrameReader:header_limit", test_header_limit),
+	T("LspFrameReader:malformed_is_final", test_malformed_is_final),
+	T("LspFrameReader:mid_message", test_mid_message),
+	()
+];
+
+// Chunk sizes that each input is fed in. The last one feeds all of it at once.
+def CHUNKS = [1, 2, 3, 5, 8, 13, 4096, -1];
+
+// Returns {payload} framed with a Content-Length header.
+def frame(payload: string) -> string {
+	return StringBuilder.new().put1("Content-Length: %d\r\n\r\n", payload.length).puts(payload).toString();
+}
+def renderFrame(f: LspFrame) -> string {
+	match (f) {
+		Incomplete => return "incomplete";
+		Message(payload) => return Strings.format1("msg:%s", payload);
+		Skipped(reason) => return Strings.format1("skip:%s", reason);
+		Malformed(reason) => return Strings.format1("bad:%s", reason);
+	}
+}
+// Takes out frames until more input is needed or the stream is malformed, and
+// appends them to {buf}, separated by " | ". Returns false if it is malformed.
+def drain(r: LspFrameReader, buf: StringBuilder) -> bool {
+	for (f = r.next(); !LspFrame.Incomplete.?(f); f = r.next()) {
+		if (buf.length > 0) buf.puts(" | ");
+		buf.puts(renderFrame(f));
+		if (LspFrame.Malformed.?(f)) return false;
+	}
+	return true;
+}
+// Feeds {input} in chunks of {chunk} bytes (all at once if negative), taking
+// out frames after each chunk, and returns the frames.
+def readChunked(input: string, chunk: int, max: int) -> string {
+	var r = LspFrameReader.new(max), buf = StringBuilder.new();
+	if (chunk < 0) chunk = input.length;
+	for (i = 0; i < input.length; i += chunk) {
+		var n = if(input.length - i < chunk, input.length - i, chunk);
+		if (!drain(r.feed(input[i ..+ n]), buf)) return buf.toString();
+	}
+	drain(r, buf);
+	return buf.toString();
+}
+// Checks that {input} reads as {expected} however it is split into chunks.
+def expectFrames(t: Tester, input: string, max: int, expected: string) {
+	for (chunk in CHUNKS) {
+		var got = readChunked(input, chunk, max);
+		if (!Strings.equal(expected, got)) return t.fail3("in chunks of %d bytes: expected \"%s\", got \"%s\"", chunk, expected, got);
+	}
+}
+def expectMessages(t: Tester, input: string, expected: string) {
+	expectFrames(t, input, LspFraming.DEFAULT_MAX_PAYLOAD, expected);
+}
+def concat(parts: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (p in parts) buf.puts(p);
+	return buf.toString();
+}
+
+def test_one_message(t: Tester) {
+	expectMessages(t, "Content-Length: 2\r\n\r\n{}", "msg:{}");
+	expectMessages(t, "", "");
+	expectMessages(t, "Content-Length: 2\r\n\r\n{", "");
+	expectMessages(t, "Content-Length: 2\r\n", "");
+}
+def test_consecutive_messages(t: Tester) {
+	var a = "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}", b = "{\"id\":1}";
+	expectMessages(t, concat([frame(a), frame(b), frame(a)]), Strings.format3("msg:%s | msg:%s | msg:%s", a, b, a));
+	// Bytes after the payload belong to the next header, even if they look like JSON.
+	expectMessages(t, "Content-Length: 2\r\n\r\n{}}\r\n", "msg:{}");
+}
+def test_length_counts_bytes(t: Tester) {
+	// U+00E9 is two bytes in UTF-8 and U+1F600 is four.
+	var e = "\"\xC3\xA9\"", smiley = "\"\xF0\x9F\x98\x80\"";
+	expectMessages(t, "Content-Length: 4\r\n\r\n\"\xC3\xA9\"", "msg:\"\xC3\xA9\"");
+	expectMessages(t, concat([frame(e), frame(smiley)]), Strings.format2("msg:%s | msg:%s", e, smiley));
+	// Counting characters instead of bytes would take three bytes, and wait for
+	// more input after reading the rest as the start of the next header.
+	expectMessages(t, "Content-Length: 3\r\n\r\n\"\xC3\xA9\"", "msg:\"\xC3\xA9");
+}
+def test_empty_payload(t: Tester) {
+	expectMessages(t, concat(["Content-Length: 0\r\n\r\n", frame("{}")]), "msg: | msg:{}");
+	expectMessages(t, "Content-Length: 000\r\n\r\n", "msg:");
+}
+def test_field_names_and_spaces(t: Tester) {
+	expectMessages(t, "content-length:2\r\n\r\n{}", "msg:{}");
+	expectMessages(t, "CONTENT-LENGTH: \t2 \t\r\n\r\n{}", "msg:{}");
+	expectMessages(t, "Content-length:  2\r\nCONTENT-TYPE:application/vscode-jsonrpc\r\n\r\n{}", "msg:{}");
+	expectMessages(t, "Content-Length: 02\r\n\r\n{}", "msg:{}");
+}
+def test_unknown_fields(t: Tester) {
+	expectMessages(t, "X-Trace: abc: def\r\nContent-Length: 2\r\nX-Empty:\r\n\r\n{}", "msg:{}");
+	// Field names that only start like a known one are other fields.
+	expectMessages(t, "Content-Length-X: 9\r\nContent-Length: 2\r\n\r\n{}", "msg:{}");
+}
+def test_content_type(t: Tester) {
+	var types = [
+		"application/vscode-jsonrpc; charset=utf-8",
+		"application/vscode-jsonrpc; charset=utf8",
+		"application/vscode-jsonrpc;charset=\"UTF-8\"",
+		"application/vscode-jsonrpc ; Charset = Utf-8 ; x=y",
+		"application/vscode-jsonrpc",
+		"application/json; version=2",
+		""
+	];
+	for (ct in types) {
+		var input = StringBuilder.new().put1("Content-Type: %s\r\nContent-Length: 2\r\n\r\n{}", ct).toString();
+		expectMessages(t, input, "msg:{}");
+	}
+}
+def test_unsupported_charset(t: Tester) {
+	expectMessages(t, concat(["Content-Length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=latin1\r\n\r\n{}", frame("[]")]),
+		"skip:payload charset \"latin1\" is not utf-8 | msg:[]");
+	expectMessages(t, concat(["Content-Type: text/plain; charset=\"utf-16\"\r\nContent-Length: 0\r\n\r\n", frame("[]")]),
+		"skip:payload charset \"utf-16\" is not utf-8 | msg:[]");
+}
+def test_payload_limit(t: Tester) {
+	expectFrames(t, frame("1234"), 4, "msg:1234");
+	expectFrames(t, concat([frame("12345"), frame("{}")]), 4,
+		"skip:payload of 5 bytes is longer than the limit of 4 bytes | msg:{}");
+	// A payload that is skipped is never buffered, however long it claims to be.
+	expectFrames(t, "Content-Length: 999999999999999\r\n\r\n{}", 4,
+		"");
+	var r = LspFrameReader.new(4);
+	r.feed("Content-Length: 999999999999999\r\n\r\n");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
+}
+def test_large_payload(t: Tester) {
+	// Longer than the reader's initial buffer, fed in one piece and in chunks.
+	var payload = Array<byte>.new(100000);
+	for (i < payload.length) payload[i] = byte.view('a' + i % 26);
+	var input = concat([frame(payload), frame("{}")]);
+	var expected = concat(["msg:", payload, " | msg:{}"]);
+	for (chunk in [4096, 65536, -1]) {
+		var got = readChunked(input, chunk, LspFraming.DEFAULT_MAX_PAYLOAD);
+		if (!Strings.equal(expected, got)) return t.fail1("in chunks of %d bytes: wrong frames", chunk);
+	}
+}
+def test_invalid_content_length(t: Tester) {
+	var values = ["", "abc", "-1", "+1", "1 2", "0x10", "1.0", "1000000000000000"];
+	for (v in values) {
+		var input = StringBuilder.new().put1("Content-Length: %s\r\n\r\n{}", v).toString();
+		expectMessages(t, input, Strings.format1("bad:Content-Length is invalid: \"%s\"", v));
+	}
+	expectMessages(t, "Content-Type: application/vscode-jsonrpc\r\n\r\n{}", "bad:header has no Content-Length");
+	expectMessages(t, "\r\n{}", "bad:header has no Content-Length");
+	expectMessages(t, "Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}", "bad:header repeats Content-Length");
+	expectMessages(t, "Content-Type: a\r\nContent-Length: 2\r\ncontent-type: a\r\n\r\n{}", "bad:header repeats Content-Type");
+}
+def test_malformed_lines(t: Tester) {
+	expectMessages(t, "Content-Length 2\r\n\r\n{}", "bad:header line has no colon");
+	expectMessages(t, ": 2\r\nContent-Length: 2\r\n\r\n{}", "bad:header field name is invalid");
+	expectMessages(t, "Content Length: 2\r\n\r\n{}", "bad:header field name is invalid");
+	expectMessages(t, "Content-Length : 2\r\n\r\n{}", "bad:header field name is invalid");
+	expectMessages(t, "Content-Length: 2\n\r\n\r\n{}", "bad:header line contains a CR or LF outside a CR LF pair");
+	expectMessages(t, "Content-Length: 2\r\r\n\r\n{}", "bad:header line contains a CR or LF outside a CR LF pair");
+	expectMessages(t, "Content-Length: 2\n\n{}\r\n\r\n", "bad:header line contains a CR or LF outside a CR LF pair");
+}
+def test_invalid_bytes(t: Tester) {
+	// These fail as soon as the byte arrives, without waiting for the header to end.
+	expectMessages(t, "Content-Length: 2\r\nX: \xC3\xA9", "bad:header contains byte 0xC3");
+	expectMessages(t, "Content-Length: \x002", "bad:header contains byte 0x00");
+	expectMessages(t, "\x7F", "bad:header contains byte 0x7F");
+	expectMessages(t, "Content-Length: \x1B", "bad:header contains byte 0x1B");
+}
+def test_header_limit(t: Tester) {
+	var max = LspFraming.MAX_HEADER_BYTES;
+	var head = "Content-Length: 2\r\nX: ", tail = "\r\n\r\n";
+	var filler = Array<byte>.new(max - head.length - tail.length);
+	for (i < filler.length) filler[i] = 'x';
+	expectMessages(t, concat([head, filler, tail, "{}"]), "msg:{}");
+	var tooLong = Strings.format1("bad:header is longer than %d bytes", max);
+	expectMessages(t, concat([head, filler, "x", tail, "{}"]), tooLong);
+	// Without an end, the header fails once it has grown past the limit.
+	expectMessages(t, concat([head, filler, "xxxx"]), tooLong);
+	expectMessages(t, concat([head, filler, "xxx"]), "");
+}
+def test_malformed_is_final(t: Tester) {
+	var r = LspFrameReader.new(LspFraming.DEFAULT_MAX_PAYLOAD);
+	r.feed(frame("{}")).feed("Content-Length: x\r\n\r\n").feed(frame("[]"));
+	t.assert_string("msg:{}", renderFrame(r.next()));
+	t.assert_string("bad:Content-Length is invalid: \"x\"", renderFrame(r.next()));
+	r.feed(frame("[]"));
+	t.assert_string("bad:Content-Length is invalid: \"x\"", renderFrame(r.next()));
+	t.assertz(false, r.midMessage());
+}
+def test_mid_message(t: Tester) {
+	var r = LspFrameReader.new(4);
+	t.assertz(false, r.midMessage());
+	r.feed("Content-");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
+	r.feed("Length: 2\r\n\r\n{");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
+	r.feed("}");
+	t.assert_string("msg:{}", renderFrame(r.next()));
+	t.assertz(false, r.midMessage());
+	r.feed("Content-Length: 5\r\n\r\n123");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
+	r.feed("45");
+	t.assert(LspFrame.Skipped.?(r.next()), "expected a skipped frame");
+	t.assertz(false, r.midMessage());
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+}
