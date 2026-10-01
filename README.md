@@ -40,7 +40,7 @@ One process owns the protocol, the in-memory document overlays, the compiler fro
 
 ## Building
 
-Requirements: Linux or macOS on x86-64, `git`, `make`, and `bash`. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
+Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac with Rosetta 2, plus `git`, `make`, and `bash`. See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
 
 ```sh
 git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-server.git
