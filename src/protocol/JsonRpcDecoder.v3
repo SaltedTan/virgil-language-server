@@ -1,0 +1,114 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The result of decoding one incoming payload.
+type JsonRpcInput {
+	// A well-formed message. If {unsupportedNumbers} is true, the payload held
+	// numbers that are not 32-bit integers. {JsonValue} cannot represent them,
+	// so they were replaced with null, and the message's params, result, or
+	// error data must not be used.
+	case Valid(msg: JsonRpcMessage, unsupportedNumbers: bool);
+	// Not a valid request or notification. It is answered with {error}. {id} is
+	// the message's ID if it had a valid one, and null otherwise.
+	case Rejected(id: JsonRpcId, error: JsonRpcError);
+	// A malformed response. Answering a response could start a loop of error
+	// replies, so it is dropped. {reason} is for logging.
+	case Dropped(reason: string);
+}
+
+// Decodes and validates incoming JSON-RPC 2.0 payloads. Every member is
+// checked for presence and type before it is read: a missing map key would
+// yield a default value, and a failed cast would end the process.
+component JsonRpcDecoder {
+	// Decodes one payload. A message with a method is a request (with an ID) or
+	// a notification (without one). A message with a result or an error and no
+	// method is a response. Anything else is rejected as an invalid request.
+	def decode(payload: Array<byte>) -> JsonRpcInput {
+		var text = payload;
+		if (text == null) text = Array<byte>.new(0);
+		var parser = JsonRpcJsonParser.new(text);
+		var root = parser.parseDocument();
+		if (!parser.ok) {
+			return reject(JsonRpcId.Null, JsonRpcErrorCode.PARSE_ERROR,
+				Strings.format2("invalid JSON at byte %d: %s", parser.error_pos, parser.error_msg));
+		}
+		// This also rejects JSON-RPC batches, which LSP does not use.
+		if (!JsonValue.JObject.?(root)) {
+			return reject(JsonRpcId.Null, JsonRpcErrorCode.INVALID_REQUEST, "a message must be a JSON object");
+		}
+		var obj = JsonValue.JObject.!(root).v;
+		var unsupported = parser.unsupportedNumbers > 0;
+		if (!obj.has("method") && (obj.has("result") || obj.has("error"))) return decodeResponse(obj, unsupported);
+		return decodeRequest(obj, unsupported);
+	}
+	private def decodeRequest(obj: HashMap<string, JsonValue>, unsupported: bool) -> JsonRpcInput {
+		var hasId = obj.has("id");
+		// The ID is read first, so that an invalid request can be answered with it.
+		var id = if(hasId, toId(obj["id"]), JsonRpcId.Null);
+		if (!hasVersion(obj)) return invalid(id, "jsonrpc must be \"2.0\"");
+		if (!obj.has("method")) return invalid(id, "a request or notification needs a method");
+		var method = obj["method"];
+		if (!JsonValue.String.?(method)) return invalid(id, "method must be a string");
+		if (obj.has("result") || obj.has("error")) return invalid(id, "a request cannot have a result or an error");
+		var params: JsonRpcParams = JsonRpcParams.Absent;
+		if (obj.has("params")) {
+			match (obj["params"]) {
+				Null => params = JsonRpcParams.Null;
+				JObject(v) => params = JsonRpcParams.ByName(v);
+				JArray(v) => params = JsonRpcParams.ByPosition(v);
+				_ => return invalid(id, "params must be an object or an array");
+			}
+		}
+		var name = JsonValue.String.!(method).v;
+		if (!hasId) return JsonRpcInput.Valid(JsonRpcMessage.Notification(name, params), unsupported);
+		if (JsonRpcId.Null.?(id)) return invalid(id, "id must be a 32-bit integer or a string");
+		return JsonRpcInput.Valid(JsonRpcMessage.Request(id, name, params), unsupported);
+	}
+	private def decodeResponse(obj: HashMap<string, JsonValue>, unsupported: bool) -> JsonRpcInput {
+		if (!hasVersion(obj)) return JsonRpcInput.Dropped("response without jsonrpc \"2.0\"");
+		if (!obj.has("id")) return JsonRpcInput.Dropped("response without an id");
+		var idValue = obj["id"], id = toId(idValue);
+		var hasResult = obj.has("result"), hasError = obj.has("error");
+		if (hasResult && hasError) return JsonRpcInput.Dropped("response with both a result and an error");
+		if (hasResult) {
+			if (JsonRpcId.Null.?(id)) return JsonRpcInput.Dropped("response id must be a 32-bit integer or a string");
+			return JsonRpcInput.Valid(JsonRpcMessage.Response(id, obj["result"]), unsupported);
+		}
+		// An error response may have a null ID: the peer could not read ours.
+		if (JsonRpcId.Null.?(id) && !JsonValue.Null.?(idValue)) {
+			return JsonRpcInput.Dropped("response id must be a 32-bit integer, a string, or null");
+		}
+		var value = obj["error"];
+		if (!JsonValue.JObject.?(value)) return JsonRpcInput.Dropped("error must be an object");
+		var members = JsonValue.JObject.!(value).v;
+		if (!members.has("code") || !JsonValue.Int.?(members["code"])) {
+			return JsonRpcInput.Dropped("error code must be a 32-bit integer");
+		}
+		if (!members.has("message") || !JsonValue.String.?(members["message"])) {
+			return JsonRpcInput.Dropped("error message must be a string");
+		}
+		var error = JsonRpcError.new(JsonValue.Int.!(members["code"]).v, JsonValue.String.!(members["message"]).v);
+		if (members.has("data")) error.withData(members["data"]);
+		return JsonRpcInput.Valid(JsonRpcMessage.ErrorResponse(id, error), unsupported);
+	}
+	// Converts an ID member to a {JsonRpcId}. Returns {JsonRpcId.Null} if the
+	// value is not an integer or a string.
+	private def toId(v: JsonValue) -> JsonRpcId {
+		match (v) {
+			Int(n) => return JsonRpcId.Int(n);
+			String(s) => return JsonRpcId.String(s);
+			_ => return JsonRpcId.Null;
+		}
+	}
+	private def hasVersion(obj: HashMap<string, JsonValue>) -> bool {
+		if (!obj.has("jsonrpc")) return false;
+		var v = obj["jsonrpc"];
+		return JsonValue.String.?(v) && Strings.equal(JsonValue.String.!(v).v, "2.0");
+	}
+	private def invalid(id: JsonRpcId, msg: string) -> JsonRpcInput {
+		return reject(id, JsonRpcErrorCode.INVALID_REQUEST, msg);
+	}
+	private def reject(id: JsonRpcId, code: int, msg: string) -> JsonRpcInput {
+		return JsonRpcInput.Rejected(id, JsonRpcError.new(code, msg));
+	}
+}

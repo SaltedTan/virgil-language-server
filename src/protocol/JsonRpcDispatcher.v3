@@ -1,0 +1,72 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// What a request handler returns: the result or the error of its response.
+type JsonRpcReply {
+	case Result(v: JsonValue);
+	case Error(error: JsonRpcError);
+}
+
+// Routes decoded messages to handlers by method name and returns the reply
+// payload, if any. It does no I/O; the caller frames and writes the reply.
+//
+// - A request gets exactly one response with its original ID: the handler's
+//   result or error, or MethodNotFound if no handler is registered.
+// - A notification never gets a response. Unknown notifications are ignored.
+// - An invalid payload gets a ParseError or InvalidRequest error response.
+// - Responses from the client are dropped. The server sends no requests yet,
+//   so there is no pending-request table to match them against.
+class JsonRpcDispatcher {
+	private def requestHandlers = Strings.newMap<JsonRpcMessage.Request -> JsonRpcReply>();
+	private def notificationHandlers = Strings.newMap<JsonRpcMessage.Notification -> void>();
+
+	def onRequest(method: string, handler: JsonRpcMessage.Request -> JsonRpcReply) -> this {
+		requestHandlers[method] = handler;
+	}
+	def onNotification(method: string, handler: JsonRpcMessage.Notification -> void) -> this {
+		notificationHandlers[method] = handler;
+	}
+	// Decodes and handles one payload. Returns the reply payload, or null if
+	// there is nothing to send.
+	def handle(payload: Array<byte>) -> Array<byte> {
+		return dispatch(JsonRpcDecoder.decode(payload));
+	}
+	// Handles one decoded payload. Returns the reply payload, or null if there
+	// is nothing to send.
+	def dispatch(input: JsonRpcInput) -> Array<byte> {
+		match (input) {
+			Valid(msg, unsupportedNumbers) => {
+				match (msg) {
+					x: JsonRpcMessage.Request => return answer(x, unsupportedNumbers);
+					x: JsonRpcMessage.Notification => notify(x, unsupportedNumbers);
+					_ => ;
+				}
+				return null;
+			}
+			Rejected(id, error) => return JsonRpcMessage.ErrorResponse(id, error).encode();
+			Dropped => return null;
+		}
+	}
+	private def answer(request: JsonRpcMessage.Request, unsupportedNumbers: bool) -> Array<byte> {
+		var handler = requestHandlers[request.method];
+		if (handler == null) {
+			return error(request.id, JsonRpcErrorCode.METHOD_NOT_FOUND,
+				Strings.format1("method not found: %s", request.method));
+		}
+		if (unsupportedNumbers) {
+			return error(request.id, JsonRpcErrorCode.INVALID_PARAMS,
+				"params contain a number that is not a 32-bit integer");
+		}
+		match (handler(request)) {
+			Result(v) => return JsonRpcMessage.Response(request.id, v).encode();
+			Error(e) => return JsonRpcMessage.ErrorResponse(request.id, e).encode();
+		}
+	}
+	private def notify(notification: JsonRpcMessage.Notification, unsupportedNumbers: bool) {
+		var handler = notificationHandlers[notification.method];
+		if (handler != null && !unsupportedNumbers) handler(notification);
+	}
+	private def error(id: JsonRpcId, code: int, msg: string) -> Array<byte> {
+		return JsonRpcMessage.ErrorResponse(id, JsonRpcError.new(code, msg)).encode();
+	}
+}

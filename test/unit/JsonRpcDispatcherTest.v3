@@ -1,0 +1,237 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("JsonRpcDispatcher:result_int_id", test_result_int_id),
+	T("JsonRpcDispatcher:result_string_id", test_result_string_id),
+	T("JsonRpcDispatcher:id_extremes", test_id_extremes),
+	T("JsonRpcDispatcher:handler_error", test_handler_error),
+	T("JsonRpcDispatcher:handler_sees_params", test_handler_sees_params),
+	T("JsonRpcDispatcher:unknown_request", test_unknown_request),
+	T("JsonRpcDispatcher:unknown_notification", test_unknown_notification),
+	T("JsonRpcDispatcher:notification_not_answered", test_notification_not_answered),
+	T("JsonRpcDispatcher:kinds_are_separate", test_kinds_are_separate),
+	T("JsonRpcDispatcher:parse_error", test_dispatch_parse_error),
+	T("JsonRpcDispatcher:invalid_request", test_dispatch_invalid_request),
+	T("JsonRpcDispatcher:responses_not_answered", test_responses_not_answered),
+	T("JsonRpcDispatcher:unsupported_numbers", test_dispatch_unsupported_numbers),
+	T("JsonRpcDispatcher:reply_escaping", test_reply_escaping),
+	()
+];
+
+// Records the messages its handlers receive and replies with {reply}.
+class DispatchRecorder {
+	var reply: JsonRpcReply = JsonRpcReply.Result(JsonValue.Int(42));
+	var requests: int;
+	var notifications: int;
+	var lastParams: JsonRpcParams;
+
+	def onRequest(r: JsonRpcMessage.Request) -> JsonRpcReply {
+		requests++;
+		lastParams = r.params;
+		return reply;
+	}
+	def onNotification(n: JsonRpcMessage.Notification) {
+		notifications++;
+		lastParams = n.params;
+	}
+}
+
+def newDispatcher(rec: DispatchRecorder) -> JsonRpcDispatcher {
+	return JsonRpcDispatcher.new()
+		.onRequest("textDocument/hover", rec.onRequest)
+		.onRequest("shutdown", rec.onRequest)
+		.onNotification("initialized", rec.onNotification)
+		.onNotification("$/cancelRequest", rec.onNotification);
+}
+def shapeOf(p: JsonRpcParams) -> string {
+	match (p) {
+		Absent => return "absent";
+		Null => return "null";
+		ByName(v) => return "object";
+		ByPosition(v) => return "array";
+	}
+}
+// Handles {text} and checks the reply against {expected}, or that there is no
+// reply if {expected} is null.
+def expectReply(t: Tester, d: JsonRpcDispatcher, text: string, expected: string) {
+	var got = d.handle(text);
+	if (expected == null) {
+		if (got != null) t.fail2("expected no reply to %s, got %s", text, got);
+	} else if (got == null) {
+		t.fail2("expected %s in reply to %s, got nothing", expected, text);
+	} else {
+		t.assert_string(expected, got);
+	}
+}
+// Handles {text} and checks that the reply is an error response with {code}
+// whose ID renders as {id}.
+def expectError(t: Tester, d: JsonRpcDispatcher, text: string, id: string, code: int) {
+	var prefix = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,", id, code);
+	var got = d.handle(text);
+	if (got == null) t.fail1("expected an error reply to %s", text);
+	else t.assert(Strings.startsWith(got, prefix), got);
+}
+
+def test_result_int_id(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/hover\",\"params\":{}}",
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":42}");
+	rec.reply = JsonRpcReply.Result(JsonValue.Null);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}");
+	t.asserti(2, rec.requests);
+}
+
+def test_result_string_id(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"shutdown\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"result\":42}");
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"7\",\"method\":\"shutdown\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":\"7\",\"result\":42}");
+	// Escapes are decoded and re-encoded: the reply carries the same string value.
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"q\\\"b\\\\s\\/\\u00e9\\u0001\",\"method\":\"shutdown\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":\"q\\\"b\\\\s/\xC3\xA9\\u0001\",\"result\":42}");
+}
+
+def test_id_extremes(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	var ids = ["0", "-1", "2147483647", "-2147483648", "\"\""];
+	for (id in ids) {
+		expectReply(t, d, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":%s,\"method\":\"shutdown\"}", id),
+			Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":42}", id));
+	}
+}
+
+def test_handler_error(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	rec.reply = JsonRpcReply.Error(JsonRpcError.new(-32803, "request failed"));
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"h\",\"method\":\"textDocument/hover\"}",
+		"{\"jsonrpc\":\"2.0\",\"id\":\"h\",\"error\":{\"code\":-32803,\"message\":\"request failed\"}}");
+	rec.reply = JsonRpcReply.Error(null);
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\"}", "3", JsonRpcErrorCode.INTERNAL_ERROR);
+}
+
+def test_handler_sees_params(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	var shapes = [
+		("", "absent"),
+		(",\"params\":null", "null"),
+		(",\"params\":{\"a\":1}", "object"),
+		(",\"params\":[1]", "array")
+	];
+	for (s in shapes) {
+		d.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"shutdown\"%s}", s.0));
+		t.assert_string(s.1, shapeOf(rec.lastParams));
+		rec.lastParams = JsonRpcParams.Absent;
+		d.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"%s}", s.0));
+		t.assert_string(s.1, shapeOf(rec.lastParams));
+	}
+}
+
+def test_unknown_request(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"workspace/symbol\",\"params\":{}}",
+		"{\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32601,\"message\":\"method not found: workspace/symbol\"}}");
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"s-5\",\"method\":\"nope\"}", "\"s-5\"", JsonRpcErrorCode.METHOD_NOT_FOUND);
+	// LSP: a request starting with $/ that the server does not handle must
+	// get MethodNotFound.
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"$/unknown\"}", "6", JsonRpcErrorCode.METHOD_NOT_FOUND);
+	// Method names are matched exactly.
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"Shutdown\"}", "7", JsonRpcErrorCode.METHOD_NOT_FOUND);
+	t.asserti(0, rec.requests);
+}
+
+def test_unknown_notification(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{}}", null);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"$/setTrace\",\"params\":{\"value\":\"off\"}}", null);
+	t.asserti(0, rec.notifications);
+}
+
+def test_notification_not_answered(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}", null);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":1}}", null);
+	t.asserti(2, rec.notifications);
+}
+
+def test_kinds_are_separate(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	// A notification for a request method is not answered and runs no handler.
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}", null);
+	// A request for a notification method gets MethodNotFound.
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialized\"}", "1", JsonRpcErrorCode.METHOD_NOT_FOUND);
+	t.asserti(0, rec.requests);
+	t.asserti(0, rec.notifications);
+}
+
+def test_dispatch_parse_error(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":",
+		"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"invalid JSON at byte 11: unexpected end of input\"}}");
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"shutdown\"", "null", JsonRpcErrorCode.PARSE_ERROR);
+	expectError(t, d, "\x01\xFF", "null", JsonRpcErrorCode.PARSE_ERROR);
+	expectError(t, d, null, "null", JsonRpcErrorCode.PARSE_ERROR);
+	t.asserti(0, rec.requests);
+}
+
+def test_dispatch_invalid_request(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":42}", "9", JsonRpcErrorCode.INVALID_REQUEST);
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"shutdown\"}", "null", JsonRpcErrorCode.INVALID_REQUEST);
+	expectError(t, d, "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"shutdown\"}]", "null", JsonRpcErrorCode.INVALID_REQUEST);
+	// Without an ID it may be a notification, but JSON-RPC still answers an
+	// invalid request, with a null ID.
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":\"x\"}", "null", JsonRpcErrorCode.INVALID_REQUEST);
+	t.asserti(0, rec.requests);
+	t.asserti(0, rec.notifications);
+}
+
+def test_responses_not_answered(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", null);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"error\":{\"code\":-32601,\"message\":\"no\"}}", null);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1,\"error\":{\"code\":1,\"message\":\"x\"}}", null);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"result\":1}", null);
+	t.asserti(0, rec.requests);
+}
+
+def test_dispatch_unsupported_numbers(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/hover\",\"params\":{\"x\":1.5}}",
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32602,\"message\":\"params contain a number that is not a 32-bit integer\"}}");
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"u\",\"method\":\"shutdown\",\"params\":[4294967296]}", "\"u\"", JsonRpcErrorCode.INVALID_PARAMS);
+	// MethodNotFound takes precedence for unknown methods.
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"nope\",\"params\":{\"x\":1e3}}", "4", JsonRpcErrorCode.METHOD_NOT_FOUND);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{\"x\":0.1}}", null);
+	expectError(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"shutdown\"}", "null", JsonRpcErrorCode.INVALID_REQUEST);
+	expectReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":2.5}", null);
+	t.asserti(0, rec.requests);
+	t.asserti(0, rec.notifications);
+}
+
+def test_reply_escaping(t: Tester) {
+	var rec = DispatchRecorder.new(), d = newDispatcher(rec);
+	var text = "it's \"quoted\" \\ back\x01\x1F\tend\xFF";
+	rec.reply = JsonRpcReply.Result(JsonValue.String(text));
+	var reply = d.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"shutdown\"}");
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"it's \\\"quoted\\\" \\\\ back\\u0001\\u001f\\tend\\ufffd\"}", reply);
+	// The reply decodes as a valid response carrying the same string, except
+	// for the invalid UTF-8 byte.
+	match (JsonRpcDecoder.decode(reply)) {
+		Valid(msg, unsupportedNumbers) => {
+			match (msg) {
+				Response(id, result) => {
+					t.assert(JsonValue.String.?(result), "string result");
+					if (JsonValue.String.?(result)) {
+						t.assert_string("it's \"quoted\" \\ back\x01\x1F\tend\xEF\xBF\xBD", JsonValue.String.!(result).v);
+					}
+				}
+				_ => t.fail("expected a response");
+			}
+		}
+		_ => t.fail("expected the reply to decode");
+	}
+}

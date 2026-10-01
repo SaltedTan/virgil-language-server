@@ -9,6 +9,8 @@ V3C    := scripts/v3c.sh
 # checkout's aeneas/DEPS. lib/test is excluded here and added only to tests.
 AENEAS_DEPS = $(filter-out lib/test/%,$(shell cat $(VIRGIL)/aeneas/DEPS 2>/dev/null))
 AENEAS_SRC  = $(VIRGIL)/aeneas/src/*/*.v3 $(addprefix $(VIRGIL)/,$(AENEAS_DEPS))
+# Virgil libraries the server uses that Aeneas does not.
+VIRGIL_LIBS = $(VIRGIL)/lib/file/json/JsonParser.v3
 
 # src/main.v3 holds the entry point and must be passed first.
 SERVER_LIB  = $(filter-out src/main.v3,$(shell find src -name '*.v3' | sort))
@@ -31,11 +33,11 @@ buildinfo: check-virgil
 
 $(BUILD)/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=virgil-lsp \
-	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC)
+	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 $(BUILD)/unit-tests: buildinfo $(TEST_SRC) $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=unit-tests \
-	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL)/lib/test/*.v3
+	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS) $(VIRGIL)/lib/test/*.v3
 
 test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests
 	$(BUILD)/unit-tests

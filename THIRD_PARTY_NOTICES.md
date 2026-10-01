@@ -11,7 +11,7 @@ This file lists third-party material that is used by, linked into, or adapted in
 | Pinned revision | `9945e4300bba2cd6d872c1a6f4ecfaa600f4be48` (2026-09-30) |
 | License | Apache License 2.0 (`vendor/virgil/aeneas/LICENSE`; source headers refer to it) |
 | Copyright | Ben L. Titzer, Google Inc., and the Virgil authors, as stated in individual source headers |
-| How it is used | Compiled into the `virgil-lsp` executable: `aeneas/src`, plus the libraries listed in `aeneas/DEPS` (`lib/util`, `lib/asm/*`, `lib/file/elf`). `lib/test` is used only by the unit-test executable. The prebuilt `bin/stable` compiler is used as a build tool. |
+| How it is used | Compiled into the `virgil-lsp` executable: `aeneas/src`, plus the libraries listed in `aeneas/DEPS` (`lib/util`, `lib/asm/*`, `lib/file/elf`) and `lib/file/json/JsonParser.v3`. `lib/test` is used only by the unit-test executable. The prebuilt `bin/stable` compiler is used as a build tool. |
 | Modifications | None. This repository calls Virgil APIs and does not copy or modify Virgil source. |
 
 Release archives that contain a `virgil-lsp` binary must include a copy of the Apache License 2.0 and this notice file.

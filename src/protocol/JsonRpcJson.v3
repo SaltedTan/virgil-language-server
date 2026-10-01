@@ -1,0 +1,283 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// JSON reading and writing for the JSON-RPC layer, built on Virgil's
+// lib/file/json. The pinned upstream parser and renderer differ from RFC 8259
+// in ways that matter for LSP traffic, so this file corrects them:
+//
+// - Upstream keeps string escapes undecoded and rejects \/, \b, \f, and \uXXXX.
+//   {JsonRpcJsonParser.parseString} decodes all JSON escapes.
+// - Upstream does not treat a carriage return as whitespace.
+// - {JsonValue} has no doubles and only 32-bit integers. Other numbers are
+//   parsed by the JSON grammar, replaced with null, and counted, so the caller
+//   can answer with an error instead of misreading the message.
+// - The parser is recursive descent, and a stack overflow kills the process.
+//   Nesting deeper than {JsonRpcJson.MAX_DEPTH} is rejected before parsing.
+// - {JsonValue.render} writes Virgil literals: it emits \' and leaves control
+//   characters unescaped. {JsonRpcJson.render} writes valid JSON instead.
+
+// Parses one complete JSON text into a {JsonValue}.
+class JsonRpcJsonParser extends JsonParser {
+	// Numbers that are not 32-bit integers, each replaced with null.
+	var unsupportedNumbers: int;
+
+	new(text: Array<byte>) super(text) {
+		skipWs = JsonRpcJson.skipWhitespace;
+	}
+	// Parses the whole input as a single JSON value. The result is meaningful
+	// only if {ok} is true; otherwise {error_msg} and {error_pos} describe the
+	// first error.
+	def parseDocument() -> JsonValue {
+		if (JsonRpcJson.exceedsDepth(data, JsonRpcJson.MAX_DEPTH)) {
+			fail(Strings.format1("arrays and objects nest deeper than %d levels", JsonRpcJson.MAX_DEPTH));
+			return JsonValue.Null;
+		}
+		var v = parseValue();
+		if (ok && pos < limit) fail("unexpected data after the JSON value");
+		return v;
+	}
+	// Parses a JSON string. Always returns a {JsonValue.String} unless it fails,
+	// which the upstream object parser relies on before casting the key.
+	def parseString() -> JsonValue {
+		var d = data;
+		if (pos >= limit || d[pos] != '\"') return failAt(pos, "invalid string");
+		var buf = StringBuilder.new();
+		var i = pos + 1;
+		while (i < limit) {
+			var ch = d[i];
+			if (ch == '\"') {
+				advance(i + 1 - pos);
+				return JsonValue.String(buf.extract());
+			}
+			if (ch < ' ') return failAt(i, "control character in string");
+			if (ch == '\\') {
+				var n = decodeEscape(d, i + 1, buf);
+				if (n <= 0) return failAt(i, "invalid escape in string");
+				i += 1 + n;
+			} else if (ch < 0x80) {
+				buf.putc(ch);
+				i++;
+			} else {
+				var r = Utf8.decode1(d[i ... limit]);
+				if (r.0 <= 0) return failAt(i, "invalid UTF-8 in string");
+				buf.putr(d[i ..+ r.0]);
+				i += r.0;
+			}
+		}
+		return failAt(i, "unterminated string");
+	}
+	// Parses a JSON number. Integers in the 32-bit range become {JsonValue.Int};
+	// any other valid number becomes null and is counted in {unsupportedNumbers}.
+	def parseNumber() -> JsonValue {
+		var d = data, i = pos;
+		if (i < limit && d[i] == '-') i++;
+		if (i < limit && d[i] == '0') i++;
+		else if (isDigitAt(i)) i = skipDigits(i);
+		else return failAt(i, "invalid number");
+		var integer = true;
+		if (i < limit && d[i] == '.') {
+			if (!isDigitAt(i + 1)) return failAt(i + 1, "invalid number");
+			i = skipDigits(i + 1);
+			integer = false;
+		}
+		if (i < limit && (d[i] == 'e' || d[i] == 'E')) {
+			i++;
+			if (i < limit && (d[i] == '+' || d[i] == '-')) i++;
+			if (!isDigitAt(i)) return failAt(i, "invalid number");
+			i = skipDigits(i);
+			integer = false;
+		}
+		var len = i - pos;
+		if (integer) {
+			var r = Ints.parseDecimal(d, pos);
+			if (r.0 == len) {
+				advance(len);
+				return JsonValue.Int(r.1);
+			}
+			if (len == 2 && d[pos] == '-' && d[pos + 1] == '0') { // -0, which Ints rejects
+				advance(len);
+				return JsonValue.Int(0);
+			}
+		}
+		unsupportedNumbers++;
+		advance(len);
+		return JsonValue.Null;
+	}
+	// Decodes the escape that follows a backslash, starting at {d[i]}, into
+	// {buf}. Returns the number of bytes consumed, or 0 if it is invalid.
+	private def decodeEscape(d: Array<byte>, i: int, buf: StringBuilder) -> int {
+		if (i >= limit) return 0;
+		match (d[i]) {
+			'\"' => buf.putc('\"');
+			'\\' => buf.putc('\\');
+			'/' => buf.putc('/');
+			'b' => buf.putc('\x08');
+			'f' => buf.putc('\x0C');
+			'n' => buf.putc('\n');
+			'r' => buf.putc('\r');
+			't' => buf.putc('\t');
+			'u' => return decodeUnicodeEscape(d, i + 1, buf);
+			_ => return 0;
+		}
+		return 1;
+	}
+	// Decodes the hex digits of a \u escape starting at {d[i]}. A high
+	// surrogate followed by a \u low surrogate is combined into one code point.
+	// A lone surrogate becomes U+FFFD, which is also one UTF-16 code unit, so
+	// LSP character offsets stay aligned. Returns the bytes consumed, counting
+	// the 'u', or 0 if the digits are invalid.
+	private def decodeUnicodeEscape(d: Array<byte>, i: int, buf: StringBuilder) -> int {
+		var unit = hex4(d, i);
+		if (unit < 0) return 0;
+		var consumed = 5, cp = u32.view(unit);
+		if (unit >= 0xD800 && unit <= 0xDBFF) {
+			var low = -1;
+			if (i + 6 <= limit && d[i + 4] == '\\' && d[i + 5] == 'u') low = hex4(d, i + 6);
+			if (low >= 0xDC00 && low <= 0xDFFF) {
+				cp = 0x10000u + (u32.view(unit - 0xD800) << 10) + u32.view(low - 0xDC00);
+				consumed = 11;
+			} else {
+				cp = 0xFFFD;
+			}
+		} else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+			cp = 0xFFFD;
+		}
+		buf.pututf8(cp);
+		return consumed;
+	}
+	// Returns the value of the four hex digits at {d[i]}, or -1.
+	private def hex4(d: Array<byte>, i: int) -> int {
+		if (i + 4 > limit) return -1;
+		var v = 0;
+		for (j < 4) {
+			var ch = d[i + j];
+			if (!Chars.isHex(ch)) return -1;
+			v = (v << 4) | Chars.hexValue(ch);
+		}
+		return v;
+	}
+	private def isDigitAt(i: int) -> bool {
+		return i < limit && Chars.isDecimal(data[i]);
+	}
+	private def skipDigits(i: int) -> int {
+		while (isDigitAt(i)) i++;
+		return i;
+	}
+	private def failAt(i: int, msg: string) -> JsonValue {
+		failRel(i - pos, msg);
+		return JsonValue.Null;
+	}
+}
+
+// JSON helpers for the JSON-RPC layer.
+component JsonRpcJson {
+	// Maximum nesting of arrays and objects in an incoming message. LSP
+	// messages nest only a few levels; the parser's stack overflows somewhere
+	// beyond 30,000 levels.
+	def MAX_DEPTH = 256;
+
+	// Renders {v} as compact JSON. Object members are sorted by key, so the
+	// output is deterministic. Null strings, arrays, and maps render as null.
+	def render(buf: StringBuilder, v: JsonValue) -> StringBuilder {
+		match (v) {
+			String(s) => renderString(buf, s);
+			Int(n) => buf.putd(n);
+			Bool(b) => buf.puts(if(b, "true", "false"));
+			Null => buf.puts("null");
+			JArray(a) => {
+				if (a == null) return buf.puts("null");
+				buf.putc('[');
+				for (i < a.length) {
+					if (i > 0) buf.putc(',');
+					render(buf, a[i]);
+				}
+				buf.putc(']');
+			}
+			JObject(map) => {
+				if (map == null) return buf.puts("null");
+				var members = MapCollector.new(Strings.asciiLt, map).extract();
+				buf.putc('{');
+				for (i < members.length) {
+					if (i > 0) buf.putc(',');
+					var key = members[i].0;
+					renderString(buf, if(key == null, "", key));
+					buf.putc(':');
+					render(buf, members[i].1);
+				}
+				buf.putc('}');
+			}
+		}
+		return buf;
+	}
+	// Renders {s} as a JSON string. Quotes, backslashes, and control characters
+	// are escaped. Each byte that is not part of valid UTF-8 becomes U+FFFD, so
+	// the output is always valid JSON. A null string renders as null.
+	def renderString(buf: StringBuilder, s: string) -> StringBuilder {
+		if (s == null) return buf.puts("null");
+		buf.putc('\"');
+		var i = 0;
+		while (i < s.length) {
+			var ch = s[i];
+			if (ch >= 0x80) {
+				var r = Utf8.decode1(s[i ...]);
+				if (r.0 > 0) {
+					buf.putr(s[i ..+ r.0]);
+					i += r.0;
+				} else {
+					buf.puts("\\ufffd");
+					i++;
+				}
+				continue;
+			}
+			match (ch) {
+				'\"' => buf.puts("\\\"");
+				'\\' => buf.puts("\\\\");
+				'\n' => buf.puts("\\n");
+				'\r' => buf.puts("\\r");
+				'\t' => buf.puts("\\t");
+				'\x08' => buf.puts("\\b");
+				'\x0C' => buf.puts("\\f");
+				_ => {
+					if (ch < ' ') {
+						buf.puts("\\u00");
+						buf.putc(Chars.hexMap_l[ch >> 4]);
+						buf.putc(Chars.hexMap_l[ch & 0xF]);
+					} else {
+						buf.putc(ch);
+					}
+				}
+			}
+			i++;
+		}
+		return buf.putc('\"');
+	}
+	// Skips JSON whitespace: space, tab, line feed, and carriage return.
+	def skipWhitespace(r: TextReader) {
+		while (r.pos < r.limit) {
+			var ch = r.char;
+			if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') return;
+			r.skip1();
+		}
+	}
+	// Returns true if arrays and objects in {d} nest deeper than {max}.
+	// Brackets inside strings are not counted. On malformed input this can
+	// differ from what the parser sees, but only after the point where the
+	// parser has already stopped.
+	def exceedsDepth(d: Array<byte>, max: int) -> bool {
+		var depth = 0, inString = false;
+		for (i = 0; i < d.length; i++) {
+			var ch = d[i];
+			if (inString) {
+				if (ch == '\\') i++;
+				else if (ch == '\"') inString = false;
+			} else if (ch == '\"') {
+				inString = true;
+			} else if (ch == '[' || ch == '{') {
+				if (++depth > max) return true;
+			} else if (ch == ']' || ch == '}') {
+				depth--;
+			}
+		}
+		return false;
+	}
+}
