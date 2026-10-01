@@ -5,12 +5,15 @@
 // This file must be the first source passed to the compiler so that
 // {VirgilLsp.main} is selected as the program entry point.
 component VirgilLsp {
+	def STDIN = 0;
+	def STDOUT = 1;
+
 	def main(args: Array<string>) -> int {
 		if (args.length == 0) return usage(2);
 		var cmd = args[0];
 		if (Strings.equal(cmd, "--version")) return version();
 		if (Strings.equal(cmd, "--help") || Strings.equal(cmd, "-h")) return usage(0);
-		if (Strings.equal(cmd, "--stdio")) return stdio();
+		if (Strings.equal(cmd, "--stdio")) return stdio(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "parse")) return parse(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "analyze")) return analyze(Arrays.range(args, 1, args.length));
 		Log.error2("unknown argument '%s'; run '%s --help'", cmd, BuildInfo.NAME);
@@ -20,7 +23,9 @@ component VirgilLsp {
 		var buf = StringBuilder.new();
 		buf.put1("Usage: %s <command>\n\n", BuildInfo.NAME);
 		buf.puts("Commands:\n");
-		buf.puts("  --stdio            Run the language server over standard input/output.\n");
+		buf.puts("  --stdio [options]  Run the language server over standard input/output.\n");
+		buf.puts("    --max-message-bytes=<n>\n");
+		buf.put1("                     Skip incoming messages larger than n bytes (default %d).\n", LspFraming.DEFAULT_MAX_PAYLOAD);
 		buf.puts("  --version          Print the server version and pinned Virgil revision.\n");
 		buf.puts("  --help             Print this summary.\n\n");
 		buf.puts("Development commands (unstable):\n");
@@ -43,10 +48,41 @@ component VirgilLsp {
 		System.puts(buf.toString());
 		return 0;
 	}
-	def stdio() -> int {
-		// The JSON-RPC/LSP core is milestone M1; see ROADMAP.md.
-		Log.error("the --stdio transport is not implemented yet");
-		return 3;
+	def stdio(args: Array<string>) -> int {
+		var maxPayload = LspFraming.DEFAULT_MAX_PAYLOAD;
+		for (arg in args) {
+			if (Strings.startsWith(arg, "--max-message-bytes=")) {
+				var start = "--max-message-bytes=".length, p = Ints.parseDecimal(arg, start);
+				// Nine digits keep the value within an int.
+				if (p.0 != arg.length - start || p.0 > 9 || p.1 < 1) {
+					Log.error1("invalid option '%s'", arg);
+					return 2;
+				}
+				maxPayload = p.1;
+			} else {
+				Log.error2("unknown option '%s'; run '%s --help'", arg, BuildInfo.NAME);
+				return 2;
+			}
+		}
+		// No handlers yet: lifecycle and features come later in M1 and M2, so
+		// every request is answered with MethodNotFound.
+		var dispatcher = JsonRpcDispatcher.new();
+		var transport = LspTransport.new(dispatcher, maxPayload, System.write(STDOUT, _), Log.warn);
+		var buf = Array<byte>.new(64 * 1024);
+		while (true) {
+			var n = System.read(STDIN, buf);
+			if (n <= 0) {
+				// The end of the input, or a read error, which can't be told apart.
+				transport.close();
+				break;
+			}
+			if (!transport.receive(buf[0 ..+ n])) break;
+		}
+		if (transport.failure != null) {
+			Log.error(transport.failure);
+			return 1;
+		}
+		return 0;
 	}
 	def parse(paths: Array<string>) -> int {
 		if (paths.length == 0) return usage(2);

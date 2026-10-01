@@ -26,7 +26,28 @@ expect() {
     [ "$got" -eq "$code" ] || { ok=0; echo "  exit: expected $code, got $got"; }
     check_stream stdout "$TMP/out" "$out_pat" || ok=0
     check_stream stderr "$TMP/err" "$err_pat" || ok=0
-    if [ $ok -eq 1 ]; then
+    finish "$name" $ok
+}
+
+# expect_stdio <name> <expected-exit> <expected-stdout-file> <stderr-pattern|-> -- <args...>
+# Runs "--stdio <args...>" with the caller's standard input. Standard output
+# must equal the file byte for byte, so it can hold nothing but framed messages.
+expect_stdio() {
+    local name=$1 code=$2 want=$3 err_pat=$4
+    shift 5
+    "$EXE" --stdio "$@" > "$TMP/out" 2> "$TMP/err"
+    local got=$?
+    local ok=1
+    [ "$got" -eq "$code" ] || { ok=0; echo "  exit: expected $code, got $got"; }
+    cmp -s "$want" "$TMP/out" || { ok=0; echo "  stdout: differs from"; sed 's/^/  expected| /' "$want"; }
+    check_stream stderr "$TMP/err" "$err_pat" || ok=0
+    finish "$name" $ok
+}
+
+# finish <name> <ok>: counts a result, and prints the output of a failure.
+finish() {
+    local name=$1 ok=$2
+    if [ "$ok" -eq 1 ]; then
         pass=$((pass + 1))
     else
         fail=$((fail + 1))
@@ -73,6 +94,65 @@ expect "analyze stats go to stderr" 0 '^ok: 2 files' 'analysis 1: parse [0-9]+ u
 expect "analyze missing file" 1 "" "cannot read file" -- analyze "$TMP/missing.v3"
 expect "analyze rejects a bad repeat count" 2 "" "invalid option" -- analyze --repeat=0 "$A/two-file/main.v3"
 expect "analyze rejects unknown options" 2 "" "unknown option" -- analyze --bogus "$A/two-file/main.v3"
+
+# frame <payload>: prints the payload with a Content-Length header, in bytes.
+frame() {
+    printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) )) "$1"
+}
+request() {  # request <id> <method> [params]
+    local params=${3:-'{}'}
+    printf '{"jsonrpc":"2.0","id":%s,"method":"%s","params":%s}' "$1" "$2" "$params"
+}
+not_found() {  # not_found <id> <method>
+    printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found: %s"}}' "$1" "$2"
+}
+E=$'\xc3\xa9'  # U+00E9, two bytes in UTF-8
+INVALID='{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"a message must be a JSON object"}}'
+
+# Requests, a notification, a non-object payload, and non-ASCII text. With no
+# handlers registered yet, every request gets MethodNotFound.
+{
+    frame "$(request 1 initialize)"
+    frame '{"jsonrpc":"2.0","method":"initialized","params":{}}'
+    frame '[]'
+    frame "$(request "\"$E\"" "h${E}llo")"
+} > "$TMP/in"
+{
+    frame "$(not_found 1 initialize)"
+    frame "$INVALID"
+    frame "$(not_found "\"$E\"" "h${E}llo")"
+} > "$TMP/want"
+expect_stdio "stdio writes only framed replies" 0 "$TMP/want" "" -- < "$TMP/in"
+
+# The same input, split so that one message arrives in two reads.
+split_input() {
+    head -c 30 "$TMP/in"
+    sleep 0.2
+    tail -c +31 "$TMP/in"
+}
+expect_stdio "stdio reads a message split across reads" 0 "$TMP/want" "" -- < <(split_input)
+
+: > "$TMP/empty"
+expect_stdio "stdio exits cleanly at the end of input" 0 "$TMP/empty" "" -- < "$TMP/empty"
+
+{ frame "$(request 1 big '["0123456789012345678901234567890123456789"]')"; frame "$(request 2 small)"; } > "$TMP/in"
+frame "$(not_found 2 small)" > "$TMP/want"
+expect_stdio "stdio skips a message over the limit" 0 "$TMP/want" \
+    'warning: skipped a message: payload of [0-9]+ bytes is longer than the limit of 64 bytes' -- \
+    --max-message-bytes=64 < "$TMP/in"
+
+{ frame "$(request 1 a)"; printf 'Content-Length: x\r\n\r\n{}'; frame "$(request 2 b)"; } > "$TMP/in"
+frame "$(not_found 1 a)" > "$TMP/want"
+expect_stdio "stdio stops at a malformed header" 1 "$TMP/want" \
+    'error: malformed message header: Content-Length is invalid' -- < "$TMP/in"
+
+printf 'Content-Length: 10\r\n\r\n{' > "$TMP/in"
+expect_stdio "stdio fails when the input ends inside a message" 1 "$TMP/empty" \
+    'error: input ended in the middle of a message' -- < "$TMP/in"
+
+expect "stdio rejects a bad message limit" 2 "" "invalid option" -- --stdio --max-message-bytes=0
+expect "stdio rejects a message limit over nine digits" 2 "" "invalid option" -- --stdio --max-message-bytes=1234567890
+expect "stdio rejects unknown options" 2 "" "unknown option" -- --stdio --bogus
 
 echo "cli: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,0 +1,172 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspFrameWriter:frames_payload", test_frames_payload),
+	T("LspFrameWriter:length_counts_bytes", test_writer_counts_bytes),
+	T("LspFrameWriter:partial_writes", test_partial_writes),
+	T("LspFrameWriter:write_failure", test_write_failure),
+	T("LspTransport:replies_in_order", test_replies_in_order),
+	T("LspTransport:fragmented_input", test_fragmented_input),
+	T("LspTransport:skipped_message", test_skipped_message),
+	T("LspTransport:malformed_header", test_malformed_header),
+	T("LspTransport:write_failure", test_transport_write_failure),
+	T("LspTransport:end_of_input", test_end_of_input),
+	()
+];
+
+// Collects what is written. Each write takes at most {maxChunk} bytes (all of
+// them if not positive), and every write after the first {failAfter} fails
+// (none if negative).
+class WriteRecorder(maxChunk: int, failAfter: int) {
+	def out = Vector<byte>.new();
+	var writes: int;
+
+	// Returns everything written so far.
+	def text() -> string {
+		return out.copy();
+	}
+
+	def write(r: Range<byte>) -> int {
+		if (failAfter >= 0 && writes >= failAfter) return 0;
+		writes++;
+		var n = if(maxChunk > 0 && r.length > maxChunk, maxChunk, r.length);
+		out.putr(r[0 ..+ n]);
+		return n;
+	}
+}
+class WarningRecorder {
+	def warnings = Vector<string>.new();
+
+	def warn(msg: string) {
+		warnings.put(msg);
+	}
+}
+
+def framed(payload: string) -> string {
+	return StringBuilder.new().put1("Content-Length: %d\r\n\r\n", payload.length).puts(payload).toString();
+}
+def joined(parts: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (p in parts) buf.puts(p);
+	return buf.toString();
+}
+// A dispatcher that answers "echo" with its params and records notifications.
+def echoDispatcher() -> JsonRpcDispatcher {
+	return JsonRpcDispatcher.new().onRequest("echo", echo);
+}
+def echo(r: JsonRpcMessage.Request) -> JsonRpcReply {
+	match (r.params) {
+		ByPosition(v) => return JsonRpcReply.Result(JsonValue.JArray(v));
+		_ => return JsonRpcReply.Result(JsonValue.Null);
+	}
+}
+def request(id: int, method: string) -> string {
+	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"%s\",\"params\":[\"\xC3\xA9\"]}", id, method);
+}
+def result(id: int) -> string {
+	return Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":[\"\xC3\xA9\"]}", id);
+}
+def notFound(id: int, method: string) -> string {
+	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{\"code\":-32601,\"message\":\"method not found: %s\"}}", id, method);
+}
+def NOTIFICATION = "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}";
+
+def test_frames_payload(t: Tester) {
+	var w = WriteRecorder.new(0, -1);
+	t.assertz(true, LspFrameWriter.new(w.write).send("{}"));
+	t.assert_string("Content-Length: 2\r\n\r\n{}", w.text());
+	t.asserti(1, w.writes);
+	t.assertz(true, LspFrameWriter.new(w.write).send(""));
+	t.assert_string("Content-Length: 2\r\n\r\n{}Content-Length: 0\r\n\r\n", w.text());
+}
+def test_writer_counts_bytes(t: Tester) {
+	var w = WriteRecorder.new(0, -1);
+	LspFrameWriter.new(w.write).send("\"\xF0\x9F\x98\x80\"");
+	t.assert_string("Content-Length: 6\r\n\r\n\"\xF0\x9F\x98\x80\"", w.text());
+}
+def test_partial_writes(t: Tester) {
+	var payload = request(7, "echo");
+	for (chunk in [1, 2, 3, 10]) {
+		var w = WriteRecorder.new(chunk, -1);
+		t.assertz(true, LspFrameWriter.new(w.write).send(payload));
+		t.assert_string(framed(payload), w.text());
+		var expected = (framed(payload).length + chunk - 1) / chunk;
+		t.asserti(expected, w.writes);
+	}
+}
+def test_write_failure(t: Tester) {
+	var w = WriteRecorder.new(5, 2);
+	t.assertz(false, LspFrameWriter.new(w.write).send("{\"jsonrpc\":\"2.0\"}"));
+	t.assert_string("Content-Le", w.text());
+}
+def test_replies_in_order(t: Tester) {
+	var w = WriteRecorder.new(0, -1), r = WarningRecorder.new();
+	var transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
+	var input = joined([framed(request(1, "echo")), framed(NOTIFICATION), framed(request(2, "nope")), framed("[]"), framed(request(3, "echo"))]);
+	t.assertz(true, transport.receive(input));
+	t.assertz(true, transport.close());
+	var invalid = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"a message must be a JSON object\"}}";
+	t.assert_string(joined([framed(result(1)), framed(notFound(2, "nope")), framed(invalid), framed(result(3))]), w.text());
+	t.asserti(0, r.warnings.length);
+	t.assert(transport.failure == null, "expected no failure");
+}
+def test_fragmented_input(t: Tester) {
+	var input = joined([framed(request(1, "echo")), framed(NOTIFICATION), framed(request(2, "echo"))]);
+	var expected = joined([framed(result(1)), framed(result(2))]);
+	for (chunk in [1, 2, 7, 64]) {
+		var w = WriteRecorder.new(3, -1), r = WarningRecorder.new();
+		var transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
+		for (i = 0; i < input.length; i += chunk) {
+			var n = if(input.length - i < chunk, input.length - i, chunk);
+			t.assertz(true, transport.receive(input[i ..+ n]));
+		}
+		t.assertz(true, transport.close());
+		if (!Strings.equal(expected, w.text())) return t.fail1("in chunks of %d bytes: wrong output", chunk);
+	}
+}
+def test_skipped_message(t: Tester) {
+	var w = WriteRecorder.new(0, -1), r = WarningRecorder.new();
+	var transport = LspTransport.new(echoDispatcher(), 64, w.write, r.warn);
+	var big = Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"echo\",\"params\":[\"%s\"]}", "0123456789012345678901234567890123456789");
+	t.assertz(true, transport.receive(joined([framed(big), framed("[2]")])));
+	t.assertz(true, transport.close());
+	t.asserti(1, r.warnings.length);
+	if (r.warnings.length == 1) {
+		t.assert_string(Strings.format1("skipped a message: payload of %d bytes is longer than the limit of 64 bytes", big.length), r.warnings[0]);
+	}
+	// The skipped request gets no reply; the next message is still read.
+	var invalid = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"a message must be a JSON object\"}}";
+	t.assert_string(framed(invalid), w.text());
+}
+def test_malformed_header(t: Tester) {
+	var w = WriteRecorder.new(0, -1), r = WarningRecorder.new();
+	var transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
+	t.assertz(false, transport.receive(joined([framed(request(1, "echo")), "Content-Length: 2\n\n{}", framed(request(2, "echo"))])));
+	t.assert_string("malformed message header: header line contains a CR or LF outside a CR LF pair", transport.failure);
+	// Replies to messages before the bad header were sent; nothing after it is read.
+	t.assert_string(framed(result(1)), w.text());
+	t.assertz(false, transport.receive(framed(request(3, "echo"))));
+	t.assertz(false, transport.close());
+	t.assert_string(framed(result(1)), w.text());
+	t.asserti(0, r.warnings.length);
+}
+def test_transport_write_failure(t: Tester) {
+	var w = WriteRecorder.new(0, 1), r = WarningRecorder.new();
+	var transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
+	t.assertz(true, transport.receive(joined([framed(request(1, "echo")), framed(NOTIFICATION)])));
+	t.assertz(false, transport.receive(framed(request(2, "echo"))));
+	t.assert_string("cannot write a reply", transport.failure);
+	t.assert_string(framed(result(1)), w.text());
+}
+def test_end_of_input(t: Tester) {
+	var w = WriteRecorder.new(0, -1), r = WarningRecorder.new();
+	var transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
+	t.assertz(true, transport.close());
+	transport = LspTransport.new(echoDispatcher(), LspFraming.DEFAULT_MAX_PAYLOAD, w.write, r.warn);
+	t.assertz(true, transport.receive(joined([framed(request(1, "echo")), "Content-Length: 10\r\n\r\n{"])));
+	t.assertz(false, transport.close());
+	t.assert_string("input ended in the middle of a message", transport.failure);
+	t.assert_string(framed(result(1)), w.text());
+}
