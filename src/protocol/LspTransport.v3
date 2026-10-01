@@ -1,0 +1,67 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Frames outgoing payloads with a Content-Length header and writes them with
+// {write}. Like a write to a pipe, {write} may write only part of what it is
+// given. It returns how many bytes it wrote, or 0 or less if writing failed.
+class LspFrameWriter(write: Range<byte> -> int) {
+	// Writes {payload} as one framed message. Returns false if writing failed,
+	// in which case part of the message may have been written.
+	def send(payload: Array<byte>) -> bool {
+		var header = Strings.format1("Content-Length: %d\r\n\r\n", payload.length);
+		// One buffer, so that a message usually takes one write.
+		var frame = Array<byte>.new(header.length + payload.length);
+		for (i < header.length) frame[i] = header[i];
+		var body = frame[header.length ...];
+		for (i < payload.length) body[i] = payload[i];
+		var done = 0;
+		while (done < frame.length) {
+			var n = write(frame[done ...]);
+			if (n <= 0) return false;
+			done += n;
+		}
+		return true;
+	}
+}
+
+// Connects the client's byte stream to a dispatcher: it reads framed messages,
+// dispatches each one, and writes the replies as framed messages. It does no
+// I/O itself. The caller passes in the bytes it reads, and {write} sends the
+// output. Skipped messages are reported to {warn}.
+class LspTransport(dispatcher: JsonRpcDispatcher, maxPayload: int, write: Range<byte> -> int, warn: string -> void) {
+	private def reader = LspFrameReader.new(maxPayload);
+	private def writer = LspFrameWriter.new(write);
+	// Why the connection stopped, once {receive} or {close} has returned false.
+	def var failure: string;
+
+	// Handles {data}, read from the client. Returns false if the connection
+	// can't continue, because a header was malformed or a reply couldn't be
+	// written.
+	def receive(data: Range<byte>) -> bool {
+		if (failure != null) return false;
+		reader.feed(data);
+		for (f = reader.next(); !LspFrame.Incomplete.?(f); f = reader.next()) {
+			match (f) {
+				Message(payload) => {
+					var reply = dispatcher.handle(payload);
+					if (reply != null && !writer.send(reply)) return fail("cannot write a reply");
+				}
+				Skipped(reason) => warn(Strings.format1("skipped a message: %s", reason));
+				Malformed(reason) => return fail(Strings.format1("malformed message header: %s", reason));
+				Incomplete => ;
+			}
+		}
+		return true;
+	}
+	// Handles the end of the client's input. Returns false if the connection
+	// had already stopped or the input ended in the middle of a message.
+	def close() -> bool {
+		if (failure != null) return false;
+		if (reader.midMessage()) return fail("input ended in the middle of a message");
+		return true;
+	}
+	private def fail(reason: string) -> bool {
+		failure = reason;
+		return false;
+	}
+}

@@ -22,7 +22,7 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, lifecycle state machine | Message model and frame reader present; stdio transport and lifecycle planned (M1) |
+| `src/protocol/` | Byte framing, JSON-RPC message model, lifecycle state machine | Message model, framing, and stdio transport present; lifecycle planned (M1) |
 | `src/documents/` | URIs, versioned text, `PositionMap` | Planned (M2) |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
@@ -112,7 +112,7 @@ The pinned `lib/file/json` differs from RFC 8259 in ways that matter for LSP tra
 
 - `Content-Length` counts bytes, not characters, and is required. Field names are case-insensitive. Spaces and tabs around a value are ignored, and unknown fields are ignored.
 - `Content-Type` is optional. Its media type isn't checked, but a `charset` parameter must be `utf-8` (or `utf8`, which LSP accepts for backward compatibility).
-- The payload limit is set when the reader is created. `LspFraming.DEFAULT_MAX_PAYLOAD` is 16 MiB. The header may be at most `LspFraming.MAX_HEADER_BYTES` (8 KiB) long.
+- The payload limit is set when the reader is created: `virgil-lsp --stdio --max-message-bytes=<n>`, or `LspFraming.DEFAULT_MAX_PAYLOAD` (16 MiB) by default. The header may be at most `LspFraming.MAX_HEADER_BYTES` (8 KiB) long.
 
 Each call returns one frame:
 
@@ -125,10 +125,24 @@ Each call returns one frame:
 
 A byte that can't appear in a header fails as soon as it arrives, so input without a header, such as bare JSON with non-ASCII text, doesn't wait for a header end that never comes. Header lines must end with CR LF; a lone LF is malformed. `midMessage()` reports whether part of a message has been read, so that the end of the input can be told apart from a message cut short.
 
+### Stdio transport
+
+`LspTransport` (`src/protocol/LspTransport.v3`) connects the frame reader to the dispatcher: each payload is dispatched, and each reply is written by `LspFrameWriter` as one framed message. The writer builds the header and payload in one buffer and keeps writing until all of it is out, because a write to a pipe may take only part of it. The transport does no I/O itself: `--stdio` reads standard input in chunks of up to 64 KiB, passes them in, and gives the transport a function that writes to standard output. Unit tests drive it with input in small chunks and a writer that takes a few bytes at a time.
+
+| Event | Effect | Exit status |
+| --- | --- | --- |
+| A message is skipped | A warning on stderr. No reply, because the payload wasn't read, so it isn't known whether it was a request. | Continues |
+| A header is malformed | An error on stderr. Replies to earlier messages have been sent. Nothing after the header is read. | 1 |
+| A reply can't be written | An error on stderr | 1 |
+| The input ends between messages | — | 0 |
+| The input ends in the middle of a message | An error on stderr | 1 |
+
+No handlers are registered yet, so every request gets `MethodNotFound`. `initialize`, `shutdown`, and `exit` come with the lifecycle work, which will also decide the exit status when the input ends without an `exit` notification.
+
 ## Protocol invariants
 
 - Each request receives exactly one response, carrying the request's original `id` (integer or string). *(present)*
 - Notifications never receive a response. Unknown notifications are ignored. Unknown requests receive `MethodNotFound`. *(present)*
-- `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are rejected. *(frame reader present; stdio transport planned, M1)*
-- Standard output carries protocol bytes only.
+- `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are skipped. *(present)*
+- Standard output carries protocol bytes only. *(present; `test/cli/run.sh` compares it byte for byte)*
 - Advertised capabilities exactly match implemented handlers.

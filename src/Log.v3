@@ -18,4 +18,7 @@ component Log {
 	def error2<A, B>(fmt: string, a: A, b: B) {
 		error(Strings.format2(fmt, a, b));
 	}
+	def warn(msg: string) {
+		raw(Strings.format2("%s: warning: %s\n", BuildInfo.NAME, msg));
+	}
 }

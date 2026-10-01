@@ -1,6 +1,6 @@
 # Neovim / LazyVim
 
-> **Not usable yet.** The server does not implement `--stdio` until milestone M1, and useful features arrive in M2. These files describe the intended setup and will be tested by headless Neovim end-to-end tests.
+> **Not usable yet.** `virgil-lsp --stdio` reads and writes framed messages, but doesn't handle `initialize` until the lifecycle work in milestone M1, and useful features arrive in M2. These files describe the intended setup and will be tested by headless Neovim end-to-end tests.
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
