@@ -57,8 +57,8 @@ def test_parse_tab_columns(t: Tester) {
 def test_parse_byte_offsets(t: Tester) {
 	var cases = ["component C {\n/*\t*/ def x = ;\n}\n",
 		"component C { // trailing\t😀", "/*\t*/ def if = 1;",
-		"/*\t*/ def if // trailing\tcomment"];
-	var begins = [28, cases[1].length, 10, 10], ends = [28, cases[1].length, 12, 12];
+		"/*\t*/ def if // trailing\tcomment", "/*\t*/ def f() => missing.[](in);"];
+	var begins = [28, cases[1].length, 10, 10, 28], ends = [28, cases[1].length, 12, 12, 30];
 	for (i < cases.length) {
 		var r = AeneasAdapter.parseFile("offsets.v3", cases[i]);
 		t.assert(r.diagnostics.length > 0, "expected a parse error");

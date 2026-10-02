@@ -9,6 +9,7 @@ def X = [
 	T("LspParserDiagnostics:byte_ranges", test_diagnostics_ranges),
 	T("LspParserDiagnostics:hint_eof_recovery", test_diagnostics_hint_recovery),
 	T("LspParserDiagnostics:hint_ranges", test_diagnostics_hint_ranges),
+	T("LspParserDiagnostics:retrospective_token_ranges", test_diagnostics_retrospective_ranges),
 	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
 	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
 	()
@@ -159,6 +160,23 @@ def test_diagnostics_hint_ranges(t: Tester) {
 	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 24);
 	replace(t, server, 4, "/*\t*/ class C #boxed {}");
 	t.asserti(0, publication(t, rec, 3, URI, 4).length);
+}
+def test_diagnostics_retrospective_ranges(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	var cases = ["/*\t*/ def f() => missing.[](in);", "/*\t*/ def f() => missing.[]=(in);",
+		"/*\t*/ def f() -> int => missing.[](in);", "/*\t*/ def f() -> int => missing.[]=(in);",
+		"/*\t\t*/ def f()=>0;def     if=2;", "/*\t\t*/ def f()->int=>0;def     if=2;"];
+	var begins = [28, 29, 35, 36, 26, 31];
+	for (i < cases.length) {
+		if (i == 0) open(t, server, URI, i + 1, cases[i]);
+		else replace(t, server, i + 1, cases[i]);
+		assertRange(t, publication(t, rec, i, URI, i + 1), 0, begins[i], begins[i] + 2);
+	}
+	replace(t, server, cases.length + 1, "/*\t*/ def f() => missing.[](1);");
+	t.asserti(0, publication(t, rec, cases.length, URI, cases.length + 1).length);
+	notify(t, server, "didClose", ID);
+	t.asserti(0, publication(t, rec, cases.length + 1, URI, cases.length + 1).length);
+	t.asserti(cases.length + 2, rec.payloads.length);
 }
 class DiagnosticDiskReader {
 	var reads: int;

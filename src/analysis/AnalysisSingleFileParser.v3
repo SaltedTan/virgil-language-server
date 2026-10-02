@@ -53,14 +53,11 @@ class AnalysisParserState extends ParserState {
 		super(file, errors, AnalysisSingleFileParser.skip, TypeCache.new()) { }
 
 	def token(len: int) -> Token {
-		var t = tokenAt(curPos, curPos + len);
-		advance(t.image.length);
-		return t;
-	}
-	def tokenAt(start: int, end: int) -> Token {
+		var end = curPos + len;
 		if (end > input.length) end = input.length;
-		var t = Token.new(fileName, Arrays.range(input, start, end), line(start), column(start));
-		AnalysisParseErrors.!(ERROR).recordToken(t, start, end);
+		var t = Token.new(fileName, Arrays.range(input, curPos, end), curLine, curCol);
+		AnalysisParseErrors.!(ERROR).recordToken(t, curPos, end);
+		advance(t.image.length);
 		return t;
 	}
 }
