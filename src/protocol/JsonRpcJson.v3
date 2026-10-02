@@ -13,6 +13,9 @@
 //   can answer with an error instead of misreading the message.
 // - The parser is recursive descent, and a stack overflow kills the process.
 //   Nesting deeper than {JsonRpcJson.MAX_DEPTH} is rejected before parsing.
+// - The parser builds the whole tree, and running out of heap kills the
+//   process. A document with more than {JsonRpcJson.MAX_VALUES} values is
+//   rejected before parsing.
 // - {JsonValue.render} writes Virgil literals: it emits \' and leaves control
 //   characters unescaped. {JsonRpcJson.render} writes valid JSON instead.
 
@@ -20,6 +23,9 @@
 class JsonRpcJsonParser extends JsonParser {
 	// Numbers that are not 32-bit integers, each replaced with null.
 	var unsupportedNumbers: int;
+	// Limits checked before parsing. Tests lower them.
+	var maxDepth = JsonRpcJson.MAX_DEPTH;
+	var maxValues = JsonRpcJson.MAX_VALUES;
 
 	new(text: Array<byte>) super(text) {
 		skipWs = JsonRpcJson.skipWhitespace;
@@ -28,8 +34,13 @@ class JsonRpcJsonParser extends JsonParser {
 	// only if {ok} is true; otherwise {error_msg} and {error_pos} describe the
 	// first error.
 	def parseDocument() -> JsonValue {
-		if (JsonRpcJson.exceedsDepth(data, JsonRpcJson.MAX_DEPTH)) {
-			fail(Strings.format1("arrays and objects nest deeper than %d levels", JsonRpcJson.MAX_DEPTH));
+		var size = JsonRpcJson.measure(data);
+		if (size.0 > maxDepth) {
+			fail(Strings.format1("arrays and objects nest deeper than %d levels", maxDepth));
+			return JsonValue.Null;
+		}
+		if (size.1 > maxValues) {
+			fail(Strings.format1("more than %d values", maxValues));
 			return JsonValue.Null;
 		}
 		var v = parseValue();
@@ -175,6 +186,14 @@ component JsonRpcJson {
 	// messages nest only a few levels; the parser's stack overflows somewhere
 	// beyond 30,000 levels.
 	def MAX_DEPTH = 256;
+	// Maximum number of values in an incoming message, counting object keys.
+	// The parser keeps every value on the heap, and the most expensive shapes
+	// (small objects) cost up to about 200 bytes per value, so with the default
+	// 200 MB heap a message with about a million values can end the process.
+	// At this limit even those shapes, plus a string that fills the rest of a
+	// 16 MiB payload, parse with room to spare. No LSP message from a client
+	// comes close.
+	def MAX_VALUES = 500000;
 
 	// Renders {v} as compact JSON. Object members are sorted by key, so the
 	// output is deterministic. Null strings, arrays, and maps render as null.
@@ -259,25 +278,40 @@ component JsonRpcJson {
 			r.skip1();
 		}
 	}
-	// Returns true if arrays and objects in {d} nest deeper than {max}.
-	// Brackets inside strings are not counted. On malformed input this can
-	// differ from what the parser sees, but only after the point where the
-	// parser has already stopped.
-	def exceedsDepth(d: Array<byte>, max: int) -> bool {
-		var depth = 0, inString = false;
+	// Measures {d} without allocating: returns the deepest nesting of arrays
+	// and objects, and the number of values, counting each object key as one.
+	// Bytes inside strings are not counted. For valid JSON both are exact. On
+	// malformed input they can differ from what the parser sees, but only
+	// after the point where the parser has already stopped.
+	def measure(d: Array<byte>) -> (int, int) {
+		var depth = 0, maxDepth = 0, values = 0;
+		var inString = false, inNumber = false;
 		for (i = 0; i < d.length; i++) {
 			var ch = d[i];
 			if (inString) {
 				if (ch == '\\') i++;
 				else if (ch == '\"') inString = false;
-			} else if (ch == '\"') {
-				inString = true;
-			} else if (ch == '[' || ch == '{') {
-				if (++depth > max) return true;
-			} else if (ch == ']' || ch == '}') {
-				depth--;
+				continue;
+			}
+			// A number starts with a digit or '-' that doesn't continue one.
+			var numberChar = (ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E';
+			if (numberChar && !inNumber && (ch == '-' || (ch >= '0' && ch <= '9'))) values++;
+			inNumber = numberChar;
+			match (ch) {
+				'\"' => {
+					inString = true;
+					values++;
+				}
+				'[', '{' => {
+					values++;
+					if (++depth > maxDepth) maxDepth = depth;
+				}
+				']', '}' => depth--;
+				// The first letters of true, false, and null; none appears again in them.
+				't', 'f', 'n' => values++;
+				_ => ;
 			}
 		}
-		return false;
+		return (maxDepth, values);
 	}
 }

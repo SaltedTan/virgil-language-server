@@ -141,6 +141,25 @@ expect_stdio "stdio skips a message over the limit" 0 "$TMP/want" \
     'warning: skipped a message: payload of [0-9]+ bytes is longer than the limit of 64 bytes' -- \
     --max-message-bytes=64 < "$TMP/in"
 
+# Five million zeros: under the default 16 MiB message limit, but far more
+# values than the heap can hold once parsed. The message is answered with a
+# ParseError, and the next request is still read.
+{
+    printf '{"jsonrpc":"2.0","id":1,"method":"x","params":['
+    yes '0,' | head -n 4999999 | tr -d '\n'
+    printf '0]}'
+} > "$TMP/dense"
+{
+    printf 'Content-Length: %d\r\n\r\n' $(( $(wc -c < "$TMP/dense") ))
+    cat "$TMP/dense"
+    frame "$(request 2 small)"
+} > "$TMP/in"
+{
+    frame '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON at byte 0: more than 500000 values"}}'
+    frame "$(not_found 2 small)"
+} > "$TMP/want"
+expect_stdio "stdio rejects a message with too many values and keeps going" 0 "$TMP/want" "" -- < "$TMP/in"
+
 { frame "$(request 1 a)"; printf 'Content-Length: x\r\n\r\n{}'; frame "$(request 2 b)"; } > "$TMP/in"
 frame "$(not_found 1 a)" > "$TMP/want"
 expect_stdio "stdio stops at a malformed header" 1 "$TMP/want" \
