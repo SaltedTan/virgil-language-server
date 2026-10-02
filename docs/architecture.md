@@ -22,7 +22,7 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, lifecycle state machine | Message model, framing, and stdio transport present; lifecycle planned (M1) |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, and server request tracking present; lifecycle planned (M1) |
 | `src/documents/` | URIs, versioned text, `PositionMap` | Planned (M2) |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
@@ -78,7 +78,8 @@ Each analysis produces an immutable snapshot containing: the configuration revis
 | --- | --- |
 | `JsonRpcMessage.v3` | `JsonRpcMessage` with four distinct shapes: `Request`, `Notification`, `Response`, `ErrorResponse`. `JsonRpcId` (`Int`, `String`, or `Null`, which only error responses use). `JsonRpcParams` (`Absent`, `Null`, `ByName`, `ByPosition`). `JsonRpcError` and the standard error codes. Encoding. |
 | `JsonRpcDecoder.v3` | Decodes and validates a payload into `JsonRpcInput`: `Valid`, `Rejected` (answered with an error), or `Dropped`. |
-| `JsonRpcDispatcher.v3` | Routes requests and notifications to handlers by method name and returns the reply payload, if any. |
+| `JsonRpcDispatcher.v3` | Routes requests and notifications to handlers by method name, and responses to the pending-request table. Returns the reply payload, if any. |
+| `JsonRpcPendingRequests.v3` | The requests the server has sent to the client, matched to their responses (see below). |
 | `JsonRpcJson.v3` | JSON parsing and rendering on top of Virgil's `lib/file/json` (see below). |
 
 The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Incoming messages are handled as follows:
@@ -88,13 +89,25 @@ The decoder checks each member for presence and type before reading it. A missin
 | Request with a registered method | The handler's result or error, with the original `id` |
 | Request with an unknown method | `MethodNotFound` (-32601), with the original `id` |
 | Notification, known or unknown | None. Unknown notifications are ignored. |
-| Response or error response | None. The server sends no requests yet, so there is no pending-request table to match them against. Malformed responses are dropped, because answering a response could start a loop of error replies. |
+| Response or error response | None. It completes the server request with the same `id`, if one is outstanding, and is otherwise ignored. Malformed responses are dropped, because answering a response could start a loop of error replies. |
 | Payload that is not valid JSON | `ParseError` (-32700), `id` null |
 | Valid JSON that is not a valid request or notification | `InvalidRequest` (-32600), with the original `id` if it was valid and null otherwise |
 
 A message is an invalid request if it isn't an object (this includes batches, which LSP doesn't use), its `jsonrpc` isn't `"2.0"`, its `method` is missing or not a string, its `id` isn't an integer or a string, its `params` isn't an object, an array, or null, or it has a `result` or `error` next to a `method`. Following JSON-RPC 2.0, it is answered even if it has no `id`.
 
 String IDs are echoed as the same string value. Escapes are decoded on input and re-encoded on output, so `"\u0041"` comes back as `"A"`.
+
+### Server requests
+
+The server also sends requests to the client, such as `workspace/configuration` or `client/registerCapability`, and must match the client's responses to them. The server is single-threaded, so a handler can't wait for a response. Instead, `JsonRpcPendingRequests` keeps a callback for each outstanding request, which runs when the request completes and receives the result or the error as a `JsonRpcReply`. The dispatcher owns the table (`pending`) and passes every response to it. Like the dispatcher, the table does no I/O: `send(method, params, onComplete)` records the request and returns its encoded payload, which the caller frames and writes.
+
+- Requests get integer IDs counting up from 1, skipping any ID that is still outstanding, so no two outstanding requests share an ID. After the largest 32-bit integer, the count starts again at 1.
+- A response or error response whose `id` matches an outstanding request completes it exactly once and removes it from the table, before the callback runs, so the callback may send further requests.
+- A response with an unknown or already-completed `id` (including a string `id`, since the server sends only integers), or an error response with a null `id`, completes nothing and is not answered. `complete` returns the reason, and the dispatcher passes it to its `onIgnoredResponse` handler. `--stdio` logs it to stderr as a warning.
+- A response that held numbers that aren't 32-bit integers completes its request with `InternalError` (-32603) instead, so the callback never sees the null placeholders (see [Numbers](#json-limitations-and-workarounds)).
+- `failAll(error)` completes every outstanding request with `error`, for shutdown and exit, so that no caller waits forever. Requests sent by the callbacks it runs stay outstanding.
+
+Requests the client never answers stay outstanding until `failAll`; there is no timeout yet. No server request is sent yet: the first ones come with the lifecycle work.
 
 ### JSON limitations and workarounds
 
