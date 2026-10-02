@@ -6,7 +6,7 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: pre-alpha (M1 protocol foundation in progress).** The repository builds an executable that links the Aeneas front end. From the command line it can report syntax and type errors for a set of files, and follow a name to its declaration. It supports LSP framing and accepts framed JSON-RPC over `--stdio`, but no LSP methods are implemented yet. See the [framing contract](docs/architecture.md#framing) for payload limits and [ROADMAP.md](ROADMAP.md) for the plan.
+> **Status: pre-alpha (M1 protocol foundation in progress).** The repository builds an executable that links the Aeneas front end. From the command line it can report syntax and type errors for a set of files, and follow a name to its declaration. The [protocol foundation](docs/architecture.md#json-rpc-messages) supports LSP framing and accepts framed JSON-RPC over `--stdio`, but no LSP methods are implemented yet. See the [framing contract](docs/architecture.md#framing) for payload limits and [ROADMAP.md](ROADMAP.md) for the plan.
 
 ## Why
 

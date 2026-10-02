@@ -57,9 +57,8 @@ class JsonRpcPendingRequests {
 			_ => return "not a response";
 		}
 	}
-	// Completes every outstanding request with {error}, for shutdown and exit,
-	// so that no caller waits forever. Requests sent by the callbacks it runs
-	// stay outstanding.
+	// Shutdown and exit drain the original entries. Callbacks may complete
+	// other entries or send new requests, which must remain pending.
 	def failAll(error: JsonRpcError) {
 		for (l = Maps.valueList(callbacks); l != null; l = l.tail) {
 			var request = l.head;
