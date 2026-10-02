@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Occurrence collection no longer traps on a null type binding left by verification errors, including `E.set.all` on enums with more than 64 cases.
 - `scripts/bench-analysis.sh` reports failed input sets, command exit statuses and stderr, rejects runs without timing samples, and cleans up temporary files on exit.
 
+### Changed
+
+- Analysis adapter caches a lazy per-file binding index and binary-searches definition queries, reuses compiler configuration across analyses, and counts the global type cache only for requested statistics. The development `analyze --bindings` command reuses its report buffer without copying each file's output.
+
 ### Added
 
 - Versioned full-text document synchronization (`didOpen`, `didChange`, `didSave`, `didClose`) with exactly matching `initialize` capabilities. Stale/out-of-order changes, duplicate opens, and unsupported incremental changes are ignored and logged to stderr. In-memory overlays override disk through an injected reader, and local Linux/macOS file URIs are normalized to canonical keys. See [Document store](docs/architecture.md#document-store) for version, save, and URI identity rules. Unit and golden transcript tests cover synchronization and rejection sequences.

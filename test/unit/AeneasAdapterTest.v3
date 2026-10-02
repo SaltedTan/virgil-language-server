@@ -16,6 +16,8 @@ def X = [
 	T("AeneasAdapter:binding_after_semantic_error", test_binding_after_semantic_error),
 	T("AeneasAdapter:binding_with_null_type", test_binding_with_null_type),
 	T("AeneasAdapter:repeat_analysis_equal", test_repeat_analysis_equal),
+	T("AeneasAdapter:cached_binding_index", test_cached_binding_index),
+	T("AeneasAdapter:optional_global_stats", test_optional_global_stats),
 	()
 ];
 
@@ -61,7 +63,7 @@ def analyzeFiles(t: Tester, paths: Array<string>) -> ProgramAnalysis {
 		}
 		sources[i] = AnalysisSource.new(paths[i], input);
 	}
-	return AeneasAdapter.analyzeProgram(sources);
+	return AeneasAdapter.analyzeProgram(sources, false);
 }
 def assertDiagnostic(t: Tester, a: ProgramAnalysis, kind: string, path: string, line: int, column: int) {
 	if (a.diagnostics.length == 0) return t.fail1("expected a %s diagnostic", kind);
@@ -138,7 +140,7 @@ def test_analyze_in_memory_only(t: Tester) {
 		AnalysisSource.new("no/such/dir/a.v3", "component A { def f() -> int { return B.new().g(); } }\n"),
 		AnalysisSource.new("no/such/dir/b.v3", "class B { def g() -> int { return 1; } }\n"),
 		AnalysisSource.new("no/such/dir/empty.v3", null)
-	]);
+	], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertDefinition(t, a, "no/such/dir/a.v3", 1, 39, AnalysisDeclKind.CLASS, "B", "no/such/dir/b.v3", 1, 7);
@@ -148,7 +150,7 @@ def test_analyze_in_memory_only(t: Tester) {
 // ExceptionInInitialization if the adapter ran Compilation.init().
 def test_analyze_runs_no_initializers(t: Tester) {
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("init.v3",
-		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")]);
+		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 }
@@ -213,4 +215,51 @@ def test_repeat_analysis_equal(t: Tester) {
 		t.assert_string(expectedBroken, renderAnalysis(analyzeFiles(t, broken), broken));
 	}
 	t.assert(first.occurrences(MAIN).length > 0, "expected bindings to compare");
+}
+
+// Every coordinate in the fixture, including gaps and exclusive ends, must
+// agree with a linear lookup. Repeated queries reuse the actual index objects,
+// even after the shared compiler has analyzed another program.
+def test_cached_binding_index(t: Tester) {
+	var a = analyzeFiles(t, [SHAPES, MAIN]);
+	if (a == null) return;
+	var uses = a.occurrences(MAIN);
+	t.assert(uses == a.occurrences(MAIN), "occurrences should reuse the per-file index");
+	for (line < 12) {
+		for (column < 65) {
+			var expected: AnalysisDeclaration;
+			for (o in uses) {
+				if (o.range.contains(line, column)) {
+					expected = o.declaration;
+					break;
+				}
+			}
+			t.assert(expected == a.definitionAt(MAIN, line, column), "indexed lookup must match source-order lookup");
+		}
+	}
+	var other = analyzeFiles(t, [SHAPES, UNRESOLVED]);
+	if (other == null) return;
+	t.assert(uses == a.occurrences(MAIN), "later analyses must not replace an older snapshot's index");
+	t.asserti(0, a.occurrences("missing.v3").length);
+	t.assert(a.definitionAt("missing.v3", 1, 1) == null, "unknown path has no definition");
+	var broken = analyzeFiles(t, [SHAPES, SYNTAX_ERROR]);
+	if (broken == null) return;
+	t.assert(broken.definitionAt(SHAPES, 10, 24) == null, "parse failure has no binding index");
+	var empty = AeneasAdapter.analyzeProgram([AnalysisSource.new("empty.v3", "")], false);
+	t.assert(empty.occurrences("empty.v3") == empty.occurrences("empty.v3"), "empty index is cached too");
+	t.assert(empty.definitionAt("empty.v3", 1, 1) == null, "empty index has no definition");
+}
+
+def test_optional_global_stats(t: Tester) {
+	var sources = [AnalysisSource.new("stats.v3", "class C { }\ncomponent S { def f(c: C) -> C { return c; } }\n")];
+	var unmeasured = AeneasAdapter.analyzeProgram(sources, false);
+	t.asserti(-1, unmeasured.stats.globalTypesAdded);
+	var before = AeneasAdapter.globalTypeCount();
+	var measured = AeneasAdapter.analyzeProgram(sources, true);
+	t.asserti(AeneasAdapter.globalTypeCount() - before, measured.stats.globalTypesAdded);
+	t.assert(measured.stats.globalTypesAdded >= 0, "requested global stats must be available");
+	t.assert_string(renderAnalysis(unmeasured, ["stats.v3"]), renderAnalysis(measured, ["stats.v3"]));
+	var again = AeneasAdapter.analyzeProgram(sources, false);
+	t.asserti(-1, again.stats.globalTypesAdded);
+	t.assert_string(renderAnalysis(measured, ["stats.v3"]), renderAnalysis(again, ["stats.v3"]));
 }

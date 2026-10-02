@@ -100,6 +100,30 @@ expect "analyze missing file" 1 "" "cannot read file" -- analyze "$TMP/missing.v
 expect "analyze rejects a bad repeat count" 2 "" "invalid option" -- analyze --repeat=0 "$A/two-file/main.v3"
 expect "analyze rejects unknown options" 2 "" "unknown option" -- analyze --bogus "$A/two-file/main.v3"
 
+# A complete report spans the header and both files. Pin its bytes so buffer
+# reuse cannot leak capacity bytes, duplicate a prior chunk, or miss a chunk.
+# The golden uses repository-relative fixture paths; CLI output uses absolute
+# paths here, so add ROOT to every path in the expected report.
+awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \
+    "$ROOT/test/cli/analysis-bindings.txt" > "$TMP/analysis-want"
+for options in "--bindings" "--bindings --repeat=3" "--bindings --stats --repeat=3"; do
+    # Word splitting is intentional: options is a fixed list, not user input.
+    "$EXE" analyze $options "$A/two-file/shapes.v3" "$A/two-file/main.v3" > "$TMP/out" 2> "$TMP/err"
+    got=$?
+    ok=1
+    [ "$got" -eq 0 ] || ok=0
+    cmp -s "$TMP/analysis-want" "$TMP/out" || ok=0
+    if [[ "$options" == *--stats* ]]; then
+        [ "$(wc -l < "$TMP/err")" -eq 3 ] || ok=0
+        for run in 1 2 3; do
+            grep -Eq "^virgil-lsp: analysis $run: parse [0-9]+ us, verify [0-9]+ us, 13 bindings in [0-9]+ us, uids \\+[0-9]+ \\(next [0-9]+\\), global types \\+[0-9]+ \\(total [0-9]+\\)$" "$TMP/err" || ok=0
+        done
+    else
+        [ ! -s "$TMP/err" ] || ok=0
+    fi
+    finish "analyze complete report $options" "$ok"
+done
+
 # frame <payload>: prints the payload with a Content-Length header, in bytes.
 frame() {
     printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) )) "$1"
