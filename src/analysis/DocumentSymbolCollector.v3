@@ -75,7 +75,7 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		// Class/enum header parameters declare fields, unlike method parameters.
 		if (d.params != null) for (p in d.params.asArray()) {
 			var i = syntax.find(p.token);
-			if (i >= 0) children.put(make(p, 8, i, parameterEnd(i), []));
+			if (i >= 0) children.put(make(p, 8, if(p.isReadOnly, i, i - 1), parameterEnd(i), []));
 		}
 		var i = syntax.find(d.token), start = declarationStart(i);
 		return make(d, kind, start, declarationEnd(start, !VstPacking.?(d)), sorted(children));
@@ -93,7 +93,7 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 				}
 				x: VstMethod => {
 					var start = declarationStart(i);
-					result.put(make(m, if(VstNew.?(m), 9, 6), start, declarationEnd(start, true), []));
+					result.put(make(m, if(VstNew.?(m), 9, 6), start, declarationEnd(start, BlockStmt.?(x.func.body)), []));
 				}
 				x: VstField => {
 					// A comma-separated var/def declares several fields. Each
@@ -112,7 +112,10 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 			}
 		}
 	}
-	private def ch(i: int) -> byte { return input[tokens[i].begin]; }
+	private def ch(i: int) -> byte {
+		var t = tokens[i];
+		return if(t.end - t.begin == 1, input[t.begin], 0);
+	}
 	// Strings are consumed as single spans, so punctuation inside strings and
 	// comments never participates in delimiter balancing.
 	private def matching(i: int) -> int {

@@ -8,6 +8,8 @@ def X = [
 	T("LspDocumentSymbols:utf16_ranges", test_symbol_utf16_ranges),
 	T("LspDocumentSymbols:params_lifecycle", test_symbol_params),
 	T("LspDocumentSymbols:header_fields_cr", test_symbol_header_fields),
+	T("LspDocumentSymbols:bound_index_operators", test_symbol_bound_index_operators),
+	T("LspDocumentSymbols:expression_bodies", test_symbol_expression_bodies),
 	()
 ];
 
@@ -121,6 +123,60 @@ def test_symbol_header_fields(t: Tester) {
 	checkSymbol(t, c[0], "item", 8, 0, 8, 0, 28, 0, 8);
 	checkSymbol(t, c[1], "f", 8, 0, 30, 0, 50, 0, 30);
 	checkSymbol(t, c[2], "body", 6, 1, 1, 1, 14, 1, 5);
+	s.documents.change(URI, 2, "class C(var value: int, var next: int, fixed: int) {}");
+	a = symbols(t, s);
+	checkSymbol(t, a[0], "C", 5, 0, 0, 0, 53, 0, 6);
+	c = children(a[0]);
+	t.asserti(3, c.length);
+	checkSymbol(t, c[0], "value", 8, 0, 8, 0, 22, 0, 12);
+	checkSymbol(t, c[1], "next", 8, 0, 24, 0, 37, 0, 28);
+	checkSymbol(t, c[2], "fixed", 8, 0, 39, 0, 49, 0, 39);
+	s.documents.change(URI, 3, "enum E(value: int) { A(1) }");
+	a = symbols(t, s);
+	c = children(a[0]);
+	t.asserti(2, c.length);
+	checkSymbol(t, c[0], "value", 8, 0, 7, 0, 17, 0, 7);
+	checkSymbol(t, c[1], "A", 22, 0, 21, 0, 25, 0, 21);
+}
+
+def test_symbol_bound_index_operators(t: Tester) {
+	var s = running(t);
+	var text = "component C {\n\tdef bound() {\n";
+	for (i < 25) text = Arrays.concat(text, Strings.format1("\tvar bound = array.%s;\n", if(i % 2 == 0, "[]", "[]=")));
+	text = Arrays.concat(text, "\t}\n\tvar getters = [array.[], array.[]=];\n}\nenum E { A(array.[], array.[]=) }");
+	s.documents.open(URI, "virgil", 1, text);
+	var a = symbols(t, s);
+	t.asserti(2, a.length);
+	checkSymbol(t, a[0], "C", 3, 0, 0, 29, 1, 0, 10);
+	var c = children(a[0]);
+	t.asserti(2, c.length);
+	checkSymbol(t, c[0], "bound", 6, 1, 1, 27, 2, 1, 5);
+	checkSymbol(t, c[1], "getters", 8, 28, 1, 28, 37, 28, 5);
+	checkSymbol(t, a[1], "E", 10, 30, 0, 30, 33, 30, 5);
+	c = children(a[1]);
+	t.asserti(1, c.length);
+	checkSymbol(t, c[0], "A", 22, 30, 9, 30, 31, 30, 9);
+}
+
+def test_symbol_expression_bodies(t: Tester) {
+	for (header in ["def factory()", "def factory() -> () -> int", "def [i: int]"]) {
+		var declaration = Strings.format1("%s => fun() { return; };", header);
+		for (prefix in ["", "component C {\n", "class C {\n"]) {
+			var s = running(t);
+			var line = if(prefix.length == 0, 0, 1);
+			var text = Strings.format3("%s%s%s", prefix, declaration, if(line == 0, "", "\n}"));
+			s.documents.open(URI, "virgil", 1, text);
+			var a = symbols(t, s);
+			t.asserti(1, a.length);
+			if (line != 0) a = children(a[0]);
+			t.asserti(1, a.length);
+			var obj = JsonValue.JObject.!(a[0]).v;
+			t.asserti(6, JsonValue.Int.!(obj["kind"]).v);
+			var r = JsonValue.JObject.!(obj["range"]).v;
+			checkPosition(t, r["start"], line, 0);
+			checkPosition(t, r["end"], line, declaration.length);
+		}
+	}
 }
 
 def test_symbol_params(t: Tester) {
