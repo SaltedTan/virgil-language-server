@@ -14,8 +14,10 @@ def X = [
 	T("AeneasAdapter:analyze_runs_no_initializers", test_analyze_runs_no_initializers),
 	T("AeneasAdapter:binding_lookup", test_binding_lookup),
 	T("AeneasAdapter:binding_captured_local", test_binding_captured_local),
+	T("AeneasAdapter:binding_capture_contexts", test_binding_capture_contexts),
 	T("AeneasAdapter:binding_explicit_constructor", test_binding_explicit_constructor),
 	T("AeneasAdapter:binding_exports", test_binding_exports),
+	T("AeneasAdapter:binding_exports_after_semantic_errors", test_binding_exports_after_semantic_errors),
 	T("AeneasAdapter:binding_this_class", test_binding_this_class),
 	T("AeneasAdapter:binding_after_semantic_error", test_binding_after_semantic_error),
 	T("AeneasAdapter:binding_with_null_type", test_binding_with_null_type),
@@ -87,6 +89,15 @@ def assertDefinition(t: Tester, a: ProgramAnalysis, path: string, line: int, col
 	t.asserti(declLine, d.range.beginLine);
 	t.asserti(declColumn, d.range.beginColumn);
 	t.asserti(declColumn + name.length, d.range.endColumn);
+}
+def assertSingleDefinition(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int,
+		kind: AnalysisDeclKind, name: string, declPath: string, declLine: int, declColumn: int) {
+	assertDefinition(t, a, path, line, column, kind, name, declPath, declLine, declColumn);
+	var count = 0;
+	for (o in a.occurrences(path)) {
+		if (o.range.contains(line, column)) count++;
+	}
+	t.asserti(1, count);
 }
 // Everything an analysis reports, for comparing runs.
 def renderAnalysis(a: ProgramAnalysis, paths: Array<string>) -> string {
@@ -188,10 +199,36 @@ def test_binding_captured_local(t: Tester) {
 		"def compute(seed: int) -> int {\n    var total = 0;\n    var f = fun () => total + total;\n    var g = fun () => fun () => total + seed;\n    return f() + g()();\n}\n")], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
-	assertDefinition(t, a, path, 3, 23, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
-	assertDefinition(t, a, path, 3, 31, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
-	assertDefinition(t, a, path, 4, 33, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
-	assertDefinition(t, a, path, 4, 41, AnalysisDeclKind.PARAMETER, "seed", path, 1, 13);
+	assertSingleDefinition(t, a, path, 3, 23, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
+	assertSingleDefinition(t, a, path, 3, 31, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
+	assertSingleDefinition(t, a, path, 4, 33, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
+	assertSingleDefinition(t, a, path, 4, 41, AnalysisDeclKind.PARAMETER, "seed", path, 1, 13);
+	assertSingleDefinition(t, a, path, 5, 12, AnalysisDeclKind.LOCAL, "f", path, 3, 9);
+	assertSingleDefinition(t, a, path, 5, 18, AnalysisDeclKind.LOCAL, "g", path, 4, 9);
+}
+
+def test_binding_capture_contexts(t: Tester) {
+	var path = "capture-contexts.v3";
+	var source = "class Box {\n    var field = fun (fieldParam: int) => fun () => fieldParam;\n    new(ctorParam: int) {\n        var ctorLocal = ctorParam;\n        var f = fun () => ctorLocal + ctorParam;\n    }\n    def method(methodParam: int) -> int {\n        var local = methodParam;\n        var f = fun () => local + methodParam;\n        return f();\n    }\n}\ncomponent Globals {\n    def field = fun (fieldParam: int) => fun () => fieldParam;\n}\nenum Choices(action: void -> int) {\n    A(fun () -> int { var enumLocal = 0; return (fun () => enumLocal)(); })\n}\n";
+	for (broken < 2) {
+		var a = AeneasAdapter.analyzeProgram([
+			AnalysisSource.new(path, source),
+			AnalysisSource.new("error.v3", if(broken == 0, "", "def broken() -> int { return missing; }\n"))
+		], false);
+		t.assertz(true, a.parsed);
+		t.assertz(broken == 0, a.verified);
+		t.assertz(broken != 0, a.diagnostics.length > 0);
+		assertSingleDefinition(t, a, path, 2, 52, AnalysisDeclKind.PARAMETER, "fieldParam", path, 2, 22);
+		assertSingleDefinition(t, a, path, 4, 25, AnalysisDeclKind.PARAMETER, "ctorParam", path, 3, 9);
+		assertSingleDefinition(t, a, path, 5, 27, AnalysisDeclKind.LOCAL, "ctorLocal", path, 4, 13);
+		assertSingleDefinition(t, a, path, 5, 39, AnalysisDeclKind.PARAMETER, "ctorParam", path, 3, 9);
+		assertSingleDefinition(t, a, path, 8, 21, AnalysisDeclKind.PARAMETER, "methodParam", path, 7, 16);
+		assertSingleDefinition(t, a, path, 9, 27, AnalysisDeclKind.LOCAL, "local", path, 8, 13);
+		assertSingleDefinition(t, a, path, 9, 35, AnalysisDeclKind.PARAMETER, "methodParam", path, 7, 16);
+		assertSingleDefinition(t, a, path, 10, 16, AnalysisDeclKind.LOCAL, "f", path, 9, 13);
+		assertSingleDefinition(t, a, path, 14, 52, AnalysisDeclKind.PARAMETER, "fieldParam", path, 14, 22);
+		assertSingleDefinition(t, a, path, 17, 60, AnalysisDeclKind.LOCAL, "enumLocal", path, 17, 27);
+	}
 }
 
 // A user-written `new` remains a constructor, unlike the default constructor.
@@ -216,6 +253,27 @@ def test_binding_exports(t: Tester) {
 	t.asserti(2, a.occurrences(path).length);
 }
 
+def test_binding_exports_after_semantic_errors(t: Tester) {
+	var path = "invalid-exports.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+		"def main() { }\nexport def main() { }\nexport def answer: int = 42;\nexport def left: int = 1, right: int = 2;\nexport \"inline-alias\" def helper() { }\ndef named() { }\nexport named;\nexport \"named-main\" = main;\nexport \"named-helper\" = helper;\nexport \"named-answer\" = answer;\nclass Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], false);
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	t.assert(a.diagnostics.length > 0, "expected semantic errors");
+	t.assert(a.definitionAt(path, 2, 12) == null, "a duplicate inline declaration is not a use");
+	t.assert(a.definitionAt(path, 3, 12) == null, "an inline field declaration is not a use");
+	t.assert(a.definitionAt(path, 4, 12) == null, "the first inline field declaration is not a use");
+	t.assert(a.definitionAt(path, 4, 27) == null, "the second inline field declaration is not a use");
+	t.assert(a.definitionAt(path, 5, 27) == null, "an aliased inline declaration is not a use");
+	assertSingleDefinition(t, a, path, 7, 8, AnalysisDeclKind.METHOD, "named", path, 6, 5);
+	assertSingleDefinition(t, a, path, 8, 23, AnalysisDeclKind.METHOD, "main", path, 1, 5);
+	assertSingleDefinition(t, a, path, 9, 25, AnalysisDeclKind.METHOD, "helper", path, 5, 27);
+	assertSingleDefinition(t, a, path, 10, 25, AnalysisDeclKind.FIELD, "answer", path, 3, 12);
+	assertSingleDefinition(t, a, path, 12, 29, AnalysisDeclKind.CLASS, "Rect", path, 11, 7);
+	assertSingleDefinition(t, a, path, 12, 34, AnalysisDeclKind.CONSTRUCTOR, "new", path, 11, 14);
+	t.asserti(6, a.occurrences(path).length);
+}
+
 // The verifier's `this` parameter borrows a class/constructor token but is not
 // a source parameter. Resolve it to the enclosing class, even in a lambda.
 def test_binding_this_class(t: Tester) {
@@ -227,7 +285,7 @@ def test_binding_this_class(t: Tester) {
 	assertDefinition(t, a, path, 1, 53, AnalysisDeclKind.CLASS, "Rect", path, 1, 7);
 	assertDefinition(t, a, path, 1, 58, AnalysisDeclKind.FIELD, "width", path, 1, 12);
 	assertDefinition(t, a, path, 4, 23, AnalysisDeclKind.CLASS, "Box", path, 2, 7);
-	assertDefinition(t, a, path, 5, 43, AnalysisDeclKind.CLASS, "Box", path, 2, 7);
+	assertSingleDefinition(t, a, path, 5, 43, AnalysisDeclKind.CLASS, "Box", path, 2, 7);
 }
 
 // Bindings that the verifier resolved stay available when other code has errors.

@@ -16,15 +16,14 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		for (i < file.enums.length) visitCompound(file.enums[i]);
 		for (i < file.exports.length) {
 			var e = file.exports[i].expr;
-			// `export def` reuses the declaration token for its synthetic use.
-			// Separate `export name` / `export "alias" = name` tokens are real uses.
-			match (e.varbind) {
-				ComponentMethod(member, typeArgs) => {
-					if (e.ident.name == member.token) continue;
+			var inline = false;
+			for (l = file.exports[i].synthetic.members; l != null; l = l.tail) {
+				if (e.ident.name == l.head.token) {
+					inline = true;
+					break;
 				}
-				_ => ;
 			}
-			expr(e);
+			if (!inline) expr(e);
 		}
 		var a = result.extract();
 		return Arrays.sort(a, 0, a.length, before);
