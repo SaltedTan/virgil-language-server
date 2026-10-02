@@ -1,6 +1,6 @@
-Content-Length: 187
+Content-Length: 217
 
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
 
 {"jsonrpc":"2.0","id":2,"result":null}Content-Length: 88
 

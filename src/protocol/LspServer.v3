@@ -37,6 +37,7 @@ class LspServer {
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
 	private var documentSync: LspDocumentSync;
+	private def documentSymbols = LspDocumentSymbols.new(documents);
 	def var state = LspServerState.UNINITIALIZED;
 	// The process exit status, once {exited} is true.
 	def var exitStatus: int;
@@ -51,6 +52,7 @@ class LspServer {
 		documentSync = LspDocumentSync.new(documents, ignoredDocumentSync);
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
+		documentSymbols.register(dispatcher);
 	}
 	private def ignoredDocumentSync(reason: string) {
 		if (warnDocumentSync != null) warnDocumentSync(reason);
@@ -138,7 +140,7 @@ class LspServer {
 		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);
 		serverInfo["version"] = JsonValue.String(BuildInfo.VERSION);
 		var result = Strings.newMap<JsonValue>();
-		// Advertise only the implemented full-text synchronization handlers.
+		// Advertise only implemented and tested handlers.
 		var save = Strings.newMap<JsonValue>();
 		save["includeText"] = JsonValue.Bool(false);
 		var sync = Strings.newMap<JsonValue>();
@@ -147,6 +149,7 @@ class LspServer {
 		sync["save"] = JsonValue.JObject(save);
 		var capabilities = Strings.newMap<JsonValue>();
 		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
+		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		result["capabilities"] = JsonValue.JObject(capabilities);
 		result["serverInfo"] = JsonValue.JObject(serverInfo);
 		return JsonRpcReply.Result(JsonValue.JObject(result));

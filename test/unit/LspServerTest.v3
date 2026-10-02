@@ -39,7 +39,7 @@ def errorReply(id: string, code: int, msg: string) -> string {
 	return Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,\"message\":\"%s\"}}", id, code, msg);
 }
 def initializeResult() -> string {
-	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
+	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"documentSymbolProvider\":true,\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
 		BuildInfo.NAME, BuildInfo.VERSION);
 }
 def SHUTDOWN_RESULT = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}";
@@ -74,7 +74,7 @@ def test_initialize_result(t: Tester) {
 	// echoed.
 	s = LspServer.new(DocumentLimits.MAX_BYTES);
 	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"method\":\"initialize\",\"params\":{}}",
-		Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"result\":{\"capabilities\":{\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
+		Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"result\":{\"capabilities\":{\"documentSymbolProvider\":true,\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
 			BuildInfo.NAME, BuildInfo.VERSION));
 }
 

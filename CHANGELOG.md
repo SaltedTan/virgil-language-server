@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Hierarchical VST-derived document symbols for open, unsaved buffers. See [Document symbols](docs/architecture.md#document-symbols) for supported declarations, ranges, and failure behavior.
 - Versioned full-text document synchronization (`didOpen`, `didChange`, `didSave`, `didClose`) with exactly matching `initialize` capabilities. Stale/out-of-order changes, duplicate opens, and unsupported incremental changes are ignored and logged to stderr. In-memory overlays override disk through an injected reader, and local Linux/macOS file URIs are normalized to canonical keys. See [Document store](docs/architecture.md#document-store) for version, save, and URI identity rules. Unit and golden transcript tests cover synchronization and rejection sequences.
 - Repository foundation: Apache-2.0 license, roadmap, community documents, issue and pull-request templates, and CI.
 - ADR-0001 (Virgil-native server) and ADR-0002 (pinned Virgil adapter boundary).
@@ -38,4 +39,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Pending-request table and response matching for server-initiated requests. See [Server requests](docs/architecture.md#server-requests) for the completion contract, logging, and current limitations.
 - LSP lifecycle and `$/cancelRequest` notification handling. See [Lifecycle](docs/architecture.md#lifecycle) for initialization, shutdown, cancellation, and exit behavior.
 - Golden transcript tests under `test/protocol/`: recorded `--stdio` input bytes with the expected output bytes and exit status, covering the lifecycle, fragmented, consecutive, malformed, Unicode, and oversized messages, and cancellation. `make test` runs them.
-- `PositionMap` under `src/documents/`: converts between UTF-8 byte offsets, Aeneas line/tab-expanded column pairs, and LSP positions in the `utf-16`, `utf-8`, or `utf-32` position encoding, with LSP 3.17 line endings and out-of-range handling. See [Coordinates](docs/architecture.md#coordinates) for the rules. Not yet used by any handler.
+- `PositionMap` under `src/documents/`: coordinate conversion for document text. See [Coordinates](docs/architecture.md#coordinates) for supported encodings, line endings, and out-of-range handling.
