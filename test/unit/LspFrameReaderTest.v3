@@ -13,6 +13,7 @@ def X = [
 	T("LspFrameReader:unsupported_charset", test_unsupported_charset),
 	T("LspFrameReader:payload_limit", test_payload_limit),
 	T("LspFrameReader:large_payload", test_large_payload),
+	T("LspFrameReader:large_declared_length", test_large_declared_length),
 	T("LspFrameReader:invalid_content_length", test_invalid_content_length),
 	T("LspFrameReader:malformed_lines", test_malformed_lines),
 	T("LspFrameReader:invalid_bytes", test_invalid_bytes),
@@ -156,6 +157,19 @@ def test_large_payload(t: Tester) {
 		var got = readChunked(input, chunk, LspFraming.DEFAULT_MAX_PAYLOAD);
 		if (!Strings.equal(expected, got)) return t.fail1("in chunks of %d bytes: wrong frames", chunk);
 	}
+}
+def test_large_declared_length(t: Tester) {
+	// A payload under the limit is buffered as it arrives, so a header that
+	// declares far more than the heap holds allocates nothing up front.
+	var max = 999999999;
+	expectFrames(t, "Content-Length: 999999999\r\n\r\n{\"jsonrpc\"", max, "");
+	var r = LspFrameReader.new(max);
+	r.feed("Content-Length: 999999999\r\n\r\n");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
+	r.feed("{}");
+	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
+	t.assertz(true, r.midMessage());
 }
 def test_invalid_content_length(t: Tester) {
 	var values = ["", "abc", "-1", "+1", "1 2", "0x10", "1.0", "1000000000000000"];

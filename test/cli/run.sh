@@ -181,8 +181,23 @@ printf 'Content-Length: 10\r\n\r\n{' > "$TMP/in"
 expect_stdio "stdio fails when the input ends inside a message" 1 "$TMP/empty" \
     'error: input ended in the middle of a message' -- < "$TMP/in"
 
+# A header alone, declaring the longest payload the limit allows. The payload
+# is buffered as it arrives, so the input ending is reported, not a heap trap.
+printf 'Content-Length: 16777216\r\n\r\n' > "$TMP/in"
+expect_stdio "stdio fails when the input ends after a header at the maximum limit" 1 "$TMP/empty" \
+    'error: input ended in the middle of a message' -- --max-message-bytes=16777216 < "$TMP/in"
+
 expect "stdio rejects a bad message limit" 2 "" "invalid option" -- --stdio --max-message-bytes=0
 expect "stdio rejects a message limit over nine digits" 2 "" "invalid option" -- --stdio --max-message-bytes=1234567890
+expect "stdio rejects a message limit over the supported maximum" 2 "" \
+    "invalid option '--max-message-bytes=16777217': the supported maximum is 16777216 bytes" -- \
+    --stdio --max-message-bytes=16777217 < /dev/null
+# The reproduction from #26: this limit used to be accepted, and the header
+# alone then ran out of heap.
+printf 'Content-Length: 999999999\r\n\r\n' > "$TMP/in"
+expect_stdio "stdio rejects a limit too large for the heap" 2 "$TMP/empty" \
+    "invalid option '--max-message-bytes=999999999': the supported maximum is 16777216 bytes" -- \
+    --max-message-bytes=999999999 < "$TMP/in"
 expect "stdio rejects unknown options" 2 "" "unknown option" -- --stdio --bogus
 
 echo "cli: $pass passed, $fail failed"
