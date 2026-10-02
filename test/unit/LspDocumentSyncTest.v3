@@ -1,0 +1,116 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspDocumentSync:sequence", test_sync_sequence),
+	T("LspDocumentSync:atomic_change", test_sync_atomic_change),
+	T("LspDocumentSync:invalid_params", test_sync_invalid_params),
+	T("LspDocumentSync:lifecycle", test_sync_lifecycle),
+	()
+];
+
+class DocumentWarningRecorder {
+	def lines = Vector<string>.new();
+	def warn(reason: string) { lines.put(reason); }
+}
+
+def INITIALIZE = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+def SHUTDOWN = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}";
+def runningServer(t: Tester) -> LspServer {
+	var server = LspServer.new();
+	t.assert(server.handle(INITIALIZE) != null, "initialize must reply");
+	return server;
+}
+def syncNotify(t: Tester, server: LspServer, method: string, params: string) {
+	var reply = server.handle(Strings.format2("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/%s\",\"params\":%s}", method, params));
+	t.assert(reply == null, "document notification must never receive a reply");
+}
+def SYNC_OPEN = "{\"textDocument\":{\"uri\":\"file:///a%20b.v3\",\"languageId\":\"virgil\",\"version\":1,\"text\":\"original\"}}";
+def SYNC_ID = "{\"textDocument\":{\"uri\":\"file:/a b.v3\"}}";
+def syncChange(version: int, changes: string) -> string {
+	return Strings.format2("{\"textDocument\":{\"uri\":\"file:/a b.v3\",\"version\":%d},\"contentChanges\":%s}", version, changes);
+}
+
+def test_sync_sequence(t: Tester) {
+	var server = runningServer(t), rec = DocumentWarningRecorder.new();
+	server.warnDocumentSync = rec.warn;
+	syncNotify(t, server, "didChange", syncChange(2, "[{\"text\":\"not open\"}]"));
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	syncNotify(t, server, "didChange", syncChange(4, "[{\"text\":\"first\"},{\"text\":\"é😀\\r\\n\"}]"));
+	var doc = server.documents.overlay("file:///a%20b.v3");
+	t.asserti(4, doc.version);
+	t.assert_string("é😀\r\n", doc.text);
+	for (version in [4, 2, 3]) syncNotify(t, server, "didChange", syncChange(version, "[{\"text\":\"stale\"}]"));
+	t.asserti(4, server.documents.overlay(doc.uri).version);
+	t.assert_string(doc.text, server.documents.read(doc.uri));
+	syncNotify(t, server, "didSave", "{\"textDocument\":{\"uri\":\"file:/a b.v3\"},\"text\":\"unversioned\"}");
+	t.assert(server.documents.overlay(doc.uri) == doc, "save must preserve the overlay record");
+	t.asserti(4, server.documents.overlay(doc.uri).version);
+	t.assert_string(doc.text, server.documents.read(doc.uri));
+	syncNotify(t, server, "didClose", SYNC_ID);
+	t.assert(server.documents.overlay(doc.uri) == null, "close did not drop overlay");
+	syncNotify(t, server, "didChange", syncChange(5, "[{\"text\":\"closed\"}]"));
+	syncNotify(t, server, "didSave", SYNC_ID);
+	syncNotify(t, server, "didClose", SYNC_ID);
+	t.asserti(8, rec.lines.length);
+	t.assert_string("ignored textDocument/didChange: document is not open", rec.lines[0]);
+	t.assert_string("ignored textDocument/didOpen: document is already open", rec.lines[1]);
+	for (i = 2; i < 5; i++) t.assert_string("ignored textDocument/didChange: document version is not newer", rec.lines[i]);
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	t.asserti(1, server.documents.overlay(doc.uri).version);
+}
+
+def test_sync_atomic_change(t: Tester) {
+	var server = runningServer(t), rec = DocumentWarningRecorder.new();
+	server.warnDocumentSync = rec.warn;
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	var changes = ["[{\"range\":{},\"text\":\"x\"}]", "[{\"text\":\"would replace\"},{\"range\":null,\"text\":\"bad\"}]",
+		"[{\"text\":\"would replace\"},{\"text\":42}]", "[]", "[null]", "[{\"rangeLength\":1,\"text\":\"x\"}]"];
+	for (change in changes) {
+		syncNotify(t, server, "didChange", syncChange(2, change));
+		var doc = server.documents.overlay("file:/a b.v3");
+		t.asserti(1, doc.version);
+		t.assert_string("original", doc.text);
+	}
+	t.asserti(changes.length, rec.lines.length);
+	// An ignored version was never consumed, so a corrected batch can retry.
+	syncNotify(t, server, "didChange", syncChange(2, "[{\"text\":\"\"}]"));
+	t.asserti(2, server.documents.overlay("file:/a b.v3").version);
+	t.assert_string("", server.documents.read("file:/a b.v3"));
+}
+
+def test_sync_invalid_params(t: Tester) {
+	var server = runningServer(t), rec = DocumentWarningRecorder.new();
+	server.warnDocumentSync = rec.warn;
+	for (method in ["didOpen", "didChange", "didSave", "didClose"]) {
+		for (params in ["null", "[]", "{}", "{\"textDocument\":null}", "{\"textDocument\":{\"uri\":42}}"])
+			syncNotify(t, server, method, params);
+	}
+	syncNotify(t, server, "didOpen", "{\"textDocument\":{\"uri\":\"file:///a%00b\",\"languageId\":\"virgil\",\"version\":1,\"text\":\"x\"}}");
+	syncNotify(t, server, "didOpen", "{\"textDocument\":{\"uri\":\"untitled:a\",\"languageId\":\"virgil\",\"version\":1.5,\"text\":\"x\"}}");
+	t.assert(server.documents.overlay("untitled:a") == null, "fractional version must be dropped");
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	var doc = server.documents.overlay("file:/a b.v3");
+	syncNotify(t, server, "didChange", "{\"textDocument\":{\"uri\":\"file:/a b.v3\",\"version\":2147483648},\"contentChanges\":[{\"text\":\"x\"}]}");
+	syncNotify(t, server, "didSave", "{\"textDocument\":{\"uri\":\"file:/a b.v3\"},\"text\":null}");
+	t.asserti(24, rec.lines.length);
+	t.asserti(1, server.documents.overlay("file:/a b.v3").version);
+	t.assert_string("original", server.documents.read("file:/a b.v3"));
+	t.assert(server.documents.overlay(doc.uri) == doc, "invalid events must preserve the overlay record");
+}
+
+def test_sync_lifecycle(t: Tester) {
+	var server = LspServer.new(), rec = DocumentWarningRecorder.new();
+	server.warnDocumentSync = rec.warn;
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	t.assert(server.documents.overlay("file:/a b.v3") == null, "pre-initialize open must be dropped");
+	t.assert(server.handle(INITIALIZE) != null, "initialize must reply");
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}", server.handle(SHUTDOWN));
+	syncNotify(t, server, "didChange", syncChange(2, "[{\"text\":\"late\"}]"));
+	syncNotify(t, server, "didClose", SYNC_ID);
+	t.asserti(1, server.documents.overlay("file:/a b.v3").version);
+	t.asserti(0, rec.lines.length);
+}

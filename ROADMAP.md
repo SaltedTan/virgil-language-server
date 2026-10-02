@@ -222,9 +222,9 @@ Exit criteria:
 
 Deliverables:
 
-- `initialize`, `initialized`, `didOpen`, `didChange`, `didSave`, and `didClose` handlers.
-- Full-text synchronization first (`TextDocumentSyncKind.FULL`), with document version checks.
-- URI/path normalization and in-memory overlays.
+- `initialize`, `initialized`, `didOpen`, `didChange`, `didSave`, and `didClose` handlers. *(present)*
+- Full-text synchronization first (`TextDocumentSyncKind.Full`), with document version checks. *(present; stale/out-of-order changes rejected)*
+- URI/path normalization and in-memory overlays. *(present; [document-store rules](docs/architecture.md#document-store))*
 - Dedicated position/range conversion module.
 - `Parser.parseFile` adapter for one open document.
 - Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics.
@@ -398,7 +398,7 @@ Do not couple the core server release to the VS Code extension version. Record a
 | JSON-RPC         | Integer/string/null IDs as permitted, request/notification/response distinction, result/error exclusivity, unknown methods, cancellation |
 | Lifecycle        | Pre-initialize request, duplicate initialize, shutdown then exit, abnormal exit, client process disappearance                            |
 | Position mapping | Tabs, spaces, CRLF, UTF-8, UTF-16 surrogate pairs, zero-length ranges, EOF, multiline ranges                                             |
-| Document store   | Open/change/save/close, monotonically increasing versions, stale changes, disk/overlay precedence, multiple workspace folders            |
+| Document store   | Open/change/save/close, monotonically increasing versions, stale changes, disk/overlay precedence, URI identity; workspace folders in M3 |
 | Compiler adapter | One and many files, parser error, semantic error, clean project, repeat analysis, compiler flags, no initialization/codegen              |
 | Symbol index     | Shadowing, private/file scope, fields versus methods, inheritance, type parameters, variants, enum cases, synthetic declarations         |
 | LSP features     | Golden request/response fixtures for every advertised capability; never advertise an unimplemented handler                               |
@@ -498,7 +498,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 4. Implement the JSON-RPC envelope model so responses preserve incoming IDs.
 5. Harden stdio framing and enforce protocol-only stdout.
 6. Add golden transcript tests for requests, notifications, lifecycle, and malformed packets.
-7. Implement versioned full-text document synchronization.
+7. Implement versioned full-text document synchronization. *(present)*
 8. Integrate [`PositionMap`](docs/architecture.md#coordinates) with the document store and diagnostics.
 9. Publish parser diagnostics for unsaved single files.
 10. Implement document symbols from the VST.

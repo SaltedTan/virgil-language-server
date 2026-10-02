@@ -1,6 +1,6 @@
 # Neovim / LazyVim
 
-> **Not usable yet.** `virgil-lsp --stdio` handles the LSP lifecycle (`initialize`, `shutdown`, `exit`) but advertises no features. Useful features arrive in milestone M2. These files describe the intended setup and will be tested by headless Neovim end-to-end tests.
+> **Not usable yet.** `virgil-lsp --stdio` handles the LSP lifecycle (`initialize`, `shutdown`, `exit`) and versioned full-text document synchronization, but not diagnostics or other language features yet. Useful language features arrive later in milestone M2. These files describe the intended setup and will be tested by headless Neovim end-to-end tests.
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 

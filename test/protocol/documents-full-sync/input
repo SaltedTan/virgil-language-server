@@ -1,0 +1,35 @@
+Content-Length: 75
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}Content-Length: 52
+
+{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/a%20b.v3","languageId":"virgil","version":1,"text":"original"}}}Content-Length: 174
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":2},"contentChanges":[{"text":"é😀\r\nsecond"}]}}Content-Length: 102
+
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 179
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":5},"contentChanges":[{"text":"temporary"},{"text":""}]}}Content-Length: 133
+
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:/tmp/a b.v3"},"text":"unversioned save text"}}Content-Length: 103
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 155
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:/tmp/a b.v3","languageId":"virgil","version":-1,"text":"reopened"}}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":0},"contentChanges":[{"text":"version 0"}]}}Content-Length: 103
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 152
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:buffer","languageId":"virgil","version":1,"text":"virtual"}}}Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:buffer","version":2},"contentChanges":[{"text":"virtual edit"}]}}Content-Length: 101
+
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"untitled:buffer"}}}Content-Length: 102
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"untitled:buffer"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

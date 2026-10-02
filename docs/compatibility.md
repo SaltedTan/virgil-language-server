@@ -10,7 +10,7 @@ The scheduled `virgil-master` workflow builds and tests against current upstream
 
 ## LSP baseline
 
-The server targets a conservative subset of [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) and negotiates capabilities instead of assuming a particular editor.
+The server targets a conservative subset of [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/). See [Lifecycle](architecture.md#lifecycle) for initialization behavior and [Document store](architecture.md#document-store) for synchronization capabilities.
 
 ## Host platforms
 

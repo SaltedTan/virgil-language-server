@@ -1,0 +1,111 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("DocumentStore:overlay_precedence", test_store_overlay_precedence),
+	T("DocumentStore:versions", test_store_versions),
+	T("DocumentStore:duplicate_open", test_store_duplicate_open),
+	T("DocumentStore:save", test_store_save),
+	T("DocumentStore:opaque_and_invalid", test_store_opaque_and_invalid),
+	()
+];
+
+class DocumentReaderFake {
+	var calls: int;
+	var bytes: Array<byte> = "disk";
+	var path: string;
+	def read(path: string) -> Array<byte> {
+		calls++;
+		this.path = path;
+		return bytes;
+	}
+}
+
+def test_store_overlay_precedence(t: Tester) {
+	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read);
+	var uri = "file:///tmp/a%20b.v3", alias = "FILE://localhost/tmp/a b.v3";
+	t.assert_string("disk", store.read(uri));
+	t.assert_string("/tmp/a b.v3", disk.path);
+	t.assert(store.open(uri, "virgil", 1, "") == null, "open failed");
+	t.assert_string("", store.read(alias));
+	t.asserti(1, disk.calls);
+	t.assert(store.change(alias, 2, "unsaved") == null, "change failed");
+	t.assert_string("unsaved", store.read(uri));
+	t.asserti(1, disk.calls);
+	t.assert(store.close(alias) == null, "close failed");
+	t.assert(store.overlay(uri) == null, "close must drop the overlay");
+	disk.bytes = "new disk";
+	t.assert_string("new disk", store.read(uri));
+	t.asserti(2, disk.calls);
+	disk.bytes = null;
+	t.assert(store.read(uri) == null, "missing file must return null");
+	t.asserti(3, disk.calls);
+}
+
+def test_store_versions(t: Tester) {
+	var store = DocumentStore.new(null), uri = "file:///a.v3";
+	t.assert_string("document is not open", store.change(uri, 1, "x"));
+	t.assert(store.open(uri, "virgil", -10, "first") == null, "open failed");
+	var snapshot = store.overlay(uri);
+	for (version in [-11, -10, -2147483648]) {
+		t.assert_string("document version is not newer", store.change(uri, version, "stale"));
+		t.asserti(-10, store.overlay(uri).version);
+		t.assert_string("first", store.read(uri));
+	}
+	t.assert(store.change(uri, 8, "new") == null, "versions may skip");
+	t.assert_string("document version is not newer", store.change(uri, 7, "out of order"));
+	t.asserti(8, store.overlay(uri).version);
+	t.asserti(-10, snapshot.version);
+	t.assert_string("first", snapshot.text);
+	t.assert(store.change(uri, 2147483647, "max") == null, "maximum version must work");
+	t.assert_string("document version is not newer", store.change(uri, -2147483648, "wrapped"));
+	t.asserti(2147483647, store.overlay(uri).version);
+	t.assert_string("max", store.read(uri));
+}
+
+def test_store_duplicate_open(t: Tester) {
+	var store = DocumentStore.new(null), uri = "file:///a%20b.v3", alias = "file:/a b.v3";
+	t.assert(store.open(uri, "virgil", 5, "original") == null, "open failed");
+	for (version in [4, 5, 99]) {
+		t.assert_string("document is already open", store.open(alias, "other", version, "duplicate"));
+		t.asserti(5, store.overlay(uri).version);
+		t.assert_string("virgil", store.overlay(uri).languageId);
+		t.assert_string("original", store.read(uri));
+	}
+	t.assert(store.close(uri) == null, "close failed");
+	t.assert(store.open(alias, "virgil", 1, "reopened") == null, "close resets version sequence");
+	t.asserti(1, store.overlay(uri).version);
+}
+
+def test_store_save(t: Tester) {
+	var store = DocumentStore.new(null), uri = "untitled:a";
+	t.assert_string("document is not open", store.save(uri));
+	t.assert(store.open(uri, "virgil", 3, "text") == null, "open failed");
+	var doc = store.overlay(uri);
+	t.assert(store.save(uri) == null, "save failed");
+	t.assert(store.overlay(uri) == doc, "save must preserve the overlay record");
+	t.assert(store.save(uri) == null, "repeated save failed");
+	t.assert(store.overlay(uri) == doc, "repeated save must preserve the overlay record");
+	t.asserti(3, store.overlay(uri).version);
+	t.assert_string("text", store.read(uri));
+	t.assert(store.change(uri, 4, "edit") == null, "change failed");
+	doc = store.overlay(uri);
+	t.assert(store.save(uri) == null, "save after change failed");
+	t.assert(store.overlay(uri) == doc, "save after change must preserve the overlay record");
+	t.asserti(4, doc.version);
+	t.assert_string("edit", store.read(uri));
+	t.assert(store.close(uri) == null, "close failed");
+	t.assert_string("document is not open", store.close(uri));
+	t.assert_string("document is not open", store.save(uri));
+}
+
+def test_store_opaque_and_invalid(t: Tester) {
+	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read);
+	t.assert(store.open("untitled:a%20b", "virgil", 0, "virtual") == null, "virtual open failed");
+	t.assert_string("virtual", store.read("untitled:a%20b"));
+	t.assert(store.read("untitled:a b") == null, "opaque URI spellings must stay distinct");
+	t.assert_string("invalid or nonlocal file URI", store.open("file://remote/a", "virgil", 0, "bad"));
+	t.assert(store.read("file:///a%00b") == null, "invalid path must not reach reader");
+	t.asserti(0, disk.calls);
+}

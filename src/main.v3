@@ -71,6 +71,8 @@ component VirgilLsp {
 			}
 		}
 		var server = LspServer.new();
+		server.documents.withReader(System.fileLoad);
+		server.warnDocumentSync = Log.warn;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
 		var buf = Array<byte>.new(64 * 1024);

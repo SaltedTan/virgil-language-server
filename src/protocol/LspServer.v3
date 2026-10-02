@@ -31,6 +31,10 @@ enum LspServerState {
 class LspServer {
 	// Handlers for the server's features are registered here.
 	def dispatcher = JsonRpcDispatcher.new();
+	def documents = DocumentStore.new(null);
+	// The caller supplies stderr logging; unit tests may record warnings.
+	var warnDocumentSync: string -> void;
+	private var documentSync: LspDocumentSync;
 	def var state = LspServerState.UNINITIALIZED;
 	// The process exit status, once {exited} is true.
 	def var exitStatus: int;
@@ -41,6 +45,11 @@ class LspServer {
 		dispatcher
 			.onRequest("initialize", initialize)
 			.onRequest("shutdown", shutdown);
+		documentSync = LspDocumentSync.new(documents, ignoredDocumentSync);
+		documentSync.register(dispatcher);
+	}
+	private def ignoredDocumentSync(reason: string) {
+		if (warnDocumentSync != null) warnDocumentSync(reason);
 	}
 	// Decodes and handles one payload. Returns the reply payload, or null if
 	// there is nothing to send.
@@ -62,6 +71,7 @@ class LspServer {
 							return null;
 						}
 						if (state != LspServerState.RUNNING) return null;
+						if (unsupportedNumbers) documentSync.unsupportedNumbers(x);
 					}
 					_ => ;
 				}
@@ -110,9 +120,16 @@ class LspServer {
 		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);
 		serverInfo["version"] = JsonValue.String(BuildInfo.VERSION);
 		var result = Strings.newMap<JsonValue>();
-		// Advertise only what is implemented and tested. Nothing is yet, so
-		// the client's capabilities don't change what the server does.
-		result["capabilities"] = JsonValue.JObject(Strings.newMap<JsonValue>());
+		// Advertise only the implemented full-text synchronization handlers.
+		var save = Strings.newMap<JsonValue>();
+		save["includeText"] = JsonValue.Bool(false);
+		var sync = Strings.newMap<JsonValue>();
+		sync["openClose"] = JsonValue.Bool(true);
+		sync["change"] = JsonValue.Int(1); // TextDocumentSyncKind.Full
+		sync["save"] = JsonValue.JObject(save);
+		var capabilities = Strings.newMap<JsonValue>();
+		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
+		result["capabilities"] = JsonValue.JObject(capabilities);
 		result["serverInfo"] = JsonValue.JObject(serverInfo);
 		return JsonRpcReply.Result(JsonValue.JObject(result));
 	}

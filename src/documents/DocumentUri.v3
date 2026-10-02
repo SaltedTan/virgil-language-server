@@ -1,0 +1,87 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Local POSIX file URIs (Linux/macOS), without filesystem access. Other
+// schemes are opaque. Invalid or nonlocal file URIs return null. See the
+// document-store section of docs/architecture.md for the exact identity rules.
+component DocumentUri {
+	def normalize(uri: string) -> string {
+		if (uri == null || uri.length == 0) return null;
+		if (!isFile(uri)) return uri;
+		var path = filePath(uri);
+		if (path == null) return null;
+		var buf = StringBuilder.new().puts("file://");
+		for (ch in path) {
+			if (ch == '/' || unreserved(ch)) buf.putc(ch);
+			else buf.putc('%').putc(Chars.hexMap_u[ch >> 4]).putc(Chars.hexMap_u[ch & 15]);
+		}
+		return buf.extract();
+	}
+	// Decoded, lexically normalized absolute path, or null for non-file,
+	// invalid, or nonlocal URIs. Never resolves symlinks or consults disk.
+	def filePath(uri: string) -> string {
+		if (uri == null || !isFile(uri)) return null;
+		var start = 5;
+		if (uri.length >= 7 && uri[5] == '/' && uri[6] == '/') {
+			start = 7;
+			while (start < uri.length && uri[start] != '/') start++;
+			var host = Arrays.range(uri, 7, start);
+			if (host.length > 0 && !asciiEqual(host, "localhost")) return null;
+		}
+		if (start >= uri.length || uri[start] != '/') return null;
+		var buf = StringBuilder.new();
+		var i = start;
+		while (i < uri.length) {
+			var ch = uri[i++];
+			if (ch == '?' || ch == '#') return null;
+			if (ch == '%') {
+				if (i + 2 > uri.length || !Chars.isHex(uri[i]) || !Chars.isHex(uri[i + 1])) return null;
+				ch = byte.view((Chars.hexValue(uri[i]) << 4) | Chars.hexValue(uri[i + 1]));
+				i += 2;
+			}
+			if (ch == 0) return null;
+			buf.putc(ch);
+		}
+		var decoded = buf.extract();
+		i = 0;
+		while (i < decoded.length) {
+			var r = Utf8.decode1(decoded[i ...]);
+			if (r.0 <= 0) return null;
+			i += r.0;
+		}
+		// POSIX lexical normalization: repeated slashes and dot segments.
+		var parts = Vector<string>.new();
+		i = 1;
+		while (i < decoded.length) {
+			var end = i;
+			while (end < decoded.length && decoded[end] != '/') end++;
+			var part = Arrays.range(decoded, i, end);
+			if (Strings.equal(part, "..")) {
+				if (parts.length > 0) parts.length--;
+			} else if (part.length > 0 && !Strings.equal(part, ".")) parts.put(part);
+			i = end + 1;
+		}
+		buf.putc('/');
+		for (j < parts.length) {
+			if (j > 0) buf.putc('/');
+			buf.puts(parts[j]);
+		}
+		return buf.extract();
+	}
+	private def isFile(uri: string) -> bool {
+		return uri.length >= 5 && asciiEqual(Arrays.range(uri, 0, 5), "file:");
+	}
+	private def asciiEqual(a: string, b: string) -> bool {
+		if (a.length != b.length) return false;
+		for (i < a.length) {
+			var ch = a[i];
+			if (ch >= 'A' && ch <= 'Z') ch = byte.view(ch + 32);
+			if (ch != b[i]) return false;
+		}
+		return true;
+	}
+	private def unreserved(ch: byte) -> bool {
+		return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
+	}
+}
