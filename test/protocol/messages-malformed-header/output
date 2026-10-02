@@ -1,3 +1,3 @@
-Content-Length: 110
+Content-Length: 187
 
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}

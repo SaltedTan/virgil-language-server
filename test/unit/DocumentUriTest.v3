@@ -1,0 +1,55 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("DocumentUri:equivalent_files", test_uri_equivalent_files),
+	T("DocumentUri:encoding", test_uri_encoding),
+	T("DocumentUri:invalid_files", test_uri_invalid_files),
+	T("DocumentUri:opaque", test_uri_opaque),
+	()
+];
+
+def test_uri_equivalent_files(t: Tester) {
+	var inputs = ["file:///tmp/a%20b.v3", "file:/tmp/a b.v3", "FILE://LOCALHOST/tmp/a%20b.v3",
+		"file:///tmp//./a%20b.v3", "file:///tmp/sub/../a%20b.v3", "file:///tmp/%61%20b.v3",
+		"file:///tmp%2fa%20b.v3"];
+	for (uri in inputs) {
+		t.assert_string("file:///tmp/a%20b.v3", DocumentUri.normalize(uri));
+		t.assert_string("/tmp/a b.v3", DocumentUri.filePath(uri));
+	}
+	t.assert_string("file:///a", DocumentUri.normalize("file:///../../a/"));
+	t.assert_string("file:///", DocumentUri.normalize("file:/"));
+	t.assert_string("file:///A", DocumentUri.normalize("file:///A"));
+}
+
+def test_uri_encoding(t: Tester) {
+	var inputs = ["file:///tmp/é😀%23%3f%25+@.v3", "file:///tmp/%c3%a9%f0%9f%98%80%23%3F%25%2b%40.v3"];
+	for (uri in inputs) {
+		var key = DocumentUri.normalize(uri);
+		t.assert_string("file:///tmp/%C3%A9%F0%9F%98%80%23%3F%25%2B%40.v3", key);
+		t.assert_string("/tmp/é😀#?%+@.v3", DocumentUri.filePath(key));
+		t.assert_string(key, DocumentUri.normalize(key));
+	}
+	t.assert_string("file:///tmp/a-._~09AZaz", DocumentUri.normalize("file:///tmp/a-._~09AZaz"));
+	// Decode once: a literal percent escape is not a slash.
+	t.assert_string("/tmp/%2F", DocumentUri.filePath("file:///tmp/%252F"));
+}
+
+def test_uri_invalid_files(t: Tester) {
+	var inputs = [null, "", "file:", "file:relative.v3", "file://localhost", "file://server/a.v3",
+		"file:///a%", "file:///a%2", "file:///a%GG", "file:///a%00b", "file:///a\x00b",
+		"file:///a?x", "file:///a#x", "file:///a%FF", "file:///a%C0%80", "file:///a%ED%A0%80"];
+	for (uri in inputs) {
+		t.assert(DocumentUri.normalize(uri) == null, "expected invalid file URI");
+		t.assert(DocumentUri.filePath(uri) == null, "expected no file path");
+	}
+}
+
+def test_uri_opaque(t: Tester) {
+	var inputs = ["untitled:one", "git:/a%20b?rev=1#L2", "custom:/a/../b", "Untitled:one", "https://host/a"];
+	for (uri in inputs) {
+		t.assert_string(uri, DocumentUri.normalize(uri));
+		t.assert(DocumentUri.filePath(uri) == null, "non-file URI must have no disk path");
+	}
+}

@@ -1,0 +1,19 @@
+Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/a%20b.v3","languageId":"virgil","version":1,"text":"original"}}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":2},"contentChanges":[{"text":"version 2"}]}}Content-Length: 75
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/a%20b.v3","languageId":"virgil","version":1,"text":"original"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":3},"contentChanges":[{"text":"version 3"}]}}Content-Length: 102
+
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 103
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

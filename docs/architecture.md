@@ -22,8 +22,8 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, server request tracking, and lifecycle present |
-| `src/documents/` | URIs, versioned text, `PositionMap` | `PositionMap` present; URIs and versioned text planned (M2) |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document-sync handlers | Message model, framing, stdio transport, server request tracking, lifecycle, and full-text sync present |
+| `src/documents/` | URI normalization, versioned in-memory overlays with injected disk fallback, `PositionMap` | Present |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
 
@@ -79,6 +79,33 @@ A position inside a character (the middle of a surrogate pair or of a multi-byte
 
 Aeneas's pinned [`Parser.v3` `skipToNextToken`](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/Parser.v3#L1444-L1511) counts every non-newline byte inside block comments (tabs included) as one column and does not advance columns inside line comments; newlines reset the column and advance the line. Consequently, compiler columns after a tab inside a block comment on the same line, and the end-of-file position after a trailing line comment, do not map exactly. For `component C {\n/*\t*/ def x = ;\n}\n`, Aeneas reports the semicolon at 2:15, which the map converts to LSP 1:9 instead of its actual position 1:14. `PositionMap:known_aeneas_block_comment_divergence` records this limitation. [Issue #8](https://github.com/SaltedTan/virgil-language-server/issues/8) will resolve it by having the analysis layer provide byte positions.
 
+## Document store
+
+`DocumentStore` (`src/documents/DocumentStore.v3`) owns open-document overlays, keyed by `DocumentUri.normalize(uri)`. It does no file I/O: its injected reader takes a decoded local absolute path and returns bytes, or `null` if unavailable. The stdio entry point injects `System.fileLoad`. `read(uri)` always returns the open overlay first, even when it is empty; otherwise it reads a local file afresh. Non-`file:` documents have no disk fallback. `overlay(uri)` returns only an open document's record (canonical URI, language ID, version, text, and saved flag). Updates replace records, so retained records preserve the version and text they captured; callers must treat their text bytes as read-only. Snapshot publication gates remain planned below.
+
+`LspDocumentSync` (`src/protocol/LspDocumentSync.v3`) registers four notifications on the lifecycle's dispatcher. They run only while the server is running and never produce responses. Invalid parameters and rejected operations are ignored and logged through `Log.warn` to stderr in stdio mode.
+
+| Notification | Effect |
+| --- | --- |
+| `textDocument/didOpen` | Records URI, language ID, integer version, and full text. A second open for an already-open canonical URI is ignored and logged, regardless of its version. Close first to restart a version sequence. |
+| `textDocument/didChange` | Accepts only a version **greater than** the current version (gaps and negative initial versions are allowed). Equal, older, and out-of-order versions are ignored and logged, as are changes to unopened documents. Every content change must contain full text and no `range` or `rangeLength`; the whole batch is validated before changing anything. Multiple full replacements apply in order, leaving the last text. An empty batch is ignored and logged, without consuming its version. |
+| `textDocument/didSave` | Marks the current overlay saved without changing its text or version, and does not read or write disk. Save requests no text (`includeText: false`); unsolicited string text is ignored because it has no version and must not overwrite an accepted edit. Save on a closed document is ignored and logged. |
+| `textDocument/didClose` | Drops the overlay immediately, restoring disk fallback. Close on a closed document is ignored and logged. A subsequent open may start at any integer version. |
+
+An accepted change clears the saved flag. Malformed batches, duplicate opens, and stale changes never alter text, version, or saved state. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization, diagnostics, document symbols, and position-encoding negotiation are not advertised.
+
+### URI identity on Linux and macOS
+
+`DocumentUri` is pure and uses POSIX paths on the [supported platforms](decisions/0003-supported-platforms.md):
+
+- The `file:` scheme and the optional `localhost` authority are ASCII case-insensitive. Empty authority and `localhost` are equivalent: `file:/tmp/a`, `file:///tmp/a`, and `FILE://LOCALHOST/tmp/a` identify one document. Other file authorities are rejected rather than treated as local files. Paths must be absolute.
+- Percent escapes are decoded **once**, with either hex case, into UTF-8 path bytes. Malformed escapes, NUL bytes, invalid UTF-8, and raw query/fragment delimiters are rejected. Literal `?`, `#`, and `%` in filenames must be escaped. Raw Unicode and spaces are accepted and canonicalized; `+` is a literal plus, never a space.
+- Path normalization is lexical: repeated slashes, `.` and `..` segments, and trailing slashes are removed; parents above root stay at root. Encoded slashes and dots participate after decoding. Canonical keys are `file://` followed by the absolute path, retaining `/` and ASCII unreserved characters (`A–Z a–z 0–9 - . _ ~`) and encoding all other bytes with uppercase `%HH`.
+- Path case and Unicode normalization are preserved, including on macOS. No `realpath`, symlink resolution, filesystem case folding, or inode lookup is performed. Lexical identity is not filesystem identity: symlink aliases and different case spellings on a case-insensitive filesystem are not coalesced, and clients should send lexically normalized paths rather than traversing symlinks with `..`.
+- Non-`file:` URIs remain exact opaque keys: scheme case, escapes, queries, fragments, and dot segments are untouched. Empty/null URIs are rejected. Native Windows drive and UNC paths are not supported (WSL uses Linux file URIs).
+
+For example, `file:///tmp/%61%20b.v3` and `file:/tmp/a b.v3` share the key `file:///tmp/a%20b.v3` and disk path `/tmp/a b.v3`. `untitled:a%20b` and `untitled:a b` remain distinct.
+
 ## Analysis snapshots *(planned)*
 
 Each analysis produces an immutable snapshot containing: the configuration revision, the document versions it used, the `Program` and verified VST, diagnostics grouped by URI, declaration and occurrence indexes, and a type/signature display cache. Handlers read the newest snapshot that matches the request's document versions. A result computed from document version *n* is never published after version *n + 1* has been accepted. When a new edit breaks parsing, navigation keeps using the last good semantic snapshot while current syntax errors are published.
@@ -94,7 +121,8 @@ Each analysis produces an immutable snapshot containing: the configuration revis
 | `JsonRpcDispatcher.v3` | Routes requests and notifications to handlers by method name, and responses to the pending-request table. Returns the reply payload, if any. |
 | `JsonRpcPendingRequests.v3` | The requests the server has sent to the client, matched to their responses (see below). |
 | `JsonRpcJson.v3` | JSON parsing and rendering on top of Virgil's `lib/file/json` (see below). |
-| `LspServer.v3` | The [lifecycle](#lifecycle) in front of the dispatcher, and the LSP error codes it uses. |
+| `LspServer.v3` | The [lifecycle](#lifecycle) in front of the dispatcher, implemented capabilities, and the LSP error codes it uses. |
+| `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 
 The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Once the [lifecycle](#lifecycle) has admitted a message, it is handled as follows:
 
@@ -129,7 +157,7 @@ The pinned `lib/file/json` differs from RFC 8259 in ways that matter for LSP tra
 
 - **String escapes.** `JsonParser` keeps escapes undecoded and rejects `\/`, `\b`, `\f`, and `\uXXXX`. Clients do send these: for example, `JSON.stringify` in VS Code writes control characters in document text as `\u00XX`. `JsonRpcJsonParser` overrides `parseString` to decode all JSON escapes, combining surrogate pairs. A lone surrogate becomes U+FFFD, which is also one UTF-16 code unit, so LSP character offsets don't shift.
 - **Whitespace.** A carriage return counts as whitespace.
-- **Numbers.** `JsonValue` has no floating point and only 32-bit integers. `parseNumber` accepts the full JSON number grammar. Any number that isn't a 32-bit integer (fractions, exponents, out of range) becomes null and is counted. As an `id`, such a number gives `InvalidRequest` with a null `id`. Elsewhere in a request admitted by the [lifecycle](#lifecycle), the request gets `InvalidParams` (-32602) with its original `id`, or `MethodNotFound` if the method is unknown. Its handler never runs, so it never sees the replaced values. The dispatcher ignores notifications with such a number; lifecycle admission and the `exit` exception are described in [Lifecycle](#lifecycle). Apart from the `decimal` colour values of `textDocument/colorPresentation`, which the server doesn't support, LSP 3.17 has no fractional numbers sent by the client, and its integers fit in 32 bits. Free-form `LSPAny` values such as `initializationOptions` could still contain one, and would make that request fail.
+- **Numbers.** `JsonValue` has no floating point and only 32-bit integers. `parseNumber` accepts the full JSON number grammar. Any number that isn't a 32-bit integer (fractions, exponents, out of range) becomes null and is counted. As an `id`, such a number gives `InvalidRequest` with a null `id`. Elsewhere in a request admitted by the [lifecycle](#lifecycle), the request gets `InvalidParams` (-32602) with its original `id`, or `MethodNotFound` if the method is unknown. Its handler never runs, so it never sees the replaced values. The dispatcher ignores notifications with such a number; document-sync notifications admitted by the lifecycle also log a warning without reading the replaced params. Lifecycle admission and the `exit` exception are described in [Lifecycle](#lifecycle). Apart from the `decimal` colour values of `textDocument/colorPresentation`, which the server doesn't support, LSP 3.17 has no fractional numbers sent by the client, and its integers fit in 32 bits. Free-form `LSPAny` values such as `initializationOptions` could still contain one, and would make that request fail.
 - **Nesting.** The recursive-descent parser overflows the stack, which kills the process. In a probe of the pinned parser, 30,000 levels of nesting still parsed and 50,000 crashed. Input that nests arrays and objects more than 256 levels deep is rejected as a `ParseError` before parsing starts.
 - **Size.** The parser builds the whole tree on the heap, and running out of heap kills the process. The byte limit on messages doesn't bound that: a 10 MB array of five million zeros needed more than the default 200 MB heap. The cost per value depends on its shape. Measured with the pinned build, an integer costs about 60 bytes, an empty string or array about 85, and an empty object about 185, including the parser's temporary vectors. A message with more than 500,000 values (`JsonRpcJson.MAX_VALUES`, counting object keys) is rejected as a `ParseError` before parsing starts. At that limit the most expensive shapes still parse with room to spare, even alongside a string that fills the rest of a 16 MiB message: 750,000 values still fit, and some shapes fail at a million. No LSP message from a client comes close to the limit. The same allocation-free pre-scan, `JsonRpcJson.measure`, counts values and measures nesting. Strings count as one value each; their bytes are bounded by the message limit, and a 16 MiB string parses within the default heap. See [Framing](#framing) for the supported payload limit and memory budget.
 - **Rendering.** `JsonValue.render` writes Virgil string literals: it escapes `'` as `\'` and leaves control characters raw, which produces invalid JSON. `JsonRpcJson.render` escapes quotes, backslashes, and all control characters, and replaces bytes that aren't valid UTF-8 with `\ufffd`, so output is always valid JSON. Output is compact, and object members are sorted by key, so it's deterministic.
@@ -180,7 +208,7 @@ Header bytes are checked as they arrive, so a header fails as soon as the byte t
 | Shutting down | Every request gets `InvalidRequest`, including `shutdown` and `initialize`. | `exit` is handled. Others are dropped. | — |
 | Exited | Nothing is read. | Nothing is read. | — |
 
-Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply; no client capability or other param field changes the server's behavior yet. The result contains an empty `capabilities` object, because no feature is implemented yet, and `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
+Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply; no client capability or other param field changes the server's behavior yet. The result advertises full-text `textDocumentSync` with open/close and save support (see [Document store](#document-store)), and contains `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
 
 `exit` ends the session in any state. So does the end of the input, which is how a client process that disappears looks to the server. Either way, outstanding server requests are failed, and the process exits:
 
@@ -206,4 +234,4 @@ Once decoded as a valid notification, `$/cancelRequest` never gets a response, r
 - Notifications never receive a response. Unknown notifications are ignored. Request errors depend on the [lifecycle state](#lifecycle). *(present)*
 - `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are skipped. *(present)*
 - Standard output carries protocol bytes only. *(present; the [transcripts](../test/protocol/) compare it byte for byte)*
-- Advertised capabilities exactly match implemented handlers. *(present: none are advertised)*
+- Advertised capabilities exactly match implemented handlers. *(present: full-text document synchronization with open/close and save)*

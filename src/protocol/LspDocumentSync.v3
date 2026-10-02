@@ -1,0 +1,98 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Full-text synchronization notifications. Validation is atomic: no member of
+// a didChange batch is applied unless every member is a full-text change.
+// Rejections are reported through an injected warning sink, never as replies.
+class LspDocumentSync(store: DocumentStore, warn: string -> void) {
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher
+			.onNotification("textDocument/didOpen", didOpen)
+			.onNotification("textDocument/didChange", didChange)
+			.onNotification("textDocument/didSave", didSave)
+			.onNotification("textDocument/didClose", didClose);
+	}
+	// The decoder replaced unsupported numbers with null. Do not read params.
+	def unsupportedNumbers(n: JsonRpcMessage.Notification) {
+		if (Strings.equal(n.method, "textDocument/didOpen") || Strings.equal(n.method, "textDocument/didChange") ||
+			Strings.equal(n.method, "textDocument/didSave") || Strings.equal(n.method, "textDocument/didClose")) {
+			ignored(n, "params contain a number that is not a 32-bit integer");
+		}
+	}
+	private def didOpen(n: JsonRpcMessage.Notification) {
+		var params = members(n), doc = objectMember(params, "textDocument");
+		if (!stringMember(doc, "uri") || !stringMember(doc, "languageId") ||
+			!intMember(doc, "version") || !stringMember(doc, "text")) {
+			ignored(n, "invalid textDocument (expected uri, languageId, version, text)");
+			return;
+		}
+		ignored(n, store.open(JsonValue.String.!(doc["uri"]).v, JsonValue.String.!(doc["languageId"]).v,
+			JsonValue.Int.!(doc["version"]).v, JsonValue.String.!(doc["text"]).v));
+	}
+	private def didChange(n: JsonRpcMessage.Notification) {
+		var params = members(n), doc = objectMember(params, "textDocument");
+		if (!stringMember(doc, "uri") || !intMember(doc, "version") || params == null ||
+			!params.has("contentChanges") || !JsonValue.JArray.?(params["contentChanges"])) {
+			ignored(n, "invalid didChange params");
+			return;
+		}
+		var changes = JsonValue.JArray.!(params["contentChanges"]).v;
+		if (changes == null || changes.length == 0) {
+			ignored(n, "contentChanges must not be empty");
+			return;
+		}
+		var text: string;
+		for (change in changes) {
+			if (!JsonValue.JObject.?(change)) {
+				ignored(n, "invalid content change");
+				return;
+			}
+			var obj = JsonValue.JObject.!(change).v;
+			if (obj == null || obj.has("range") || obj.has("rangeLength")) {
+				ignored(n, "incremental changes are not supported");
+				return;
+			}
+			if (!stringMember(obj, "text")) {
+				ignored(n, "content change text must be a string");
+				return;
+			}
+			text = JsonValue.String.!(obj["text"]).v;
+		}
+		// Each event replaces the whole text; only the last one survives.
+		ignored(n, store.change(JsonValue.String.!(doc["uri"]).v, JsonValue.Int.!(doc["version"]).v, text));
+	}
+	private def didSave(n: JsonRpcMessage.Notification) {
+		var params = members(n), uri = documentUri(params);
+		if (uri == null || (params.has("text") && !stringMember(params, "text"))) {
+			ignored(n, "invalid didSave params");
+			return;
+		}
+		// Unsolicited save text is not versioned and cannot overwrite edits.
+		ignored(n, store.save(uri));
+	}
+	private def didClose(n: JsonRpcMessage.Notification) {
+		var uri = documentUri(members(n));
+		if (uri == null) ignored(n, "invalid didClose params");
+		else ignored(n, store.close(uri));
+	}
+	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
+		if (reason != null && warn != null) warn(Strings.format2("ignored %s: %s", n.method, reason));
+	}
+	private def members(n: JsonRpcMessage.Notification) -> HashMap<string, JsonValue> {
+		return if(JsonRpcParams.ByName.?(n.params), JsonRpcParams.ByName.!(n.params).v);
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def stringMember(obj: HashMap<string, JsonValue>, key: string) -> bool {
+		return obj != null && obj.has(key) && JsonValue.String.?(obj[key]) && JsonValue.String.!(obj[key]).v != null;
+	}
+	private def intMember(obj: HashMap<string, JsonValue>, key: string) -> bool {
+		return obj != null && obj.has(key) && JsonValue.Int.?(obj[key]);
+	}
+	private def documentUri(params: HashMap<string, JsonValue>) -> string {
+		var doc = objectMember(params, "textDocument");
+		return if(stringMember(doc, "uri"), JsonValue.String.!(doc["uri"]).v);
+	}
+}

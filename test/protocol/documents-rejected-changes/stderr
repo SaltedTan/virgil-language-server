@@ -1,0 +1,12 @@
+^virgil-lsp: warning: ignored textDocument/didChange: document\ is\ not\ open$
+^virgil-lsp: warning: ignored textDocument/didOpen: document\ is\ already\ open$
+^virgil-lsp: warning: ignored textDocument/didChange: document\ version\ is\ not\ newer$
+^virgil-lsp: warning: ignored textDocument/didChange: document\ version\ is\ not\ newer$
+^virgil-lsp: warning: ignored textDocument/didChange: document\ version\ is\ not\ newer$
+^virgil-lsp: warning: ignored textDocument/didChange: incremental\ changes\ are\ not\ supported$
+^virgil-lsp: warning: ignored textDocument/didChange: document\ version\ is\ not\ newer$
+^virgil-lsp: warning: ignored textDocument/didChange: document\ is\ not\ open$
+^virgil-lsp: warning: ignored textDocument/didSave: document\ is\ not\ open$
+^virgil-lsp: warning: ignored textDocument/didClose: document\ is\ not\ open$
+^virgil-lsp: warning: ignored textDocument/didOpen: invalid\ or\ nonlocal\ file\ URI$
+^virgil-lsp: warning: ignored textDocument/didOpen: params\ contain\ a\ number\ that\ is\ not\ a\ 32\-bit\ integer$

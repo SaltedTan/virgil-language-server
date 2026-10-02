@@ -1,0 +1,41 @@
+Content-Length: 75
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":1},"contentChanges":[{"text":"version 1"}]}}Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/a%20b.v3","languageId":"virgil","version":1,"text":"original"}}}Content-Length: 160
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/a%20b.v3","languageId":"virgil","version":20,"text":"duplicate"}}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":4},"contentChanges":[{"text":"version 4"}]}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":4},"contentChanges":[{"text":"version 4"}]}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":2},"contentChanges":[{"text":"version 2"}]}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":3},"contentChanges":[{"text":"version 3"}]}}Content-Length: 269
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":5},"contentChanges":[{"text":"must be atomic"},{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"text":"incremental"}]}}Content-Length: 179
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":5},"contentChanges":[{"text":"corrected full change"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:/tmp/a b.v3"},"text":"not versioned"}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":5},"contentChanges":[{"text":"version 5"}]}}Content-Length: 103
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 167
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"FILE://localhost/tmp/a b.v3","version":6},"contentChanges":[{"text":"version 6"}]}}Content-Length: 102
+
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 103
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:/tmp/a b.v3"}}}Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/a%00b.v3","languageId":"virgil","version":1,"text":"original"}}}Content-Length: 160
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/other.v3","languageId":"virgil","version":1.5,"text":"original"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

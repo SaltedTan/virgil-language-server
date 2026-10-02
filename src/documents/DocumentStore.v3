@@ -1,0 +1,65 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// An accepted version of an open document. Treat text bytes as read-only.
+// Updates replace the record, so a retained record keeps its original version.
+class DocumentOverlay(uri: string, languageId: string, version: int, text: Array<byte>, saved: bool) { }
+
+// Versioned overlays with no direct file I/O. The injected reader receives a
+// decoded local absolute path and returns bytes, or null if unavailable.
+// Mutation methods return null on success, or a reason for ignoring the event.
+class DocumentStore {
+	private var reader: string -> Array<byte>;
+
+	new(reader) { }
+	// The stdio entry point supplies its disk reader; tests supply a fake.
+	def withReader(reader: string -> Array<byte>) -> this {
+		this.reader = reader;
+	}
+	private def overlays = Strings.newMap<DocumentOverlay>();
+
+	def overlay(uri: string) -> DocumentOverlay {
+		var key = DocumentUri.normalize(uri);
+		return if(key != null, overlays[key]);
+	}
+	// An open overlay always wins, including an empty document. Non-file URIs
+	// have no disk fallback; closed files are read afresh, not cached.
+	def read(uri: string) -> Array<byte> {
+		var doc = overlay(uri);
+		if (doc != null) return doc.text;
+		var path = DocumentUri.filePath(uri);
+		return if(path != null && reader != null, reader(path));
+	}
+	def open(uri: string, languageId: string, version: int, text: Array<byte>) -> string {
+		var key = DocumentUri.normalize(uri);
+		if (key == null) return "invalid or nonlocal file URI";
+		if (text == null || languageId == null) return "missing document text or languageId";
+		// Duplicate opens are ignored, even with a newer version. A client must
+		// close first to begin a new version sequence.
+		if (overlays[key] != null) return "document is already open";
+		overlays[key] = DocumentOverlay.new(key, languageId, version, text, false);
+		return null;
+	}
+	def change(uri: string, version: int, text: Array<byte>) -> string {
+		var doc = overlay(uri);
+		if (doc == null) return "document is not open";
+		if (version <= doc.version) return "document version is not newer";
+		if (text == null) return "missing document text";
+		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text, false);
+		return null;
+	}
+	// Save has no version and cannot replace the authoritative overlay. The
+	// client was told includeText=false. It only marks the current text saved.
+	def save(uri: string) -> string {
+		var doc = overlay(uri);
+		if (doc == null) return "document is not open";
+		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, doc.version, doc.text, true);
+		return null;
+	}
+	def close(uri: string) -> string {
+		var doc = overlay(uri);
+		if (doc == null) return "document is not open";
+		overlays.remove(doc.uri);
+		return null;
+	}
+}
