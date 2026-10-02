@@ -600,7 +600,7 @@ For LSP, read only the relevant sections of the [3.17 specification](https://mic
 ### Week 4
 
 - Implement `didOpen`, `didChange`, and `didClose` with full-text synchronization.
-- Call `Parser.parseFile` on the unsaved overlay.
+- Use the [single-file compiler adapter](docs/architecture.md#compiler-adapter) on the unsaved overlay.
 - Publish/clear syntax diagnostics.
 - Implement document symbols with your own VST visitor informed by Virgil's licensed `vctags` example.
 - Demo the same edit in LazyVim and VS Code and tag an internal `v0.0.1` checkpoint if the transcript suite is green.

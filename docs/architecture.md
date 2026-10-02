@@ -111,7 +111,7 @@ Accepted opens and full-text changes synchronously run `AeneasAdapter.parseFile`
 
 Diagnostics include the Aeneas message, error code, `source: "aeneas"`, error severity, and a UTF-16 range derived from exact byte offsets, not compiler display columns. Aeneas point errors remain empty ranges, including at EOF. Non-file overlays are analyzed the same way as file overlays. See [Compiler adapter](#compiler-adapter) for parsing and recovery details and [Coordinates](#coordinates) for range conversion. This is syntax-only: verification, workspace analysis, scheduling, and process isolation remain later milestones.
 
-Outgoing notifications use `LspServer.sendNotification`, separate from `handle`'s reply payload. The stdio entry point binds this sink to the transport's frame writer; partial writes and notification write failures follow the same transport failure path as replies. Unit tests inject a recording sink instead.
+See [Stdio transport](#stdio-transport) for the notification sink and write-failure behavior.
 
 ### URI identity on Linux and macOS
 
@@ -219,6 +219,8 @@ Header bytes are checked as they arrive, so a header fails as soon as the byte t
 ### Stdio transport
 
 `LspTransport` (`src/protocol/LspTransport.v3`) connects the frame reader to a message handler, which for `--stdio` is the [lifecycle](#lifecycle) in front of the dispatcher: each payload is handled, and each returned reply or server notification is written by `LspFrameWriter` as one framed message. Once the handler reports that it has finished, after `exit`, the transport reads no more messages. The writer builds the header and payload in one buffer and keeps writing until all of it is out, because a write to a pipe may take only part of it. The transport does no I/O itself: `--stdio` reads standard input in chunks of up to 64 KiB, passes them in, and gives the transport a function that writes to standard output. Unit tests drive it with input in small chunks and a writer that takes a few bytes at a time.
+
+Parser diagnostic publications use `LspServer.sendNotification`, which the stdio entry point binds to `LspTransport.send`. This sink shares the frame writer and failure path with returned messages; unit tests can inject a recording sink instead. Capacity warnings still arrive as `handle`'s returned payload.
 
 | Event | Effect | Exit status |
 | --- | --- | --- |
