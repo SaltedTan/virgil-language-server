@@ -1,0 +1,21 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+type T { case Local(d: int); case Other(a: int, b: int); }
+enum E { X, Y }
+component M {
+    def f(t: T) -> int {
+        match (t) {
+            Local(d) => return d;
+            Other(a, b) => return a + b;
+        }
+    }
+    def g(e: E) -> int {
+        match (e) {
+            X => return 1;
+            Y => return 2;
+        }
+    }
+    def local() -> T { return T.Local(1); }
+    def x() -> E { return E.X; }
+}

@@ -1,0 +1,20 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+enum Op(prec: int) { ADD(1), MUL(1 + 1) }
+component M {
+    def f(op: Op) -> int { return op.prec + Op.ADD.prec; }
+    def getter(op: Op) -> int { return Op.prec(op); }
+    def mul() -> int { return Op.MUL.prec; }
+    def tag(op: Op) -> int { return op.tag; }
+    def name(op: Op) -> string { return op.name; }
+    def count() -> int { return Op.count; }
+}
+
+enum E(count: int) { A(7), B(1 + 1) }
+component N {
+    def builtin() -> int { return E.count; }
+    def literal() -> int { return E.A.count; }
+    def instance(e: E) -> int { return e.count; }
+    def nonliteral() -> int { return E.B.count; }
+}

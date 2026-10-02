@@ -1,10 +1,7 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Walks a file after verification has run, recording each {VarExpr} whose
-// {varbind} leads to a declaration in program source. Uses that resolve to
-// built-in operators, constants, or the synthetic System component are skipped.
-// This is the seed of the occurrence index described in docs/architecture.md.
+// Builds the occurrence index described in docs/architecture.md#compiler-adapter.
 class OccurrenceCollector extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private var fileName: string;
@@ -91,10 +88,26 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 	def visitMatch(s: MatchStmt, env: void) {
 		expr(s.expr);
 		// defcase aliases a case in this list; it is not another subtree.
-		for (l = s.cases.list; l != null; l = l.tail) matchCase(l.head);
+		for (l = s.cases.list; l != null; l = l.tail) matchCase(l.head, s.expr.exactType);
 	}
-	private def matchCase(c: MatchCase) {
-		for (l = c.patterns.list; l != null; l = l.tail) expr(l.head.expr);
+	private def matchCase(c: MatchCase, matchType: Type) {
+		for (l = c.patterns.list; l != null; l = l.tail) {
+			var pat = l.head;
+			expr(pat.expr);
+			if (!VarExpr.?(pat.expr)) continue;
+			var ve = VarExpr.!(pat.expr);
+			// Qualified cases already have bindings. Unqualified case names
+			// bypass ordinary name resolution in the verifier.
+			if (ve.expr != null || ve.varbind.ok()) continue;
+			if (pat.variantCase != null) {
+				record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase));
+			} else if (pat.val != null && EnumType.?(matchType)) {
+				// Enum patterns retain only their resolved case value; look up
+				// the declaration in the verified scrutinee's enum.
+				var member = EnumType.!(matchType).lookupCase(ve.ident.name.image);
+				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member));
+			}
+		}
 		stmt(c.stmt);
 	}
 	def visitEmpty(s: EmptyStmt, env: void) { }
@@ -115,9 +128,19 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 	def visitVar(e: VarExpr, env: void) {
 		expr(e.expr);
 		var decl = declarationOf(e.varbind);
-		if (decl == null) return;
-		var token = e.ident.name;
-		if (token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
+		// A literal enum argument folds E.Case.param to Const, losing the
+		// field in the binding. Require an EnumConst receiver: E.count is a
+		// built-in even when the enum has a parameter named count.
+		if (decl == null && VarBinding.Const.?(e.varbind) && VarExpr.?(e.expr)
+				&& VarBinding.EnumConst.?(VarExpr.!(e.expr).varbind) && EnumType.?(e.expr.exactType)) {
+			var et = EnumType.!(e.expr.exactType);
+			var member = et.enumDecl.memberMap[e.ident.name.image];
+			if (VstField.?(member)) decl = make(AnalysisDeclKind.FIELD, member);
+		}
+		record(e.ident.name, decl);
+	}
+	private def record(token: Token, decl: AnalysisDeclaration) {
+		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
 		result.put(AnalysisOccurrence.new(rangeOf(token), decl));
 	}
 	def visitLiteral(e: Literal, env: void) { }
@@ -174,6 +197,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 			ClassNew(receiver, member, funcType) => return make(AnalysisDeclKind.CONSTRUCTOR, member);
 			VariantCase(receiver, member) => return make(AnalysisDeclKind.VARIANT_CASE, member);
 			EnumConst(member) => return make(AnalysisDeclKind.ENUM_CASE, member);
+			Inst(op, facts) => return operatorDeclaration(op);
+			Apply(op, facts) => return operatorDeclaration(op);
 			Type(t) => return typeDeclaration(t);
 			LayoutDecl(decl) => return make(AnalysisDeclKind.LAYOUT, decl);
 			LayoutFieldDecl(decl) => return make(AnalysisDeclKind.LAYOUT_FIELD, decl);
@@ -185,7 +210,16 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 			RefLayoutRepeatedField(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
 			RefLayoutNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
 			RefLayoutRepeatedNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
-			_ => return null; // operators, constants, and other built-in bindings
+			_ => return null; // bindings without a source declaration
+		}
+	}
+	private def operatorDeclaration(op: Operator) -> AnalysisDeclaration {
+		match (op.opcode) {
+			VstSugar(sugar) => match (sugar) {
+				EnumGetParam(field) => return make(AnalysisDeclKind.FIELD, field);
+				_ => return null;
+			}
+			_ => return null;
 		}
 	}
 	private def typeDeclaration(t: Type) -> AnalysisDeclaration {

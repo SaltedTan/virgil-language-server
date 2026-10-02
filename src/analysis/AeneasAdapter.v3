@@ -58,7 +58,7 @@ class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisR
 	}
 }
 
-// A use of a name that verification bound to a declaration in the program.
+// A use of a name that verification resolved to a declaration in the program.
 // {range} covers the identifier at the use site.
 class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration) {
 	def toString() -> string {
@@ -90,11 +90,8 @@ class ProgramAnalysis {
 		}
 	}
 
-	// Every use in {path} that verification bound to a source declaration, in
-	// source order. Empty if parsing failed, because verification did not run.
-	// After semantic errors the result covers whatever the verifier bound.
-	// Collected once on first use of each file; callers must not modify the
-	// returned array, which is shared with definition queries.
+	// Source-declaration uses in {path}; see docs/architecture.md#compiler-adapter.
+	// Callers must not modify the cached array shared with definition queries.
 	def occurrences(path: string) -> Array<AnalysisOccurrence> {
 		var file = files[path];
 		if (file == null) return [];
