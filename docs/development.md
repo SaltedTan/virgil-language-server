@@ -11,7 +11,7 @@
 ```sh
 git submodule update --init --recursive   # if you cloned without --recurse-submodules
 make            # builds build/virgil-lsp
-make test       # builds and runs unit tests and command-line smoke tests
+make test       # builds and runs all suites listed below
 make clean
 ```
 
@@ -48,14 +48,12 @@ scripts/bench-analysis.sh        # parse and verify timings: small fixture and t
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
 
-Each directory in `test/protocol/` is one transcript: `input` (or `input.1`, `input.2`, ... to split the input across reads), the expected `output` and `status`, and optionally `args` and `stderr`. The header of `test/protocol/run.sh` describes the format. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
+The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
 
 ```sh
 frame() { printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) )) "$1"; }
 frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' > input
 ```
-
-In `output`, write `@VERSION@` for the server version in the `initialize` result.
 
 Planned additions: `test/features/` and `test/e2e/` (headless Neovim and the VS Code Extension Host).
 

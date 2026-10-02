@@ -133,7 +133,7 @@ The existing prototype is a useful skeleton, but its protocol code should be con
 5. Standard output must contain protocol bytes only. All logs go to standard error or an explicitly selected log file.
 6. `Content-Length` is a byte count. Reads and writes may be partial, messages may be fragmented, and a message-size limit is needed.
 7. `Content-Type` is optional and, when present, is normally a MIME value with a charset rather than the bare string `utf-8`.
-8. Unknown notifications are ignored; unknown requests receive `MethodNotFound` with the original ID.
+8. Unknown-method handling follows the [JSON-RPC dispatch contract](docs/architecture.md#json-rpc-messages) and [lifecycle state](docs/architecture.md#lifecycle).
 9. Lifecycle ordering, `$/cancelRequest`, shutdown, and exit behavior need transcript tests.
 10. Compiler locations and LSP locations use different coordinate systems.
 
