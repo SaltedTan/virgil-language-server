@@ -47,8 +47,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 					if (x.superclause != null && x.superclause != decl.superclause) expr(x.superclause.args);
 					stmt(x.func.body);
 				}
-				// Synthetic methods wrap lambda funcs already reached through
-				// FunExpr in source methods or field initializers.
+				// Traverse lambda bodies through FunExpr so their capture mapping
+				// is active, rather than through synthetic method wrappers.
 				x: VstMethod => {
 					if (x.isSynthetic) continue;
 					thisParam = x.func.thisParam;
