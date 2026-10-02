@@ -20,13 +20,12 @@
 #                line counts must be equal. Without this file, standard error
 #                must be empty.
 #
-# Usage: test/protocol/run.sh <path-to-virgil-lsp> [case...]
+# Usage: test/protocol/run.sh <path-to-virgil-lsp>
 set -uo pipefail
 # Byte semantics for string lengths and offsets.
 export LC_ALL=C
 
-EXE=${1:?usage: run.sh <path-to-virgil-lsp> [case...]}
-shift
+EXE=${1:?usage: run.sh <path-to-virgil-lsp>}
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -107,18 +106,12 @@ run_case() {
 
 pass=0
 fail=0
-if [ $# -gt 0 ]; then
-    cases=("$@")
-else
-    cases=()
-    for c in "$DIR"/*/; do cases+=("$(basename "$c")"); done
-fi
-for name in "${cases[@]}"; do
-    if run_case "$DIR/$name" > "$TMP/report"; then
+for c in "$DIR"/*/; do
+    if run_case "$c" > "$TMP/report"; then
         pass=$((pass + 1))
     else
         fail=$((fail + 1))
-        echo "FAIL: $name"
+        echo "FAIL: $(basename "$c")"
         cat "$TMP/report"
     fi
 done

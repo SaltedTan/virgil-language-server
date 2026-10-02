@@ -40,11 +40,7 @@ class LspServer {
 	new() {
 		dispatcher
 			.onRequest("initialize", initialize)
-			.onNotification("initialized", ignore)
-			.onRequest("shutdown", shutdown)
-			// The server handles one message at a time, so a request has
-			// already been answered when a cancellation for it is read.
-			.onNotification("$/cancelRequest", ignore);
+			.onRequest("shutdown", shutdown);
 	}
 	// Decodes and handles one payload. Returns the reply payload, or null if
 	// there is nothing to send.
@@ -125,7 +121,6 @@ class LspServer {
 		failPending("the server is shutting down");
 		return JsonRpcReply.Result(JsonValue.Null);
 	}
-	private def ignore(notification: JsonRpcMessage.Notification) { }
 	// Ends the session. {reason} explains a nonzero exit status.
 	private def exit(reason: string) {
 		if (state == LspServerState.SHUTTING_DOWN) {

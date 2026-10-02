@@ -45,7 +45,7 @@ scripts/bench-analysis.sh        # parse and verify timings: small fixture and t
 | --- | --- | --- |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`) | `build/unit-tests [glob]` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness | `test/cli/run.sh build/virgil-lsp` |
-| `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp [case...]` |
+| `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
 
 Each directory in `test/protocol/` is one transcript: `input` (or `input.1`, `input.2`, ... to split the input across reads), the expected `output` and `status`, and optionally `args` and `stderr`. The header of `test/protocol/run.sh` describes the format. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
