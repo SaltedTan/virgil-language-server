@@ -14,6 +14,7 @@ def X = [
 	T("AeneasAdapter:analyze_runs_no_initializers", test_analyze_runs_no_initializers),
 	T("AeneasAdapter:binding_lookup", test_binding_lookup),
 	T("AeneasAdapter:binding_after_semantic_error", test_binding_after_semantic_error),
+	T("AeneasAdapter:binding_with_null_type", test_binding_with_null_type),
 	T("AeneasAdapter:repeat_analysis_equal", test_repeat_analysis_equal),
 	()
 ];
@@ -179,6 +180,25 @@ def test_binding_after_semantic_error(t: Tester) {
 	assertDefinition(t, a, UNRESOLVED, 6, 24, AnalysisDeclKind.LOCAL, "r", UNRESOLVED, 5, 21);
 	assertDefinition(t, a, UNRESOLVED, 6, 27, AnalysisDeclKind.METHOD, "area", SHAPES, 4, 13);
 	t.assert(a.definitionAt(UNRESOLVED, 6, 35) == null, "an unresolved name has no definition");
+}
+
+// An oversized enum's E.set is bound to VarBinding.Type(null). Collecting
+// occurrences must skip that binding without losing the resolved E use.
+def test_binding_with_null_type(t: Tester) {
+	var path = "test/fixtures/analysis/enum-set-too-large/main.v3";
+	var a = analyzeFiles(t, [path]);
+	if (a == null) return;
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	t.asserti(2, a.diagnostics.length);
+	assertDiagnostic(t, a, "EnumSetTooLarge", path, 3, 29);
+	t.assert_string("UnresolvedMember", a.diagnostics[1].kind);
+	t.asserti(3, a.diagnostics[1].beginLine);
+	t.asserti(33, a.diagnostics[1].beginColumn);
+	t.asserti(1, a.occurrences(path).length);
+	assertDefinition(t, a, path, 3, 27, AnalysisDeclKind.ENUM, "E", path, 1, 6);
+	t.assert(a.definitionAt(path, 3, 29) == null, "a null type has no definition");
+	t.assert(a.definitionAt(path, 3, 33) == null, "an unresolved member has no definition");
 }
 
 // The same inputs give the same diagnostics and bindings, including after

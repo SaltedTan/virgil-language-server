@@ -185,6 +185,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		}
 	}
 	private def typeDeclaration(t: Type) -> AnalysisDeclaration {
+		// Verification errors can leave a Type binding with no resolved type.
+		if (t == null) return null;
 		match (t) {
 			x: ClassType => return make(AnalysisDeclKind.CLASS, x.classDecl);
 			x: EnumType => return make(AnalysisDeclKind.ENUM, x.enumDecl);

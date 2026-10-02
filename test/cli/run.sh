@@ -87,6 +87,11 @@ expect "analyze reports syntax error" 1 'syntax-error/main\.v3:5:25: ParseError'
     analyze "$A/two-file/shapes.v3" "$A/syntax-error/main.v3"
 expect "analyze follows a binding across files" 0 'main\.v3:4:25-4:31 -> COMPONENT Shapes @ .*two-file/shapes\.v3:8:11-8:17' "" -- \
     analyze --bindings "$A/two-file/shapes.v3" "$A/two-file/main.v3"
+expect "analyze bindings reports oversized enum set without trapping" 1 'enum-set-too-large/main\.v3:3:29: EnumSetTooLarge' "" -- \
+    analyze --bindings "$A/enum-set-too-large/main.v3"
+check_stream stdout "$TMP/out" 'enum-set-too-large/main\.v3:3:33: UnresolvedMember' && \
+    check_stream stdout "$TMP/out" 'main\.v3:3:27-3:28 -> ENUM E @ .*main\.v3:1:6-1:7'
+finish "analyze bindings retains diagnostics and resolved enum use" $(( $? == 0 ))
 expect "analyze repeats with identical results" 0 '^ok: 2 files' "" -- \
     analyze --repeat=3 --bindings "$A/two-file/shapes.v3" "$A/two-file/main.v3"
 expect "analyze stats go to stderr" 0 '^ok: 2 files' 'analysis 1: parse [0-9]+ us, verify [0-9]+ us' -- \
