@@ -1,0 +1,139 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// LSP error codes, beyond the JSON-RPC 2.0 codes in {JsonRpcErrorCode}.
+component LspErrorCode {
+	def SERVER_NOT_INITIALIZED = -32002;	// a request arrived before initialize
+	def REQUEST_CANCELLED = -32800;		// the request was cancelled
+}
+
+// Where the server is in the LSP lifecycle.
+enum LspServerState {
+	UNINITIALIZED,	// no initialize request has succeeded yet
+	RUNNING,	// initialize succeeded
+	SHUTTING_DOWN,	// shutdown succeeded
+	EXITED		// exit was received, or the input ended
+}
+
+// The LSP 3.17 lifecycle in front of a dispatcher. Each payload is checked
+// against the lifecycle state before the dispatcher routes it. Like the
+// dispatcher, it does no I/O. See docs/architecture.md.
+//
+// - Before a successful initialize, requests other than initialize get
+//   ServerNotInitialized, and notifications other than exit are dropped.
+// - initialize returns the server's capabilities. It may succeed only once.
+// - After shutdown, requests get InvalidRequest, and notifications other than
+//   exit are dropped.
+// - exit, or the end of the input, ends the session. The exit status is 0 if
+//   shutdown succeeded first, and 1 otherwise. Nothing is handled after that.
+// - Payloads that aren't valid requests or notifications, and responses from
+//   the client, are passed to the dispatcher in every state before exit.
+class LspServer {
+	// Handlers for the server's features are registered here.
+	def dispatcher = JsonRpcDispatcher.new();
+	def var state = LspServerState.UNINITIALIZED;
+	// The process exit status, once {exited} is true.
+	def var exitStatus: int;
+	// Why the exit status is not 0, for logging.
+	def var failure: string;
+
+	new() {
+		dispatcher
+			.onRequest("initialize", initialize)
+			.onRequest("shutdown", shutdown);
+	}
+	// Decodes and handles one payload. Returns the reply payload, or null if
+	// there is nothing to send.
+	def handle(payload: Array<byte>) -> Array<byte> {
+		if (state == LspServerState.EXITED) return null;
+		var input = JsonRpcDecoder.decode(payload);
+		match (input) {
+			Valid(msg, unsupportedNumbers) => {
+				match (msg) {
+					x: JsonRpcMessage.Request => {
+						var error = admit(x.method);
+						if (error != null) return JsonRpcMessage.ErrorResponse(x.id, error).encode();
+					}
+					x: JsonRpcMessage.Notification => {
+						// Handled here, not by the dispatcher, so that params it
+						// can't read don't stop the process from exiting.
+						if (Strings.equal(x.method, "exit")) {
+							exit("received exit before a shutdown request");
+							return null;
+						}
+						if (state != LspServerState.RUNNING) return null;
+					}
+					_ => ;
+				}
+			}
+			_ => ;
+		}
+		return dispatcher.dispatch(input);
+	}
+	// Returns true once the session has ended, so no more input is handled.
+	def exited() -> bool {
+		return state == LspServerState.EXITED;
+	}
+	// Handles the end of the input, which ends the session as exit does. Does
+	// nothing if it has already ended.
+	def close() {
+		if (state != LspServerState.EXITED) exit("the input ended before a shutdown request");
+	}
+	// Returns the error for a request with {method} in the current state, or
+	// null if it may be dispatched.
+	private def admit(method: string) -> JsonRpcError {
+		var initialize = Strings.equal(method, "initialize");
+		match (state) {
+			UNINITIALIZED => {
+				if (!initialize) {
+					return JsonRpcError.new(LspErrorCode.SERVER_NOT_INITIALIZED, "the server is not initialized");
+				}
+			}
+			RUNNING => {
+				if (initialize) {
+					return JsonRpcError.new(JsonRpcErrorCode.INVALID_REQUEST, "the server is already initialized");
+				}
+			}
+			SHUTTING_DOWN => {
+				return JsonRpcError.new(JsonRpcErrorCode.INVALID_REQUEST, "the server is shutting down");
+			}
+			EXITED => ;
+		}
+		return null;
+	}
+	private def initialize(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		if (!JsonRpcParams.ByName.?(request.params)) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "initialize params must be an object"));
+		}
+		state = LspServerState.RUNNING;
+		var serverInfo = Strings.newMap<JsonValue>();
+		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);
+		serverInfo["version"] = JsonValue.String(BuildInfo.VERSION);
+		var result = Strings.newMap<JsonValue>();
+		// Advertise only what is implemented and tested. Nothing is yet, so
+		// the client's capabilities don't change what the server does.
+		result["capabilities"] = JsonValue.JObject(Strings.newMap<JsonValue>());
+		result["serverInfo"] = JsonValue.JObject(serverInfo);
+		return JsonRpcReply.Result(JsonValue.JObject(result));
+	}
+	private def shutdown(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		state = LspServerState.SHUTTING_DOWN;
+		failPending("the server is shutting down");
+		return JsonRpcReply.Result(JsonValue.Null);
+	}
+	// Ends the session. {reason} explains a nonzero exit status.
+	private def exit(reason: string) {
+		if (state == LspServerState.SHUTTING_DOWN) {
+			exitStatus = 0;
+		} else {
+			exitStatus = 1;
+			failure = reason;
+		}
+		state = LspServerState.EXITED;
+		failPending("the server exited");
+	}
+	// Completes the requests the server sent and the client hasn't answered.
+	private def failPending(msg: string) {
+		dispatcher.pending.failAll(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, msg));
+	}
+}

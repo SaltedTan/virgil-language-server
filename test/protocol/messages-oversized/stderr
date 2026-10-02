@@ -1,0 +1,2 @@
+^virgil-lsp: warning: skipped a message: payload of 129 bytes is longer than the limit of 128 bytes$
+^virgil-lsp: warning: skipped a message: payload of 5000 bytes is longer than the limit of 128 bytes$

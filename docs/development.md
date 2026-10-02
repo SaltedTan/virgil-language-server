@@ -11,7 +11,7 @@
 ```sh
 git submodule update --init --recursive   # if you cloned without --recurse-submodules
 make            # builds build/virgil-lsp
-make test       # builds and runs unit tests and command-line smoke tests
+make test       # builds and runs all suites listed below
 make clean
 ```
 
@@ -45,9 +45,17 @@ scripts/bench-analysis.sh        # parse and verify timings: small fixture and t
 | --- | --- | --- |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`) | `build/unit-tests [glob]` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness | `test/cli/run.sh build/virgil-lsp` |
+| `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
 
-Planned additions: `test/protocol/` (golden JSON-RPC transcripts), `test/features/`, and `test/e2e/` (headless Neovim and the VS Code Extension Host).
+The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
+
+```sh
+frame() { printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) )) "$1"; }
+frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' > input
+```
+
+Planned additions: `test/features/` and `test/e2e/` (headless Neovim and the VS Code Extension Host).
 
 To add a unit test, create `test/unit/<Thing>Test.v3` and register test functions:
 

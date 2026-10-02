@@ -22,7 +22,7 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, and server request tracking present; lifecycle planned (M1) |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, server request tracking, and lifecycle present |
 | `src/documents/` | URIs, versioned text, `PositionMap` | Planned (M2) |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
@@ -81,8 +81,9 @@ Each analysis produces an immutable snapshot containing: the configuration revis
 | `JsonRpcDispatcher.v3` | Routes requests and notifications to handlers by method name, and responses to the pending-request table. Returns the reply payload, if any. |
 | `JsonRpcPendingRequests.v3` | The requests the server has sent to the client, matched to their responses (see below). |
 | `JsonRpcJson.v3` | JSON parsing and rendering on top of Virgil's `lib/file/json` (see below). |
+| `LspServer.v3` | The [lifecycle](#lifecycle) in front of the dispatcher, and the LSP error codes it uses. |
 
-The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Incoming messages are handled as follows:
+The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Once the [lifecycle](#lifecycle) has admitted a message, it is handled as follows:
 
 | Input | Reply |
 | --- | --- |
@@ -107,7 +108,7 @@ The server will need to send requests to the client, such as `workspace/configur
 - A decoded response or error response marked `JsonRpcInput.Valid(_, true)` completes its matching request with `InternalError` (-32603), so the callback never sees the null placeholders for numbers that aren't 32-bit integers (see [Numbers](#json-limitations-and-workarounds)). Malformed responses are still dropped without completing a request.
 - `failAll(error)` visits the requests outstanding when it starts and completes each with `error` unless an earlier callback already completed it. Requests sent by the callbacks it runs stay outstanding, even if they reuse an original request's ID. The `JsonRpcPendingRequests:fail_all_reentrant` and `JsonRpcPendingRequests:fail_all_recycled_ids` unit tests cover these cases.
 
-Requests the client never answers stay outstanding until `failAll`; there is no timeout yet. No server request is sent yet: the first ones come with the lifecycle work.
+Requests the client never answers stay outstanding until `failAll`; there is no timeout yet. A successful `shutdown`, `exit`, and the end of the input each call `failAll` with `RequestCancelled` (-32800), using the completion contract above. No server request is sent yet.
 
 ### JSON limitations and workarounds
 
@@ -115,7 +116,7 @@ The pinned `lib/file/json` differs from RFC 8259 in ways that matter for LSP tra
 
 - **String escapes.** `JsonParser` keeps escapes undecoded and rejects `\/`, `\b`, `\f`, and `\uXXXX`. Clients do send these: for example, `JSON.stringify` in VS Code writes control characters in document text as `\u00XX`. `JsonRpcJsonParser` overrides `parseString` to decode all JSON escapes, combining surrogate pairs. A lone surrogate becomes U+FFFD, which is also one UTF-16 code unit, so LSP character offsets don't shift.
 - **Whitespace.** A carriage return counts as whitespace.
-- **Numbers.** `JsonValue` has no floating point and only 32-bit integers. `parseNumber` accepts the full JSON number grammar. Any number that isn't a 32-bit integer (fractions, exponents, out of range) becomes null and is counted. As an `id`, such a number gives `InvalidRequest` with a null `id`. Elsewhere in a request, the request gets `InvalidParams` (-32602) with its original `id`, or `MethodNotFound` if the method is unknown. Its handler never runs, so it never sees the replaced values. A notification with such a number is ignored. Apart from the `decimal` colour values of `textDocument/colorPresentation`, which the server doesn't support, LSP 3.17 has no fractional numbers sent by the client, and its integers fit in 32 bits. Free-form `LSPAny` values such as `initializationOptions` could still contain one, and would make that request fail.
+- **Numbers.** `JsonValue` has no floating point and only 32-bit integers. `parseNumber` accepts the full JSON number grammar. Any number that isn't a 32-bit integer (fractions, exponents, out of range) becomes null and is counted. As an `id`, such a number gives `InvalidRequest` with a null `id`. Elsewhere in a request admitted by the [lifecycle](#lifecycle), the request gets `InvalidParams` (-32602) with its original `id`, or `MethodNotFound` if the method is unknown. Its handler never runs, so it never sees the replaced values. The dispatcher ignores notifications with such a number; lifecycle admission and the `exit` exception are described in [Lifecycle](#lifecycle). Apart from the `decimal` colour values of `textDocument/colorPresentation`, which the server doesn't support, LSP 3.17 has no fractional numbers sent by the client, and its integers fit in 32 bits. Free-form `LSPAny` values such as `initializationOptions` could still contain one, and would make that request fail.
 - **Nesting.** The recursive-descent parser overflows the stack, which kills the process. In a probe of the pinned parser, 30,000 levels of nesting still parsed and 50,000 crashed. Input that nests arrays and objects more than 256 levels deep is rejected as a `ParseError` before parsing starts.
 - **Size.** The parser builds the whole tree on the heap, and running out of heap kills the process. The byte limit on messages doesn't bound that: a 10 MB array of five million zeros needed more than the default 200 MB heap. The cost per value depends on its shape. Measured with the pinned build, an integer costs about 60 bytes, an empty string or array about 85, and an empty object about 185, including the parser's temporary vectors. A message with more than 500,000 values (`JsonRpcJson.MAX_VALUES`, counting object keys) is rejected as a `ParseError` before parsing starts. At that limit the most expensive shapes still parse with room to spare, even alongside a string that fills the rest of a 16 MiB message: 750,000 values still fit, and some shapes fail at a million. No LSP message from a client comes close to the limit. The same allocation-free pre-scan, `JsonRpcJson.measure`, counts values and measures nesting. Strings count as one value each; their bytes are bounded by the message limit, and a 16 MiB string parses within the default heap. See [Framing](#framing) for the supported payload limit and memory budget.
 - **Rendering.** `JsonValue.render` writes Virgil string literals: it escapes `'` as `\'` and leaves control characters raw, which produces invalid JSON. `JsonRpcJson.render` escapes quotes, backslashes, and all control characters, and replaces bytes that aren't valid UTF-8 with `\ufffd`, so output is always valid JSON. Output is compact, and object members are sorted by key, so it's deterministic.
@@ -144,22 +145,52 @@ Header bytes are checked as they arrive, so a header fails as soon as the byte t
 
 ### Stdio transport
 
-`LspTransport` (`src/protocol/LspTransport.v3`) connects the frame reader to the dispatcher: each payload is dispatched, and each reply is written by `LspFrameWriter` as one framed message. The writer builds the header and payload in one buffer and keeps writing until all of it is out, because a write to a pipe may take only part of it. The transport does no I/O itself: `--stdio` reads standard input in chunks of up to 64 KiB, passes them in, and gives the transport a function that writes to standard output. Unit tests drive it with input in small chunks and a writer that takes a few bytes at a time.
+`LspTransport` (`src/protocol/LspTransport.v3`) connects the frame reader to a message handler, which for `--stdio` is the [lifecycle](#lifecycle) in front of the dispatcher: each payload is handled, and each reply is written by `LspFrameWriter` as one framed message. Once the handler reports that it has finished, after `exit`, the transport reads no more messages. The writer builds the header and payload in one buffer and keeps writing until all of it is out, because a write to a pipe may take only part of it. The transport does no I/O itself: `--stdio` reads standard input in chunks of up to 64 KiB, passes them in, and gives the transport a function that writes to standard output. Unit tests drive it with input in small chunks and a writer that takes a few bytes at a time.
 
 | Event | Effect | Exit status |
 | --- | --- | --- |
 | A message is skipped | A warning on stderr. No reply, because the payload wasn't read, so it isn't known whether it was a request. | Continues |
 | A header is malformed | An error on stderr. Replies to earlier messages have been sent. Nothing after the header is read. | 1 |
 | A reply can't be written | An error on stderr | 1 |
-| The input ends between messages | — | 0 |
 | The input ends in the middle of a message | An error on stderr | 1 |
+| The `exit` notification is handled | Nothing after it is read, even input already received | See [Lifecycle](#lifecycle) |
+| The input ends between messages | — | See [Lifecycle](#lifecycle) |
 
-No handlers are registered yet, so every request gets `MethodNotFound`. `initialize`, `shutdown`, and `exit` come with the lifecycle work, which will also decide the exit status when the input ends without an `exit` notification.
+## Lifecycle
+
+`LspServer` (`src/protocol/LspServer.v3`) follows the lifecycle of the [LSP 3.17 specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#lifeCycleMessages). It checks each request and notification against the lifecycle state before the dispatcher routes it. Payloads that aren't valid requests or notifications get their `ParseError` or `InvalidRequest` in every state, and responses from the client go to the [pending-request table](#server-requests) in every state, until `exit`.
+
+| State | Request | Notification | Next state |
+| --- | --- | --- | --- |
+| Uninitialized | `initialize` is handled. Any other request gets `ServerNotInitialized` (-32002), even an unknown method. | `exit` is handled. Others, including `initialized`, are dropped. | Running, once `initialize` succeeds |
+| Running | A second `initialize` gets `InvalidRequest` (-32600). `shutdown` returns `null`. Other requests are dispatched. | `initialized` is accepted and does nothing. Others are dispatched. | Shutting down, after `shutdown` |
+| Shutting down | Every request gets `InvalidRequest`, including `shutdown` and `initialize`. | `exit` is handled. Others are dropped. | — |
+| Exited | Nothing is read. | Nothing is read. | — |
+
+Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply; no client capability or other param field changes the server's behavior yet. The result contains an empty `capabilities` object, because no feature is implemented yet, and `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
+
+`exit` ends the session in any state. So does the end of the input, which is how a client process that disappears looks to the server. Either way, outstanding server requests are failed, and the process exits:
+
+| How the session ends | Exit status | stderr |
+| --- | --- | --- |
+| `exit` after a successful `shutdown` | 0 | — |
+| `exit` without a successful `shutdown` | 1 | An error |
+| The input ends after a successful `shutdown` | 0 | — |
+| The input ends without a successful `shutdown` | 1 | An error |
+| The transport fails (see the [stdio transport](#stdio-transport)) | 1 | An error |
+
+The end of the input is treated like `exit` because a client that sent `shutdown` has asked the server to stop and has nothing more to send, while one that disappears without it ended the session abnormally. The server doesn't watch the client's `processId`.
+
+`exit` is handled before its params are read, so params the server can't read (see [Numbers](#json-limitations-and-workarounds)) don't stop it. The transport reads nothing after `exit`, so later messages get no reply, even if they arrived in the same read.
+
+### Cancellation
+
+Once decoded as a valid notification, `$/cancelRequest` never gets a response, regardless of the contents of its params. Malformed envelopes follow the [JSON-RPC validation contract](#json-rpc-messages). The server handles one message at a time and replies before it reads the next, so a cancellation of an earlier request arrives after that request has been answered, and there is nothing left to cancel. Before `initialize` and after `shutdown` it is dropped like other notifications. A request with the method `$/cancelRequest` is unregistered and follows the request rules in the lifecycle table above.
 
 ## Protocol invariants
 
-- Each incoming request receives exactly one response, carrying the request's original `id` (integer or string). *(present)*
-- Notifications never receive a response. Unknown notifications are ignored. Unknown requests receive `MethodNotFound`. *(present)*
+- Each incoming request receives at most one response, carrying the request's original `id` (integer or string). [Skipped](#framing) messages and input after `exit` aren't read, so they get none; a [transport failure](#stdio-transport) may prevent delivery of a complete response. *(present)*
+- Notifications never receive a response. Unknown notifications are ignored. Request errors depend on the [lifecycle state](#lifecycle). *(present)*
 - `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are skipped. *(present)*
-- Standard output carries protocol bytes only. *(present; `test/cli/run.sh` compares it byte for byte)*
-- Advertised capabilities exactly match implemented handlers.
+- Standard output carries protocol bytes only. *(present; the [transcripts](../test/protocol/) compare it byte for byte)*
+- Advertised capabilities exactly match implemented handlers. *(present: none are advertised)*

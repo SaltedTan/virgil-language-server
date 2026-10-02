@@ -1,0 +1,11 @@
+Content-Length: 110
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 80
+
+{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"method not found: a"}}Content-Length: 82
+
+{"jsonrpc":"2.0","id":"c","error":{"code":-32601,"message":"method not found: c"}}Content-Length: 80
+
+{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found: e"}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":4,"result":null}

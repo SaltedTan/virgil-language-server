@@ -1,0 +1,29 @@
+Content-Length: 107
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 33
+
+{"jsonrpc":"2.0","id":2,"method":Content-Length: 2
+
+[]Content-Length: 39
+
+[{"jsonrpc":"2.0","id":3,"method":"a"}]Content-Length: 37
+
+{"jsonrpc":"1.0","id":4,"method":"a"}Content-Length: 24
+
+{"jsonrpc":"2.0","id":5}Content-Length: 39
+
+{"jsonrpc":"2.0","id":1.5,"method":"a"}Content-Length: 51
+
+{"jsonrpc":"2.0","id":6,"method":"a","result":null}Content-Length: 43
+
+{"jsonrpc":"2.0","method":"a","params":"s"}Content-Length: 35
+
+{"jsonrpc":"2.0","id":7,"error":{}}Content-Length: 600
+
+[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]Content-Length: 0
+
+Content-Length: 44
+
+{"jsonrpc":"2.0","id":8,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

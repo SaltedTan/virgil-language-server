@@ -106,93 +106,64 @@ request() {  # request <id> <method> [params]
 not_found() {  # not_found <id> <method>
     printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found: %s"}}' "$1" "$2"
 }
-E=$'\xc3\xa9'  # U+00E9, two bytes in UTF-8
-INVALID='{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"a message must be a JSON object"}}'
+VERSION=$("$EXE" --version | head -n 1)
+VERSION=${VERSION#* }
+INITIALIZE=$(request 1 initialize '{"processId":null,"rootUri":null,"capabilities":{}}')
+INIT_RESULT=$(printf '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"%s"}}}' "$VERSION")
+EXIT='{"jsonrpc":"2.0","method":"exit"}'
 
-# Requests, a notification, a non-object payload, and non-ASCII text. With no
-# handlers registered yet, every request gets MethodNotFound.
-{
-    frame "$(request 1 initialize)"
-    frame '{"jsonrpc":"2.0","method":"initialized","params":{}}'
-    frame '[]'
-    frame "$(request "\"$E\"" "h${E}llo")"
-} > "$TMP/in"
-{
-    frame "$(not_found 1 initialize)"
-    frame "$INVALID"
-    frame "$(not_found "\"$E\"" "h${E}llo")"
-} > "$TMP/want"
-expect_stdio "stdio writes only framed replies" 0 "$TMP/want" "" -- < "$TMP/in"
-
-# The same input, split so that one message arrives in two reads.
-split_input() {
-    head -c 30 "$TMP/in"
-    sleep 0.2
-    tail -c +31 "$TMP/in"
-}
-expect_stdio "stdio reads a message split across reads" 0 "$TMP/want" "" -- < <(split_input)
-
-: > "$TMP/empty"
-expect_stdio "stdio exits cleanly at the end of input" 0 "$TMP/empty" "" -- < "$TMP/empty"
-
-# The server has sent no requests, so a response from the client matches none.
-# It is not answered, and the reason goes to stderr.
-frame '{"jsonrpc":"2.0","id":1,"result":null}' > "$TMP/in"
-expect_stdio "stdio logs a response that matches no request" 0 "$TMP/empty" \
-    'warning: ignored a response: no outstanding request has id 1' -- < "$TMP/in"
-
-{ frame "$(request 1 big '["0123456789012345678901234567890123456789"]')"; frame "$(request 2 small)"; } > "$TMP/in"
-frame "$(not_found 2 small)" > "$TMP/want"
-expect_stdio "stdio skips a message over the limit" 0 "$TMP/want" \
-    'warning: skipped a message: payload of [0-9]+ bytes is longer than the limit of 64 bytes' -- \
-    --max-message-bytes=64 < "$TMP/in"
+# Golden transcripts in test/protocol/ cover the protocol over --stdio. The
+# cases here need input generated at run time or held open.
 
 # Five million zeros: under the default 16 MiB message limit, but far more
 # values than the heap can hold once parsed. The message is answered with a
 # ParseError, and the next request is still read.
 {
-    printf '{"jsonrpc":"2.0","id":1,"method":"x","params":['
+    printf '{"jsonrpc":"2.0","id":2,"method":"x","params":['
     yes '0,' | head -n 4999999 | tr -d '\n'
     printf '0]}'
 } > "$TMP/dense"
 {
+    frame "$INITIALIZE"
     printf 'Content-Length: %d\r\n\r\n' $(( $(wc -c < "$TMP/dense") ))
     cat "$TMP/dense"
-    frame "$(request 2 small)"
+    frame "$(request 3 small)"
+    frame "$(request 4 shutdown)"
+    frame "$EXIT"
 } > "$TMP/in"
 {
+    frame "$INIT_RESULT"
     frame '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON at byte 0: more than 500000 values"}}'
-    frame "$(not_found 2 small)"
+    frame "$(not_found 3 small)"
+    frame '{"jsonrpc":"2.0","id":4,"result":null}'
 } > "$TMP/want"
 expect_stdio "stdio rejects a message with too many values and keeps going" 0 "$TMP/want" "" -- < "$TMP/in"
-
-{ frame "$(request 1 a)"; printf 'Content-Length: x\r\n\r\n{}'; frame "$(request 2 b)"; } > "$TMP/in"
-frame "$(not_found 1 a)" > "$TMP/want"
-expect_stdio "stdio stops at a malformed header" 1 "$TMP/want" \
-    'error: malformed message header: Content-Length is invalid' -- < "$TMP/in"
 
 # A bare LF proves the header is malformed, so the server must stop while the
 # client still holds the pipe open. If it waited for more input instead, it
 # would report the input ending inside a message once the pipe closed.
 held_open() {
-    frame "$(request 1 a)"
+    frame "$INITIALIZE"
     printf 'Content-Length: 2\n\n{}'
     sleep 3
 }
-frame "$(not_found 1 a)" > "$TMP/want"
+frame "$INIT_RESULT" > "$TMP/want"
 expect_stdio "stdio stops at a bare LF without waiting for more input" 1 "$TMP/want" \
     'error: malformed message header: header has an LF without a CR before it' -- < <(held_open)
 
-printf 'Content-Length: 10\r\n\r\n{' > "$TMP/in"
-expect_stdio "stdio fails when the input ends inside a message" 1 "$TMP/empty" \
-    'error: input ended in the middle of a message' -- < "$TMP/in"
+# exit ends the process even while the client holds the pipe open.
+exit_held_open() {
+    frame "$INITIALIZE"
+    frame "$(request 2 shutdown)"
+    frame "$EXIT"
+    sleep 3
+}
+{ frame "$INIT_RESULT"; frame '{"jsonrpc":"2.0","id":2,"result":null}'; } > "$TMP/want"
+SECONDS=0
+expect_stdio "stdio exits at exit without waiting for more input" 0 "$TMP/want" "" -- < <(exit_held_open)
+[ "$SECONDS" -lt 3 ] || { fail=$((fail + 1)); echo "FAIL: stdio waited for the end of input after exit"; }
 
-# A header alone, declaring the longest payload the limit allows. The payload
-# is buffered as it arrives, so the input ending is reported, not a heap trap.
-printf 'Content-Length: 16777216\r\n\r\n' > "$TMP/in"
-expect_stdio "stdio fails when the input ends after a header at the maximum limit" 1 "$TMP/empty" \
-    'error: input ended in the middle of a message' -- --max-message-bytes=16777216 < "$TMP/in"
-
+: > "$TMP/empty"
 expect "stdio rejects a bad message limit" 2 "" "invalid option" -- --stdio --max-message-bytes=0
 expect "stdio rejects a message limit over nine digits" 2 "" "invalid option" -- --stdio --max-message-bytes=1234567890
 expect "stdio rejects a message limit over the supported maximum" 2 "" \

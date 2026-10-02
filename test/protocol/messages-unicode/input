@@ -1,0 +1,23 @@
+Content-Length: 107
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 76
+
+{"jsonrpc":"2.0","id":"é😀","method":"héllo","params":{"text":"世界"}}Content-Length: 62
+
+{"jsonrpc":"2.0","id":"\u00e9\ud83d\ude00","method":"\u0068i"}Content-Length: 54
+
+{"jsonrpc":"2.0","id":"\ud800|\u0001|\/","method":"x"}Content-Length: 39
+
+{"jsonrpc":"2.0","id":"�","method":"x"}Content-Length: 118
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///é.v3","text":"// 😀\n"}}}Content-Length: 40
+Content-Type: application/vscode-jsonrpc; charset=UTF-8
+
+{"jsonrpc":"2.0","id":"é","method":"y"}Content-Length: 40
+Content-Type: application/vscode-jsonrpc; charset=utf8
+
+{"jsonrpc":"2.0","id":"é","method":"z"}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

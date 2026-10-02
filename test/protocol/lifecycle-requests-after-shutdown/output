@@ -1,0 +1,15 @@
+Content-Length: 110
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":2,"result":null}Content-Length: 88
+
+{"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"the server is shutting down"}}Content-Length: 88
+
+{"jsonrpc":"2.0","id":4,"error":{"code":-32600,"message":"the server is shutting down"}}Content-Length: 88
+
+{"jsonrpc":"2.0","id":5,"error":{"code":-32600,"message":"the server is shutting down"}}Content-Length: 90
+
+{"jsonrpc":"2.0","id":"x","error":{"code":-32600,"message":"the server is shutting down"}}Content-Length: 95
+
+{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"a message must be a JSON object"}}

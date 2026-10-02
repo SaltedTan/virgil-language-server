@@ -1,0 +1,256 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspServer:initialize_result", test_initialize_result),
+	T("LspServer:before_initialize", test_before_initialize),
+	T("LspServer:initialize_invalid_params", test_initialize_invalid_params),
+	T("LspServer:duplicate_initialize", test_duplicate_initialize),
+	T("LspServer:running", test_running),
+	T("LspServer:after_shutdown", test_after_shutdown),
+	T("LspServer:exit_after_shutdown", test_exit_after_shutdown),
+	T("LspServer:exit_without_shutdown", test_exit_without_shutdown),
+	T("LspServer:exit_unsupported_numbers", test_exit_unsupported_numbers),
+	T("LspServer:close", test_server_close),
+	T("LspServer:cancel_request", test_cancel_request),
+	T("LspServer:shutdown_fails_pending", test_shutdown_fails_pending),
+	T("LspServer:exit_fails_pending", test_exit_fails_pending),
+	()
+];
+
+def INITIALIZE = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":null,\"capabilities\":{}}}";
+def SHUTDOWN = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}";
+def EXIT = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}";
+
+// Handles {text} and checks the reply against {expected}, or that there is no
+// reply if {expected} is null.
+def expectServerReply(t: Tester, s: LspServer, text: string, expected: string) {
+	var got = s.handle(text);
+	if (expected == null) {
+		if (got != null) t.fail2("expected no reply to %s, got %s", text, got);
+	} else if (got == null) {
+		t.fail2("expected %s in reply to %s, got nothing", expected, text);
+	} else {
+		t.assert_string(expected, got);
+	}
+}
+def errorReply(id: string, code: int, msg: string) -> string {
+	return Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,\"message\":\"%s\"}}", id, code, msg);
+}
+def initializeResult() -> string {
+	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
+		BuildInfo.NAME, BuildInfo.VERSION);
+}
+def SHUTDOWN_RESULT = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}";
+def NOT_INITIALIZED = "the server is not initialized";
+def SHUTTING_DOWN = "the server is shutting down";
+
+// Returns a server that has been initialized.
+def runningServer(t: Tester) -> LspServer {
+	var s = LspServer.new();
+	expectServerReply(t, s, INITIALIZE, initializeResult());
+	return s;
+}
+// Records the replies to the requests the server sent.
+class PendingRecorder {
+	def replies = Vector<string>.new();
+
+	def onComplete(reply: JsonRpcReply) {
+		match (reply) {
+			Result(v) => replies.put("result");
+			Error(e) => replies.put(Strings.format2("%d %s", e.code, e.message));
+		}
+	}
+}
+
+def test_initialize_result(t: Tester) {
+	var s = LspServer.new();
+	t.assert(s.state == LspServerState.UNINITIALIZED, "expected UNINITIALIZED");
+	expectServerReply(t, s, INITIALIZE, initializeResult());
+	t.assert(s.state == LspServerState.RUNNING, "expected RUNNING");
+	t.assertz(false, s.exited());
+	// The params need not hold anything the server reads, and a string ID is
+	// echoed.
+	s = LspServer.new();
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"method\":\"initialize\",\"params\":{}}",
+		Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"result\":{\"capabilities\":{},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
+			BuildInfo.NAME, BuildInfo.VERSION));
+}
+
+def test_before_initialize(t: Tester) {
+	var s = LspServer.new();
+	var code = LspErrorCode.SERVER_NOT_INITIALIZED;
+	expectServerReply(t, s, SHUTDOWN, errorReply("2", code, NOT_INITIALIZED));
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":\"h\",\"method\":\"textDocument/hover\",\"params\":{}}",
+		errorReply("\"h\"", code, NOT_INITIALIZED));
+	// Unknown methods get the same error, rather than MethodNotFound.
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"nope\"}", errorReply("3", code, NOT_INITIALIZED));
+	// So do requests with numbers the server can't represent.
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"nope\",\"params\":[1.5]}", errorReply("4", code, NOT_INITIALIZED));
+	// Notifications are dropped.
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}", null);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{}}", null);
+	// Payloads that aren't requests are answered as in any other state.
+	expectServerReply(t, s, "[]", errorReply("null", JsonRpcErrorCode.INVALID_REQUEST, "a message must be a JSON object"));
+	expectServerReply(t, s, "{", errorReply("null", JsonRpcErrorCode.PARSE_ERROR, "invalid JSON at byte 1: invalid string"));
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":null}", null);
+	t.assert(s.state == LspServerState.UNINITIALIZED, "expected UNINITIALIZED");
+	expectServerReply(t, s, INITIALIZE, initializeResult());
+}
+
+def test_initialize_invalid_params(t: Tester) {
+	var s = LspServer.new();
+	var params = ["", ",\"params\":null", ",\"params\":[]"];
+	for (p in params) {
+		expectServerReply(t, s, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"%s}", p),
+			errorReply("1", JsonRpcErrorCode.INVALID_PARAMS, "initialize params must be an object"));
+	}
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":1.5}}",
+		errorReply("1", JsonRpcErrorCode.INVALID_PARAMS, "params contain a number that is not a 32-bit integer"));
+	// A failed initialize leaves the server uninitialized, so it may be retried.
+	t.assert(s.state == LspServerState.UNINITIALIZED, "expected UNINITIALIZED");
+	expectServerReply(t, s, SHUTDOWN, errorReply("2", LspErrorCode.SERVER_NOT_INITIALIZED, NOT_INITIALIZED));
+	expectServerReply(t, s, INITIALIZE, initializeResult());
+}
+
+def test_duplicate_initialize(t: Tester) {
+	var s = runningServer(t);
+	expectServerReply(t, s, INITIALIZE, errorReply("1", JsonRpcErrorCode.INVALID_REQUEST, "the server is already initialized"));
+	t.assert(s.state == LspServerState.RUNNING, "expected RUNNING");
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+}
+
+def test_running(t: Tester) {
+	var s = runningServer(t);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}", null);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}", null);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"nope\"}",
+		errorReply("3", JsonRpcErrorCode.METHOD_NOT_FOUND, "method not found: nope"));
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"nope\"}", null);
+	// Registered handlers are reached once the server is running.
+	var rec = DispatchRecorder.new();
+	s.dispatcher.onRequest("textDocument/hover", rec.onRequest);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/hover\",\"params\":{}}",
+		"{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":42}");
+	t.asserti(1, rec.requests);
+}
+
+def test_after_shutdown(t: Tester) {
+	var s = runningServer(t);
+	var rec = DispatchRecorder.new();
+	s.dispatcher.onRequest("textDocument/hover", rec.onRequest);
+	s.dispatcher.onNotification("textDocument/didOpen", rec.onNotification);
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+	t.assert(s.state == LspServerState.SHUTTING_DOWN, "expected SHUTTING_DOWN");
+	var code = JsonRpcErrorCode.INVALID_REQUEST;
+	expectServerReply(t, s, SHUTDOWN, errorReply("2", code, SHUTTING_DOWN));
+	expectServerReply(t, s, INITIALIZE, errorReply("1", code, SHUTTING_DOWN));
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/hover\",\"params\":{}}",
+		errorReply("5", code, SHUTTING_DOWN));
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"nope\"}", errorReply("6", code, SHUTTING_DOWN));
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{}}", null);
+	t.asserti(0, rec.requests);
+	t.asserti(0, rec.notifications);
+	expectServerReply(t, s, "[]", errorReply("null", code, "a message must be a JSON object"));
+	t.assertz(false, s.exited());
+}
+
+def test_exit_after_shutdown(t: Tester) {
+	var s = runningServer(t);
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+	expectServerReply(t, s, EXIT, null);
+	t.assertz(true, s.exited());
+	t.asserti(0, s.exitStatus);
+	t.assert(s.failure == null, "expected no failure");
+	// Nothing is handled after exit, not even an invalid payload.
+	expectServerReply(t, s, INITIALIZE, null);
+	expectServerReply(t, s, "[]", null);
+	expectServerReply(t, s, EXIT, null);
+	s.close();
+	t.asserti(0, s.exitStatus);
+	t.assert(s.failure == null, "expected no failure");
+}
+
+def test_exit_without_shutdown(t: Tester) {
+	var s = runningServer(t);
+	expectServerReply(t, s, EXIT, null);
+	t.assertz(true, s.exited());
+	t.asserti(1, s.exitStatus);
+	t.assert_string("received exit before a shutdown request", s.failure);
+	// exit is honoured before initialize too.
+	s = LspServer.new();
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}", null);
+	t.assertz(true, s.exited());
+	t.asserti(1, s.exitStatus);
+	expectServerReply(t, s, INITIALIZE, null);
+}
+
+def test_exit_unsupported_numbers(t: Tester) {
+	var s = runningServer(t);
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":[1e3]}", null);
+	t.assertz(true, s.exited());
+	t.asserti(0, s.exitStatus);
+}
+
+def test_server_close(t: Tester) {
+	var s = LspServer.new();
+	s.close();
+	t.assertz(true, s.exited());
+	t.asserti(1, s.exitStatus);
+	t.assert_string("the input ended before a shutdown request", s.failure);
+	s = runningServer(t);
+	s.close();
+	t.asserti(1, s.exitStatus);
+	s = runningServer(t);
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+	s.close();
+	t.assertz(true, s.exited());
+	t.asserti(0, s.exitStatus);
+	t.assert(s.failure == null, "expected no failure");
+	expectServerReply(t, s, EXIT, null);
+	t.asserti(0, s.exitStatus);
+}
+
+def test_cancel_request(t: Tester) {
+	var s = runningServer(t);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"nope\"}",
+		errorReply("3", JsonRpcErrorCode.METHOD_NOT_FOUND, "method not found: nope"));
+	// The request was answered before its cancellation was read, and the
+	// cancellation itself is never answered, whatever its params.
+	var params = ["{\"id\":3}", "{\"id\":\"x\"}", "{\"id\":99}", "{}", "null", "[1.5]"];
+	for (p in params) {
+		expectServerReply(t, s, Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":%s}", p), null);
+	}
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\"}", null);
+	t.assert(s.state == LspServerState.RUNNING, "expected RUNNING");
+}
+
+def test_shutdown_fails_pending(t: Tester) {
+	var s = runningServer(t), rec = PendingRecorder.new();
+	s.dispatcher.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete);
+	s.dispatcher.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete);
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+	t.asserti(0, s.dispatcher.pending.count());
+	t.asserti(2, rec.replies.length);
+	for (i < rec.replies.length) t.assert_string("-32800 the server is shutting down", rec.replies[i]);
+	// A late response to a failed request completes nothing and is not answered.
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", null);
+	t.asserti(2, rec.replies.length);
+}
+
+def test_exit_fails_pending(t: Tester) {
+	var s = runningServer(t), rec = PendingRecorder.new();
+	s.dispatcher.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete);
+	expectServerReply(t, s, EXIT, null);
+	t.asserti(0, s.dispatcher.pending.count());
+	t.asserti(1, rec.replies.length);
+	if (rec.replies.length == 1) t.assert_string("-32800 the server exited", rec.replies[0]);
+	s = runningServer(t);
+	s.dispatcher.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete);
+	s.close();
+	t.asserti(0, s.dispatcher.pending.count());
+	t.asserti(2, rec.replies.length);
+	if (rec.replies.length == 2) t.assert_string("-32800 the server exited", rec.replies[1]);
+}

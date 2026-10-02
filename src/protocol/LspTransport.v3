@@ -24,27 +24,31 @@ class LspFrameWriter(write: Range<byte> -> int) {
 	}
 }
 
-// Connects the client's byte stream to a dispatcher: it reads framed messages,
-// dispatches each one, and writes the replies as framed messages. It does no
-// I/O itself. The caller passes in the bytes it reads, and {write} sends the
-// output. Skipped messages are reported to {warn}.
-class LspTransport(dispatcher: JsonRpcDispatcher, maxPayload: int, write: Range<byte> -> int, warn: string -> void) {
+// Connects the client's byte stream to a message handler: it reads framed
+// messages, passes each payload to {handle}, and writes the replies it returns
+// as framed messages. Once {finished} returns true, no more messages are read.
+// It does no I/O itself. The caller passes in the bytes it reads, and {write}
+// sends the output. Skipped messages are reported to {warn}.
+class LspTransport(handle: Array<byte> -> Array<byte>, finished: void -> bool, maxPayload: int,
+		write: Range<byte> -> int, warn: string -> void) {
 	private def reader = LspFrameReader.new(maxPayload);
 	private def writer = LspFrameWriter.new(write);
 	// Why the connection stopped, once {receive} or {close} has returned false.
 	def var failure: string;
 
 	// Handles {data}, read from the client. Returns false if the connection
-	// can't continue, because a header was malformed or a reply couldn't be
-	// written.
+	// can't continue, because a header was malformed, a reply couldn't be
+	// written, or the handler has finished. Only the first two set {failure}.
 	def receive(data: Range<byte>) -> bool {
-		if (failure != null) return false;
+		if (failure != null || finished()) return false;
 		reader.feed(data);
 		for (f = reader.next(); !LspFrame.Incomplete.?(f); f = reader.next()) {
 			match (f) {
 				Message(payload) => {
-					var reply = dispatcher.handle(payload);
+					var reply = handle(payload);
 					if (reply != null && !writer.send(reply)) return fail("cannot write a reply");
+					// Later input, even in the same chunk, is not read.
+					if (finished()) return false;
 				}
 				Skipped(reason) => warn(Strings.format1("skipped a message: %s", reason));
 				Malformed(reason) => return fail(Strings.format1("malformed message header: %s", reason));
@@ -54,9 +58,11 @@ class LspTransport(dispatcher: JsonRpcDispatcher, maxPayload: int, write: Range<
 		return true;
 	}
 	// Handles the end of the client's input. Returns false if the connection
-	// had already stopped or the input ended in the middle of a message.
+	// had already failed or the input ended in the middle of a message. Input
+	// after the handler finished doesn't matter, because it isn't read.
 	def close() -> bool {
 		if (failure != null) return false;
+		if (finished()) return true;
 		if (reader.midMessage()) return fail("input ended in the middle of a message");
 		return true;
 	}
