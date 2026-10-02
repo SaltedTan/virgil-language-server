@@ -1,17 +1,31 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Builds the occurrence index described in docs/architecture.md#compiler-adapter.
+// The occurrence-index contract is documented in
+// docs/architecture.md#compiler-adapter.
 class OccurrenceCollector extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private var fileName: string;
+	private var captures: List<(ParamDecl, VarBinding.Local)>;
+	private var thisParam: ParamDecl;
+	private var thisClass: VstClass;
 
 	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
 		fileName = file.fileName;
 		for (i < file.components.length) visitCompound(file.components[i]);
 		for (i < file.classes.length) visitCompound(file.classes[i]);
 		for (i < file.enums.length) visitCompound(file.enums[i]);
-		for (i < file.exports.length) expr(file.exports[i].expr);
+		for (i < file.exports.length) {
+			var e = file.exports[i].expr;
+			var inline = false;
+			for (l = file.exports[i].synthetic.members; l != null; l = l.tail) {
+				if (e.ident.name == l.head.token) {
+					inline = true;
+					break;
+				}
+			}
+			if (!inline) expr(e);
+		}
 		var a = result.extract();
 		return Arrays.sort(a, 0, a.length, before);
 	}
@@ -20,18 +34,26 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		return x.beginLine < y.beginLine || (x.beginLine == y.beginLine && x.beginColumn < y.beginColumn);
 	}
 	private def visitCompound(decl: VstCompound) {
+		// Verification clears compound.verifier; functions retain the receiver.
+		thisParam = if(decl.constructor != null, decl.constructor.func.thisParam);
+		thisClass = if(VstClass.?(decl), VstClass.!(decl));
 		if (decl.superclause != null) expr(decl.superclause.args);
 		for (l = decl.members; l != null; l = l.tail) {
 			match (l.head) {
 				x: VstNew => {
+					thisParam = x.func.thisParam;
 					// Verification shares the class clause with its constructor.
 					// Only a constructor-local clause needs a second walk.
 					if (x.superclause != null && x.superclause != decl.superclause) expr(x.superclause.args);
 					stmt(x.func.body);
 				}
-				// Synthetic methods wrap lambda funcs already reached through
-				// FunExpr in source methods or field initializers.
-				x: VstMethod => if (!x.isSynthetic) stmt(x.func.body);
+				// Traverse lambda bodies through FunExpr so their capture mapping
+				// is active, rather than through synthetic method wrappers.
+				x: VstMethod => {
+					if (x.isSynthetic) continue;
+					thisParam = x.func.thisParam;
+					stmt(x.func.body);
+				}
 				x: VstField => expr(x.init);
 				x: VstEnumCase => exprs(x.args);
 			}
@@ -179,14 +201,27 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		exprs(e.exprs);
 	}
 	def visitFunExpr(e: FunExpr, env: void) {
+		var outer = captures;
+		for (l = e.captures; l != null; l = l.tail) captures = List.new(l.head, captures);
 		stmt(e.func.body);
+		captures = outer;
 	}
 
 	// Follows a verifier binding to the declaration it names, if that
 	// declaration comes from program source.
 	private def declarationOf(b: VarBinding) -> AnalysisDeclaration {
 		match (b) {
-			Local(decl) => return make(if(ParamDecl.?(decl), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), decl);
+			Local(decl) => {
+				// Captured locals are represented by synthetic parameters. Follow
+				// their outer bindings, including captures through nested lambdas.
+				for (l = captures; l != null; l = l.tail) {
+					if (l.head.0 == decl) return declarationOf(l.head.1);
+				}
+				// `this` is a synthetic receiver parameter whose token comes from
+				// the class or constructor. Only the enclosing class is a target.
+				if (decl == thisParam) return make(AnalysisDeclKind.CLASS, thisClass);
+				return make(if(ParamDecl.?(decl), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), decl);
+			}
 			ObjectField(receiver, member) => return make(AnalysisDeclKind.FIELD, member);
 			ComponentField(member) => return make(AnalysisDeclKind.FIELD, member);
 			ClassField(receiver, member) => return make(AnalysisDeclKind.FIELD, member);
@@ -194,7 +229,10 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 			ObjectMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
 			ClassMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
 			ComponentMethod(member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
-			ClassNew(receiver, member, funcType) => return make(AnalysisDeclKind.CONSTRUCTOR, member);
+			ClassNew(receiver, member, funcType) => {
+				if (member.isSynthetic) return make(AnalysisDeclKind.CLASS, member.receiver);
+				return make(AnalysisDeclKind.CONSTRUCTOR, member);
+			}
 			VariantCase(receiver, member) => return make(AnalysisDeclKind.VARIANT_CASE, member);
 			EnumConst(member) => return make(AnalysisDeclKind.ENUM_CASE, member);
 			Inst(op, facts) => return operatorDeclaration(op);

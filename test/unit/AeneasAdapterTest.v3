@@ -13,6 +13,12 @@ def X = [
 	T("AeneasAdapter:analyze_in_memory_only", test_analyze_in_memory_only),
 	T("AeneasAdapter:analyze_runs_no_initializers", test_analyze_runs_no_initializers),
 	T("AeneasAdapter:binding_lookup", test_binding_lookup),
+	T("AeneasAdapter:binding_captured_local", test_binding_captured_local),
+	T("AeneasAdapter:binding_capture_contexts", test_binding_capture_contexts),
+	T("AeneasAdapter:binding_explicit_constructor", test_binding_explicit_constructor),
+	T("AeneasAdapter:binding_exports", test_binding_exports),
+	T("AeneasAdapter:binding_exports_after_semantic_errors", test_binding_exports_after_semantic_errors),
+	T("AeneasAdapter:binding_this_class", test_binding_this_class),
 	T("AeneasAdapter:binding_after_semantic_error", test_binding_after_semantic_error),
 	T("AeneasAdapter:binding_with_null_type", test_binding_with_null_type),
 	T("AeneasAdapter:repeat_analysis_equal", test_repeat_analysis_equal),
@@ -83,6 +89,15 @@ def assertDefinition(t: Tester, a: ProgramAnalysis, path: string, line: int, col
 	t.asserti(declLine, d.range.beginLine);
 	t.asserti(declColumn, d.range.beginColumn);
 	t.asserti(declColumn + name.length, d.range.endColumn);
+}
+def assertSingleDefinition(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int,
+		kind: AnalysisDeclKind, name: string, declPath: string, declLine: int, declColumn: int) {
+	assertDefinition(t, a, path, line, column, kind, name, declPath, declLine, declColumn);
+	var count = 0;
+	for (o in a.occurrences(path)) {
+		if (o.range.contains(line, column)) count++;
+	}
+	t.asserti(1, count);
 }
 // Everything an analysis reports, for comparing runs.
 def renderAnalysis(a: ProgramAnalysis, paths: Array<string>) -> string {
@@ -168,11 +183,109 @@ def test_binding_lookup(t: Tester) {
 	assertDefinition(t, a, MAIN, 6, 34, AnalysisDeclKind.FIELD, "width", SHAPES, 3, 12);
 	// shapes.v3:10	return Rect.new(side, side);
 	assertDefinition(t, a, SHAPES, 10, 24, AnalysisDeclKind.CLASS, "Rect", SHAPES, 3, 7);
+	assertDefinition(t, a, SHAPES, 10, 29, AnalysisDeclKind.CLASS, "Rect", SHAPES, 3, 7);
 	assertDefinition(t, a, SHAPES, 10, 39, AnalysisDeclKind.PARAMETER, "side", SHAPES, 9, 20);
 	// Whitespace, operators, and declarations themselves are not uses.
 	t.assert(a.definitionAt(MAIN, 6, 30) == null, "no definition expected at an operator");
 	t.assert(a.definitionAt(MAIN, 4, 21) == null, "no definition expected at a declaration");
 	t.asserti(7, a.occurrences(MAIN).length);
+}
+
+// Captures must resolve through the verifier's synthetic lambda parameters,
+// including a capture of a capture and an ordinary source parameter.
+def test_binding_captured_local(t: Tester) {
+	var path = "captures.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+		"def compute(seed: int) -> int {\n    var total = 0;\n    var f = fun () => total + total;\n    var g = fun () => fun () => total + seed;\n    return f() + g()();\n}\n")], false);
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.verified);
+	assertSingleDefinition(t, a, path, 3, 23, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
+	assertSingleDefinition(t, a, path, 3, 31, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
+	assertSingleDefinition(t, a, path, 4, 33, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
+	assertSingleDefinition(t, a, path, 4, 41, AnalysisDeclKind.PARAMETER, "seed", path, 1, 13);
+	assertSingleDefinition(t, a, path, 5, 12, AnalysisDeclKind.LOCAL, "f", path, 3, 9);
+	assertSingleDefinition(t, a, path, 5, 18, AnalysisDeclKind.LOCAL, "g", path, 4, 9);
+}
+
+def test_binding_capture_contexts(t: Tester) {
+	var path = "capture-contexts.v3";
+	var source = "class Box {\n    var field = fun (fieldParam: int) => fun () => fieldParam;\n    new(ctorParam: int) {\n        var ctorLocal = ctorParam;\n        var f = fun () => ctorLocal + ctorParam;\n    }\n    def method(methodParam: int) -> int {\n        var local = methodParam;\n        var f = fun () => local + methodParam;\n        return f();\n    }\n}\ncomponent Globals {\n    def field = fun (fieldParam: int) => fun () => fieldParam;\n}\nenum Choices(action: void -> int) {\n    A(fun () -> int { var enumLocal = 0; return (fun () => enumLocal)(); })\n}\n";
+	for (broken < 2) {
+		var a = AeneasAdapter.analyzeProgram([
+			AnalysisSource.new(path, source),
+			AnalysisSource.new("error.v3", if(broken == 0, "", "def broken() -> int { return missing; }\n"))
+		], false);
+		t.assertz(true, a.parsed);
+		t.assertz(broken == 0, a.verified);
+		t.assertz(broken != 0, a.diagnostics.length > 0);
+		assertSingleDefinition(t, a, path, 2, 52, AnalysisDeclKind.PARAMETER, "fieldParam", path, 2, 22);
+		assertSingleDefinition(t, a, path, 4, 25, AnalysisDeclKind.PARAMETER, "ctorParam", path, 3, 9);
+		assertSingleDefinition(t, a, path, 5, 27, AnalysisDeclKind.LOCAL, "ctorLocal", path, 4, 13);
+		assertSingleDefinition(t, a, path, 5, 39, AnalysisDeclKind.PARAMETER, "ctorParam", path, 3, 9);
+		assertSingleDefinition(t, a, path, 8, 21, AnalysisDeclKind.PARAMETER, "methodParam", path, 7, 16);
+		assertSingleDefinition(t, a, path, 9, 27, AnalysisDeclKind.LOCAL, "local", path, 8, 13);
+		assertSingleDefinition(t, a, path, 9, 35, AnalysisDeclKind.PARAMETER, "methodParam", path, 7, 16);
+		assertSingleDefinition(t, a, path, 10, 16, AnalysisDeclKind.LOCAL, "f", path, 9, 13);
+		assertSingleDefinition(t, a, path, 14, 52, AnalysisDeclKind.PARAMETER, "fieldParam", path, 14, 22);
+		assertSingleDefinition(t, a, path, 17, 60, AnalysisDeclKind.LOCAL, "enumLocal", path, 17, 27);
+	}
+}
+
+// A user-written `new` remains a constructor, unlike the default constructor.
+def test_binding_explicit_constructor(t: Tester) {
+	var path = "constructor.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+		"class Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], false);
+	t.asserti(0, a.diagnostics.length);
+	assertDefinition(t, a, path, 2, 34, AnalysisDeclKind.CONSTRUCTOR, "new", path, 1, 14);
+}
+
+// Inline export declarations have no use token; separately named exports do.
+def test_binding_exports(t: Tester) {
+	var path = "exports.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+		"export def main() { }\ndef helper() { }\nexport helper;\nexport \"alias\" = helper;\n")], false);
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.verified);
+	t.assert(a.definitionAt(path, 1, 12) == null, "an export declaration is not a use of itself");
+	assertDefinition(t, a, path, 3, 8, AnalysisDeclKind.METHOD, "helper", path, 2, 5);
+	assertDefinition(t, a, path, 4, 18, AnalysisDeclKind.METHOD, "helper", path, 2, 5);
+	t.asserti(2, a.occurrences(path).length);
+}
+
+def test_binding_exports_after_semantic_errors(t: Tester) {
+	var path = "invalid-exports.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+		"def main() { }\nexport def main() { }\nexport def answer: int = 42;\nexport def left: int = 1, right: int = 2;\nexport \"inline-alias\" def helper() { }\ndef named() { }\nexport named;\nexport \"named-main\" = main;\nexport \"named-helper\" = helper;\nexport \"named-answer\" = answer;\nclass Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], false);
+	t.assertz(true, a.parsed);
+	t.assertz(false, a.verified);
+	t.assert(a.diagnostics.length > 0, "expected semantic errors");
+	t.assert(a.definitionAt(path, 2, 12) == null, "a duplicate inline declaration is not a use");
+	t.assert(a.definitionAt(path, 3, 12) == null, "an inline field declaration is not a use");
+	t.assert(a.definitionAt(path, 4, 12) == null, "the first inline field declaration is not a use");
+	t.assert(a.definitionAt(path, 4, 27) == null, "the second inline field declaration is not a use");
+	t.assert(a.definitionAt(path, 5, 27) == null, "an aliased inline declaration is not a use");
+	assertSingleDefinition(t, a, path, 7, 8, AnalysisDeclKind.METHOD, "named", path, 6, 5);
+	assertSingleDefinition(t, a, path, 8, 23, AnalysisDeclKind.METHOD, "main", path, 1, 5);
+	assertSingleDefinition(t, a, path, 9, 25, AnalysisDeclKind.METHOD, "helper", path, 5, 27);
+	assertSingleDefinition(t, a, path, 10, 25, AnalysisDeclKind.FIELD, "answer", path, 3, 12);
+	assertSingleDefinition(t, a, path, 12, 29, AnalysisDeclKind.CLASS, "Rect", path, 11, 7);
+	assertSingleDefinition(t, a, path, 12, 34, AnalysisDeclKind.CONSTRUCTOR, "new", path, 11, 14);
+	t.asserti(6, a.occurrences(path).length);
+}
+
+// The verifier's `this` parameter borrows a class/constructor token but is not
+// a source parameter. Resolve it to the enclosing class, even in a lambda.
+def test_binding_this_class(t: Tester) {
+	var path = "this.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+		"class Rect(width: int) { def area() -> int { return this.width; } }\nclass Box {\n    var width: int;\n    new(width: int) { this.width = width; }\n    def area() -> int { var f = fun () => this.width; return f(); }\n}\n")], false);
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.verified);
+	assertDefinition(t, a, path, 1, 53, AnalysisDeclKind.CLASS, "Rect", path, 1, 7);
+	assertDefinition(t, a, path, 1, 58, AnalysisDeclKind.FIELD, "width", path, 1, 12);
+	assertDefinition(t, a, path, 4, 23, AnalysisDeclKind.CLASS, "Box", path, 2, 7);
+	assertSingleDefinition(t, a, path, 5, 43, AnalysisDeclKind.CLASS, "Box", path, 2, 7);
 }
 
 // Bindings that the verifier resolved stay available when other code has errors.
