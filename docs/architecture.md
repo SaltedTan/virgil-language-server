@@ -23,7 +23,7 @@ flowchart TD
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
 | `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, server request tracking, and lifecycle present |
-| `src/documents/` | URIs, versioned text, `PositionMap` | Planned (M2) |
+| `src/documents/` | URIs, versioned text, `PositionMap` | `PositionMap` present; URIs and versioned text planned (M2) |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
 
@@ -64,7 +64,18 @@ The M0 spike (issue #1) measured these. They shape the analysis snapshot design 
 
 ## Coordinates
 
-Aeneas reports one-based lines and one-based **display columns with tab expansion**. LSP uses zero-based lines and, by default, UTF-16 code-unit offsets with no tab expansion. The adapter returns compiler coordinates unchanged. A dedicated `PositionMap` per document converts between UTF-8 byte offsets, compiler line/column pairs, and negotiated LSP positions. Subtracting one from a compiler column is wrong for tab-indented code. The unit test `AeneasAdapter:parse_tab_columns` records the current compiler behaviour.
+Aeneas reports one-based lines and one-based **display columns with tab expansion**. LSP uses zero-based lines and, by default, UTF-16 code-unit offsets with no tab expansion. The adapter returns compiler coordinates unchanged. `PositionMap` (`src/documents/PositionMap.v3`) converts between UTF-8 byte offsets, compiler line/column pairs, and LSP positions for one document text. Subtracting one from a compiler column is wrong for tab-indented code. The unit test `AeneasAdapter:parse_tab_columns` records the current compiler behaviour.
+
+The map is pure and takes compiler coordinates as plain ints. Its rules:
+
+| | Compiler (Aeneas) | LSP 3.17 |
+| --- | --- | --- |
+| Base | One-based lines and columns | Zero-based lines and characters |
+| Line ends | `\n` only. A `\r` is an ordinary byte with a column. | `\n`, `\r\n`, or `\r`, not part of the line |
+| Columns or characters | One per byte, so a non-ASCII character takes one column per UTF-8 byte. A tab moves column *c* to 1 + ⌊(*c* + 8) / 8⌋ × 8, as `ParserState.column` does: the next stop of 9, 17, 25, …, except that from a multiple of 8 it skips a stop (8 → 17). | Code units of the position encoding: `utf-16` (default), `utf-8`, or `utf-32`. Invalid UTF-8 reads as U+FFFD, one per invalid sequence as in the WHATWG decoder. |
+| Out of range | A column past the line end is the line end. A column inside a tab's expansion is the tab. | A character past the line end is the line end. A line past the last line is the end of the document. |
+
+A position inside a character (the middle of a surrogate pair or of a multi-byte UTF-8 sequence) maps to the start of that character, as does a byte offset inside a character or between the `\r` and `\n` of `\r\n`. Negative inputs mean 0. Aeneas departs from its own column rule after a tab inside a block comment (counted as one column) and after a line comment that ends the file, so positions it reports later on such a line are shifted. The position encoding is a parameter of the map, and `initialize` does not negotiate one yet.
 
 ## Analysis snapshots *(planned)*
 
