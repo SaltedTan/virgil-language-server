@@ -26,6 +26,7 @@ component VirgilLsp {
 		buf.puts("  --stdio [options]  Run the language server over standard input/output.\n");
 		buf.puts("    --max-message-bytes=<n>\n");
 		buf.put1("                     Skip incoming messages larger than n bytes (default %d).\n", LspFraming.DEFAULT_MAX_PAYLOAD);
+		buf.put1("                     n can be at most %d.\n", LspFraming.MAX_SUPPORTED_PAYLOAD);
 		buf.puts("  --version          Print the server version and pinned Virgil revision.\n");
 		buf.puts("  --help             Print this summary.\n\n");
 		buf.puts("Development commands (unstable):\n");
@@ -56,6 +57,11 @@ component VirgilLsp {
 				// Nine digits keep the value within an int.
 				if (p.0 != arg.length - start || p.0 > 9 || p.1 < 1) {
 					Log.error1("invalid option '%s'", arg);
+					return 2;
+				}
+				// A longer message could run out of heap once it is parsed.
+				if (p.1 > LspFraming.MAX_SUPPORTED_PAYLOAD) {
+					Log.error2("invalid option '%s': the supported maximum is %d bytes", arg, LspFraming.MAX_SUPPORTED_PAYLOAD);
 					return 2;
 				}
 				maxPayload = p.1;

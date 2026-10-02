@@ -7,6 +7,11 @@ component LspFraming {
 	def MAX_HEADER_BYTES = 8192;
 	// The default limit on the payload of one incoming message.
 	def DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
+	// The highest payload limit the server supports with its default 200 MB
+	// heap. Body bytes must be bounded along with {JsonRpcJson.MAX_VALUES}
+	// before parsing the whole message. See docs/architecture.md#framing for
+	// the supported memory budget.
+	def MAX_SUPPORTED_PAYLOAD = 16 * 1024 * 1024;
 }
 
 // One result of reading the client's byte stream. See {LspFrameReader.next}.
@@ -36,6 +41,8 @@ type LspFrame {
 // - Content-Type is optional. Its media type isn't checked. A charset other
 //   than utf-8 (or utf8) skips the message.
 // - A payload longer than {maxPayload} bytes is skipped without being buffered.
+//   A payload within the limit is buffered as its bytes arrive, so a header
+//   alone never allocates the length it declares.
 // - Unknown header fields are ignored.
 // - A header is malformed if it contains a byte that isn't printable ASCII, a
 //   space, or a tab (apart from the CR LF line ends), has a CR or LF outside a
@@ -48,6 +55,7 @@ class LspFrameReader(maxPayload: int) {
 	private var limit: int;		// end of the unread input
 	private var scanned: int;	// header bytes after {pos} already checked
 	private var payload: Array<byte>;	// the payload being read, if any
+	private var length: int;	// the Content-Length of {payload}
 	private var filled: int;	// bytes of {payload} read so far
 	private var skipReason: string;	// set while a message is being skipped
 	private var skipRemaining: long;	// payload bytes left to skip
@@ -88,13 +96,22 @@ class LspFrameReader(maxPayload: int) {
 			skipReason = null;
 			return LspFrame.Skipped(reason);
 		}
-		var n = payload.length - filled;
+		var n = length - filled;
 		if (n > available) n = available;
+		if (filled + n > payload.length) {
+			// Grow with the bytes received, not to the declared length, which
+			// may never arrive. Doubling keeps the copying linear.
+			var size = if(payload.length < length - payload.length, 2 * payload.length, length);
+			if (size < filled + n) size = filled + n;
+			var dest = Array<byte>.new(size);
+			for (i < filled) dest[i] = payload[i];
+			payload = dest;
+		}
 		var to = payload[filled ..+ n];
 		for (i < n) to[i] = input[pos + i];
 		pos += n;
 		filled += n;
-		if (filled < payload.length) return LspFrame.Incomplete;
+		if (filled < length) return LspFrame.Incomplete;
 		var result = payload;
 		payload = null;
 		return LspFrame.Message(result);
@@ -168,7 +185,11 @@ class LspFrameReader(maxPayload: int) {
 			skip(Strings.format1("payload charset \"%s\" is not utf-8", charset), contentLength);
 			return true;
 		}
-		payload = Array<byte>.new(int.view(contentLength));
+		// The buffer starts with room for the payload bytes already fed in,
+		// and {next} grows it as more arrive.
+		length = int.view(contentLength);
+		var available = limit - pos;
+		payload = Array<byte>.new(if(available < length, available, length));
 		filled = 0;
 		return true;
 	}

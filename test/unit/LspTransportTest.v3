@@ -169,4 +169,9 @@ def test_end_of_input(t: Tester) {
 	t.assertz(false, transport.close());
 	t.assert_string("input ended in the middle of a message", transport.failure);
 	t.assert_string(framed(result(1)), w.text());
+	// A header that declares far more than the heap holds, with no payload.
+	transport = LspTransport.new(echoDispatcher(), 999999999, w.write, r.warn);
+	t.assertz(true, transport.receive("Content-Length: 999999999\r\n\r\n"));
+	t.assertz(false, transport.close());
+	t.assert_string("input ended in the middle of a message", transport.failure);
 }
