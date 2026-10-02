@@ -1,7 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Builds the occurrence index described in docs/architecture.md#compiler-adapter.
+// The occurrence-index contract is documented in
+// docs/architecture.md#compiler-adapter.
 class OccurrenceCollector extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private var fileName: string;

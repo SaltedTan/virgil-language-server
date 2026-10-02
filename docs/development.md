@@ -32,7 +32,7 @@ build/virgil-lsp analyze a.v3 b.v3        # development command: parse and verif
 build/virgil-lsp --stdio                  # LSP over stdio
 ```
 
-`analyze` runs the compiler spike: the files are parsed and verified together, from in-memory copies, and semantic diagnostics are printed. `--bindings` also prints each use and the declaration it resolves to. `--stats` prints timing and compiler global-state counters to stderr. `--repeat=<n>` runs the analysis n times in one process and fails if any run differs. For example:
+`analyze` runs the compiler spike: the files are parsed and verified together, from in-memory copies, and semantic diagnostics are printed. `--bindings` also prints each indexed use and its source declaration according to the [binding contract](architecture.md#compiler-adapter). `--stats` prints timing and compiler global-state counters to stderr. `--repeat=<n>` runs the analysis n times in one process and fails if any run differs. For example:
 
 ```sh
 build/virgil-lsp analyze --bindings test/fixtures/analysis/two-file/*.v3
