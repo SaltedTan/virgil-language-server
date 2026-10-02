@@ -5,7 +5,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspDocumentSymbols:hierarchy_ranges", test_symbol_hierarchy),
 	T("LspDocumentSymbols:overlay_parse_failure", test_symbol_overlay),
-	T("LspDocumentSymbols:encodings", test_symbol_encodings),
+	T("LspDocumentSymbols:utf16_ranges", test_symbol_utf16_ranges),
 	T("LspDocumentSymbols:params_lifecycle", test_symbol_params),
 	T("LspDocumentSymbols:header_fields_cr", test_symbol_header_fields),
 	()
@@ -97,23 +97,17 @@ def test_symbol_overlay(t: Tester) {
 	t.asserti(0, symbols(t, s).length);
 }
 
-def test_symbol_encodings(t: Tester) {
-	var encodings = ["utf-16", "utf-8", "utf-32"];
-	var columns = [21, 24, 20];
-	for (i < encodings.length) {
-		var s = LspServer.new(DocumentLimits.MAX_BYTES);
-		var init = Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"general\":{\"positionEncodings\":[\"unsupported\",\"%s\",\"utf-16\"]}}}}", encodings[i]);
-		var response = JsonRpcJsonParser.new(s.handle(init)).parseDocument();
-		var caps = JsonValue.JObject.!(JsonValue.JObject.!(JsonValue.JObject.!(response).v["result"]).v["capabilities"]).v;
-		t.assert_string(encodings[i], JsonValue.String.!(caps["positionEncoding"]).v);
-		t.assertz(true, JsonValue.Bool.!(caps["documentSymbolProvider"]).v);
-		// Same-line block-comment tab has anomalous compiler columns. Parser
-		// consumption offsets also handle CRLF, UTF-8, and escaped braces.
-		s.documents.open(URI, "virgil", 1, "/*\t é😀 */ component C {\r\n\tdef f() {}\r\n}");
-		var a = symbols(t, s);
-		checkSymbol(t, a[0], "C", 3, 0, columns[i] - 10, 2, 1, 0, columns[i]);
-		checkSymbol(t, children(a[0])[0], "f", 6, 1, 1, 1, 11, 1, 5);
-	}
+def test_symbol_utf16_ranges(t: Tester) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	var init = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\"]}}}}";
+	var response = JsonRpcJsonParser.new(s.handle(init)).parseDocument();
+	var caps = JsonValue.JObject.!(JsonValue.JObject.!(JsonValue.JObject.!(response).v["result"]).v["capabilities"]).v;
+	t.assertz(false, caps.has("positionEncoding"));
+	t.assertz(true, JsonValue.Bool.!(caps["documentSymbolProvider"]).v);
+	s.documents.open(URI, "virgil", 1, "/*\t é😀 */ component C {\r\n\tdef f() {}\r\n}");
+	var a = symbols(t, s);
+	checkSymbol(t, a[0], "C", 3, 0, 11, 2, 1, 0, 21);
+	checkSymbol(t, children(a[0])[0], "f", 6, 1, 1, 1, 11, 1, 5);
 }
 
 def test_symbol_header_fields(t: Tester) {

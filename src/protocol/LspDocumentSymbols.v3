@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 class LspDocumentSymbols(store: DocumentStore) {
-	var encoding = PositionEncoding.UTF16;
-
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
 	}
@@ -16,7 +14,7 @@ class LspDocumentSymbols(store: DocumentStore) {
 		}
 		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
 		if (overlay == null) return JsonRpcReply.Result(JsonValue.JArray([]));
-		var map = PositionMap.new(overlay.text, encoding);
+		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
 		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text);
 		return JsonRpcReply.Result(encodeSymbols(symbols, map));
 	}
@@ -48,22 +46,5 @@ class LspDocumentSymbols(store: DocumentStore) {
 		obj["line"] = JsonValue.Int(p.line);
 		obj["character"] = JsonValue.Int(p.character);
 		return JsonValue.JObject(obj);
-	}
-	// Prefer the first supported encoding in the client's ordered list. UTF-16
-	// remains the required default when the capability is absent or unusable.
-	def negotiate(params: HashMap<string, JsonValue>) {
-		var general = objectMember(objectMember(params, "capabilities"), "general");
-		if (general == null || !general.has("positionEncodings") || !JsonValue.JArray.?(general["positionEncodings"])) return;
-		var offered = JsonValue.JArray.!(general["positionEncodings"]).v;
-		if (offered == null) return;
-		for (v in offered) {
-			if (!JsonValue.String.?(v)) continue;
-			for (e in [PositionEncoding.UTF8, PositionEncoding.UTF16, PositionEncoding.UTF32]) {
-				if (Strings.equal(JsonValue.String.!(v).v, e.lspName)) {
-					encoding = e;
-					return;
-				}
-			}
-		}
 	}
 }

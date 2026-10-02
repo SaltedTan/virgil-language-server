@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `textDocument/documentSymbol` returns hierarchical VST-derived symbols for components, classes, enums, layouts, packings, methods, constructors, and fields in the current open overlay. Complete declaration ranges and name selections use parser byte boundaries and `PositionMap`, with negotiated UTF-8/UTF-16/UTF-32 positions. Parse failures and closed documents return an empty outline; no semantic analysis or disk reads are required.
+- `textDocument/documentSymbol` returns hierarchical VST-derived symbols for components, classes, enums, layouts, packings, methods, constructors, and fields in the current open overlay. Complete declaration ranges and name selections use parser byte boundaries and `PositionMap`, with UTF-16 positions. Parse failures and closed documents return an empty outline; no semantic analysis or disk reads are required.
 - Versioned full-text document synchronization (`didOpen`, `didChange`, `didSave`, `didClose`) with exactly matching `initialize` capabilities. Stale/out-of-order changes, duplicate opens, and unsupported incremental changes are ignored and logged to stderr. In-memory overlays override disk through an injected reader, and local Linux/macOS file URIs are normalized to canonical keys. See [Document store](docs/architecture.md#document-store) for version, save, and URI identity rules. Unit and golden transcript tests cover synchronization and rejection sequences.
 - Repository foundation: Apache-2.0 license, roadmap, community documents, issue and pull-request templates, and CI.
 - ADR-0001 (Virgil-native server) and ADR-0002 (pinned Virgil adapter boundary).

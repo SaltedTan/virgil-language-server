@@ -91,7 +91,7 @@ inputs = [
     notify("exit", {}),
 ]
 outputs = [
-    reply(1, dict(capabilities=dict(documentSymbolProvider=True, positionEncoding="utf-16",
+    reply(1, dict(capabilities=dict(documentSymbolProvider=True,
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False))),
                   serverInfo=dict(name="virgil-lsp", version="@VERSION@"))),
     reply(2, OUTLINE),
