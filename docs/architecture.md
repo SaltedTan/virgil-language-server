@@ -56,7 +56,7 @@ The adapter never runs initializers, reachability analysis, or code generation.
 
 ### Known constraints of the compiler front end
 
-The M0 spike (issue #1) measured these. They shape the analysis snapshot design below.
+The M0 spike (issue #1) measured these. They shape the analysis snapshot design below. The detailed, extended inventory of known process-killing parse and verify inputs is in [Aeneas crash paths](aeneas-crash-paths.md).
 
 - **Aeneas keeps every analyzed program reachable.** `TypeCon.create` interns a composite type in the cache of a nested type's *constructor*, not in the cache that holds the nested type. Tuple, function, and array constructors are global, so types such as `(A, B) -> void` or `Array<(A, B)>` land in the process-wide `TypeUtil.globalCache` even when `A` and `B` are program classes. So does every composite type over an enum, because enum constructors also use the global cache. Each such type pins the whole `Program`. Each analysis of the Aeneas sources retains about 70 MB more. With the default 200 MB semispace heap, the second analysis in one process fails with `HeapOverflow`. Removing program-dependent entries from the global cache after an analysis stops the growth in an experiment, but one further, still unidentified root keeps the most recent large program reachable.
 - **The UID counter never resets.** `UID.next` is global, and type hashes are raw UIDs. Once it passes 2^29, non-generic class types look "open", and verification crashes with `TypeCheckException` in `Type.substitute()`. One analysis of the Aeneas sources uses about 32,500 UIDs, so the limit is about 16,500 such analyses per process.
