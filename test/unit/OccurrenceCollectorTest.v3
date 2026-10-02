@@ -16,6 +16,7 @@ component OccurrenceCollectorTest {
 		T("OccurrenceCollector:enum_literal_parameter_field", enum_literal_parameter_field),
 		T("OccurrenceCollector:enum_type_parameter_field", enum_type_parameter_field),
 		T("OccurrenceCollector:enum_nonliteral_parameter_field", enum_nonliteral_parameter_field),
+		T("OccurrenceCollector:enum_count_parameter_field", enum_count_parameter_field),
 		T("OccurrenceCollector:unresolved_match_cases", unresolved_match_cases),
 		()
 	];
@@ -98,6 +99,17 @@ component OccurrenceCollectorTest {
 	def enum_nonliteral_parameter_field(t: Tester) {
 		var a = analyze(t, ENUM_FIELDS);
 		if (a != null) use(t, a, ENUM_FIELDS, 8, 38, AnalysisDeclKind.FIELD, "prec", 4, 9);
+	}
+	def enum_count_parameter_field(t: Tester) {
+		var a = analyze(t, ENUM_FIELDS);
+		if (a == null) return;
+		t.assert(a.definitionAt(ENUM_FIELDS, 16, 37) == null, "enum count is not the same-named parameter field");
+		for (o in a.occurrences(ENUM_FIELDS)) {
+			t.assert(o.range.beginLine != 16 || o.range.beginColumn != 37, "enum count has no source occurrence");
+		}
+		use(t, a, ENUM_FIELDS, 17, 39, AnalysisDeclKind.FIELD, "count", 14, 8);
+		use(t, a, ENUM_FIELDS, 18, 42, AnalysisDeclKind.FIELD, "count", 14, 8);
+		use(t, a, ENUM_FIELDS, 19, 42, AnalysisDeclKind.FIELD, "count", 14, 8);
 	}
 	def unresolved_match_cases(t: Tester) {
 		var path = "unresolved-patterns.v3";

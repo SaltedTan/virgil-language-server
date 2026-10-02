@@ -130,7 +130,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		var decl = declarationOf(e.varbind);
 		// A literal enum argument folds E.Case.param to Const, losing the
 		// field in the binding. Recover it only for verified enum members.
-		if (decl == null && VarBinding.Const.?(e.varbind) && e.expr != null && EnumType.?(e.expr.exactType)) {
+		if (decl == null && VarBinding.Const.?(e.varbind) && VarExpr.?(e.expr)
+				&& VarBinding.EnumConst.?(VarExpr.!(e.expr).varbind) && EnumType.?(e.expr.exactType)) {
 			var et = EnumType.!(e.expr.exactType);
 			var member = et.enumDecl.memberMap[e.ident.name.image];
 			if (VstField.?(member)) decl = make(AnalysisDeclKind.FIELD, member);

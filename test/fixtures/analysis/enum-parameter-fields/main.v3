@@ -10,3 +10,11 @@ component M {
     def name(op: Op) -> string { return op.name; }
     def count() -> int { return Op.count; }
 }
+
+enum E(count: int) { A(7), B(1 + 1) }
+component N {
+    def builtin() -> int { return E.count; }
+    def literal() -> int { return E.A.count; }
+    def instance(e: E) -> int { return e.count; }
+    def nonliteral() -> int { return E.B.count; }
+}
