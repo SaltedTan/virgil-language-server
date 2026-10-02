@@ -122,7 +122,15 @@ def test_content_type(t: Tester) {
 		"application/vscode-jsonrpc ; Charset = Utf-8 ; x=y",
 		"application/vscode-jsonrpc",
 		"application/json; version=2",
-		""
+		"",
+		// Semicolons inside a quoted value don't start a parameter.
+		"application/vscode-jsonrpc; x=\"a; charset=latin1; z=b\"; charset=utf-8",
+		"application/vscode-jsonrpc; x=\"a\\\"; charset=latin1\"; charset=utf-8",
+		"application/vscode-jsonrpc; x=\"a;charset=latin1\"",
+		// An escaped backslash doesn't escape the closing quote.
+		"application/vscode-jsonrpc; x=\"a\\\\\"; charset=utf-8",
+		// Escapes in a quoted charset are undone.
+		"application/vscode-jsonrpc; charset=\"u\\tf-8\""
 	];
 	for (ct in types) {
 		var input = StringBuilder.new().put1("Content-Type: %s\r\nContent-Length: 2\r\n\r\n{}", ct).toString();
@@ -134,6 +142,20 @@ def test_unsupported_charset(t: Tester) {
 		"skip:payload charset \"latin1\" is not utf-8 | msg:[]");
 	expectMessages(t, concat(["Content-Type: text/plain; charset=\"utf-16\"\r\nContent-Length: 0\r\n\r\n", frame("[]")]),
 		"skip:payload charset \"utf-16\" is not utf-8 | msg:[]");
+	// Text inside another parameter's quoted value isn't the charset.
+	var types = [
+		"application/vscode-jsonrpc; x=\"a; charset=utf-8; z=b\"; charset=latin1",
+		"application/vscode-jsonrpc; x=\"a\\\"; charset=utf-8\"; charset=latin1",
+		"application/vscode-jsonrpc; x=\"a\\\\\"; charset=latin1; y=\"charset=utf-8\"",
+		"application/vscode-jsonrpc; charset=\"lat\\in1\""
+	];
+	for (ct in types) {
+		var input = StringBuilder.new().put1("Content-Type: %s\r\nContent-Length: 2\r\n\r\n{}", ct).toString();
+		expectMessages(t, concat([input, frame("[]")]), "skip:payload charset \"latin1\" is not utf-8 | msg:[]");
+	}
+	// An unterminated quoted string is kept as it is.
+	expectMessages(t, concat(["Content-Type: text/plain; charset=\"utf-8; x=y\r\nContent-Length: 2\r\n\r\n{}", frame("[]")]),
+		"skip:payload charset \"\"utf-8; x=y\" is not utf-8 | msg:[]");
 }
 def test_payload_limit(t: Tester) {
 	expectFrames(t, frame("1234"), 4, "msg:1234");

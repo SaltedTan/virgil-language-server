@@ -39,7 +39,8 @@ type LspFrame {
 // - Content-Length counts bytes and is required. Field names are
 //   case-insensitive, and spaces and tabs around a value are ignored.
 // - Content-Type is optional. Its media type isn't checked. A charset other
-//   than utf-8 (or utf8) skips the message.
+//   than utf-8 (or utf8) skips the message. Semicolons inside a quoted
+//   parameter value don't separate parameters.
 // - A payload longer than {maxPayload} bytes is skipped without being buffered.
 //   A payload within the limit is buffered as its bytes arrive, so a header
 //   alone never allocates the length it declares.
@@ -241,20 +242,51 @@ def parseLength(s: string) -> long {
 	}
 	return n;
 }
-// Returns the charset parameter of a Content-Type value, without quotes, or
-// null if it has none. The media type and other parameters are ignored.
+// Returns the charset parameter of a Content-Type value, with any quotes and
+// backslash escapes undone, or null if it has none. Parameters are split at
+// semicolons outside quoted strings, so text inside another parameter's quoted
+// value is never taken for the charset. The media type and other parameters
+// are ignored.
 def charsetOf(contentType: string) -> string {
-	var params = Strings.split(contentType, ";", -1);
-	for (i = 1; i < params.length; i++) {
-		var p = params[i], eq = 0;
+	var i = 0, n = contentType.length;
+	while (i < n && contentType[i] != ';') i++;	// skip the media type
+	while (i < n) {
+		var start = ++i;
+		while (i < n && contentType[i] != ';') {
+			if (contentType[i] != '\"') {
+				i++;
+			} else {
+				var end = endOfQuoted(contentType, i);
+				i = if(end < 0, n, end);
+			}
+		}
+		var p = Arrays.range(contentType, start, i), eq = 0;
 		while (eq < p.length && p[eq] != '=') eq++;
 		if (eq == p.length) continue;
 		if (!Strings.equal(lowered(Strings.strip(Arrays.range(p, 0, eq))), "charset")) continue;
 		var v = Strings.strip(Arrays.range(p, eq + 1, p.length));
-		if (v.length >= 2 && v[0] == '\"' && v[v.length - 1] == '\"') v = Arrays.range(v, 1, v.length - 1);
+		if (v.length > 0 && v[0] == '\"' && endOfQuoted(v, 0) == v.length) v = unquoted(v);
 		return v;
 	}
 	return null;
+}
+// Returns the index just past the quoted string that starts at s[start], or -1
+// if it is unterminated. A backslash escapes the byte after it.
+def endOfQuoted(s: string, start: int) -> int {
+	for (i = start + 1; i < s.length; i++) {
+		if (s[i] == '\\') i++;
+		else if (s[i] == '\"') return i + 1;
+	}
+	return -1;
+}
+// Returns the contents of the quoted string {s}, with backslash escapes undone.
+def unquoted(s: string) -> string {
+	var buf = StringBuilder.new();
+	for (i = 1; i < s.length - 1; i++) {
+		if (s[i] == '\\') i++;
+		buf.putc(s[i]);
+	}
+	return buf.toString();
 }
 def isUtf8(charset: string) -> bool {
 	var c = lowered(charset);
