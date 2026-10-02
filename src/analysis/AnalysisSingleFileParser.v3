@@ -38,6 +38,11 @@ class AnalysisParseErrors extends ErrorGen {
 		offsets.put((begin, end));
 		errors = List.new(Error.new(range, sourceLine, error, msg), errors);
 		incErrors();
+		if (parser != null && Strings.equal(msg, "invalid start of expression") &&
+			parser.curByte == '.' && parser.peek(1) == '.' &&
+			(parser.peek(2) == '.' || parser.peek(2) == '+')) {
+			parser.advance(3);
+		}
 	}
 	private def coordinate(line: int, column: int) -> string {
 		return Strings.format2("%d:%d", line, column);

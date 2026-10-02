@@ -9,6 +9,7 @@ def X = [
 	T("AeneasAdapter:parse_byte_offsets", test_parse_byte_offsets),
 	T("AeneasAdapter:parse_rep_hint_eof", test_parse_rep_hint_eof),
 	T("AeneasAdapter:parse_rep_hint_ranges", test_parse_rep_hint_ranges),
+	T("AeneasAdapter:parse_missing_range_bounds", test_parse_missing_range_bounds),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
 	T("AeneasAdapter:analyze_type_error", test_analyze_type_error),
@@ -64,6 +65,31 @@ def test_parse_byte_offsets(t: Tester) {
 		t.assert(r.diagnostics.length > 0, "expected a parse error");
 		t.asserti(begins[i], r.diagnostics[0].beginOffset);
 		t.asserti(ends[i], r.diagnostics[0].endOffset);
+	}
+}
+
+def test_parse_missing_range_bounds(t: Tester) {
+	var prefixes = ["def f() { xs[", "def f() { return xs[", "def f() { x = xs[",
+		"def f() { g(xs[", "def f() { var x = xs[", "def f() => xs[",
+		"def f() { if (xs[", "def f() { -xs[", "def f() { 1 + xs[", "def f() { xs[xs["];
+	var suffixes = ["]; }", "]; }", "]; }", "]); }", "]; }", "];",
+		"]) {} }", "]; }", "]; }", "]]; }"];
+	for (i < prefixes.length) {
+		for (op in ["...", "..+"]) {
+			var text = StringBuilder.new().puts(prefixes[i]).puts(op).puts(suffixes[i]).toString();
+			var r = AeneasAdapter.parseFile("range.v3", text);
+			t.assert(r.diagnostics.length > 0, "expected a missing range bound diagnostic");
+			if (r.diagnostics.length == 0) continue;
+			var d = r.diagnostics[0];
+			t.assert_string("ParseError", d.kind);
+			t.assert_string("invalid start of expression", d.message);
+			t.asserti(prefixes[i].length, d.beginOffset);
+			t.asserti(prefixes[i].length, d.endOffset);
+		}
+	}
+	for (expr in ["xs[0 ... 1]", "xs[0 ...]", "xs[0 ..+ 1]", "xs[0][1 ... 2]", "xs[0][1 ..+ 2]"]) {
+		var text = StringBuilder.new().puts("def f() { ").puts(expr).puts("; }").toString();
+		t.asserti(0, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
 	}
 }
 

@@ -10,6 +10,7 @@ def X = [
 	T("LspParserDiagnostics:hint_eof_recovery", test_diagnostics_hint_recovery),
 	T("LspParserDiagnostics:hint_ranges", test_diagnostics_hint_ranges),
 	T("LspParserDiagnostics:retrospective_token_ranges", test_diagnostics_retrospective_ranges),
+	T("LspParserDiagnostics:range_bounds_recovery", test_diagnostics_range_recovery),
 	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
 	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
 	()
@@ -133,6 +134,29 @@ def test_diagnostics_ranges(t: Tester) {
 	// CRLF's CR is rejected by the pinned parser and maps to the line end.
 	replace(t, server, 5, "component C {\r\n}");
 	assertRange(t, publication(t, rec, 4, URI, 5), 0, 13, 13);
+}
+def test_diagnostics_range_recovery(t: Tester) {
+	for (op in ["...", "..+"]) {
+		var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+		var malformed = StringBuilder.new().puts("def f() { xs[").puts(op).puts("]; }").toString();
+		open(t, server, URI, 1, malformed);
+		assertRange(t, publication(t, rec, 0, URI, 1), 0, 13, 13);
+		replace(t, server, 2, "def f() { xs[0 ... 1]; }");
+		t.asserti(0, publication(t, rec, 1, URI, 2).length);
+		malformed = StringBuilder.new().puts("/*\t*/ def f() { xs[").puts(op).puts("]; }").toString();
+		replace(t, server, 3, malformed);
+		assertRange(t, publication(t, rec, 2, URI, 3), 0, 19, 19);
+		replace(t, server, 4, "/*\t*/ def f() { xs[0 ..+ 1]; }");
+		t.asserti(0, publication(t, rec, 3, URI, 4).length);
+		malformed = StringBuilder.new().puts("def f() { xs[").puts(op).toString();
+		replace(t, server, 5, malformed);
+		assertRange(t, publication(t, rec, 4, URI, 5), 0, 13, 13);
+		replace(t, server, 6, "def f() { xs[0 ...]; }");
+		t.asserti(0, publication(t, rec, 5, URI, 6).length);
+		notify(t, server, "didClose", ID);
+		t.asserti(0, publication(t, rec, 6, URI, 6).length);
+		t.asserti(7, rec.payloads.length);
+	}
 }
 def test_diagnostics_hint_recovery(t: Tester) {
 	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
