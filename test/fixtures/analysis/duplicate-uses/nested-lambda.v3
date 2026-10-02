@@ -1,0 +1,9 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+component M {
+	def main(y: int) -> int {
+		var f = fun (a: int) => fun (b: int) => a + b + y;
+		return f(1)(2);
+	}
+}
