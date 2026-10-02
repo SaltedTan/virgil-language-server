@@ -63,6 +63,8 @@ class DocumentStore {
 		var remaining = used - cost(doc.uri, doc.languageId, doc.text);
 		var charge = cost(doc.uri, doc.languageId, text);
 		if (charge > long.view(capacity) - remaining) return DocumentLimits.EXCEEDED;
+		// The pinned map can cache a detached bucket after resizing. Remove before
+		// reinserting to keep the retained entry and byte accounting in sync.
 		overlays.remove(doc.uri);
 		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text);
 		used = remaining + charge;
