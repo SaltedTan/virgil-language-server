@@ -129,7 +129,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		expr(e.expr);
 		var decl = declarationOf(e.varbind);
 		// A literal enum argument folds E.Case.param to Const, losing the
-		// field in the binding. Recover it only for verified enum members.
+		// field in the binding. Require an EnumConst receiver: E.count is a
+		// built-in even when the enum has a parameter named count.
 		if (decl == null && VarBinding.Const.?(e.varbind) && VarExpr.?(e.expr)
 				&& VarBinding.EnumConst.?(VarExpr.!(e.expr).varbind) && EnumType.?(e.expr.exactType)) {
 			var et = EnumType.!(e.expr.exactType);
