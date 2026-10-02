@@ -1,0 +1,511 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("PositionMap:empty_document", test_empty_document),
+	T("PositionMap:lf_lines", test_lf_lines),
+	T("PositionMap:empty_lines", test_empty_lines),
+	T("PositionMap:crlf", test_crlf),
+	T("PositionMap:lone_cr", test_lone_cr),
+	T("PositionMap:eof", test_eof),
+	T("PositionMap:out_of_range", test_out_of_range),
+	T("PositionMap:tabs", test_tabs),
+	T("PositionMap:tab_after_column_8", test_tab_after_column_8),
+	T("PositionMap:compiler_out_of_range", test_compiler_out_of_range),
+	T("PositionMap:non_ascii_bmp", test_non_ascii_bmp),
+	T("PositionMap:astral", test_astral),
+	T("PositionMap:inside_surrogate_pair", test_inside_surrogate_pair),
+	T("PositionMap:inside_utf8_sequence", test_inside_utf8_sequence),
+	T("PositionMap:invalid_utf8", test_invalid_utf8),
+	T("PositionMap:zero_length_range", test_zero_length_range),
+	T("PositionMap:multiline_range", test_multiline_range),
+	T("PositionMap:matches_aeneas_columns", test_matches_aeneas_columns),
+	T("PositionMap:known_aeneas_block_comment_divergence", test_known_aeneas_block_comment_divergence),
+	T("PositionMap:round_trip_generated", test_round_trip_generated),
+	()
+];
+
+def ENCODINGS = [PositionEncoding.UTF16, PositionEncoding.UTF8, PositionEncoding.UTF32];
+
+def utf16(text: string) -> PositionMap {
+	return PositionMap.new(text, PositionEncoding.UTF16);
+}
+def assertPosition(t: Tester, line: int, character: int, got: LspPosition) {
+	if (got.line == line && got.character == character) return;
+	t.fail2("expected position %d:%d", line, character);
+	t.fail1("  got %d", got.line);
+	t.fail1("  got character %d", got.character);
+}
+def assertCompiler(t: Tester, line: int, column: int, got: (int, int)) {
+	if (got.0 == line && got.1 == column) return;
+	t.fail2("expected compiler position %d:%d", line, column);
+	t.fail2("  got %d:%d", got.0, got.1);
+}
+
+def test_empty_document(t: Tester) {
+	for (encoding in ENCODINGS) {
+		var m = PositionMap.new("", encoding);
+		t.asserti(1, m.lineCount());
+		t.asserti(1, m.compilerLineCount());
+		assertPosition(t, 0, 0, m.offsetToPosition(0));
+		t.asserti(0, m.positionToOffset(0, 0));
+		t.asserti(0, m.positionToOffset(3, 7));
+		assertCompiler(t, 1, 1, m.offsetToCompiler(0));
+		t.asserti(0, m.compilerToOffset(1, 1));
+	}
+}
+
+def test_lf_lines(t: Tester) {
+	var m = utf16("ab\ncd");
+	t.asserti(2, m.lineCount());
+	assertPosition(t, 0, 0, m.offsetToPosition(0));
+	assertPosition(t, 0, 2, m.offsetToPosition(2));
+	assertPosition(t, 1, 0, m.offsetToPosition(3));
+	assertPosition(t, 1, 2, m.offsetToPosition(5));
+	t.asserti(1, m.positionToOffset(0, 1));
+	t.asserti(4, m.positionToOffset(1, 1));
+	assertCompiler(t, 1, 3, m.offsetToCompiler(2));
+	assertCompiler(t, 2, 1, m.offsetToCompiler(3));
+	t.asserti(3, m.compilerToOffset(2, 1));
+}
+
+def test_empty_lines(t: Tester) {
+	var m = utf16("a\n\n\nb\n");
+	t.asserti(5, m.lineCount());
+	t.asserti(5, m.compilerLineCount());
+	assertPosition(t, 1, 0, m.offsetToPosition(2));
+	assertPosition(t, 2, 0, m.offsetToPosition(3));
+	assertPosition(t, 3, 0, m.offsetToPosition(4));
+	assertPosition(t, 4, 0, m.offsetToPosition(6));
+	// A character past the end of an empty line means its start.
+	t.asserti(2, m.positionToOffset(1, 0));
+	t.asserti(2, m.positionToOffset(1, 4));
+	t.asserti(3, m.positionToOffset(2, 1));
+	assertCompiler(t, 2, 1, m.offsetToCompiler(2));
+	t.asserti(3, m.compilerToOffset(3, 9));
+}
+
+def test_crlf(t: Tester) {
+	var m = utf16("ab\r\ncd\r\n");
+	t.asserti(3, m.lineCount());
+	t.asserti(3, m.compilerLineCount());
+	assertPosition(t, 0, 2, m.offsetToPosition(2));
+	// Between '\r' and '\n' is the end of the line.
+	assertPosition(t, 0, 2, m.offsetToPosition(3));
+	assertPosition(t, 1, 0, m.offsetToPosition(4));
+	assertPosition(t, 2, 0, m.offsetToPosition(8));
+	// The terminator is not part of the line.
+	t.asserti(2, m.positionToOffset(0, 2));
+	t.asserti(2, m.positionToOffset(0, 3));
+	t.asserti(6, m.positionToOffset(1, 9));
+	// For the compiler, '\r' is the last column of its line.
+	assertCompiler(t, 1, 3, m.offsetToCompiler(2));
+	assertCompiler(t, 1, 4, m.offsetToCompiler(3));
+	assertCompiler(t, 2, 1, m.offsetToCompiler(4));
+	t.asserti(2, m.compilerToOffset(1, 3));
+	t.asserti(3, m.compilerToOffset(1, 4));
+	t.asserti(3, m.compilerToOffset(1, 9));
+	assertPosition(t, 0, 2, m.compilerToPosition(1, 4));
+	assertPosition(t, 1, 1, m.compilerToPosition(2, 2));
+}
+
+def test_lone_cr(t: Tester) {
+	// A lone '\r' ends an LSP line but not a compiler line.
+	var m = utf16("ab\rcd\ne");
+	t.asserti(3, m.lineCount());
+	t.asserti(2, m.compilerLineCount());
+	assertPosition(t, 0, 2, m.offsetToPosition(2));
+	assertPosition(t, 1, 0, m.offsetToPosition(3));
+	assertPosition(t, 2, 0, m.offsetToPosition(6));
+	t.asserti(2, m.positionToOffset(0, 5));
+	t.asserti(4, m.positionToOffset(1, 1));
+	assertCompiler(t, 1, 4, m.offsetToCompiler(3));
+	assertCompiler(t, 2, 1, m.offsetToCompiler(6));
+	assertPosition(t, 1, 1, m.compilerToPosition(1, 5));
+	assertCompiler(t, 1, 5, m.positionToCompiler(1, 1));
+	var crcr = utf16("\r\r\n\r");
+	t.asserti(4, crcr.lineCount());
+	t.asserti(2, crcr.compilerLineCount());
+	assertPosition(t, 1, 0, crcr.offsetToPosition(1));
+	assertPosition(t, 2, 0, crcr.offsetToPosition(3));
+	assertPosition(t, 3, 0, crcr.offsetToPosition(4));
+}
+
+def test_eof(t: Tester) {
+	var noNewline = utf16("ab\ncd");
+	assertPosition(t, 1, 2, noNewline.offsetToPosition(5));
+	t.asserti(5, noNewline.positionToOffset(1, 2));
+	t.asserti(5, noNewline.positionToOffset(1, 3));
+	assertCompiler(t, 2, 3, noNewline.offsetToCompiler(5));
+	t.asserti(5, noNewline.compilerToOffset(2, 3));
+	t.asserti(5, noNewline.compilerToOffset(2, 30));
+	var newline = utf16("ab\n");
+	t.asserti(2, newline.lineCount());
+	assertPosition(t, 1, 0, newline.offsetToPosition(3));
+	t.asserti(3, newline.positionToOffset(1, 0));
+	assertCompiler(t, 2, 1, newline.offsetToCompiler(3));
+	t.asserti(3, newline.compilerToOffset(2, 1));
+}
+
+def test_out_of_range(t: Tester) {
+	var m = utf16("ab\ncd\n");
+	// A line past the end means the end of the document.
+	t.asserti(6, m.positionToOffset(3, 0));
+	t.asserti(6, m.positionToOffset(100, 100));
+	// A character past the end of the line means the end of the line.
+	t.asserti(2, m.positionToOffset(0, 100));
+	// Negative values mean 0.
+	t.asserti(0, m.positionToOffset(-1, 5));
+	t.asserti(3, m.positionToOffset(1, -4));
+	// Offsets are clamped into the text.
+	assertPosition(t, 0, 0, m.offsetToPosition(-3));
+	assertPosition(t, 2, 0, m.offsetToPosition(99));
+	assertCompiler(t, 1, 1, m.offsetToCompiler(-3));
+	assertCompiler(t, 3, 1, m.offsetToCompiler(99));
+}
+
+def test_tabs(t: Tester) {
+	var m = utf16("\tx\n a\tb\n\t\ty");
+	// A tab moves to the next tab stop: 9, 17, ...
+	assertCompiler(t, 1, 9, m.offsetToCompiler(1));
+	assertCompiler(t, 2, 3, m.offsetToCompiler(5));
+	assertCompiler(t, 2, 9, m.offsetToCompiler(6));
+	assertCompiler(t, 3, 17, m.offsetToCompiler(10));
+	// LSP characters do not expand tabs.
+	assertPosition(t, 0, 1, m.offsetToPosition(1));
+	assertPosition(t, 1, 3, m.offsetToPosition(6));
+	assertPosition(t, 2, 2, m.offsetToPosition(10));
+	assertPosition(t, 0, 1, m.compilerToPosition(1, 9));
+	assertPosition(t, 2, 2, m.compilerToPosition(3, 17));
+	assertCompiler(t, 3, 17, m.positionToCompiler(2, 2));
+	// A column inside a tab's expansion means the tab.
+	t.asserti(0, m.compilerToOffset(1, 1));
+	t.asserti(0, m.compilerToOffset(1, 5));
+	t.asserti(0, m.compilerToOffset(1, 8));
+	t.asserti(1, m.compilerToOffset(1, 9));
+	t.asserti(9, m.compilerToOffset(3, 12));
+}
+
+def test_tab_after_column_8(t: Tester) {
+	// Aeneas moves a tab at a column that is a multiple of 8 one stop further.
+	var m = utf16("1234567\tx\n123456789012345\ty\n12345678\tz");
+	assertCompiler(t, 1, 17, m.offsetToCompiler(8));
+	assertCompiler(t, 2, 25, m.offsetToCompiler(26));
+	assertCompiler(t, 3, 17, m.offsetToCompiler(37));
+	t.asserti(7, m.compilerToOffset(1, 9));
+	t.asserti(7, m.compilerToOffset(1, 16));
+	t.asserti(8, m.compilerToOffset(1, 17));
+}
+
+def test_compiler_out_of_range(t: Tester) {
+	var m = utf16("ab\ncd\n");
+	t.asserti(0, m.compilerToOffset(0, 5));
+	t.asserti(0, m.compilerToOffset(1, 0));
+	t.asserti(0, m.compilerToOffset(1, -5));
+	t.asserti(2, m.compilerToOffset(1, 50));
+	t.asserti(6, m.compilerToOffset(3, 1));
+	t.asserti(6, m.compilerToOffset(4, 1));
+	t.asserti(6, m.compilerToOffset(400, 2));
+}
+
+// "é" is 2 UTF-8 bytes, "€" is 3; both are one UTF-16 unit.
+def BMP = "x\xC3\xA9y\xE2\x82\xACz";
+
+def test_non_ascii_bmp(t: Tester) {
+	var m = utf16(BMP);
+	assertPosition(t, 0, 2, m.offsetToPosition(3));
+	assertPosition(t, 0, 4, m.offsetToPosition(7));
+	assertPosition(t, 0, 5, m.offsetToPosition(8));
+	t.asserti(3, m.positionToOffset(0, 2));
+	t.asserti(7, m.positionToOffset(0, 4));
+	var u8 = PositionMap.new(BMP, PositionEncoding.UTF8);
+	assertPosition(t, 0, 3, u8.offsetToPosition(3));
+	assertPosition(t, 0, 7, u8.offsetToPosition(7));
+	t.asserti(7, u8.positionToOffset(0, 7));
+	var u32 = PositionMap.new(BMP, PositionEncoding.UTF32);
+	assertPosition(t, 0, 4, u32.offsetToPosition(7));
+	t.asserti(7, u32.positionToOffset(0, 4));
+	// Compiler columns count bytes.
+	assertCompiler(t, 1, 4, m.offsetToCompiler(3));
+	assertCompiler(t, 1, 8, m.offsetToCompiler(7));
+	t.asserti(7, m.compilerToOffset(1, 8));
+	assertPosition(t, 0, 4, m.compilerToPosition(1, 8));
+}
+
+// U+1F600 is 4 UTF-8 bytes, a UTF-16 surrogate pair, and one UTF-32 unit.
+def ASTRAL = "a\xF0\x9F\x98\x80b";
+
+def test_astral(t: Tester) {
+	var m = utf16(ASTRAL);
+	assertPosition(t, 0, 1, m.offsetToPosition(1));
+	assertPosition(t, 0, 3, m.offsetToPosition(5));
+	assertPosition(t, 0, 4, m.offsetToPosition(6));
+	t.asserti(5, m.positionToOffset(0, 3));
+	var u8 = PositionMap.new(ASTRAL, PositionEncoding.UTF8);
+	assertPosition(t, 0, 5, u8.offsetToPosition(5));
+	t.asserti(5, u8.positionToOffset(0, 5));
+	var u32 = PositionMap.new(ASTRAL, PositionEncoding.UTF32);
+	assertPosition(t, 0, 2, u32.offsetToPosition(5));
+	t.asserti(5, u32.positionToOffset(0, 2));
+	assertCompiler(t, 1, 6, m.offsetToCompiler(5));
+	assertPosition(t, 0, 3, m.compilerToPosition(1, 6));
+}
+
+def test_inside_surrogate_pair(t: Tester) {
+	// The middle of a surrogate pair means the start of the character.
+	var m = utf16(ASTRAL);
+	t.asserti(1, m.positionToOffset(0, 2));
+	assertPosition(t, 0, 1, m.offsetToPosition(m.positionToOffset(0, 2)));
+}
+
+def test_inside_utf8_sequence(t: Tester) {
+	// A byte offset inside a character maps to the start of the character.
+	var m = utf16(ASTRAL);
+	for (offset = 2; offset < 5; offset++) assertPosition(t, 0, 1, m.offsetToPosition(offset));
+	// So does a UTF-8 position inside a character.
+	var u8 = PositionMap.new(ASTRAL, PositionEncoding.UTF8);
+	for (character = 2; character < 5; character++) t.asserti(1, u8.positionToOffset(0, character));
+	// Compiler columns address every byte.
+	assertCompiler(t, 1, 4, m.offsetToCompiler(3));
+	t.asserti(3, m.compilerToOffset(1, 4));
+	assertPosition(t, 0, 1, m.compilerToPosition(1, 4));
+}
+
+def test_invalid_utf8(t: Tester) {
+	// Each invalid sequence is one U+FFFD: a stray continuation byte, a byte
+	// that never starts a sequence, a truncated sequence, an encoded
+	// surrogate (three U+FFFDs), and an overlong form (two U+FFFDs).
+	var text = "\x80a\xFFb\xE2\x82c\xED\xA0\x80d\xC0\xAFe\xF0\x9F\x98";
+	var m = utf16(text);
+	assertPosition(t, 0, 1, m.offsetToPosition(1));
+	assertPosition(t, 0, 3, m.offsetToPosition(3));
+	assertPosition(t, 0, 4, m.offsetToPosition(4));
+	assertPosition(t, 0, 5, m.offsetToPosition(6));
+	assertPosition(t, 0, 6, m.offsetToPosition(7));
+	assertPosition(t, 0, 9, m.offsetToPosition(10));
+	assertPosition(t, 0, 10, m.offsetToPosition(11));
+	assertPosition(t, 0, 12, m.offsetToPosition(13));
+	assertPosition(t, 0, 13, m.offsetToPosition(14));
+	assertPosition(t, 0, 14, m.offsetToPosition(17));
+	// The truncated sequence at the end is one unit.
+	assertPosition(t, 0, 13, m.offsetToPosition(15));
+	t.asserti(14, m.positionToOffset(0, 13));
+	t.asserti(17, m.positionToOffset(0, 14));
+	// In UTF-8, U+FFFD is 3 units.
+	var u8 = PositionMap.new(text, PositionEncoding.UTF8);
+	assertPosition(t, 0, 3, u8.offsetToPosition(1));
+	assertPosition(t, 0, 7, u8.offsetToPosition(3));
+	assertPosition(t, 0, 8, u8.offsetToPosition(4));
+	assertPosition(t, 0, 11, u8.offsetToPosition(6));
+	t.asserti(4, u8.positionToOffset(0, 8));
+	t.asserti(4, u8.positionToOffset(0, 10));
+	t.asserti(6, u8.positionToOffset(0, 11));
+	var u32 = PositionMap.new(text, PositionEncoding.UTF32);
+	assertPosition(t, 0, 14, u32.offsetToPosition(17));
+	// Compiler columns count the bytes.
+	assertCompiler(t, 1, 18, m.offsetToCompiler(17));
+}
+
+def test_zero_length_range(t: Tester) {
+	var m = utf16("\tdef x = ;\n");
+	var r = m.compilerRangeToLsp(1, 17, 1, 17);
+	assertPosition(t, 0, 9, r.start);
+	assertPosition(t, 0, 9, r.end);
+	var eof = m.compilerRangeToLsp(2, 1, 2, 1);
+	assertPosition(t, 1, 0, eof.start);
+	assertPosition(t, 1, 0, eof.end);
+}
+
+def test_multiline_range(t: Tester) {
+	var m = utf16("\tvar s = \"\xE2\x82\xAC\";\r\n\t\tf(s);\r\n");
+	// From the string literal to the end of "f(s)".
+	var r = m.compilerRangeToLsp(1, 17, 2, 21);
+	assertPosition(t, 0, 9, r.start);
+	assertPosition(t, 1, 6, r.end);
+	// An end column past the line end clamps to the end of the line.
+	var wide = m.compilerRangeToLsp(1, 9, 2, 99);
+	assertPosition(t, 0, 1, wide.start);
+	assertPosition(t, 1, 7, wide.end);
+}
+
+// Checks that the position of the first diagnostic for {text} is at the
+// first byte of {token}, which must occur once.
+def checkAeneasColumn(t: Tester, text: string, token: string) {
+	var r = AeneasAdapter.parseFile("columns.v3", text);
+	if (r.diagnostics.length == 0) return t.fail1("expected a syntax error in %s", text);
+	var d = r.diagnostics[0];
+	var offset = indexOf(text, token);
+	var m = utf16(text);
+	assertCompiler(t, d.beginLine, d.beginColumn, m.offsetToCompiler(offset));
+	t.asserti(offset, m.compilerToOffset(d.beginLine, d.beginColumn));
+}
+def indexOf(text: string, token: string) -> int {
+	for (i = 0; i + token.length <= text.length; i++) {
+		var j = 0;
+		while (j < token.length && text[i + j] == token[j]) j++;
+		if (j == token.length) return i;
+	}
+	return -1;
+}
+
+// The column rule must match what Aeneas reports.
+def test_matches_aeneas_columns(t: Tester) {
+	checkAeneasColumn(t, "component C {\n\tdef x = ;\n}\n", ";");
+	// A tab at column 16 moves to 25.
+	checkAeneasColumn(t, "component C {\n\tdef xy=\t;\n}\n", ";");
+	// Each byte of a non-ASCII character takes a column.
+	checkAeneasColumn(t, "component C {\n\tdef s = \"\xE2\x82\xAC\xF0\x9F\x98\x80\"\t\t+ ;\n}\n", ";");
+	checkAeneasColumn(t, "component C {\n\tdef \xC3\xA9 = 1;\n}\n", "\xC3");
+	// Aeneas rejects '\r' as an invalid character, at its column.
+	checkAeneasColumn(t, "component C {\n\tdef x = 1;\t\r\n}\n", "\r");
+}
+
+def test_known_aeneas_block_comment_divergence(t: Tester) {
+	var text = "component C {\n/*\t*/ def x = ;\n}\n";
+	var r = AeneasAdapter.parseFile("comment-columns.v3", text);
+	if (r.diagnostics.length == 0) return t.fail("expected a syntax error");
+	var d = r.diagnostics[0];
+	t.asserti(2, d.beginLine);
+	t.asserti(15, d.beginColumn);
+	var offset = indexOf(text, ";");
+	for (encoding in ENCODINGS) {
+		var m = PositionMap.new(text, encoding);
+		assertPosition(t, 1, 14, m.offsetToPosition(offset));
+		t.asserti(offset, m.positionToOffset(1, 14));
+		assertCompiler(t, 2, 20, m.offsetToCompiler(offset));
+		assertCompiler(t, 2, 20, m.positionToCompiler(1, 14));
+		t.asserti(offset, m.compilerToOffset(2, 20));
+		t.asserti(offset - 5, m.compilerToOffset(d.beginLine, d.beginColumn));
+		assertPosition(t, 1, 9, m.compilerToPosition(d.beginLine, d.beginColumn));
+		var range = m.compilerRangeToLsp(d.beginLine, d.beginColumn, d.beginLine, d.beginColumn);
+		assertPosition(t, 1, 9, range.start);
+		assertPosition(t, 1, 9, range.end);
+	}
+}
+
+// A fragment of generated text: one character or line terminator, with the
+// number of units it takes in each encoding. {kind} is 'c' for an ordinary
+// character, 't' for a tab, or 'n', 'r', 'R' for "\n", "\r", "\r\n".
+class Fragment(text: string, kind: byte, utf8: int, utf16: int, utf32: int) {
+	def units(encoding: PositionEncoding) -> int {
+		match (encoding) {
+			UTF16 => return utf16;
+			UTF8 => return utf8;
+			UTF32 => return utf32;
+		}
+	}
+}
+
+def FRAGMENTS = [
+	Fragment.new("a", 'c', 1, 1, 1),
+	Fragment.new(" ", 'c', 1, 1, 1),
+	Fragment.new("\t", 't', 1, 1, 1),
+	Fragment.new("\n", 'n', 0, 0, 0),
+	Fragment.new("\r", 'r', 0, 0, 0),
+	Fragment.new("\r\n", 'R', 0, 0, 0),
+	Fragment.new("\xC3\xA9", 'c', 2, 1, 1),
+	Fragment.new("\xE2\x82\xAC", 'c', 3, 1, 1),
+	Fragment.new("\xF0\x9F\x98\x80", 'c', 4, 2, 1),
+	Fragment.new("\xFF", 'c', 3, 1, 1),
+	Fragment.new("\xE2\x82", 'c', 3, 1, 1)
+];
+
+// A deterministic pseudo-random generator, so failures reproduce.
+class Lcg(var state: int) {
+	def next(bound: int) -> int {
+		state = state * 1103515245 + 12345;
+		return ((state >>> 16) & 0x7FFF) % bound;
+	}
+}
+
+// Generates texts from {FRAGMENTS} and checks every conversion against
+// positions computed independently from the fragments.
+def test_round_trip_generated(t: Tester) {
+	var rng = Lcg.new(20261002);
+	for (iteration < 200) {
+		var count = rng.next(40);
+		var frags = Vector<Fragment>.new();
+		for (i < count) {
+			var f = FRAGMENTS[rng.next(FRAGMENTS.length)];
+			// "\r" then "\n" would form one "\r\n" terminator.
+			if (f.kind == 'n' && frags.length > 0 && frags[frags.length - 1].kind == 'r') continue;
+			frags.put(f);
+		}
+		for (encoding in ENCODINGS) checkGenerated(t, frags, encoding);
+	}
+}
+
+def checkGenerated(t: Tester, frags: Vector<Fragment>, encoding: PositionEncoding) {
+	var buf = StringBuilder.new();
+	for (i < frags.length) buf.puts(frags[i].text);
+	var text = buf.toString();
+	var m = PositionMap.new(text, encoding);
+	// The expected positions at the start of each fragment.
+	var offset = 0, line = 0, character = 0, cline = 1, column = 1;
+	var prev = LspPosition.new(0, 0);
+	for (i = 0; i <= frags.length; i++) {
+		var p = m.offsetToPosition(offset);
+		if (p.line != line || p.character != character) {
+			t.fail2("offset %d of %s", offset, text);
+			return assertPosition(t, line, character, p);
+		}
+		if (m.positionToOffset(line, character) != offset) {
+			return t.fail2("position %d:%d did not map back", line, character);
+		}
+		var c = m.offsetToCompiler(offset);
+		if (c.0 != cline || c.1 != column) {
+			t.fail2("offset %d of %s", offset, text);
+			return assertCompiler(t, cline, column, c);
+		}
+		if (m.compilerToOffset(cline, column) != offset) {
+			return t.fail2("compiler position %d:%d did not map back", cline, column);
+		}
+		if (i == frags.length) break;
+		var f = frags[i];
+		// Offsets inside the fragment map to its start, and back to distinct
+		// compiler positions.
+		for (j = 1; j < f.text.length; j++) {
+			if (!m.offsetToPosition(offset + j).equals(p)) return t.fail2("offset %d of %s", offset + j, text);
+			var cj = m.offsetToCompiler(offset + j);
+			if (m.compilerToOffset(cj.0, cj.1) != offset + j) return t.fail2("offset %d of %s", offset + j, text);
+		}
+		// Positions inside the fragment map to its start.
+		for (j = 1; j < f.units(encoding); j++) {
+			if (m.positionToOffset(line, character + j) != offset) return t.fail2("position %d:%d", line, character + j);
+		}
+		match (f.kind) {
+			'c' => {
+				character += f.units(encoding);
+				column += f.text.length;
+			}
+			't' => {
+				character++;
+				column = 1 + ((column + 8) / 8) * 8;
+			}
+			'n' => {
+				line++;
+				character = 0;
+				cline++;
+				column = 1;
+			}
+			'r' => {
+				line++;
+				character = 0;
+				column++;
+			}
+			'R' => {
+				line++;
+				character = 0;
+				cline++;
+				column = 1;
+			}
+		}
+		offset += f.text.length;
+	}
+	t.asserti(line + 1, m.lineCount());
+	t.asserti(cline, m.compilerLineCount());
+	// Past the end of the last line, and past the last line.
+	t.asserti(text.length, m.positionToOffset(line, character + 1));
+	t.asserti(text.length, m.positionToOffset(line + 1, 0));
+}
