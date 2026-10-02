@@ -22,10 +22,10 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document-sync and document-symbol handlers | Message model, framing, stdio transport, server request tracking, lifecycle, full-text sync, and syntax outlines present |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document-sync and document-symbol handlers, parser diagnostic publication | Message model, framing, stdio transport, server request tracking, lifecycle, full-text sync, syntax outlines, and parser diagnostics present |
 | `src/documents/` | URI normalization, versioned in-memory overlays with injected disk fallback, `PositionMap` | Present |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
-| `src/features/` | Diagnostics, semantic symbols, definition, hover, and later features | Planned (M2–M5) |
+| `src/features/` | Semantic diagnostics, semantic symbols, definition, hover, and later features | Planned (M2–M5) |
 
 ## Build model
 
@@ -109,7 +109,7 @@ Malformed batches, duplicate opens, and stale changes never alter text or versio
 
 Accepted opens and full-text changes synchronously run `AeneasAdapter.parseFile` on the retained overlay and send `textDocument/publishDiagnostics` for its canonical URI and version. Only the last replacement in a validated change batch is parsed. Each publication replaces the previous list, including an empty list when the parse is clean. Accepted closes publish an empty list with the last open version without reading the disk. Saves and rejected events never publish. Lifecycle admission also gates publication, so no diagnostics are sent before initialization or after shutdown.
 
-Diagnostics include the Aeneas message, error code, `source: "aeneas"`, error severity, and a UTF-16 range derived from exact byte offsets, not compiler display columns. Aeneas point errors remain empty ranges, including at EOF. Non-file overlays are analyzed the same way as file overlays. Incomplete hints at EOF and ranges missing both bounds (`xs[...]`, `xs[..+]`) publish diagnostics, and later edits can clear them. Hint keyword ranges following block-comment tabs use captured token endpoints; for `/*\t*/ class C #if {}`, the range is 0:15–0:17. This is syntax-only: verification, workspace analysis, scheduling, and process isolation remain later milestones.
+Diagnostics include the Aeneas message, error code, `source: "aeneas"`, error severity, and a UTF-16 range derived from exact byte offsets, not compiler display columns. Aeneas point errors remain empty ranges, including at EOF. Non-file overlays are analyzed the same way as file overlays. See [Compiler adapter](#compiler-adapter) for parsing and recovery details and [Coordinates](#coordinates) for range conversion. This is syntax-only: verification, workspace analysis, scheduling, and process isolation remain later milestones.
 
 Outgoing notifications use `LspServer.sendNotification`, separate from `handle`'s reply payload. The stdio entry point binds this sink to the transport's frame writer; partial writes and notification write failures follow the same transport failure path as replies. Unit tests inject a recording sink instead.
 
@@ -153,6 +153,7 @@ Each analysis produces an immutable snapshot containing: the configuration revis
 | `LspServer.v3` | The [lifecycle](#lifecycle) in front of the dispatcher, implemented capabilities, and the LSP error codes it uses. |
 | `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 | `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, and converts byte ranges with `PositionMap`. |
+| `LspParserDiagnostics.v3` | Publishes [parser diagnostics](#parser-diagnostics) for accepted overlays and clears them on close. |
 
 The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Once the [lifecycle](#lifecycle) has admitted a message, it is handled as follows:
 

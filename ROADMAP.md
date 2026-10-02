@@ -226,8 +226,8 @@ Deliverables:
 - Full-text synchronization first (`TextDocumentSyncKind.Full`), with document version checks. *(present; stale/out-of-order changes rejected)*
 - URI/path normalization and in-memory overlays. *(present; [document-store rules](docs/architecture.md#document-store))*
 - Dedicated position/range conversion module.
-- `Parser.parseFile` adapter for one open document.
-- Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics.
+- Single-file parser adapter for one open document. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
+- Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics. *(present; [publication contract](docs/architecture.md#parser-diagnostics))*
 - `textDocument/documentSymbol` using VST declarations; the `vctags` traversal is a useful model.
 - A manually launchable LazyVim config and VS Code development client.
 
