@@ -39,15 +39,11 @@ type LspFrame {
 // - Content-Length counts bytes and is required. Field names are
 //   case-insensitive, and spaces and tabs around a value are ignored.
 // - Content-Type handling is documented in docs/architecture.md#framing.
-// - A payload longer than {maxPayload} bytes is skipped without being buffered.
+// - A payload longer than {maxPayload} bytes is skipped.
 //   A payload within the limit is buffered as its bytes arrive, so a header
 //   alone never allocates the length it declares.
-// - Payload bytes go straight from a chunk into the payload, and skipped bytes
-//   are dropped without being copied. The reader buffers only a header, up to
-//   {LspFraming.MAX_HEADER_BYTES}, and any input after a complete frame until
-//   {next} returns it. A caller that takes out frames after each chunk, as
-//   {LspTransport} does, so buffers at most one chunk beyond a header, and the
-//   buffer shrinks back once that input has been read.
+// - See docs/architecture.md#framing for the buffering and memory guarantees
+//   and the caller's responsibility to limit chunks and drain frames.
 // - Unknown header fields are ignored.
 // - A header is malformed if it contains a byte that isn't printable ASCII, a
 //   space, or a tab (apart from the CR LF line ends), has a CR or LF outside a
@@ -66,10 +62,8 @@ class LspFrameReader(maxPayload: int) {
 	private var skipRemaining: long;	// payload bytes left to skip
 	private var failure: string;	// set once the header is malformed
 
-	// Takes in {data}. Ignored once the stream is malformed. The bytes of the
-	// payload being read are copied straight into it, and those of a payload
-	// being skipped are dropped. Only a header, and input after a complete
-	// frame that {next} hasn't returned yet, are copied into the buffer.
+	// Takes in {data}. Ignored once the stream is malformed. See
+	// docs/architecture.md#framing for the caller's memory contract.
 	def feed(data: Range<byte>) -> this {
 		while (failure == null && data.length > 0) {
 			if (advance()) break;
@@ -79,8 +73,8 @@ class LspFrameReader(maxPayload: int) {
 				data = data[consume(data) ...];
 			} else {
 				// Buffer no more than the header limit allows, so that the end
-				// of the header, or its failure, is found before the bytes
-				// after it are copied.
+				// of the header, or its failure, is found before the rest
+				// of the chunk is copied.
 				var n = LspFraming.MAX_HEADER_BYTES - (limit - pos);
 				if (n > data.length) n = data.length;
 				append(data[0 ..+ n]);
