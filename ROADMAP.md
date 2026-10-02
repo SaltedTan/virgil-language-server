@@ -137,7 +137,7 @@ The existing prototype is a useful skeleton, but its protocol code should be con
 9. Lifecycle ordering, `$/cancelRequest`, shutdown, and exit behavior need transcript tests.
 10. Compiler locations and LSP locations use different coordinate systems.
 
-The last item deserves its own module. Aeneas locations are one-based and parser columns expand tab characters to tab stops. LSP lines and characters are zero-based, and the broadly compatible default is UTF-16 code units without tab expansion. Build a `PositionMap` per document that can translate among UTF-8 byte offsets, compiler line/display-column pairs, and negotiated LSP positions. Test tabs, CRLF, non-ASCII BMP characters, astral characters, empty lines, and EOF. Directly subtracting one from `beginColumn` will produce wrong highlights in tab-indented Virgil code.
+For the last item, use the per-document `PositionMap`; [Coordinates](docs/architecture.md#coordinates) owns its conversion rules and known compiler limitations.
 
 ## Workspace and project model
 
@@ -499,7 +499,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 5. Harden stdio framing and enforce protocol-only stdout.
 6. Add golden transcript tests for requests, notifications, lifecycle, and malformed packets.
 7. Implement versioned full-text document synchronization.
-8. Implement and exhaustively test `PositionMap`.
+8. Integrate [`PositionMap`](docs/architecture.md#coordinates) with the document store and diagnostics.
 9. Publish parser diagnostics for unsaved single files.
 10. Implement document symbols from the VST.
 11. Specify `.virgil-lsp.json` and add fixture projects.
@@ -595,7 +595,7 @@ For LSP, read only the relevant sections of the [3.17 specification](https://mic
 - Implement initialize/shutdown/exit state handling and route all logs away from stdout.
 - Connect minimal VS Code and Neovim development clients to the lifecycle-only server.
 - Add a versioned full-text document store.
-- Implement URI normalization and `PositionMap` with tab/Unicode tests.
+- Implement URI normalization and connect [`PositionMap`](docs/architecture.md#coordinates) to the document store.
 
 ### Week 4
 

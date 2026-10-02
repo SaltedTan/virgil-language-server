@@ -24,40 +24,15 @@ class LspPosition(line: int, character: int) {
 // A zero-based LSP range. {end} is exclusive.
 class LspRange(start: LspPosition, end: LspPosition) { }
 
-// Translates between the three coordinate systems for one immutable document
+// Translates between the three coordinate systems for one document
 // text: UTF-8 byte offsets, compiler line/column pairs, and LSP positions in
 // one {PositionEncoding}. It does no I/O and is independent of the compiler;
 // compiler coordinates are plain ints.
 //
-// Byte offsets run from 0 to {text.length} inclusive. Every conversion
-// accepts any int and clamps it into range, so no input traps.
-//
-// Compiler coordinates follow Aeneas (vendor/virgil/aeneas/src/vst/ParserState.v3,
-// {ParserState.column}, and the same tab rule in Parser.v3 {skipToNextToken}):
-// - Lines are one-based and end only at '\n'. A '\r' is an ordinary byte, so
-//   a lone '\r' does not start a compiler line, and the '\r' of "\r\n" takes
-//   a column at the end of its line.
-// - Columns are one-based and count bytes, so each byte of a non-ASCII
-//   character takes a column. A tab moves column c to 1 + ((c + 8) / 8) * 8.
-//   That is the next tab stop of width 8 (9, 17, 25, ...), except that a tab
-//   at a column that is a multiple of 8 skips a stop: from column 8 it moves
-//   to 17, not 9.
-// For Aeneas's comment-column exceptions, see {nextColumn}.
-//
-// LSP positions follow LSP 3.17:
-// - Lines are zero-based and end at "\n", "\r\n", or "\r". The terminator is
-//   not part of the line, so a position never falls inside it.
-// - {character} counts code units of the encoding. The text is decoded as
-//   UTF-8, with each invalid sequence read as one U+FFFD, as the WHATWG
-//   decoder does: a byte that cannot start a sequence, or the longest valid
-//   prefix of a truncated sequence, is one U+FFFD. U+FFFD is 1 UTF-16 unit,
-//   1 UTF-32 unit, and 3 UTF-8 units.
-// - A character past the end of its line means the end of the line. A line
-//   past the last line means the end of the document. Negative values mean 0.
-// - A position inside a character (in the middle of a surrogate pair, or of a
-//   multi-byte UTF-8 sequence) means the start of that character.
-// - A byte offset inside a character, or between the '\r' and '\n' of "\r\n",
-//   maps to the position before that character or terminator.
+// {text} must be non-null and remain unchanged while the map is in use:
+// line boundaries are cached, but conversions read the original byte array.
+// See docs/architecture.md#coordinates for the conversion contract and
+// {nextColumn} for the compiler's comment-column exceptions.
 class PositionMap {
 	def text: Array<byte>;
 	def encoding: PositionEncoding;
