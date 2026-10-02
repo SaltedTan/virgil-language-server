@@ -1,10 +1,7 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Walks a file after verification has run, recording source declarations
-// resolved through bindings, match-pattern metadata, or enum parameter sugar.
-// Built-in operators/constants and the synthetic System component are skipped.
-// This is the seed of the occurrence index described in docs/architecture.md.
+// Builds the occurrence index described in docs/architecture.md#compiler-adapter.
 class OccurrenceCollector extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private var fileName: string;
@@ -211,7 +208,7 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 			RefLayoutRepeatedField(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
 			RefLayoutNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
 			RefLayoutRepeatedNested(receiver, member) => return make(AnalysisDeclKind.LAYOUT_FIELD, member);
-			_ => return null; // operators, constants, and other built-in bindings
+			_ => return null; // bindings without a source declaration
 		}
 	}
 	private def operatorDeclaration(op: Operator) -> AnalysisDeclaration {

@@ -265,7 +265,7 @@ Deliverables:
 
 - VST visitor/walker for declarations, type references, statements, and expressions.
 - Symbol identities for local variables, fields, methods, compounds, enum cases, layouts, and packings.
-- Occurrence index derived from `VarExpr.varbind`, `AppExpr.appbind`, `NamedTypeRef.binding`, and declaration tokens.
+- Occurrence index extending the [compiler adapter's current coverage](docs/architecture.md#compiler-adapter) to applications and named type references.
 - `textDocument/definition`.
 - `textDocument/hover` using declarations and `Expr.effectiveType()`.
 - Workspace/document-symbol polishing.
