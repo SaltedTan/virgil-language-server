@@ -71,8 +71,8 @@ class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration)
 // Measurements of one whole-program analysis.
 class AnalysisStats(parseUs: int, verifyUs: int, uidsUsed: int, globalTypesAdded: int) { }
 
-// The result of parsing and verifying a whole program. It keeps the verified
-// syntax tree so that binding queries can be answered after the analysis.
+// The result of parsing and verifying a whole program. It keeps the syntax
+// tree for binding queries; see docs/architecture.md#compiler-adapter.
 class ProgramAnalysis {
 	def diagnostics: Array<AnalysisDiagnostic>;
 	def stats: AnalysisStats;

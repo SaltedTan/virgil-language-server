@@ -1,9 +1,9 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Walks one verified file and records every {VarExpr} whose {varbind} leads to
-// a declaration in the program source. Uses that resolve to built-in
-// operators, constants, or the synthetic System component are skipped.
+// Walks a file after verification has run, recording each {VarExpr} whose
+// {varbind} leads to a declaration in program source. Uses that resolve to
+// built-in operators, constants, or the synthetic System component are skipped.
 // This is the seed of the occurrence index described in docs/architecture.md.
 class OccurrenceCollector extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
@@ -185,6 +185,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		}
 	}
 	private def typeDeclaration(t: Type) -> AnalysisDeclaration {
+		// Verification errors can leave a Type binding with no resolved type.
+		if (t == null) return null;
 		match (t) {
 			x: ClassType => return make(AnalysisDeclKind.CLASS, x.classDecl);
 			x: EnumType => return make(AnalysisDeclKind.ENUM, x.enumDecl);
