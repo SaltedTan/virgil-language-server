@@ -14,6 +14,7 @@ def X = [
 	T("JsonRpcPendingRequests:callback_sends_request", test_callback_sends_request),
 	T("JsonRpcPendingRequests:fail_all", test_fail_all),
 	T("JsonRpcPendingRequests:fail_all_reentrant", test_fail_all_reentrant),
+	T("JsonRpcPendingRequests:fail_all_recycled_ids", test_fail_all_recycled_ids),
 	T("JsonRpcDispatcher:response_completes_request", test_dispatch_response_completes),
 	T("JsonRpcDispatcher:ignored_responses", test_dispatch_ignored_responses),
 	T("JsonRpcDispatcher:response_unsupported_numbers", test_dispatch_response_unsupported_numbers),
@@ -268,6 +269,46 @@ def test_fail_all_reentrant(t: Tester) {
 	t.asserti(1, p.count());
 	expectCompleted(t, p, response(3, JsonValue.Null), false);
 	t.asserti(2, a.rec.replies.length);
+}
+
+// Both original callbacks complete the other request and send a follow-up.
+// Whichever callback runs first, the second runs before either follow-up is
+// sent, so both original IDs are available for reuse after wraparound.
+class RecycledFailAllHelper(p: JsonRpcPendingRequests, other: int) {
+	def original = CompletionRecorder.new();
+	def followUp = CompletionRecorder.new();
+
+	def onComplete(r: JsonRpcReply) {
+		original.onComplete(r);
+		p.complete(response(other, JsonValue.Null), false);
+		p.send("client/registerCapability", JsonRpcParams.Absent, followUp.onComplete);
+	}
+}
+
+def test_fail_all_recycled_ids(t: Tester) {
+	var p = JsonRpcPendingRequests.new();
+	var a = RecycledFailAllHelper.new(p, 2), b = RecycledFailAllHelper.new(p, 1);
+	var boundary = CompletionRecorder.new();
+	p.send("a", JsonRpcParams.Absent, a.onComplete);
+	p.send("b", JsonRpcParams.Absent, b.onComplete);
+	// Advance to the boundary without sending billions of requests. Sending
+	// this request wraps the allocator to 1 while IDs 1 and 2 are outstanding.
+	p.nextId = int.max;
+	t.asserti(int.max, sendId(p, boundary));
+	p.failAll(JsonRpcError.new(-32800, "stop"));
+	t.asserti(1, a.original.replies.length);
+	t.asserti(1, b.original.replies.length);
+	boundary.expect(t, ["error {\"code\":-32800,\"message\":\"stop\"}"]);
+	// The snapshot must not fail a newly sent request just because it reuses
+	// an original request's ID. Both follow-ups must remain pending.
+	a.followUp.expect(t, NONE);
+	b.followUp.expect(t, NONE);
+	t.asserti(2, p.count());
+	expectCompleted(t, p, response(1, JsonValue.Null), false);
+	expectCompleted(t, p, response(2, JsonValue.Null), false);
+	a.followUp.expect(t, ["result null"]);
+	b.followUp.expect(t, ["result null"]);
+	t.asserti(0, p.count());
 }
 
 def test_dispatch_response_completes(t: Tester) {

@@ -17,7 +17,7 @@
 //   callback may send further requests.
 // - A response that matches no outstanding request completes nothing.
 class JsonRpcPendingRequests {
-	private def callbacks = HashMap<int, JsonRpcReply -> void>.new(int.!<int>, int.==);
+	private def callbacks = HashMap<int, JsonRpcPendingRequest>.new(int.!<int>, int.==);
 	private var outstanding: int;
 	// The ID the next request gets, unless a request with that ID is still
 	// outstanding.
@@ -34,7 +34,7 @@ class JsonRpcPendingRequests {
 		var id = nextId;
 		while (callbacks.has(id)) id = after(id);
 		nextId = after(id);
-		callbacks[id] = onComplete;
+		callbacks[id] = JsonRpcPendingRequest.new(id, onComplete);
 		outstanding++;
 		return JsonRpcMessage.Request(JsonRpcId.Int(id), method, params).encode();
 	}
@@ -61,9 +61,12 @@ class JsonRpcPendingRequests {
 	// so that no caller waits forever. Requests sent by the callbacks it runs
 	// stay outstanding.
 	def failAll(error: JsonRpcError) {
-		for (l = Maps.keyList(callbacks); l != null; l = l.tail) {
-			// An earlier callback may have completed this request already.
-			var callback = take(l.head);
+		for (l = Maps.valueList(callbacks); l != null; l = l.tail) {
+			var request = l.head;
+			// An earlier callback may have completed this request and sent a
+			// new one with the same ID. Only fail the original entry.
+			if (callbacks[request.id] != request) continue;
+			var callback = take(request.id);
 			if (callback != null) callback(JsonRpcReply.Error(error));
 		}
 	}
@@ -85,7 +88,7 @@ class JsonRpcPendingRequests {
 	// isn't outstanding.
 	private def take(id: int) -> JsonRpcReply -> void {
 		if (!callbacks.has(id)) return null;
-		var callback = callbacks[id];
+		var callback = callbacks[id].callback;
 		callbacks.remove(id);
 		outstanding--;
 		return callback;
@@ -94,3 +97,5 @@ class JsonRpcPendingRequests {
 		return if(id == int.max, 1, id + 1);
 	}
 }
+
+private class JsonRpcPendingRequest(id: int, callback: JsonRpcReply -> void) { }
