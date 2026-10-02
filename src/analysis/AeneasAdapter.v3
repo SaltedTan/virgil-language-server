@@ -106,7 +106,6 @@ class ProgramAnalysis {
 		var uses = occurrences(path), low = 0, high = uses.length;
 		// Identifier tokens do not overlap, so their exclusive ends are also
 		// in source order. Find the first token ending after the query point.
-		// This also preserves the first match if a token was collected twice.
 		while (low < high) {
 			var mid = low + (high - low) / 2, r = uses[mid].range;
 			if (r.endLine < line || (r.endLine == line && r.endColumn <= column)) low = mid + 1;

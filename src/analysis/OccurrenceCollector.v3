@@ -27,7 +27,7 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		for (l = decl.members; l != null; l = l.tail) {
 			match (l.head) {
 				x: VstNew => {
-					// Verification copies the class clause onto its constructor.
+					// Verification shares the class clause with its constructor.
 					// Only a constructor-local clause needs a second walk.
 					if (x.superclause != null && x.superclause != decl.superclause) expr(x.superclause.args);
 					stmt(x.func.body);
