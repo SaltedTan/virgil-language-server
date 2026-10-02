@@ -38,9 +38,7 @@ type LspFrame {
 //
 // - Content-Length counts bytes and is required. Field names are
 //   case-insensitive, and spaces and tabs around a value are ignored.
-// - Content-Type is optional. Its media type isn't checked. A charset other
-//   than utf-8 (or utf8) skips the message. Semicolons inside a quoted
-//   parameter value don't separate parameters.
+// - Content-Type handling is documented in docs/architecture.md#framing.
 // - A payload longer than {maxPayload} bytes is skipped without being buffered.
 //   A payload within the limit is buffered as its bytes arrive, so a header
 //   alone never allocates the length it declares.
