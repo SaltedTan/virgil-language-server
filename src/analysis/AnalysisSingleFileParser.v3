@@ -1,0 +1,90 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// Copyright 2011 Google Inc. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// Parser driver adapted from the pinned Aeneas Parser.v3; see THIRD_PARTY_NOTICES.md.
+
+class AnalysisParseErrors extends ErrorGen {
+	var parser: ParserState;
+	def offsets = Vector<(int, int)>.new();
+	private def positions = Strings.newMap<int>();
+
+	new(maxErrors: int) super(maxErrors) { }
+
+	def record(p: ParserState) {
+		parser = p;
+		// Preserve token ends when a trailing line comment later reaches EOF
+		// with the same compiler column. Empty current-point errors use curPos.
+		recordPosition(p.curLine, p.curCol, p.curPos);
+	}
+	def recordToken(token: Token, begin: int, end: int) {
+		recordPosition(token.beginLine, token.beginColumn, begin);
+		recordPosition(token.beginLine, token.beginColumn + token.image.length, end);
+	}
+	private def recordPosition(line: int, column: int, pos: int) {
+		var key = coordinate(line, column);
+		if (!positions.has(key)) positions[key] = pos;
+	}
+	def addError(range: FileRange, sourceLine: string, error: string, msg: string) {
+		var begin = -1, end = -1;
+		if (range != null && parser != null) {
+			if (range.beginLine == parser.curLine && range.endLine == parser.curLine &&
+				range.beginColumn == parser.curCol && range.endColumn == parser.curCol) {
+				begin = end = parser.curPos;
+			} else {
+				begin = offset(range.beginLine, range.beginColumn);
+				end = offset(range.endLine, range.endColumn);
+			}
+		}
+		offsets.put((begin, end));
+		errors = List.new(Error.new(range, sourceLine, error, msg), errors);
+		incErrors();
+		if (parser != null && Strings.equal(msg, "invalid start of expression") &&
+			parser.curByte == '.' && parser.peek(1) == '.' &&
+			(parser.peek(2) == '.' || parser.peek(2) == '+')) {
+			parser.advance(3);
+		}
+	}
+	private def coordinate(line: int, column: int) -> string {
+		return Strings.format2("%d:%d", line, column);
+	}
+	private def offset(line: int, column: int) -> int {
+		var key = coordinate(line, column);
+		return if(positions.has(key), positions[key], -1);
+	}
+}
+
+class AnalysisParserState extends ParserState {
+	new(file: VstFile, errors: AnalysisParseErrors)
+		super(file, errors, AnalysisSingleFileParser.skip, TypeCache.new()) { }
+
+	def token(len: int) -> Token {
+		var end = curPos + len;
+		if (end > input.length) end = input.length;
+		var t = Token.new(fileName, Arrays.range(input, curPos, end), curLine, curCol);
+		AnalysisParseErrors.!(ERROR).recordToken(t, curPos, end);
+		advance(t.image.length);
+		return t;
+	}
+}
+
+component AnalysisSingleFileParser {
+	def skip(p: ParserState) {
+		var errors = AnalysisParseErrors.!(p.ERROR);
+		errors.record(p);
+		Parser.skipToNextToken(p);
+		errors.record(p);
+	}
+	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors) -> VstFile {
+		var file = VstFile.new(path, input);
+		var p = AnalysisParserState.new(file, errors);
+		p.enableFunExprs = CLOptions.FUN_EXPRS.get();
+		p.enableSimpleBodies = CLOptions.SIMPLE_BODIES.get();
+		p.enableOpenTypes = CLOptions.OPEN_TYPES.get();
+		p.enableDescriptors = CLOptions.DESCRIPTORS.get();
+		while (p.curByte != Parser.END) {
+			if (!Parser.parseToplevelDecl(p, file)) break;
+		}
+		if (file.synthetic != null) file.synthetic.members = Lists.reverse(file.synthetic.members);
+		return file;
+	}
+}

@@ -226,8 +226,8 @@ Deliverables:
 - Full-text synchronization first (`TextDocumentSyncKind.Full`), with document version checks. *(present; stale/out-of-order changes rejected)*
 - URI/path normalization and in-memory overlays. *(present; [document-store rules](docs/architecture.md#document-store))*
 - Dedicated position/range conversion module.
-- `Parser.parseFile` adapter for one open document.
-- Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics.
+- Single-file parser adapter for one open document. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
+- Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics. *(present; [publication contract](docs/architecture.md#parser-diagnostics))*
 - `textDocument/documentSymbol` using VST declarations; the `vctags` traversal is a useful model.
 - A manually launchable LazyVim config and VS Code development client.
 
@@ -600,7 +600,7 @@ For LSP, read only the relevant sections of the [3.17 specification](https://mic
 ### Week 4
 
 - Implement `didOpen`, `didChange`, and `didClose` with full-text synchronization.
-- Call `Parser.parseFile` on the unsaved overlay.
+- Use the [single-file compiler adapter](docs/architecture.md#compiler-adapter) on the unsaved overlay.
 - Publish/clear syntax diagnostics.
 - Implement document symbols with your own VST visitor informed by Virgil's licensed `vctags` example.
 - Demo the same edit in LazyVim and VS Code and tag an internal `v0.0.1` checkpoint if the transcript suite is green.

@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Single-file parser diagnostics for unsaved document overlays, with corrected comment offsets. See [Parser diagnostics](docs/architecture.md#parser-diagnostics) for publication behavior and [Compiler adapter](docs/architecture.md#compiler-adapter) for parsing and recovery details.
 - Hierarchical VST-derived document symbols for open, unsaved buffers. See [Document symbols](docs/architecture.md#document-symbols) for supported declarations, ranges, and failure behavior.
 - Versioned full-text document synchronization (`didOpen`, `didChange`, `didSave`, `didClose`) with exactly matching `initialize` capabilities. Stale/out-of-order changes, duplicate opens, and unsupported incremental changes are ignored and logged to stderr. In-memory overlays override disk through an injected reader, and local Linux/macOS file URIs are normalized to canonical keys. See [Document store](docs/architecture.md#document-store) for version, save, and URI identity rules. Unit and golden transcript tests cover synchronization and rejection sequences.
 - Repository foundation: Apache-2.0 license, roadmap, community documents, issue and pull-request templates, and CI.

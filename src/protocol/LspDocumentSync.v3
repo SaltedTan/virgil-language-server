@@ -6,6 +6,10 @@
 // Rejections are reported through an injected warning sink, never as replies.
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	var capacityWarning: string -> void;
+	// Accepted events only; retained records identify the version analyzed or closed.
+	var onUpdate: DocumentOverlay -> void;
+	var onClose: DocumentOverlay -> void;
+
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher
 			.onNotification("textDocument/didOpen", didOpen)
@@ -27,8 +31,11 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			ignored(n, "invalid textDocument (expected uri, languageId, version, text)");
 			return;
 		}
-		ignored(n, store.open(JsonValue.String.!(doc["uri"]).v, JsonValue.String.!(doc["languageId"]).v,
-			JsonValue.Int.!(doc["version"]).v, JsonValue.String.!(doc["text"]).v));
+		var uri = JsonValue.String.!(doc["uri"]).v;
+		var reason = store.open(uri, JsonValue.String.!(doc["languageId"]).v,
+			JsonValue.Int.!(doc["version"]).v, JsonValue.String.!(doc["text"]).v);
+		ignored(n, reason);
+		if (reason == null && onUpdate != null) onUpdate(store.overlay(uri));
 	}
 	private def didChange(n: JsonRpcMessage.Notification) {
 		var params = members(n), doc = objectMember(params, "textDocument");
@@ -60,7 +67,10 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			text = JsonValue.String.!(obj["text"]).v;
 		}
 		// Each event replaces the whole text; only the last one survives.
-		ignored(n, store.change(JsonValue.String.!(doc["uri"]).v, JsonValue.Int.!(doc["version"]).v, text));
+		var uri = JsonValue.String.!(doc["uri"]).v;
+		var reason = store.change(uri, JsonValue.Int.!(doc["version"]).v, text);
+		ignored(n, reason);
+		if (reason == null && onUpdate != null) onUpdate(store.overlay(uri));
 	}
 	private def didSave(n: JsonRpcMessage.Notification) {
 		var params = members(n), uri = documentUri(params);
@@ -73,8 +83,13 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	}
 	private def didClose(n: JsonRpcMessage.Notification) {
 		var uri = documentUri(members(n));
-		if (uri == null) ignored(n, "invalid didClose params");
-		else ignored(n, store.close(uri));
+		if (uri == null) {
+			ignored(n, "invalid didClose params");
+			return;
+		}
+		var doc = store.overlay(uri), reason = store.close(uri);
+		ignored(n, reason);
+		if (reason == null && onClose != null) onClose(doc);
 	}
 	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
 		if (reason == null) return;

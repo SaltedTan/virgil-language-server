@@ -36,6 +36,8 @@ class LspServer {
 	private var documentWarning: Array<byte>;
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
+	// Server-initiated notifications are separate from handle()'s replies.
+	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private def documentSymbols = LspDocumentSymbols.new(documents);
 	def var state = LspServerState.UNINITIALIZED;
@@ -53,6 +55,12 @@ class LspServer {
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
+		var diagnostics = LspParserDiagnostics.new(publishNotification);
+		documentSync.onUpdate = diagnostics.update;
+		documentSync.onClose = diagnostics.close;
+	}
+	private def publishNotification(payload: Array<byte>) {
+		if (sendNotification != null) sendNotification(payload);
 	}
 	private def ignoredDocumentSync(reason: string) {
 		if (warnDocumentSync != null) warnDocumentSync(reason);

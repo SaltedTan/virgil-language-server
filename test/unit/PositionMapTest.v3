@@ -21,7 +21,7 @@ def X = [
 	T("PositionMap:zero_length_range", test_zero_length_range),
 	T("PositionMap:multiline_range", test_multiline_range),
 	T("PositionMap:matches_aeneas_columns", test_matches_aeneas_columns),
-	T("PositionMap:known_aeneas_block_comment_divergence", test_known_aeneas_block_comment_divergence),
+	T("PositionMap:analysis_block_comment_offsets", test_analysis_block_comment_offsets),
 	T("PositionMap:round_trip_generated", test_round_trip_generated),
 	()
 ];
@@ -361,7 +361,8 @@ def test_matches_aeneas_columns(t: Tester) {
 	checkAeneasColumn(t, "component C {\n\tdef x = 1;\t\r\n}\n", "\r");
 }
 
-def test_known_aeneas_block_comment_divergence(t: Tester) {
+// Diagnostic consumers use adapter byte offsets, not compiler column reversal.
+def test_analysis_block_comment_offsets(t: Tester) {
 	var text = "component C {\n/*\t*/ def x = ;\n}\n";
 	var r = AeneasAdapter.parseFile("comment-columns.v3", text);
 	if (r.diagnostics.length == 0) return t.fail("expected a syntax error");
@@ -369,6 +370,8 @@ def test_known_aeneas_block_comment_divergence(t: Tester) {
 	t.asserti(2, d.beginLine);
 	t.asserti(15, d.beginColumn);
 	var offset = indexOf(text, ";");
+	t.asserti(offset, d.beginOffset);
+	t.asserti(offset, d.endOffset);
 	for (encoding in ENCODINGS) {
 		var m = PositionMap.new(text, encoding);
 		assertPosition(t, 1, 14, m.offsetToPosition(offset));
@@ -378,9 +381,8 @@ def test_known_aeneas_block_comment_divergence(t: Tester) {
 		t.asserti(offset, m.compilerToOffset(2, 20));
 		t.asserti(offset - 5, m.compilerToOffset(d.beginLine, d.beginColumn));
 		assertPosition(t, 1, 9, m.compilerToPosition(d.beginLine, d.beginColumn));
-		var range = m.compilerRangeToLsp(d.beginLine, d.beginColumn, d.beginLine, d.beginColumn);
-		assertPosition(t, 1, 9, range.start);
-		assertPosition(t, 1, 9, range.end);
+		assertPosition(t, 1, 14, m.offsetToPosition(d.beginOffset));
+		assertPosition(t, 1, 14, m.offsetToPosition(d.endOffset));
 	}
 }
 
