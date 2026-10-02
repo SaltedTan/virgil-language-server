@@ -42,6 +42,7 @@ class PositionMap {
 	private def lspEnds = Vector<int>.new();
 	// Compiler line {i + 1} starts at byte {compilerStarts[i]}.
 	private def compilerStarts = Vector<int>.new();
+	private var lspCharacters: Array<int>;
 
 	new(text, encoding) {
 		var max = text.length;
@@ -65,6 +66,18 @@ class PositionMap {
 			i++;
 		}
 		lspEnds.put(max);
+		lspCharacters = Array<int>.new(max + 1);
+		for (line < lspStarts.length) {
+			var i = lspStarts[line], end = lspEnds[line], character = 0;
+			while (i < end) {
+				var len = sequenceLength(i);
+				for (j < len) lspCharacters[i + j] = character;
+				character += units(i, len);
+				i += len;
+			}
+			var next = if(line + 1 < lspStarts.length, lspStarts[line + 1], max + 1);
+			for (i = end; i < next; i++) lspCharacters[i] = character;
+		}
 	}
 
 	// The number of LSP lines. A document that ends with a line terminator
@@ -85,15 +98,7 @@ class PositionMap {
 	def offsetToPosition(offset: int) -> LspPosition {
 		offset = clampOffset(offset);
 		var line = findLine(lspStarts, offset);
-		var i = lspStarts[line], end = lspEnds[line], character = 0;
-		if (offset > end) offset = end;
-		while (i < offset) {
-			var len = sequenceLength(i);
-			if (i + len > offset) break;
-			character += units(i, len);
-			i += len;
-		}
-		return LspPosition.new(line, character);
+		return LspPosition.new(line, lspCharacters[offset]);
 	}
 	// Converts the LSP position {line}:{character} to a byte offset.
 	def positionToOffset(line: int, character: int) -> int {

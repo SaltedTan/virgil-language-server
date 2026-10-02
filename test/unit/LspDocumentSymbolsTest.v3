@@ -10,6 +10,7 @@ def X = [
 	T("LspDocumentSymbols:header_fields_cr", test_symbol_header_fields),
 	T("LspDocumentSymbols:bound_index_operators", test_symbol_bound_index_operators),
 	T("LspDocumentSymbols:expression_bodies", test_symbol_expression_bodies),
+	T("LspDocumentSymbols:large_single_line", test_symbol_large_single_line),
 	()
 ];
 
@@ -177,6 +178,31 @@ def test_symbol_expression_bodies(t: Tester) {
 			checkPosition(t, r["end"], line, declaration.length);
 		}
 	}
+}
+
+def test_symbol_large_single_line(t: Tester) {
+	var count = 10000;
+	var buf = StringBuilder.new().puts("component C { var ");
+	var names = Array<string>.new(count), starts = Array<int>.new(count);
+	for (i < count) {
+		if (i > 0) buf.puts(", ");
+		starts[i] = buf.length;
+		names[i] = Strings.format1("f%d", i);
+		buf.puts(names[i]).puts(": int");
+	}
+	buf.puts(";");
+	var fieldEnd = buf.length;
+	var text = buf.puts(" }").extract();
+	var s = running(t);
+	s.documents.open(URI, "virgil", 1, text);
+	var started = System.ticksUs();
+	var a = symbols(t, s);
+	t.assert(System.ticksUs() - started < 5000000, "large outline must complete within five seconds");
+	t.asserti(1, a.length);
+	checkSymbol(t, a[0], "C", 3, 0, 0, 0, text.length, 0, 10);
+	var c = children(a[0]);
+	t.asserti(count, c.length);
+	for (i < count) checkSymbol(t, c[i], names[i], 8, 0, 14, 0, fieldEnd, 0, starts[i]);
 }
 
 def test_symbol_params(t: Tester) {
