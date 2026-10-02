@@ -182,5 +182,7 @@ expect_stdio "stdio rejects a limit too large for the heap" 2 "$TMP/empty" \
     --max-message-bytes=999999999 < "$TMP/in"
 expect "stdio rejects unknown options" 2 "" "unknown option" -- --stdio --bogus
 
+bash "$ROOT/test/cli/bench-analysis.sh" || { fail=$((fail + 1)); echo "FAIL: benchmark driver regression tests"; }
+
 echo "cli: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -39,12 +39,19 @@ build/virgil-lsp analyze --bindings test/fixtures/analysis/two-file/*.v3
 scripts/bench-analysis.sh        # parse and verify timings: small fixture and the Aeneas sources
 ```
 
+The benchmark accepts a positive run count (default 10), with `EXE` and `VIRGIL`
+overrides for the executable and Virgil checkout. Each run must succeed and emit
+parse/verify timings on stderr. Otherwise it reports the input set and run number,
+the exit status for a failed command, and the command's stderr, then exits non-zero
+without printing a summary for that input set. Temporary files are cleaned up on
+exit, including failure or interruption.
+
 ## Tests
 
 | Location | What | How it runs |
 | --- | --- | --- |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`) | `build/unit-tests [glob]` |
-| `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness | `test/cli/run.sh build/virgil-lsp` |
+| `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
 

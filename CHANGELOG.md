@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Occurrence collection no longer traps on a null type binding left by verification errors, including `E.set.all` on enums with more than 64 cases.
+- `scripts/bench-analysis.sh` reports failed input sets, command exit statuses and stderr, rejects runs without timing samples, and cleans up temporary files on exit.
 
 ### Added
 
