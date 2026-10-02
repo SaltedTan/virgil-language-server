@@ -7,6 +7,7 @@ def X = [
 	T("LspDocumentSync:atomic_change", test_sync_atomic_change),
 	T("LspDocumentSync:invalid_params", test_sync_invalid_params),
 	T("LspDocumentSync:lifecycle", test_sync_lifecycle),
+	T("LspDocumentSync:capacity_warning", test_sync_capacity_warning),
 	()
 ];
 
@@ -18,7 +19,7 @@ class DocumentWarningRecorder {
 def INITIALIZE = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
 def SHUTDOWN = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}";
 def runningServer(t: Tester) -> LspServer {
-	var server = LspServer.new();
+	var server = LspServer.new(DocumentLimits.MAX_BYTES);
 	t.assert(server.handle(INITIALIZE) != null, "initialize must reply");
 	return server;
 }
@@ -102,7 +103,7 @@ def test_sync_invalid_params(t: Tester) {
 }
 
 def test_sync_lifecycle(t: Tester) {
-	var server = LspServer.new(), rec = DocumentWarningRecorder.new();
+	var server = LspServer.new(DocumentLimits.MAX_BYTES), rec = DocumentWarningRecorder.new();
 	server.warnDocumentSync = rec.warn;
 	syncNotify(t, server, "didOpen", SYNC_OPEN);
 	t.assert(server.documents.overlay("file:/a b.v3") == null, "pre-initialize open must be dropped");
@@ -113,4 +114,30 @@ def test_sync_lifecycle(t: Tester) {
 	syncNotify(t, server, "didClose", SYNC_ID);
 	t.asserti(1, server.documents.overlay("file:/a b.v3").version);
 	t.asserti(0, rec.lines.length);
+}
+
+// The output is an LSP server notification, not a reply to didOpen/didChange.
+def test_sync_capacity_warning(t: Tester) {
+	var capacity = DocumentLimits.RECORD_BYTES + "file:///a%20b.v3".length + "virgil".length + 8;
+	var server = LspServer.new(capacity), rec = DocumentWarningRecorder.new();
+	server.warnDocumentSync = rec.warn;
+	t.assert(server.handle(INITIALIZE) != null, "initialize must reply");
+	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	var doc = server.documents.overlay("file:/a b.v3");
+	var change = Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":%s}",
+		syncChange(2, "[{\"text\":\"123456789\"}]"));
+	var warning = server.handle(change);
+	t.assert_string(Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"window/showMessage\",\"params\":{\"message\":\"ignored textDocument/didChange: %s\",\"type\":2}}", DocumentLimits.EXCEEDED), warning);
+	t.assert(server.documents.overlay(doc.uri) == doc, "warning must preserve the accepted overlay");
+	var open = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"untitled:b\",\"languageId\":\"virgil\",\"version\":1,\"text\":\"\"}}}";
+	t.assert_string(Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"window/showMessage\",\"params\":{\"message\":\"ignored textDocument/didOpen: %s\",\"type\":2}}", DocumentLimits.EXCEEDED), server.handle(open));
+	t.assert(server.documents.overlay("untitled:b") == null, "over-capacity document must stay closed");
+	t.asserti(2, rec.lines.length);
+	// A later smaller update at the rejected version succeeds. No warning leaks.
+	syncNotify(t, server, "didChange", syncChange(2, "[{\"text\":\"123456789\"},{\"text\":\"é\"}]"));
+	t.asserti(2, server.documents.overlay(doc.uri).version);
+	t.assert_string("é", server.documents.read(doc.uri));
+	syncNotify(t, server, "didClose", SYNC_ID);
+	t.assert(server.handle(open) == null, "close must free room for the rejected open");
+	t.assert(server.documents.overlay("untitled:b") != null, "retry open must succeed");
 }

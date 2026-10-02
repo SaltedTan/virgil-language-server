@@ -1,6 +1,14 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
+// Aggregate retained-overlay budget, independent of the per-message limit.
+// Charge metadata too, so empty documents cannot bypass the bound.
+component DocumentLimits {
+	def MAX_BYTES = 1024 * 1024;
+	def RECORD_BYTES = 256;
+	def EXCEEDED = "aggregate open-document capacity exceeded; close documents or reduce text and retry";
+}
+
 // An accepted version of an open document. Treat text bytes as read-only.
 // Updates replace the record, so a retained record keeps its original version.
 class DocumentOverlay(uri: string, languageId: string, version: int, text: Array<byte>) { }
@@ -11,7 +19,11 @@ class DocumentOverlay(uri: string, languageId: string, version: int, text: Array
 class DocumentStore {
 	private var reader: string -> Array<byte>;
 
-	new(reader) { }
+	private var capacity: int;
+	private var used: long;
+
+	// Supply MAX_BYTES in production; smaller budgets exercise boundaries in tests.
+	new(reader, capacity) { }
 	// The stdio entry point supplies its disk reader; tests supply a fake.
 	def withReader(reader: string -> Array<byte>) -> this {
 		this.reader = reader;
@@ -37,7 +49,10 @@ class DocumentStore {
 		// Duplicate opens are ignored, even with a newer version. A client must
 		// close first to begin a new version sequence.
 		if (overlays[key] != null) return "document is already open";
+		var charge = cost(key, languageId, text);
+		if (charge > long.view(capacity) - used) return DocumentLimits.EXCEEDED;
 		overlays[key] = DocumentOverlay.new(key, languageId, version, text);
+		used += charge;
 		return null;
 	}
 	def change(uri: string, version: int, text: Array<byte>) -> string {
@@ -45,8 +60,19 @@ class DocumentStore {
 		if (doc == null) return "document is not open";
 		if (version <= doc.version) return "document version is not newer";
 		if (text == null) return "missing document text";
+		var remaining = used - cost(doc.uri, doc.languageId, doc.text);
+		var charge = cost(doc.uri, doc.languageId, text);
+		if (charge > long.view(capacity) - remaining) return DocumentLimits.EXCEEDED;
+		// The pinned map can cache a detached bucket after resizing. Remove before
+		// reinserting to keep the retained entry and byte accounting in sync.
+		overlays.remove(doc.uri);
 		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text);
+		used = remaining + charge;
 		return null;
+	}
+	private def cost(uri: string, languageId: string, text: Array<byte>) -> long {
+		return long.view(DocumentLimits.RECORD_BYTES) + long.view(uri.length) +
+			long.view(languageId.length) + long.view(text.length);
 	}
 	def save(uri: string) -> string {
 		if (overlay(uri) == null) return "document is not open";
@@ -56,6 +82,7 @@ class DocumentStore {
 		var doc = overlay(uri);
 		if (doc == null) return "document is not open";
 		overlays.remove(doc.uri);
+		used -= cost(doc.uri, doc.languageId, doc.text);
 		return null;
 	}
 }
