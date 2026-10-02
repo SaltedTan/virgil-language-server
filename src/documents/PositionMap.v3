@@ -42,10 +42,7 @@ class LspRange(start: LspPosition, end: LspPosition) { }
 //   That is the next tab stop of width 8 (9, 17, 25, ...), except that a tab
 //   at a column that is a multiple of 8 skips a stop: from column 8 it moves
 //   to 17, not 9.
-// Aeneas departs from this rule in a few places, and positions it reports
-// after them on the same line are shifted: inside a block comment it counts a
-// tab as one column, and after a line comment that ends the file it does not
-// advance at all.
+// For Aeneas's comment-column exceptions, see {nextColumn}.
 //
 // LSP positions follow LSP 3.17:
 // - Lines are zero-based and end at "\n", "\r\n", or "\r". The terminator is
@@ -72,7 +69,7 @@ class PositionMap {
 	private def compilerStarts = Vector<int>.new();
 
 	new(text, encoding) {
-		var max = if(text == null, 0, text.length);
+		var max = text.length;
 		lspStarts.put(0);
 		compilerStarts.put(0);
 		var i = 0;
@@ -106,7 +103,7 @@ class PositionMap {
 	}
 	// The length of the text in bytes.
 	def length() -> int {
-		return if(text == null, 0, text.length);
+		return text.length;
 	}
 
 	// Converts byte {offset} to an LSP position.
@@ -197,6 +194,12 @@ class PositionMap {
 		return lo;
 	}
 	// The compiler column after byte {b} at column {c}.
+	// Aeneas skipToNextToken counts every non-newline byte inside block
+	// comments (tabs included) as one column, and does not advance columns
+	// inside line comments. Compiler columns after a block-comment tab on the
+	// same line, and EOF after a trailing line comment, do not map exactly.
+	// https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/Parser.v3#L1444-L1511
+	// Issue #8 will resolve this by having the analysis layer provide byte positions.
 	private def nextColumn(c: int, b: byte) -> int {
 		return if(b == '\t', 1 + ((c + 8) / 8) * 8, c + 1);
 	}

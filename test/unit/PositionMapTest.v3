@@ -21,6 +21,7 @@ def X = [
 	T("PositionMap:zero_length_range", test_zero_length_range),
 	T("PositionMap:multiline_range", test_multiline_range),
 	T("PositionMap:matches_aeneas_columns", test_matches_aeneas_columns),
+	T("PositionMap:known_aeneas_block_comment_divergence", test_known_aeneas_block_comment_divergence),
 	T("PositionMap:round_trip_generated", test_round_trip_generated),
 	()
 ];
@@ -53,9 +54,6 @@ def test_empty_document(t: Tester) {
 		assertCompiler(t, 1, 1, m.offsetToCompiler(0));
 		t.asserti(0, m.compilerToOffset(1, 1));
 	}
-	var m = PositionMap.new(null, PositionEncoding.UTF16);
-	t.asserti(1, m.lineCount());
-	t.asserti(0, m.positionToOffset(0, 5));
 }
 
 def test_lf_lines(t: Tester) {
@@ -361,6 +359,29 @@ def test_matches_aeneas_columns(t: Tester) {
 	checkAeneasColumn(t, "component C {\n\tdef \xC3\xA9 = 1;\n}\n", "\xC3");
 	// Aeneas rejects '\r' as an invalid character, at its column.
 	checkAeneasColumn(t, "component C {\n\tdef x = 1;\t\r\n}\n", "\r");
+}
+
+def test_known_aeneas_block_comment_divergence(t: Tester) {
+	var text = "component C {\n/*\t*/ def x = ;\n}\n";
+	var r = AeneasAdapter.parseFile("comment-columns.v3", text);
+	if (r.diagnostics.length == 0) return t.fail("expected a syntax error");
+	var d = r.diagnostics[0];
+	t.asserti(2, d.beginLine);
+	t.asserti(15, d.beginColumn);
+	var offset = indexOf(text, ";");
+	for (encoding in ENCODINGS) {
+		var m = PositionMap.new(text, encoding);
+		assertPosition(t, 1, 14, m.offsetToPosition(offset));
+		t.asserti(offset, m.positionToOffset(1, 14));
+		assertCompiler(t, 2, 20, m.offsetToCompiler(offset));
+		assertCompiler(t, 2, 20, m.positionToCompiler(1, 14));
+		t.asserti(offset, m.compilerToOffset(2, 20));
+		t.asserti(offset - 5, m.compilerToOffset(d.beginLine, d.beginColumn));
+		assertPosition(t, 1, 9, m.compilerToPosition(d.beginLine, d.beginColumn));
+		var range = m.compilerRangeToLsp(d.beginLine, d.beginColumn, d.beginLine, d.beginColumn);
+		assertPosition(t, 1, 9, range.start);
+		assertPosition(t, 1, 9, range.end);
+	}
 }
 
 // A fragment of generated text: one character or line terminator, with the
