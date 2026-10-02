@@ -14,6 +14,8 @@ def X = [
 	T("LspFrameReader:payload_limit", test_payload_limit),
 	T("LspFrameReader:large_payload", test_large_payload),
 	T("LspFrameReader:large_declared_length", test_large_declared_length),
+	T("LspFrameReader:large_skipped_chunk", test_large_skipped_chunk),
+	T("LspFrameReader:large_chunk_after_message", test_large_chunk_after_message),
 	T("LspFrameReader:invalid_content_length", test_invalid_content_length),
 	T("LspFrameReader:malformed_lines", test_malformed_lines),
 	T("LspFrameReader:invalid_bytes", test_invalid_bytes),
@@ -192,6 +194,81 @@ def test_large_declared_length(t: Tester) {
 	r.feed("{}");
 	t.assert(LspFrame.Incomplete.?(r.next()), "expected an incomplete frame");
 	t.assertz(true, r.midMessage());
+}
+// The length of the oversized payloads below, and the most the reader may
+// allocate or keep for them.
+def HUGE = 20000000;
+def SMALL = 65536;
+// Returns the heap bytes still reachable, after a full collection.
+def liveBytes() -> long {
+	RiGc.forceGC();
+	return Semispace.fromSpaceUsed();
+}
+// Returns {parts}, a message with a {HUGE}-byte payload, and {after}, in one
+// array.
+def withHuge(parts: Array<string>, after: string) -> Array<byte> {
+	var head = concat([concat(parts), Strings.format1("Content-Length: %d\r\n\r\n", HUGE)]);
+	var data = Array<byte>.new(head.length + HUGE + after.length);
+	for (i < head.length) data[i] = head[i];
+	for (i < after.length) data[head.length + HUGE + i] = after[i];
+	return data;
+}
+// Feeds a huge skipped message, then {after}, in one chunk, and returns the
+// frames. Checks that reading it allocates little. The chunk is unreachable
+// once this returns.
+def feedHuge(t: Tester, r: LspFrameReader, after: string) -> string {
+	var data = withHuge([], after);
+	var before = liveBytes();
+	var buf = StringBuilder.new();
+	drain(r.feed(data), buf);
+	var allocated = Semispace.fromSpaceUsed() - before;
+	if (allocated > SMALL) t.fail1("reading the chunk allocated %d bytes", allocated);
+	return buf.toString();
+}
+def test_large_skipped_chunk(t: Tester) {
+	// A skipped payload fed in one chunk is neither copied nor kept.
+	var r = LspFrameReader.new(64);
+	var base = liveBytes();
+	var skipped = Strings.format2("skip:payload of %d bytes is longer than the limit of %d bytes", HUGE, 64);
+	t.assert_string(skipped, feedHuge(t, r, ""));
+	var kept = liveBytes() - base;
+	if (kept > SMALL) return t.fail1("kept %d bytes after the skipped message", kept);
+	r.feed(frame("{}"));
+	t.assert_string("msg:{}", renderFrame(r.next()));
+	kept = liveBytes() - base;
+	if (kept > SMALL) return t.fail1("kept %d bytes after the next message", kept);
+	// A message in the same chunk as the skipped payload is still read.
+	t.assert_string(Strings.format1("%s | msg:[]", skipped), feedHuge(t, r, frame("[]")));
+	kept = liveBytes() - base;
+	if (kept > SMALL) return t.fail1("kept %d bytes after the message in the same chunk", kept);
+	t.assertz(false, r.midMessage());
+}
+// Feeds {parts}, then a huge message, then {after}, in one chunk, and returns
+// the frames.
+def feedAfterMessages(r: LspFrameReader, parts: Array<string>, after: string) -> string {
+	var buf = StringBuilder.new();
+	drain(r.feed(withHuge(parts, after)), buf);
+	return buf.toString();
+}
+def test_large_chunk_after_message(t: Tester) {
+	// Input after a complete message is buffered until {next} returns it, but
+	// the buffer is released once that input has been read.
+	var r = LspFrameReader.new(64);
+	var base = liveBytes();
+	var skipped = Strings.format2("skip:payload of %d bytes is longer than the limit of %d bytes", HUGE, 64);
+	var got = feedAfterMessages(r, [frame("{}")], frame("[]"));
+	t.assert_string(Strings.format1("msg:{} | %s | msg:[]", skipped), got);
+	var kept = liveBytes() - base;
+	if (kept > SMALL) return t.fail1("kept %d bytes after the chunk was read", kept);
+	// The same, when the chunk ends with part of the next header.
+	got = feedAfterMessages(r, [frame("{}")], "Content-Le");
+	t.assert_string(Strings.format1("msg:{} | %s", skipped), got);
+	kept = liveBytes() - base;
+	if (kept > SMALL) return t.fail1("kept %d bytes with part of a header left", kept);
+	t.assertz(true, r.midMessage());
+	r.feed("ngth: 2\r\n\r\n{}");
+	t.assert_string("msg:{}", renderFrame(r.next()));
+	t.assertz(false, r.midMessage());
 }
 def test_invalid_content_length(t: Tester) {
 	var values = ["", "abc", "-1", "+1", "1 2", "0x10", "1.0", "1000000000000000"];

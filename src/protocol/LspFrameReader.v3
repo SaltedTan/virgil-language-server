@@ -42,6 +42,12 @@ type LspFrame {
 // - A payload longer than {maxPayload} bytes is skipped without being buffered.
 //   A payload within the limit is buffered as its bytes arrive, so a header
 //   alone never allocates the length it declares.
+// - Payload bytes go straight from a chunk into the payload, and skipped bytes
+//   are dropped without being copied. The reader buffers only a header, up to
+//   {LspFraming.MAX_HEADER_BYTES}, and any input after a complete frame until
+//   {next} returns it. A caller that takes out frames after each chunk, as
+//   {LspTransport} does, so buffers at most one chunk beyond a header, and the
+//   buffer shrinks back once that input has been read.
 // - Unknown header fields are ignored.
 // - A header is malformed if it contains a byte that isn't printable ASCII, a
 //   space, or a tab (apart from the CR LF line ends), has a CR or LF outside a
@@ -49,7 +55,7 @@ type LspFrame {
 //   valid Content-Length, repeats Content-Length or Content-Type, or is longer
 //   than {LspFraming.MAX_HEADER_BYTES}.
 class LspFrameReader(maxPayload: int) {
-	private var input = Array<byte>.new(4096);
+	private var input = Array<byte>.new(BUFFER_SIZE);
 	private var pos: int;		// start of the unread input
 	private var limit: int;		// end of the unread input
 	private var scanned: int;	// header bytes after {pos} already checked
@@ -60,9 +66,85 @@ class LspFrameReader(maxPayload: int) {
 	private var skipRemaining: long;	// payload bytes left to skip
 	private var failure: string;	// set once the header is malformed
 
-	// Appends {data} to the unread input. Ignored once the stream is malformed.
+	// Takes in {data}. Ignored once the stream is malformed. The bytes of the
+	// payload being read are copied straight into it, and those of a payload
+	// being skipped are dropped. Only a header, and input after a complete
+	// frame that {next} hasn't returned yet, are copied into the buffer.
 	def feed(data: Range<byte>) -> this {
-		if (failure != null) return;
+		while (failure == null && data.length > 0) {
+			if (advance()) break;
+			if (failure != null) return;
+			// The buffered input has been read, apart from part of a header.
+			if (payload != null || skipReason != null) {
+				data = data[consume(data) ...];
+			} else {
+				// Buffer no more than the header limit allows, so that the end
+				// of the header, or its failure, is found before the bytes
+				// after it are copied.
+				var n = LspFraming.MAX_HEADER_BYTES - (limit - pos);
+				if (n > data.length) n = data.length;
+				append(data[0 ..+ n]);
+				data = data[n ...];
+			}
+		}
+		if (failure == null) append(data);
+	}
+	// Reads the next frame. Returns {LspFrame.Incomplete} if more input is
+	// needed.
+	def next() -> LspFrame {
+		if (failure == null && advance()) {
+			if (skipReason != null) {
+				var reason = skipReason;
+				skipReason = null;
+				return LspFrame.Skipped(reason);
+			}
+			var result = payload;
+			payload = null;
+			return LspFrame.Message(result);
+		}
+		if (failure != null) return LspFrame.Malformed(failure);
+		return LspFrame.Incomplete;
+	}
+	// Returns true if part of a message has been fed in but not yet returned,
+	// so that the end of the input would cut that message short.
+	def midMessage() -> bool {
+		return failure == null && (payload != null || skipReason != null || limit > pos);
+	}
+
+	// Reads the buffered input until the next frame is complete. Returns true
+	// if it is.
+	private def advance() -> bool {
+		if (payload == null && skipReason == null && !readHeader()) return false;
+		pos += consume(input[pos ... limit]);
+		release();
+		return if(skipReason != null, skipRemaining == 0, filled == length);
+	}
+	// Reads the start of {data} into the payload being read or skipped.
+	// Returns how many bytes belonged to it.
+	private def consume(data: Range<byte>) -> int {
+		if (skipReason != null) {
+			var n = if(skipRemaining < data.length, int.view(skipRemaining), data.length);
+			skipRemaining -= n;
+			return n;
+		}
+		var n = length - filled;
+		if (n > data.length) n = data.length;
+		if (filled + n > payload.length) {
+			// Grow with the bytes received, not to the declared length, which
+			// may never arrive. Doubling keeps the copying linear.
+			var size = if(payload.length < length - payload.length, 2 * payload.length, length);
+			if (size < filled + n) size = filled + n;
+			var dest = Array<byte>.new(size);
+			for (i < filled) dest[i] = payload[i];
+			payload = dest;
+		}
+		var to = payload[filled ..+ n];
+		for (i < n) to[i] = data[i];
+		filled += n;
+		return n;
+	}
+	// Appends {data} to the unread input.
+	private def append(data: Range<byte>) {
 		var n = data.length, live = limit - pos;
 		if (limit + n > input.length) {
 			// Move the unread input to the front, growing the buffer if needed.
@@ -77,50 +159,18 @@ class LspFrameReader(maxPayload: int) {
 		for (i < n) to[i] = data[i];
 		limit += n;
 	}
-	// Reads the next frame from the unread input. Returns {LspFrame.Incomplete}
-	// if more input is needed.
-	def next() -> LspFrame {
-		if (failure != null) return LspFrame.Malformed(failure);
-		if (payload == null && skipReason == null && !readHeader()) {
-			if (failure != null) return LspFrame.Malformed(failure);
-			return LspFrame.Incomplete;
-		}
-		var available = limit - pos;
-		if (skipReason != null) {
-			var n = if(skipRemaining < available, int.view(skipRemaining), available);
-			pos += n;
-			skipRemaining -= n;
-			if (skipRemaining > 0) return LspFrame.Incomplete;
-			var reason = skipReason;
-			skipReason = null;
-			return LspFrame.Skipped(reason);
-		}
-		var n = length - filled;
-		if (n > available) n = available;
-		if (filled + n > payload.length) {
-			// Grow with the bytes received, not to the declared length, which
-			// may never arrive. Doubling keeps the copying linear.
-			var size = if(payload.length < length - payload.length, 2 * payload.length, length);
-			if (size < filled + n) size = filled + n;
-			var dest = Array<byte>.new(size);
-			for (i < filled) dest[i] = payload[i];
-			payload = dest;
-		}
-		var to = payload[filled ..+ n];
-		for (i < n) to[i] = input[pos + i];
-		pos += n;
-		filled += n;
-		if (filled < length) return LspFrame.Incomplete;
-		var result = payload;
-		payload = null;
-		return LspFrame.Message(result);
+	// Once no more than a header's worth of unread input is left in a buffer
+	// grown past the header limit, moves it to a smaller buffer, so that a long
+	// chunk isn't kept after it has been read.
+	private def release() {
+		var max = LspFraming.MAX_HEADER_BYTES, live = limit - pos;
+		if (input.length <= max || live > max) return;
+		var dest = Array<byte>.new(if(live > BUFFER_SIZE, live, BUFFER_SIZE));
+		for (i < live) dest[i] = input[pos + i];
+		input = dest;
+		pos = 0;
+		limit = live;
 	}
-	// Returns true if part of a message has been fed in but not yet returned,
-	// so that the end of the input would cut that message short.
-	def midMessage() -> bool {
-		return failure == null && (payload != null || skipReason != null || limit > pos);
-	}
-
 	// Looks for the end of the header, checking each byte on the way, so that
 	// a bad header fails as soon as the byte that proves it arrives. Parses the
 	// header and returns true once the end has been found.
@@ -184,8 +234,8 @@ class LspFrameReader(maxPayload: int) {
 			skip(Strings.format1("payload charset \"%s\" is not utf-8", charset), contentLength);
 			return true;
 		}
-		// The buffer starts with room for the payload bytes already fed in,
-		// and {next} grows it as more arrive.
+		// The buffer starts with room for the payload bytes already buffered,
+		// and {consume} grows it as more arrive.
 		length = int.view(contentLength);
 		var available = limit - pos;
 		payload = Array<byte>.new(if(available < length, available, length));
@@ -229,6 +279,8 @@ class LspFrameReader(maxPayload: int) {
 	}
 }
 
+// The initial size of {LspFrameReader}'s input buffer.
+def BUFFER_SIZE = 4096;
 // Parses a Content-Length value: one or more decimal digits. Returns -1 if it
 // is invalid or longer than 15 digits, which no message could reach.
 def parseLength(s: string) -> long {
