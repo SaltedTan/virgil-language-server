@@ -81,7 +81,7 @@ Aeneas's pinned [`Parser.v3` `skipToNextToken`](https://github.com/titzer/virgil
 
 ## Document store
 
-`DocumentStore` (`src/documents/DocumentStore.v3`) owns open-document overlays, keyed by `DocumentUri.normalize(uri)`. It does no file I/O: its injected reader takes a decoded local absolute path and returns bytes, or `null` if unavailable. The stdio entry point injects `System.fileLoad`. `read(uri)` always returns the open overlay first, even when it is empty; otherwise it reads a local file afresh. Non-`file:` documents have no disk fallback. `overlay(uri)` returns only an open document's record (canonical URI, language ID, version, text, and saved flag). Updates replace records, so retained records preserve the version and text they captured; callers must treat their text bytes as read-only. Snapshot publication gates remain planned below.
+`DocumentStore` (`src/documents/DocumentStore.v3`) owns open-document overlays, keyed by `DocumentUri.normalize(uri)`. It does no file I/O: its injected reader takes a decoded local absolute path and returns bytes, or `null` if unavailable. The stdio entry point injects `System.fileLoad`. `read(uri)` always returns the open overlay first, even when it is empty; otherwise it reads a local file afresh. Non-`file:` documents have no disk fallback. `overlay(uri)` returns only an open document's record (canonical URI, language ID, version, and text). Accepted changes replace records, so retained records preserve the version and text they captured; callers must treat their text bytes as read-only. Snapshot publication gates remain planned below.
 
 `LspDocumentSync` (`src/protocol/LspDocumentSync.v3`) registers four notifications on the lifecycle's dispatcher. They run only while the server is running and never produce responses. Invalid parameters and rejected operations are ignored and logged through `Log.warn` to stderr in stdio mode.
 
@@ -89,10 +89,10 @@ Aeneas's pinned [`Parser.v3` `skipToNextToken`](https://github.com/titzer/virgil
 | --- | --- |
 | `textDocument/didOpen` | Records URI, language ID, integer version, and full text. A second open for an already-open canonical URI is ignored and logged, regardless of its version. Close first to restart a version sequence. |
 | `textDocument/didChange` | Accepts only a version **greater than** the current version (gaps and negative initial versions are allowed). Equal, older, and out-of-order versions are ignored and logged, as are changes to unopened documents. Every content change must contain full text and no `range` or `rangeLength`; the whole batch is validated before changing anything. Multiple full replacements apply in order, leaving the last text. An empty batch is ignored and logged, without consuming its version. |
-| `textDocument/didSave` | Marks the current overlay saved without changing its text or version, and does not read or write disk. Save requests no text (`includeText: false`); unsolicited string text is ignored because it has no version and must not overwrite an accepted edit. Save on a closed document is ignored and logged. |
+| `textDocument/didSave` | Validates that the document is open without changing its overlay record, text, or version, and does not read or write disk. Save requests no text (`includeText: false`); unsolicited string text is ignored because it has no version and must not overwrite an accepted edit. Save on a closed document is ignored and logged. |
 | `textDocument/didClose` | Drops the overlay immediately, restoring disk fallback. Close on a closed document is ignored and logged. A subsequent open may start at any integer version. |
 
-An accepted change clears the saved flag. Malformed batches, duplicate opens, and stale changes never alter text, version, or saved state. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization, diagnostics, document symbols, and position-encoding negotiation are not advertised.
+Malformed batches, duplicate opens, and stale changes never alter text or version. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization, diagnostics, document symbols, and position-encoding negotiation are not advertised.
 
 ### URI identity on Linux and macOS
 

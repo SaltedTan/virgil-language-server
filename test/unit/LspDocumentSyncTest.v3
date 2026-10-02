@@ -46,7 +46,7 @@ def test_sync_sequence(t: Tester) {
 	t.asserti(4, server.documents.overlay(doc.uri).version);
 	t.assert_string(doc.text, server.documents.read(doc.uri));
 	syncNotify(t, server, "didSave", "{\"textDocument\":{\"uri\":\"file:/a b.v3\"},\"text\":\"unversioned\"}");
-	t.assertz(true, server.documents.overlay(doc.uri).saved);
+	t.assert(server.documents.overlay(doc.uri) == doc, "save must preserve the overlay record");
 	t.asserti(4, server.documents.overlay(doc.uri).version);
 	t.assert_string(doc.text, server.documents.read(doc.uri));
 	syncNotify(t, server, "didClose", SYNC_ID);
@@ -92,12 +92,13 @@ def test_sync_invalid_params(t: Tester) {
 	syncNotify(t, server, "didOpen", "{\"textDocument\":{\"uri\":\"untitled:a\",\"languageId\":\"virgil\",\"version\":1.5,\"text\":\"x\"}}");
 	t.assert(server.documents.overlay("untitled:a") == null, "fractional version must be dropped");
 	syncNotify(t, server, "didOpen", SYNC_OPEN);
+	var doc = server.documents.overlay("file:/a b.v3");
 	syncNotify(t, server, "didChange", "{\"textDocument\":{\"uri\":\"file:/a b.v3\",\"version\":2147483648},\"contentChanges\":[{\"text\":\"x\"}]}");
 	syncNotify(t, server, "didSave", "{\"textDocument\":{\"uri\":\"file:/a b.v3\"},\"text\":null}");
 	t.asserti(24, rec.lines.length);
 	t.asserti(1, server.documents.overlay("file:/a b.v3").version);
 	t.assert_string("original", server.documents.read("file:/a b.v3"));
-	t.assertz(false, server.documents.overlay("file:/a b.v3").saved);
+	t.assert(server.documents.overlay(doc.uri) == doc, "invalid events must preserve the overlay record");
 }
 
 def test_sync_lifecycle(t: Tester) {

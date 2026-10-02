@@ -3,7 +3,7 @@
 
 // An accepted version of an open document. Treat text bytes as read-only.
 // Updates replace the record, so a retained record keeps its original version.
-class DocumentOverlay(uri: string, languageId: string, version: int, text: Array<byte>, saved: bool) { }
+class DocumentOverlay(uri: string, languageId: string, version: int, text: Array<byte>) { }
 
 // Versioned overlays with no direct file I/O. The injected reader receives a
 // decoded local absolute path and returns bytes, or null if unavailable.
@@ -37,7 +37,7 @@ class DocumentStore {
 		// Duplicate opens are ignored, even with a newer version. A client must
 		// close first to begin a new version sequence.
 		if (overlays[key] != null) return "document is already open";
-		overlays[key] = DocumentOverlay.new(key, languageId, version, text, false);
+		overlays[key] = DocumentOverlay.new(key, languageId, version, text);
 		return null;
 	}
 	def change(uri: string, version: int, text: Array<byte>) -> string {
@@ -45,15 +45,11 @@ class DocumentStore {
 		if (doc == null) return "document is not open";
 		if (version <= doc.version) return "document version is not newer";
 		if (text == null) return "missing document text";
-		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text, false);
+		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text);
 		return null;
 	}
-	// Save has no version and cannot replace the authoritative overlay. The
-	// client was told includeText=false. It only marks the current text saved.
 	def save(uri: string) -> string {
-		var doc = overlay(uri);
-		if (doc == null) return "document is not open";
-		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, doc.version, doc.text, true);
+		if (overlay(uri) == null) return "document is not open";
 		return null;
 	}
 	def close(uri: string) -> string {
