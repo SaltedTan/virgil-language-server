@@ -1,0 +1,13 @@
+Content-Length: 107
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":1,"result":null}Content-Length: 38
+
+{"jsonrpc":"2.0","id":"r","result":{}}Content-Length: 68
+
+{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"oops"}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

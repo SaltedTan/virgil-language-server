@@ -1,0 +1,9 @@
+Content-Length: 96
+
+{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"initialize params must be an object"}}Content-Length: 90
+
+{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"the server is not initialized"}}Content-Length: 110
+
+{"jsonrpc":"2.0","id":3,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":4,"result":null}

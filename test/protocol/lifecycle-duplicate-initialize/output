@@ -1,0 +1,9 @@
+Content-Length: 110
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 94
+
+{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"the server is already initialized"}}Content-Length: 95
+
+{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found: workspace/symbol"}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":4,"result":null}

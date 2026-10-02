@@ -1,0 +1,3 @@
+^virgil-lsp: warning: ignored a response: no outstanding request has id 1$
+^virgil-lsp: warning: ignored a response: no outstanding request has id "r"$
+^virgil-lsp: warning: ignored a response: error response with a null id: -32603 oops$

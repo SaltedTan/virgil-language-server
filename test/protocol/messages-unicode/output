@@ -1,0 +1,17 @@
+Content-Length: 110
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 92
+
+{"jsonrpc":"2.0","id":"é😀","error":{"code":-32601,"message":"method not found: héllo"}}Content-Length: 88
+
+{"jsonrpc":"2.0","id":"é😀","error":{"code":-32601,"message":"method not found: hi"}}Content-Length: 93
+
+{"jsonrpc":"2.0","id":"�|\u0001|/","error":{"code":-32601,"message":"method not found: x"}}Content-Length: 112
+
+{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON at byte 23: invalid UTF-8 in string"}}Content-Length: 83
+
+{"jsonrpc":"2.0","id":"é","error":{"code":-32601,"message":"method not found: y"}}Content-Length: 83
+
+{"jsonrpc":"2.0","id":"é","error":{"code":-32601,"message":"method not found: z"}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":2,"result":null}

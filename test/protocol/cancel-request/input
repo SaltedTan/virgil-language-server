@@ -1,0 +1,25 @@
+Content-Length: 107
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 40
+
+{"jsonrpc":"2.0","id":2,"method":"nope"}Content-Length: 62
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":2}}Content-Length: 64
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"2"}}Content-Length: 63
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":99}}Content-Length: 64
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":2.5}}Content-Length: 56
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{}}Content-Length: 44
+
+{"jsonrpc":"2.0","method":"$/cancelRequest"}Content-Length: 57
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":"x"}Content-Length: 69
+
+{"jsonrpc":"2.0","id":3,"method":"$/cancelRequest","params":{"id":2}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

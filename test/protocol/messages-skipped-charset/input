@@ -1,0 +1,12 @@
+Content-Length: 107
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 37
+Content-Type: application/vscode-jsonrpc; charset=latin1
+
+{"jsonrpc":"2.0","id":2,"method":"a"}Content-Length: 37
+
+{"jsonrpc":"2.0","id":3,"method":"b"}Content-Length: 44
+
+{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

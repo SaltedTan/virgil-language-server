@@ -1,0 +1,21 @@
+Content-Length: 139
+
+{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///a.v3"},"position":{"line":0,"character":0}}}Content-Length: 46
+
+{"jsonrpc":"2.0","id":"s","method":"shutdown"}Content-Length: 75
+
+{"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"x"}}Content-Length: 52
+
+{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 142
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///a.v3","languageId":"virgil","version":1,"text":""}}}Content-Length: 62
+
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":1}}Content-Length: 107
+
+{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 52
+
+{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

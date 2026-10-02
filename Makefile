@@ -42,6 +42,7 @@ $(BUILD)/unit-tests: buildinfo $(TEST_SRC) $(SERVER_LIB)
 test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests
 	$(BUILD)/unit-tests
 	test/cli/run.sh $(BUILD)/virgil-lsp
+	test/protocol/run.sh $(BUILD)/virgil-lsp
 
 clean:
 	rm -rf $(BUILD)

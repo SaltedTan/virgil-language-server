@@ -22,7 +22,7 @@ flowchart TD
 | `src/main.v3` | Command-line entry point | Present |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes. | Adapter spike present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, and server request tracking present; lifecycle planned (M1) |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine | Message model, framing, stdio transport, server request tracking, and lifecycle present |
 | `src/documents/` | URIs, versioned text, `PositionMap` | Planned (M2) |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
 | `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
@@ -81,8 +81,9 @@ Each analysis produces an immutable snapshot containing: the configuration revis
 | `JsonRpcDispatcher.v3` | Routes requests and notifications to handlers by method name, and responses to the pending-request table. Returns the reply payload, if any. |
 | `JsonRpcPendingRequests.v3` | The requests the server has sent to the client, matched to their responses (see below). |
 | `JsonRpcJson.v3` | JSON parsing and rendering on top of Virgil's `lib/file/json` (see below). |
+| `LspServer.v3` | The [lifecycle](#lifecycle) in front of the dispatcher, and the LSP error codes it uses. |
 
-The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Incoming messages are handled as follows:
+The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Once the [lifecycle](#lifecycle) has admitted a message, it is handled as follows:
 
 | Input | Reply |
 | --- | --- |
@@ -107,7 +108,7 @@ The server will need to send requests to the client, such as `workspace/configur
 - A decoded response or error response marked `JsonRpcInput.Valid(_, true)` completes its matching request with `InternalError` (-32603), so the callback never sees the null placeholders for numbers that aren't 32-bit integers (see [Numbers](#json-limitations-and-workarounds)). Malformed responses are still dropped without completing a request.
 - `failAll(error)` visits the requests outstanding when it starts and completes each with `error` unless an earlier callback already completed it. Requests sent by the callbacks it runs stay outstanding, even if they reuse an original request's ID. The `JsonRpcPendingRequests:fail_all_reentrant` and `JsonRpcPendingRequests:fail_all_recycled_ids` unit tests cover these cases.
 
-Requests the client never answers stay outstanding until `failAll`; there is no timeout yet. No server request is sent yet: the first ones come with the lifecycle work.
+Requests the client never answers stay outstanding until `failAll`; there is no timeout yet. A successful `shutdown`, `exit`, and the end of the input each call `failAll` with `RequestCancelled` (-32800), so every request completes before the process ends. No server request is sent yet.
 
 ### JSON limitations and workarounds
 
@@ -144,22 +145,56 @@ Header bytes are checked as they arrive, so a header fails as soon as the byte t
 
 ### Stdio transport
 
-`LspTransport` (`src/protocol/LspTransport.v3`) connects the frame reader to the dispatcher: each payload is dispatched, and each reply is written by `LspFrameWriter` as one framed message. The writer builds the header and payload in one buffer and keeps writing until all of it is out, because a write to a pipe may take only part of it. The transport does no I/O itself: `--stdio` reads standard input in chunks of up to 64 KiB, passes them in, and gives the transport a function that writes to standard output. Unit tests drive it with input in small chunks and a writer that takes a few bytes at a time.
+`LspTransport` (`src/protocol/LspTransport.v3`) connects the frame reader to a message handler, which for `--stdio` is the [lifecycle](#lifecycle) in front of the dispatcher: each payload is handled, and each reply is written by `LspFrameWriter` as one framed message. Once the handler reports that it has finished, after `exit`, the transport reads no more messages. The writer builds the header and payload in one buffer and keeps writing until all of it is out, because a write to a pipe may take only part of it. The transport does no I/O itself: `--stdio` reads standard input in chunks of up to 64 KiB, passes them in, and gives the transport a function that writes to standard output. Unit tests drive it with input in small chunks and a writer that takes a few bytes at a time.
 
 | Event | Effect | Exit status |
 | --- | --- | --- |
 | A message is skipped | A warning on stderr. No reply, because the payload wasn't read, so it isn't known whether it was a request. | Continues |
 | A header is malformed | An error on stderr. Replies to earlier messages have been sent. Nothing after the header is read. | 1 |
 | A reply can't be written | An error on stderr | 1 |
-| The input ends between messages | — | 0 |
 | The input ends in the middle of a message | An error on stderr | 1 |
+| The `exit` notification is handled | Nothing after it is read, even input already received | See [Lifecycle](#lifecycle) |
+| The input ends between messages | — | See [Lifecycle](#lifecycle) |
 
-No handlers are registered yet, so every request gets `MethodNotFound`. `initialize`, `shutdown`, and `exit` come with the lifecycle work, which will also decide the exit status when the input ends without an `exit` notification.
+## Lifecycle
+
+`LspServer` (`src/protocol/LspServer.v3`) follows the lifecycle of the [LSP 3.17 specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#lifeCycleMessages). It checks each request and notification against the lifecycle state before the dispatcher routes it. Payloads that aren't valid requests or notifications get their `ParseError` or `InvalidRequest` in every state, and responses from the client go to the [pending-request table](#server-requests) in every state, until `exit`.
+
+| State | Request | Notification | Next state |
+| --- | --- | --- | --- |
+| Uninitialized | `initialize` is handled. Any other request gets `ServerNotInitialized` (-32002), even an unknown method. | `exit` is handled. Others, including `initialized`, are dropped. | Running, once `initialize` succeeds |
+| Running | A second `initialize` gets `InvalidRequest` (-32600). `shutdown` returns `null`. Other requests are dispatched. | `initialized` is accepted and does nothing. Others are dispatched. | Shutting down, after `shutdown` |
+| Shutting down | Every request gets `InvalidRequest`, including `shutdown` and `initialize`. | `exit` is handled. Others are dropped. | — |
+| Exited | Nothing is read. | Nothing is read. | — |
+
+`initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The server reads nothing else from the params yet. The result advertises no capabilities, because no feature is implemented yet, and names the server:
+
+```json
+{"capabilities":{},"serverInfo":{"name":"virgil-lsp","version":"0.0.0-dev"}}
+```
+
+`exit` ends the session in any state. So does the end of the input, which is how a client process that disappears looks to the server. Either way, outstanding server requests are failed, and the process exits:
+
+| How the session ends | Exit status | stderr |
+| --- | --- | --- |
+| `exit` after a successful `shutdown` | 0 | — |
+| `exit` without a successful `shutdown` | 1 | An error |
+| The input ends after a successful `shutdown` | 0 | — |
+| The input ends without a successful `shutdown` | 1 | An error |
+| The transport fails (see the [stdio transport](#stdio-transport)) | 1 | An error |
+
+The end of the input is treated like `exit` because a client that sent `shutdown` has asked the server to stop and has nothing more to send, while one that disappears without it ended the session abnormally. The server doesn't watch the client's `processId`.
+
+`exit` is handled before its params are read, so params the server can't read (see [Numbers](#json-limitations-and-workarounds)) don't stop it. The transport reads nothing after `exit`, so later messages get no reply, even if they arrived in the same read.
+
+### Cancellation
+
+`$/cancelRequest` is a notification, so it never gets a response, whatever its params. The server handles one message at a time and replies before it reads the next, so a cancellation always arrives after the request it names has been answered, and there is nothing left to cancel. Before `initialize` and after `shutdown` it is dropped like other notifications. A request with the method `$/cancelRequest` gets `MethodNotFound`, as the specification requires for unhandled `$/` requests.
 
 ## Protocol invariants
 
-- Each incoming request receives exactly one response, carrying the request's original `id` (integer or string). *(present)*
-- Notifications never receive a response. Unknown notifications are ignored. Unknown requests receive `MethodNotFound`. *(present)*
+- Each incoming request read before `exit` receives exactly one response, carrying the request's original `id` (integer or string). [Skipped](#framing) messages and input after `exit` aren't read, so they get none. *(present)*
+- Notifications never receive a response. Unknown notifications are ignored. Once the server is initialized, unknown requests receive `MethodNotFound`. *(present)*
 - `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are skipped. *(present)*
-- Standard output carries protocol bytes only. *(present; `test/cli/run.sh` compares it byte for byte)*
-- Advertised capabilities exactly match implemented handlers.
+- Standard output carries protocol bytes only. *(present; the [transcripts](../test/protocol/) compare it byte for byte)*
+- Advertised capabilities exactly match implemented handlers. *(present: none are advertised)*

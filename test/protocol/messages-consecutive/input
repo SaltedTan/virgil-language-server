@@ -1,0 +1,19 @@
+Content-Length: 107
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 52
+
+{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 37
+
+{"jsonrpc":"2.0","id":2,"method":"a"}Content-Length: 42
+
+{"jsonrpc":"2.0","method":"b","params":{}}Content-Length: 54
+
+{"jsonrpc":"2.0","id":"c","method":"c","params":[1,2]}Content-Length: 44
+
+{"jsonrpc":"2.0","method":"d","params":null}Content-Length: 51
+
+{"jsonrpc":"2.0","id":3,"method":"e","params":null}Content-Length: 44
+
+{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}
