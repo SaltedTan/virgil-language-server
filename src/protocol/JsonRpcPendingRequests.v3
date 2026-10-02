@@ -50,7 +50,6 @@ class JsonRpcPendingRequests {
 				// The client couldn't read the ID of a request, so it can't be
 				// told which one failed.
 				if (JsonRpcId.Null.?(id)) {
-					if (error == null) return "error response with a null id";
 					return Strings.format2("error response with a null id: %d %s", error.code, error.message);
 				}
 				return finish(id, JsonRpcReply.Error(error), unsupportedNumbers);

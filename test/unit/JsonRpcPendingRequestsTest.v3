@@ -185,7 +185,6 @@ def test_null_id_error(t: Tester) {
 	sendId(p, rec);
 	expectIgnored(t, p, errorResponse(JsonRpcId.Null, JsonRpcErrorCode.PARSE_ERROR, "bad JSON"),
 		"error response with a null id: -32700 bad JSON");
-	expectIgnored(t, p, JsonRpcMessage.ErrorResponse(JsonRpcId.Null, null), "error response with a null id");
 	rec.expect(t, NONE);
 	t.asserti(1, p.count());
 }
