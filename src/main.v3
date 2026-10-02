@@ -72,7 +72,7 @@ component VirgilLsp {
 		}
 		// No handlers yet: lifecycle and features come later in M1 and M2, so
 		// every request is answered with MethodNotFound.
-		var dispatcher = JsonRpcDispatcher.new();
+		var dispatcher = JsonRpcDispatcher.new().onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(dispatcher, maxPayload, System.write(STDOUT, _), Log.warn);
 		var buf = Array<byte>.new(64 * 1024);
 		while (true) {
@@ -89,6 +89,9 @@ component VirgilLsp {
 			return 1;
 		}
 		return 0;
+	}
+	def warnIgnoredResponse(reason: string) {
+		Log.warn(Strings.format1("ignored a response: %s", reason));
 	}
 	def parse(paths: Array<string>) -> int {
 		if (paths.length == 0) return usage(2);

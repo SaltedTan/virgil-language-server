@@ -1,0 +1,354 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("JsonRpcPendingRequests:send_encodes_request", test_send_encodes_request),
+	T("JsonRpcPendingRequests:ids_skip_outstanding", test_ids_skip_outstanding),
+	T("JsonRpcPendingRequests:ids_wrap", test_ids_wrap),
+	T("JsonRpcPendingRequests:result_completes_once", test_result_completes_once),
+	T("JsonRpcPendingRequests:error_completes_once", test_error_completes_once),
+	T("JsonRpcPendingRequests:unknown_ids", test_pending_unknown_ids),
+	T("JsonRpcPendingRequests:null_id_error", test_null_id_error),
+	T("JsonRpcPendingRequests:unsupported_numbers", test_pending_unsupported_numbers),
+	T("JsonRpcPendingRequests:callback_sends_request", test_callback_sends_request),
+	T("JsonRpcPendingRequests:fail_all", test_fail_all),
+	T("JsonRpcPendingRequests:fail_all_reentrant", test_fail_all_reentrant),
+	T("JsonRpcPendingRequests:fail_all_recycled_ids", test_fail_all_recycled_ids),
+	T("JsonRpcDispatcher:response_completes_request", test_dispatch_response_completes),
+	T("JsonRpcDispatcher:ignored_responses", test_dispatch_ignored_responses),
+	T("JsonRpcDispatcher:response_unsupported_numbers", test_dispatch_response_unsupported_numbers),
+	()
+];
+
+// Records the replies that complete requests, rendered as "result <json>" or
+// "error <json>".
+class CompletionRecorder {
+	def replies = Vector<string>.new();
+
+	def onComplete(r: JsonRpcReply) {
+		var buf = StringBuilder.new();
+		match (r) {
+			Result(v) => JsonRpcJson.render(buf.puts("result "), v);
+			Error(e) => e.render(buf.puts("error "));
+		}
+		replies.put(buf.toString());
+	}
+	// Checks that the replies so far are exactly {expected}, in order.
+	def expect(t: Tester, expected: Array<string>) {
+		t.asserti(expected.length, replies.length);
+		for (i < expected.length) {
+			if (i < replies.length) t.assert_string(expected[i], replies[i]);
+		}
+	}
+}
+
+def NONE = Array<string>.new(0);
+
+// Collects the reasons responses were ignored.
+class IgnoredRecorder {
+	def reasons = Vector<string>.new();
+
+	def onIgnored(reason: string) {
+		reasons.put(reason);
+	}
+}
+
+def response(id: int, result: JsonValue) -> JsonRpcMessage {
+	return JsonRpcMessage.Response(JsonRpcId.Int(id), result);
+}
+def errorResponse(id: JsonRpcId, code: int, msg: string) -> JsonRpcMessage {
+	return JsonRpcMessage.ErrorResponse(id, JsonRpcError.new(code, msg));
+}
+// Sends a request with no params and returns its ID, read back from the
+// encoded request.
+def sendId(p: JsonRpcPendingRequests, rec: CompletionRecorder) -> int {
+	var payload = p.send("window/workDoneProgress/create", JsonRpcParams.Absent, rec.onComplete);
+	match (JsonRpcDecoder.decode(payload)) {
+		Valid(msg, unsupportedNumbers) => {
+			match (msg) {
+				Request(id, method, params) => if (JsonRpcId.Int.?(id)) return JsonRpcId.Int.!(id).v;
+				_ => ;
+			}
+		}
+		_ => ;
+	}
+	return -1;
+}
+// Handles {text} and checks that there is no reply.
+def expectNoReply(t: Tester, d: JsonRpcDispatcher, text: string) {
+	var got = d.handle(text);
+	if (got != null) t.fail2("expected no reply to %s, got %s", text, got);
+}
+// Completes a request through {p} and checks that it completed one.
+def expectCompleted(t: Tester, p: JsonRpcPendingRequests, msg: JsonRpcMessage, unsupportedNumbers: bool) {
+	var reason = p.complete(msg, unsupportedNumbers);
+	if (reason != null) t.fail1("expected a request to complete, got: %s", reason);
+}
+// Completes a request through {p} and checks that none completed, for {reason}.
+def expectIgnored(t: Tester, p: JsonRpcPendingRequests, msg: JsonRpcMessage, reason: string) {
+	var got = p.complete(msg, false);
+	if (got == null) t.fail1("expected the response to be ignored: %s", reason);
+	else t.assert_string(reason, got);
+}
+
+def test_send_encodes_request(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	var item = Strings.newMap<JsonValue>();
+	item["section"] = JsonValue.String("virgil");
+	var params = Strings.newMap<JsonValue>();
+	params["items"] = JsonValue.JArray([JsonValue.JObject(item)]);
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"workspace/configuration\",\"params\":{\"items\":[{\"section\":\"virgil\"}]}}",
+		p.send("workspace/configuration", JsonRpcParams.ByName(params), rec.onComplete));
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"client/registerCapability\",\"params\":[]}",
+		p.send("client/registerCapability", JsonRpcParams.ByPosition(Array<JsonValue>.new(0)), rec.onComplete));
+	t.asserti(2, p.count());
+	rec.expect(t, NONE);
+}
+
+def test_ids_skip_outstanding(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	t.asserti(1, sendId(p, rec));
+	t.asserti(2, sendId(p, rec));
+	t.asserti(3, sendId(p, rec));
+	expectCompleted(t, p, response(2, JsonValue.Null), false);
+	// 1 is outstanding, 2 is free again.
+	p.nextId = 1;
+	t.asserti(2, sendId(p, rec));
+	// 1, 2, and 3 are all outstanding.
+	p.nextId = 1;
+	t.asserti(4, sendId(p, rec));
+	t.asserti(5, sendId(p, rec));
+	t.asserti(5, p.count());
+}
+
+def test_ids_wrap(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	p.nextId = int.max - 1;
+	t.asserti(int.max - 1, sendId(p, rec));
+	t.asserti(int.max, sendId(p, rec));
+	t.asserti(1, sendId(p, rec));
+	// Wrapping skips outstanding IDs too.
+	p.nextId = int.max;
+	t.asserti(2, sendId(p, rec));
+	expectCompleted(t, p, response(int.max, JsonValue.Int(9)), false);
+	rec.expect(t, ["result 9"]);
+	t.asserti(3, p.count());
+}
+
+def test_result_completes_once(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), first = CompletionRecorder.new(), second = CompletionRecorder.new();
+	sendId(p, first);
+	sendId(p, second);
+	expectCompleted(t, p, response(2, JsonValue.JArray([JsonValue.Int(7), JsonValue.Null])), false);
+	first.expect(t, NONE);
+	second.expect(t, ["result [7,null]"]);
+	t.asserti(1, p.count());
+	// A second response with the same ID completes nothing.
+	expectIgnored(t, p, response(2, JsonValue.Int(8)), "no outstanding request has id 2");
+	expectIgnored(t, p, errorResponse(JsonRpcId.Int(2), -32803, "late"), "no outstanding request has id 2");
+	second.expect(t, ["result [7,null]"]);
+	expectCompleted(t, p, response(1, JsonValue.Null), false);
+	first.expect(t, ["result null"]);
+	t.asserti(0, p.count());
+}
+
+def test_error_completes_once(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	sendId(p, rec);
+	var error = JsonRpcError.new(-32803, "request failed").withData(JsonValue.String("why"));
+	expectCompleted(t, p, JsonRpcMessage.ErrorResponse(JsonRpcId.Int(1), error), false);
+	rec.expect(t, ["error {\"code\":-32803,\"message\":\"request failed\",\"data\":\"why\"}"]);
+	t.asserti(0, p.count());
+	expectIgnored(t, p, response(1, JsonValue.Null), "no outstanding request has id 1");
+	rec.expect(t, ["error {\"code\":-32803,\"message\":\"request failed\",\"data\":\"why\"}"]);
+}
+
+def test_pending_unknown_ids(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	sendId(p, rec);
+	expectIgnored(t, p, response(99, JsonValue.Null), "no outstanding request has id 99");
+	expectIgnored(t, p, response(0, JsonValue.Null), "no outstanding request has id 0");
+	// The server sends integer IDs, so the string "1" is a different ID.
+	expectIgnored(t, p, JsonRpcMessage.Response(JsonRpcId.String("1"), JsonValue.Null),
+		"no outstanding request has id \"1\"");
+	expectIgnored(t, p, errorResponse(JsonRpcId.String("a\"b"), -32601, "no"),
+		"no outstanding request has id \"a\\\"b\"");
+	// Requests and notifications are not responses.
+	expectIgnored(t, p, JsonRpcMessage.Request(JsonRpcId.Int(1), "x", JsonRpcParams.Absent), "not a response");
+	expectIgnored(t, p, JsonRpcMessage.Notification("x", JsonRpcParams.Absent), "not a response");
+	rec.expect(t, NONE);
+	t.asserti(1, p.count());
+}
+
+def test_null_id_error(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	sendId(p, rec);
+	expectIgnored(t, p, errorResponse(JsonRpcId.Null, JsonRpcErrorCode.PARSE_ERROR, "bad JSON"),
+		"error response with a null id: -32700 bad JSON");
+	rec.expect(t, NONE);
+	t.asserti(1, p.count());
+}
+
+def test_pending_unsupported_numbers(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	sendId(p, rec);
+	sendId(p, rec);
+	var expected = "error {\"code\":-32603,\"message\":\"the response contains a number that is not a 32-bit integer\"}";
+	// The null stands for a number that could not be represented.
+	expectCompleted(t, p, response(1, JsonValue.JArray([JsonValue.Null])), true);
+	rec.expect(t, [expected]);
+	var error = JsonRpcError.new(-32803, "failed").withData(JsonValue.Null);
+	expectCompleted(t, p, JsonRpcMessage.ErrorResponse(JsonRpcId.Int(2), error), true);
+	rec.expect(t, [expected, expected]);
+	t.asserti(0, p.count());
+	// An unknown ID is still ignored.
+	t.assert_string("no outstanding request has id 3", p.complete(response(3, JsonValue.Null), true));
+}
+
+// Sends a follow-up request when its first request completes.
+class FollowUp(p: JsonRpcPendingRequests, rec: CompletionRecorder) {
+	var sent: string;
+
+	def onComplete(r: JsonRpcReply) {
+		rec.onComplete(r);
+		if (sent == null) sent = p.send("client/registerCapability", JsonRpcParams.Absent, rec.onComplete);
+	}
+}
+
+def test_callback_sends_request(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new(), f = FollowUp.new(p, rec);
+	p.send("workspace/configuration", JsonRpcParams.Absent, f.onComplete);
+	expectCompleted(t, p, response(1, JsonValue.Null), false);
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"client/registerCapability\"}", f.sent);
+	t.asserti(1, p.count());
+	expectCompleted(t, p, response(2, JsonValue.Int(5)), false);
+	rec.expect(t, ["result null", "result 5"]);
+	t.asserti(0, p.count());
+}
+
+def test_fail_all(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), recs = [CompletionRecorder.new(), CompletionRecorder.new(), CompletionRecorder.new()];
+	for (r in recs) sendId(p, r);
+	expectCompleted(t, p, response(2, JsonValue.Int(1)), false);
+	p.failAll(JsonRpcError.new(-32800, "the server is shutting down"));
+	t.asserti(0, p.count());
+	var failed = "error {\"code\":-32800,\"message\":\"the server is shutting down\"}";
+	recs[0].expect(t, [failed]);
+	recs[1].expect(t, ["result 1"]);
+	recs[2].expect(t, [failed]);
+	// Responses that arrive afterwards complete nothing.
+	expectIgnored(t, p, response(1, JsonValue.Null), "no outstanding request has id 1");
+	recs[0].expect(t, [failed]);
+	// With nothing outstanding, there is nothing to fail.
+	p.failAll(JsonRpcError.new(-32800, "again"));
+	recs[0].expect(t, [failed]);
+}
+
+// When it completes, completes the request with ID {other} and sends a new
+// request.
+class FailAllHelper(p: JsonRpcPendingRequests, other: int) {
+	def rec = CompletionRecorder.new();
+
+	def onComplete(r: JsonRpcReply) {
+		rec.onComplete(r);
+		p.complete(response(other, JsonValue.Int(other)), false);
+		p.send("window/workDoneProgress/create", JsonRpcParams.Absent, rec.onComplete);
+	}
+}
+
+def test_fail_all_reentrant(t: Tester) {
+	// Whichever of the two is failed first, each completes exactly once.
+	var p = JsonRpcPendingRequests.new(), a = FailAllHelper.new(p, 2), b = CompletionRecorder.new();
+	p.send("a", JsonRpcParams.Absent, a.onComplete);
+	p.send("b", JsonRpcParams.Absent, b.onComplete);
+	p.failAll(JsonRpcError.new(-32800, "stop"));
+	a.rec.expect(t, ["error {\"code\":-32800,\"message\":\"stop\"}"]);
+	t.asserti(1, b.replies.length);
+	// The request sent while failing stays outstanding.
+	t.asserti(1, p.count());
+	expectCompleted(t, p, response(3, JsonValue.Null), false);
+	t.asserti(2, a.rec.replies.length);
+}
+
+// Both original callbacks complete the other request and send a follow-up.
+// Whichever callback runs first, the second runs before either follow-up is
+// sent, so both original IDs are available for reuse after wraparound.
+class RecycledFailAllHelper(p: JsonRpcPendingRequests, other: int) {
+	def original = CompletionRecorder.new();
+	def followUp = CompletionRecorder.new();
+
+	def onComplete(r: JsonRpcReply) {
+		original.onComplete(r);
+		p.complete(response(other, JsonValue.Null), false);
+		p.send("client/registerCapability", JsonRpcParams.Absent, followUp.onComplete);
+	}
+}
+
+def test_fail_all_recycled_ids(t: Tester) {
+	var p = JsonRpcPendingRequests.new();
+	var a = RecycledFailAllHelper.new(p, 2), b = RecycledFailAllHelper.new(p, 1);
+	var boundary = CompletionRecorder.new();
+	p.send("a", JsonRpcParams.Absent, a.onComplete);
+	p.send("b", JsonRpcParams.Absent, b.onComplete);
+	// Advance to the boundary without sending billions of requests. Sending
+	// this request wraps the allocator to 1 while IDs 1 and 2 are outstanding.
+	p.nextId = int.max;
+	t.asserti(int.max, sendId(p, boundary));
+	p.failAll(JsonRpcError.new(-32800, "stop"));
+	t.asserti(1, a.original.replies.length);
+	t.asserti(1, b.original.replies.length);
+	boundary.expect(t, ["error {\"code\":-32800,\"message\":\"stop\"}"]);
+	// The snapshot must not fail a newly sent request just because it reuses
+	// an original request's ID. Both follow-ups must remain pending.
+	a.followUp.expect(t, NONE);
+	b.followUp.expect(t, NONE);
+	t.asserti(2, p.count());
+	expectCompleted(t, p, response(1, JsonValue.Null), false);
+	expectCompleted(t, p, response(2, JsonValue.Null), false);
+	a.followUp.expect(t, ["result null"]);
+	b.followUp.expect(t, ["result null"]);
+	t.asserti(0, p.count());
+}
+
+def test_dispatch_response_completes(t: Tester) {
+	var d = JsonRpcDispatcher.new(), rec = CompletionRecorder.new(), ignored = IgnoredRecorder.new();
+	d.onIgnoredResponse(ignored.onIgnored);
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"workspace/configuration\"}",
+		d.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete));
+	d.pending.send("client/registerCapability", JsonRpcParams.Absent, rec.onComplete);
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[{\"tabSize\":4}]}");
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"no\"}}");
+	rec.expect(t, ["result [{\"tabSize\":4}]", "error {\"code\":-32601,\"message\":\"no\"}"]);
+	t.asserti(0, d.pending.count());
+	t.asserti(0, ignored.reasons.length);
+}
+
+def test_dispatch_ignored_responses(t: Tester) {
+	var d = JsonRpcDispatcher.new(), rec = CompletionRecorder.new(), ignored = IgnoredRecorder.new();
+	d.onIgnoredResponse(ignored.onIgnored);
+	d.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete);
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":null}");
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":null}");
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"bad\"}}");
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1}");
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":2}");
+	t.asserti(4, ignored.reasons.length);
+	if (ignored.reasons.length == 4) {
+		t.assert_string("no outstanding request has id 7", ignored.reasons[0]);
+		t.assert_string("no outstanding request has id \"1\"", ignored.reasons[1]);
+		t.assert_string("error response with a null id: -32700 bad", ignored.reasons[2]);
+		t.assert_string("no outstanding request has id 1", ignored.reasons[3]);
+	}
+	rec.expect(t, ["result 1"]);
+	// Without a handler, ignored responses are still not answered.
+	expectNoReply(t, JsonRpcDispatcher.new(), "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":null}");
+}
+
+def test_dispatch_response_unsupported_numbers(t: Tester) {
+	var d = JsonRpcDispatcher.new(), rec = CompletionRecorder.new();
+	d.pending.send("workspace/configuration", JsonRpcParams.Absent, rec.onComplete);
+	expectNoReply(t, d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[{\"zoom\":1.5}]}");
+	rec.expect(t, ["error {\"code\":-32603,\"message\":\"the response contains a number that is not a 32-bit integer\"}"]);
+	t.asserti(0, d.pending.count());
+}

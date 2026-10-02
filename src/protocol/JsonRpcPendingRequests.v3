@@ -1,0 +1,100 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The requests the server has sent to the client and not yet seen completed,
+// and what to do when each one completes. The server is single-threaded, so a
+// handler that sends a request can't wait for the response. Instead, the table
+// keeps a callback that runs when the response arrives. Like the dispatcher, it
+// does no I/O: {send} returns the encoded request, and {complete} takes a
+// decoded response.
+//
+// - Requests get integer IDs counting up from {nextId}, skipping any ID that
+//   is still outstanding, so no two outstanding requests share an ID. After the
+//   largest int, the count starts again at 1.
+// - Each request completes exactly once: with the client's result or error,
+//   with an error if the response can't be used, or with the error given to
+//   {failAll}. It is removed from the table before its callback runs, so the
+//   callback may send further requests.
+// - A response that matches no outstanding request completes nothing.
+class JsonRpcPendingRequests {
+	private def callbacks = HashMap<int, JsonRpcPendingRequest>.new(int.!<int>, int.==);
+	private var outstanding: int;
+	// The ID the next request gets, unless a request with that ID is still
+	// outstanding.
+	var nextId = 1;
+
+	// The number of outstanding requests.
+	def count() -> int {
+		return outstanding;
+	}
+	// Records a request for {method} with {params}. When the request completes,
+	// {onComplete} is called once, with its result or error. Returns the
+	// encoded request, which the caller frames and writes.
+	def send(method: string, params: JsonRpcParams, onComplete: JsonRpcReply -> void) -> Array<byte> {
+		var id = nextId;
+		while (callbacks.has(id)) id = after(id);
+		nextId = after(id);
+		callbacks[id] = JsonRpcPendingRequest.new(id, onComplete);
+		outstanding++;
+		return JsonRpcMessage.Request(JsonRpcId.Int(id), method, params).encode();
+	}
+	// Completes the request that {response} answers, if it is outstanding.
+	// {unsupportedNumbers} is the flag of the {JsonRpcInput.Valid} that held the
+	// response. If it is set, the response held null placeholders, so the
+	// request completes with an error instead. Returns null if a request was
+	// completed, and otherwise the reason none was, for logging.
+	def complete(response: JsonRpcMessage, unsupportedNumbers: bool) -> string {
+		match (response) {
+			Response(id, result) => return finish(id, JsonRpcReply.Result(result), unsupportedNumbers);
+			ErrorResponse(id, error) => {
+				// The client couldn't read the ID of a request, so it can't be
+				// told which one failed.
+				if (JsonRpcId.Null.?(id)) {
+					return Strings.format2("error response with a null id: %d %s", error.code, error.message);
+				}
+				return finish(id, JsonRpcReply.Error(error), unsupportedNumbers);
+			}
+			_ => return "not a response";
+		}
+	}
+	// Fails the requests outstanding when this call starts. Callbacks may
+	// complete other entries; requests they send must remain pending.
+	def failAll(error: JsonRpcError) {
+		for (l = Maps.valueList(callbacks); l != null; l = l.tail) {
+			var request = l.head;
+			// An earlier callback may have completed this request and sent a
+			// new one with the same ID. Only fail the original entry.
+			if (callbacks[request.id] != request) continue;
+			var callback = take(request.id);
+			if (callback != null) callback(JsonRpcReply.Error(error));
+		}
+	}
+	private def finish(id: JsonRpcId, reply: JsonRpcReply, unsupportedNumbers: bool) -> string {
+		// Only integer IDs are sent, so a string ID matches no request.
+		var callback: JsonRpcReply -> void;
+		if (JsonRpcId.Int.?(id)) callback = take(JsonRpcId.Int.!(id).v);
+		if (callback == null) {
+			return Strings.format1("no outstanding request has id %s", id.render(StringBuilder.new()).toString());
+		}
+		if (unsupportedNumbers) {
+			reply = JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR,
+				"the response contains a number that is not a 32-bit integer"));
+		}
+		callback(reply);
+		return null;
+	}
+	// Removes the request with {id} and returns its callback, or null if it
+	// isn't outstanding.
+	private def take(id: int) -> JsonRpcReply -> void {
+		if (!callbacks.has(id)) return null;
+		var callback = callbacks[id].callback;
+		callbacks.remove(id);
+		outstanding--;
+		return callback;
+	}
+	private def after(id: int) -> int {
+		return if(id == int.max, 1, id + 1);
+	}
+}
+
+private class JsonRpcPendingRequest(id: int, callback: JsonRpcReply -> void) { }

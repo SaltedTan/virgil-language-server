@@ -135,6 +135,12 @@ expect_stdio "stdio reads a message split across reads" 0 "$TMP/want" "" -- < <(
 : > "$TMP/empty"
 expect_stdio "stdio exits cleanly at the end of input" 0 "$TMP/empty" "" -- < "$TMP/empty"
 
+# The server has sent no requests, so a response from the client matches none.
+# It is not answered, and the reason goes to stderr.
+frame '{"jsonrpc":"2.0","id":1,"result":null}' > "$TMP/in"
+expect_stdio "stdio logs a response that matches no request" 0 "$TMP/empty" \
+    'warning: ignored a response: no outstanding request has id 1' -- < "$TMP/in"
+
 { frame "$(request 1 big '["0123456789012345678901234567890123456789"]')"; frame "$(request 2 small)"; } > "$TMP/in"
 frame "$(not_found 2 small)" > "$TMP/want"
 expect_stdio "stdio skips a message over the limit" 0 "$TMP/want" \

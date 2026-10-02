@@ -1,7 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// What a request handler returns: the result or the error of its response.
+// The result or the error of a response: what a request handler returns, and
+// what completes a request the server sent.
 type JsonRpcReply {
 	case Result(v: JsonValue);
 	case Error(error: JsonRpcError);
@@ -14,17 +15,26 @@ type JsonRpcReply {
 //   result or error, or MethodNotFound if no handler is registered.
 // - A notification never gets a response. Unknown notifications are ignored.
 // - An invalid payload gets a ParseError or InvalidRequest error response.
-// - Responses from the client are dropped. The server sends no requests yet,
-//   so there is no pending-request table to match them against.
+// - A response from the client completes the server request it answers in
+//   {pending}, and is never answered. A response that completes nothing is
+//   reported to the ignored-response handler, if there is one.
 class JsonRpcDispatcher {
 	private def requestHandlers = Strings.newMap<JsonRpcMessage.Request -> JsonRpcReply>();
 	private def notificationHandlers = Strings.newMap<JsonRpcMessage.Notification -> void>();
+	private var ignoredResponseHandler: string -> void;
+	// The requests the server has sent to the client. Send them with
+	// {pending.send}, so that their responses are matched.
+	def pending = JsonRpcPendingRequests.new();
 
 	def onRequest(method: string, handler: JsonRpcMessage.Request -> JsonRpcReply) -> this {
 		requestHandlers[method] = handler;
 	}
 	def onNotification(method: string, handler: JsonRpcMessage.Notification -> void) -> this {
 		notificationHandlers[method] = handler;
+	}
+	// Sets {handler} to receive the reason a response completed no request.
+	def onIgnoredResponse(handler: string -> void) -> this {
+		ignoredResponseHandler = handler;
 	}
 	// Decodes and handles one payload. Returns the reply payload, or null if
 	// there is nothing to send.
@@ -39,7 +49,11 @@ class JsonRpcDispatcher {
 				match (msg) {
 					x: JsonRpcMessage.Request => return answer(x, unsupportedNumbers);
 					x: JsonRpcMessage.Notification => notify(x, unsupportedNumbers);
-					_ => ;
+					_ => {
+						// A response or an error response.
+						var reason = pending.complete(msg, unsupportedNumbers);
+						if (reason != null && ignoredResponseHandler != null) ignoredResponseHandler(reason);
+					}
 				}
 				return null;
 			}
