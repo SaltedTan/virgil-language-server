@@ -68,7 +68,8 @@ class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration)
 	}
 }
 
-// Measurements of one whole-program analysis.
+// Measurements of one whole-program analysis. {globalTypesAdded} is -1 when
+// global-cache statistics were not requested.
 class AnalysisStats(parseUs: int, verifyUs: int, uidsUsed: int, globalTypesAdded: int) { }
 
 // The result of parsing and verifying a whole program. It keeps the syntax
@@ -78,37 +79,61 @@ class ProgramAnalysis {
 	def stats: AnalysisStats;
 	def parsed: bool;	// parsing reported no errors, so verification ran
 	def verified: bool;	// parsing and verification both reported no errors
-	private def prog: Program;
+	private def files = Strings.newMap<AnalysisFileIndex>();
 
-	new(diagnostics, stats, parsed, verified, prog) { }
+	new(diagnostics, stats, parsed, verified, prog: Program) {
+		if (parsed) {
+			for (f in prog.vst.files) {
+				// Preserve the first file's bindings if an input path is repeated.
+				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f);
+			}
+		}
+	}
 
 	// Every use in {path} that verification bound to a source declaration, in
 	// source order. Empty if parsing failed, because verification did not run.
 	// After semantic errors the result covers whatever the verifier bound.
+	// Collected once on first use of each file; callers must not modify the
+	// returned array, which is shared with definition queries.
 	def occurrences(path: string) -> Array<AnalysisOccurrence> {
-		var file = findFile(path);
+		var file = files[path];
 		if (file == null) return [];
-		return OccurrenceCollector.new().collect(file);
+		return file.occurrences();
 	}
 	// The declaration that the identifier at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
 	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
-		for (o in occurrences(path)) {
-			if (o.range.contains(line, column)) return o.declaration;
+		var uses = occurrences(path), low = 0, high = uses.length;
+		// Identifier tokens do not overlap, so their exclusive ends are also
+		// in source order. Find the first token ending after the query point.
+		// This also preserves the first match if a token was collected twice.
+		while (low < high) {
+			var mid = low + (high - low) / 2, r = uses[mid].range;
+			if (r.endLine < line || (r.endLine == line && r.endColumn <= column)) low = mid + 1;
+			else high = mid;
 		}
+		if (low < uses.length && uses[low].range.contains(line, column)) return uses[low].declaration;
 		return null;
 	}
-	private def findFile(path: string) -> VstFile {
-		if (!parsed) return null;
-		for (f in prog.vst.files) {
-			if (f != null && Strings.equal(f.fileName, path)) return f;
-		}
-		return null;
+}
+
+// Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
+// repeated walk, allocation, or sort for subsequent binding queries.
+class AnalysisFileIndex(file: VstFile) {
+	private var uses: Array<AnalysisOccurrence>;
+
+	def occurrences() -> Array<AnalysisOccurrence> {
+		if (uses == null) uses = OccurrenceCollector.new().collect(file);
+		return uses;
 	}
 }
 
 component AeneasAdapter {
 	def MAX_ERRORS = 100;
+	// Parse/verify do not mutate compiler configuration. Each analysis still
+	// owns a fresh Program and Compilation; only this default configuration
+	// is reused. Per-project CLOptions configuration remains future work.
+	private def compiler = Compiler.new(null);
 
 	// Parse one file in isolation. Does not verify, initialize, or generate code.
 	def parseFile(path: string, input: Array<byte>) -> FileParseResult {
@@ -122,8 +147,9 @@ component AeneasAdapter {
 	// order. Builds a fresh {Program} each time and runs only
 	// {Compilation.parse()} and, if parsing succeeded, {Compilation.verify()}.
 	// Never initializes, runs reachability, or generates code.
-	def analyzeProgram(sources: Array<AnalysisSource>) -> ProgramAnalysis {
-		var uidBefore = UID.next, globalBefore = globalTypeCount();
+	// {collectStats} enables the expensive process-wide type-cache counts.
+	def analyzeProgram(sources: Array<AnalysisSource>, collectStats: bool) -> ProgramAnalysis {
+		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
 		var prog = Program.new();
 		// Without a target, Aeneas provides a synthetic System component, as
 		// it does for the interpreter (see Aeneas.makeProgram).
@@ -136,7 +162,7 @@ component AeneasAdapter {
 			var input = sources[i].input;
 			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
 		}
-		var compilation = Compilation.new(Compiler.new(null), prog);
+		var compilation = Compilation.new(compiler, prog);
 		var t0 = System.ticksUs();
 		var parsed = compilation.parse();
 		var t1 = System.ticksUs();
@@ -146,7 +172,7 @@ component AeneasAdapter {
 		var verified = parsed && compilation.verify();
 		var t2 = System.ticksUs();
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
-			globalTypeCount() - globalBefore);
+			if(collectStats, globalTypeCount() - globalBefore, -1));
 		return ProgramAnalysis.new(convertErrors(null, prog.ERROR), stats, parsed, verified, prog);
 	}
 	// The next value of Aeneas's process-wide UID counter. It never resets, so

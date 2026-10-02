@@ -149,7 +149,7 @@ component VirgilLsp {
 		}
 		var firstHash: u64, failed = false;
 		for (run < repeat) {
-			var analysis = AeneasAdapter.analyzeProgram(sources);
+			var analysis = AeneasAdapter.analyzeProgram(sources, stats);
 			// Only the first run prints; later runs are compared by hash so
 			// that large reports never need to be held in memory.
 			var out = AnalysisReport.new(run == 0);
@@ -206,7 +206,7 @@ class AnalysisReport(print: bool) {
 	// Writes and clears {buf}.
 	def write(buf: StringBuilder) {
 		for (i < buf.length) hash = (hash ^ buf.buf[i]) * 0x100000001b3ul;
-		if (print) System.puts(buf.extract());
-		else buf.reset();
+		if (print && buf.length > 0) System.out.putr(buf.buf[0 ..+ buf.length]);
+		buf.reset();
 	}
 }
