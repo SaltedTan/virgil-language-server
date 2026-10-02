@@ -1,91 +1,192 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-def T = UnitTests.register;
-def X = [
-	T("OccurrenceCollector:default_match_once", test_default_match_once),
-	T("OccurrenceCollector:lambda_once", test_lambda_once),
-	T("OccurrenceCollector:nested_lambda_once", test_nested_lambda_once),
-	T("OccurrenceCollector:field_lambda_once", test_field_lambda_once),
-	T("OccurrenceCollector:superclass_once", test_superclass_once),
-	T("OccurrenceCollector:explicit_superclass_once", test_explicit_superclass_once),
-	()
-];
+component OccurrenceCollectorTest {
+	def T = UnitTests.register;
+	def X = [
+		T("OccurrenceCollector:default_match_once", test_default_match_once),
+		T("OccurrenceCollector:lambda_once", test_lambda_once),
+		T("OccurrenceCollector:nested_lambda_once", test_nested_lambda_once),
+		T("OccurrenceCollector:field_lambda_once", test_field_lambda_once),
+		T("OccurrenceCollector:superclass_once", test_superclass_once),
+		T("OccurrenceCollector:explicit_superclass_once", test_explicit_superclass_once),
+		T("OccurrenceCollector:variant_match_cases", variant_match_cases),
+		T("OccurrenceCollector:enum_match_cases", enum_match_cases),
+		T("OccurrenceCollector:enum_parameter_fields", enum_parameter_fields),
+		T("OccurrenceCollector:enum_literal_parameter_field", enum_literal_parameter_field),
+		T("OccurrenceCollector:enum_type_parameter_field", enum_type_parameter_field),
+		T("OccurrenceCollector:enum_nonliteral_parameter_field", enum_nonliteral_parameter_field),
+		T("OccurrenceCollector:unresolved_match_cases", unresolved_match_cases),
+		()
+	];
+	def MATCH_CASES = "test/fixtures/analysis/match-cases/main.v3";
+	def ENUM_FIELDS = "test/fixtures/analysis/enum-parameter-fields/main.v3";
 
-def fixture(t: Tester, name: string) -> (ProgramAnalysis, string) {
-	var path = Strings.format1("test/fixtures/analysis/duplicate-uses/%s.v3", name);
-	var bytes = System.fileLoad(path);
-	t.assert(bytes != null, "fixture must be readable from the repository root");
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, bytes)], false);
-	t.asserti(0, a.diagnostics.length);
-	t.assertz(true, a.verified);
-	return (a, path);
-}
-
-// Count at the source token, not just by declaration: separate uses of the
-// same name must survive. Also check that definition lookup sees that use.
-def assertOnce(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int, name: string) {
-	var count = 0;
-	for (o in a.occurrences(path)) {
-		if (o.range.beginLine != line || o.range.beginColumn != column) continue;
-		count++;
-		t.assert_string(name, o.declaration.name);
-		t.asserti(column + name.length, o.range.endColumn);
+	def analyze(t: Tester, path: string) -> ProgramAnalysis {
+		var input = System.fileLoad(path);
+		if (input == null) {
+			t.fail1("cannot read %s; run the unit tests from the repository root", path);
+			return null;
+		}
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, input)], false);
+		if (a != null) {
+			t.asserti(0, a.diagnostics.length);
+			t.assertz(true, a.verified);
+		}
+		return a;
 	}
-	t.asserti(1, count);
-	var decl = a.definitionAt(path, line, column);
-	if (decl == null) return t.fail("expected definition for the unique use");
-	t.assert_string(name, decl.name);
-}
+	// Check the full token range in the public occurrence index, as well as
+	// definition lookup, so a future references consumer sees the same use.
+	def use(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int,
+			kind: AnalysisDeclKind, name: string, declLine: int, declColumn: int) {
+		var d = a.definitionAt(path, line, column);
+		if (d == null) return t.fail3("no definition at %s:%d:%d", path, line, column);
+		t.assert(d.kind == kind, "declaration kind");
+		t.assert_string(name, d.name);
+		t.assert_string(path, d.range.path);
+		t.asserti(declLine, d.range.beginLine);
+		t.asserti(declColumn, d.range.beginColumn);
+		t.asserti(declColumn + name.length, d.range.endColumn);
+		var count = 0;
+		for (o in a.occurrences(path)) {
+			if (o.range.beginLine != line || o.range.beginColumn != column) continue;
+			count++;
+			t.assert_string(path, o.range.path);
+			t.asserti(line, o.range.endLine);
+			t.asserti(column + name.length, o.range.endColumn);
+		}
+		t.asserti(1, count);
+	}
+	def variant_match_cases(t: Tester) {
+		var a = analyze(t, MATCH_CASES);
+		if (a == null) return;
+		// Qualified construction is the already-working VarBinding path.
+		use(t, a, MATCH_CASES, 19, 33, AnalysisDeclKind.VARIANT_CASE, "Local", 4, 15);
+		use(t, a, MATCH_CASES, 9, 13, AnalysisDeclKind.VARIANT_CASE, "Local", 4, 15);
+		use(t, a, MATCH_CASES, 10, 13, AnalysisDeclKind.VARIANT_CASE, "Other", 4, 35);
+		use(t, a, MATCH_CASES, 9, 32, AnalysisDeclKind.LOCAL, "d", 9, 19);
+		use(t, a, MATCH_CASES, 10, 35, AnalysisDeclKind.LOCAL, "a", 10, 19);
+		use(t, a, MATCH_CASES, 10, 39, AnalysisDeclKind.LOCAL, "b", 10, 22);
+	}
+	def enum_match_cases(t: Tester) {
+		var a = analyze(t, MATCH_CASES);
+		if (a == null) return;
+		// Qualified enum constants already have EnumConst bindings.
+		use(t, a, MATCH_CASES, 20, 29, AnalysisDeclKind.ENUM_CASE, "X", 5, 10);
+		use(t, a, MATCH_CASES, 15, 13, AnalysisDeclKind.ENUM_CASE, "X", 5, 10);
+		use(t, a, MATCH_CASES, 16, 13, AnalysisDeclKind.ENUM_CASE, "Y", 5, 13);
+	}
+	def enum_parameter_fields(t: Tester) {
+		var a = analyze(t, ENUM_FIELDS);
+		if (a == null) return;
+		// Receiver use and enum case qualification already resolve normally.
+		use(t, a, ENUM_FIELDS, 6, 35, AnalysisDeclKind.PARAMETER, "op", 6, 11);
+		use(t, a, ENUM_FIELDS, 6, 48, AnalysisDeclKind.ENUM_CASE, "ADD", 4, 22);
+		use(t, a, ENUM_FIELDS, 6, 38, AnalysisDeclKind.FIELD, "prec", 4, 9);
+		t.assert(a.definitionAt(ENUM_FIELDS, 9, 40) == null, "synthetic enum tag is not a parameter field");
+		t.assert(a.definitionAt(ENUM_FIELDS, 10, 44) == null, "synthetic enum name is not a parameter field");
+		t.assert(a.definitionAt(ENUM_FIELDS, 11, 36) == null, "enum count is not a parameter field");
+	}
+	def enum_literal_parameter_field(t: Tester) {
+		var a = analyze(t, ENUM_FIELDS);
+		if (a != null) use(t, a, ENUM_FIELDS, 6, 52, AnalysisDeclKind.FIELD, "prec", 4, 9);
+	}
+	def enum_type_parameter_field(t: Tester) {
+		var a = analyze(t, ENUM_FIELDS);
+		if (a != null) use(t, a, ENUM_FIELDS, 7, 43, AnalysisDeclKind.FIELD, "prec", 4, 9);
+	}
+	def enum_nonliteral_parameter_field(t: Tester) {
+		var a = analyze(t, ENUM_FIELDS);
+		if (a != null) use(t, a, ENUM_FIELDS, 8, 38, AnalysisDeclKind.FIELD, "prec", 4, 9);
+	}
+	def unresolved_match_cases(t: Tester) {
+		var path = "unresolved-patterns.v3";
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
+			"type T { case Local; }\nenum E { X }\ncomponent M {\n    def f(t: T) { match (t) { Missing => return; } }\n    def g(e: E) { match (e) { Missing => return; } }\n}\n")], false);
+		t.assertz(true, a.parsed);
+		t.assertz(false, a.verified);
+		t.assert(a.diagnostics.length > 0, "expected unresolved case diagnostics");
+		t.assert(a.definitionAt(path, 4, 29) == null, "unresolved variant case has no declaration");
+		t.assert(a.definitionAt(path, 5, 29) == null, "unresolved enum case has no declaration");
+		// Only the two scrutinee parameter uses should survive verification.
+		t.asserti(2, a.occurrences(path).length);
+	}
 
-def test_default_match_once(t: Tester) {
-	var f = fixture(t, "match"), a = f.0, path = f.1;
-	assertOnce(t, a, path, 9, 24, "k");
-	assertOnce(t, a, path, 10, 30, "f");
-	assertOnce(t, a, path, 11, 30, "g");
-	assertOnce(t, a, path, 11, 32, "x");
-}
+	def fixture(t: Tester, name: string) -> (ProgramAnalysis, string) {
+		var path = Strings.format1("test/fixtures/analysis/duplicate-uses/%s.v3", name);
+		var bytes = System.fileLoad(path);
+		t.assert(bytes != null, "fixture must be readable from the repository root");
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, bytes)], false);
+		t.asserti(0, a.diagnostics.length);
+		t.assertz(true, a.verified);
+		return (a, path);
+	}
 
-def test_lambda_once(t: Tester) {
-	var f = fixture(t, "lambda"), a = f.0, path = f.1;
-	assertOnce(t, a, path, 6, 41, "a");
-	assertOnce(t, a, path, 6, 45, "y");
-	assertOnce(t, a, path, 7, 24, "f");
-}
+	// Count at the source token, not just by declaration: separate uses of the
+	// same name must survive. Also check that definition lookup sees that use.
+	def assertOnce(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int, name: string) {
+		var count = 0;
+		for (o in a.occurrences(path)) {
+			if (o.range.beginLine != line || o.range.beginColumn != column) continue;
+			count++;
+			t.assert_string(name, o.declaration.name);
+			t.asserti(column + name.length, o.range.endColumn);
+		}
+		t.asserti(1, count);
+		var decl = a.definitionAt(path, line, column);
+		if (decl == null) return t.fail("expected definition for the unique use");
+		t.assert_string(name, decl.name);
+	}
 
-def test_nested_lambda_once(t: Tester) {
-	var f = fixture(t, "nested-lambda"), a = f.0, path = f.1;
-	assertOnce(t, a, path, 6, 57, "a");
-	assertOnce(t, a, path, 6, 61, "b");
-	assertOnce(t, a, path, 6, 65, "y");
-	assertOnce(t, a, path, 7, 24, "f");
-}
+	def test_default_match_once(t: Tester) {
+		var f = fixture(t, "match"), a = f.0, path = f.1;
+		assertOnce(t, a, path, 9, 24, "k");
+		assertOnce(t, a, path, 10, 30, "f");
+		assertOnce(t, a, path, 11, 30, "g");
+		assertOnce(t, a, path, 11, 32, "x");
+	}
 
-def test_field_lambda_once(t: Tester) {
-	var f = fixture(t, "field-lambda"), a = f.0, path = f.1;
-	assertOnce(t, a, path, 6, 33, "a");
-	assertOnce(t, a, path, 6, 37, "y");
-	assertOnce(t, a, path, 7, 36, "f");
-}
+	def test_lambda_once(t: Tester) {
+		var f = fixture(t, "lambda"), a = f.0, path = f.1;
+		assertOnce(t, a, path, 6, 41, "a");
+		assertOnce(t, a, path, 6, 45, "y");
+		assertOnce(t, a, path, 7, 24, "f");
+	}
 
-def test_superclass_once(t: Tester) {
-	var f = fixture(t, "superclass"), a = f.0, path = f.1;
-	assertOnce(t, a, path, 6, 27, "x");
-	assertOnce(t, a, path, 6, 31, "K");
-	assertOnce(t, a, path, 6, 33, "k");
-}
+	def test_nested_lambda_once(t: Tester) {
+		var f = fixture(t, "nested-lambda"), a = f.0, path = f.1;
+		assertOnce(t, a, path, 6, 57, "a");
+		assertOnce(t, a, path, 6, 61, "b");
+		assertOnce(t, a, path, 6, 65, "y");
+		assertOnce(t, a, path, 7, 24, "f");
+	}
 
-def test_explicit_superclass_once(t: Tester) {
-	var f = fixture(t, "explicit-superclass"), a = f.0, path = f.1;
-	assertOnce(t, a, path, 6, 19, "K");
-	assertOnce(t, a, path, 6, 21, "k");
-	assertOnce(t, a, path, 7, 17, "K");
-	assertOnce(t, a, path, 7, 19, "k");
-	// A constructor-local super clause is not shared with the class. Keep it,
-	// and keep later uses of the same declarations in the constructor body.
-	assertOnce(t, a, path, 10, 27, "x");
-	assertOnce(t, a, path, 10, 31, "K");
-	assertOnce(t, a, path, 10, 33, "k");
-	assertOnce(t, a, path, 10, 40, "K");
-	assertOnce(t, a, path, 10, 42, "k");
+	def test_field_lambda_once(t: Tester) {
+		var f = fixture(t, "field-lambda"), a = f.0, path = f.1;
+		assertOnce(t, a, path, 6, 33, "a");
+		assertOnce(t, a, path, 6, 37, "y");
+		assertOnce(t, a, path, 7, 36, "f");
+	}
+
+	def test_superclass_once(t: Tester) {
+		var f = fixture(t, "superclass"), a = f.0, path = f.1;
+		assertOnce(t, a, path, 6, 27, "x");
+		assertOnce(t, a, path, 6, 31, "K");
+		assertOnce(t, a, path, 6, 33, "k");
+	}
+
+	def test_explicit_superclass_once(t: Tester) {
+		var f = fixture(t, "explicit-superclass"), a = f.0, path = f.1;
+		assertOnce(t, a, path, 6, 19, "K");
+		assertOnce(t, a, path, 6, 21, "k");
+		assertOnce(t, a, path, 7, 17, "K");
+		assertOnce(t, a, path, 7, 19, "k");
+		// A constructor-local super clause is not shared with the class. Keep it,
+		// and keep later uses of the same declarations in the constructor body.
+		assertOnce(t, a, path, 10, 27, "x");
+		assertOnce(t, a, path, 10, 31, "K");
+		assertOnce(t, a, path, 10, 33, "k");
+		assertOnce(t, a, path, 10, 40, "K");
+		assertOnce(t, a, path, 10, 42, "k");
+	}
 }
