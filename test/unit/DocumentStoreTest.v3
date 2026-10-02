@@ -8,6 +8,8 @@ def X = [
 	T("DocumentStore:duplicate_open", test_store_duplicate_open),
 	T("DocumentStore:save", test_store_save),
 	T("DocumentStore:opaque_and_invalid", test_store_opaque_and_invalid),
+	T("DocumentStore:capacity", test_store_capacity),
+	T("DocumentStore:metadata_capacity", test_store_metadata_capacity),
 	()
 ];
 
@@ -23,7 +25,7 @@ class DocumentReaderFake {
 }
 
 def test_store_overlay_precedence(t: Tester) {
-	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read);
+	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read, DocumentLimits.MAX_BYTES);
 	var uri = "file:///tmp/a%20b.v3", alias = "FILE://localhost/tmp/a b.v3";
 	t.assert_string("disk", store.read(uri));
 	t.assert_string("/tmp/a b.v3", disk.path);
@@ -44,7 +46,7 @@ def test_store_overlay_precedence(t: Tester) {
 }
 
 def test_store_versions(t: Tester) {
-	var store = DocumentStore.new(null), uri = "file:///a.v3";
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), uri = "file:///a.v3";
 	t.assert_string("document is not open", store.change(uri, 1, "x"));
 	t.assert(store.open(uri, "virgil", -10, "first") == null, "open failed");
 	var snapshot = store.overlay(uri);
@@ -65,7 +67,7 @@ def test_store_versions(t: Tester) {
 }
 
 def test_store_duplicate_open(t: Tester) {
-	var store = DocumentStore.new(null), uri = "file:///a%20b.v3", alias = "file:/a b.v3";
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), uri = "file:///a%20b.v3", alias = "file:/a b.v3";
 	t.assert(store.open(uri, "virgil", 5, "original") == null, "open failed");
 	for (version in [4, 5, 99]) {
 		t.assert_string("document is already open", store.open(alias, "other", version, "duplicate"));
@@ -79,7 +81,7 @@ def test_store_duplicate_open(t: Tester) {
 }
 
 def test_store_save(t: Tester) {
-	var store = DocumentStore.new(null), uri = "untitled:a";
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), uri = "untitled:a";
 	t.assert_string("document is not open", store.save(uri));
 	t.assert(store.open(uri, "virgil", 3, "text") == null, "open failed");
 	var doc = store.overlay(uri);
@@ -101,11 +103,51 @@ def test_store_save(t: Tester) {
 }
 
 def test_store_opaque_and_invalid(t: Tester) {
-	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read);
+	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read, DocumentLimits.MAX_BYTES);
 	t.assert(store.open("untitled:a%20b", "virgil", 0, "virtual") == null, "virtual open failed");
 	t.assert_string("virtual", store.read("untitled:a%20b"));
 	t.assert(store.read("untitled:a b") == null, "opaque URI spellings must stay distinct");
 	t.assert_string("invalid or nonlocal file URI", store.open("file://remote/a", "virgil", 0, "bad"));
 	t.assert(store.read("file:///a%00b") == null, "invalid path must not reach reader");
 	t.asserti(0, disk.calls);
+}
+
+// Tiny injected budgets exercise the real admission logic, not MiB allocations.
+def test_store_capacity(t: Tester) {
+	var a = "file:///a", alias = "file:/a", b = "untitled:b";
+	var capacity = 2 * DocumentLimits.RECORD_BYTES + a.length + b.length + 2 + 8;
+	var store = DocumentStore.new(null, capacity);
+	t.assert(store.open(a, "v", 1, "12345") == null, "first open failed");
+	t.assert(store.open(b, "v", 1, "123") == null, "exact capacity must fit");
+	var original = store.overlay(a), other = store.overlay(b);
+	t.assert_string(DocumentLimits.EXCEEDED, store.open("untitled:c", "v", 1, ""));
+	t.assert(store.overlay("untitled:c") == null, "rejected open must not create an overlay");
+	t.assert_string("document is already open", store.open(alias, "v", 9, "long duplicate"));
+	t.assert_string("document version is not newer", store.change(alias, 1, "long stale"));
+	t.assert_string(DocumentLimits.EXCEEDED, store.change(alias, 2, "123456"));
+	t.assert(store.overlay(a) == original, "rejection must preserve text and version");
+	t.assert(store.overlay(b) == other, "other accepted documents must remain intact");
+	t.assert(store.save(a) == null, "save must not charge again");
+	t.assert(store.change(alias, 2, "abcde") == null, "same-size replacement must fit");
+	t.assert(store.change(alias, 3, "abc") == null, "shrinking must release capacity");
+	t.assert(store.change(b, 2, "12345") == null, "released capacity must be reusable");
+	t.assert_string(DocumentLimits.EXCEEDED, store.change(b, 3, "123456"));
+	t.assert(store.close(alias) == null, "close failed");
+	t.assert_string("document is not open", store.close(alias));
+	t.assert(store.open(a, "v", 0, "123") == null, "close must release capacity exactly once");
+	t.assert_string(DocumentLimits.EXCEEDED, store.change(a, 1, "1234"));
+	t.assert_string("12345", original.text);
+}
+
+def test_store_metadata_capacity(t: Tester) {
+	var uri = "untitled:é", language = "virgil";
+	var capacity = DocumentLimits.RECORD_BYTES + uri.length + language.length;
+	var store = DocumentStore.new(null, capacity);
+	t.assert_string(DocumentLimits.EXCEEDED, store.open(uri, language, 1, "é"));
+	t.assert(store.open(uri, language, 1, "") == null, "metadata at exact capacity must fit");
+	t.assert_string(DocumentLimits.EXCEEDED, store.open("untitled:b", "", 1, ""));
+	t.assert(store.close(uri) == null, "close failed");
+	t.assert_string(DocumentLimits.EXCEEDED, store.open("untitled:éx", language, 1, ""));
+	t.assert_string(DocumentLimits.EXCEEDED, store.open(uri, "virgilx", 1, ""));
+	t.assert(store.open(uri, language, 1, "") == null, "failed opens must not consume capacity");
 }

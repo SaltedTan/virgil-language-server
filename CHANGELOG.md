@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Occurrence collection reports uses only once in default match cases, lambda bodies (including nested lambdas and field initializers), and superclass arguments shared with constructors.
 - Match-case names and enum parameter fields now resolve in the [occurrence index](docs/architecture.md#compiler-adapter).
+- Open-document overlays now have a 1 MiB aggregate admission budget, including text, URI/language metadata, and per-record overhead. Over-capacity opens and changes preserve accepted overlays and emit an LSP `window/showMessage` warning; shrinking or closing releases capacity. See [Document store](docs/architecture.md#document-store) for the supported capacity and parsing headroom.
 - Occurrence collection no longer traps on a null type binding left by verification errors, including `E.set.all` on enums with more than 64 cases.
 - `scripts/bench-analysis.sh` reports failed input sets, command exit statuses and stderr, rejects runs without timing samples, and cleans up temporary files on exit.
 

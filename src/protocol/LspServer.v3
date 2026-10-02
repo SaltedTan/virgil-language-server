@@ -29,9 +29,11 @@ enum LspServerState {
 // - Payloads that aren't valid requests or notifications, and responses from
 //   the client, are passed to the dispatcher in every state before exit.
 class LspServer {
+	private var documentCapacity: int;
 	// Handlers for the server's features are registered here.
 	def dispatcher = JsonRpcDispatcher.new();
-	def documents = DocumentStore.new(null);
+	def documents = DocumentStore.new(null, documentCapacity);
+	private var documentWarning: Array<byte>;
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
 	private var documentSync: LspDocumentSync;
@@ -41,18 +43,26 @@ class LspServer {
 	// Why the exit status is not 0, for logging.
 	def var failure: string;
 
-	new() {
+	// Production supplies DocumentLimits.MAX_BYTES; tests may inject less.
+	new(documentCapacity) {
 		dispatcher
 			.onRequest("initialize", initialize)
 			.onRequest("shutdown", shutdown);
 		documentSync = LspDocumentSync.new(documents, ignoredDocumentSync);
+		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 	}
 	private def ignoredDocumentSync(reason: string) {
 		if (warnDocumentSync != null) warnDocumentSync(reason);
 	}
-	// Decodes and handles one payload. Returns the reply payload, or null if
-	// there is nothing to send.
+	private def capacityExceeded(message: string) {
+		var params = Strings.newMap<JsonValue>();
+		params["type"] = JsonValue.Int(2); // MessageType.Warning
+		params["message"] = JsonValue.String(message);
+		documentWarning = JsonRpcMessage.Notification("window/showMessage", JsonRpcParams.ByName(params)).encode();
+	}
+	// Decodes and handles one payload. Returns a reply or server-notification
+	// payload, or null if there is nothing to send.
 	def handle(payload: Array<byte>) -> Array<byte> {
 		if (state == LspServerState.EXITED) return null;
 		var input = JsonRpcDecoder.decode(payload);
@@ -78,7 +88,15 @@ class LspServer {
 			}
 			_ => ;
 		}
-		return dispatcher.dispatch(input);
+		var reply = dispatcher.dispatch(input);
+		// A synchronization notification has no reply. Capacity rejection instead
+		// sends a server notification, without inventing a JSON-RPC response id.
+		if (documentWarning != null) {
+			var warning = documentWarning;
+			documentWarning = null;
+			return warning;
+		}
+		return reply;
 	}
 	// Returns true once the session has ended, so no more input is handled.
 	def exited() -> bool {

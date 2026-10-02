@@ -5,6 +5,7 @@
 // a didChange batch is applied unless every member is a full-text change.
 // Rejections are reported through an injected warning sink, never as replies.
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
+	var capacityWarning: string -> void;
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher
 			.onNotification("textDocument/didOpen", didOpen)
@@ -76,7 +77,10 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 		else ignored(n, store.close(uri));
 	}
 	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
-		if (reason != null && warn != null) warn(Strings.format2("ignored %s: %s", n.method, reason));
+		if (reason == null) return;
+		var message = Strings.format2("ignored %s: %s", n.method, reason);
+		if (warn != null) warn(message);
+		if (Strings.equal(reason, DocumentLimits.EXCEEDED) && capacityWarning != null) capacityWarning(message);
 	}
 	private def members(n: JsonRpcMessage.Notification) -> HashMap<string, JsonValue> {
 		return if(JsonRpcParams.ByName.?(n.params), JsonRpcParams.ByName.!(n.params).v);

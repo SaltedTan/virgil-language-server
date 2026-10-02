@@ -70,7 +70,7 @@ component VirgilLsp {
 				return 2;
 			}
 		}
-		var server = LspServer.new();
+		var server = LspServer.new(DocumentLimits.MAX_BYTES);
 		server.documents.withReader(System.fileLoad);
 		server.warnDocumentSync = Log.warn;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);

@@ -48,7 +48,7 @@ def SHUTTING_DOWN = "the server is shutting down";
 
 // Returns a server that has been initialized.
 def runningServer(t: Tester) -> LspServer {
-	var s = LspServer.new();
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
 	expectServerReply(t, s, INITIALIZE, initializeResult());
 	return s;
 }
@@ -65,21 +65,21 @@ class PendingRecorder {
 }
 
 def test_initialize_result(t: Tester) {
-	var s = LspServer.new();
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
 	t.assert(s.state == LspServerState.UNINITIALIZED, "expected UNINITIALIZED");
 	expectServerReply(t, s, INITIALIZE, initializeResult());
 	t.assert(s.state == LspServerState.RUNNING, "expected RUNNING");
 	t.assertz(false, s.exited());
 	// The params need not hold anything the server reads, and a string ID is
 	// echoed.
-	s = LspServer.new();
+	s = LspServer.new(DocumentLimits.MAX_BYTES);
 	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"method\":\"initialize\",\"params\":{}}",
 		Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"result\":{\"capabilities\":{\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
 			BuildInfo.NAME, BuildInfo.VERSION));
 }
 
 def test_before_initialize(t: Tester) {
-	var s = LspServer.new();
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
 	var code = LspErrorCode.SERVER_NOT_INITIALIZED;
 	expectServerReply(t, s, SHUTDOWN, errorReply("2", code, NOT_INITIALIZED));
 	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":\"h\",\"method\":\"textDocument/hover\",\"params\":{}}",
@@ -100,7 +100,7 @@ def test_before_initialize(t: Tester) {
 }
 
 def test_initialize_invalid_params(t: Tester) {
-	var s = LspServer.new();
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
 	var params = ["", ",\"params\":null", ",\"params\":[]"];
 	for (p in params) {
 		expectServerReply(t, s, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"%s}", p),
@@ -179,7 +179,7 @@ def test_exit_without_shutdown(t: Tester) {
 	t.asserti(1, s.exitStatus);
 	t.assert_string("received exit before a shutdown request", s.failure);
 	// exit is honoured before initialize too.
-	s = LspServer.new();
+	s = LspServer.new(DocumentLimits.MAX_BYTES);
 	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}", null);
 	t.assertz(true, s.exited());
 	t.asserti(1, s.exitStatus);
@@ -195,7 +195,7 @@ def test_exit_unsupported_numbers(t: Tester) {
 }
 
 def test_server_close(t: Tester) {
-	var s = LspServer.new();
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
 	s.close();
 	t.assertz(true, s.exited());
 	t.asserti(1, s.exitStatus);
