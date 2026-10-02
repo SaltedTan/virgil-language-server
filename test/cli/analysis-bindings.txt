@@ -2,7 +2,7 @@ ok: 2 files parsed and verified
 test/fixtures/analysis/two-file/shapes.v3:5:24-5:29 -> FIELD width @ test/fixtures/analysis/two-file/shapes.v3:3:12-3:17
 test/fixtures/analysis/two-file/shapes.v3:5:32-5:38 -> FIELD height @ test/fixtures/analysis/two-file/shapes.v3:3:24-3:30
 test/fixtures/analysis/two-file/shapes.v3:10:24-10:28 -> CLASS Rect @ test/fixtures/analysis/two-file/shapes.v3:3:7-3:11
-test/fixtures/analysis/two-file/shapes.v3:10:29-10:32 -> CONSTRUCTOR new @ test/fixtures/analysis/two-file/shapes.v3:3:7-3:10
+test/fixtures/analysis/two-file/shapes.v3:10:29-10:32 -> CLASS Rect @ test/fixtures/analysis/two-file/shapes.v3:3:7-3:11
 test/fixtures/analysis/two-file/shapes.v3:10:33-10:37 -> PARAMETER side @ test/fixtures/analysis/two-file/shapes.v3:9:20-9:24
 test/fixtures/analysis/two-file/shapes.v3:10:39-10:43 -> PARAMETER side @ test/fixtures/analysis/two-file/shapes.v3:9:20-9:24
 test/fixtures/analysis/two-file/main.v3:4:25-4:31 -> COMPONENT Shapes @ test/fixtures/analysis/two-file/shapes.v3:8:11-8:17
