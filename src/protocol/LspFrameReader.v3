@@ -8,11 +8,9 @@ component LspFraming {
 	// The default limit on the payload of one incoming message.
 	def DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
 	// The highest payload limit the server supports with its default 200 MB
-	// heap. A message is parsed in full, and its parsed form takes several
-	// times its length. At this length every shape measured still parses, even
-	// with as many values as {JsonRpcJson.MAX_VALUES} allows. The costliest,
-	// 500,000 empty objects and a string filling the rest, runs out of heap
-	// at about 17.3 MiB.
+	// heap. Body bytes must be bounded along with {JsonRpcJson.MAX_VALUES}
+	// before parsing the whole message. See docs/architecture.md#framing for
+	// the supported memory budget.
 	def MAX_SUPPORTED_PAYLOAD = 16 * 1024 * 1024;
 }
 
@@ -43,8 +41,8 @@ type LspFrame {
 // - Content-Type is optional. Its media type isn't checked. A charset other
 //   than utf-8 (or utf8) skips the message.
 // - A payload longer than {maxPayload} bytes is skipped without being buffered.
-//   A shorter one is buffered as its bytes arrive, so a header alone never
-//   allocates the length it declares.
+//   A payload within the limit is buffered as its bytes arrive, so a header
+//   alone never allocates the length it declares.
 // - Unknown header fields are ignored.
 // - A header is malformed if it contains a byte that isn't printable ASCII, a
 //   space, or a tab (apart from the CR LF line ends), has a CR or LF outside a
