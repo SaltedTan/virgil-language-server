@@ -1,6 +1,6 @@
-Content-Length: 187
+Content-Length: 245
 
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 94
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"positionEncoding":"utf-16","textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 94
 
 {"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"the server is already initialized"}}Content-Length: 95
 

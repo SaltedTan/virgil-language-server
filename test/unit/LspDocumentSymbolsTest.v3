@@ -1,0 +1,143 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspDocumentSymbols:hierarchy_ranges", test_symbol_hierarchy),
+	T("LspDocumentSymbols:overlay_parse_failure", test_symbol_overlay),
+	T("LspDocumentSymbols:encodings", test_symbol_encodings),
+	T("LspDocumentSymbols:params_lifecycle", test_symbol_params),
+	T("LspDocumentSymbols:header_fields_cr", test_symbol_header_fields),
+	()
+];
+
+def URI = "untitled:symbols.v3";
+def REQUEST = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"untitled:symbols.v3\"}}}";
+def running(t: Tester) -> LspServer {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}") != null, "initialize reply");
+	return s;
+}
+def symbols(t: Tester, s: LspServer) -> Array<JsonValue> {
+	var parsed = JsonRpcJsonParser.new(s.handle(REQUEST));
+	var obj = JsonValue.JObject.!(parsed.parseDocument()).v;
+	t.assert(parsed.ok, "symbol reply must be JSON");
+	t.assert(obj.has("result"), "symbol request must succeed");
+	return JsonValue.JArray.!(obj["result"]).v;
+}
+def children(s: JsonValue) -> Array<JsonValue> {
+	return JsonValue.JArray.!(JsonValue.JObject.!(s).v["children"]).v;
+}
+def checkPosition(t: Tester, v: JsonValue, line: int, column: int) {
+	var obj = JsonValue.JObject.!(v).v;
+	t.asserti(line, JsonValue.Int.!(obj["line"]).v);
+	t.asserti(column, JsonValue.Int.!(obj["character"]).v);
+}
+def checkSymbol(t: Tester, v: JsonValue, name: string, kind: int, bl: int, bc: int, el: int, ec: int, nl: int, nc: int) {
+	var obj = JsonValue.JObject.!(v).v;
+	t.assert_string(name, JsonValue.String.!(obj["name"]).v);
+	t.asserti(kind, JsonValue.Int.!(obj["kind"]).v);
+	var r = JsonValue.JObject.!(obj["range"]).v;
+	checkPosition(t, r["start"], bl, bc);
+	checkPosition(t, r["end"], el, ec);
+	r = JsonValue.JObject.!(obj["selectionRange"]).v;
+	checkPosition(t, r["start"], nl, nc);
+	checkPosition(t, r["end"], nl, nc + name.length);
+}
+
+def test_symbol_hierarchy(t: Tester) {
+	var s = running(t);
+	var text = "private component C {\n\tprivate def text = \"};{}\"; // not a delimiter\n\tdef f(x: int) -> int {\n\t\tif (x > 0) { return x; }\n\t\treturn 0;\n\t}\n}\nclass K(value: int) {\n\tnew() {}\n\tvar a = [1, 2], b = 3;\n\tdef abstract() -> int;\n}\nenum E { A, B(1) }\nlayout L {\n\t+0 word: int;\n\t=4;\n}\npacking P(x: 1): 2 = 0b0x;\ndef top() {}";
+	t.assert(s.documents.open(URI, "virgil", 1, text) == null, "open");
+	var a = symbols(t, s);
+	t.asserti(6, a.length);
+	checkSymbol(t, a[0], "C", 3, 0, 0, 6, 1, 0, 18);
+	var c = children(a[0]);
+	t.asserti(2, c.length);
+	checkSymbol(t, c[0], "text", 8, 1, 1, 1, 27, 1, 13);
+	checkSymbol(t, c[1], "f", 6, 2, 1, 5, 2, 2, 5);
+	checkSymbol(t, a[1], "K", 5, 7, 0, 11, 1, 7, 6);
+	c = children(a[1]);
+	t.asserti(5, c.length);
+	checkSymbol(t, c[0], "value", 8, 7, 8, 7, 18, 7, 8);
+	checkSymbol(t, c[1], "new", 9, 8, 1, 8, 9, 8, 1);
+	checkSymbol(t, c[2], "a", 8, 9, 1, 9, 23, 9, 5);
+	checkSymbol(t, c[3], "b", 8, 9, 1, 9, 23, 9, 17);
+	checkSymbol(t, c[4], "abstract", 6, 10, 1, 10, 23, 10, 5);
+	checkSymbol(t, a[2], "E", 10, 12, 0, 12, 18, 12, 5);
+	c = children(a[2]);
+	t.asserti(2, c.length); // no synthesized tag/name or duplicated cases
+	checkSymbol(t, c[0], "A", 22, 12, 9, 12, 10, 12, 9);
+	checkSymbol(t, c[1], "B", 22, 12, 12, 12, 16, 12, 12);
+	checkSymbol(t, a[3], "L", 23, 13, 0, 16, 1, 13, 7);
+	c = children(a[3]);
+	t.asserti(1, c.length);
+	checkSymbol(t, c[0], "word", 8, 14, 1, 14, 14, 14, 4);
+	checkSymbol(t, a[4], "P", 23, 17, 0, 17, 26, 17, 8);
+	checkSymbol(t, a[5], "top", 6, 18, 0, 18, 12, 18, 4);
+}
+
+def test_symbol_overlay(t: Tester) {
+	var s = running(t);
+	t.asserti(0, symbols(t, s).length); // unopened, no disk fallback
+	s.documents.open(URI, "virgil", 1, "component Old {}");
+	checkSymbol(t, symbols(t, s)[0], "Old", 3, 0, 0, 0, 16, 0, 10);
+	s.documents.change(URI, 2, "component New {}");
+	checkSymbol(t, symbols(t, s)[0], "New", 3, 0, 0, 0, 16, 0, 10);
+	// Semantic errors are irrelevant: this feature never runs verification.
+	s.documents.change(URI, 3, "component C { def x: Missing = unknown; }");
+	t.asserti(1, symbols(t, s).length);
+	for (text in ["component Good {}\ncomponent Broken { def x = ; }", "component C #", "", "#"]) {
+		s.documents.change(URI, s.documents.overlay(URI).version + 1, text);
+		t.asserti(0, symbols(t, s).length);
+	}
+	s.documents.change(URI, 8, "component Fixed {}");
+	t.asserti(1, symbols(t, s).length);
+	s.documents.close(URI);
+	t.asserti(0, symbols(t, s).length);
+}
+
+def test_symbol_encodings(t: Tester) {
+	var encodings = ["utf-16", "utf-8", "utf-32"];
+	var columns = [21, 24, 20];
+	for (i < encodings.length) {
+		var s = LspServer.new(DocumentLimits.MAX_BYTES);
+		var init = Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"general\":{\"positionEncodings\":[\"unsupported\",\"%s\",\"utf-16\"]}}}}", encodings[i]);
+		var response = JsonRpcJsonParser.new(s.handle(init)).parseDocument();
+		var caps = JsonValue.JObject.!(JsonValue.JObject.!(JsonValue.JObject.!(response).v["result"]).v["capabilities"]).v;
+		t.assert_string(encodings[i], JsonValue.String.!(caps["positionEncoding"]).v);
+		t.assertz(true, JsonValue.Bool.!(caps["documentSymbolProvider"]).v);
+		// Same-line block-comment tab has anomalous compiler columns. Parser
+		// consumption offsets also handle CRLF, UTF-8, and escaped braces.
+		s.documents.open(URI, "virgil", 1, "/*\t é😀 */ component C {\r\n\tdef f() {}\r\n}");
+		var a = symbols(t, s);
+		checkSymbol(t, a[0], "C", 3, 0, columns[i] - 10, 2, 1, 0, columns[i]);
+		checkSymbol(t, children(a[0])[0], "f", 6, 1, 1, 1, 11, 1, 5);
+	}
+}
+
+def test_symbol_header_fields(t: Tester) {
+	var s = running(t);
+	s.documents.open(URI, "virgil", 1, "class G(item: Pair<int, int>, f: (int, int) -> int) {\r\tdef body() {}\r}");
+	var a = symbols(t, s);
+	t.asserti(1, a.length);
+	checkSymbol(t, a[0], "G", 5, 0, 0, 2, 1, 0, 6);
+	var c = children(a[0]);
+	t.asserti(3, c.length);
+	checkSymbol(t, c[0], "item", 8, 0, 8, 0, 28, 0, 8);
+	checkSymbol(t, c[1], "f", 8, 0, 30, 0, 50, 0, 30);
+	checkSymbol(t, c[2], "body", 6, 1, 1, 1, 14, 1, 5);
+}
+
+def test_symbol_params(t: Tester) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32002,\"message\":\"the server is not initialized\"}}", s.handle(REQUEST));
+	s = running(t);
+	for (p in ["null", "[]", "{}", "{\"textDocument\":null}", "{\"textDocument\":{\"uri\":1}}", "{\"textDocument\":{\"uri\":\"\"}}", "{\"textDocument\":{\"uri\":\"file://remote/a\"}}"] ) {
+		var req = Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/documentSymbol\",\"params\":%s}", p);
+		var obj = JsonValue.JObject.!(JsonRpcJsonParser.new(s.handle(req)).parseDocument()).v;
+		t.asserti(-32602, JsonValue.Int.!(JsonValue.JObject.!(obj["error"]).v["code"]).v);
+	}
+	s.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}");
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32600,\"message\":\"the server is shutting down\"}}", s.handle(REQUEST));
+}

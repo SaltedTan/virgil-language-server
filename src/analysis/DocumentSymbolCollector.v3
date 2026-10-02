@@ -1,0 +1,165 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Syntax-only symbols. Byte offsets are exclusive at the end; no compiler
+// types escape the adapter. The protocol maps them using PositionMap.
+class AnalysisDocumentSymbol(name: string, kind: int, begin: int, end: int,
+		nameBegin: int, nameEnd: int, children: Array<AnalysisDocumentSymbol>) { }
+
+// The VST records names, but not complete declaration ranges. Record parser
+// consumption boundaries (before whitespace/comments are skipped), rather than
+// guessing ends from the next declaration or counting braces in raw text.
+class SymbolSyntaxToken(begin: int, end: int, line: int, column: int) { }
+class SymbolSyntaxIndex {
+	def tokens = Vector<SymbolSyntaxToken>.new();
+	private var begin = -1;
+	private var line: int;
+	private var column: int;
+
+	def skip(p: ParserState) {
+		finish(p);
+		Parser.skipToNextToken(p);
+		begin = p.curPos;
+		line = p.curLine;
+		column = p.curCol;
+	}
+	// advance1 at EOF does not call skipFunc, so flush that last delimiter.
+	def finish(p: ParserState) {
+		if (begin >= 0 && p.curPos > begin) {
+			tokens.put(SymbolSyntaxToken.new(begin, p.curPos, line, column));
+			begin = p.curPos;
+		}
+	}
+	def find(t: Token) -> int {
+		var lo = 0, hi = tokens.length;
+		while (lo < hi) {
+			var mid = lo + (hi - lo) / 2, x = tokens[mid];
+			if (x.line < t.beginLine || (x.line == t.beginLine && x.column < t.beginColumn)) lo = mid + 1;
+			else hi = mid;
+		}
+		if (lo < tokens.length && tokens[lo].line == t.beginLine && tokens[lo].column == t.beginColumn) return lo;
+		return -1;
+	}
+}
+
+class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
+	private def input = file.input;
+	private def tokens = syntax.tokens;
+
+	def collect() -> Array<AnalysisDocumentSymbol> {
+		var result = Vector<AnalysisDocumentSymbol>.new();
+		for (i < file.components.length) {
+			var d = file.components[i];
+			if (d.isFileScope) members(d, result);
+			else if (!d.isSynthetic) result.put(compound(d, 3)); // Namespace
+		}
+		for (i < file.classes.length) {
+			var d = file.classes[i];
+			if (!d.isSynthetic) result.put(compound(d, 5)); // Class
+		}
+		for (i < file.enums.length) result.put(compound(file.enums[i], 10)); // Enum
+		for (i < file.layouts.length) result.put(compound(file.layouts[i], 23)); // Struct
+		for (i < file.packings.length) result.put(compound(file.packings[i], 23));
+		return sorted(result);
+	}
+	private def sorted(v: Vector<AnalysisDocumentSymbol>) -> Array<AnalysisDocumentSymbol> {
+		var a = v.extract();
+		return Arrays.sort(a, 0, a.length, before);
+	}
+	private def before(a: AnalysisDocumentSymbol, b: AnalysisDocumentSymbol) -> bool {
+		return a.nameBegin < b.nameBegin;
+	}
+	private def compound(d: VstCompound, kind: int) -> AnalysisDocumentSymbol {
+		var children = Vector<AnalysisDocumentSymbol>.new();
+		members(d, children);
+		// Class/enum header parameters declare fields, unlike method parameters.
+		if (d.params != null) for (p in d.params.asArray()) {
+			var i = syntax.find(p.token);
+			if (i >= 0) children.put(make(p, 8, i, parameterEnd(i), []));
+		}
+		var i = syntax.find(d.token), start = declarationStart(i);
+		return make(d, kind, start, declarationEnd(start, !VstPacking.?(d)), sorted(children));
+	}
+	private def members(d: VstCompound, result: Vector<AnalysisDocumentSymbol>) {
+		var fieldStart = -1, fieldEnd = -1;
+		for (l = d.members; l != null; l = l.tail) {
+			var m = l.head, i = syntax.find(m.token);
+			if (i < 0 || m.isSynthetic) continue;
+			match (m) {
+				x: VstEnumCase => {
+					var end = i;
+					if (i + 1 < tokens.length && ch(i + 1) == '(') end = matching(i + 1);
+					result.put(make(m, 22, i, end, [])); // EnumMember
+				}
+				x: VstMethod => {
+					var start = declarationStart(i);
+					result.put(make(m, if(VstNew.?(m), 9, 6), start, declarationEnd(start, true), []));
+				}
+				x: VstField => {
+					// A comma-separated var/def declares several fields. Each
+					// shares the full statement range but selects its own name.
+					if (i > fieldEnd) {
+						fieldStart = declarationStart(i);
+						fieldEnd = declarationEnd(fieldStart, false);
+					}
+					result.put(make(m, 8, fieldStart, fieldEnd, []));
+				}
+				x: VstLayoutField => {
+					var start = declarationStart(i);
+					result.put(make(m, 8, start, declarationEnd(start, false), []));
+				}
+				_ => ; // compiler-generated tag/name/descriptor members
+			}
+		}
+	}
+	private def ch(i: int) -> byte { return input[tokens[i].begin]; }
+	// Strings are consumed as single spans, so punctuation inside strings and
+	// comments never participates in delimiter balancing.
+	private def matching(i: int) -> int {
+		var open = ch(i), close = if(open == '(', ')', if(open == '[', ']', '}'));
+		for (j = i + 1; j < tokens.length; j++) {
+			var c = ch(j);
+			if (c == close) return j;
+			if (c == '(' || c == '[' || c == '{') j = matching(j);
+		}
+		return i; // only used on a successfully parsed file
+	}
+	private def declarationStart(i: int) -> int {
+		// Walk backward over header tokens, including modifiers, stopping at
+		// the enclosing body or the previous declaration's terminator.
+		while (i > 0) {
+			var c = ch(i - 1);
+			if (c == ';' || c == '{' || c == '}') break;
+			i--;
+		}
+		return i;
+	}
+	private def declarationEnd(i: int, body: bool) -> int {
+		for (j = i; j < tokens.length; j++) {
+			var c = ch(j);
+			if (c == ';') return j;
+			if (c == '(' || c == '[' || c == '{') {
+				var end = matching(j);
+				if (c == '{' && body) return end;
+				j = end;
+			}
+		}
+		return i;
+	}
+	private def parameterEnd(i: int) -> int {
+		var angles = 0;
+		for (j = i + 1; j < tokens.length; j++) {
+			var c = ch(j);
+			if (angles == 0 && (c == ',' || c == ')')) return j - 1;
+			if (c == '<') angles++;
+			if (c == '>') angles--;
+			if (c == '(' || c == '[') j = matching(j);
+		}
+		return i;
+	}
+	private def make(d: Decl, kind: int, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
+		var i = syntax.find(d.token), name = tokens[i];
+		return AnalysisDocumentSymbol.new(d.name(), kind, tokens[start].begin, tokens[end].end,
+			name.begin, name.end, children);
+	}
+}

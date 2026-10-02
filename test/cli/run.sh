@@ -138,7 +138,7 @@ not_found() {  # not_found <id> <method>
 VERSION=$("$EXE" --version | head -n 1)
 VERSION=${VERSION#* }
 INITIALIZE=$(request 1 initialize '{"processId":null,"rootUri":null,"capabilities":{}}')
-INIT_RESULT=$(printf '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"%s"}}}' "$VERSION")
+INIT_RESULT=$(printf '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"positionEncoding":"utf-16","textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"%s"}}}' "$VERSION")
 EXIT='{"jsonrpc":"2.0","method":"exit"}'
 
 # Golden transcripts in test/protocol/ cover the protocol over --stdio. The

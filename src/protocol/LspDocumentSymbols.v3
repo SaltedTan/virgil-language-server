@@ -1,0 +1,69 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+class LspDocumentSymbols(store: DocumentStore) {
+	var encoding = PositionEncoding.UTF16;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
+	}
+	private def documentSymbol(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = objectMember(params, "textDocument");
+		if (doc == null || !doc.has("uri") || !JsonValue.String.?(doc["uri"]) ||
+			JsonValue.String.!(doc["uri"]).v == null || DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v) == null) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "documentSymbol params require a valid textDocument.uri"));
+		}
+		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
+		if (overlay == null) return JsonRpcReply.Result(JsonValue.JArray([]));
+		var map = PositionMap.new(overlay.text, encoding);
+		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text);
+		return JsonRpcReply.Result(encodeSymbols(symbols, map));
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def encodeSymbols(symbols: Array<AnalysisDocumentSymbol>, map: PositionMap) -> JsonValue {
+		var result = Vector<JsonValue>.new();
+		for (s in symbols) {
+			var obj = Strings.newMap<JsonValue>();
+			obj["name"] = JsonValue.String(s.name);
+			obj["kind"] = JsonValue.Int(s.kind);
+			obj["range"] = range(map, s.begin, s.end);
+			obj["selectionRange"] = range(map, s.nameBegin, s.nameEnd);
+			if (s.children.length > 0) obj["children"] = encodeSymbols(s.children, map);
+			result.put(JsonValue.JObject(obj));
+		}
+		return JsonValue.JArray(result.extract());
+	}
+	private def range(map: PositionMap, begin: int, end: int) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["start"] = position(map.offsetToPosition(begin));
+		obj["end"] = position(map.offsetToPosition(end));
+		return JsonValue.JObject(obj);
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+	// Prefer the first supported encoding in the client's ordered list. UTF-16
+	// remains the required default when the capability is absent or unusable.
+	def negotiate(params: HashMap<string, JsonValue>) {
+		var general = objectMember(objectMember(params, "capabilities"), "general");
+		if (general == null || !general.has("positionEncodings") || !JsonValue.JArray.?(general["positionEncodings"])) return;
+		var offered = JsonValue.JArray.!(general["positionEncodings"]).v;
+		if (offered == null) return;
+		for (v in offered) {
+			if (!JsonValue.String.?(v)) continue;
+			for (e in [PositionEncoding.UTF8, PositionEncoding.UTF16, PositionEncoding.UTF32]) {
+				if (Strings.equal(JsonValue.String.!(v).v, e.lspName)) {
+					encoding = e;
+					return;
+				}
+			}
+		}
+	}
+}
