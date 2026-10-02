@@ -7,6 +7,8 @@ def X = [
 	T("LspParserDiagnostics:rejected_events", test_diagnostics_rejected),
 	T("LspParserDiagnostics:lifecycle", test_diagnostics_lifecycle),
 	T("LspParserDiagnostics:byte_ranges", test_diagnostics_ranges),
+	T("LspParserDiagnostics:hint_eof_recovery", test_diagnostics_hint_recovery),
+	T("LspParserDiagnostics:hint_ranges", test_diagnostics_hint_ranges),
 	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
 	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
 	()
@@ -130,6 +132,33 @@ def test_diagnostics_ranges(t: Tester) {
 	// CRLF's CR is rejected by the pinned parser and maps to the line end.
 	replace(t, server, 5, "component C {\r\n}");
 	assertRange(t, publication(t, rec, 4, URI, 5), 0, 13, 13);
+}
+def test_diagnostics_hint_recovery(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	open(t, server, URI, 1, "class C #");
+	assertRange(t, publication(t, rec, 0, URI, 1), 0, 9, 9);
+	replace(t, server, 2, "class C #boxed {}");
+	t.asserti(0, publication(t, rec, 1, URI, 2).length);
+	replace(t, server, 3, "/*\t*/ class C #");
+	assertRange(t, publication(t, rec, 2, URI, 3), 0, 15, 15);
+	replace(t, server, 4, "/*\t*/ class C #boxed {}");
+	t.asserti(0, publication(t, rec, 3, URI, 4).length);
+	notify(t, server, "didClose", ID);
+	t.asserti(0, publication(t, rec, 4, URI, 4).length);
+	t.asserti(5, rec.payloads.length);
+}
+def test_diagnostics_hint_ranges(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	open(t, server, URI, 1, "/*\t*/ class C #if {}");
+	assertRange(t, publication(t, rec, 0, URI, 1), 0, 15, 17);
+	replace(t, server, 2, "/*\t*/ class C #if // trailing\t😀");
+	var values = publication(t, rec, 1, URI, 2);
+	t.assert(values.length > 0, "expected a keyword diagnostic");
+	if (values.length > 0) assertRange(t, [values[0]], 0, 15, 17);
+	replace(t, server, 3, "/*\t*/ class C #boxed #if {}");
+	assertRange(t, publication(t, rec, 2, URI, 3), 0, 22, 24);
+	replace(t, server, 4, "/*\t*/ class C #boxed {}");
+	t.asserti(0, publication(t, rec, 3, URI, 4).length);
 }
 class DiagnosticDiskReader {
 	var reads: int;

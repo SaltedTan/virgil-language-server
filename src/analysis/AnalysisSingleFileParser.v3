@@ -3,10 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Parser driver adapted from the pinned Aeneas Parser.v3; see THIRD_PARTY_NOTICES.md.
 
-// Observe the pinned parser's token boundaries rather than lexing comments a
-// second time. Compiler columns alone cannot identify EOF after a line comment
-// or tokens following tabs in block comments. The skip hook retains their
-// actual byte positions; ErrorGen captures them at the instant an error occurs.
 class AnalysisParseErrors extends ErrorGen {
 	var parser: ParserState;
 	def offsets = Vector<(int, int)>.new();
@@ -16,10 +12,17 @@ class AnalysisParseErrors extends ErrorGen {
 
 	def record(p: ParserState) {
 		parser = p;
-		var key = coordinate(p.curLine, p.curCol);
 		// Preserve token ends when a trailing line comment later reaches EOF
 		// with the same compiler column. Empty current-point errors use curPos.
-		if (!positions.has(key)) positions[key] = p.curPos;
+		recordPosition(p.curLine, p.curCol, p.curPos);
+	}
+	def recordToken(token: Token, begin: int, end: int) {
+		recordPosition(token.beginLine, token.beginColumn, begin);
+		recordPosition(token.beginLine, token.beginColumn + token.image.length, end);
+	}
+	private def recordPosition(line: int, column: int, pos: int) {
+		var key = coordinate(line, column);
+		if (!positions.has(key)) positions[key] = pos;
 	}
 	def addError(range: FileRange, sourceLine: string, error: string, msg: string) {
 		var begin = -1, end = -1;
@@ -41,10 +44,24 @@ class AnalysisParseErrors extends ErrorGen {
 	}
 	private def offset(line: int, column: int) -> int {
 		var key = coordinate(line, column);
-		if (positions.has(key)) return positions[key];
-		// ParserState.tokenAt computes columns by scanning raw bytes, using
-		// the ordinary tab rule rather than skipToNextToken's comment rules.
-		return PositionMap.new(parser.input, PositionEncoding.UTF8).compilerToOffset(line, column);
+		return if(positions.has(key), positions[key], -1);
+	}
+}
+
+class AnalysisParserState extends ParserState {
+	new(file: VstFile, errors: AnalysisParseErrors)
+		super(file, errors, AnalysisSingleFileParser.skip, TypeCache.new()) { }
+
+	def token(len: int) -> Token {
+		var t = tokenAt(curPos, curPos + len);
+		advance(t.image.length);
+		return t;
+	}
+	def tokenAt(start: int, end: int) -> Token {
+		if (end > input.length) end = input.length;
+		var t = Token.new(fileName, Arrays.range(input, start, end), line(start), column(start));
+		AnalysisParseErrors.!(ERROR).recordToken(t, start, end);
+		return t;
 	}
 }
 
@@ -55,11 +72,9 @@ component AnalysisSingleFileParser {
 		Parser.skipToNextToken(p);
 		errors.record(p);
 	}
-	// The setup and top-level driver from the pinned Parser.parseFile, with
-	// an injected skip hook. Grammar parsing remains entirely in Aeneas.
 	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors) -> VstFile {
 		var file = VstFile.new(path, input);
-		var p = ParserState.new(file, errors, skip, TypeCache.new());
+		var p = AnalysisParserState.new(file, errors);
 		p.enableFunExprs = CLOptions.FUN_EXPRS.get();
 		p.enableSimpleBodies = CLOptions.SIMPLE_BODIES.get();
 		p.enableOpenTypes = CLOptions.OPEN_TYPES.get();

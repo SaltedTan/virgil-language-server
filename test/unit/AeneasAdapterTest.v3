@@ -7,6 +7,8 @@ def X = [
 	T("AeneasAdapter:parse_error_location", test_parse_error_location),
 	T("AeneasAdapter:parse_tab_columns", test_parse_tab_columns),
 	T("AeneasAdapter:parse_byte_offsets", test_parse_byte_offsets),
+	T("AeneasAdapter:parse_rep_hint_eof", test_parse_rep_hint_eof),
+	T("AeneasAdapter:parse_rep_hint_ranges", test_parse_rep_hint_ranges),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
 	T("AeneasAdapter:analyze_type_error", test_analyze_type_error),
@@ -62,6 +64,60 @@ def test_parse_byte_offsets(t: Tester) {
 		t.assert(r.diagnostics.length > 0, "expected a parse error");
 		t.asserti(begins[i], r.diagnostics[0].beginOffset);
 		t.asserti(ends[i], r.diagnostics[0].endOffset);
+	}
+}
+
+def test_parse_rep_hint_eof(t: Tester) {
+	var prefixes = ["class C ", "type T ", "type T { case C ",
+		"type T { case _ ", "layout L ", "layout L { +0 x: int ",
+		"def f() ", "def f() -> int ", "component C { def x ",
+		"component C { def f() { var x "];
+	for (prefix in prefixes) {
+		var text = StringBuilder.new().puts(prefix).putc('#').toString();
+		var r = AeneasAdapter.parseFile("hint.v3", text);
+		var found = false;
+		for (d in r.diagnostics) {
+			if (Strings.equal(d.message, "identifier expected")) {
+				found = true;
+				t.asserti(text.length, d.beginOffset);
+				t.asserti(text.length, d.endOffset);
+			}
+		}
+		t.assert(found, "expected a missing hint identifier diagnostic");
+	}
+	t.asserti(0, AeneasAdapter.parseFile("hint.v3", "class C #boxed {}").diagnostics.length);
+}
+
+def test_parse_rep_hint_ranges(t: Tester) {
+	var prefixes = ["/*\t*/ class C ", "/*\t*/ type T ", "/*\t*/ type T { case C ",
+		"/*\t*/ type T { case _ ", "/*\t*/ layout L ", "/*\t*/ layout L { +0 x: int ",
+		"/*\t*/ def f() ", "/*\t*/ def f() -> int ", "/*\t*/ component C { def x ",
+		"/*\t*/ component C { def f() { var x "];
+	for (prefix in prefixes) {
+		for (suffix in ["if {}", "if", "if // trailing\tcomment"]) {
+			var text = StringBuilder.new().puts(prefix).putc('#').puts(suffix).toString();
+			var r = AeneasAdapter.parseFile("hint.v3", text);
+			var found = false;
+			for (d in r.diagnostics) {
+				if (Strings.equal(d.message, "keyword \"if\" cannot be used as identifier")) {
+					found = true;
+					t.asserti(prefix.length + 1, d.beginOffset);
+					t.asserti(prefix.length + 3, d.endOffset);
+				}
+			}
+			t.assert(found, "expected a keyword hint diagnostic");
+		}
+	}
+	var clean = ["/*\t*/ class C #boxed #no-inline {}", "type T #boxed {}",
+		"type T { case C #boxed; }", "layout L #big-endian { = 4; }",
+		"layout L { +0 x: int #big-endian; = 4; }", "def f() #inline {}",
+		"def f() -> int #no-inline { return 1; }", "component C { def x #boxed; }",
+		"component C { def f() { var x #boxed = 1; } }",
+		"/*\t*/ def f() => missing.[](1);", "/*\t*/ def f() => missing.[]=(1, 2);"];
+	for (text in clean) {
+		var r = AeneasAdapter.parseFile("hint.v3", text);
+		t.asserti(0, r.diagnostics.length);
+		t.assert(r.declarationCount > 0, "expected a parsed declaration");
 	}
 }
 
