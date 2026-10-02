@@ -104,7 +104,7 @@ The server will need to send requests to the client, such as `workspace/configur
 - Requests get integer IDs counting up from 1, skipping any ID that is still outstanding, so no two outstanding requests share an ID. After the largest 32-bit integer, the count starts again at 1.
 - A response or error response whose `id` matches an outstanding request completes it exactly once and removes it from the table, before the callback runs, so the callback may send further requests.
 - A response with an unknown or already-completed `id` (including a string `id`, since the server sends only integers), or an error response with a null `id`, completes nothing and is not answered. `complete` returns the reason, and the dispatcher passes it to its `onIgnoredResponse` handler. `--stdio` logs it to stderr as a warning.
-- A response that held numbers that aren't 32-bit integers completes its request with `InternalError` (-32603) instead, so the callback never sees the null placeholders (see [Numbers](#json-limitations-and-workarounds)).
+- A decoded response or error response marked `JsonRpcInput.Valid(_, true)` completes its matching request with `InternalError` (-32603), so the callback never sees the null placeholders for numbers that aren't 32-bit integers (see [Numbers](#json-limitations-and-workarounds)). Malformed responses are still dropped without completing a request.
 - `failAll(error)` visits the requests outstanding when it starts and completes each with `error` unless an earlier callback already completed it. Requests sent by the callbacks it runs stay outstanding, even if they reuse an original request's ID. The `JsonRpcPendingRequests:fail_all_reentrant` and `JsonRpcPendingRequests:fail_all_recycled_ids` unit tests cover these cases.
 
 Requests the client never answers stay outstanding until `failAll`; there is no timeout yet. No server request is sent yet: the first ones come with the lifecycle work.
@@ -157,7 +157,7 @@ No handlers are registered yet, so every request gets `MethodNotFound`. `initial
 
 ## Protocol invariants
 
-- Each request receives exactly one response, carrying the request's original `id` (integer or string). *(present)*
+- Each incoming request receives exactly one response, carrying the request's original `id` (integer or string). *(present)*
 - Notifications never receive a response. Unknown notifications are ignored. Unknown requests receive `MethodNotFound`. *(present)*
 - `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are skipped. *(present)*
 - Standard output carries protocol bytes only. *(present; `test/cli/run.sh` compares it byte for byte)*
