@@ -25,7 +25,7 @@ flowchart TD
 | `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document-sync and document-symbol handlers | Message model, framing, stdio transport, server request tracking, lifecycle, full-text sync, and syntax outlines present |
 | `src/documents/` | URI normalization, versioned in-memory overlays with injected disk fallback, `PositionMap` | Present |
 | `src/workspace/` | `.virgil-lsp.json`, glob expansion, project contexts, scheduling | Planned (M3) |
-| `src/features/` | Diagnostics, symbols, definition, hover, and later features | Planned (M2–M5) |
+| `src/features/` | Diagnostics, semantic symbols, definition, hover, and later features | Planned (M2–M5) |
 
 ## Build model
 
@@ -44,7 +44,7 @@ Aeneas has its own `main`, but it comes later on the command line, so it isn't s
 The adapter (`src/analysis/AeneasAdapter.v3`) exposes compiler functionality in server-owned types:
 
 - `parseFile(path, bytes)` runs `Parser.parseFile` on in-memory bytes and returns `AnalysisDiagnostic`s and a declaration count. *(present)*
-- `documentSymbols(path, bytes)` parses without verification and walks the VST, returning hierarchical server-owned `AnalysisDocumentSymbol`s with complete byte ranges (see [Document symbols](#document-symbols)). Parse errors return an empty array. *(present)*
+- `documentSymbols(path, bytes)` is the syntax-outline adapter entry point (see [Document symbols](#document-symbols)). *(present)*
 - `analyzeProgram(sources, collectStats)` builds a fresh `Program` from in-memory `AnalysisSource`s and runs `Compilation.parse()`, then `Compilation.verify()` if parsing succeeded, reusing one default-configured `Compiler`. It returns a `ProgramAnalysis` with diagnostics and timing; process-wide type-cache counts are collected only when requested (`--stats`), otherwise `globalTypesAdded` is -1. Nothing is read from disk. Without a target, Aeneas supplies a synthetic `System` component, as it does for its interpreter. *(present; disk sources plus overlays come with the project model in M3)*
 - `ProgramAnalysis.occurrences(path)` lazily walks each parsed file once after verification runs, including when semantic errors leave only partial bindings, and maps resolved `VarExpr` identifiers to source declarations (`AnalysisOccurrence`, `AnalysisDeclaration`). Unqualified match-case names are recorded as `VARIANT_CASE` or `ENUM_CASE` uses from verifier pattern metadata. Enum parameter fields are recorded as `FIELD` uses of the parameter declaration, following getter operators (including enum-type getter functions) or recovering the field from a verified enum-case receiver when a literal case argument was folded to a constant. Each resolved use is reported once, even when verification shares subtrees. Parsing failures return an empty array because verification did not run. Verification errors do not prevent collection of resolved uses; bindings with no source declaration, including null type bindings, are skipped. The source-ordered array is cached per file in that analysis; callers must not modify it. Paths are indexed once when the analysis is created. `definitionAt(path, line, column)` binary-searches the cached identifier ranges at a compiler position. *(present for `VarExpr`)* `AppExpr.appbind`, `NamedTypeRef.binding`, and expression types follow in M4.
 
@@ -67,7 +67,7 @@ The M0 spike (issue #1) measured these. They shape the analysis snapshot design 
 
 ## Coordinates
 
-Aeneas reports one-based lines and one-based **display columns with tab expansion**. LSP uses zero-based lines and, by default, UTF-16 code-unit offsets with no tab expansion. The adapter returns compiler coordinates unchanged. `PositionMap` (`src/documents/PositionMap.v3`) converts between UTF-8 byte offsets, compiler line/column pairs, and LSP positions for one document text. Subtracting one from a compiler column is wrong for tab-indented code. The unit test `AeneasAdapter:parse_tab_columns` records the current compiler behaviour.
+Aeneas reports one-based lines and one-based **display columns with tab expansion**. LSP uses zero-based lines and, by default, UTF-16 code-unit offsets with no tab expansion. The adapter returns diagnostic compiler coordinates unchanged. `PositionMap` (`src/documents/PositionMap.v3`) converts between UTF-8 byte offsets, compiler line/column pairs, and LSP positions for one document text. Subtracting one from a compiler column is wrong for tab-indented code. The unit test `AeneasAdapter:parse_tab_columns` records the current compiler behaviour.
 
 The map is pure and takes compiler coordinates as plain ints. Its rules:
 
@@ -103,17 +103,7 @@ The capacity leaves headroom for [parsing the next message](#framing) within the
 | `textDocument/didSave` | Validates that the document is open without changing its overlay record, text, or version, and does not read or write disk. Save requests no text (`includeText: false`); unsolicited string text is ignored because it has no version and must not overwrite an accepted edit. Save on a closed document is ignored and logged. |
 | `textDocument/didClose` | Drops the overlay immediately, restoring disk fallback. Close on a closed document is ignored and logged. A subsequent open may start at any integer version. |
 
-Malformed batches, duplicate opens, and stale changes never alter text or version. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization, diagnostics, and position-encoding negotiation are not advertised. Document symbols are implemented separately (see below).
-
-## Document symbols
-
-`LspDocumentSymbols` handles `textDocument/documentSymbol` and advertises `documentSymbolProvider: true`. It returns hierarchical `DocumentSymbol[]` from the requested open document's current overlay, without reading disk or running semantic verification. Malformed parameters receive `InvalidParams`; a closed/unopened document or any parse failure returns `[]`, never a stale or truncated outline.
-
-The analysis layer walks VST declarations in source order: components are namespaces, classes are classes, enums are enums (with enum-member children), layouts and packings are structs, methods are methods, constructors are constructors, and fields are fields. Class/enum header parameters are field children. File-scope methods and fields appear at the root rather than under the compiler's synthetic component. Compiler-generated tag/name members are omitted. Method locals and parameters are not outline symbols.
-
-The VST does not store complete declaration ranges. `SymbolSyntaxIndex` records the parser's consumption spans **before** it skips whitespace and comments, associates VST name tokens with those spans, and balances consumed delimiters to find declaration ends. Strings and comments cannot introduce false delimiters. `range` includes modifiers and the final body brace or semicolon, excluding trailing whitespace/comments; comma-separated fields share their statement range. `selectionRange` selects each declaration's name. The adapter returns server-owned symbols with UTF-8 byte offsets; the protocol converts both ranges through `PositionMap` with UTF-16 positions. This also avoids the compiler's same-line block-comment tab column anomaly. CRLF and bare CR are normalized only in parser input, preserving byte offsets and leaving the overlay unchanged.
-
-Golden transcripts and handler-level unit tests cover all supported declaration kinds, nested bodies, exact ranges, unsaved replacements, parse failure/recovery, URI aliases, lifecycle/parameter errors, and UTF-16 positions.
+Malformed batches, duplicate opens, and stale changes never alter text or version. Full synchronization is advertised as `textDocumentSync: {openClose: true, change: 1, save: {includeText: false}}`; incremental synchronization, diagnostics, and position-encoding negotiation are not advertised. See [Document symbols](#document-symbols) for outline support.
 
 ### URI identity on Linux and macOS
 
@@ -126,6 +116,16 @@ Golden transcripts and handler-level unit tests cover all supported declaration 
 - Non-`file:` URIs remain exact opaque keys: scheme case, escapes, queries, fragments, and dot segments are untouched. Empty/null URIs are rejected. Native Windows drive and UNC paths are not supported (WSL uses Linux file URIs).
 
 For example, `file:///tmp/%61%20b.v3` and `file:/tmp/a b.v3` share the key `file:///tmp/a%20b.v3` and disk path `/tmp/a b.v3`. `untitled:a%20b` and `untitled:a b` remain distinct.
+
+## Document symbols
+
+`LspDocumentSymbols` handles `textDocument/documentSymbol` and advertises `documentSymbolProvider: true`. It returns hierarchical `DocumentSymbol[]` from the requested open document's current overlay, without reading disk or running semantic verification. Malformed parameters receive `InvalidParams`; a closed/unopened document or any parse failure returns `[]`, never a stale or truncated outline.
+
+The analysis layer walks VST declarations in source order: components are namespaces, classes are classes, enums are enums (with enum-member children), layouts and packings are structs, methods are methods, constructors are constructors, and fields are fields. Class/enum header parameters are field children. File-scope methods and fields appear at the root rather than under the compiler's synthetic component. Compiler-generated tag/name members are omitted. Method locals and parameters are not outline symbols.
+
+The VST does not store complete declaration ranges. `SymbolSyntaxIndex` records the parser's consumption spans **before** it skips whitespace and comments, associates VST name tokens with those spans, and balances consumed delimiters to find declaration ends. Strings and comments cannot introduce false delimiters. `range` includes modifiers and the final body brace or semicolon, excluding trailing whitespace/comments; comma-separated fields share their statement range. `selectionRange` selects each declaration's name. The adapter returns server-owned symbols with UTF-8 byte offsets; the protocol converts both ranges through `PositionMap` with UTF-16 positions. This also avoids the compiler's same-line block-comment tab column anomaly. CRLF and bare CR are normalized only in parser input, preserving byte offsets and leaving the overlay unchanged.
+
+Golden transcripts and handler-level unit tests cover all supported declaration kinds, nested bodies, exact ranges, unsaved replacements, parse failure/recovery, URI aliases, lifecycle/parameter errors, and UTF-16 positions.
 
 ## Analysis snapshots *(planned)*
 

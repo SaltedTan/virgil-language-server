@@ -60,7 +60,7 @@ See [docs/development.md](docs/development.md) for details.
 
 ## Editor setup
 
-Editor integration is not usable until milestone M2. Work-in-progress configuration lives in [`editors/nvim/`](editors/nvim/) and [`clients/vscode/`](clients/vscode/).
+Editor integrations remain in development. Setup and current integration status live in [`editors/nvim/`](editors/nvim/) and [`clients/vscode/`](clients/vscode/).
 
 ## Contributing
 

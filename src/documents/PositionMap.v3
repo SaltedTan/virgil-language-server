@@ -10,7 +10,7 @@ enum PositionEncoding(lspName: string) {
 	UTF32("utf-32")
 }
 
-// A zero-based LSP position. {character} counts units of the negotiated
+// A zero-based LSP position. {character} counts units of the selected
 // {PositionEncoding} from the start of the line.
 class LspPosition(line: int, character: int) {
 	def equals(that: LspPosition) -> bool {
@@ -30,7 +30,8 @@ class LspRange(start: LspPosition, end: LspPosition) { }
 // compiler coordinates are plain ints.
 //
 // {text} must be non-null and remain unchanged while the map is in use:
-// line boundaries are cached, but conversions read the original byte array.
+// line boundaries and byte-to-LSP character counts are cached; inverse and
+// compiler conversions read the original byte array.
 // See docs/architecture.md#coordinates for the conversion contract and
 // {nextColumn} for the compiler's comment-column exceptions.
 class PositionMap {
