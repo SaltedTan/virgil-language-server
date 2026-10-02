@@ -1,0 +1,6 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+class A(v: int) { }
+component K { def k() -> int { return 1; } }
+class B(x: int) extends A(x + K.k()) { }

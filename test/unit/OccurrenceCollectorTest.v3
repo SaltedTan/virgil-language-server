@@ -1,0 +1,91 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("OccurrenceCollector:default_match_once", test_default_match_once),
+	T("OccurrenceCollector:lambda_once", test_lambda_once),
+	T("OccurrenceCollector:nested_lambda_once", test_nested_lambda_once),
+	T("OccurrenceCollector:field_lambda_once", test_field_lambda_once),
+	T("OccurrenceCollector:superclass_once", test_superclass_once),
+	T("OccurrenceCollector:explicit_superclass_once", test_explicit_superclass_once),
+	()
+];
+
+def fixture(t: Tester, name: string) -> (ProgramAnalysis, string) {
+	var path = Strings.format1("test/fixtures/analysis/duplicate-uses/%s.v3", name);
+	var bytes = System.fileLoad(path);
+	t.assert(bytes != null, "fixture must be readable from the repository root");
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, bytes)], false);
+	t.asserti(0, a.diagnostics.length);
+	t.assertz(true, a.verified);
+	return (a, path);
+}
+
+// Count at the source token, not just by declaration: separate uses of the
+// same name must survive. Also check that definition lookup sees that use.
+def assertOnce(t: Tester, a: ProgramAnalysis, path: string, line: int, column: int, name: string) {
+	var count = 0;
+	for (o in a.occurrences(path)) {
+		if (o.range.beginLine != line || o.range.beginColumn != column) continue;
+		count++;
+		t.assert_string(name, o.declaration.name);
+		t.asserti(column + name.length, o.range.endColumn);
+	}
+	t.asserti(1, count);
+	var decl = a.definitionAt(path, line, column);
+	if (decl == null) return t.fail("expected definition for the unique use");
+	t.assert_string(name, decl.name);
+}
+
+def test_default_match_once(t: Tester) {
+	var f = fixture(t, "match"), a = f.0, path = f.1;
+	assertOnce(t, a, path, 9, 24, "k");
+	assertOnce(t, a, path, 10, 30, "f");
+	assertOnce(t, a, path, 11, 30, "g");
+	assertOnce(t, a, path, 11, 32, "x");
+}
+
+def test_lambda_once(t: Tester) {
+	var f = fixture(t, "lambda"), a = f.0, path = f.1;
+	assertOnce(t, a, path, 6, 41, "a");
+	assertOnce(t, a, path, 6, 45, "y");
+	assertOnce(t, a, path, 7, 24, "f");
+}
+
+def test_nested_lambda_once(t: Tester) {
+	var f = fixture(t, "nested-lambda"), a = f.0, path = f.1;
+	assertOnce(t, a, path, 6, 57, "a");
+	assertOnce(t, a, path, 6, 61, "b");
+	assertOnce(t, a, path, 6, 65, "y");
+	assertOnce(t, a, path, 7, 24, "f");
+}
+
+def test_field_lambda_once(t: Tester) {
+	var f = fixture(t, "field-lambda"), a = f.0, path = f.1;
+	assertOnce(t, a, path, 6, 33, "a");
+	assertOnce(t, a, path, 6, 37, "y");
+	assertOnce(t, a, path, 7, 36, "f");
+}
+
+def test_superclass_once(t: Tester) {
+	var f = fixture(t, "superclass"), a = f.0, path = f.1;
+	assertOnce(t, a, path, 6, 27, "x");
+	assertOnce(t, a, path, 6, 31, "K");
+	assertOnce(t, a, path, 6, 33, "k");
+}
+
+def test_explicit_superclass_once(t: Tester) {
+	var f = fixture(t, "explicit-superclass"), a = f.0, path = f.1;
+	assertOnce(t, a, path, 6, 19, "K");
+	assertOnce(t, a, path, 6, 21, "k");
+	assertOnce(t, a, path, 7, 17, "K");
+	assertOnce(t, a, path, 7, 19, "k");
+	// A constructor-local super clause is not shared with the class. Keep it,
+	// and keep later uses of the same declarations in the constructor body.
+	assertOnce(t, a, path, 10, 27, "x");
+	assertOnce(t, a, path, 10, 31, "K");
+	assertOnce(t, a, path, 10, 33, "k");
+	assertOnce(t, a, path, 10, 40, "K");
+	assertOnce(t, a, path, 10, 42, "k");
+}

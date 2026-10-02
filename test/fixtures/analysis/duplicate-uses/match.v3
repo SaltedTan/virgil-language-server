@@ -1,0 +1,14 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+enum K { A, B }
+component M {
+	def f() { }
+	def g(x: int) { }
+	def main(k: K, x: int) {
+		match (k) {
+			A => f();
+			_ => g(x);
+		}
+	}
+}

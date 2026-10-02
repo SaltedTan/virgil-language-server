@@ -27,10 +27,14 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		for (l = decl.members; l != null; l = l.tail) {
 			match (l.head) {
 				x: VstNew => {
-					if (x.superclause != null) expr(x.superclause.args);
+					// Verification copies the class clause onto its constructor.
+					// Only a constructor-local clause needs a second walk.
+					if (x.superclause != null && x.superclause != decl.superclause) expr(x.superclause.args);
 					stmt(x.func.body);
 				}
-				x: VstMethod => stmt(x.func.body);
+				// Synthetic methods wrap lambda funcs already reached through
+				// FunExpr in source methods or field initializers.
+				x: VstMethod => if (!x.isSynthetic) stmt(x.func.body);
 				x: VstField => expr(x.init);
 				x: VstEnumCase => exprs(x.args);
 			}
@@ -86,8 +90,8 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 	}
 	def visitMatch(s: MatchStmt, env: void) {
 		expr(s.expr);
+		// defcase aliases a case in this list; it is not another subtree.
 		for (l = s.cases.list; l != null; l = l.tail) matchCase(l.head);
-		if (s.defcase != null) matchCase(s.defcase);
 	}
 	private def matchCase(c: MatchCase) {
 		for (l = c.patterns.list; l != null; l = l.tail) expr(l.head.expr);
