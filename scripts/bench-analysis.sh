@@ -14,6 +14,17 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 VIRGIL=${VIRGIL:-$ROOT/vendor/virgil}
 EXE=${EXE:-$ROOT/build/virgil-lsp}
 RUNS=${1:-10}
+if [[ ! $RUNS =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: runs must be a positive integer" >&2
+    exit 1
+fi
+
+# Install cleanup before allocating anything, including on interrupted runs.
+TMP=
+trap 'if [[ -n $TMP ]]; then rm -rf "$TMP"; fi' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+TMP=$(mktemp -d)
 
 small=("$ROOT"/test/fixtures/analysis/two-file/*.v3)
 # Same file set as AENEAS_SRC in the Makefile.
@@ -29,18 +40,32 @@ summarize() {
 
 bench() {
     local label=$1; shift
-    local lines parse verify
+    local lines parse=$TMP/parse verify=$TMP/verify stderr=$TMP/stderr
+    local run status samples p v
     lines=$(cat "$@" | wc -l | tr -d ' ')
-    parse=$(mktemp); verify=$(mktemp)
-    for _ in $(seq "$RUNS"); do
-        "$EXE" analyze --stats "$@" 2>&1 >/dev/null |
-            sed -n 's/.*parse \([0-9]*\) us, verify \([0-9]*\) us.*/\1 \2/p' |
-            while read -r p v; do echo "$p" >> "$parse"; echo "$v" >> "$verify"; done
+    : > "$parse"; : > "$verify"
+    for run in $(seq "$RUNS"); do
+        if "$EXE" analyze --stats "$@" > /dev/null 2> "$stderr"; then
+            :
+        else
+            status=$?
+            echo "error: $label run $run failed (exit status $status)" >&2
+            cat "$stderr" >&2
+            exit "$status"
+        fi
+        samples=$(sed -n 's/.*parse \([0-9][0-9]*\) us, verify \([0-9][0-9]*\) us.*/\1 \2/p' "$stderr")
+        if [[ -z $samples ]]; then
+            echo "error: $label run $run produced no timing sample (expected --stats parse/verify timings)" >&2
+            cat "$stderr" >&2
+            exit 1
+        fi
+        while read -r p v; do
+            echo "$p" >> "$parse"; echo "$v" >> "$verify"
+        done <<< "$samples"
     done
     echo "$label: $# files, $lines lines, $RUNS runs"
     echo "  parse  (us): $(summarize < "$parse")"
     echo "  verify (us): $(summarize < "$verify")"
-    rm -f "$parse" "$verify"
 }
 
 bench "small fixture" "${small[@]}"
