@@ -1,0 +1,15 @@
+Content-Length: 58
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 190
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:parser-comments","languageId":"virgil","version":1,"text":"component C {\n/*\t*/ def x = ;\n}\n"}}}Content-Length: 186
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:parser-comments","version":2},"contentChanges":[{"text":"component C { // trailing\t😀"}]}}Content-Length: 187
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:parser-comments","version":3},"contentChanges":[{"text":"component C { def x = missing; }"}]}}Content-Length: 111
+
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"untitled:parser-comments"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

@@ -1,0 +1,45 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Synchronous, single-file syntax diagnostics for the accepted overlay. No
+// disk reads or verification. UTF-16 is the protocol default; negotiation is
+// not yet implemented. Each publication replaces the complete previous list.
+class LspParserDiagnostics(send: Array<byte> -> void) {
+	def update(doc: DocumentOverlay) {
+		var path = DocumentUri.filePath(doc.uri);
+		if (path == null) path = doc.uri;
+		var result = AeneasAdapter.parseFile(path, doc.text);
+		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
+		var diagnostics = Array<JsonValue>.new(result.diagnostics.length);
+		for (i < diagnostics.length) {
+			var d = result.diagnostics[i];
+			var range = Strings.newMap<JsonValue>();
+			range["start"] = position(map.offsetToPosition(d.beginOffset));
+			range["end"] = position(map.offsetToPosition(d.endOffset));
+			var diagnostic = Strings.newMap<JsonValue>();
+			diagnostic["range"] = JsonValue.JObject(range);
+			diagnostic["severity"] = JsonValue.Int(1); // DiagnosticSeverity.Error
+			diagnostic["source"] = JsonValue.String("aeneas");
+			if (d.kind != null) diagnostic["code"] = JsonValue.String(d.kind);
+			diagnostic["message"] = JsonValue.String(Strings.nonnull(d.message));
+			diagnostics[i] = JsonValue.JObject(diagnostic);
+		}
+		publish(doc, diagnostics);
+	}
+	def close(doc: DocumentOverlay) {
+		publish(doc, []);
+	}
+	private def publish(doc: DocumentOverlay, diagnostics: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["uri"] = JsonValue.String(doc.uri);
+		params["version"] = JsonValue.Int(doc.version);
+		params["diagnostics"] = JsonValue.JArray(diagnostics);
+		send(JsonRpcMessage.Notification("textDocument/publishDiagnostics", JsonRpcParams.ByName(params)).encode());
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+}

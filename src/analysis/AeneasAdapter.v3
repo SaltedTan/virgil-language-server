@@ -6,12 +6,16 @@
 // {Parser}, {VstFile}, {ErrorGen}, or {Compilation}. Everything it returns is
 // expressed in server-owned types so that compiler changes stay contained here.
 
-// A compiler diagnostic in compiler coordinates: one-based lines and
-// one-based, tab-expanded display columns. Conversion to LSP positions is the
-// job of the position-mapping module, not of the adapter. {path} is null for
-// diagnostics that are not attached to a source file.
+// A compiler diagnostic. One-based compiler coordinates remain available for
+// CLI reports. Single-file parsing also supplies exact UTF-8 byte offsets;
+// -1 means unavailable (including whole-program diagnostics). LSP consumers
+// use offsets, since compiler columns have comment-dependent rules. {path}
+// is null for diagnostics that are not attached to a source file.
 class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
 		endLine: int, endColumn: int, kind: string, message: string) {
+	var beginOffset: int = -1;
+	var endOffset: int = -1;
+
 	def toString() -> string {
 		var buf = StringBuilder.new();
 		buf.put3("%s:%d:%d: ", if(path == null, "<program>", path), beginLine, beginColumn);
@@ -133,11 +137,16 @@ component AeneasAdapter {
 
 	// Parse one file in isolation. Does not verify, initialize, or generate code.
 	def parseFile(path: string, input: Array<byte>) -> FileParseResult {
-		var errors = ErrorGen.new(MAX_ERRORS);
-		var file = Parser.parseFile(path, input, errors, TypeCache.new());
+		var errors = AnalysisParseErrors.new(MAX_ERRORS);
+		var file = AnalysisSingleFileParser.parse(path, input, errors);
 		var decls = file.classes.length + file.components.length + file.enums.length
 			+ file.layouts.length + file.packings.length;
-		return FileParseResult.new(path, convertErrors(path, errors), decls);
+		var diagnostics = convertErrors(path, errors);
+		for (i < diagnostics.length) {
+			diagnostics[i].beginOffset = errors.offsets[i].0;
+			diagnostics[i].endOffset = errors.offsets[i].1;
+		}
+		return FileParseResult.new(path, diagnostics, decls);
 	}
 	// Parse current document bytes without verification. A failed parse yields
 	// no symbols: the compiler stops early and its partial VST is not an outline.

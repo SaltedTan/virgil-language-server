@@ -1,0 +1,160 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspParserDiagnostics:open_change_fix_close", test_diagnostics_sequence),
+	T("LspParserDiagnostics:rejected_events", test_diagnostics_rejected),
+	T("LspParserDiagnostics:lifecycle", test_diagnostics_lifecycle),
+	T("LspParserDiagnostics:byte_ranges", test_diagnostics_ranges),
+	T("LspParserDiagnostics:overlay_only", test_diagnostics_overlay),
+	T("LspParserDiagnostics:notification_write_failure", test_diagnostics_write_failure),
+	()
+];
+
+class DiagnosticRecorder {
+	def payloads = Vector<string>.new();
+	def send(payload: Array<byte>) { payloads.put(payload); }
+}
+def INIT = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+def URI = "untitled:diagnostics";
+def notify(t: Tester, server: LspServer, method: string, params: string) {
+	var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/%s\",\"params\":%s}", method, params);
+	t.assert(server.handle(payload) == null, "notification must not have a reply");
+}
+def quoted(text: string) -> string {
+	return JsonRpcJson.renderString(StringBuilder.new(), text).toString();
+}
+def open(t: Tester, server: LspServer, uri: string, version: int, text: string) {
+	var params = StringBuilder.new().put1("{\"textDocument\":{\"uri\":%s,", quoted(uri));
+	params.put1("\"languageId\":\"virgil\",\"version\":%d,\"text\":", version).puts(quoted(text)).puts("}}");
+	notify(t, server, "didOpen", params.toString());
+}
+def change(t: Tester, server: LspServer, version: int, changes: string) {
+	notify(t, server, "didChange", Strings.format2("{\"textDocument\":{\"uri\":\"untitled:diagnostics\",\"version\":%d},\"contentChanges\":%s}", version, changes));
+}
+def replace(t: Tester, server: LspServer, version: int, text: string) {
+	change(t, server, version, Strings.format1("[{\"text\":%s}]", quoted(text)));
+}
+def ID = "{\"textDocument\":{\"uri\":\"untitled:diagnostics\"}}";
+def setup(t: Tester, recorder: DiagnosticRecorder) -> LspServer {
+	var server = LspServer.new(DocumentLimits.MAX_BYTES);
+	server.sendNotification = recorder.send;
+	t.assert(server.handle(INIT) != null, "initialize must reply");
+	return server;
+}
+def publication(t: Tester, rec: DiagnosticRecorder, index: int, uri: string, version: int) -> Array<JsonValue> {
+	var decoded = JsonRpcDecoder.decode(rec.payloads[index]);
+	if (!JsonRpcInput.Valid.?(decoded)) { t.fail("invalid publication JSON"); return []; }
+	var valid = JsonRpcInput.Valid.!(decoded);
+	if (!JsonRpcMessage.Notification.?(valid.msg)) { t.fail("publication must be a notification"); return []; }
+	var n = JsonRpcMessage.Notification.!(valid.msg);
+	t.assert_string("textDocument/publishDiagnostics", n.method);
+	var params = JsonRpcParams.ByName.!(n.params).v;
+	t.assert_string(uri, JsonValue.String.!(params["uri"]).v);
+	t.asserti(version, JsonValue.Int.!(params["version"]).v);
+	return JsonValue.JArray.!(params["diagnostics"]).v;
+}
+def diagnosticPosition(t: Tester, value: JsonValue, line: int, character: int) {
+	var obj = JsonValue.JObject.!(value).v;
+	t.asserti(line, JsonValue.Int.!(obj["line"]).v);
+	t.asserti(character, JsonValue.Int.!(obj["character"]).v);
+}
+def assertRange(t: Tester, values: Array<JsonValue>, line: int, begin: int, end: int) {
+	t.asserti(1, values.length);
+	if (values.length != 1) return;
+	var d = JsonValue.JObject.!(values[0]).v;
+	t.asserti(1, JsonValue.Int.!(d["severity"]).v);
+	t.assert_string("aeneas", JsonValue.String.!(d["source"]).v);
+	t.assert_string("ParseError", JsonValue.String.!(d["code"]).v);
+	t.assert(JsonValue.String.!(d["message"]).v.length > 0, "diagnostic needs a message");
+	var range = JsonValue.JObject.!(d["range"]).v;
+	diagnosticPosition(t, range["start"], line, begin);
+	diagnosticPosition(t, range["end"], line, end);
+}
+def test_diagnostics_sequence(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	open(t, server, URI, 1, "component C { def x = ; }");
+	assertRange(t, publication(t, rec, 0, URI, 1), 0, 22, 22);
+	// Only the last full replacement in a validated batch is parsed.
+	change(t, server, 3, "[{\"text\":\"broken\"},{\"text\":\"component C {}\"}]");
+	t.asserti(0, publication(t, rec, 1, URI, 3).length);
+	replace(t, server, 4, "component C { def x = ; }");
+	assertRange(t, publication(t, rec, 2, URI, 4), 0, 22, 22);
+	notify(t, server, "didClose", ID);
+	t.asserti(0, publication(t, rec, 3, URI, 4).length);
+	t.asserti(4, rec.payloads.length);
+	open(t, server, URI, -2, "");
+	t.asserti(0, publication(t, rec, 4, URI, -2).length);
+}
+def test_diagnostics_rejected(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	replace(t, server, 2, "bad");
+	open(t, server, URI, 1, "component C {}");
+	open(t, server, URI, 2, "bad");
+	for (v in [1, 0, -1]) replace(t, server, v, "bad");
+	for (c in ["[]", "[{\"text\":\"bad\"},{\"range\":{},\"text\":\"bad\"}]", "[{\"text\":42}]"]) change(t, server, 2, c);
+	notify(t, server, "didChange", "{\"textDocument\":{\"uri\":\"untitled:diagnostics\",\"version\":1.5},\"contentChanges\":[{\"text\":\"bad\"}]}");
+	notify(t, server, "didSave", ID);
+	t.asserti(1, rec.payloads.length);
+	replace(t, server, 2, "bad");
+	t.asserti(1, publication(t, rec, 1, URI, 2).length);
+	notify(t, server, "didClose", ID);
+	notify(t, server, "didClose", ID);
+	replace(t, server, 3, "bad");
+	t.asserti(3, rec.payloads.length);
+}
+def test_diagnostics_lifecycle(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = LspServer.new(DocumentLimits.MAX_BYTES);
+	server.sendNotification = rec.send;
+	open(t, server, URI, 1, "bad");
+	t.asserti(0, rec.payloads.length);
+	server.handle(INIT);
+	open(t, server, URI, 1, "bad");
+	server.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}");
+	replace(t, server, 2, "bad");
+	notify(t, server, "didClose", ID);
+	t.asserti(1, rec.payloads.length);
+}
+def test_diagnostics_ranges(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec);
+	open(t, server, URI, 1, "component C {\n/*\t*/ def x = ;\n}\n");
+	assertRange(t, publication(t, rec, 0, URI, 1), 1, 14, 14);
+	replace(t, server, 2, "component C { // trailing\t😀");
+	assertRange(t, publication(t, rec, 1, URI, 2), 0, 28, 28);
+	replace(t, server, 3, "component C {\n\tdef x = \"é😀\" + ;\n}");
+	assertRange(t, publication(t, rec, 2, URI, 3), 1, 17, 17);
+	// Error on a name token instead of at the current parser position.
+	replace(t, server, 4, "/*\t*/ def if = 1;");
+	assertRange(t, publication(t, rec, 3, URI, 4), 0, 10, 12);
+	// CRLF's CR is rejected by the pinned parser and maps to the line end.
+	replace(t, server, 5, "component C {\r\n}");
+	assertRange(t, publication(t, rec, 4, URI, 5), 0, 13, 13);
+}
+class DiagnosticDiskReader {
+	var reads: int;
+	def read(path: string) -> Array<byte> { reads++; return "bad"; }
+}
+def test_diagnostics_overlay(t: Tester) {
+	var rec = DiagnosticRecorder.new(), server = setup(t, rec), disk = DiagnosticDiskReader.new();
+	server.documents.withReader(disk.read);
+	open(t, server, "file:/no/such/a%20b.v3", 7, "component C { def x = missing; }");
+	// Undefined names need verification; parser diagnostics must remain empty.
+	t.asserti(0, publication(t, rec, 0, "file:///no/such/a%20b.v3", 7).length);
+	notify(t, server, "didClose", "{\"textDocument\":{\"uri\":\"FILE://localhost/no/such/a b.v3\"}}");
+	t.asserti(0, publication(t, rec, 1, "file:///no/such/a%20b.v3", 7).length);
+	t.asserti(0, disk.reads);
+}
+def framed(payload: string) -> string {
+	return StringBuilder.new().put1("Content-Length: %d\r\n\r\n", payload.length).puts(payload).toString();
+}
+def test_diagnostics_write_failure(t: Tester) {
+	var server = LspServer.new(DocumentLimits.MAX_BYTES), writer = WriteRecorder.new(0, 1), warn = WarningRecorder.new();
+	var transport = LspTransport.new(server.handle, server.exited, LspFraming.DEFAULT_MAX_PAYLOAD, writer.write, warn.warn);
+	server.sendNotification = transport.send;
+	t.assertz(true, transport.receive(framed(INIT)));
+	var open = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"untitled:diagnostics\",\"languageId\":\"virgil\",\"version\":1,\"text\":\"\"}}}";
+	t.assertz(false, transport.receive(framed(open)));
+	t.assert_string("cannot write a notification", transport.failure);
+	t.assertz(false, transport.close());
+}

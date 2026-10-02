@@ -75,6 +75,7 @@ component VirgilLsp {
 		server.warnDocumentSync = Log.warn;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
+		server.sendNotification = transport.send;
 		var buf = Array<byte>.new(64 * 1024);
 		while (true) {
 			var n = System.read(STDIN, buf);

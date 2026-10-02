@@ -1,0 +1,13 @@
+Content-Length: 217
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 301
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":14,"line":1},"start":{"character":14,"line":1}},"severity":1,"source":"aeneas"}],"uri":"untitled:parser-comments","version":1}}Content-Length: 309
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of member declaration","range":{"end":{"character":28,"line":0},"start":{"character":28,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:parser-comments","version":2}}Content-Length: 133
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"untitled:parser-comments","version":3}}Content-Length: 133
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"untitled:parser-comments","version":3}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":2,"result":null}

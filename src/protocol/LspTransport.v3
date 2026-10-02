@@ -36,6 +36,11 @@ class LspTransport(handle: Array<byte> -> Array<byte>, finished: void -> bool, m
 	// Why the connection stopped, once {receive} or {close} has returned false.
 	def var failure: string;
 
+	// Server-initiated messages use the same writer and failure path as replies.
+	def send(payload: Array<byte>) {
+		if (failure == null && !writer.send(payload)) fail("cannot write a notification");
+	}
+
 	// Handles {data}, read from the client. Returns false if the connection
 	// can't continue, because a header was malformed, an outgoing message couldn't be
 	// written, or the handler has finished. Only the first two set {failure}.
@@ -46,6 +51,7 @@ class LspTransport(handle: Array<byte> -> Array<byte>, finished: void -> bool, m
 			match (f) {
 				Message(payload) => {
 					var reply = handle(payload);
+					if (failure != null) return false;
 					if (reply != null && !writer.send(reply)) return fail("cannot write a reply");
 					// Later input, even in the same chunk, is not read.
 					if (finished()) return false;
