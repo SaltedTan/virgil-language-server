@@ -10,6 +10,7 @@ def X = [
 	T("DocumentStore:opaque_and_invalid", test_store_opaque_and_invalid),
 	T("DocumentStore:capacity", test_store_capacity),
 	T("DocumentStore:metadata_capacity", test_store_metadata_capacity),
+	T("DocumentStore:resize_capacity", test_store_resize_capacity),
 	()
 ];
 
@@ -150,4 +151,40 @@ def test_store_metadata_capacity(t: Tester) {
 	t.assert_string(DocumentLimits.EXCEEDED, store.open("untitled:éx", language, 1, ""));
 	t.assert_string(DocumentLimits.EXCEEDED, store.open(uri, "virgilx", 1, ""));
 	t.assert(store.open(uri, language, 1, "") == null, "failed opens must not consume capacity");
+}
+
+def test_store_resize_capacity(t: Tester) {
+	var uris = [
+		"file:///tmp/AaAaAa.v3", "file:///tmp/AaAaBB.v3", "file:///tmp/AaBBAa.v3",
+		"file:///tmp/AaBBBB.v3", "file:///tmp/BBAaAa.v3", "file:///tmp/BBAaBB.v3",
+		"file:///tmp/BBBBAa.v3"
+	];
+	var alias = "FILE://localhost/tmp/BBAaBB.v3";
+	var capacity = 7 * (DocumentLimits.RECORD_BYTES + uris[0].length + 1) + 8;
+	for (text in ["", "abcd", "abcdefgh"]) {
+		var store = DocumentStore.new(null, capacity);
+		for (i < 5) t.assert(store.open(uris[i], "v", 1, "") == null, "empty open failed");
+		t.assert(store.open(uris[5], "v", 1, "1234") == null, "resize open failed");
+		var original = store.overlay(uris[5]);
+		t.assert(store.change(alias, 2, text) == null, "replacement after resize failed");
+		var otherText = Arrays.range("12345678", 0, 8 - text.length);
+		t.assert(store.open(uris[6], "v", 1, otherText) == null, "exact capacity must fit after replacement");
+		t.assert_string(DocumentLimits.EXCEEDED, store.open("untitled:extra", "v", 1, ""));
+		t.assert_string("", store.read(uris[0]));
+		t.assert_string(text, store.read(uris[5]));
+		t.asserti(2, store.overlay(alias).version);
+		t.assert_string("document version is not newer", store.change(alias, 2, "stale"));
+		t.assert_string("1234", original.text);
+		t.asserti(1, original.version);
+		t.assert_string(otherText, store.read(uris[6]));
+		t.assert(store.close(alias) == null, "close after cache eviction failed");
+		t.assert(store.overlay(uris[5]) == null, "close must remove the retained entry");
+		t.assert_string("document is not open", store.close(alias));
+		t.assert(store.open(uris[5], "v", 0, text) == null, "close must release the replacement charge");
+		var rejection = store.change(uris[6], 2, "123456789");
+		t.assert(rejection != null, "growth must exceed capacity after close and reopen");
+		if (rejection != null) t.assert_string(DocumentLimits.EXCEEDED, rejection);
+		t.assert_string(otherText, store.read(uris[6]));
+		t.asserti(1, store.overlay(uris[6]).version);
+	}
 }

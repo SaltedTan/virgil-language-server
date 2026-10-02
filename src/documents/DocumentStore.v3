@@ -63,6 +63,7 @@ class DocumentStore {
 		var remaining = used - cost(doc.uri, doc.languageId, doc.text);
 		var charge = cost(doc.uri, doc.languageId, text);
 		if (charge > long.view(capacity) - remaining) return DocumentLimits.EXCEEDED;
+		overlays.remove(doc.uri);
 		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text);
 		used = remaining + charge;
 		return null;
