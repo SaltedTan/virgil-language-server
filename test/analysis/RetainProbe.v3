@@ -18,6 +18,9 @@ component AnalysisRetainProbe {
 				buf.put1("enum E%d { A, B }\n", i);
 				buf.put3("def enums%d(e: E%d) -> Array<E%d> { return [e]; }\n", i, i, i);
 			}
+			buf.puts("def tuples() {\nvar t0 = 1;\n");
+			for (i = 1; i <= 30; i++) buf.put3("var t%d = (t%d, t%d);\n", i, i - 1, i - 1);
+			buf.puts("var items = [t30];\n}\n");
 			sources = [AnalysisSource.new("generated.v3", buf.extract())];
 		} else {
 			sources = Array<AnalysisSource>.new(args.length);

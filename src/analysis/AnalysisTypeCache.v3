@@ -28,17 +28,18 @@ component AnalysisTypeCache {
 
 	def release() {
 		var cache = TypeUtil.globalCache;
-		prune(cache.singleBuckets);
-		prune(cache.multiBuckets);
+		var memo = TypeUtil.newTypeMap<bool>();
+		prune(cache.singleBuckets, memo);
+		prune(cache.multiBuckets, memo);
 	}
 
-	private def prune(buckets: Array<Type>) {
+	private def prune(buckets: Array<Type>, memo: HashMap<Type, bool>) {
 		for (i < buckets.length) {
 			var previous: Type;
 			var next: Type;
 			for (t = buckets[i]; t != null; t = next) {
 				next = t.link;
-				if (isGlobal(t)) {
+				if (isGlobal(t, memo)) {
 					previous = t;
 				} else {
 					if (previous == null) buckets[i] = next;
@@ -49,16 +50,23 @@ component AnalysisTypeCache {
 		}
 	}
 
-	private def isGlobal(t: Type) -> bool {
+	private def isGlobal(t: Type, memo: HashMap<Type, bool>) -> bool {
+		if (memo.has(t)) return memo[t];
 		var tc = t.typeCon;
-		if (tc.typeCache != TypeUtil.globalCache) return false;
 		// Enum constructors use the global cache too, but hold source declarations.
-		if (tc.kind == Kind.ENUM || tc.kind == Kind.ENUM_SET) return false;
+		var global = tc.typeCache == TypeUtil.globalCache
+			&& tc.kind != Kind.ENUM && tc.kind != Kind.ENUM_SET;
 		// TypeCon chooses a cache from immediate constructors, missing program
 		// dependencies nested inside builtin tuples, arrays and function types.
-		for (l = t.nested; l != null; l = l.tail) {
-			if (!isGlobal(l.head)) return false;
+		if (global) {
+			for (l = t.nested; l != null; l = l.tail) {
+				if (!isGlobal(l.head, memo)) {
+					global = false;
+					break;
+				}
+			}
 		}
-		return true;
+		memo[t] = global;
+		return global;
 	}
 }

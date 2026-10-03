@@ -28,6 +28,7 @@ def X = [
 	T("AeneasAdapter:repeat_analysis_equal", test_repeat_analysis_equal),
 	T("AeneasAdapter:cached_binding_index", test_cached_binding_index),
 	T("AeneasAdapter:lazy_bindings_after_cache_cleanup", test_lazy_bindings_after_cache_cleanup),
+	T("AeneasAdapter:shared_nested_tuple_cleanup", test_shared_nested_tuple_cleanup),
 	T("AeneasAdapter:optional_global_stats", test_optional_global_stats),
 	()
 ];
@@ -475,6 +476,29 @@ def test_lazy_bindings_after_cache_cleanup(t: Tester) {
 	assertDefinition(t, first, path, 5, 43, AnalysisDeclKind.FIELD, "value", path, 1, 14);
 	var second = AeneasAdapter.analyzeProgram(sources, false);
 	t.assert_string(renderAnalysis(first, [path]), renderAnalysis(second, [path]));
+}
+
+def test_shared_nested_tuple_cleanup(t: Tester) {
+	var path = "shared-tuples.v3";
+	var buf = StringBuilder.new().puts("def tuples() {\n    var t0 = 1;\n");
+	for (i = 1; i <= 30; i++) buf.put3("    var t%d = (t%d, t%d);\n", i, i - 1, i - 1);
+	buf.puts("    var items = [t30];\n}\n");
+	var sources = [AnalysisSource.new(path, buf.extract())];
+	for (collectStats in [false, true]) {
+		var start = System.ticksUs();
+		var nested = AeneasAdapter.analyzeProgram(sources, collectStats);
+		t.assert(System.ticksUs() - start < 5000000, "shared tuple analysis must finish within five seconds");
+		t.assertz(true, nested.verified);
+		t.asserti(0, nested.diagnostics.length);
+		start = System.ticksUs();
+		var tiny = AeneasAdapter.analyzeProgram(
+			[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], collectStats);
+		t.assert(System.ticksUs() - start < 5000000, "subsequent tiny analysis must finish within five seconds");
+		t.assertz(true, tiny.verified);
+		t.asserti(0, tiny.diagnostics.length);
+		RiGc.forceGC();
+		assertDefinition(t, nested, path, 32, 16, AnalysisDeclKind.LOCAL, "t29", path, 31, 9);
+	}
 }
 
 def test_optional_global_stats(t: Tester) {
