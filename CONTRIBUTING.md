@@ -26,7 +26,7 @@ make test
 ## Pull requests
 
 - Keep pull requests small and focused on one change. Include tests that exercise it.
-- `make test` must pass. CI runs the same command and is required before merge.
+- `make test` and all required CI checks must pass before merge. See the [development guide](docs/development.md#tests) for the server suites and VS Code client checks.
 - Update documentation and `CHANGELOG.md` (under *Unreleased*) for user-visible changes.
 - Never advertise an LSP capability that isn't fully implemented and tested.
 - Keep standard output protocol-only. All logging goes to standard error through `Log`.

@@ -12,9 +12,9 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
 ## Setup
 
-Requirements: VS Code 1.91 or later, Node.js 20 or later with `npm`, and a built server.
+Requirements: a [supported VS Code version](../../docs/compatibility.md#editors), Node.js 20 or later with `npm`, and a built server.
 
-1. Build the server from the repository root (`make`), and either put `build/` on your `PATH` or set `virgil.server.path` to the absolute path of `build/virgil-lsp`. Keep `virgil-lsp-worker` in the same directory as `virgil-lsp` ([Building](../../README.md#building)).
+1. Build the server from the repository root (`make`), and either put `build/` on your `PATH` or set `virgil.server.path` to the absolute path of `build/virgil-lsp`. Follow the [executable placement guidance](../../README.md#building).
 2. Install the extension's dependencies from the lockfile and compile it:
 
    ```sh
