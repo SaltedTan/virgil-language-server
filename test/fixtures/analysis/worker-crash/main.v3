@@ -1,0 +1,3 @@
+// Traps in the pinned verifier: the untyped 0i literal reaches
+// TryRepresentationChangeOfLiteral (docs/aeneas-crash-paths.md, row 1).
+def x: i32 = 0i;

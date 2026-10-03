@@ -5,12 +5,14 @@
 // protocol bytes, so every log line is written to standard error.
 component Log {
 	def STDERR = 2;
+	// The program named at the start of each line. The analysis worker sets its own.
+	var program = BuildInfo.NAME;
 
 	def raw(msg: string) {
 		System.fileWriteK(STDERR, msg, 0, msg.length);
 	}
 	def error(msg: string) {
-		raw(Strings.format2("%s: error: %s\n", BuildInfo.NAME, msg));
+		raw(Strings.format2("%s: error: %s\n", program, msg));
 	}
 	def error1<A>(fmt: string, a: A) {
 		error(Strings.format1(fmt, a));
@@ -19,6 +21,9 @@ component Log {
 		error(Strings.format2(fmt, a, b));
 	}
 	def warn(msg: string) {
-		raw(Strings.format2("%s: warning: %s\n", BuildInfo.NAME, msg));
+		raw(Strings.format2("%s: warning: %s\n", program, msg));
+	}
+	def info(msg: string) {
+		raw(Strings.format2("%s: %s\n", program, msg));
 	}
 }

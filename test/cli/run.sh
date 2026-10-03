@@ -10,6 +10,8 @@ EXE=${1:?usage: run.sh <path-to-virgil-lsp>}
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 FIXTURES=$ROOT/test/fixtures
 TMP=$(mktemp -d)
+# Executable discovery resolves symlinks (e.g. /var to /private/var on macOS).
+TMP=$(cd "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0
@@ -99,6 +101,78 @@ expect "analyze stats go to stderr" 0 '^ok: 2 files' 'analysis 1: parse [0-9]+ u
 expect "analyze missing file" 1 "" "cannot read file" -- analyze "$TMP/missing.v3"
 expect "analyze rejects a bad repeat count" 2 "" "invalid option" -- analyze --repeat=0 "$A/two-file/main.v3"
 expect "analyze rejects unknown options" 2 "" "unknown option" -- analyze --bogus "$A/two-file/main.v3"
+expect "analyze rejects a bad worker timeout" 2 "" "invalid option" -- analyze --worker-timeout-ms=0 "$A/two-file/main.v3"
+expect "analyze rejects a bad worker analysis limit" 2 "" "invalid option" -- \
+    analyze --worker-max-analyses=x "$A/two-file/main.v3"
+
+# Whole-program analysis runs in virgil-lsp-worker, next to the executable
+# (docs/decisions/0004-analysis-worker-process.md). A verifier trap or hang
+# ends only the worker; the command reports it and stdout stays clean.
+WORKER=$(dirname "$EXE")/virgil-lsp-worker
+expect "analyze contains a verifier crash" 1 "" \
+    'analysis worker [0-9]+ crashed during an analysis; it ended with exit status 255' -- \
+    analyze "$A/worker-crash/main.v3"
+check_stream stderr "$TMP/err" '!NullCheckException' && \
+    check_stream stderr "$TMP/err" 'error: analysis run 1 failed: the analysis worker crashed \(exit status 255\)$'
+finish "analyze crash keeps the worker's trace and reports the failure" $(( $? == 0 ))
+SECONDS=0
+expect "analyze contains a verifier hang" 1 "" \
+    'analysis worker [0-9]+ exceeded the analysis time limit of 1000 ms and was killed; it ended with signal 9' -- \
+    analyze --worker-timeout-ms=1000 "$A/worker-hang/main.v3"
+[ "$SECONDS" -lt 10 ] || { fail=$((fail + 1)); echo "FAIL: the hanging analysis was not stopped at its time limit"; }
+check_stream stderr "$TMP/err" 'error: analysis run 1 failed: the analysis worker timed out \(signal 9\)$'
+finish "analyze hang reports the failure" $(( $? == 0 ))
+# A worker whose supervisor dies during a hanging analysis must still end: it
+# arms a timer for twice the time limit plus a second (4 s here).
+"$EXE" analyze --worker-timeout-ms=1500 "$A/worker-hang/main.v3" > /dev/null 2>&1 &
+supervisor=$!
+worker=
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    worker=$(pgrep -P "$supervisor")
+    [ -z "$worker" ] || break
+    sleep 0.1
+done
+sleep 0.7
+kill -9 "$supervisor"
+wait "$supervisor" 2>/dev/null
+SECONDS=0
+while [ -n "$worker" ] && kill -0 "$worker" 2>/dev/null && [ "$SECONDS" -lt 15 ]; do sleep 0.2; done
+if [ -n "$worker" ] && ! kill -0 "$worker" 2>/dev/null; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+    echo "FAIL: an orphaned analysis worker kept running (process ${worker:-not found})"
+    [ -z "$worker" ] || kill -9 "$worker" 2>/dev/null
+fi
+
+mkdir "$TMP/alone"
+cp "$EXE" "$TMP/alone/virgil-lsp"
+EXE_SAVED=$EXE
+EXE=$TMP/alone/virgil-lsp
+expect "analyze reports a missing worker" 1 "" \
+    "cannot start the analysis worker: cannot execute $TMP/alone/virgil-lsp-worker" -- \
+    analyze "$A/two-file/shapes.v3" "$A/two-file/main.v3"
+EXE=$EXE_SAVED
+EXE_SAVED=$EXE
+EXE=$WORKER
+expect "worker refuses to run without a server" 2 "" 'virgil-lsp-worker: error: virgil-lsp-worker is started by virgil-lsp' --
+EXE=$EXE_SAVED
+
+# Many analyses of the Aeneas sources in one command, across replaced workers:
+# every run must report the same diagnostics and all 162,929 bindings.
+VIRGIL=$ROOT/vendor/virgil
+aeneas=("$VIRGIL"/aeneas/src/*/*.v3)
+for dep in $(grep -v '^lib/test/' "$VIRGIL/aeneas/DEPS"); do
+    aeneas+=("$VIRGIL"/$dep)
+done
+expect "analyze repeats the Aeneas sources across replaced workers" 0 \
+    "^ok: ${#aeneas[@]} files parsed and verified$" \
+    'replacing analysis worker [0-9]+ after 8 analyses \(limit 8\)' -- \
+    analyze --bindings --stats --repeat=20 --worker-max-analyses=8 "${aeneas[@]}"
+[ "$(grep -c 'replacing analysis worker' "$TMP/err")" -eq 2 ] && \
+    [ "$(grep -Ec '^virgil-lsp: analysis [0-9]+: parse [0-9]+ us, verify [0-9]+ us, 162929 bindings' "$TMP/err")" -eq 20 ] && \
+    [ "$(grep -c ' -> ' "$TMP/out")" -eq 162929 ]
+finish "analyze repeats report every binding from each worker" $(( $? == 0 ))
 
 # A complete report spans the header and both files. Pin its bytes so buffer
 # reuse cannot leak capacity bytes, duplicate a prior chunk, or miss a chunk.

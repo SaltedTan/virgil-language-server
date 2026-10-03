@@ -1,0 +1,111 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Entry point of the virgil-lsp-worker executable, which runs whole-program
+// analyses for virgil-lsp so that compiler crashes, hangs, and leaks end only
+// this process. This file must be the first source passed to the compiler for
+// that executable. See docs/decisions/0004-analysis-worker-process.md.
+component VirgilLspWorker {
+	def NAME = AnalysisWire.WORKER_NAME;
+
+	def main(args: Array<string>) -> int {
+		Log.program = NAME;
+		if (args.length != 1 || !Strings.equal(args[0], AnalysisWire.WORKER_ARG)) {
+			Log.error2("%s is started by %s and is not run directly", NAME, BuildInfo.NAME);
+			return 2;
+		}
+		return AnalysisWorker.new(AnalysisWire.REQUEST_FD, AnalysisWire.RESULT_FD).run();
+	}
+}
+
+// Serves analysis requests on a worker's pipes until the server closes the
+// request pipe. Each request is a fresh Aeneas parse and verify; the worker
+// keeps nothing of it but process-wide compiler state.
+class AnalysisWorker(requestFd: int, resultFd: int) {
+	private def reader = WorkerFrameReader.new(WorkerFraming.MAX_PAYLOAD);
+	private var analyses: int;
+
+	// Returns the process exit status.
+	def run() -> int {
+		var heapBytes = long.!(CiRuntime.HEAP_END - CiRuntime.HEAP_START);
+		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, heapBytes))) return 1;
+		while (true) {
+			var payload = receive();
+			if (payload == null) {
+				if (reader.error != null) return fail(reader.error);
+				if (reader.midFrame()) return fail("the request pipe ended in the middle of a message");
+				return 0; // the server closed the pipe
+			}
+			var result = handle(payload);
+			payload = null;
+			if (result == null) return fail("received a malformed request");
+			// Report the heap that stays live between analyses, which is what
+			// a retention leak would grow. Exclude the result being sent.
+			RiGc.forceGC();
+			var liveBytes = Semispace.fromSpaceUsed() - result.data.length;
+			if (!send(AnalysisWire.finishResult(result, liveBytes))) return 1;
+		}
+		return 0;
+	}
+	// Decodes and runs one request. Nothing it allocates but the encoded
+	// result stays reachable after it returns.
+	private def handle(payload: Array<byte>) -> DataWriter {
+		var request = AnalysisWire.decodeAnalyze(payload);
+		if (request == null) return null;
+		analyses++;
+		// The server kills a worker at its time limit. If the server has died,
+		// this timer still ends a worker caught in a compiler loop.
+		var alarm = 2L * request.timeoutMs + 1000;
+		HostOs.setAlarm(if(request.timeoutMs <= 0, 0, if(alarm > int.max, int.max, int.view(alarm))));
+		var stats = (request.flags & AnalysisWire.WANT_STATS) != 0;
+		var analysis = AeneasAdapter.analyzeProgram(request.sources, stats);
+		var files: Array<(string, Array<AnalysisOccurrence>)>, collectUs = -1;
+		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
+			// Each distinct path once; a repeated path keeps the first file's
+			// bindings, as ProgramAnalysis does.
+			var seen = Strings.newMap<bool>(), list = Vector<(string, Array<AnalysisOccurrence>)>.new();
+			var start = System.ticksUs();
+			for (s in request.sources) {
+				if (seen.has(s.path)) continue;
+				seen[s.path] = true;
+				list.put((s.path, analysis.occurrences(s.path)));
+			}
+			collectUs = System.ticksUs() - start;
+			files = list.extract();
+		}
+		HostOs.setAlarm(0);
+		var globalTypes = if(stats, AeneasAdapter.globalTypeCount(), -1);
+		return AnalysisWire.encodeResult(request.id, analyses, AeneasAdapter.uidCounter(),
+			analysis, collectUs, globalTypes, files);
+	}
+	// Reads the next request payload. Returns null at the end of the input,
+	// on a read error, or if the frame was invalid.
+	private def receive() -> Array<byte> {
+		while (true) {
+			var space = reader.space();
+			if (space.length == 0) return null;
+			var n = HostOs.read(requestFd, space);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) return null;
+			var payload = reader.advance(n);
+			if (payload != null || reader.error != null) return payload;
+		}
+		return null;
+	}
+	private def send(frame: Range<byte>) -> bool {
+		while (frame.length > 0) {
+			var n = HostOs.write(resultFd, frame);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) {
+				fail("cannot write to the server");
+				return false;
+			}
+			frame = frame[n ...];
+		}
+		return true;
+	}
+	private def fail(msg: string) -> int {
+		Log.error(msg);
+		return 1;
+	}
+}

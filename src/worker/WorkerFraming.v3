@@ -1,0 +1,68 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Framing on the pipes between the server and an analysis worker: each message
+// is a 4-byte little-endian payload length, then the payload. See
+// docs/decisions/0004-analysis-worker-process.md.
+component WorkerFraming {
+	def HEADER_BYTES = 4;
+	// Larger frames are a protocol error. The Aeneas sources take 2.9 MB as a
+	// request and 2.0 MB as a result with occurrences. The limit also bounds
+	// what decoding a result can allocate in the server.
+	def MAX_PAYLOAD = 16 * 1024 * 1024;
+
+	// Returns a writer whose first bytes are reserved for the frame header.
+	def start() -> DataWriter {
+		return DataWriter.new().put_b32(0);
+	}
+	// Fills in the header of a frame started by {start} and returns the frame.
+	def finish(w: DataWriter) -> Range<byte> {
+		var end = w.end();
+		w.at(0).put_b32(end - HEADER_BYTES).at(end);
+		return w.alias();
+	}
+}
+
+// Reassembles frames from bytes read in pieces of any size. The caller reads
+// into {space()} and reports the count to {advance}, which returns each
+// complete payload once.
+class WorkerFrameReader(maxPayload: int) {
+	private def header = Array<byte>.new(WorkerFraming.HEADER_BYTES);
+	private var headerFilled: int;
+	private var payload: Array<byte>;
+	private var filled: int;
+	// Why the stream can't continue, once a header was invalid.
+	def var error: string;
+
+	// Where the next bytes read belong. Empty once {error} is set.
+	def space() -> Range<byte> {
+		if (error != null) return header[0 ... 0];
+		if (payload == null) return header[headerFilled ...];
+		return payload[filled ...];
+	}
+	// Records {n} bytes read into {space()}. Returns the payload it completes, or null.
+	def advance(n: int) -> Array<byte> {
+		if (payload == null) {
+			headerFilled += n;
+			if (headerFilled < header.length) return null;
+			headerFilled = 0;
+			var length = int.view(DataReaders.read_range_u32(header));
+			if (length < 0 || length > maxPayload) {
+				error = Strings.format2("frame of %d bytes exceeds the limit of %d bytes", u32.view(length), maxPayload);
+				return null;
+			}
+			payload = Array<byte>.new(length);
+			filled = 0;
+		} else {
+			filled += n;
+		}
+		if (filled < payload.length) return null;
+		var result = payload;
+		payload = null;
+		return result;
+	}
+	// Returns true if part of a frame has been read.
+	def midFrame() -> bool {
+		return headerFilled > 0 || payload != null;
+	}
+}

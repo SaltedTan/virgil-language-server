@@ -1,0 +1,283 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// These tests start the real virgil-lsp-worker from the unit test executable's
+// directory, as `make test` builds it. A crashing worker's stack trace on
+// standard error is expected output.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisSupervisor:completes", test_completes),
+	T("AnalysisSupervisor:crash_keeps_snapshot", test_crash_keeps_snapshot),
+	T("AnalysisSupervisor:enum_case_crash", test_enum_case_crash),
+	T("AnalysisSupervisor:hang_times_out", test_hang_times_out),
+	T("AnalysisSupervisor:replaces_after_max_analyses", test_replaces_after_max_analyses),
+	T("AnalysisSupervisor:replaces_at_uid_limit", test_replaces_at_uid_limit),
+	T("AnalysisSupervisor:replaces_at_live_heap_limit", test_replaces_at_live_heap_limit),
+	T("AnalysisSupervisor:missing_worker", test_missing_worker),
+	T("AnalysisSupervisor:not_a_worker", test_not_a_worker),
+	T("AnalysisSupervisor:request_too_large", test_request_too_large),
+	T("AnalysisSupervisor:request_size_boundary", test_request_size_boundary),
+	T("AnalysisSupervisor:aggregate_request_too_large", test_aggregate_request_too_large),
+	T("AnalysisSupervisor:oversized_request_keeps_snapshot", test_oversized_request_keeps_snapshot),
+	T("AnalysisSupervisor:default_worker_path", test_default_worker_path),
+	()
+];
+
+def SHAPES = "test/fixtures/analysis/two-file/shapes.v3";
+def MAIN = "test/fixtures/analysis/two-file/main.v3";
+def CRASH = "test/fixtures/analysis/worker-crash/main.v3";
+def HANG = "test/fixtures/analysis/worker-hang/main.v3";
+def ALL = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
+
+// Records what a supervisor logs.
+class SupervisorTestLog {
+	def warnings = Vector<string>.new();
+	def infos = Vector<string>.new();
+	def warn(msg: string) {
+		warnings.put(msg);
+	}
+	def info(msg: string) {
+		infos.put(msg);
+	}
+}
+
+def newSupervisor(limits: AnalysisWorkerLimits, path: string) -> (AnalysisSupervisor, SupervisorTestLog) {
+	// As in production: a write to a dead worker must not end this process.
+	HostOs.ignoreSigpipe();
+	var s = AnalysisSupervisor.new(path, limits), log = SupervisorTestLog.new();
+	s.warn = log.warn;
+	s.info = log.info;
+	return (s, log);
+}
+def load(t: Tester, paths: Array<string>) -> Array<AnalysisSource> {
+	var sources = Array<AnalysisSource>.new(paths.length);
+	for (i < paths.length) {
+		var input = System.fileLoad(paths[i]);
+		if (input == null) {
+			t.fail1("cannot read %s; run the unit tests from the repository root", paths[i]);
+			return null;
+		}
+		sources[i] = AnalysisSource.new(paths[i], input);
+	}
+	return sources;
+}
+def completed(t: Tester, outcome: AnalysisOutcome) -> AnalysisSnapshot {
+	match (outcome) {
+		Completed(snapshot) => return snapshot;
+		Failed(failure, reason) => t.fail2("expected a snapshot, got %s: %s", failure.name, reason);
+	}
+	return null;
+}
+def assertFailed(t: Tester, want: AnalysisFailure, outcome: AnalysisOutcome) {
+	match (outcome) {
+		Completed(snapshot) => t.fail1("expected %s, got a snapshot", want.name);
+		Failed(failure, reason) => if (failure != want) t.fail3("expected %s, got %s: %s", want.name, failure.name, reason);
+	}
+}
+// Queries that must keep working on a snapshot, whatever happens to workers.
+def assertQueries(t: Tester, s: AnalysisSnapshot) {
+	var d = s.definitionAt(MAIN, 4, 25);
+	if (d == null) return t.fail("no definition of Shapes");
+	t.assert_string("COMPONENT Shapes @ test/fixtures/analysis/two-file/shapes.v3:8:11-8:17", d.render(StringBuilder.new()).toString());
+	t.asserti(7, s.occurrences(MAIN).length);
+}
+def contains(log: Vector<string>, text: string) -> bool {
+	for (i < log.length) {
+		var m = log[i];
+		for (j = 0; j + text.length <= m.length; j++) {
+			if (Strings.equal(text, Arrays.range(m, j, j + text.length))) return true;
+		}
+	}
+	return false;
+}
+
+def test_completes(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	var a = completed(t, s.analyze(good, ALL));
+	var b = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (a == null || b == null) return;
+	t.asserti(1, a.generation);
+	t.asserti(2, b.generation);
+	t.assert(s.snapshot == b, "latest snapshot");
+	t.assertz(true, b.verified);
+	t.asserti(1, s.workersStarted);
+	t.asserti(0, sl.1.warnings.length);
+	assertQueries(t, a);
+	assertQueries(t, b);
+	t.asserti(0, b.stats.globalTypesAdded); // a second analysis adds no global types
+}
+
+// The issue #13 reproduction: verification traps on `def x: i32 = 0i;`.
+// The worker dies; the supervisor reports it, keeps the last snapshot, and
+// serves the next analysis from a new worker.
+def test_crash_keeps_snapshot(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]), crash = load(t, [CRASH]);
+	if (good == null || crash == null) return;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	var first = completed(t, s.analyze(good, ALL));
+	if (first == null) return s.close();
+	var start = System.ticksMs();
+	assertFailed(t, AnalysisFailure.CRASHED, s.analyze(crash, ALL));
+	t.assert(System.ticksMs() - start < 5000, "a crash is reported promptly");
+	t.assert(s.snapshot == first, "the last snapshot is kept");
+	assertQueries(t, first);
+	t.assert(contains(sl.1.warnings, "crashed during an analysis; it ended with exit status 255; snapshot 1 is kept"), "crash logged");
+	var next = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (next == null) return;
+	t.asserti(2, next.generation);
+	t.asserti(2, s.workersStarted);
+	assertQueries(t, next);
+}
+
+def test_enum_case_crash(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	assertFailed(t, AnalysisFailure.CRASHED, s.analyze([AnalysisSource.new("enum.v3", "enum E { A(6) }\n")], ALL));
+	t.assert(s.snapshot == null, "no snapshot yet");
+	t.assert(completed(t, s.analyze(good, ALL)) != null, "recovered");
+	s.close();
+}
+
+// A class that extends itself makes verification loop forever. The worker is
+// killed at the time limit, and the next analysis gets a new worker.
+def test_hang_times_out(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]), hang = load(t, [HANG]);
+	if (good == null || hang == null) return;
+	var limits = AnalysisWorkerLimits.new();
+	limits.timeoutMs = 500;
+	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
+	var first = completed(t, s.analyze(good, ALL));
+	var start = System.ticksMs();
+	assertFailed(t, AnalysisFailure.TIMED_OUT, s.analyze(hang, ALL));
+	var elapsed = System.ticksMs() - start;
+	t.assert(elapsed >= 500 && elapsed < 5000, Strings.format1("timed out after %d ms", elapsed));
+	t.assert(s.snapshot == first, "the last snapshot is kept");
+	t.assert(contains(sl.1.warnings, "exceeded the analysis time limit of 500 ms and was killed; it ended with signal 9"), "timeout logged");
+	if (first != null) assertQueries(t, first);
+	t.assert(completed(t, s.analyze(good, ALL)) != null, "recovered");
+	t.asserti(2, s.workersStarted);
+	s.close();
+}
+
+def test_replaces_after_max_analyses(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var limits = AnalysisWorkerLimits.new();
+	limits.maxAnalyses = 2;
+	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
+	for (i < 5) {
+		var snapshot = completed(t, s.analyze(good, ALL));
+		if (snapshot == null) return s.close();
+		assertQueries(t, snapshot);
+	}
+	s.close();
+	t.asserti(3, s.workersStarted);
+	t.asserti(2, sl.1.infos.length);
+	t.assert(contains(sl.1.infos, "after 2 analyses (limit 2)"), "replacement logged");
+	t.asserti(0, sl.1.warnings.length);
+}
+
+def test_replaces_at_uid_limit(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var limits = AnalysisWorkerLimits.new();
+	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
+	var first = completed(t, s.analyze(good, ALL));
+	if (first == null) return s.close();
+	// The second analysis in a worker passes this; a new worker's first does not.
+	limits.maxUid = first.stats.uidNext + 1;
+	var second = completed(t, s.analyze(good, ALL)), third = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (second == null || third == null) return;
+	t.assert(second.stats.uidNext > first.stats.uidNext, "the counter grows in one worker");
+	t.asserti(first.stats.uidNext, third.stats.uidNext);
+	t.asserti(2, s.workersStarted);
+	t.assert(contains(sl.1.infos, "because its UID counter reached"), "replacement logged");
+}
+
+def test_replaces_at_live_heap_limit(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var limits = AnalysisWorkerLimits.new();
+	limits.maxLiveBytes = 0;
+	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
+	t.assert(completed(t, s.analyze(good, ALL)) != null, "first");
+	t.assert(completed(t, s.analyze(good, ALL)) != null, "second");
+	s.close();
+	t.asserti(2, s.workersStarted);
+	t.assert(contains(sl.1.infos, "because its live heap reached"), "replacement logged");
+}
+
+def test_missing_worker(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), "/nonexistent/virgil-lsp-worker"), s = sl.0;
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], ALL));
+	t.asserti(0, s.workersStarted);
+	t.assert(contains(sl.1.warnings, "cannot execute /nonexistent/virgil-lsp-worker"), "start failure logged");
+	sl = newSupervisor(AnalysisWorkerLimits.new(), null);
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, sl.0.analyze([AnalysisSource.new("a.v3", "")], ALL));
+}
+
+// An executable that exits without the handshake is not used as a worker.
+def test_not_a_worker(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), "/usr/bin/true"), s = sl.0;
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], ALL));
+	t.asserti(1, s.workersStarted);
+	t.assert(contains(sl.1.warnings, "closed its result pipe before its handshake; it ended with exit status 0"), "handshake failure logged");
+}
+
+def test_request_too_large(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	var big = Array<byte>.new(60 * 1024 * 1024);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], ALL));
+	t.asserti(0, s.workersStarted);
+}
+
+def test_request_size_boundary(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), null), s = sl.0;
+	var bytes = Array<byte>.new(WorkerFraming.MAX_PAYLOAD - 12);
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new(null, bytes)], 0));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("x", bytes)], 0));
+	t.asserti(0, s.workersStarted);
+}
+
+def test_aggregate_request_too_large(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), null), s = sl.0;
+	var bytes = Array<byte>.new(1024 * 1024);
+	var sources = Array<AnalysisSource>.new(2048);
+	for (i < sources.length) sources[i] = AnalysisSource.new("big.v3", bytes);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, ALL));
+	for (i < sources.length) sources[i] = AnalysisSource.new(bytes, null);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, ALL));
+	t.asserti(0, s.workersStarted);
+}
+
+def test_oversized_request_keeps_snapshot(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	var first = completed(t, s.analyze(good, ALL));
+	if (first == null) return s.close();
+	var big = Array<byte>.new(WorkerFraming.MAX_PAYLOAD);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], ALL));
+	t.assert(s.snapshot == first, "the last snapshot is kept");
+	assertQueries(t, first);
+	var next = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (next == null) return;
+	t.asserti(2, next.generation);
+	t.asserti(1, s.workersStarted);
+	t.asserti(0, sl.1.warnings.length);
+	assertQueries(t, next);
+}
+
+def test_default_worker_path(t: Tester) {
+	var path = WorkerProcesses.defaultPath();
+	if (path == null) return t.fail("the executable path is unknown");
+	t.assert(path[0] == '/', "absolute path");
+	t.assert(Strings.endsWith(path, "/virgil-lsp-worker"), path);
+}

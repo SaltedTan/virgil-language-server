@@ -18,10 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The development `analyze` command now uses the analysis worker, with timeout and analysis-count tuning options; see [Running](docs/development.md#running) for options and failure output. `make` also builds `build/virgil-lsp-worker`; see [Building](README.md#building) for executable placement.
 - Analysis adapter caches a lazy per-file binding index and binary-searches definition queries, reuses compiler configuration across analyses, and counts the global type cache only for requested statistics. The development `analyze --bindings` command reuses its report buffer without copying each file's output.
 
 ### Added
 
+- A replaceable analysis worker and [ADR-0004](docs/decisions/0004-analysis-worker-process.md), which records its process model and restart policy. See [Analysis worker](docs/architecture.md#analysis-worker) for the current integration scope.
 - Single-file parser diagnostics for unsaved document overlays, with corrected comment offsets. See [Parser diagnostics](docs/architecture.md#parser-diagnostics) for publication behavior and [Compiler adapter](docs/architecture.md#compiler-adapter) for parsing and recovery details.
 - Hierarchical VST-derived document symbols for open, unsaved buffers. See [Document symbols](docs/architecture.md#document-symbols) for supported declarations, ranges, and failure behavior.
 - Versioned full-text document synchronization (`didOpen`, `didChange`, `didSave`, `didClose`) with exactly matching `initialize` capabilities. Stale/out-of-order changes, duplicate opens, and unsupported incremental changes are ignored and logged to stderr. In-memory overlays override disk through an injected reader, and local Linux/macOS file URIs are normalized to canonical keys. See [Document store](docs/architecture.md#document-store) for version, save, and URI identity rules. Unit and golden transcript tests cover synchronization and rejection sequences.

@@ -1,0 +1,3 @@
+// Loops forever in the pinned verifier: resolving a member of a class that
+// extends itself (docs/aeneas-crash-paths.md, row 3).
+class S extends S { def f() { me; } }

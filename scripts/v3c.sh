@@ -9,6 +9,9 @@
 #   VIRGIL_V3C   Aeneas binary to compile with (default: the checkout's
 #                prebuilt bin/stable compiler for the host).
 #   V3C_TARGET   Override the detected host target, e.g. x86-64-darwin.
+#
+# With the single argument -print-target, print the selected target instead of
+# compiling. The Makefile uses it to choose the host files under src/os/.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,6 +38,11 @@ if [ -z "${V3C_TARGET:-}" ] || [ ! -x "$VIRGIL/bin/v3c-$V3C_TARGET" ]; then
     fi
     echo "       see docs/compatibility.md for supported platforms" >&2
     exit 1
+fi
+
+if [ "$#" -eq 1 ] && [ "$1" = "-print-target" ]; then
+    echo "$V3C_TARGET"
+    exit 0
 fi
 
 if [ -z "${VIRGIL_V3C:-}" ]; then
