@@ -259,7 +259,11 @@ def main():
                 oversized.write_text('component C { def f() => C.' + 'x' * 600000 + '; }')
                 rejected = session.reply(session.analyze([oversized.as_uri()]))
                 assert rejected['error']['code'] == -32603, rejected
-                assert 'malformed result' in rejected['error']['message'], rejected
+                message = rejected['error']['message']
+                assert 'program is too large to analyze' in message, rejected
+                assert 'allocation budget of 16777216 bytes' in message, rejected
+                assert "reduce the program's source set" in message, rejected
+                assert 'malformed' not in message, rejected
                 session.snapshot(response)
                 session.send('textDocument/didChange', dict(textDocument=dict(uri=uri, version=2),
                              contentChanges=[dict(text='component C {}')]), request=False)

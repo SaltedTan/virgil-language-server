@@ -31,6 +31,7 @@ component SyntheticAnalysisWorker {
 				// charged at 32 bytes per message byte for JSON response headroom.
 				w.put_sleb32(-1);
 				for (i < 4) w.put_sleb32(1);
+				w.put_sleb32(-1).put_sleb32(-1);
 				w.put_sleb32(-1);
 				var text = Array<byte>.new(AnalysisWire.MAX_RESULT_ALLOCATION / 32);
 				for (i < text.length) text[i] = 'x';
