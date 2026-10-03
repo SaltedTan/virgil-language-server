@@ -7,8 +7,8 @@
 // expressed in server-owned types so that compiler changes stay contained here.
 
 // A compiler diagnostic. One-based compiler coordinates remain available for
-// CLI reports. Single-file parsing also supplies exact UTF-8 byte offsets;
-// -1 means unavailable (including whole-program diagnostics). LSP consumers
+// CLI reports. Single-file and whole-program diagnostics also supply exact
+// UTF-8 byte offsets; -1 means unavailable (no captured source). LSP consumers
 // use offsets, since compiler columns have comment-dependent rules. {path}
 // is null for diagnostics that are not attached to a source file.
 class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
@@ -207,9 +207,42 @@ component AeneasAdapter {
 		// Drop process-wide roots even when parsing or verification failed.
 		// The result still owns its VST; dropping that result makes it collectible.
 		AnalysisTypeCache.release();
+		var diagnostics = convertErrors(null, prog.ERROR);
+		var coordinates = AnalysisSourceCoordinates.new(sources);
+		for (d in diagnostics) coordinates.diagnostic(d);
+		// Failed parses can have ambiguous point coordinates: advance1 at
+		// EOF leaves the last byte's column, and tokenAt recomputes columns
+		// without comment context. Reuse the exact single-file observer for
+		// just the files that reported errors, rather than guessing at them.
+		if (!parsed) captureProgramParseOffsets(sources, diagnostics);
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
-		return ProgramAnalysis.new(convertErrors(null, prog.ERROR), stats, parsed, verified, prog);
+		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
+	}
+	private def captureProgramParseOffsets(sources: Array<AnalysisSource>, diagnostics: Array<AnalysisDiagnostic>) {
+		var parsedFiles = Strings.newMap<FileParseResult>();
+		for (d in diagnostics) {
+			if (d.path == null || !Strings.equal(d.kind, "ParseError")) continue;
+			if (!parsedFiles.has(d.path)) {
+				for (s in sources) {
+					if (!Strings.equal(s.path, d.path)) continue;
+					parsedFiles[d.path] = parseFile(s.path, if(s.input == null, Array<byte>.new(0), s.input));
+					break;
+				}
+			}
+			var file = parsedFiles[d.path];
+			if (file == null) continue;
+			for (p in file.diagnostics) {
+				if (d.beginLine == p.beginLine && d.beginColumn == p.beginColumn &&
+					d.endLine == p.endLine && d.endColumn == p.endColumn && Strings.equal(d.message, p.message)) {
+					if (p.beginOffset >= 0 && p.endOffset >= 0) {
+						d.beginOffset = p.beginOffset;
+						d.endOffset = p.endOffset;
+					}
+					break;
+				}
+			}
+		}
 	}
 	// The next value of Aeneas's process-wide UID counter. It never resets, so
 	// it measures how many IDs analyses have consumed.

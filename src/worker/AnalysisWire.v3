@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 1;
+	def PROTOCOL_VERSION = 2;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -113,6 +113,7 @@ component AnalysisWire {
 		for (d in analysis.diagnostics) {
 			putString(w, d.path);
 			w.put_sleb32(d.beginLine).put_sleb32(d.beginColumn).put_sleb32(d.endLine).put_sleb32(d.endColumn);
+			w.put_sleb32(d.beginOffset).put_sleb32(d.endOffset);
 			putString(w, d.kind);
 			putString(w, d.message);
 		}
@@ -168,12 +169,19 @@ component AnalysisWire {
 		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
 		var flags = r.readByte();
 		var stats = AnalysisSnapshotStats.new(r.readInt(), r.readInt(), r.readInt(), r.readInt(), uidNext, r.readInt(), r.readInt());
-		var diagnostics = Array<AnalysisDiagnostic>.new(r.readCount(7, 2048));
+		// Path, six coordinate ints, kind, and message take at least nine
+		// bytes. The record charge includes the two new offset fields, plus
+		// the existing conservative diagnostic/JSON response allowance.
+		var diagnostics = Array<AnalysisDiagnostic>.new(r.readCount(9, 2056));
 		for (i < diagnostics.length) {
 			var path = r.readString(32);
 			var bl = r.readInt(), bc = r.readInt(), el = r.readInt(), ec = r.readInt();
+			var beginOffset = r.readInt(), endOffset = r.readInt();
 			var kind = r.readString(32);
-			diagnostics[i] = AnalysisDiagnostic.new(path, bl, bc, el, ec, kind, r.readString(32));
+			var d = AnalysisDiagnostic.new(path, bl, bc, el, ec, kind, r.readString(32));
+			d.beginOffset = beginOffset;
+			d.endOffset = endOffset;
+			diagnostics[i] = d;
 		}
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];

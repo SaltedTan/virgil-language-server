@@ -1,0 +1,107 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisCoordinates:semantic_offsets", test_semantic_offsets),
+	T("AnalysisCoordinates:trailing_line_comment", test_trailing_line_comment),
+	T("AnalysisCoordinates:token_end_before_comment", test_token_end_before_comment),
+	T("AnalysisCoordinates:parser_coordinate_ambiguities", test_parser_coordinate_ambiguities),
+	T("AnalysisCoordinates:no_file", test_no_file),
+	T("AnalysisCoordinates:replay_boundaries", test_replay_boundaries),
+	()
+];
+
+// Assert both worker-side and decoded offsets, and the resulting UTF-16 LSP
+// range. No semantic publication is needed to exercise the complete boundary.
+def check(t: Tester, text: string, begin: int, end: int, line: int, character: int) {
+	var sources = [AnalysisSource.new("coordinates.v3", text)];
+	var a = AeneasAdapter.analyzeProgram(sources, false);
+	t.assert(a.diagnostics.length > 0, "expected a diagnostic");
+	if (a.diagnostics.length == 0) return;
+	var w = AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null);
+	var frame = AnalysisWire.finishResult(w, 0L);
+	var result = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["coordinates.v3"]);
+	if (result == null) return t.fail("result did not decode");
+	var map = PositionMap.new(text, PositionEncoding.UTF16);
+	for (d in [a.diagnostics[0], result.snapshot.diagnostics[0]]) {
+		t.asserti(begin, d.beginOffset);
+		t.asserti(end, d.endOffset);
+		var start = map.offsetToPosition(d.beginOffset), finish = map.offsetToPosition(d.endOffset);
+		t.asserti(line, start.line);
+		t.asserti(character, start.character);
+		t.asserti(line, finish.line);
+		t.asserti(character + end - begin, finish.character);
+	}
+}
+
+def test_semantic_offsets(t: Tester) {
+	var prefixes = ["component C {\n/*\t*/ def x: int = ",
+		"component C {\n\tdef x: int = ",
+		"component C {\n/* start\n\t*/ def x: int = ",
+		"component C {\n/*\t😀é*/ def x: int = ",
+		"component C {\n def s = \"/*\\\"//😀é\"; def x: int = ",
+		"component C {\n/*\t*/\tdef x: int = "];
+	var lines = [1, 1, 2, 1, 1, 1];
+	// LSP counts an emoji as two UTF-16 units and é as one, not six bytes.
+	var characters = [19, 14, 17, 22, 35, 19];
+	for (i < prefixes.length) {
+		var prefix = prefixes[i];
+		check(t, Arrays.concat(prefix, "\"s\";\n}\n"), prefix.length, prefix.length + 3, lines[i], characters[i]);
+	}
+}
+
+def test_trailing_line_comment(t: Tester) {
+	var text = "component C { // trailing\t😀";
+	check(t, text, text.length, text.length, 0, 28);
+}
+
+def test_token_end_before_comment(t: Tester) {
+	var text = "/*\t*/ def if// trailing\t😀";
+	check(t, text, 10, 12, 0, 10);
+}
+
+// ParserState.advance1 does not advance the column when consuming the last
+// byte; tokenAt uses context-free tabs. Neither can be inverted unambiguously
+// from just a line/column pair, so whole-program parser errors reuse capture.
+def test_parser_coordinate_ambiguities(t: Tester) {
+	var cases = ["component C { def x = 1;", "/*\t*/ def f() => missing.[](in);",
+		"/*\t*/ def if // trailing\tcomment", "component C { def x = ; }"];
+	for (text in cases) {
+		var single = AeneasAdapter.parseFile("ambiguity.v3", text);
+		var whole = AeneasAdapter.analyzeProgram([AnalysisSource.new("ambiguity.v3", text)], false);
+		t.asserti(single.diagnostics.length, whole.diagnostics.length);
+		for (i < whole.diagnostics.length) {
+			t.asserti(single.diagnostics[i].beginOffset, whole.diagnostics[i].beginOffset);
+			t.asserti(single.diagnostics[i].endOffset, whole.diagnostics[i].endOffset);
+		}
+	}
+}
+
+def test_no_file(t: Tester) {
+	var d = AnalysisDiagnostic.new(null, 0, 0, 0, 0, "ProgramError", "no file");
+	AnalysisSourceCoordinates.new([AnalysisSource.new("a.v3", "class A {}")]).diagnostic(d);
+	t.asserti(-1, d.beginOffset);
+	t.asserti(-1, d.endOffset);
+	var a = ProgramAnalysis.new([d], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null), 0L);
+	var r = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, []);
+	if (r == null) return t.fail("non-file result did not decode");
+	t.assert(r.snapshot.diagnostics[0].path == null, "null path preserved");
+	t.asserti(-1, r.snapshot.diagnostics[0].beginOffset);
+	t.asserti(-1, r.snapshot.diagnostics[0].endOffset);
+}
+
+def test_replay_boundaries(t: Tester) {
+	var text = "a\t/*\t\n\t*/b// trailing\t😀", map = AnalysisCoordinates.new(text);
+	t.asserti(0, map.offset(1, 1, false));
+	t.asserti(1, map.offset(1, 3, false)); // inside whitespace tab expansion
+	t.asserti(4, map.offset(1, 11, false)); // block-comment tab counts one
+	t.asserti(9, map.offset(2, 4, false));
+	t.asserti(10, map.offset(2, 5, false)); // token end, before trailing comment
+	t.asserti(text.length, map.offset(2, 5, true)); // EOF point, same column
+	var next = AnalysisCoordinates.new("// ignored\t\n\tname");
+	t.asserti(13, next.offset(2, 9, false));
+	// CR is an ordinary compiler byte; LSP alone treats it as a line end.
+	t.asserti(2, AnalysisCoordinates.new("a\rb").offset(1, 3, false));
+}
