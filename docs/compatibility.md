@@ -47,7 +47,8 @@ The language server runs on the machine that holds the files, which isn't always
 
 | Editor | Minimum version | Status |
 | --- | --- | --- |
-| Neovim / LazyVim | 0.11 (`vim.lsp.config`) | Planned (M2) |
+| Neovim (plain config) | 0.11 (`vim.lsp.config`) | Headless smoke test: 0.11.6 locally and pinned in Linux CI; macOS CI uses Homebrew Neovim (0.11+) and logs its version |
+| LazyVim | 0.11 (`vim.lsp.config`) | Configuration provided, untested |
 | VS Code, including Remote-SSH and Remote-WSL | to be decided | Planned (M2) |
 
 Server and VS Code extension versions are released independently. This table will record which ranges work together.

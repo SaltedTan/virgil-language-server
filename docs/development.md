@@ -5,6 +5,7 @@
 - Linux x86-64 (including WSL 2), or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`)
 - `git`, `make`, `bash`; Python 3.9+ for interactive protocol tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
+- Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).
 
 ## Build and test
 
@@ -12,6 +13,7 @@
 git submodule update --init --recursive   # if you cloned without --recurse-submodules
 make            # builds build/virgil-lsp and build/virgil-lsp-worker
 make test       # builds and runs all suites listed below
+make test-nvim  # only the headless Neovim smoke test (skips if missing/older than 0.11)
 make clean
 ```
 
@@ -79,6 +81,7 @@ After `initialize`, send `virgil-lsp/analyze` with a nonempty `uris` array:
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses, lifecycle cleanup, and large JSON alongside analysis allocations and snapshot replacement | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
+| `test/e2e/nvim/` | Headless plain Neovim configuration: attach, diagnostics published/cleared, symbols, graceful server exit status 0 | `make test-nvim` or `make test`; skips without Neovim 0.11+, or fails with `REQUIRE_NVIM=1` (CI) |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
 
 The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
@@ -88,7 +91,7 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) ))
 frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' > input
 ```
 
-Planned additions: `test/features/` and `test/e2e/` (headless Neovim and the VS Code Extension Host).
+Planned additions: `test/features/` and VS Code Extension Host tests in `test/e2e/`.
 
 To add a unit test, create `test/unit/<Thing>Test.v3` and register test functions:
 

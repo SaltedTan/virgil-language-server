@@ -18,11 +18,20 @@ jobs:
     name: Build and test (pinned Virgil, linux x86-64)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      REQUIRE_NVIM: '1'
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0 # full history so --version reports a described revision
+      - name: Install Neovim 0.11.6
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Show pinned Virgil revision
         run: git -C vendor/virgil log -1 --format='%H %cs %s'
       - name: Build and test
@@ -36,11 +45,15 @@ jobs:
     name: Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)
     runs-on: macos-15
     timeout-minutes: 20
+    env:
+      REQUIRE_NVIM: '1'
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
+      - name: Install Neovim (Homebrew)
+        run: brew install neovim
       - name: Install Rosetta 2
         run: sudo softwareupdate --install-rosetta --agree-to-license
       - name: Show host and pinned Virgil revision
