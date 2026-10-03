@@ -7,7 +7,7 @@ enum AnalysisFailure {
 	CRASHED,	// the worker ended during analysis
 	TIMED_OUT,	// killed at the analysis wall-clock limit
 	MALFORMED,	// killed after an invalid result
-	TOO_LARGE,	// request exceeded the frame limit; nothing sent
+	TOO_LARGE,	// request exceeded frame limit, or result exceeded allocation budget
 	BUSY		// another analysis is outstanding; nothing changed
 }
 
@@ -117,10 +117,18 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 					sendRequest();
 					return AnalysisOutcome.Pending;
 				}
-				var result = AnalysisWire.decodeResult(payload, generation + 1, paths);
-				if (result == null || result.id != activeId) {
-					return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
+				var result: AnalysisWorkerResult;
+				match (AnalysisWire.decodeResult(payload, generation + 1, paths)) {
+					Decoded(decoded) => result = decoded;
+					TooLarge(id) => {
+						if (id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
+						// Decoding stopped at the budget, so the remainder and the
+						// restart-policy state are not trusted. Replace conservatively.
+						return discard(AnalysisFailure.TOO_LARGE, "sent a result exceeding the allocation budget and was replaced");
+					}
+					Malformed => return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				}
+				if (result.id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				generation++;
 				snapshot = result.snapshot;
 				clearPending();
@@ -183,7 +191,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 			CRASHED => return "the analysis worker crashed";
 			TIMED_OUT => return "the analysis worker timed out";
 			MALFORMED => return "the analysis worker sent a malformed result";
-			TOO_LARGE => return "the request is too large";
+			TOO_LARGE => return Strings.format1("the program is too large to analyze: result exceeds the allocation budget of %d bytes; reduce the program's source set", AnalysisWire.MAX_RESULT_ALLOCATION);
 			BUSY => return "an analysis is already running";
 		}
 	}

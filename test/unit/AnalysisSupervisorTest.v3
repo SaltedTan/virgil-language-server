@@ -20,6 +20,8 @@ def X = [
 	T("AnalysisSupervisor:request_size_boundary", test_request_size_boundary),
 	T("AnalysisSupervisor:aggregate_request_too_large", test_aggregate_request_too_large),
 	T("AnalysisSupervisor:oversized_request_keeps_snapshot", test_oversized_request_keeps_snapshot),
+	T("AnalysisSupervisor:over_budget_result_keeps_snapshot", test_over_budget_result_keeps_snapshot),
+	T("AnalysisSupervisor:malformed_result_replaces_worker", test_malformed_result_replaces_worker),
 	T("AnalysisSupervisor:default_worker_path", test_default_worker_path),
 	()
 ];
@@ -309,6 +311,55 @@ def test_oversized_request_keeps_snapshot(t: Tester) {
 	t.asserti(1, s.workersStarted);
 	t.asserti(0, sl.1.warnings.length);
 	assertQueries(t, next);
+}
+
+// Issue #63: a valid frame whose diagnostic expands beyond the allocation
+// budget must not be blamed on a malformed worker. The conservative replacement
+// policy still reaps it, and a smaller subsequent analysis can complete.
+def test_over_budget_result_keeps_snapshot(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), HostOs.executablePath()), s = sl.0;
+	var good = [AnalysisSource.new("good", "")];
+	var first = completed(t, s.analyze(good, ALL));
+	if (first == null) return s.close();
+	var outcome = s.analyze([AnalysisSource.new("too-large", "")], ALL);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, outcome);
+	match (outcome) {
+		Failed(failure, reason) => {
+			var messages = Vector<string>.new();
+			messages.put(reason);
+			t.assert(contains(messages, "16777216 bytes"), "failure identifies the unchanged decoding budget");
+			t.assert(contains(messages, "reduce the program's source set"), "failure offers recovery action");
+			t.assert(!contains(messages, "malformed"), "too large is not malformed");
+		}
+		_ => return s.close();
+	}
+	t.assertz(false, s.busy());
+	t.assert(s.snapshot == first, "the last snapshot is kept");
+	t.assert(contains(sl.1.warnings, "result exceeding the allocation budget"), "budget failure logged");
+	t.assert(contains(sl.1.warnings, "snapshot 1 is kept"), "snapshot preservation logged");
+	t.assert(!contains(sl.1.warnings, "malformed"), "log does not blame worker corruption");
+	var next = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (next == null) return;
+	t.asserti(2, next.generation);
+	t.asserti(2, s.workersStarted);
+}
+
+def test_malformed_result_replaces_worker(t: Tester) {
+	for (mode in ["malformed", "wrong-id"]) {
+		var sl = newSupervisor(AnalysisWorkerLimits.new(), HostOs.executablePath()), s = sl.0;
+		var good = [AnalysisSource.new("good", "")];
+		var first = completed(t, s.analyze(good, ALL));
+		if (first == null) return s.close();
+		assertFailed(t, AnalysisFailure.MALFORMED, s.analyze([AnalysisSource.new(mode, "")], ALL));
+		t.assert(s.snapshot == first, "malformed result preserves snapshot");
+		t.assert(contains(sl.1.warnings, "sent a malformed result and was killed"), "malformed result still kills worker");
+		var next = completed(t, s.analyze(good, ALL));
+		s.close();
+		if (next == null) return;
+		t.asserti(2, next.generation);
+		t.asserti(2, s.workersStarted);
+	}
 }
 
 def test_default_worker_path(t: Tester) {
