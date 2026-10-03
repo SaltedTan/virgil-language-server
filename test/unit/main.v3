@@ -4,6 +4,7 @@
 // Entry point for the unit test executable. Must be the first test source.
 component UnitTestMain {
 	def main(args: Array<string>) -> int {
+		if (args.length == 1 && Strings.equal(args[0], AnalysisWire.WORKER_ARG)) return SyntheticAnalysisWorker.run();
 		return UnitTests.run(args);
 	}
 }

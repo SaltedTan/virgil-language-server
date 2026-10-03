@@ -51,7 +51,14 @@ def roundTrip(sources: Array<AnalysisSource>, analysis: ProgramAnalysis, occurre
 	}
 	var w = AnalysisWire.encodeResult(7, 3, 4567, analysis, if(occurrences, 12, -1), 42, files);
 	var payload = payloadOf(AnalysisWire.finishResult(w, 123456789012L));
-	return (payload, AnalysisWire.decodeResult(payload, 5, paths));
+	return (payload, decodedResult(payload, 5, paths));
+}
+// Existing snapshot comparisons only need the successfully decoded result.
+def decodedResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisWorkerResult {
+	match (AnalysisWire.decodeResult(payload, generation, paths)) {
+		Decoded(result) => return result;
+		_ => return null;
+	}
 }
 def render(d: AnalysisDeclaration) -> string {
 	return if(d == null, "null", d.render(StringBuilder.new()).toString());
@@ -192,7 +199,8 @@ def test_truncated_messages(t: Tester) {
 	var paths = [SHAPES, MAIN];
 	var result = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, false), true).0;
 	for (n < result.length) {
-		if (AnalysisWire.decodeResult(Arrays.range(result, 0, n), 1, paths) != null) return t.fail1("decoded a result cut to %d bytes", n);
+		t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(Arrays.range(result, 0, n), 1, paths)),
+			Strings.format1("result cut to %d bytes is malformed", n));
 	}
 	var hello = payloadOf(AnalysisWire.encodeHello("1", "r", 1L));
 	for (n < hello.length) {
@@ -217,16 +225,16 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "content length");
 	// Results with a huge diagnostic count, a bad path index, a bad declaration
 	// kind, and an occurrence pointing past the declarations.
-	t.assert(AnalysisWire.decodeResult(result(1000000000, null), 1, []) == null, "diagnostic count");
-	t.assert(AnalysisWire.decodeResult(result(0, declaration(0, 5)), 1, []) == null, "path index");
-	t.assert(AnalysisWire.decodeResult(result(0, declaration(200, 0)), 1, []) == null, "declaration kind");
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(1000000000, null), 1, [])), "diagnostic count");
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(0, 5)), 1, [])), "path index");
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(200, 0)), 1, [])), "declaration kind");
 	var occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
 	occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2).put_sleb32(1);
-	t.assert(AnalysisWire.decodeResult(result(0, occurrences), 1, []) == null, "declaration index");
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, occurrences), 1, [])), "declaration index");
 	// The same occurrence, pointing at declaration 0, is accepted.
 	occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
 	occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2).put_sleb32(0);
-	var r = AnalysisWire.decodeResult(result(0, occurrences), 1, []);
+	var r = decodedResult(result(0, occurrences), 1, []);
 	if (r == null) return t.fail("valid result was rejected");
 	t.assert_string("LOCAL x @ p.v3:1:1-1:2", render(r.snapshot.definitionAt("p.v3", 1, 1)));
 }
@@ -256,7 +264,7 @@ def test_result_index_string_budget(t: Tester) {
 	index.put_sleb32(1).putb(0).put_sleb32(text.length).puta(text).put_sleb32(0);
 	index.puta("\x01\x01\x01\x02").put_sleb32(1).put_sleb32(0).put_sleb32(1);
 	index.puta("\x01\x01\x01\x02\x00");
-	var decoded = AnalysisWire.decodeResult(result(0, index), 1, [text]);
+	var decoded = decodedResult(result(0, index), 1, [text]);
 	if (decoded == null) return t.fail("index strings within the allocation budget were rejected");
 	var definition = decoded.snapshot.definitionAt(text, 1, 1);
 	if (definition == null) return t.fail("decoded index cannot resolve its occurrence");
@@ -271,10 +279,10 @@ def test_result_allocation_budget(t: Tester) {
 		for (j < 4) declarations.put_sleb32(1);
 	}
 	declarations.put_sleb32(0);
-	t.assert(AnalysisWire.decodeResult(result(0, declarations), 1, []) == null, "compact declarations exceed allocation budget");
+	assertTooLarge(t, result(0, declarations), "compact declarations exceed allocation budget");
 	var files = declaration(0, 0).put_sleb32(100000);
 	for (i < 100000) files.put_sleb32(0).put_sleb32(0);
-	t.assert(AnalysisWire.decodeResult(result(0, files), 1, []) == null, "compact file table exceeds allocation budget");
+	assertTooLarge(t, result(0, files), "compact file table exceeds allocation budget");
 	var occurrences = DataWriter.new().put_sleb32(2).put_sleb32(4).puta("p.v3").put_sleb32(4).puta("q.v3");
 	occurrences.put_sleb32(1).putb(0).put_sleb32(1).putb('x').put_sleb32(0);
 	occurrences.puta("\x01\x01\x01\x02").put_sleb32(2);
@@ -282,23 +290,43 @@ def test_result_allocation_budget(t: Tester) {
 		occurrences.put_sleb32(f).put_sleb32(500000);
 		for (i < 500000) occurrences.puta("\x01\x01\x01\x02\x00");
 	}
-	t.assert(AnalysisWire.decodeResult(result(0, occurrences), 1, []) == null, "occurrence budget is aggregate across files");
+	assertTooLarge(t, result(0, occurrences), "occurrence budget is aggregate across files");
 	var text = Array<byte>.new(1024 * 1024);
 	for (i < text.length) text[i] = 1;
 	var diagnostic = DataWriter.new().put_sleb32(-1);
 	for (i < 6) diagnostic.put_sleb32(1);
 	diagnostic.put_sleb32(-1).put_sleb32(text.length).puta(text);
-	t.assert(AnalysisWire.decodeResult(Arrays.concat(result(1, null), diagnostic.extract()), 1, []) == null,
-		"diagnostic escaping exceeds allocation budget");
+	var large = Arrays.concat(result(1, null), diagnostic.extract());
+	assertTooLarge(t, large, "diagnostic escaping exceeds allocation budget");
+	large[0] = AnalysisWire.HELLO;
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(large, 1, [])), "wrong kind is malformed even with an oversized body");
+	// Four diagnostic records make the fixed charge divisible by 32,
+	// including the two byte offsets per record. With null path and kind,
+	// three null messages and one message header, this exactly fills the budget.
+	var boundary = (AnalysisWire.MAX_RESULT_ALLOCATION - (64 + 4 * 2056 + 64)) / 32;
+	for (n in [boundary, boundary + 1]) {
+		var d = DataWriter.new();
+		for (i < 3) d.puta("\x7F\x01\x01\x01\x01\x01\x01\x7F\x7F");
+		d.put_sleb32(-1).puta("\x01\x01\x01\x01\x01\x01").put_sleb32(-1);
+		d.put_sleb32(n).putr(text[0 ... n]);
+		var payload = Arrays.concat(result(4, null), d.extract());
+		if (n == boundary) t.assert(decodedResult(payload, 1, []) != null, "exact allocation budget accepted");
+		else assertTooLarge(t, payload, "one message byte beyond allocation budget rejected");
+	}
 	var diagnostics = DataWriter.new();
 	for (i < 10000) diagnostics.puta("\x7F\x01\x01\x01\x01\x7F\x7F\x7F\x7F");
-	t.assert(AnalysisWire.decodeResult(Arrays.concat(result(10000, null), diagnostics.extract()), 1, []) == null,
-		"diagnostic records exceed allocation budget");
+	assertTooLarge(t, Arrays.concat(result(10000, null), diagnostics.extract()), "diagnostic records exceed allocation budget");
+}
+
+def assertTooLarge(t: Tester, payload: Array<byte>, message: string) {
+	var outcome = AnalysisWire.decodeResult(payload, 1, []);
+	t.assert(AnalysisResultDecode.TooLarge.?(outcome), message);
+	if (AnalysisResultDecode.TooLarge.?(outcome)) t.asserti(1, AnalysisResultDecode.TooLarge.!(outcome).id);
 }
 
 def test_wrong_kind(t: Tester) {
 	var hello = payloadOf(AnalysisWire.encodeHello("1", "r", 1L));
 	t.assert(AnalysisWire.decodeAnalyze(hello) == null, "hello is not a request");
-	t.assert(AnalysisWire.decodeResult(hello, 1, []) == null, "hello is not a result");
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(hello, 1, [])), "hello is not a result");
 	t.assert(AnalysisWire.decodeHello([]) == null, "empty payload");
 }

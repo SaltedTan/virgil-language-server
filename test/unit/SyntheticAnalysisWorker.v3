@@ -1,0 +1,53 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The unit-test executable can serve deterministic RESULT fixtures on the real
+// worker pipes. This exercises admission, replacement, and snapshot preservation
+// without needing a compiler program large enough to exhaust a decoding budget.
+component SyntheticAnalysisWorker {
+	def run() -> int {
+		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, 384L * 1024 * 1024))) return 1;
+		var reader = WorkerFrameReader.new(WorkerFraming.MAX_PAYLOAD);
+		while (true) {
+			var space = reader.space();
+			if (space.length == 0) return 1;
+			var n = HostOs.read(AnalysisWire.REQUEST_FD, space);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) return 0;
+			var payload = reader.advance(n);
+			if (reader.error != null) return 1;
+			if (payload == null) continue;
+			var request = AnalysisWire.decodeAnalyze(payload);
+			if (request == null || request.sources.length != 1) return 1;
+			var mode = request.sources[0].path;
+			var large = Strings.equal(mode, "too-large") || Strings.equal(mode, "wrong-id");
+			var id = request.id + if(Strings.equal(mode, "wrong-id"), 1);
+			var w = WorkerFraming.start().putb(AnalysisWire.RESULT).put_b32(id).put_b32(1).put_b32(1).put_b64(0);
+			w.putb(3); // parsed and verified, no occurrence index
+			for (i < 6) w.put_sleb32(0);
+			w.put_sleb32(if(large, 1, 0));
+			if (large) {
+				// A complete diagnostic, encoded well within the frame limit but
+				// charged at 32 bytes per message byte for JSON response headroom.
+				w.put_sleb32(-1);
+				for (i < 4) w.put_sleb32(1);
+				w.put_sleb32(-1);
+				var text = Array<byte>.new(AnalysisWire.MAX_RESULT_ALLOCATION / 32);
+				for (i < text.length) text[i] = 'x';
+				w.put_sleb32(text.length).puta(text);
+			}
+			if (Strings.equal(mode, "malformed")) w.putb(0); // trailing byte
+			if (!send(WorkerFraming.finish(w))) return 1;
+		}
+		return 0;
+	}
+	private def send(frame: Range<byte>) -> bool {
+		while (frame.length > 0) {
+			var n = HostOs.write(AnalysisWire.RESULT_FD, frame);
+			if (n == HostOs.EINTR) continue;
+			if (n <= 0) return false;
+			frame = frame[n ...];
+		}
+		return true;
+	}
+}

@@ -162,8 +162,10 @@ component AnalysisWire {
 		}
 	}
 	// Decodes a RESULT into the worker's state and a snapshot with
-	// {generation} for a request with {paths}. Returns null if malformed.
-	def decodeResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisWorkerResult {
+	// {generation} for a request with {paths}. Budget exhaustion stops decoding
+	// before allocating; it is distinct from a malformed payload. The remainder
+	// of an over-budget payload is not validated, so its worker is not reused.
+	def decodeResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisResultDecode {
 		var r = AnalysisWireReader.new(payload, RESULT);
 		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
 		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
@@ -209,7 +211,9 @@ component AnalysisWire {
 				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets));
 			}
 		}
-		return if(r.finish(), AnalysisWorkerResult.new(id, state, snapshot));
+		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
+		if (!r.finish()) return AnalysisResultDecode.Malformed;
+		return AnalysisResultDecode.Decoded(AnalysisWorkerResult.new(id, state, snapshot));
 	}
 
 	private def declKinds() -> Array<AnalysisDeclKind> {
@@ -255,11 +259,20 @@ class AnalysisWorkerState(analyses: int, uidNext: int, liveBytes: long) { }
 // A decoded RESULT.
 class AnalysisWorkerResult(id: int, state: AnalysisWorkerState, snapshot: AnalysisSnapshot) { }
 
+// TooLarge carries the header ID so a stale or unsolicited result is still
+// rejected as malformed. It never exposes the partially decoded snapshot.
+type AnalysisResultDecode {
+	case Decoded(result: AnalysisWorkerResult);
+	case TooLarge(id: int);
+	case Malformed;
+}
+
 // Reads one message, bounding every count and index by the bytes and tables
 // actually present, so that a malformed message is rejected without trapping.
 class AnalysisWireReader {
 	private var r: DataReader;
 	private var remaining: long;
+	def var overBudget: bool;
 
 	new(payload: Array<byte>, kind: byte) {
 		r = DataReader.new(payload);
@@ -316,6 +329,7 @@ class AnalysisWireReader {
 	private def reserve(bytes: long) -> bool {
 		if (!r.ok) return false;
 		if (bytes > remaining) {
+			overBudget = true;
 			r.fail("result exceeds the allocation budget");
 			return false;
 		}
