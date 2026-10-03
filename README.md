@@ -21,7 +21,7 @@ One server, used by both LazyVim/Neovim and VS Code, providing:
 - document symbols
 - go-to-definition for locals, members, methods, and named types
 - hover with declaration signatures and inferred types
-- a `.virgil-lsp.json` project file describing which sources form a program
+- a [`.virgil-lsp.json` project file](docs/configuration.md) describing which sources form a program
 
 Completion, references, rename, and incremental analysis come after v0.1. Formatting and debugging are out of scope.
 

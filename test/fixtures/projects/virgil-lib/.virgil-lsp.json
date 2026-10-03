@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "words",
+      "sources": ["src/*.v3"],
+      "virgilDependencies": ["lib/util/*.v3"]
+    }
+  ]
+}

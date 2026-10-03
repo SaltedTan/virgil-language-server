@@ -1,0 +1,17 @@
+// Uses Vector, StringBuilder, and Strings from Virgil's lib/util, which the
+// project names relative to the Virgil root rather than to this directory.
+component Words {
+	def main(args: Array<string>) -> int {
+		var words = Vector<string>.new();
+		for (a in args) words.put(a);
+		var buf = StringBuilder.new();
+		for (i < words.length) {
+			if (i > 0) buf.putc(' ');
+			buf.puts(words[i]);
+		}
+		var line = buf.toString();
+		System.puts(line);
+		System.ln();
+		return if(Strings.equal(line, ""), 1, 0);
+	}
+}

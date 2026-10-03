@@ -1,0 +1,41 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The syntax of patterns in a version 1 project file (see "Patterns" in
+// docs/configuration.md). This only checks syntax; matching patterns against
+// directories is separate work.
+component ProjectPatterns {
+	// Returns null if {pattern} is valid, or the problem with it. Patterns
+	// that select source files ({sourceFiles}) must end in ".v3".
+	def check(pattern: string, sourceFiles: bool) -> string {
+		if (pattern.length == 0) return "a pattern must not be empty";
+		if (pattern[0] == '/') return "a pattern must be a relative path";
+		for (ch in pattern) {
+			if (ch < ' ' || ch == 0x7F) return "a pattern must not contain control characters";
+			if (ch == '\\') return "a pattern must not contain '\\'; separate directories with '/'";
+			if (ch == '[' || ch == ']' || ch == '{' || ch == '}') {
+				return "'[', ']', '{', and '}' are reserved in patterns";
+			}
+		}
+		var start = 0, last: string;
+		for (i = 0; i <= pattern.length; i++) {
+			if (i < pattern.length && pattern[i] != '/') continue;
+			var segment = Arrays.range(pattern, start, i);
+			if (segment.length == 0) return "a pattern must not contain an empty path segment";
+			if (Strings.equal(segment, ".") || Strings.equal(segment, "..")) {
+				return "a pattern must not contain '.' or '..' segments";
+			}
+			if (!Strings.equal(segment, "**") && hasDoubleStar(segment)) return "'**' must be a whole path segment";
+			last = segment;
+			start = i + 1;
+		}
+		if (sourceFiles && !Strings.endsWith(last, ".v3")) return "a pattern that selects source files must end in '.v3'";
+		return null;
+	}
+	private def hasDoubleStar(segment: string) -> bool {
+		for (i = 1; i < segment.length; i++) {
+			if (segment[i - 1] == '*' && segment[i] == '*') return true;
+		}
+		return false;
+	}
+}

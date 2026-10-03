@@ -1,0 +1,481 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("ProjectConfig:minimal", test_minimal),
+	T("ProjectConfig:all_fields", test_all_fields),
+	T("ProjectConfig:no_projects", test_no_projects),
+	T("ProjectConfig:byte_order_mark", test_byte_order_mark),
+	T("ProjectConfig:fixtures", test_fixtures),
+	T("ProjectConfig:invalid_json", test_invalid_json),
+	T("ProjectConfig:size_limit", test_size_limit),
+	T("ProjectConfig:nesting_limit", test_nesting_limit),
+	T("ProjectConfig:root_not_object", test_root_not_object),
+	T("ProjectConfig:version", test_version),
+	T("ProjectConfig:unknown_fields", test_unknown_fields),
+	T("ProjectConfig:duplicate_fields", test_duplicate_fields),
+	T("ProjectConfig:missing_fields", test_missing_fields),
+	T("ProjectConfig:wrong_types", test_wrong_types),
+	T("ProjectConfig:project_names", test_project_names),
+	T("ProjectConfig:empty_sources", test_empty_sources),
+	T("ProjectConfig:target", test_target),
+	T("ProjectConfig:pattern_syntax", test_pattern_syntax),
+	T("ProjectConfig:invalid_patterns", test_invalid_patterns),
+	T("ProjectConfig:compiler_flags", test_compiler_flags),
+	T("ProjectConfig:invalid_compiler_flags", test_invalid_compiler_flags),
+	T("ProjectConfig:no_code_execution", test_no_code_execution),
+	T("ProjectConfig:diagnostic_order", test_diagnostic_order),
+	T("ProjectConfig:diagnostic_limit", test_diagnostic_limit),
+	()
+];
+
+// Wraps {project}, the members of one project object, in a valid file.
+def oneProject(project: string) -> string {
+	return Strings.format1("{\"version\": 1, \"projects\": [{%s}]}", project);
+}
+// Parses {text}, failing {t} unless it is a valid project file.
+def valid(t: Tester, text: string) -> ProjectConfig {
+	var r = ProjectConfigParser.parse(text);
+	if (r.diagnostics.length > 0) {
+		t.fail2("expected a valid project file, got %s in %s", render(text, r.diagnostics), text);
+		return ProjectConfig.new([]);
+	}
+	if (r.config == null) t.fail1("expected a model for %s", text);
+	return if(r.config != null, r.config, ProjectConfig.new([]));
+}
+// Parses {text} and checks its diagnostics, as {render} shows them.
+def invalid(t: Tester, text: string, expected: string) -> Array<ProjectConfigDiagnostic> {
+	var r = ProjectConfigParser.parse(text);
+	if (r.config != null) t.fail1("expected no model for %s", text);
+	t.assert_string(expected, render(text, r.diagnostics));
+	return r.diagnostics;
+}
+// Shows each diagnostic as its code and the text it covers, or the offset
+// of an empty range, separated by " | ".
+def render(text: string, diagnostics: Array<ProjectConfigDiagnostic>) -> string {
+	var buf = StringBuilder.new();
+	for (i < diagnostics.length) {
+		var d = diagnostics[i];
+		if (i > 0) buf.puts(" | ");
+		buf.puts(d.code.code);
+		if (d.begin == d.end) buf.put1("@%d", d.begin);
+		else buf.putc(':').putr(text[d.begin ... d.end]);
+	}
+	return buf.toString();
+}
+// Concatenates {parts}.
+def cat(parts: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (p in parts) buf.puts(p);
+	return buf.toString();
+}
+def patterns(list: Array<ProjectPattern>) -> string {
+	var buf = StringBuilder.new();
+	for (i < list.length) {
+		if (i > 0) buf.putc(' ');
+		buf.puts(list[i].text);
+	}
+	return buf.toString();
+}
+def strings(list: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (i < list.length) {
+		if (i > 0) buf.putc(' ');
+		buf.puts(list[i]);
+	}
+	return buf.toString();
+}
+def assertContains(t: Tester, text: string, part: string) {
+	for (i = 0; i + part.length <= text.length; i++) {
+		if (Ranges.equal(text[i ..+ part.length], part)) return;
+	}
+	t.fail2("expected %q to contain %q", Strings.puts(text), Strings.puts(part));
+}
+
+def test_minimal(t: Tester) {
+	var text = "{\"version\": 1, \"projects\": [{\"name\": \"app\", \"sources\": [\"src/*.v3\"]}]}";
+	var config = valid(t, text);
+	t.asserti(1, config.projects.length);
+	if (config.projects.length != 1) return;
+	var p = config.projects[0];
+	t.assert_string("app", p.name);
+	t.assert_string("src/*.v3", patterns(p.sources));
+	t.assert_string("\"src/*.v3\"", Arrays.range(text, p.sources[0].begin, p.sources[0].end));
+	t.assert_string("{\"name\": \"app\", \"sources\": [\"src/*.v3\"]}", Arrays.range(text, p.begin, p.end));
+	t.asserti(0, p.dependencies.length);
+	t.asserti(0, p.virgilDependencies.length);
+	t.asserti(0, p.exclude.length);
+	t.asserti(0, p.compilerArgs.length);
+}
+
+def test_all_fields(t: Tester) {
+	// Wizard engine's x86-64-linux build of wizeng, abridged.
+	var text = cat(["{\n",
+		"  \"version\": 1,\n",
+		"  \"projects\": [\n",
+		"    {\n",
+		"      \"name\": \"wizeng-x86-64-linux\",\n",
+		"      \"sources\": [\"src/engine/*.v3\", \"src/engine/x86-64/*.v3\", \"src/wizeng.main.v3\"],\n",
+		"      \"dependencies\": [\"third_party/**/*.v3\"],\n",
+		"      \"virgilDependencies\": [\"lib/util/*.v3\", \"lib/asm/x86-64/*.v3\"],\n",
+		"      \"exclude\": [\"src/**/test/**\", \"third_party/broken.v3\"],\n",
+		"      \"compilerArgs\": [\"-lang:fun-exprs\", \"-lang:simple-bodies=true\", \"-lang:descriptors\", \"-lang:legacy-infer=false\"],\n",
+		"      \"target\": null\n",
+		"    },\n",
+		"    {\"target\": null, \"sources\": [\"src/objdump.main.v3\"], \"name\": \"objdump\"}\n",
+		"  ]\n",
+		"}\n"]);
+	var config = valid(t, text);
+	t.asserti(2, config.projects.length);
+	if (config.projects.length != 2) return;
+	var p = config.projects[0];
+	t.assert_string("wizeng-x86-64-linux", p.name);
+	t.assert_string("src/engine/*.v3 src/engine/x86-64/*.v3 src/wizeng.main.v3", patterns(p.sources));
+	t.assert_string("third_party/**/*.v3", patterns(p.dependencies));
+	t.assert_string("lib/util/*.v3 lib/asm/x86-64/*.v3", patterns(p.virgilDependencies));
+	t.assert_string("src/**/test/** third_party/broken.v3", patterns(p.exclude));
+	t.assert_string("-lang:fun-exprs -lang:simple-bodies=true -lang:descriptors -lang:legacy-infer=false", strings(p.compilerArgs));
+	var q = config.projects[1];
+	t.assert_string("objdump", q.name);
+	t.assert_string("src/objdump.main.v3", patterns(q.sources));
+	t.asserti(0, q.compilerArgs.length);
+}
+
+def test_no_projects(t: Tester) {
+	t.asserti(0, valid(t, "{\"version\": 1, \"projects\": []}").projects.length);
+	t.asserti(0, valid(t, " \t\r\n{\"projects\":[],\"version\":1}\r\n").projects.length);
+}
+
+def test_byte_order_mark(t: Tester) {
+	var text = "\xEF\xBB\xBF{\"version\": 1, \"projects\": [{\"name\": \"a\", \"sources\": [\"a.v3\"]}]}";
+	invalid(t, text, "InvalidJson@0");
+	invalid(t, " \xEF\xBB\xBF{}", "InvalidJson@1");
+}
+
+def test_fixtures(t: Tester) {
+	var two = System.fileLoad("test/fixtures/projects/two-programs/.virgil-lsp.json");
+	if (two == null) return t.fail("cannot read the two-programs fixture");
+	var config = valid(t, two);
+	t.asserti(2, config.projects.length);
+	if (config.projects.length != 2) return;
+	t.assert_string("server", config.projects[0].name);
+	t.assert_string("server/*.v3 shared/*.v3", patterns(config.projects[0].sources));
+	t.assert_string("client", config.projects[1].name);
+	t.assert_string("client/*.v3 shared/*.v3", patterns(config.projects[1].sources));
+
+	var lib = System.fileLoad("test/fixtures/projects/virgil-lib/.virgil-lsp.json");
+	if (lib == null) return t.fail("cannot read the virgil-lib fixture");
+	config = valid(t, lib);
+	t.asserti(1, config.projects.length);
+	if (config.projects.length != 1) return;
+	t.assert_string("words", config.projects[0].name);
+	t.assert_string("src/*.v3", patterns(config.projects[0].sources));
+	t.assert_string("lib/util/*.v3", patterns(config.projects[0].virgilDependencies));
+}
+
+def test_invalid_json(t: Tester) {
+	invalid(t, "", "InvalidJson@0");
+	invalid(t, "  \n", "InvalidJson@3");
+	invalid(t, "{\"version\": 1,", "InvalidJson@14");
+	invalid(t, "{\"version\": 1} x", "InvalidJson@15");
+	invalid(t, "// comment\n{\"version\": 1}", "InvalidJson@0");
+	invalid(t, "{\"version\": 1, \"projects\": [],}", "InvalidJson@30");
+	invalid(t, "{\"version\": 1, \"projects\": [1,]}", "InvalidJson@30");
+	invalid(t, "{'version': 1}", "InvalidJson@1");
+	invalid(t, "{version: 1}", "InvalidJson@1");
+	invalid(t, "{\"version\" 1}", "InvalidJson@11");
+	invalid(t, "{\"version\": 01}", "InvalidJson@13");
+	invalid(t, "{\"version\": NaN}", "InvalidJson@12");
+	invalid(t, "{\"a\": \"\\x\"}", "InvalidJson@7");
+	invalid(t, "{\"a\": \"\xFF\"}", "InvalidJson@7");
+	invalid(t, "{\"a\": \"tab\there\"}", "InvalidJson@10");
+	var d = invalid(t, "{\"version\": 1", "InvalidJson@13");
+	if (d.length == 1) assertContains(t, d[0].message, "invalid JSON: ");
+}
+
+def test_size_limit(t: Tester) {
+	var body = "{\"version\": 1, \"projects\": []}";
+	var text = Array<byte>.new(ProjectConfigParser.MAX_BYTES);
+	for (i < text.length) text[i] = ' ';
+	for (i < body.length) text[i] = body[i];
+	t.asserti(0, valid(t, text).projects.length);
+	var over = Array<byte>.new(ProjectConfigParser.MAX_BYTES + 1);
+	for (i < over.length) over[i] = ' ';
+	for (i < body.length) over[i] = body[i];
+	var r = ProjectConfigParser.parse(over);
+	t.assert(r.config == null, "expected no model for an oversized file");
+	t.assert_string("InvalidJson@0", render(over, r.diagnostics));
+	if (r.diagnostics.length == 1) assertContains(t, r.diagnostics[0].message, "larger than 262144 bytes");
+	var large = Array<byte>.new(64 * 1024 * 1024);
+	r = ProjectConfigParser.parse(large);
+	t.assert(r.config == null, "expected no model for a 64 MiB file");
+	t.assert_string("InvalidJson@0", render(large, r.diagnostics));
+	if (r.diagnostics.length == 1) assertContains(t, r.diagnostics[0].message, "larger than 262144 bytes");
+}
+
+def test_nesting_limit(t: Tester) {
+	var depth = 100000;
+	var text = Array<byte>.new(2 * depth);
+	for (i < depth) {
+		text[i] = '[';
+		text[depth + i] = ']';
+	}
+	var r = ProjectConfigParser.parse(text);
+	t.assert(r.config == null, "expected no model for deep nesting");
+	t.assert_string("InvalidJson@0", render(text, r.diagnostics));
+	if (r.diagnostics.length == 1) assertContains(t, r.diagnostics[0].message, "nest deeper than 256 levels");
+}
+
+def test_root_not_object(t: Tester) {
+	invalid(t, "[]", "WrongType:[]");
+	invalid(t, " 1 ", "WrongType:1");
+	invalid(t, "null", "WrongType:null");
+	invalid(t, "\"version\"", "WrongType:\"version\"");
+}
+
+def test_version(t: Tester) {
+	invalid(t, "{}", "MissingField:{");
+	invalid(t, "{\"projects\": []}", "MissingField:{");
+	invalid(t, "{\"version\": \"1\", \"projects\": []}", "WrongType:\"1\"");
+	invalid(t, "{\"version\": null, \"projects\": []}", "WrongType:null");
+	invalid(t, "{\"version\": 0, \"projects\": []}", "UnsupportedVersion:0");
+	invalid(t, "{\"version\": -1, \"projects\": []}", "UnsupportedVersion:-1");
+	invalid(t, "{\"version\": 1.0, \"projects\": []}", "UnsupportedVersion:1.0");
+	invalid(t, "{\"version\": 4294967297, \"projects\": []}", "UnsupportedVersion:4294967297");
+	// A later version may define other fields, so nothing else is checked.
+	var d = invalid(t, "{\"projects\": 5, \"version\": 2, \"future\": true}", "UnsupportedVersion:2");
+	if (d.length == 1) assertContains(t, d[0].message, "reads version 1 project files");
+	// The first version member decides; the repeat is still reported.
+	invalid(t, "{\"version\": 1, \"version\": 2, \"projects\": []}", "DuplicateField:\"version\"");
+	invalid(t, "{\"version\": 2, \"version\": 1, \"projects\": []}", "UnsupportedVersion:2");
+}
+
+def test_unknown_fields(t: Tester) {
+	var d = invalid(t, "{\"version\": 1, \"$schema\": \"x\", \"projects\": [], \"virgilRoot\": \"/opt/virgil\"}",
+		"UnknownField:\"$schema\" | UnknownField:\"virgilRoot\"");
+	if (d.length == 2) assertContains(t, d[0].message, "the fields are version, projects");
+	d = invalid(t, oneProject("\"name\": \"a\", \"source\": [\"a.v3\"], \"sources\": [\"a.v3\"], \"Name\": \"b\""),
+		"UnknownField:\"source\" | UnknownField:\"Name\"");
+	if (d.length == 2) {
+		assertContains(t, d[0].message, "unknown field 'source' in a project");
+		assertContains(t, d[0].message, "name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target");
+	}
+}
+
+def test_duplicate_fields(t: Tester) {
+	invalid(t, "{\"version\": 1, \"projects\": [], \"projects\": [5]}", "DuplicateField:\"projects\"");
+	var d = invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"name\": \"b\", \"sources\": [7]"),
+		"DuplicateField:\"name\" | DuplicateField:\"sources\"");
+	if (d.length == 2) assertContains(t, d[0].message, "'name' appears more than once");
+	// An escape does not hide a repeated key.
+	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"n\\u0061me\": \"b\""), "DuplicateField:\"n\\u0061me\"");
+}
+
+def test_missing_fields(t: Tester) {
+	var text = "{\"version\": 1}";
+	var d = invalid(t, text, "MissingField:{");
+	if (d.length == 1) assertContains(t, d[0].message, "the project file must have a 'projects' field");
+	text = "{\"version\": 1, \"projects\": [{}]}";
+	d = invalid(t, text, "MissingField:{ | MissingField:{");
+	if (d.length == 2) {
+		t.asserti(28, d[0].begin);
+		assertContains(t, d[0].message, "a project must have a 'name' field");
+		assertContains(t, d[1].message, "a project must have a 'sources' field");
+	}
+	invalid(t, oneProject("\"sources\": [\"a.v3\"]"), "MissingField:{");
+	invalid(t, oneProject("\"name\": \"a\""), "MissingField:{");
+}
+
+def test_wrong_types(t: Tester) {
+	invalid(t, "{\"version\": 1, \"projects\": {\"name\": \"a\"}}", "WrongType:{\"name\": \"a\"}");
+	invalid(t, "{\"version\": 1, \"projects\": [1, \"a\", null, [], true]}",
+		"WrongType:1 | WrongType:\"a\" | WrongType:null | WrongType:[] | WrongType:true");
+	var d = invalid(t, oneProject("\"name\": 1, \"sources\": \"a.v3\""), "WrongType:1 | WrongType:\"a.v3\"");
+	if (d.length == 2) {
+		assertContains(t, d[0].message, "name must be a string, not a number");
+		assertContains(t, d[1].message, "sources must be an array of strings, not a string");
+	}
+	d = invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\", 1, null, {}]"), "WrongType:1 | WrongType:null | WrongType:{}");
+	if (d.length == 3) assertContains(t, d[2].message, "sources must contain only strings, not an object");
+	invalid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"a.v3\"], \"dependencies\": {}, \"virgilDependencies\": [true], ",
+		"\"exclude\": null, \"compilerArgs\": \"-lang:descriptors\""])),
+		"WrongType:{} | WrongType:true | WrongType:null | WrongType:\"-lang:descriptors\"");
+}
+
+def test_project_names(t: Tester) {
+	var config = valid(t, cat(["{\"version\": 1, \"projects\": [",
+		"{\"name\": \"app\", \"sources\": [\"a.v3\"]}, {\"name\": \"App\", \"sources\": [\"a.v3\"]}, ",
+		"{\"name\": \"wizeng.x86-64_linux\", \"sources\": [\"a.v3\"]}]}"]));
+	t.asserti(3, config.projects.length);
+	invalid(t, oneProject("\"name\": \"\", \"sources\": [\"a.v3\"]"), "InvalidValue:\"\"");
+	var d = invalid(t, oneProject("\"name\": \"my app\", \"sources\": [\"a.v3\"]"), "InvalidValue:\"my app\"");
+	if (d.length == 1) assertContains(t, d[0].message, "only ASCII letters, digits");
+	invalid(t, oneProject("\"name\": \"caf\xC3\xA9\", \"sources\": [\"a.v3\"]"), "InvalidValue:\"caf\xC3\xA9\"");
+	invalid(t, oneProject("\"name\": \"a\\nb\", \"sources\": [\"a.v3\"]"), "InvalidValue:\"a\\nb\"");
+	var text = cat(["{\"version\": 1, \"projects\": [{\"name\": \"server\", \"sources\": [\"a.v3\"]}, ",
+		"{\"name\": \"client\", \"sources\": [\"b.v3\"]}, {\"sources\": [\"c.v3\"], \"name\": \"server\"}]}"]);
+	d = invalid(t, text, "DuplicateProjectName:\"server\"");
+	if (d.length == 1) {
+		// The later project is reported, not the first.
+		t.asserti(text.length - "\"server\"}]}".length, d[0].begin);
+		assertContains(t, d[0].message, "another project is already named 'server'");
+	}
+	// A project with other problems still claims its name.
+	invalid(t, "{\"version\": 1, \"projects\": [{\"name\": \"a\", \"sources\": 1}, {\"name\": \"a\", \"sources\": [\"b.v3\"]}]}",
+		"WrongType:1 | DuplicateProjectName:\"a\"");
+}
+
+def test_empty_sources(t: Tester) {
+	var d = invalid(t, oneProject("\"name\": \"a\", \"sources\": []"), "InvalidValue:[]");
+	if (d.length == 1) assertContains(t, d[0].message, "at least one pattern");
+	t.asserti(1, valid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"a.v3\"], \"dependencies\": [], ",
+		"\"virgilDependencies\": [], \"exclude\": [], \"compilerArgs\": []"]))).projects.length);
+}
+
+def test_target(t: Tester) {
+	t.asserti(1, valid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": null")).projects.length);
+	var d = invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": \"x86-64-linux\""),
+		"InvalidValue:\"x86-64-linux\"");
+	if (d.length == 1) assertContains(t, d[0].message, "target must be null; version 1 analyzes every project without a target");
+	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": false"), "InvalidValue:false");
+	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": [\"wasm\"]"), "InvalidValue:[\"wasm\"]");
+}
+
+def checkPattern(t: Tester, pattern: string, sourceFiles: bool, problem: string) {
+	var got = ProjectPatterns.check(pattern, sourceFiles);
+	if (problem == null) {
+		if (got != null) t.fail2("expected %q to be valid, got %q", Strings.puts(pattern), Strings.puts(got));
+	} else if (got == null) {
+		t.fail1("expected %q to be invalid", Strings.puts(pattern));
+	} else {
+		assertContains(t, got, problem);
+	}
+}
+
+def test_pattern_syntax(t: Tester) {
+	for (p in ["a.v3", "src/*.v3", "src/**/*.v3", "**/*.v3", "src/?.v3", "lib/util/*.v3", "src/*/*.v3",
+			"src/engine/objmodel/boxed/*.v3", "a b/c.v3", "caf\xC3\xA9/x.v3", ".hidden/x.v3", "x.v3.v3", "*.v3"]) {
+		checkPattern(t, p, true, null);
+		checkPattern(t, p, false, null);
+	}
+	// Exclude patterns may name any file or directory.
+	for (p in ["build/**", "**", "test", "src/**/test/**", "*.tmp", "x/*"]) checkPattern(t, p, false, null);
+
+	checkPattern(t, "", false, "must not be empty");
+	checkPattern(t, "/abs.v3", true, "must be a relative path");
+	checkPattern(t, "/", false, "must be a relative path");
+	for (p in ["../x.v3", "./x.v3", "a/../b.v3", "a/./b.v3", "a/..", ".."]) checkPattern(t, p, false, "'.' or '..' segments");
+	for (p in ["a//b.v3", "a/", "a/b/"]) checkPattern(t, p, false, "empty path segment");
+	for (p in ["src/a**b/*.v3", "src/***/x.v3", "**.v3", "x**"]) checkPattern(t, p, false, "'**' must be a whole path segment");
+	for (p in ["a\\b.v3", "C:\\src\\a.v3"]) checkPattern(t, p, false, "must not contain '\\'");
+	for (p in ["src/[ab].v3", "src/{a,b}.v3", "]", "}"]) checkPattern(t, p, false, "reserved in patterns");
+	for (p in ["a\tb.v3", "a\x00.v3", "a\x7F.v3", "a\nb.v3"]) checkPattern(t, p, false, "control characters");
+	for (p in ["src/*", "src/**", "**", "src/main.v", "src/main.V3", "a.v3/b", "src/*.v3x"]) {
+		checkPattern(t, p, true, "must end in '.v3'");
+	}
+}
+
+def test_invalid_patterns(t: Tester) {
+	var d = invalid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"src/*.v3\", \"../lib/*.v3\", \"src/*\"], ",
+		"\"dependencies\": [\"vendor/**\"], \"virgilDependencies\": [\"/opt/virgil/lib/util/*.v3\"], \"exclude\": [\"build//x\"]"])),
+		cat(["InvalidPattern:\"../lib/*.v3\" | InvalidPattern:\"src/*\" | InvalidPattern:\"vendor/**\" | ",
+		"InvalidPattern:\"/opt/virgil/lib/util/*.v3\" | InvalidPattern:\"build//x\""]));
+	if (d.length == 5) assertContains(t, d[0].message, "'.' or '..' segments");
+	// Escapes are decoded before the pattern is checked.
+	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"\\u002e\\u002e/x.v3\"]"), "InvalidPattern:\"\\u002e\\u002e/x.v3\"");
+	// Exclude patterns need not end in .v3.
+	t.asserti(1, valid(t, oneProject("\"name\": \"a\", \"sources\": [\"**/*.v3\"], \"exclude\": [\"build/**\", \"test\"]")).projects.length);
+}
+
+def checkFlags(t: Tester, args: Array<string>, problem: string) {
+	var seen = Strings.newMap<bool>(), got: string;
+	for (a in args) {
+		got = ProjectCompilerFlags.check(a, seen);
+		if (got != null) break;
+	}
+	if (problem == null) {
+		if (got != null) t.fail2("expected %q to be accepted, got %q", Strings.puts(strings(args)), Strings.puts(got));
+	} else if (got == null) {
+		t.fail1("expected %q to be rejected", Strings.puts(strings(args)));
+	} else {
+		assertContains(t, got, problem);
+	}
+}
+
+def test_compiler_flags(t: Tester) {
+	for (o in AeneasAdapter.languageOptions()) {
+		var flag = Strings.format1("-lang:%s", o.0);
+		checkFlags(t, [flag], null);
+		checkFlags(t, [Strings.format1("%s=true", flag)], null);
+		checkFlags(t, [Strings.format1("%s=false", flag)], null);
+	}
+	// Wizard engine's language flags.
+	checkFlags(t, ["-lang:fun-exprs", "-lang:simple-bodies", "-lang:descriptors"], null);
+	var config = valid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"a.v3\"], ",
+		"\"compilerArgs\": [\"-lang:descriptors\", \"-lang:simple-bodies=false\", \"-lang:fun-exprs\"]"])));
+	if (config.projects.length == 1) {
+		t.assert_string("-lang:descriptors -lang:simple-bodies=false -lang:fun-exprs", strings(config.projects[0].compilerArgs));
+	}
+}
+
+def test_invalid_compiler_flags(t: Tester) {
+	checkFlags(t, [""], "is not a compiler flag");
+	checkFlags(t, ["main.v3"], "'main.v3' is not a compiler flag; list source files in sources");
+	checkFlags(t, ["-O2"], "unsupported compiler flag '-O2'");
+	checkFlags(t, ["-heap-size=1g"], "unsupported compiler flag '-heap-size'");
+	checkFlags(t, ["-descext"], "unsupported compiler flag");
+	checkFlags(t, ["--lang:descriptors"], "unsupported compiler flag");
+	checkFlags(t, ["-lang"], "unsupported compiler flag");
+	checkFlags(t, ["-"], "unsupported compiler flag");
+	checkFlags(t, ["-lang:"], "unknown language option '-lang:'");
+	checkFlags(t, ["-lang:nope"], "unknown language option '-lang:nope'; the language options are -lang:read-only-arrays, ");
+	checkFlags(t, ["-lang:Descriptors"], "unknown language option");
+	checkFlags(t, ["-lang:descriptors=yes"], "the value of '-lang:descriptors' must be true or false");
+	checkFlags(t, ["-lang:descriptors="], "must be true or false");
+	checkFlags(t, ["-lang:descriptors=TRUE"], "must be true or false");
+	checkFlags(t, ["-lang:descriptors=true=false"], "must be true or false");
+	checkFlags(t, ["-lang:descriptors", "-lang:descriptors"], "'-lang:descriptors' is given more than once");
+	checkFlags(t, ["-lang:fun-exprs", "-lang:fun-exprs=false"], "'-lang:fun-exprs' is given more than once");
+	// Each rejected entry is reported where it appears; accepted ones are not.
+	invalid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"a.v3\"], ",
+		"\"compilerArgs\": [\"-lang:descriptors\", \"-O2\", \"-lang:descriptors=false\", \"-lang:open-types\"]"])),
+		"UnsupportedCompilerFlag:\"-O2\" | UnsupportedCompilerFlag:\"-lang:descriptors=false\"");
+}
+
+// The file is data: it names files to read and language options from a fixed
+// list. Nothing in it can name a program, a command, a URL, a place outside
+// its directory or the Virgil root, or a compiler action.
+def test_no_code_execution(t: Tester) {
+	var flags = ["-run", "-test", "-debug", "-target=x86-64-linux", "-output=/tmp", "-rt.files=/tmp/x.v3",
+		"-redef-field=Main.debug=true", "-program-name=x", "-version", "-help", "-jvm.script", "-wasm.runcmd=sh"];
+	for (f in flags) checkFlags(t, [f], "unsupported compiler flag");
+	invalid(t, cat(["{\"version\": 1, \"projects\": [], \"command\": \"make\", \"url\": \"https://example.com/x\", ",
+		"\"virgilRoot\": \"/opt/virgil\", \"env\": {\"PATH\": \"/tmp\"}}"]),
+		"UnknownField:\"command\" | UnknownField:\"url\" | UnknownField:\"virgilRoot\" | UnknownField:\"env\"");
+	invalid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"https://example.com/x.v3\", \"file:///etc/x.v3\", ",
+		"\"/usr/lib/virgil/lib/util/*.v3\"], \"virgilDependencies\": [\"../../x.v3\"], \"build\": \"sh build.sh\""])),
+		cat(["InvalidPattern:\"https://example.com/x.v3\" | InvalidPattern:\"file:///etc/x.v3\" | ",
+		"InvalidPattern:\"/usr/lib/virgil/lib/util/*.v3\" | InvalidPattern:\"../../x.v3\" | UnknownField:\"build\""]));
+	invalid(t, oneProject("\"name\": \"a\", \"sources\": [\"a.v3\"], \"target\": \"x86-64-linux\""), "InvalidValue:\"x86-64-linux\"");
+}
+
+def test_diagnostic_order(t: Tester) {
+	var text = cat(["{\"version\": 1, \"extra\": 1, \"projects\": [",
+		"{\"exclude\": [\"/x\"], \"name\": \"a\", \"compilerArgs\": [\"-O2\"], \"sources\": [\"a.v3\"], \"other\": 1}, ",
+		"{\"name\": \"b\"}, 5], \"more\": 2}"]);
+	var d = invalid(t, text, cat(["UnknownField:\"extra\" | InvalidPattern:\"/x\" | UnsupportedCompilerFlag:\"-O2\" | ",
+		"UnknownField:\"other\" | MissingField:{ | WrongType:5 | UnknownField:\"more\""]));
+	for (i = 1; i < d.length; i++) {
+		if (d[i].begin < d[i - 1].begin) t.fail1("diagnostic %d is out of source order", i);
+	}
+}
+
+def test_diagnostic_limit(t: Tester) {
+	var buf = StringBuilder.new().puts("{\"version\": 1, \"projects\": [");
+	for (i < 150) buf.puts(if(i == 0, "1", ", 1"));
+	var text = buf.puts("]}").toString();
+	var r = ProjectConfigParser.parse(text);
+	t.assert(r.config == null, "expected no model");
+	t.asserti(ProjectConfigParser.MAX_DIAGNOSTICS, r.diagnostics.length);
+}

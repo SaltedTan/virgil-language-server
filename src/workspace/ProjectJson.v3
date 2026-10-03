@@ -1,0 +1,137 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The kinds of JSON value in a project file.
+enum ProjectJsonKind(article: string) {
+	STRING("a string"),
+	NUMBER("a number"),
+	BOOLEAN("a boolean"),
+	NULL("null"),
+	ARRAY("an array"),
+	OBJECT("an object")
+}
+
+// A JSON value from a project file, with the bytes it was parsed from:
+// {begin} up to the exclusive {end}. Configuration diagnostics point at these
+// ranges. Object members keep their source order and any repeated keys, which
+// {JsonValue.JObject}'s map would lose.
+class ProjectJson(kind: ProjectJsonKind, begin: int, end: int) {
+	var text: string;				// STRING
+	var integer: bool;				// NUMBER: true if {intValue} holds it
+	var intValue: int;				// NUMBER
+	var elements: Array<ProjectJson>;		// ARRAY
+	var members: Array<ProjectJsonMember>;		// OBJECT
+
+	// Returns the member named {key} that appears first, or null.
+	def member(key: string) -> ProjectJsonMember {
+		for (m in members) if (Strings.equal(m.key.text, key)) return m;
+		return null;
+	}
+}
+
+// One member of a JSON object. {key} is a STRING value.
+class ProjectJsonMember(key: ProjectJson, value: ProjectJson) { }
+
+// Parses a project file into {ProjectJson} values. Strings, numbers, nesting
+// and value limits, and error reporting are those of {JsonRpcJsonParser}.
+class ProjectJsonParser extends JsonRpcJsonParser {
+	// The position just after the most recently consumed token.
+	private var tokenEnd: int;
+
+	new(text: Array<byte>) super(text) {
+		skipWs = skipAfterToken;
+	}
+	// Parses the whole input as one JSON value. Returns null if it is not
+	// valid JSON; {error_msg} and {error_pos} then describe the first error.
+	def parseFile() -> ProjectJson {
+		var size = JsonRpcJson.measure(data);
+		if (size.0 > maxDepth) {
+			fail(Strings.format1("arrays and objects nest deeper than %d levels", maxDepth));
+			return null;
+		}
+		if (size.1 > maxValues) {
+			fail(Strings.format1("more than %d values", maxValues));
+			return null;
+		}
+		var v = parseNode();
+		if (ok && pos < limit) fail("unexpected data after the JSON value");
+		return if(ok, v);
+	}
+	private def parseNode() -> ProjectJson {
+		skipWs(this);
+		if (testEOF()) return null;
+		var begin = pos, ch = char;
+		if (ch == '\"') {
+			var v = parseString();
+			if (!ok) return null;
+			var node = ProjectJson.new(ProjectJsonKind.STRING, begin, tokenEnd);
+			node.text = JsonValue.String.!(v).v;
+			return node;
+		}
+		if (ch == '-' || (ch >= '0' && ch <= '9')) {
+			var v = parseNumber();
+			if (!ok) return null;
+			var node = ProjectJson.new(ProjectJsonKind.NUMBER, begin, tokenEnd);
+			match (v) {
+				Int(n) => {
+					node.integer = true;
+					node.intValue = n;
+				}
+				_ => ;
+			}
+			return node;
+		}
+		if (ch == '[') return parseArrayNode(begin);
+		if (ch == '{') return parseObjectNode(begin);
+		if (optN("null") != -1) return ProjectJson.new(ProjectJsonKind.NULL, begin, tokenEnd);
+		if (optN("true") != -1 || optN("false") != -1) return ProjectJson.new(ProjectJsonKind.BOOLEAN, begin, tokenEnd);
+		fail("expected a JSON value");
+		return null;
+	}
+	private def parseArrayNode(begin: int) -> ProjectJson {
+		var elements = Vector<ProjectJson>.new();
+		req1('[');
+		if (opt1(']') == -1) {
+			while (true) {
+				var e = parseNode();
+				if (!ok) return null;
+				elements.put(e);
+				if (opt1(',') == -1) break;
+			}
+			if (req1(']') == -1) return null;
+		}
+		var node = ProjectJson.new(ProjectJsonKind.ARRAY, begin, tokenEnd);
+		node.elements = elements.extract();
+		return node;
+	}
+	private def parseObjectNode(begin: int) -> ProjectJson {
+		var members = Vector<ProjectJsonMember>.new();
+		req1('{');
+		if (opt1('}') == -1) {
+			while (true) {
+				skipWs(this);
+				if (testEOF()) return null;
+				if (char != '\"') {
+					fail("expected a string as the member name");
+					return null;
+				}
+				var key = parseNode();
+				if (!ok || req1(':') == -1) return null;
+				var value = parseNode();
+				if (!ok) return null;
+				members.put(ProjectJsonMember.new(key, value));
+				if (opt1(',') == -1) break;
+			}
+			if (req1('}') == -1) return null;
+		}
+		var node = ProjectJson.new(ProjectJsonKind.OBJECT, begin, tokenEnd);
+		node.members = members.extract();
+		return node;
+	}
+	// Every token is consumed through {TextReader.advance}, which calls this
+	// before skipping the whitespace after the token.
+	private def skipAfterToken(r: TextReader) {
+		tokenEnd = r.pos;
+		JsonRpcJson.skipWhitespace(r);
+	}
+}

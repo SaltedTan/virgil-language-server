@@ -8,5 +8,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0002](0002-pinned-virgil-adapter-boundary.md) | Pin Virgil and isolate it behind an adapter | Accepted |
 | [0003](0003-supported-platforms.md) | Supported platforms | Accepted |
 | [0004](0004-analysis-worker-process.md) | Run whole-program analysis in a replaceable worker process | Accepted |
+| [0005](0005-project-file-format.md) | Project file format, version 1 | Accepted |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
