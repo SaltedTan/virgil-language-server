@@ -6,6 +6,7 @@ def X = [
 	T("LspProjectAnalysis:contexts_and_revisions", test_contexts_and_revisions),
 	T("LspProjectAnalysis:configuration_diagnostics", test_configuration_diagnostics),
 	T("LspProjectAnalysis:initialize_folders", test_initialize_folders),
+	T("LspProjectAnalysis:explicit_uris_above_project_limit", test_explicit_uris_above_project_limit),
 	()
 ];
 class ProjectTestSession {
@@ -27,10 +28,9 @@ class ProjectTestSession {
 		if (parsed.has("id")) reply = bytes;
 		else notifications.put(bytes);
 	}
-	def begin(t: Tester, name: string) {
+	def begin(t: Tester, documentUri: string) {
 		var params = Strings.newMap<JsonValue>();
-		params["uri"] = JsonValue.String(uri);
-		if (name != null) params["project"] = JsonValue.String(name);
+		params["uri"] = JsonValue.String(documentUri);
 		reply = null;
 		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
 		t.assert(supervisor.busy(), "project request submitted");
@@ -51,20 +51,20 @@ def test_contexts_and_revisions(t: Tester) {
 	var s = ProjectTestSession.new();
 	var mapping = s.server.projects.forDocument(s.uri);
 	t.asserti(2, mapping.contexts.length);
-	s.begin(t, null);
+	s.begin(t, s.uri);
 	var serverSnapshot = s.complete(t);
 	if (serverSnapshot == null) { s.server.close(); return; }
 	t.assert_string("server", serverSnapshot.projectName);
 	t.assertz(true, serverSnapshot.matchesProject());
 	t.assertz(true, serverSnapshot.matchesDocument(s.server.documents, s.uri));
 	t.assert(serverSnapshot == mapping.contexts[0].snapshot, "server context owns its result");
-	s.begin(t, "client");
+	s.begin(t, ProjectFiles.uri(ProjectFiles.join(s.base, "client/Program.v3")));
 	var clientSnapshot = s.complete(t);
 	t.assert_string("client", clientSnapshot.projectName);
 	t.assert(clientSnapshot == mapping.contexts[1].snapshot, "client context owns distinct result");
 	t.assert(serverSnapshot == mapping.contexts[0].snapshot, "client analysis did not replace server context");
 	var configUri = ProjectFiles.uri(ProjectFiles.join(s.base, ".virgil-lsp.json"));
-	s.begin(t, null);
+	s.begin(t, s.uri);
 	// Config changes between submission and completion, before any polling.
 	s.server.documents.open(configUri, "json", 1, "{\"version\":1,\"projects\":[]}");
 	var stale = s.complete(t);
@@ -109,4 +109,22 @@ def test_initialize_folders(t: Tester) {
 	t.assert_string("/b", server.projects.folders[0]);
 	t.assert_string("/z", server.projects.folders[1]);
 	server.close();
+}
+
+def test_explicit_uris_above_project_limit(t: Tester) {
+	var s = ProjectTestSession.new(), uris = Array<JsonValue>.new(ProjectLimits.MAX_FILES + 1);
+	for (i < uris.length) {
+		var uri = Strings.format1("untitled:empty-%d", i);
+		t.assert(s.server.documents.open(uri, "virgil", 1, "") == null, "empty overlay admitted");
+		uris[i] = JsonValue.String(uri);
+	}
+	var params = Strings.newMap<JsonValue>();
+	params["uris"] = JsonValue.JArray(uris);
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+	t.assertz(true, s.supervisor.busy());
+	if (s.supervisor.busy()) {
+		var snapshot = s.complete(t);
+		if (snapshot != null) t.asserti(uris.length, snapshot.paths.length);
+	}
+	s.server.close();
 }

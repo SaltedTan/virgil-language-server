@@ -29,3 +29,15 @@ for _ in range(65):
     deep /= "d"
 deep.mkdir(parents=True, exist_ok=True)
 (deep / "Deep.v3").write_text("def deep = 1;\n", encoding="utf-8")
+
+wide = root / "scan-a"
+wide.mkdir(exist_ok=True)
+for index in range(10001):
+    (wide / f"entry-{index}").touch()
+other = root / "scan-b"
+other.mkdir(exist_ok=True)
+(other / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
+(other / "B.v3").write_text("def b = 1;\n", encoding="utf-8")

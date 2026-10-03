@@ -9,6 +9,7 @@
 class AnalysisSnapshot {
 	// Counts the snapshots one supervisor has produced, from 1.
 	def generation: int;
+	var retainedBytes = 1024L;
 	// The program's files in analysis order.
 	def paths: Array<string>;
 	// Submission provenance attached by the stdio server, never sent to the
@@ -33,11 +34,14 @@ class AnalysisSnapshot {
 	def declarations: Array<AnalysisDeclaration>;
 	private def files = Strings.newMap<AnalysisSnapshotFile>();
 
-	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) { }
+	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) {
+		for (path in paths) retainedBytes += 128L + if(path != null, path.length, 0);
+	}
 
 	// Called once on completion, before exposing the snapshot to handlers.
 	def recordDocumentVersions(versions: Array<AnalysisDocumentVersion>) {
 		documentVersions = versions;
+		for (v in versions) retainedBytes += 128L + v.uri.length;
 	}
 
 	// False for an unrecorded URI. Disk inputs are assumed current only while

@@ -35,13 +35,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			if (!JsonValue.String.?(params["uri"]) || params.has("uris")) return invalid("provide either uri or uris");
 			var mapping = projects.forDocument(JsonValue.String.!(params["uri"]).v);
 			pendingProject = mapping.active;
-			if (params.has("project")) {
-				if (!JsonValue.String.?(params["project"])) return invalid("project must be a project name");
-				pendingProject = null;
-				for (ctx in mapping.contexts) {
-					if (Strings.equal(ctx.definition.name, JsonValue.String.!(params["project"]).v)) { pendingProject = ctx; break; }
-				}
-			}
 			if (pendingProject == null) return invalid("document has no matching project; single-file features remain available");
 			// Compiler option application is separate M3 work; never silently
 			// analyze with defaults when the config requests non-default flags.
@@ -53,7 +46,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			uris = JsonValue.JArray.!(params["uris"]).v;
 		}
 		if (uris.length == 0) return invalid("analyze params require a nonempty uris array");
-		if (uris.length > ProjectLimits.MAX_FILES) return invalid("analysis selects too many source files");
 		// Validate every URI before reading files. Canonical duplicates would
 		// otherwise compile the same file twice with misleading diagnostics.
 		var keys = Array<string>.new(uris.length);
@@ -68,11 +60,12 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var sources = Array<AnalysisSource>.new(keys.length);
 		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
 		// Conservative metadata allowance, then the exact supervisor admission.
-		var bytes = 32L;
+		var bytes = 32L, snapshotBytes = 1024L;
 		for (i < keys.length) {
 			var path = DocumentUri.filePath(keys[i]);
 			if (path == null) path = keys[i];
 			bytes += long.view(path.length) + 16;
+			snapshotBytes += 256L + path.length + keys[i].length;
 			if (bytes > MAX_SOURCE_BYTES) return invalid("analysis sources exceed the analysis size budget");
 			var budget = int.view(MAX_SOURCE_BYTES - bytes);
 			var text = if(pendingProject != null && store.overlay(keys[i]) == null,
@@ -84,6 +77,8 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			var doc = store.overlay(keys[i]);
 			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
 		}
+		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
+			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
 		var outcome = supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);

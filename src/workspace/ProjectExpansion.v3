@@ -84,9 +84,10 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 		if (recursive) walk(base, relative, parts, at + 1, depth);
 		if (errors.length > 0) return;
 		var entries = ProjectFiles.list(path, ProjectLimits.MAX_VISITS - visits);
-		if (entries == null) { error(ProjectConfigCode.SOURCE_IO, "cannot enumerate project directory (or entry limit exceeded)"); return; }
-		visits += entries.length;
-		for (entry in entries) {
+		visits += entries.examined;
+		if (entries.overflow) { error(ProjectConfigCode.EXPANSION_LIMIT, "project directory traversal limit exceeded"); return; }
+		if (entries.names == null) { error(ProjectConfigCode.SOURCE_IO, "cannot enumerate project directory"); return; }
+		for (entry in entries.names) {
 			if (!ProjectGlob.segment(if(recursive, "*", part), entry)) continue;
 			var rel = if(relative.length == 0, entry, ProjectFiles.join(relative, entry));
 			var child = ProjectFiles.join(base, rel);

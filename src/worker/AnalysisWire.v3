@@ -213,6 +213,7 @@ component AnalysisWire {
 		}
 		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
 		if (!r.finish()) return AnalysisResultDecode.Malformed;
+		snapshot.retainedBytes += r.allocationBytes();
 		return AnalysisResultDecode.Decoded(AnalysisWorkerResult.new(id, state, snapshot));
 	}
 
@@ -278,6 +279,9 @@ class AnalysisWireReader {
 		r = DataReader.new(payload);
 		remaining = if(kind == AnalysisWire.RESULT, long.view(AnalysisWire.MAX_RESULT_ALLOCATION), long.max);
 		if (r.read1() != kind) r.fail("unexpected message kind");
+	}
+	def allocationBytes() -> long {
+		return long.view(AnalysisWire.MAX_RESULT_ALLOCATION) - remaining;
 	}
 	def ok() -> bool {
 		return r.ok;

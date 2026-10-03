@@ -7,6 +7,7 @@ class ProjectRevision(uri: string, number: int) { var current = true; }
 class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
+	var lastUsed: long;
 	def contains(path: string, memberOnly: bool) -> bool {
 		for (s in sources) { if(Strings.equal(path, s.path) && (!memberOnly || s.member)) return true; }
 		return false;
@@ -20,6 +21,8 @@ class WorkspaceConfig(path: string) {
 	var published: string;
 	var unreadable: bool;
 	var reportedInvalid: bool;
+	var capacityRejected: bool;
+	var rejectedAvailable: int;
 }
 class DocumentProjects(configPath: string, contexts: Array<ProjectContext>, active: ProjectContext) { }
 
@@ -29,12 +32,14 @@ class WorkspaceProjects(store: DocumentStore) {
 	def MAX_PROJECTS = 128;
 	def MAX_RETAINED_BYTES = 4 * 1024 * 1024;
 	def MAX_SOURCE_REFERENCES = 8192;
+	def MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 	def var folders: Array<string> = [];
 	var virgilRoot: string;
 	var warn: string -> void;
 	var onConfig: WorkspaceConfig -> void;
 	private var discovered: bool;
-	private def configs = Vector<WorkspaceConfig>.new();
+	private var configs = Vector<WorkspaceConfig>.new();
+	private var nextUse: long;
 	private var nextRevision: int;
 	private var scanEntries: int;
 	private var scanWarned: bool;
@@ -73,10 +78,11 @@ class WorkspaceProjects(store: DocumentStore) {
 	}
 	private def discover(dir: string, depth: int) {
 		if (scanEntries >= ProjectLimits.MAX_VISITS || depth > ProjectLimits.MAX_DEPTH || configs.length >= MAX_CONFIGS) { discoveryLimit(); return; }
-		var names = ProjectFiles.list(dir, ProjectLimits.MAX_VISITS - scanEntries);
-		if (names == null) return;
-		scanEntries += names.length;
-		for (name in names) {
+		var listing = ProjectFiles.list(dir, ProjectLimits.MAX_VISITS - scanEntries);
+		scanEntries += listing.examined;
+		if (listing.overflow) { discoveryLimit(); return; }
+		if (listing.names == null) return;
+		for (name in listing.names) {
 			var path = ProjectFiles.join(dir, name);
 			if (Strings.equal(name, FILE)) load(path);
 			else if (name.length > 0 && name[0] != '.' && ProjectFiles.metadata(path).0 == ProjectFiles.DIRECTORY) discover(path, depth + 1);
@@ -98,13 +104,16 @@ class WorkspaceProjects(store: DocumentStore) {
 		return null;
 	}
 	def refresh() {
+		pruneDeleted();
 		if (!discovered) {
 			discovered = true;
 			for (root in folders) discover(root, 0);
 		}
 		for (i < configs.length) update(configs[i]);
+		for (i < configs.length) { if(configs[i].capacityRejected) update(configs[i]); }
 	}
 	def load(path: string) -> WorkspaceConfig {
+		pruneDeleted();
 		for (i < configs.length) {
 			if (Strings.equal(configs[i].path, path)) { update(configs[i]); return configs[i]; }
 		}
@@ -113,6 +122,45 @@ class WorkspaceProjects(store: DocumentStore) {
 		configs.put(config);
 		update(config);
 		return config;
+	}
+	private def pruneDeleted() {
+		var live = Vector<WorkspaceConfig>.new();
+		for (i < configs.length) {
+			var c = configs[i];
+			if (store.overlay(ProjectFiles.uri(c.path)) == null) {
+				var fd = ProjectFiles.open(c.path, false);
+				if (fd >= 0) HostOs.close(fd);
+				if (fd == -2 || fd == -20) {
+					update(c);
+					c.revision.current = false;
+					continue;
+				}
+			}
+			live.put(c);
+		}
+		configs = live;
+	}
+	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
+		if (active != null) active.lastUsed = ++nextUse;
+		var retained = if(latest != null, latest.retainedBytes, 0L);
+		for (i < configs.length) {
+			for (ctx in configs[i].contexts) {
+				if (ctx.snapshot != null && ctx.snapshot != latest) retained += ctx.snapshot.retainedBytes;
+			}
+		}
+		while (retained > long.view(MAX_SNAPSHOT_BYTES) - incomingBytes) {
+			var victim: ProjectContext;
+			for (i < configs.length) {
+				for (ctx in configs[i].contexts) {
+					if (ctx == active || ctx.snapshot == null || ctx.snapshot == latest) continue;
+					if (victim == null || ctx.lastUsed < victim.lastUsed) victim = ctx;
+				}
+			}
+			if (victim == null) return false;
+			retained -= victim.snapshot.retainedBytes;
+			victim.snapshot = null;
+		}
+		return true;
 	}
 	private def update(c: WorkspaceConfig) {
 		var uri = ProjectFiles.uri(c.path), overlay = store.overlay(uri);
@@ -129,14 +177,15 @@ class WorkspaceProjects(store: DocumentStore) {
 		var unreadable = false;
 		if (text == null) {
 			var fd = ProjectFiles.open(c.path, false);
-			unreadable = fd != -2; // ENOENT on both hosts means deletion, not an error.
+			unreadable = fd != -2 && fd != -20;
 			if (fd >= 0) HostOs.close(fd);
 		}
-		var changed = c.revision == null || !same || c.unreadable != unreadable;
+		var available = MAX_PROJECTS - projectCount;
+		var changed = c.revision == null || !same || c.unreadable != unreadable || (c.capacityRejected && c.rejectedAvailable != available);
 		if (changed) {
 			if (c.revision != null) c.revision.current = false;
 			c.revision = ProjectRevision.new(uri, ++nextRevision);
-			c.text = text; c.unreadable = unreadable; c.contexts = []; c.diagnostics = [];
+			c.text = text; c.unreadable = unreadable; c.contexts = []; c.diagnostics = []; c.capacityRejected = false;
 			if (text == null) {
 				if (unreadable) c.diagnostics = [ProjectConfigDiagnostic.new(ProjectConfigCode.SOURCE_IO, 0, 0, "cannot read project file within the configuration size/capacity limits")];
 			} else {
@@ -144,8 +193,10 @@ class WorkspaceProjects(store: DocumentStore) {
 				c.diagnostics = parsed.diagnostics;
 				if (parsed.config != null) {
 					var defs = parsed.config.projects;
-					if (defs.length > MAX_PROJECTS - projectCount) c.diagnostics = [ProjectConfigDiagnostic.new(ProjectConfigCode.EXPANSION_LIMIT, 0, 0, "too many projects in workspace")];
-					else {
+					if (defs.length > available) {
+						c.capacityRejected = true; c.rejectedAvailable = available;
+						c.diagnostics = [ProjectConfigDiagnostic.new(ProjectConfigCode.EXPANSION_LIMIT, 0, 0, "too many projects in workspace")];
+					} else {
 						c.contexts = Array<ProjectContext>.new(defs.length);
 						for (i < defs.length) c.contexts[i] = ProjectContext.new(c.revision, defs[i]);
 					}
@@ -189,8 +240,8 @@ class WorkspaceProjects(store: DocumentStore) {
 	def forDocument(uri: string) -> DocumentProjects {
 		var path = DocumentUri.filePath(uri), nearestPath: string;
 		if (path != null) nearestPath = nearest(path);
-		var governing = if(nearestPath != null, load(nearestPath));
 		refresh();
+		var governing = if(nearestPath != null, load(nearestPath));
 		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
 		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);
 		if (path != null && !disabled) {
@@ -206,6 +257,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		for (ctx in result) {
 			if (active == null || rank(ctx, path, nearestPath) < rank(active, path, nearestPath)) active = ctx;
 		}
+		if (active != null) active.lastUsed = ++nextUse;
 		if (active == null && !singleFileWarned) {
 			singleFileWarned = true;
 			if (warn != null) warn("Without a project file selecting this document, semantic features are limited; using single-file mode.");

@@ -14,6 +14,10 @@ def X = [
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
 	T("WorkspaceProjects:active_precedence", test_active_precedence),
 	T("WorkspaceProjects:single_file_once", test_single_file_once),
+	T("WorkspaceProjects:configuration_capacity_recovery", test_configuration_capacity_recovery),
+	T("WorkspaceProjects:project_capacity_recovery", test_project_capacity_recovery),
+	T("WorkspaceProjects:discovery_overflow", test_discovery_overflow),
+	T("WorkspaceProjects:snapshot_budget", test_snapshot_budget),
 	()
 ];
 def FIXTURES = "test/fixtures/projects";
@@ -28,7 +32,7 @@ def expand(base: string, root: string, defn: ProjectDefinition) -> ProjectExpans
 }
 def test_host_directory(t: Tester) {
 	var dir = ProjectFiles.join(FIXTURES, "two-programs");
-	var names = ProjectFiles.list(dir, 100);
+	var listing = ProjectFiles.list(dir, 100), names = listing.names;
 	t.assert(names != null, "directory syscall succeeds");
 	if (names == null) return;
 	t.asserti(4, names.length);
@@ -36,8 +40,11 @@ def test_host_directory(t: Tester) {
 	t.assert_string("client", names[1]);
 	t.assert_string("server", names[2]);
 	t.assert_string("shared", names[3]);
-	t.assert(ProjectFiles.list(dir, 3) == null, "bounded directory listing");
-	t.assert(ProjectFiles.list(ProjectFiles.join(dir, ".virgil-lsp.json"), 100) == null, "not a directory");
+	listing = ProjectFiles.list(dir, 3);
+	t.assertz(true, listing.overflow);
+	t.asserti(4, listing.examined);
+	t.assert(listing.names == null, "overflow does not expose partial ordering");
+	t.assert(ProjectFiles.list(ProjectFiles.join(dir, ".virgil-lsp.json"), 100).names == null, "not a directory");
 	t.assertz(false, ProjectFiles.configMarker(ProjectFiles.join(dir, "missing/ancestor/.virgil-lsp.json")));
 	var path = ProjectFiles.join(dir, ".virgil-lsp.json"), text = System.fileLoad(path);
 	var info = ProjectFiles.metadata(path);
@@ -238,4 +245,138 @@ def test_single_file_once(t: Tester) {
 		t.asserti(0, doc.contexts.length);
 	}
 	t.asserti(1, warnings.count);
+}
+
+def projectDefinitions(count: int) -> string {
+	var text = StringBuilder.new().puts("{\"version\":1,\"projects\":[");
+	for (i < count) {
+		if (i > 0) text.putc(',');
+		text.put1("{\"name\":\"p%d\",\"sources\":[\"shared/*.v3\"]}", i);
+	}
+	return text.puts("]}").extract();
+}
+def test_configuration_capacity_recovery(t: Tester) {
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var first: WorkspaceConfig;
+	for (i < w.MAX_CONFIGS) {
+		var path = ProjectFiles.join(base, Strings.format1("capacity-%d.json", i));
+		t.assert(store.open(ProjectFiles.uri(path), "json", 1, "{\"version\":1,\"projects\":[]}") == null, "configuration overlay admitted");
+		var c = w.load(path);
+		t.assert(c != null, "configuration admitted");
+		if (i == 0) first = c;
+	}
+	var nested = ProjectFiles.join(base, "shared/.virgil-lsp.json");
+	store.open(ProjectFiles.uri(nested), "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"new\",\"sources\":[\"*.v3\"]}]}");
+	t.assert(w.load(nested) == null, "full configuration capacity rejects new marker");
+	store.close(ProjectFiles.uri(first.path));
+	var mapping = w.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3")));
+	t.assertz(false, first.revision.current);
+	t.assert(mapping.active != null, "document lookup recovers capacity before admission");
+	if (mapping.active != null) t.assert_string("new", mapping.active.definition.name);
+	store.close(ProjectFiles.uri(ProjectFiles.join(base, "capacity-1.json")));
+	var direct = ProjectFiles.join(base, "capacity-direct.json");
+	store.open(ProjectFiles.uri(direct), "json", 1, "{\"version\":1,\"projects\":[]}");
+	t.assert(w.load(direct) != null, "direct load also releases deleted records");
+}
+def test_project_capacity_recovery(t: Tester) {
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var retry = ProjectFiles.join(base, "retry.json"), full = ProjectFiles.join(base, "full.json");
+	store.open(ProjectFiles.uri(retry), "json", 1, "{\"version\":1,\"projects\":[]}");
+	var rejected = w.load(retry);
+	store.open(ProjectFiles.uri(full), "json", 1, projectDefinitions(w.MAX_PROJECTS));
+	var owner = w.load(full);
+	t.asserti(w.MAX_PROJECTS, owner.contexts.length);
+	store.change(ProjectFiles.uri(retry), 2, projectDefinitions(1));
+	w.load(retry);
+	t.asserti(0, rejected.contexts.length);
+	t.assert(rejected.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "project capacity rejection");
+	var revision = rejected.revision;
+	store.change(ProjectFiles.uri(full), 2, projectDefinitions(w.MAX_PROJECTS - 1));
+	w.refresh();
+	t.asserti(1, rejected.contexts.length);
+	t.asserti(0, rejected.diagnostics.length);
+	t.assertz(false, revision.current);
+	revision = rejected.revision;
+	w.refresh();
+	t.assert(rejected.revision == revision, "successful retry keeps stable context on subsequent refresh");
+}
+class ProjectConfigRecorder {
+	var calls: int;
+	def update(c: WorkspaceConfig) { calls++; }
+}
+def test_discovery_overflow(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	var wide = ProjectFiles.join(base, "scan-a"), other = ProjectFiles.join(base, "scan-b");
+	var listing = ProjectFiles.list(wide, ProjectLimits.MAX_VISITS);
+	t.assertz(true, listing.overflow);
+	t.asserti(ProjectLimits.MAX_VISITS + 1, listing.examined);
+	var r = expand(wide, null, definition("{\"name\":\"p\",\"sources\":[\"*.v3\"]}"));
+	t.asserti(0, r.sources.length);
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "entry overflow is an expansion diagnostic");
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var warnings = ProjectWarningRecorder.new(), configs = ProjectConfigRecorder.new();
+	w.warn = warnings.warn; w.onConfig = configs.update;
+	var params = Strings.newMap<JsonValue>(), folders = Array<JsonValue>.new(2);
+	for (i < 2) {
+		var folder = Strings.newMap<JsonValue>();
+		folder["uri"] = JsonValue.String(ProjectFiles.uri(if(i == 0, wide, other)));
+		folders[i] = JsonValue.JObject(folder);
+	}
+	params["workspaceFolders"] = JsonValue.JArray(folders);
+	w.initialize(params);
+	w.refresh();
+	t.asserti(1, warnings.count);
+	t.asserti(0, configs.calls);
+	w.refresh();
+	t.asserti(1, warnings.count);
+	var mapping = w.forDocument(ProjectFiles.uri(ProjectFiles.join(other, "B.v3")));
+	t.assert(mapping.active != null, "nearest project remains discoverable after shared scan budget is exhausted");
+	t.asserti(1, configs.calls);
+}
+def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
+	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(7);
+	for (i < 6) w.put_sleb32(-1);
+	w.put_sleb32(0).put_sleb32(1).put_sleb32(4).puta("p.v3");
+	w.put_sleb32(1).putb(0).put_sleb32(1).putb('x').put_sleb32(0).puta("\x01\x01\x01\x02");
+	w.put_sleb32(1).put_sleb32(0).put_sleb32(162929);
+	for (i < 162929) w.puta("\x01\x01\x01\x02\x00");
+	match (AnalysisWire.decodeResult(w.extract(), generation, ["p.v3"])) {
+		Decoded(result) => return result.snapshot;
+		_ => return null;
+	}
+}
+def test_snapshot_budget(t: Tester) {
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var path = ProjectFiles.join(base, "snapshot.json");
+	store.open(ProjectFiles.uri(path), "json", 1, projectDefinitions(33));
+	var contexts = w.load(path).contexts, latest: AnalysisSnapshot;
+	var reserve = long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + 1024 + 128 + 4;
+	for (i < contexts.length) {
+		if (i == 6) t.assertz(true, w.admitSnapshot(contexts[0], latest, reserve));
+		t.assertz(true, w.admitSnapshot(contexts[i], latest, reserve));
+		if (i == 6) {
+			t.assert(contexts[0].snapshot != null, "recently used context survives eviction");
+			t.assert(contexts[1].snapshot == null, "least recently used inactive context evicted first");
+		}
+		latest = occurrenceSnapshot(i + 1);
+		if (latest == null) return t.fail("snapshot fixture rejected");
+		t.assert(latest.retainedBytes >= 162929L * 20, "decoded occurrence arrays charged");
+		contexts[i].snapshot = latest;
+		var retained = 0L;
+		for (ctx in contexts) { if(ctx.snapshot != null) retained += ctx.snapshot.retainedBytes; }
+		t.assert(retained <= w.MAX_SNAPSHOT_BYTES, "aggregate snapshots remain bounded");
+	}
+	t.assert(contexts[0].snapshot == null, "old context eventually evicted");
+	t.assertz(true, w.admitSnapshot(contexts[0], latest, reserve));
+	contexts[0].snapshot = occurrenceSnapshot(34);
+	t.assert(contexts[0].snapshot.definitionAt("p.v3", 1, 1) != null, "evicted context reanalyzes on demand");
+	var active = contexts[0].snapshot;
+	t.assertz(false, w.admitSnapshot(contexts[0], latest, long.view(w.MAX_SNAPSHOT_BYTES)));
+	t.assert(contexts[0].snapshot == active, "rejection preserves active last good result");
+	t.assert(contexts[32].snapshot == latest, "rejection preserves supervisor last good result");
+	t.assertz(true, w.admitSnapshot(null, latest, reserve));
+	t.assert(contexts[32].snapshot == latest, "explicit URI admission preserves latest result");
 }
