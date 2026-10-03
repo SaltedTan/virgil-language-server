@@ -280,7 +280,7 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		return AnalysisDeclaration.new(kind, token.image, rangeOf(token));
 	}
 	private def rangeOf(token: Token) -> AnalysisRange {
-		var r = token.range();
-		return AnalysisRange.new(r.fileName, r.beginLine, r.beginColumn, r.endLine, r.endColumn);
+		return AnalysisRange.new(token.fileName, token.beginLine, token.beginColumn,
+			token.beginLine, token.beginColumn + token.image.length);
 	}
 }

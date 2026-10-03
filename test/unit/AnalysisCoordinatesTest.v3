@@ -8,6 +8,7 @@ def X = [
 	T("AnalysisCoordinates:token_end_before_comment", test_token_end_before_comment),
 	T("AnalysisCoordinates:parser_coordinate_ambiguities", test_parser_coordinate_ambiguities),
 	T("AnalysisCoordinates:retrospective_tokens", test_retrospective_tokens),
+	T("AnalysisCoordinates:binding_compiler_coordinates", test_binding_compiler_coordinates),
 	T("AnalysisCoordinates:malformed_literal_bound", test_malformed_literal_bound),
 	T("AnalysisCoordinates:no_file", test_no_file),
 	T("AnalysisCoordinates:replay_boundaries", test_replay_boundaries),
@@ -191,5 +192,70 @@ def test_malformed_literal_bound(t: Tester) {
 			t.asserti(8, result.diagnostics[0].endOffset);
 		}
 		t.assert(System.ticksUs() - start < 1000000, "malformed literal analysis must finish within one second");
+	}
+}
+
+
+def test_binding_compiler_coordinates(t: Tester) {
+	var cases = [
+		"class C { def [x: int] -> int { return x; }\n/*\t*/ def f(c: C) -> int => c.[](1);\n}\n",
+		"class C { def [x: int] = y: int {}\n/*\t*/ def f(c: C) => c.[]=(1, 2);\n}\n"
+	];
+	var names = ["[]", "[]="], columns = [36, 29], liveColumns = [31, 24];
+	for (i < cases.length) {
+		var path = "binding-coordinates.v3", text = cases[i];
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text)], false);
+		t.assertz(true, a.verified);
+		t.asserti(0, a.diagnostics.length);
+		var uses = a.occurrences(path);
+		var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1,
+			[(path, uses)]), 0L);
+		var result = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, [path]);
+		if (result == null) return t.fail("binding result did not decode");
+		var decoded = result.snapshot.occurrences(path);
+		var prog = Program.new();
+		SystemCalls.install(prog);
+		prog.files = [path];
+		prog.inputs = [text];
+		var compilation = Compilation.new(Compiler.new(null), prog);
+		t.assertz(true, compilation.parse());
+		t.assertz(true, compilation.verify());
+		var original = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), true, true, prog).occurrences(path);
+		t.asserti(original.length, uses.length);
+		t.asserti(original.length, decoded.length);
+		if (original.length != uses.length || original.length != decoded.length) return;
+		var count = 0;
+		for (j < original.length) {
+			t.assert_string(original[j].toString(), uses[j].toString());
+			t.assert_string(original[j].toString(), decoded[j].toString());
+			if (!Strings.equal(uses[j].declaration.name, names[i])) continue;
+			count++;
+			for (o in [uses[j], decoded[j]]) {
+				t.asserti(2, o.range.beginLine);
+				t.asserti(2, o.range.endLine);
+				t.asserti(columns[i], o.range.beginColumn);
+				t.asserti(columns[i] + names[i].length, o.range.endColumn);
+				t.assert(o.declaration.kind == AnalysisDeclKind.METHOD, "indexing method target");
+				t.assert_string(path, o.declaration.range.path);
+				t.asserti(1, o.declaration.range.beginLine);
+				t.asserti(1, o.declaration.range.endLine);
+				t.asserti(15, o.declaration.range.beginColumn);
+				t.asserti(15 + names[i].length, o.declaration.range.endColumn);
+			}
+		}
+		t.asserti(1, count);
+		for (column = columns[i]; column < columns[i] + names[i].length; column++) {
+			for (d in [a.definitionAt(path, 2, column), result.snapshot.definitionAt(path, 2, column)]) {
+				if (d == null) return t.fail("operator definition missing at compiler column");
+				t.assert_string(names[i], d.name);
+				t.asserti(15, d.range.beginColumn);
+				t.asserti(15 + names[i].length, d.range.endColumn);
+			}
+		}
+		for (column in [columns[i] - 1, columns[i] + names[i].length, liveColumns[i]]) {
+			t.assert(a.definitionAt(path, 2, column) == null, "compiler lookup excludes adjacent and live columns");
+			t.assert(result.snapshot.definitionAt(path, 2, column) == null, "snapshot lookup excludes adjacent and live columns");
+		}
+		AnalysisTypeCache.release();
 	}
 }
