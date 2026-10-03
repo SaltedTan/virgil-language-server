@@ -29,7 +29,7 @@ Constraints from the compiler and the server:
 5. **Virgil library files go in `virgilDependencies`, relative to the Virgil root**, written as in `aeneas/DEPS` (`lib/util/*.v3`). The project file can't name the root. [Configuration](../configuration.md#the-virgil-root) owns the planned discovery rules and logging behavior.
 6. **`compilerArgs` accepts only the pinned compiler's language options.** The adapter supplies the accepted options from the pinned compiler. [Configuration](../configuration.md#compiler-flags) owns their syntax and planned application to whole-program analysis and single-file parsing.
 7. **`target` must be `null`.** Version 1 analyzes every project without a target.
-8. **Configuration diagnostics have byte ranges.** `src/workspace/ProjectJson.v3` parses the file into values that record their byte ranges and keep repeated keys. The token decoding and limits are those of `JsonRpcJson`. The server will publish configuration diagnostics with `textDocument/publishDiagnostics` on the project file's URI, and send one `window/showMessage` warning when a project file becomes invalid.
+8. **Configuration diagnostics have byte ranges.** `src/workspace/ProjectJson.v3` parses the file into values that record their byte ranges and keep repeated keys. The token decoding and limits are those of `JsonRpcJson`. [Configuration diagnostics](../configuration.md#configuration-diagnostics) owns their publication behavior.
 9. **The parser does no file-system access.** `ProjectConfigParser.parse` takes the file's bytes and returns either a model or its diagnostics. Finding project files, reading them, and expanding patterns are separate ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55)).
 
 ## Consequences

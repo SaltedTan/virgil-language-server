@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Linux x86-64 (including WSL 2), or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`)
-- `git`, `make`, `bash`; Python 3.9+ for interactive protocol and editor tests
+- `git`, `make`, `bash`; Python 3.9+ for project-fixture preparation and cleanup, interactive protocol tests, and editor tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 - Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).
 - Optional: the [VS Code development client's prerequisites](../clients/vscode/README.md#setup).
@@ -89,6 +89,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/analysis/RetainProbe.v3` | Fresh-process live-heap regression for dropped analysis snapshots, including errors | `build/retain-probe [source.v3 ...]` (no arguments runs generated fixtures; see [measurements](architecture.md#adapter-retention-workaround-and-regression-probe)) |
 | `test/analysis/TypeDepthProbe.v3` | Analysis and subsequent tiny analysis of 100,000 inferred array and tuple levels, including lazy snapshot bindings | `build/type-depth-probe` (1 GB heap, default stack) |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory for compiler crash and hang cases; the crash traces on stderr are expected. Result-budget and malformed-result cases use the unit-test executable as a synthetic worker on the same pipes. | `build/unit-tests [glob]` |
+| `test/fixtures/projects/test_cleanup.py` | Fixture permission restoration and removal through `make clean`, independent of the build directory | `python3 test/fixtures/projects/test_cleanup.py` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses, lifecycle cleanup, and large JSON alongside analysis allocations and snapshot replacement | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/coordinates.py` | Exact worker diagnostic byte ranges, compiler-coordinate binding exports, CLI and stdio compatibility, allocation rejection/recovery, and bounded malformed-string replay | Standalone: `python3 test/protocol/coordinates.py build/virgil-lsp` (with `virgil-lsp-worker` beside it; not run by `make test`) |
