@@ -4,8 +4,8 @@
 #
 # Measure whole-program parse and verify time with `virgil-lsp analyze --stats`
 # for a small fixture and for the Aeneas sources the server is built from.
-# Each run is a fresh process: repeated large analyses in one process currently
-# exhaust the heap because Aeneas keeps every analyzed program reachable.
+# Each run is a fresh process so timing samples do not share runtime state.
+# See docs/architecture.md, "Known constraints of the compiler front end".
 #
 # Usage: scripts/bench-analysis.sh [runs]   (default 10; run `make` first)
 set -euo pipefail

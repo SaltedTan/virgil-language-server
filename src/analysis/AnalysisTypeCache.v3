@@ -1,0 +1,83 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Work around two retention paths in the pinned compiler without changing it.
+// Only parse/verify may populate this cache; returned snapshots are queried but
+// never passed back into compiler phases. Analyses must remain serialized.
+component AnalysisTypeCache {
+	private var prepared = false;
+
+	def prepare() {
+		if (prepared) return;
+		prepared = true;
+		var cache = TypeUtil.globalCache;
+		// Component initialization runs at compile time. The initial arrays live
+		// in the executable's data segment, and every element is a permanent GC
+		// root, even after TypeCache.rebalance replaces the array. Move the table
+		// to runtime-allocated arrays BEFORE an analysis can grow it. Clear the
+		// old root slots while preserving all interned builtin type identities.
+		cache.singleBuckets = detach(cache.singleBuckets);
+		cache.multiBuckets = detach(cache.multiBuckets);
+	}
+
+	private def detach(buckets: Array<Type>) -> Array<Type> {
+		var copy = Arrays.dup(buckets);
+		for (i < buckets.length) buckets[i] = null;
+		return copy;
+	}
+
+	def release() {
+		var cache = TypeUtil.globalCache;
+		var memo = TypeUtil.newTypeMap<bool>();
+		prune(cache.singleBuckets, memo);
+		prune(cache.multiBuckets, memo);
+	}
+
+	private def prune(buckets: Array<Type>, memo: HashMap<Type, bool>) {
+		for (i < buckets.length) {
+			var previous: Type;
+			var next: Type;
+			for (t = buckets[i]; t != null; t = next) {
+				next = t.link;
+				if (isGlobal(t, memo)) {
+					previous = t;
+				} else {
+					if (previous == null) buckets[i] = next;
+					else previous.link = next;
+					t.link = null;
+				}
+			}
+		}
+	}
+
+	private def isGlobal(t: Type, memo: HashMap<Type, bool>) -> bool {
+		if (memo.has(t)) return memo[t];
+		var work = Vector<(Type, List<Type>)>.new().put((t, t.nested));
+		while (work.length > 0) {
+			var i = work.length - 1, current = work[i].0, nested = work[i].1;
+			if (!memo.has(current)) {
+				var tc = current.typeCon;
+				// Enum constructors use the global cache too, but hold source declarations.
+				var global = tc.typeCache == TypeUtil.globalCache
+					&& tc.kind != Kind.ENUM && tc.kind != Kind.ENUM_SET;
+				// TypeCon chooses a cache from immediate constructors, missing program
+				// dependencies nested inside builtin tuples, arrays and function types.
+				if (global && nested != null) {
+					if (!memo.has(nested.head)) {
+						work.put((nested.head, nested.head.nested));
+						continue;
+					}
+					if (memo[nested.head]) {
+						work[i] = (current, nested.tail);
+						continue;
+					}
+					global = false;
+				}
+				memo[current] = global;
+			}
+			work[i] = (null, null);
+			work.length--;
+		}
+		return memo[t];
+	}
+}
