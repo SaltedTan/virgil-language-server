@@ -20,11 +20,13 @@ The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.m
 | --- | --- | --- | --- |
 | Linux x86-64 | **Supported** | `x86-64-linux` | Required |
 | Windows x86-64 with WSL 2 | **Supported**, using the Linux build inside WSL 2 | `x86-64-linux` | Covered by the Linux job |
-| macOS on Apple Silicon | **Supported** (interim), using the Intel build under Rosetta 2 | `x86-64-darwin` | `macos-15` (Apple Silicon), not yet required |
+| macOS on Apple Silicon | **Supported** (interim), using the Intel build under Rosetta 2 | `x86-64-darwin` | `macos-15` (Apple Silicon), required before v0.1-alpha |
 | macOS on Intel | Best effort: same build, untested | `x86-64-darwin` | None |
 | Native Windows | Not supported. Use WSL 2. | — | — |
 | Linux arm64 | Not supported yet | — | — |
 | WSL 1 | Not supported | — | — |
+
+The [repository setup script](../scripts/github-setup.sh) configures both pinned-Virgil CI jobs as required checks on `main`. Applying that branch-protection change is a separate maintainer action before v0.1-alpha; merging the script change does not apply it.
 
 Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Rosetta 2 is needed until then. Install it with:
 

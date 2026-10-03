@@ -41,7 +41,7 @@ jobs:
 
   test-macos:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
-    # supports arm64-darwin (ADR-0003). Not yet a required check.
+    # supports arm64-darwin (ADR-0003). See docs/compatibility.md for CI policy.
     name: Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)
     runs-on: macos-15
     timeout-minutes: 20
