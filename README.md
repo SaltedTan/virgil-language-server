@@ -31,12 +31,12 @@ Completion, references, rename, and incremental analysis come after v0.1. Format
 flowchart TD
     E["VS Code or Neovim"] --> P["LSP and JSON-RPC layer"]
     P --> W["Versioned documents and workspace"]
-    W --> A["Aeneas parse and verify adapter"]
+    W --> A["Aeneas parse and verify adapter, in a worker process"]
     A --> S["Immutable snapshot and symbol index"]
     S --> P
 ```
 
-One process owns the protocol, the in-memory document overlays, the compiler front end, and the semantic index. Editor integrations stay thin and contain no language semantics. All compiler access goes through a single adapter (`src/analysis/`). See [docs/architecture.md](docs/architecture.md) and the [decision records](docs/decisions/).
+One server process owns the protocol, the in-memory document overlays, and the semantic index. Whole-program parsing and verification run in a replaceable worker process, so that a compiler crash or hang cannot take the server down. Editor integrations stay thin and contain no language semantics. All compiler access goes through a single adapter (`src/analysis/`). See [docs/architecture.md](docs/architecture.md) and the [decision records](docs/decisions/).
 
 ## Building
 
@@ -45,7 +45,7 @@ Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac 
 ```sh
 git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-server.git
 cd virgil-language-server
-make test        # builds build/virgil-lsp and runs all tests
+make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs all tests
 ```
 
 Try the current development command:

@@ -1,0 +1,311 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The messages between the server and an analysis worker, each in one
+// WorkerFraming frame. The first payload byte is the message kind. Unless
+// noted, integers are signed LEB128, and strings are a length (-1 for null)
+// followed by their bytes. Encoders and decoders for both directions live
+// here, so that the protocol changes in one place; PROTOCOL_VERSION changes
+// with it. See docs/decisions/0004-analysis-worker-process.md.
+component AnalysisWire {
+	def PROTOCOL_VERSION = 1;
+	// The worker executable, which the server finds in its own directory.
+	def WORKER_NAME = "virgil-lsp-worker";
+	// The argument that makes the worker serve a server.
+	def WORKER_ARG = "--serve";
+	// The worker's descriptors for requests and results.
+	def REQUEST_FD = 3;
+	def RESULT_FD = 4;
+
+	// Worker to server, once at startup: protocol version, server version,
+	// source revision, and heap size in bytes.
+	def HELLO: byte = 1;
+	// Server to worker: request ID, flags, the server's time limit in
+	// milliseconds, file count, then each file's path and contents.
+	def ANALYZE: byte = 2;
+	// Worker to server: see encodeResult.
+	def RESULT: byte = 3;
+
+	// ANALYZE flags.
+	def WANT_OCCURRENCES = 1;
+	def WANT_STATS = 2;
+
+	// RESULT flags.
+	private def PARSED = 1;
+	private def VERIFIED = 2;
+	private def OCCURRENCES = 4;
+	// The fixed-width part of a RESULT, after the kind: request ID, the
+	// worker's analysis count, its UID counter (u32 each), and live heap
+	// bytes (u64), which is filled in after the result is encoded.
+	private def LIVE_BYTES_OFFSET = WorkerFraming.HEADER_BYTES + 1 + 3 * 4;
+	// Declaration kinds by tag, for decoding.
+	def DECL_KINDS = declKinds();
+
+	def encodeHello(version: string, revision: string, heapBytes: long) -> Range<byte> {
+		var w = WorkerFraming.start().putb(HELLO);
+		w.put_sleb32(PROTOCOL_VERSION);
+		putString(w, version);
+		putString(w, revision);
+		w.put_sleb64(heapBytes);
+		return WorkerFraming.finish(w);
+	}
+	def decodeHello(payload: Array<byte>) -> AnalysisWorkerHello {
+		var r = AnalysisWireReader.new(payload, HELLO);
+		var hello = AnalysisWorkerHello.new(r.readInt(), r.readString(), r.readString(), r.readLong());
+		return if(r.finish(), hello);
+	}
+
+	def encodeAnalyze(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) -> Range<byte> {
+		var w = WorkerFraming.start().putb(ANALYZE);
+		w.put_sleb32(id).put_sleb32(flags).put_sleb32(timeoutMs).put_sleb32(sources.length);
+		for (s in sources) {
+			putString(w, s.path);
+			var input = if(s.input == null, Array<byte>.new(0), s.input);
+			w.put_sleb32(input.length).puta(input);
+		}
+		return WorkerFraming.finish(w);
+	}
+	def decodeAnalyze(payload: Array<byte>) -> AnalysisWorkerRequest {
+		var r = AnalysisWireReader.new(payload, ANALYZE);
+		var id = r.readInt(), flags = r.readInt(), timeoutMs = r.readInt();
+		var sources = Array<AnalysisSource>.new(r.readCount(2));
+		for (i < sources.length) {
+			var path = r.readString();
+			sources[i] = AnalysisSource.new(path, r.readBytes());
+		}
+		return if(r.finish(), AnalysisWorkerRequest.new(id, flags, timeoutMs, sources));
+	}
+
+	// Encodes a RESULT: the fixed-width part, then flags, statistics,
+	// diagnostics, and, if {files} is not null, a path table, the distinct
+	// declarations, and the occurrences of each file in source order as
+	// ranges and declaration indexes. Call setLiveBytes before sending.
+	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
+			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
+		var w = WorkerFraming.start().putb(RESULT);
+		w.put_b32(id).put_b32(analyses).put_b32(uidNext).put_b64(0);
+		var flags = if(analysis.parsed, PARSED) | if(analysis.verified, VERIFIED) | if(files != null, OCCURRENCES);
+		w.putb(flags);
+		var s = analysis.stats;
+		w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
+		w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
+		w.put_sleb32(analysis.diagnostics.length);
+		for (d in analysis.diagnostics) {
+			putString(w, d.path);
+			w.put_sleb32(d.beginLine).put_sleb32(d.beginColumn).put_sleb32(d.endLine).put_sleb32(d.endColumn);
+			putString(w, d.kind);
+			putString(w, d.message);
+		}
+		if (files != null) encodeOccurrences(w, files);
+		return w;
+	}
+	// Fills in the live heap bytes of a result from {encodeResult} and returns its frame.
+	def finishResult(w: DataWriter, liveBytes: long) -> Range<byte> {
+		var end = w.end();
+		w.at(LIVE_BYTES_OFFSET).put_b64(liveBytes).at(end);
+		return WorkerFraming.finish(w);
+	}
+	private def encodeOccurrences(w: DataWriter, files: Array<(string, Array<AnalysisOccurrence>)>) {
+		var paths = Strings.newMap<int>(), pathList = Vector<string>.new();
+		var decls = HashMap<AnalysisDeclaration, int>.new(hashDeclaration, sameDeclaration);
+		var declList = Vector<AnalysisDeclaration>.new();
+		// The collector makes a declaration object per use; send each one once.
+		for (f in files) {
+			pathIndex(paths, pathList, f.0);
+			for (o in f.1) {
+				var d = o.declaration;
+				if (!decls.has(d)) {
+					decls[d] = declList.length;
+					declList.put(d);
+					pathIndex(paths, pathList, d.range.path);
+				}
+			}
+		}
+		w.put_sleb32(pathList.length);
+		for (i < pathList.length) putString(w, pathList[i]);
+		w.put_sleb32(declList.length);
+		for (i < declList.length) {
+			var d = declList[i];
+			w.putb(d.kind.tag);
+			putString(w, d.name);
+			w.put_sleb32(paths[d.range.path]);
+			putRange(w, d.range);
+		}
+		w.put_sleb32(files.length);
+		for (f in files) {
+			w.put_sleb32(paths[f.0]).put_sleb32(f.1.length);
+			for (o in f.1) {
+				putRange(w, o.range);
+				w.put_sleb32(decls[o.declaration]);
+			}
+		}
+	}
+	// Decodes a RESULT into the worker's state and a snapshot with
+	// {generation} for a request with {paths}. Returns null if malformed.
+	def decodeResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisWorkerResult {
+		var r = AnalysisWireReader.new(payload, RESULT);
+		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
+		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
+		var flags = r.readByte();
+		var stats = AnalysisSnapshotStats.new(r.readInt(), r.readInt(), r.readInt(), r.readInt(), uidNext, r.readInt(), r.readInt());
+		var diagnostics = Array<AnalysisDiagnostic>.new(r.readCount(7));
+		for (i < diagnostics.length) {
+			var path = r.readString();
+			var bl = r.readInt(), bc = r.readInt(), el = r.readInt(), ec = r.readInt();
+			var kind = r.readString();
+			diagnostics[i] = AnalysisDiagnostic.new(path, bl, bc, el, ec, kind, r.readString());
+		}
+		var hasOccurrences = (flags & OCCURRENCES) != 0;
+		var declarations: Array<AnalysisDeclaration> = [];
+		var table: Array<string> = [];
+		if (hasOccurrences) {
+			table = Array<string>.new(r.readCount(1));
+			for (i < table.length) table[i] = r.readString();
+			declarations = Array<AnalysisDeclaration>.new(r.readCount(7));
+			for (i < declarations.length) {
+				var kind = r.readKind(), name = r.readString(), path = r.readPath(table);
+				declarations[i] = AnalysisDeclaration.new(kind, name, r.readRange(path));
+			}
+		}
+		var snapshot = AnalysisSnapshot.new(generation, paths, (flags & PARSED) != 0,
+			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
+		if (hasOccurrences) {
+			for (n = r.readCount(2); n > 0 && r.ok(); n--) {
+				// Each occurrence is four range ints and a declaration index.
+				var path = r.readPath(table), count = r.readCount(5);
+				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count);
+				for (i < count) {
+					for (j < 4) ranges[4 * i + j] = r.readInt();
+					targets[i] = r.readTarget(declarations.length);
+				}
+				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets));
+			}
+		}
+		return if(r.finish(), AnalysisWorkerResult.new(id, state, snapshot));
+	}
+
+	private def declKinds() -> Array<AnalysisDeclKind> {
+		var kinds = Array<AnalysisDeclKind>.new(AnalysisDeclKind.count);
+		for (k in AnalysisDeclKind) kinds[k.tag] = k;
+		return kinds;
+	}
+	private def pathIndex(map: HashMap<string, int>, list: Vector<string>, path: string) {
+		if (!map.has(path)) {
+			map[path] = list.length;
+			list.put(path);
+		}
+	}
+	private def putString(w: DataWriter, s: string) {
+		if (s == null) w.put_sleb32(-1);
+		else w.put_sleb32(s.length).puta(s);
+	}
+	private def putRange(w: DataWriter, r: AnalysisRange) {
+		w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.endLine).put_sleb32(r.endColumn);
+	}
+	private def hashDeclaration(d: AnalysisDeclaration) -> int {
+		var r = d.range;
+		return Strings.hash(r.path) * 31 + r.beginLine * 1009 + r.beginColumn * 7 + d.kind.tag;
+	}
+	private def sameDeclaration(a: AnalysisDeclaration, b: AnalysisDeclaration) -> bool {
+		var x = a.range, y = b.range;
+		return a.kind == b.kind && Strings.equal(a.name, b.name) && Strings.equal(x.path, y.path)
+			&& x.beginLine == y.beginLine && x.beginColumn == y.beginColumn
+			&& x.endLine == y.endLine && x.endColumn == y.endColumn;
+	}
+}
+
+// The handshake a worker sends when it starts.
+class AnalysisWorkerHello(protocol: int, version: string, revision: string, heapBytes: long) { }
+
+// A decoded ANALYZE request.
+class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) { }
+
+// What a worker reports about itself with each result, for the restart policy.
+// {liveBytes} is measured after a collection, excluding the result itself.
+class AnalysisWorkerState(analyses: int, uidNext: int, liveBytes: long) { }
+
+// A decoded RESULT.
+class AnalysisWorkerResult(id: int, state: AnalysisWorkerState, snapshot: AnalysisSnapshot) { }
+
+// Reads one message, bounding every count and index by the bytes and tables
+// actually present, so that a malformed message is rejected without trapping.
+class AnalysisWireReader {
+	private var r: DataReader;
+
+	new(payload: Array<byte>, kind: byte) {
+		r = DataReader.new(payload);
+		if (r.read1() != kind) r.fail("unexpected message kind");
+	}
+	def ok() -> bool {
+		return r.ok;
+	}
+	// Returns true if the message was well formed and completely read.
+	def finish() -> bool {
+		return r.ok && r.done();
+	}
+	def readByte() -> byte {
+		return r.read1();
+	}
+	def readInt() -> int {
+		return r.read_sleb32();
+	}
+	def readLong() -> long {
+		return r.read_sleb64();
+	}
+	def readU32() -> int {
+		return int.view(r.read_u32());
+	}
+	def readU64() -> long {
+		return long.view(r.read_u64());
+	}
+	// A count of items, each of which takes at least {itemBytes} more bytes,
+	// so that a count can't make the reader allocate beyond the message's size.
+	def readCount(itemBytes: int) -> int {
+		var n = r.read_sleb32();
+		if (n < 0 || n > r.available() / itemBytes) {
+			r.fail("invalid count");
+			return 0;
+		}
+		return n;
+	}
+	def readString() -> string {
+		var n = r.read_sleb32();
+		if (n == -1) return null;
+		if (n < -1 || n > r.available()) {
+			r.fail("invalid string length");
+			return null;
+		}
+		return r.readN(n);
+	}
+	def readBytes() -> Array<byte> {
+		var n = readCount(1);
+		return if(r.ok, r.readN(n), []);
+	}
+	def readPath(table: Array<string>) -> string {
+		var i = r.read_sleb32();
+		if (u32.view(i) >= u32.view(table.length)) {
+			r.fail("invalid path index");
+			return null;
+		}
+		return table[i];
+	}
+	def readTarget(declarations: int) -> int {
+		var i = r.read_sleb32();
+		if (u32.view(i) >= u32.view(declarations)) {
+			r.fail("invalid declaration index");
+			return 0;
+		}
+		return i;
+	}
+	def readKind() -> AnalysisDeclKind {
+		var tag = r.read1();
+		if (tag >= AnalysisWire.DECL_KINDS.length) {
+			r.fail("invalid declaration kind");
+			return AnalysisDeclKind.LOCAL;
+		}
+		return AnalysisWire.DECL_KINDS[tag];
+	}
+	def readRange(path: string) -> AnalysisRange {
+		return AnalysisRange.new(path, r.read_sleb32(), r.read_sleb32(), r.read_sleb32(), r.read_sleb32());
+	}
+}

@@ -1,0 +1,155 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Host system calls that Virgil's {System} component lacks: pipes, process
+// creation, readiness polling, and signals. This is the x86-64 Linux version;
+// src/os/x86-64-darwin/HostOs.v3 declares the same members, and the Makefile
+// compiles only the file for the target. Failures return a negated errno.
+// See docs/decisions/0004-analysis-worker-process.md.
+component HostOs {
+	def EINTR = -4;
+	def EAGAIN = -11;
+	def SIGKILL = 9;
+	// Bits of a poll descriptor's events and revents.
+	def POLLIN = 0x1;
+	def POLLOUT = 0x4;
+	def POLLERR = 0x8;
+	def POLLHUP = 0x10;
+	def POLLNVAL = 0x20;
+	// Descriptors this component creates are numbered from here, above every
+	// descriptor that spawn() assigns in a child.
+	def MIN_FD = 10;
+
+	private def SYS_read = 0;
+	private def SYS_write = 1;
+	private def SYS_open = 2;
+	private def SYS_close = 3;
+	private def SYS_poll = 7;
+	private def SYS_rt_sigaction = 13;
+	private def SYS_setitimer = 38;
+	private def SYS_access = 21;
+	private def SYS_pipe = 22;
+	private def SYS_dup2 = 33;
+	private def SYS_fork = 57;
+	private def SYS_execve = 59;
+	private def SYS_exit = 60;
+	private def SYS_wait4 = 61;
+	private def SYS_kill = 62;
+	private def SYS_fcntl = 72;
+	private def SYS_readlink = 89;
+	private def F_SETFD = 2;
+	private def F_GETFL = 3;
+	private def F_SETFL = 4;
+	private def F_DUPFD_CLOEXEC = 1030;
+	private def O_NONBLOCK = 0x800;
+	private def O_CLOEXEC = 0x80000;
+	private def X_OK = 1;
+	private def ITIMER_REAL = 0;
+	private def SIGPIPE = 13;
+	private def SIG_IGN = 1L;
+
+	// Creates a pipe. Returns its read and write descriptors, both
+	// close-on-exec, or a negated errno as the first value.
+	def pipe() -> (int, int) {
+		var fds = Array<int>.new(2);
+		var r = sys(SYS_pipe, Pointer.atContents(fds));
+		if (r < 0) return (r, -1);
+		var read = moveUp(fds[0]), write = moveUp(fds[1]);
+		if (read < 0 || write < 0) {
+			if (read >= 0) close(read);
+			if (write >= 0) close(write);
+			return (if(read < 0, read, write), -1);
+		}
+		return (read, write);
+	}
+	// Opens /dev/null for reading, close-on-exec.
+	def openNull() -> int {
+		var fd = sys(SYS_open, (Pointer.atContents("/dev/null\x00"), O_CLOEXEC, 0));
+		return if(fd < 0, fd, moveUp(fd));
+	}
+	def setNonblocking(fd: int) -> bool {
+		var flags = sys(SYS_fcntl, (fd, F_GETFL, 0));
+		return flags >= 0 && sys(SYS_fcntl, (fd, F_SETFL, flags | O_NONBLOCK)) >= 0;
+	}
+	def close(fd: int) {
+		sys(SYS_close, fd);
+	}
+	// Returns the bytes read, 0 at the end of the input, or a negated errno.
+	def read(fd: int, buf: Range<byte>) -> int {
+		return sys(SYS_read, (fd, Pointer.atContents(buf), buf.length));
+	}
+	// Returns the bytes written or a negated errno.
+	def write(fd: int, buf: Range<byte>) -> int {
+		return sys(SYS_write, (fd, Pointer.atContents(buf), buf.length));
+	}
+	// Waits for events on {count} poll descriptors in {fds}, two ints each:
+	// the descriptor, then events in the low and revents in the high 16 bits.
+	def poll(fds: Array<int>, count: int, timeoutMs: int) -> int {
+		return sys(SYS_poll, (Pointer.atContents(fds), count, timeoutMs));
+	}
+	// Returns 0 if {path} (NUL-terminated) names a file this process may execute.
+	def checkExecutable(path: Array<byte>) -> int {
+		return sys(SYS_access, (Pointer.atContents(path), X_OK));
+	}
+	// Starts {args[0]} (each NUL-terminated) with an empty environment. In the
+	// child, descriptor i becomes {fds[i]} in increasing order of i, so no
+	// source may be a smaller i that is already reassigned. Every descriptor
+	// this component created is closed by execve. Returns the child's process
+	// ID or a negated errno. A child that cannot execute exits with status 127.
+	def spawn(args: Array<Array<byte>>, fds: Array<int>) -> int {
+		// Allocate before taking addresses: nothing may move until execve.
+		var argv = Array<Pointer>.new(args.length + 1), envp = Array<Pointer>.new(1);
+		for (i < args.length) argv[i] = Pointer.atContents(args[i]);
+		var pid = sys(SYS_fork, ());
+		if (pid != 0) return pid;
+		for (i < fds.length) {
+			if (fds[i] == i) sys(SYS_fcntl, (i, F_SETFD, 0));
+			else sys(SYS_dup2, (fds[i], i));
+		}
+		Linux.syscall(SYS_execve, (argv[0], Pointer.atContents(argv), Pointer.atContents(envp)));
+		Linux.syscall(SYS_exit, 127);
+		return 0;
+	}
+	def kill(pid: int, signal: int) -> int {
+		return sys(SYS_kill, (pid, signal));
+	}
+	// Waits for {pid} to exit and stores its wait status in {status[0]}.
+	def wait(pid: int, status: Array<int>) -> int {
+		while (true) {
+			var r = sys(SYS_wait4, (pid, Pointer.atContents(status), 0, Pointer.NULL));
+			if (r != EINTR) return r;
+		}
+		return 0;
+	}
+	// Ends this process with SIGALRM after {ms} milliseconds, unless called
+	// again first; 0 cancels.
+	def setAlarm(ms: int) {
+		var timer = Array<long>.new(4); // interval and value, each seconds and microseconds
+		timer[2] = ms / 1000;
+		timer[3] = (ms % 1000) * 1000;
+		sys(SYS_setitimer, (ITIMER_REAL, Pointer.atContents(timer), Pointer.NULL));
+	}
+	// Makes writes to a closed pipe fail with EPIPE instead of ending the process.
+	def ignoreSigpipe() {
+		var action = Array<long>.new(4); // handler, flags, restorer, mask
+		action[0] = SIG_IGN;
+		sys(SYS_rt_sigaction, (SIGPIPE, Pointer.atContents(action), Pointer.NULL, 8));
+	}
+	// The absolute path of this process's executable, or null.
+	def executablePath() -> string {
+		var buf = Array<byte>.new(4096);
+		var n = sys(SYS_readlink, (Pointer.atContents("/proc/self/exe\x00"), Pointer.atContents(buf), buf.length));
+		if (n <= 0 || n >= buf.length) return null;
+		return Arrays.range(buf, 0, n);
+	}
+
+	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.
+	private def moveUp(fd: int) -> int {
+		var moved = sys(SYS_fcntl, (fd, F_DUPFD_CLOEXEC, MIN_FD));
+		close(fd);
+		return moved;
+	}
+	private def sys<T>(number: int, args: T) -> int {
+		return int.view(Linux.syscall(number, args).0);
+	}
+}

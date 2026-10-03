@@ -12,15 +12,28 @@ AENEAS_SRC  = $(VIRGIL)/aeneas/src/*/*.v3 $(addprefix $(VIRGIL)/,$(AENEAS_DEPS))
 # Virgil libraries the server uses that Aeneas does not.
 VIRGIL_LIBS = $(VIRGIL)/lib/file/json/JsonParser.v3
 
-# src/main.v3 holds the entry point and must be passed first.
-SERVER_LIB  = $(filter-out src/main.v3,$(shell find src -name '*.v3' | sort))
+# The host target, as scripts/v3c.sh selects it. Exported so that every
+# compilation uses the same one. src/os/<target>/ holds its system calls.
+ifndef V3C_TARGET
+V3C_TARGET := $(shell scripts/v3c.sh -print-target 2>/dev/null)
+endif
+export V3C_TARGET
+OS_SRC      = $(sort $(wildcard src/os/$(V3C_TARGET)/*.v3))
+
+# src/main.v3 and src/worker/WorkerMain.v3 hold the entry points of the server
+# and the analysis worker, and must be passed first.
+ENTRY_SRC   = src/main.v3 src/worker/WorkerMain.v3
+SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(shell find src -name '*.v3' | sort)) $(OS_SRC)
+# The worker's heap, chosen from measurements in
+# docs/decisions/0004-analysis-worker-process.md. The server keeps the default.
+WORKER_HEAP ?= 384m
 # test/unit/main.v3 holds the test entry point and must be passed first.
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 
 .PHONY: all test check-virgil buildinfo clean
 
-all: $(BUILD)/virgil-lsp
+all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
 check-virgil:
 	@test -f $(VIRGIL)/aeneas/DEPS || { \
@@ -34,6 +47,11 @@ buildinfo: check-virgil
 $(BUILD)/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=virgil-lsp \
 	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
+# The server starts this executable from its own directory.
+$(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
+	$(V3C) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
+	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 $(BUILD)/unit-tests: buildinfo $(TEST_SRC) $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=unit-tests \
@@ -49,7 +67,8 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 	$(V3C) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
 	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
-test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
+# Unit and CLI tests start the worker next to their executables.
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(BUILD)/retain-probe
 	$(BUILD)/type-depth-probe
 	$(BUILD)/unit-tests

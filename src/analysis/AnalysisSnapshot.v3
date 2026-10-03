@@ -1,0 +1,79 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The result of one whole-program analysis as the server holds it: diagnostics,
+// declarations, and occurrences decoded from an analysis worker's message. It
+// references no compiler objects, so it stays usable after the worker that
+// produced it has crashed or been replaced. See
+// docs/decisions/0004-analysis-worker-process.md.
+class AnalysisSnapshot {
+	// Counts the snapshots one supervisor has produced, from 1.
+	def generation: int;
+	// The program's files in analysis order.
+	def paths: Array<string>;
+	def parsed: bool;	// parsing reported no errors, so verification ran
+	def verified: bool;	// parsing and verification both reported no errors
+	def diagnostics: Array<AnalysisDiagnostic>;
+	def stats: AnalysisSnapshotStats;
+	// True if the analysis collected occurrences; otherwise none are recorded.
+	def hasOccurrences: bool;
+	// Every declaration an occurrence resolves to, each once.
+	def declarations: Array<AnalysisDeclaration>;
+	private def files = Strings.newMap<AnalysisSnapshotFile>();
+
+	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) { }
+
+	// Records the occurrences of {path}, in source order (see AnalysisSnapshotFile).
+	def addFile(path: string, file: AnalysisSnapshotFile) {
+		files[path] = file;
+	}
+	// Source-declaration uses in {path}, as ProgramAnalysis.occurrences reports
+	// them. Each call returns a new array.
+	def occurrences(path: string) -> Array<AnalysisOccurrence> {
+		var file = files[path];
+		if (file == null) return [];
+		var result = Array<AnalysisOccurrence>.new(file.targets.length);
+		for (i < result.length) result[i] = AnalysisOccurrence.new(file.range(path, i), declarations[file.targets[i]]);
+		return result;
+	}
+	// The declaration that the identifier at compiler coordinates
+	// ({line}, {column}) in {path} resolves to, or null if there is none.
+	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
+		var file = files[path];
+		if (file == null) return null;
+		var i = file.find(line, column);
+		return if(i >= 0, declarations[file.targets[i]]);
+	}
+}
+
+// Measurements of the analysis that produced a snapshot, taken in the worker.
+// Fields that were not requested are -1.
+class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUsed: int,
+	uidNext: int, globalTypesAdded: int, globalTypeTotal: int) { }
+
+// The occurrences of one file, without an object per occurrence: {ranges} holds
+// the begin line, begin column, end line, and end column of occurrence i at
+// 4 * i, and {targets} holds its index in the snapshot's declarations.
+class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
+	def range(path: string, i: int) -> AnalysisRange {
+		var r = 4 * i;
+		return AnalysisRange.new(path, ranges[r], ranges[r + 1], ranges[r + 2], ranges[r + 3]);
+	}
+	// The index of the occurrence whose range contains the position, or -1.
+	def find(line: int, column: int) -> int {
+		// Identifier tokens do not overlap, so their exclusive ends are also
+		// in source order. Find the first token ending after the query point.
+		var low = 0, high = targets.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2, r = 4 * mid;
+			var endLine = ranges[r + 2], endColumn = ranges[r + 3];
+			if (endLine < line || (endLine == line && endColumn <= column)) low = mid + 1;
+			else high = mid;
+		}
+		if (low >= targets.length) return -1;
+		var r = 4 * low;
+		var beginLine = ranges[r], beginColumn = ranges[r + 1];
+		if (line < beginLine || (line == beginLine && column < beginColumn)) return -1;
+		return low;
+	}
+}

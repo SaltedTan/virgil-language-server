@@ -1,0 +1,76 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("WorkerFraming:round_trip_any_chunks", test_round_trip_any_chunks),
+	T("WorkerFraming:empty_payload", test_empty_payload),
+	T("WorkerFraming:oversized_header", test_oversized_header),
+	T("WorkerFraming:mid_frame", test_mid_frame),
+	()
+];
+
+def frame(payload: string) -> Range<byte> {
+	return WorkerFraming.finish(WorkerFraming.start().puta(payload));
+}
+// Feeds {input} to a reader in chunks of at most {chunk} bytes, as reads
+// from a pipe would arrive, and returns the payloads in order.
+def readAll(input: Array<byte>, chunk: int, max: int) -> (Vector<string>, WorkerFrameReader) {
+	var reader = WorkerFrameReader.new(max), result = Vector<string>.new();
+	var pos = 0;
+	while (pos < input.length) {
+		var space = reader.space();
+		if (space.length == 0) break;
+		var n = input.length - pos;
+		if (n > chunk) n = chunk;
+		if (n > space.length) n = space.length;
+		for (i < n) space[i] = input[pos + i];
+		pos += n;
+		var payload = reader.advance(n);
+		if (payload != null) result.put(payload);
+	}
+	return (result, reader);
+}
+
+def test_round_trip_any_chunks(t: Tester) {
+	var input = Arrays.concat(Ranges.dup(frame("first")), Arrays.concat(Ranges.dup(frame("")), Ranges.dup(frame("third payload"))));
+	t.asserti(5 + 4 + 0 + 4 + 13 + 4, input.length);
+	for (chunk in [1, 2, 3, 5, 7, input.length]) {
+		var r = readAll(input, chunk, 100);
+		t.asserti(3, r.0.length);
+		if (r.0.length != 3) return;
+		t.assert_string("first", r.0[0]);
+		t.assert_string("", r.0[1]);
+		t.assert_string("third payload", r.0[2]);
+		t.assertz(false, r.1.midFrame());
+		t.assert(r.1.error == null, "no error expected");
+	}
+}
+
+def test_empty_payload(t: Tester) {
+	var r = readAll(Ranges.dup(frame("")), 1, 0);
+	t.asserti(1, r.0.length);
+	t.assertz(false, r.1.midFrame());
+}
+
+def test_oversized_header(t: Tester) {
+	// A frame one byte over the limit, then a valid frame that must not be read.
+	var input = Arrays.concat(Ranges.dup(frame("abcdef")), Ranges.dup(frame("x")));
+	var r = readAll(input, 3, 5);
+	t.asserti(0, r.0.length);
+	t.assert_string("frame of 6 bytes exceeds the limit of 5 bytes", r.1.error);
+	t.asserti(0, r.1.space().length);
+	// A length with the top bit set is not a negative size.
+	var huge = "\x00\x00\x00\x80";
+	r = readAll(huge, 4, 5);
+	t.assert_string("frame of 2147483648 bytes exceeds the limit of 5 bytes", r.1.error);
+}
+
+def test_mid_frame(t: Tester) {
+	var input = Ranges.dup(frame("payload"));
+	for (cut < input.length) {
+		var r = readAll(Arrays.range(input, 0, cut), 2, 100);
+		t.asserti(0, r.0.length);
+		t.assertz(cut > 0, r.1.midFrame());
+	}
+}

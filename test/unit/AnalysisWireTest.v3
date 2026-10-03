@@ -1,0 +1,229 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisWire:hello_round_trip", test_hello_round_trip),
+	T("AnalysisWire:analyze_round_trip", test_analyze_round_trip),
+	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
+	T("AnalysisWire:result_with_errors", test_result_with_errors),
+	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
+	T("AnalysisWire:truncated_messages", test_truncated_messages),
+	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
+	T("AnalysisWire:wrong_kind", test_wrong_kind),
+	()
+];
+
+def SHAPES = "test/fixtures/analysis/two-file/shapes.v3";
+def MAIN = "test/fixtures/analysis/two-file/main.v3";
+def UNRESOLVED = "test/fixtures/analysis/unresolved/main.v3";
+def SYNTAX_ERROR = "test/fixtures/analysis/syntax-error/main.v3";
+
+def load(t: Tester, paths: Array<string>) -> Array<AnalysisSource> {
+	var sources = Array<AnalysisSource>.new(paths.length);
+	for (i < paths.length) {
+		var input = System.fileLoad(paths[i]);
+		if (input == null) {
+			t.fail1("cannot read %s; run the unit tests from the repository root", paths[i]);
+			return null;
+		}
+		sources[i] = AnalysisSource.new(paths[i], input);
+	}
+	return sources;
+}
+// The payload of a frame.
+def payloadOf(frame: Range<byte>) -> Array<byte> {
+	return Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]);
+}
+// Encodes {analysis} as a worker would, with every distinct path's occurrences
+// if {occurrences}, and decodes it as the server would.
+def roundTrip(sources: Array<AnalysisSource>, analysis: ProgramAnalysis, occurrences: bool) -> (Array<byte>, AnalysisWorkerResult) {
+	var paths = Array<string>.new(sources.length);
+	for (i < paths.length) paths[i] = sources[i].path;
+	var files: Array<(string, Array<AnalysisOccurrence>)>;
+	if (occurrences) {
+		var list = Vector<(string, Array<AnalysisOccurrence>)>.new();
+		for (p in paths) list.put((p, analysis.occurrences(p)));
+		files = list.extract();
+	}
+	var w = AnalysisWire.encodeResult(7, 3, 4567, analysis, if(occurrences, 12, -1), 42, files);
+	var payload = payloadOf(AnalysisWire.finishResult(w, 123456789012L));
+	return (payload, AnalysisWire.decodeResult(payload, 5, paths));
+}
+def render(d: AnalysisDeclaration) -> string {
+	return if(d == null, "null", d.render(StringBuilder.new()).toString());
+}
+
+def test_hello_round_trip(t: Tester) {
+	var hello = AnalysisWire.decodeHello(payloadOf(AnalysisWire.encodeHello("1.2.3", "abc-dirty", 402653184L)));
+	if (hello == null) return t.fail("hello did not decode");
+	t.asserti(AnalysisWire.PROTOCOL_VERSION, hello.protocol);
+	t.assert_string("1.2.3", hello.version);
+	t.assert_string("abc-dirty", hello.revision);
+	t.assertl(402653184L, hello.heapBytes);
+}
+
+def test_analyze_round_trip(t: Tester) {
+	var sources = [AnalysisSource.new("a.v3", "class A { }\n"), AnalysisSource.new("empty.v3", null),
+		AnalysisSource.new(null, "\x00\xFF")];
+	var flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
+	var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(99, flags, 2500, sources)));
+	if (r == null) return t.fail("request did not decode");
+	t.asserti(99, r.id);
+	t.asserti(flags, r.flags);
+	t.asserti(2500, r.timeoutMs);
+	t.asserti(3, r.sources.length);
+	t.assert_string("a.v3", r.sources[0].path);
+	t.assert_string("class A { }\n", r.sources[0].input);
+	// A missing input is sent as empty bytes, never read from disk.
+	t.asserti(0, r.sources[1].input.length);
+	t.assert(r.sources[2].path == null, "null path");
+	t.assert_string("\x00\xFF", r.sources[2].input);
+}
+
+// The snapshot answers every query as the analysis it was encoded from does.
+def test_result_matches_analysis(t: Tester) {
+	var sources = load(t, [SHAPES, MAIN]);
+	if (sources == null) return;
+	var analysis = AeneasAdapter.analyzeProgram(sources, false);
+	var rt = roundTrip(sources, analysis, true), result = rt.1;
+	if (result == null) return t.fail("result did not decode");
+	t.asserti(7, result.id);
+	t.asserti(3, result.state.analyses);
+	t.asserti(4567, result.state.uidNext);
+	t.assertl(123456789012L, result.state.liveBytes);
+	var s = result.snapshot;
+	t.asserti(5, s.generation);
+	t.assertz(true, s.parsed);
+	t.assertz(true, s.verified);
+	t.assertz(true, s.hasOccurrences);
+	t.asserti(2, s.paths.length);
+	t.asserti(analysis.stats.parseUs, s.stats.parseUs);
+	t.asserti(analysis.stats.verifyUs, s.stats.verifyUs);
+	t.asserti(12, s.stats.collectUs);
+	t.asserti(analysis.stats.uidsUsed, s.stats.uidsUsed);
+	t.asserti(4567, s.stats.uidNext);
+	t.asserti(-1, s.stats.globalTypesAdded);
+	t.asserti(42, s.stats.globalTypeTotal);
+	var count = 0;
+	for (path in [SHAPES, MAIN]) {
+		var want = analysis.occurrences(path), got = s.occurrences(path);
+		t.asserti(want.length, got.length);
+		if (want.length != got.length) return;
+		count += got.length;
+		for (i < want.length) {
+			t.assert_string(want[i].toString(), got[i].toString());
+			// Every column of every use, and the column just past it.
+			var r = want[i].range;
+			for (c = r.beginColumn - 1; c <= r.endColumn; c++) {
+				t.assert_string(render(analysis.definitionAt(path, r.beginLine, c)), render(s.definitionAt(path, r.beginLine, c)));
+			}
+		}
+	}
+	t.asserti(13, count);
+	// Each distinct declaration is sent once.
+	t.asserti(9, s.declarations.length);
+	t.assert(s.definitionAt("other.v3", 1, 1) == null, "unknown path");
+	t.asserti(0, s.occurrences("other.v3").length);
+}
+
+def test_result_with_errors(t: Tester) {
+	for (paths in [[SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
+		var sources = load(t, paths);
+		if (sources == null) return;
+		var analysis = AeneasAdapter.analyzeProgram(sources, true);
+		var r = roundTrip(sources, analysis, true).1;
+		if (r == null) return t.fail("result did not decode");
+		var s = r.snapshot;
+		t.assertz(analysis.parsed, s.parsed);
+		t.assertz(false, s.verified);
+		t.asserti(analysis.stats.globalTypesAdded, s.stats.globalTypesAdded);
+		t.asserti(analysis.diagnostics.length, s.diagnostics.length);
+		for (i < s.diagnostics.length) {
+			t.assert_string(analysis.diagnostics[i].toString(), s.diagnostics[i].toString());
+		}
+		for (p in paths) t.asserti(analysis.occurrences(p).length, s.occurrences(p).length);
+	}
+}
+
+def test_result_without_occurrences(t: Tester) {
+	var sources = load(t, [SHAPES, MAIN]);
+	if (sources == null) return;
+	var r = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, false), false).1;
+	if (r == null) return t.fail("result did not decode");
+	var s = r.snapshot;
+	t.assertz(false, s.hasOccurrences);
+	t.asserti(-1, s.stats.collectUs);
+	t.asserti(0, s.declarations.length);
+	t.asserti(0, s.occurrences(MAIN).length);
+	t.assert(s.definitionAt(MAIN, 4, 25) == null, "no occurrences were sent");
+}
+
+// A message cut short anywhere is rejected, without trapping.
+def test_truncated_messages(t: Tester) {
+	var sources = load(t, [SHAPES, MAIN]);
+	if (sources == null) return;
+	var paths = [SHAPES, MAIN];
+	var result = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, false), true).0;
+	for (n < result.length) {
+		if (AnalysisWire.decodeResult(Arrays.range(result, 0, n), 1, paths) != null) return t.fail1("decoded a result cut to %d bytes", n);
+	}
+	var hello = payloadOf(AnalysisWire.encodeHello("1", "r", 1L));
+	for (n < hello.length) {
+		if (AnalysisWire.decodeHello(Arrays.range(hello, 0, n)) != null) return t.fail1("decoded a hello cut to %d bytes", n);
+	}
+	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, sources));
+	for (n < request.length) {
+		if (AnalysisWire.decodeAnalyze(Arrays.range(request, 0, n)) != null) return t.fail1("decoded a request cut to %d bytes", n);
+	}
+	// Trailing bytes are also an error.
+	t.assert(AnalysisWire.decodeHello(Arrays.concat(hello, "x")) == null, "trailing byte");
+}
+
+// Counts and indexes beyond the message are rejected before allocating.
+def test_invalid_counts_and_indexes(t: Tester) {
+	// A request claiming a billion files.
+	var w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(1000000000);
+	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "file count");
+	// A file whose contents are longer than the message.
+	w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(1);
+	w.put_sleb32(1).putb('a').put_sleb32(100).putb('x');
+	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "content length");
+	// Results with a huge diagnostic count, a bad path index, a bad declaration
+	// kind, and an occurrence pointing past the declarations.
+	t.assert(AnalysisWire.decodeResult(result(1000000000, null), 1, []) == null, "diagnostic count");
+	t.assert(AnalysisWire.decodeResult(result(0, declaration(0, 5)), 1, []) == null, "path index");
+	t.assert(AnalysisWire.decodeResult(result(0, declaration(200, 0)), 1, []) == null, "declaration kind");
+	var occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
+	occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2).put_sleb32(1);
+	t.assert(AnalysisWire.decodeResult(result(0, occurrences), 1, []) == null, "declaration index");
+	// The same occurrence, pointing at declaration 0, is accepted.
+	occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
+	occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2).put_sleb32(0);
+	var r = AnalysisWire.decodeResult(result(0, occurrences), 1, []);
+	if (r == null) return t.fail("valid result was rejected");
+	t.assert_string("LOCAL x @ p.v3:1:1-1:2", render(r.snapshot.definitionAt("p.v3", 1, 1)));
+}
+// A result with {diagnostics} as its diagnostic count and, if {occurrences}
+// is not null, those bytes as its occurrence section.
+def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
+	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0);
+	w.putb(if(occurrences != null, 4 | 1, 1));
+	for (i < 6) w.put_sleb32(-1);
+	w.put_sleb32(diagnostics);
+	if (occurrences != null) w.putr(occurrences.alias());
+	return w.extract();
+}
+// A path table with "p.v3" and one declaration "x" with {kind} and {path}.
+def declaration(kind: int, path: int) -> DataWriter {
+	var w = DataWriter.new().put_sleb32(1).put_sleb32(4).puta("p.v3");
+	w.put_sleb32(1).putb(kind).put_sleb32(1).putb('x').put_sleb32(path);
+	return w.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2);
+}
+
+def test_wrong_kind(t: Tester) {
+	var hello = payloadOf(AnalysisWire.encodeHello("1", "r", 1L));
+	t.assert(AnalysisWire.decodeAnalyze(hello) == null, "hello is not a request");
+	t.assert(AnalysisWire.decodeResult(hello, 1, []) == null, "hello is not a result");
+	t.assert(AnalysisWire.decodeHello([]) == null, "empty payload");
+}

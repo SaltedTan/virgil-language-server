@@ -1,0 +1,171 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Host system calls that Virgil's {System} component lacks: pipes, process
+// creation, readiness polling, and signals. This is the x86-64 Darwin version,
+// which also runs under Rosetta 2; src/os/x86-64-linux/HostOs.v3 declares the
+// same members, and the Makefile compiles only the file for the target. The
+// kernel reports a failure with the carry flag and a positive errno, which this
+// component returns negated. See docs/decisions/0004-analysis-worker-process.md.
+component HostOs {
+	def EINTR = -4;
+	def EAGAIN = -35;
+	def SIGKILL = 9;
+	// Bits of a poll descriptor's events and revents.
+	def POLLIN = 0x1;
+	def POLLOUT = 0x4;
+	def POLLERR = 0x8;
+	def POLLHUP = 0x10;
+	def POLLNVAL = 0x20;
+	// Descriptors this component creates are numbered from here, above every
+	// descriptor that spawn() assigns in a child.
+	def MIN_FD = 10;
+
+	private def SYS_exit = 0x2000001;
+	private def SYS_fork = 0x2000002;
+	private def SYS_read = 0x2000003;
+	private def SYS_write = 0x2000004;
+	private def SYS_open = 0x2000005;
+	private def SYS_close = 0x2000006;
+	private def SYS_wait4 = 0x2000007;
+	private def SYS_getpid = 0x2000014;
+	private def SYS_access = 0x2000021;
+	private def SYS_kill = 0x2000025;
+	private def SYS_pipe = 0x200002A;
+	private def SYS_sigaction = 0x200002E;
+	private def SYS_execve = 0x200003B;
+	private def SYS_setitimer = 0x2000053;
+	private def SYS_dup2 = 0x200005A;
+	private def SYS_fcntl = 0x200005C;
+	private def SYS_poll = 0x20000E6;
+	private def SYS_proc_info = 0x2000150;
+	private def F_SETFD = 2;
+	private def F_GETFL = 3;
+	private def F_SETFL = 4;
+	private def F_DUPFD_CLOEXEC = 67;
+	private def O_NONBLOCK = 0x4;
+	private def O_CLOEXEC = 0x1000000;
+	private def X_OK = 1;
+	private def ITIMER_REAL = 0;
+	private def SIGPIPE = 13;
+	private def SIG_IGN = 1L;
+	private def PROC_INFO_CALL_PIDINFO = 2;
+	private def PROC_PIDPATHINFO = 11;
+	private def CF_FLAG = 1L;
+
+	// Creates a pipe. Returns its read and write descriptors, both
+	// close-on-exec, or a negated errno as the first value.
+	def pipe() -> (int, int) {
+		// The descriptors come back in rax and rdx.
+		var t = Darwin.syscall(SYS_pipe, ());
+		if ((t.2 & CF_FLAG) != 0) return (int.view(-t.0), -1);
+		var read = moveUp(int.view(t.0)), write = moveUp(int.view(t.1));
+		if (read < 0 || write < 0) {
+			if (read >= 0) close(read);
+			if (write >= 0) close(write);
+			return (if(read < 0, read, write), -1);
+		}
+		return (read, write);
+	}
+	// Opens /dev/null for reading, close-on-exec.
+	def openNull() -> int {
+		var fd = sys(SYS_open, (Pointer.atContents("/dev/null\x00"), O_CLOEXEC, 0));
+		return if(fd < 0, fd, moveUp(fd));
+	}
+	def setNonblocking(fd: int) -> bool {
+		var flags = sys(SYS_fcntl, (fd, F_GETFL, 0));
+		return flags >= 0 && sys(SYS_fcntl, (fd, F_SETFL, flags | O_NONBLOCK)) >= 0;
+	}
+	def close(fd: int) {
+		sys(SYS_close, fd);
+	}
+	// Returns the bytes read, 0 at the end of the input, or a negated errno.
+	def read(fd: int, buf: Range<byte>) -> int {
+		return sys(SYS_read, (fd, Pointer.atContents(buf), buf.length));
+	}
+	// Returns the bytes written or a negated errno.
+	def write(fd: int, buf: Range<byte>) -> int {
+		return sys(SYS_write, (fd, Pointer.atContents(buf), buf.length));
+	}
+	// Waits for events on {count} poll descriptors in {fds}, two ints each:
+	// the descriptor, then events in the low and revents in the high 16 bits.
+	def poll(fds: Array<int>, count: int, timeoutMs: int) -> int {
+		return sys(SYS_poll, (Pointer.atContents(fds), count, timeoutMs));
+	}
+	// Returns 0 if {path} (NUL-terminated) names a file this process may execute.
+	def checkExecutable(path: Array<byte>) -> int {
+		return sys(SYS_access, (Pointer.atContents(path), X_OK));
+	}
+	// Starts {args[0]} (each NUL-terminated) with an empty environment. In the
+	// child, descriptor i becomes {fds[i]} in increasing order of i, so no
+	// source may be a smaller i that is already reassigned. Every descriptor
+	// this component created is closed by execve. Returns the child's process
+	// ID or a negated errno. A child that cannot execute exits with status 127.
+	def spawn(args: Array<Array<byte>>, fds: Array<int>) -> int {
+		// Allocate before taking addresses: nothing may move until execve.
+		var argv = Array<Pointer>.new(args.length + 1), envp = Array<Pointer>.new(1);
+		for (i < args.length) argv[i] = Pointer.atContents(args[i]);
+		// The raw system call returns the child's ID in rax in both processes;
+		// rdx is 1 in the child (as vendor/virgil/test/testexec/DarwinOS.v3 uses).
+		var t = Darwin.syscall(SYS_fork, ());
+		if ((t.2 & CF_FLAG) != 0) return int.view(-t.0);
+		if (t.1 == 0) return int.view(t.0);
+		for (i < fds.length) {
+			if (fds[i] == i) sys(SYS_fcntl, (i, F_SETFD, 0));
+			else sys(SYS_dup2, (fds[i], i));
+		}
+		Darwin.syscall(SYS_execve, (argv[0], Pointer.atContents(argv), Pointer.atContents(envp)));
+		Darwin.syscall(SYS_exit, 127);
+		return 0;
+	}
+	def kill(pid: int, signal: int) -> int {
+		return sys(SYS_kill, (pid, signal, 1)); // POSIX semantics
+	}
+	// Waits for {pid} to exit and stores its wait status in {status[0]}.
+	def wait(pid: int, status: Array<int>) -> int {
+		while (true) {
+			var r = sys(SYS_wait4, (pid, Pointer.atContents(status), 0, Pointer.NULL));
+			if (r != EINTR) return r;
+		}
+		return 0;
+	}
+	// Ends this process with SIGALRM after {ms} milliseconds, unless called
+	// again first; 0 cancels.
+	def setAlarm(ms: int) {
+		// Interval and value, each seconds and microseconds; the 4-byte
+		// microseconds are padded to 8 bytes.
+		var timer = Array<long>.new(4);
+		timer[2] = ms / 1000;
+		timer[3] = (ms % 1000) * 1000;
+		sys(SYS_setitimer, (ITIMER_REAL, Pointer.atContents(timer), Pointer.NULL));
+	}
+	// Makes writes to a closed pipe fail with EPIPE instead of ending the process.
+	def ignoreSigpipe() {
+		var action = Array<long>.new(3); // handler, trampoline, mask and flags
+		action[0] = SIG_IGN;
+		sys(SYS_sigaction, (SIGPIPE, Pointer.atContents(action), Pointer.NULL));
+	}
+	// The absolute path of this process's executable, or null. This is
+	// libproc's proc_pidpath(), which returns a NUL-terminated path.
+	def executablePath() -> string {
+		var buf = Array<byte>.new(4096); // PROC_PIDPATHINFO_MAXSIZE
+		var pid = sys(SYS_getpid, ());
+		var r = sys(SYS_proc_info, (PROC_INFO_CALL_PIDINFO, pid, PROC_PIDPATHINFO, 0L, Pointer.atContents(buf), buf.length));
+		if (r < 0) return null;
+		for (i < buf.length) {
+			if (buf[i] == 0) return if(i > 0, Arrays.range(buf, 0, i));
+		}
+		return null;
+	}
+
+	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.
+	private def moveUp(fd: int) -> int {
+		var moved = sys(SYS_fcntl, (fd, F_DUPFD_CLOEXEC, MIN_FD));
+		close(fd);
+		return moved;
+	}
+	private def sys<T>(number: int, args: T) -> int {
+		var t = Darwin.syscall(number, args);
+		return int.view(if((t.2 & CF_FLAG) != 0, -t.0, t.0));
+	}
+}

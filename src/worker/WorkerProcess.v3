@@ -1,0 +1,133 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// What a worker process's pipes produced.
+type WorkerEvent {
+	case None;				// nothing is complete yet
+	case Message(payload: Array<byte>);	// one complete frame
+	case Closed(reason: string);		// the process can't be used any more; reason may be null
+	case TimedOut;				// the caller's deadline passed first
+}
+
+// A running worker process and the server's ends of its pipes. Both pipes are
+// nonblocking, so a caller polls them (see {pollFds}) and never waits on a
+// process that has stopped reading or writing. See
+// docs/decisions/0004-analysis-worker-process.md.
+class WorkerProcess {
+	def pid: int;
+	private var requestFd: int;	// written by the server
+	private var resultFd: int;	// read by the server
+	private def reader = WorkerFrameReader.new(WorkerFraming.MAX_PAYLOAD);
+	private var output: Range<byte>;	// the unwritten part of the current frame
+
+	new(pid, requestFd, resultFd) { }
+
+	// Queues {frame} to be written as the pipe accepts it. A previous frame
+	// must have been written completely.
+	def send(frame: Range<byte>) {
+		output = frame;
+	}
+	// Returns true while part of a frame has not been written.
+	def sending() -> bool {
+		return output != null && output.length > 0;
+	}
+	// Writes poll descriptors for the pipes into {fds} at {index}, two ints
+	// each (see HostOs.poll), and returns how many it wrote.
+	def pollFds(fds: Array<int>, index: int) -> int {
+		fds[index] = resultFd;
+		fds[index + 1] = HostOs.POLLIN;
+		if (!sending()) return 1;
+		fds[index + 2] = requestFd;
+		fds[index + 3] = HostOs.POLLOUT;
+		return 2;
+	}
+	// Does the I/O that the pipes are ready for, after a poll of the
+	// descriptors from {pollFds}. Returns the first complete message, if any.
+	def onPoll() -> WorkerEvent {
+		while (sending()) {
+			var n = HostOs.write(requestFd, output);
+			if (n == HostOs.EAGAIN) break;
+			if (n == HostOs.EINTR) continue;
+			// EPIPE: the process stopped reading, usually because it died.
+			// Its exit is reported by the read side below.
+			if (n <= 0) {
+				output = null;
+				break;
+			}
+			output = output[n ...];
+		}
+		while (true) {
+			var space = reader.space();
+			if (space.length == 0) return WorkerEvent.Closed(reader.error);
+			var n = HostOs.read(resultFd, space);
+			if (n == HostOs.EAGAIN) return WorkerEvent.None;
+			if (n == HostOs.EINTR) continue;
+			if (n == 0) return WorkerEvent.Closed(null); // usually because it exited
+			if (n < 0) return WorkerEvent.Closed(Strings.format1("reading its result pipe failed (errno %d)", -n));
+			var payload = reader.advance(n);
+			if (payload != null) return WorkerEvent.Message(payload);
+		}
+		return WorkerEvent.None;
+	}
+	// Ends the process if it is still running, waits for it, and closes the
+	// pipes. Returns a description of how it ended, such as "exit status 255".
+	def terminate() -> string {
+		HostOs.close(requestFd);
+		HostOs.close(resultFd);
+		HostOs.kill(pid, HostOs.SIGKILL);
+		var status = Array<int>.new(1);
+		if (HostOs.wait(pid, status) < 0) return "an unknown status";
+		return WorkerProcesses.describeStatus(status[0]);
+	}
+}
+
+// Starting worker processes.
+component WorkerProcesses {
+	// Starts {path} as a worker. Returns the process, or null and the reason.
+	// The worker's standard input is /dev/null, its standard output goes to
+	// the server's standard error (never to the server's standard output), and
+	// descriptors 3 and 4 carry requests and results (AnalysisWire).
+	def start(path: string) -> (WorkerProcess, string) {
+		var file = Arrays.concat(path, "\x00");
+		var access = HostOs.checkExecutable(file);
+		if (access < 0) return (null, Strings.format2("cannot execute %s (errno %d)", path, -access));
+		var requests = HostOs.pipe(), results = HostOs.pipe(), input = HostOs.openNull();
+		if (requests.0 < 0 || results.0 < 0 || input < 0) {
+			closeAll([requests.0, requests.1, results.0, results.1, input]);
+			return (null, "cannot create pipes for the analysis worker");
+		}
+		// Descriptors 1 and 2 both become the server's standard error.
+		var fds = [input, 2, 2, requests.0, results.1];
+		var pid = HostOs.spawn([file, Arrays.concat(AnalysisWire.WORKER_ARG, "\x00")], fds);
+		closeAll([requests.0, results.1, input]);
+		if (pid < 0 || !HostOs.setNonblocking(requests.1) || !HostOs.setNonblocking(results.0)) {
+			if (pid > 0) {
+				HostOs.kill(pid, HostOs.SIGKILL);
+				HostOs.wait(pid, Array<int>.new(1));
+			}
+			closeAll([requests.1, results.0]);
+			return (null, Strings.format1("cannot start %s", path));
+		}
+		return (WorkerProcess.new(pid, requests.1, results.0), null);
+	}
+	// The worker executable in the running executable's directory, or null
+	// if this process can't find its own path.
+	def defaultPath() -> string {
+		var exe = HostOs.executablePath();
+		if (exe == null) return null;
+		var slash = exe.length - 1;
+		while (slash >= 0 && exe[slash] != '/') slash--;
+		return Strings.format2("%s%s", Arrays.range(exe, 0, slash + 1), AnalysisWire.WORKER_NAME);
+	}
+	// Describes a wait status from HostOs.wait.
+	def describeStatus(status: int) -> string {
+		var signal = status & 0x7F;
+		if (signal == 0) return Strings.format1("exit status %d", (status >> 8) & 0xFF);
+		return Strings.format1("signal %d", signal);
+	}
+	private def closeAll(fds: Array<int>) {
+		for (fd in fds) {
+			if (fd >= 0) HostOs.close(fd);
+		}
+	}
+}

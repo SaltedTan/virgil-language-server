@@ -1,0 +1,102 @@
+# 0004. Run whole-program analysis in a replaceable worker process
+
+- Status: Accepted
+- Date: 2026-10-03
+- Discussion: [#13](https://github.com/SaltedTan/virgil-language-server/issues/13)
+
+## Context
+
+The compiler spike ([#1](https://github.com/SaltedTan/virgil-language-server/issues/1), [PR #11](https://github.com/SaltedTan/virgil-language-server/pull/11)) found that whole-program analysis (`Compilation.parse()` and `verify()`) cannot run safely in the language server's process:
+
+- **Ordinary input can kill or hang the process.** Virgil has no exception handling, so a trap inside Aeneas ends the process. `def x: i32 = 0i;` (typed on the way to `0i32`) and `enum E { A(6) }` trap with `!NullCheckException`; `class S extends S { def f() { me; } }` loops forever. [Aeneas crash paths](../aeneas-crash-paths.md) lists the known inputs.
+- **Analyses leave process-wide state behind.** `UID.next` never resets, and verification of any program fails once it passes 2^29, which is about 16,500 analyses of the Aeneas sources. [#12](https://github.com/SaltedTan/virgil-language-server/issues/12) removed the type-cache retention that made the second such analysis run out of heap, but the adapter cannot reset the compiler in general.
+
+Two properties of the Virgil runtime shape the answer:
+
+- `System` has no way to create a process, so this needs raw system calls through `Linux.syscall` and `Darwin.syscall`.
+- The heap size is fixed when an executable is compiled (`-heap-size`, 200 MB by default in `bin/v3c-*`). The semispace collector allocates through its whole from-space before each collection, so a busy process's resident memory approaches the configured heap.
+
+## Decision
+
+### Processes
+
+1. **Two executables from the same sources.** `virgil-lsp` is the server. `virgil-lsp-worker` runs analyses and nothing else. Its entry point is `src/worker/WorkerMain.v3`, and it is compiled with its own heap (`WORKER_HEAP` in the `Makefile`, 384 MB; see [Measurements](#measurements)). The server keeps the default heap.
+2. **The server never parses or verifies a whole program.** Only the worker calls `AeneasAdapter.analyzeProgram`, and so `Compilation.parse()` and `verify()`. Virgil compiles only reachable code, so the verifier isn't even in the server executable (306 KB, against 607 KB for the worker, on Linux). Single-file parsing (`parseFile`, document symbols) stays in the server. It provides syntax diagnostics while a worker restarts, and has its own, smaller set of [known crash paths](../aeneas-crash-paths.md).
+3. **Starting a worker.** The server looks for `virgil-lsp-worker` in its own executable's directory. On Linux it reads `/proc/self/exe`; on macOS it calls `proc_info` with `PROC_PIDPATHINFO`, as `proc_pidpath()` does. `src/os/<target>/HostOs.v3` holds the system calls for each target, and the `Makefile` compiles the one for the host. The server creates two pipes and moves their descriptors to 10 and above, close-on-exec. It then forks and `execve`s the worker with the argument `--serve` and an empty environment. In the child, descriptor 0 is `/dev/null`, descriptors 1 and 2 are the server's standard error, and descriptors 3 and 4 carry requests and results. A worker can therefore never write to the server's standard output, which belongs to the protocol. The server checks that the file is executable before forking; a child that still cannot `execve` exits with status 127. The supervising process ignores `SIGPIPE`, so that writing to a dead worker fails with `EPIPE` instead of killing it.
+4. **Handshake.** A worker starts by sending its protocol version, server version, source revision, and heap size. The server refuses a worker whose version or revision differs from its own (a stale or mismatched executable) and reports why.
+
+### Channel and framing
+
+Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions, and `AnalysisWire.PROTOCOL_VERSION` changes with the layout.
+
+| Message | Direction | Contents |
+| --- | --- | --- |
+| `HELLO` | worker → server | Protocol version, server version, source revision, heap bytes |
+| `ANALYZE` | server → worker | Request ID, flags (collect occurrences, collect statistics), the server's time limit, then each file's path and bytes, in program order |
+| `RESULT` | worker → server | Request ID, and the worker's analysis count, UID counter, and live heap; parse/verify flags and statistics; diagnostics; a path table; each distinct declaration once; each file's occurrences as ranges and declaration indexes |
+
+The server's pipe ends are nonblocking, and it polls them against the analysis deadline. It therefore never waits on a worker that has stopped reading or writing. The decoder bounds every count by the bytes that remain in the message, and every index by its table. A malformed message is rejected without trapping, and the worker that sent it is killed.
+
+### What crosses the boundary
+
+Requests carry source bytes that the server has read: open-document overlays, or files from disk. The worker never reads a file. Results carry only server-owned snapshot data: diagnostics, declaration and occurrence indexes, and measurements. No `Program`, syntax tree, or other compiler object leaves the worker. The server decodes a result into an `AnalysisSnapshot` (`src/analysis/AnalysisSnapshot.v3`), which keeps occurrences as int arrays rather than an object per use. A snapshot answers `occurrences(path)` and `definitionAt(path, line, column)` the way `ProgramAnalysis` does, and stays valid after its worker has exited. Hover text, and any other data the server needs later, will join `RESULT` with a protocol version change when the feature that uses it lands (M4).
+
+### Restart policy
+
+Analyses run one at a time. A worker starts on demand, before an analysis, and is replaced (killed with `SIGKILL` and reaped) when any of these happens:
+
+| Trigger | Limit (`AnalysisWorkerLimits`) | Outcome of that analysis |
+| --- | --- | --- |
+| It exits, traps, or closes its result pipe during an analysis | — | Failed: crashed |
+| An analysis runs past the wall-clock limit, or a start sends no handshake in time | 10 s each | Failed: timed out, or unavailable for a start |
+| It sends a malformed message | — | Failed: malformed |
+| After a completed analysis, its analysis count reaches the limit | 100 | Completed |
+| After a completed analysis, its UID counter reaches the limit | 2^28 | Completed |
+| After a completed analysis, its live heap (after a forced collection, excluding the result) reaches the limit | ⅛ of its heap (48 MB) | Completed |
+
+Each worker also arms a timer (`setitimer`) for twice the time limit plus a second while it analyzes, and `SIGALRM` ends it. The server's limit normally expires first. The timer matters when the supervising process dies during an analysis: an idle orphan reads the end of its request pipe and exits, but one caught in a compiler loop would otherwise run forever.
+
+A request larger than the frame limit fails before anything is sent. If no worker can be started, the analysis fails as unavailable, and the next analysis tries again. Failures are logged to standard error as warnings, with the process ID and how the process ended. Routine replacements get an informational line. A failure never stops the supervising process. The most recent snapshot stays current and answers queries, and the next analysis runs in a new worker. The worker inherits standard error, so its trap message and stack trace appear in the server's log.
+
+The UID limit leaves 2^28 IDs of headroom, while one analysis of the Aeneas sources uses 32,462. The count limit is a backstop against growth that the live-heap check cannot see, such as the UID counter itself; replacing a worker costs well under a millisecond. The live-heap limit catches a retention leak long before it can overflow the heap: without #12's cleanup, one analysis of the Aeneas sources retained about 70 MB.
+
+### First clients
+
+`virgil-lsp analyze` is the first client: every analysis it runs, including `--repeat` runs, goes through the supervisor. The stdio server's integration follows. Until the project model (M3) can decide which files form a program, that integration will add a development-only request, `virgil-lsp/analyze`, that is not advertised as a capability. It is answered when the worker finishes. The stdio loop must then poll standard input and the worker's pipes together, so that requests are answered while an analysis runs.
+
+### Measurements
+
+Linux x86-64, Intel Core i7-14700KF, `virgil-lsp analyze --stats --bindings --repeat=10` on the Aeneas sources and their dependencies (198 files, 80,285 lines, 2.9 MB). The server's heap was the default 200 MB in every row; only the worker's heap varied. Each analysis collected 162,929 bindings, and the result frame was 2.0 MB. The parse and verify columns are for analysis 10.
+
+| Worker heap | Parse | Verify | Collect bindings (runs 1 / 2 / 10) | Wall time (10 runs) | Peak RSS |
+| --- | ---: | ---: | --- | ---: | ---: |
+| 200m | 23 ms | 140 ms | 253 / 249 / 247 ms | 7.09 s | 205 MB |
+| 256m | 23 ms | 43 ms | 209 / 184 / 166 ms | 5.05 s | 247 MB |
+| 384m | 23 ms | 45 ms | 32 / 28 / 21 ms | 3.54 s | 328 MB |
+| 512m | 23 ms | 33 ms | 29 / 28 / 17 ms | 3.49 s | 329 MB |
+| 768m | 23 ms | 44 ms | 32 / 29 / 21 ms | 3.56 s | 329 MB |
+
+Run in process before the worker existed, the same analysis ran out of heap at 128 MB and 160 MB, so its peak live heap is between 80 and 100 MB. At 200 MB and 256 MB the collector dominates. From 384 MB up, more heap makes no measurable difference, and the resident memory a worker reaches still grows with its heap. 384 MB therefore leaves about twice the peak live heap of the largest Virgil program available. Other measurements:
+
+- Over 300 analyses of the Aeneas sources in one worker, the live heap after each analysis stayed at 164,163 bytes, and the UID counter grew by 32,462 per analysis.
+- Replacing the worker after every analysis of a two-file program cost about 0.6 ms per replacement (200 analyses: 0.14 s, against 0.02 s with one worker).
+
+## Consequences
+
+- A compiler trap, an endless loop, or a leak ends or slows only the worker. The supervisor reports it, keeps the last snapshot, and continues.
+- Releases must ship `virgil-lsp-worker` next to `virgil-lsp` (M7). The handshake rejects a pair from different builds.
+- Each new host target needs a `src/os/<target>/HostOs.v3`.
+- Every analysis copies its sources into the worker and its results back. For the Aeneas sources that is 2.9 MB and 2.0 MB, which takes a few milliseconds.
+- A worker's resident memory approaches 384 MB on programs the size of the Aeneas sources. A program needing more than about 190 MB of live heap, about twice the Aeneas sources, overflows the worker heap. Every such analysis is reported as a crash until `WORKER_HEAP` is raised.
+- A result can be at most 16 MiB. That bounds what decoding it allocates in the server's 200 MB heap. The stdio integration must budget for snapshots alongside the [document store's headroom](../architecture.md#document-store).
+- The time limit uses `System.ticksMs()`, which reads the wall clock (`gettimeofday`). A clock change during an analysis can shorten or lengthen the limit.
+- `analyze` no longer traps when the compiler does. The worker's trap message and stack trace still appear on standard error, followed by the supervisor's report and exit status 1.
+
+## Alternatives considered
+
+- **Keep analysis in the server with adapter workarounds only.** This is the interim option from #12. It leaves the crash, hang, and UID paths.
+- **One executable that starts itself as the worker.** This is simpler to ship, but the heap is fixed per executable. The server's resident memory would grow to the worker's 384 MB instead of staying within its own 200 MB.
+- **`fork` without `execve`.** This avoids finding an executable, but the child has the server's heap size and a copy of its heap, including open documents. `execve` gives each worker a fresh compiler state and its own heap.
+- **Threads.** Virgil has none, and a trap would end the whole process anyway.
+- **JSON over the pipe.** The server already parses JSON, but its parser caps values at 500,000 per message and costs 60 to 185 bytes of heap per value. One analysis of the Aeneas sources already reports 162,929 bindings, each with a range and a declaration.
+- **Keeping the program in a long-lived worker and answering queries there.** A crash or a replacement would lose the results with the worker. The policy above depends on the server owning its snapshot.
