@@ -10,6 +10,8 @@ EXE=${1:?usage: run.sh <path-to-virgil-lsp>}
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 FIXTURES=$ROOT/test/fixtures
 TMP=$(mktemp -d)
+# Executable discovery resolves symlinks (e.g. /var to /private/var on macOS).
+TMP=$(cd "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0
