@@ -165,7 +165,9 @@ def expected_snapshot(generation, uris, version=None, current=True):
 
 
 def memory_headroom(exe, work):
-    s = Session(exe, "--worker-timeout-ms=5000")
+    # Aeneas analyses keep the default time limit, which has headroom on the
+    # slowest CI runner; the hang checks use a short limit in sessions of their own.
+    s = Session(exe)
     try:
         s.initialize()
         uris = aeneas_uris()
@@ -207,8 +209,23 @@ def memory_headroom(exe, work):
         error(s, "aggregate-budget", -32602, "size budget")
         s.snapshot(good)
 
-        first = s.result(s.analyze(uris))
-        assert first == expected_snapshot(4, uris), first
+        final = s.result(s.analyze(uris))
+        assert final == expected_snapshot(4, uris), final
+        s.shutdown()
+        assert "longer than the limit of 4194304 bytes" in s.logs()
+        assert "HeapOverflow" not in s.logs(), s.logs()
+    finally:
+        s.close()
+
+
+def large_hang(exe, work):
+    s = Session(exe, "--worker-timeout-ms=5000")
+    try:
+        s.initialize()
+        shapes = Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri()
+        first = s.result(s.analyze([shapes]))
+        assert first == expected_snapshot(1, [shapes]), first
+        source = work / "large-hang.v3"
         source.write_text("class S extends S { def f() { me; } }\n//" + " " * (3 * 1024 * 1024))
         send_payload(s, large_payload("virgil-lsp/analyze", "large-hang", {"uris": [source.as_uri()]}))
         send_payload(s, large_payload("test/ping", "large-ping"))
@@ -218,17 +235,16 @@ def memory_headroom(exe, work):
         assert s.result("snapshot-during-hang") == first
         error(s, "large-hang", -32603, "timed out")
         s.snapshot(first)
-        final = s.result(s.analyze([Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri()]))
-        assert final == expected_snapshot(5, [Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri()]), final
+        final = s.result(s.analyze([shapes]))
+        assert final == expected_snapshot(2, [shapes]), final
         s.shutdown()
-        assert "longer than the limit of 4194304 bytes" in s.logs()
-        assert "HeapOverflow" not in s.logs(), s.logs()
+        assert "time limit of 5000 ms" in s.logs(), s.logs()
     finally:
         s.close()
 
 
 def exercise(exe, work):
-    s = Session(exe, "--worker-timeout-ms=5000", "--worker-max-analyses=8")
+    s = Session(exe, "--worker-timeout-ms=5000")
     try:
         uri = (work / "overlay space.v3").as_uri()
         (work / "overlay space.v3").write_text("def disk: i32 = false;\n")
@@ -299,16 +315,6 @@ def exercise(exe, work):
         good = s.result(s.analyze(["untitled:worker-test"]))
         assert good == expected_snapshot(4, ["untitled:worker-test"], version=1), good
 
-        # Match the CLI's Aeneas file set: 20 full parse/verify/index analyses,
-        # crossing multiple forced replacements while stdio keeps responding.
-        uris = aeneas_uris()
-        for generation in range(5, 25):
-            pending = s.analyze(uris)
-            s.ping()
-            current = s.result(pending)
-            assert current == expected_snapshot(generation, uris), current
-            s.snapshot(current)
-
         pending = s.analyze([hang])
         shutdown = s.send("shutdown")
         error(s, pending, -32800, "shutting down")
@@ -322,7 +328,37 @@ def exercise(exe, work):
         log = s.logs()
         assert "NullCheckException" in log and "snapshot 2 is kept" in log, log
         assert "time limit of 5000 ms" in log and "snapshot 3 is kept" in log, log
-        assert log.count("after 8 analyses (limit 8)") >= 2, log
+    except BaseException:
+        print(json.dumps(s.transcript, indent=2), file=sys.stderr)
+        print(s.logs(), file=sys.stderr)
+        raise
+    finally:
+        s.close()
+
+
+def aeneas_repeats(exe):
+    # Match the CLI's Aeneas file set and default time limit: 20 full
+    # parse/verify/index analyses, crossing multiple forced replacements while
+    # stdio keeps responding. Report each analysis's time against the limit.
+    s = Session(exe, "--worker-max-analyses=8")
+    try:
+        s.initialize()
+        uris = aeneas_uris()
+        times = []
+        for generation in range(1, 21):
+            start = time.monotonic()
+            pending = s.analyze(uris)
+            s.ping()
+            current = s.result(pending)
+            times.append(time.monotonic() - start)
+            assert current == expected_snapshot(generation, uris), current
+            s.snapshot(current)
+        s.shutdown()
+        log = s.logs()
+        assert log.count("after 8 analyses (limit 8)") == 2, log
+        ms = sorted(round(t * 1000) for t in times)
+        print(f"protocol worker: {len(ms)} Aeneas analyses took {ms[0]}-{ms[-1]} ms "
+              f"(median {ms[len(ms) // 2]} ms) against the default limit of 10000 ms")
     except BaseException:
         print(json.dumps(s.transcript, indent=2), file=sys.stderr)
         print(s.logs(), file=sys.stderr)
@@ -370,8 +406,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="virgil-worker-protocol-") as directory:
         work = Path(directory).resolve()
         exercise(exe, work)
+        aeneas_repeats(exe)
         startup_and_eof(exe, work)
         memory_headroom(exe, work)
+        large_hang(exe, work)
     print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, shutdown, startup and memory headroom passed")
 
 
