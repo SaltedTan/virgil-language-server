@@ -7,8 +7,8 @@
 // expressed in server-owned types so that compiler changes stay contained here.
 
 // A compiler diagnostic. One-based compiler coordinates remain available for
-// CLI reports. Single-file parsing also supplies exact UTF-8 byte offsets;
-// -1 means unavailable (including whole-program diagnostics). LSP consumers
+// CLI reports. Single-file and whole-program diagnostics also supply exact
+// UTF-8 byte offsets; -1 means unavailable (no captured source). LSP consumers
 // use offsets, since compiler columns have comment-dependent rules. {path}
 // is null for diagnostics that are not attached to a source file.
 class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
@@ -138,7 +138,7 @@ component AeneasAdapter {
 	// Parse one file in isolation. Does not verify, initialize, or generate code.
 	def parseFile(path: string, input: Array<byte>) -> FileParseResult {
 		var errors = AnalysisParseErrors.new(MAX_ERRORS);
-		var file = AnalysisSingleFileParser.parse(path, input, errors, null);
+		var file = AnalysisSingleFileParser.parse(path, input, errors, null, TypeCache.new(), null);
 		var decls = file.classes.length + file.components.length + file.enums.length
 			+ file.layouts.length + file.packings.length;
 		var diagnostics = convertErrors(path, errors);
@@ -158,7 +158,7 @@ component AeneasAdapter {
 		for (i < input.length) normalized[i] = if(input[i] == '\r',
 			if(i + 1 < input.length && input[i + 1] == '\n', ' ', '\n'), input[i]);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
-		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax);
+		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
 		if (errors.numErrors > 0) return [];
 		return DocumentSymbolCollector.new(file, syntax).collect();
 	}
@@ -177,7 +177,7 @@ component AeneasAdapter {
 	}
 	// Parse and verify a whole program from in-memory sources, in the given
 	// order. Builds a fresh {Program} each time and runs only
-	// {Compilation.parse()} and, if parsing succeeded, {Compilation.verify()}.
+	// the shared parser and, if parsing succeeded, {Compilation.verify()}.
 	// Never initializes, runs reachability, or generates code.
 	// {collectStats} enables the expensive process-wide type-cache counts.
 	def analyzeProgram(sources: Array<AnalysisSource>, collectStats: bool) -> ProgramAnalysis {
@@ -191,13 +191,15 @@ component AeneasAdapter {
 		prog.inputs = Array<Array<byte>>.new(sources.length);
 		for (i < sources.length) {
 			prog.files[i] = sources[i].path;
-			// A null input would make Compilation.parse() read the file from disk.
+			// Treat a missing capture as empty source to keep analysis independent of disk.
 			var input = sources[i].input;
 			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
 		}
 		var compilation = Compilation.new(compiler, prog);
 		var t0 = System.ticksUs();
-		var parsed = compilation.parse();
+		var coordinates = AnalysisSourceCoordinates.new(sources);
+		var parseErrors = parseProgram(prog, coordinates);
+		var parsed = prog.ERROR.noErrors;
 		var t1 = System.ticksUs();
 		// Compilation.compile() skips verification after a parse error, and so
 		// does the adapter: the parser stops at the first error in a file, and
@@ -207,9 +209,38 @@ component AeneasAdapter {
 		// Drop process-wide roots even when parsing or verification failed.
 		// The result still owns its VST; dropping that result makes it collectible.
 		AnalysisTypeCache.release();
+		var diagnostics = convertErrors(null, prog.ERROR);
+		for (i < diagnostics.length) {
+			var d = diagnostics[i];
+			if (!parsed && i < parseErrors.offsets.length) {
+				d.beginOffset = parseErrors.offsets[i].0;
+				d.endOffset = parseErrors.offsets[i].1;
+			}
+			diagnostics[i] = coordinates.diagnostic(d);
+		}
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
-		return ProgramAnalysis.new(convertErrors(null, prog.ERROR), stats, parsed, verified, prog);
+		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
+	}
+	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates) -> AnalysisParseErrors {
+		var errors = AnalysisParseErrors.new(prog.ERROR.maxErrors);
+		prog.vst = VstModule.new();
+		var files = Vector<VstFile>.new().grow(prog.files.length);
+		for (i = 0; i < prog.files.length && errors.notTooMany; i++) {
+			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, null,
+				prog.typeCache, coordinates.capture(prog.files[i])));
+		}
+		prog.vst.files = files.extract();
+		prog.ERROR.copy(errors);
+		if (CLOptions.REDEF_FIELD.val != null) {
+			var input = StringBuilder.new().puts("-").puts(CLOptions.REDEF_FIELD.name).puts("=");
+			var skip = input.length;
+			input.puts(CLOptions.REDEF_FIELD.val);
+			var redefs = Parser.parseRedefFields("<options>", input.toString(), skip, prog.ERROR);
+			prog.vst.redefFile = redefs.0;
+			prog.vst.fieldRedefs = redefs.1;
+		}
+		return errors;
 	}
 	// The next value of Aeneas's process-wide UID counter. It never resets, so
 	// it measures how many IDs analyses have consumed.

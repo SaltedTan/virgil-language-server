@@ -1,0 +1,261 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisCoordinates:semantic_offsets", test_semantic_offsets),
+	T("AnalysisCoordinates:trailing_line_comment", test_trailing_line_comment),
+	T("AnalysisCoordinates:token_end_before_comment", test_token_end_before_comment),
+	T("AnalysisCoordinates:parser_coordinate_ambiguities", test_parser_coordinate_ambiguities),
+	T("AnalysisCoordinates:retrospective_tokens", test_retrospective_tokens),
+	T("AnalysisCoordinates:binding_compiler_coordinates", test_binding_compiler_coordinates),
+	T("AnalysisCoordinates:malformed_literal_bound", test_malformed_literal_bound),
+	T("AnalysisCoordinates:no_file", test_no_file),
+	T("AnalysisCoordinates:replay_boundaries", test_replay_boundaries),
+	()
+];
+
+// Assert both worker-side and decoded offsets, and the resulting UTF-16 LSP
+// range. No semantic publication is needed to exercise the complete boundary.
+def check(t: Tester, text: string, begin: int, end: int, line: int, character: int) {
+	var sources = [AnalysisSource.new("coordinates.v3", text)];
+	var a = AeneasAdapter.analyzeProgram(sources, false);
+	t.assert(a.diagnostics.length > 0, "expected a diagnostic");
+	if (a.diagnostics.length == 0) return;
+	var w = AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null);
+	var frame = AnalysisWire.finishResult(w, 0L);
+	var result = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["coordinates.v3"]);
+	if (result == null) return t.fail("result did not decode");
+	var map = PositionMap.new(text, PositionEncoding.UTF16);
+	for (d in [a.diagnostics[0], result.snapshot.diagnostics[0]]) {
+		t.asserti(begin, d.beginOffset);
+		t.asserti(end, d.endOffset);
+		var start = map.offsetToPosition(d.beginOffset), finish = map.offsetToPosition(d.endOffset);
+		t.asserti(line, start.line);
+		t.asserti(character, start.character);
+		t.asserti(line, finish.line);
+		t.asserti(character + end - begin, finish.character);
+	}
+}
+
+def test_semantic_offsets(t: Tester) {
+	var prefixes = ["component C {\n/*\t*/ def x: int = ",
+		"component C {\n\tdef x: int = ",
+		"component C {\n/* start\n\t*/ def x: int = ",
+		"component C {\n/*\t😀é*/ def x: int = ",
+		"component C {\n def s = \"/*\\\"//😀é\"; def x: int = ",
+		"component C {\n/*\t*/\tdef x: int = "];
+	var lines = [1, 1, 2, 1, 1, 1];
+	// LSP counts an emoji as two UTF-16 units and é as one, not six bytes.
+	var characters = [19, 14, 17, 22, 35, 19];
+	for (i < prefixes.length) {
+		var prefix = prefixes[i];
+		check(t, Arrays.concat(prefix, "\"s\";\n}\n"), prefix.length, prefix.length + 3, lines[i], characters[i]);
+	}
+}
+
+def test_trailing_line_comment(t: Tester) {
+	var text = "component C { // trailing\t😀";
+	check(t, text, text.length, text.length, 0, 28);
+}
+
+def test_token_end_before_comment(t: Tester) {
+	var text = "/*\t*/ def if// trailing\t😀";
+	check(t, text, 10, 12, 0, 10);
+}
+
+// ParserState.advance1 does not advance the column when consuming the last
+// byte; tokenAt uses context-free tabs. Neither can be inverted unambiguously
+// from just a line/column pair, so whole-program parser errors reuse capture.
+def test_parser_coordinate_ambiguities(t: Tester) {
+	var cases = ["component C { def x = 1;", "/*\t*/ def f() => missing.[](in);",
+		"/*\t*/ def if // trailing\tcomment", "component C { def x = ; }",
+		"component C {\n/*\t*/ def f() => C.[]// trailing\t😀",
+		"component C {\n/*\t*/ def f() => C.[]=// trailing\t😀"];
+	for (text in cases) {
+		var single = AeneasAdapter.parseFile("ambiguity.v3", text);
+		var whole = AeneasAdapter.analyzeProgram([AnalysisSource.new("ambiguity.v3", text)], false);
+		t.asserti(single.diagnostics.length, whole.diagnostics.length);
+		for (i < whole.diagnostics.length) {
+			t.asserti(single.diagnostics[i].beginOffset, whole.diagnostics[i].beginOffset);
+			t.asserti(single.diagnostics[i].endOffset, whole.diagnostics[i].endOffset);
+			t.assert_string(single.diagnostics[i].toString(), whole.diagnostics[i].toString());
+		}
+	}
+}
+
+def test_no_file(t: Tester) {
+	var d = AnalysisDiagnostic.new(null, 0, 0, 0, 0, "ProgramError", "no file");
+	AnalysisSourceCoordinates.new([AnalysisSource.new("a.v3", "class A {}")]).diagnostic(d);
+	t.asserti(-1, d.beginOffset);
+	t.asserti(-1, d.endOffset);
+	var a = ProgramAnalysis.new([d], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null), 0L);
+	var r = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, []);
+	if (r == null) return t.fail("non-file result did not decode");
+	t.assert(r.snapshot.diagnostics[0].path == null, "null path preserved");
+	t.asserti(-1, r.snapshot.diagnostics[0].beginOffset);
+	t.asserti(-1, r.snapshot.diagnostics[0].endOffset);
+}
+
+def test_replay_boundaries(t: Tester) {
+	var text = "a\t/*\t\n\t*/b// trailing\t😀", map = AnalysisCoordinates.new(text);
+	t.asserti(0, map.offset(1, 1, false));
+	t.asserti(1, map.offset(1, 3, false)); // inside whitespace tab expansion
+	t.asserti(4, map.offset(1, 11, false)); // block-comment tab counts one
+	t.asserti(9, map.offset(2, 4, false));
+	t.asserti(10, map.offset(2, 5, false)); // token end, before trailing comment
+	t.asserti(text.length, map.offset(2, 5, true)); // EOF point, same column
+	var next = AnalysisCoordinates.new("// ignored\t\n\tname");
+	t.asserti(13, next.offset(2, 9, false));
+	// CR is an ordinary compiler byte; LSP alone treats it as a line end.
+	t.asserti(2, AnalysisCoordinates.new("a\rb").offset(1, 3, false));
+}
+
+
+def test_retrospective_tokens(t: Tester) {
+	for (op in ["[]", "[]="]) {
+		var prefix = "component C {\n/*\t*/ def f() => C.";
+		check(t, StringBuilder.new().puts(prefix).puts(op).puts(";\n}\n").toString(),
+			prefix.length, prefix.length + op.length, 1, 19);
+	}
+	var cases = [
+		"component C {\n/*\t*/ def f() => C.[]; def x: int = \"s\";\n}\n",
+		"class C { def [] -> int { return 1; }\n/*\t*/ def f(c: C) -> int => c.[];\n}\n",
+		"class C { def [] = x: int {}\n/*\t*/ def f(c: C) -> int => c.[]=;\n}\n",
+		"component C {\n/*\t*/ def f() -> int => ;\n}\n",
+		"component C {\n/*\t*/ def f() -> int => C.[](in);\n}\n"
+	];
+	var begins = [50, 66, 57, 38, 43], ends = [53, 70, 62, 38, 45];
+	for (i < cases.length) {
+		var text = cases[i], sources = [AnalysisSource.new("retrospective.v3", text)];
+		var a = AeneasAdapter.analyzeProgram(sources, false);
+		t.assert(a.diagnostics.length > 0, "expected retrospective diagnostic");
+		if (a.diagnostics.length == 0) continue;
+		t.asserti(begins[i], a.diagnostics[0].beginOffset);
+		t.asserti(ends[i], a.diagnostics[0].endOffset);
+		if (i == 0) {
+			t.asserti(2, a.diagnostics.length);
+			if (a.diagnostics.length == 2) {
+				t.asserti(33, a.diagnostics[1].beginOffset);
+				t.asserti(35, a.diagnostics[1].endOffset);
+			}
+		}
+		var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null), 0L);
+		var decoded = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["retrospective.v3"]);
+		if (decoded == null) return t.fail("retrospective result did not decode");
+		for (j < a.diagnostics.length) {
+			t.asserti(a.diagnostics[j].beginOffset, decoded.snapshot.diagnostics[j].beginOffset);
+			t.asserti(a.diagnostics[j].endOffset, decoded.snapshot.diagnostics[j].endOffset);
+		}
+		var prog = Program.new();
+		SystemCalls.install(prog);
+		prog.files = ["retrospective.v3"];
+		prog.inputs = [text];
+		var compilation = Compilation.new(Compiler.new(null), prog);
+		if (compilation.parse()) compilation.verify();
+		var original = Lists.reverse(prog.ERROR.errors), j = 0;
+		for (e = original; e != null; e = e.tail) {
+			t.assert(j < a.diagnostics.length, "compiler diagnostic retained");
+			if (j >= a.diagnostics.length) break;
+			var d = a.diagnostics[j++], r = e.head.range;
+			t.assert_string(e.head.description, d.message);
+			t.asserti(r.beginLine, d.beginLine);
+			t.asserti(r.beginColumn, d.beginColumn);
+			t.asserti(r.endLine, d.endLine);
+			t.asserti(r.endColumn, d.endColumn);
+		}
+		t.asserti(a.diagnostics.length, j);
+		AnalysisTypeCache.release();
+	}
+	var clean = "class C { def [x: int] -> int { return x; } def [x: int] = y: int {}\n/*\t*/ def f(c: C) -> int => c.[](1); def g(c: C) => c.[]=(1, 2);\n}\n";
+	var successful = AeneasAdapter.analyzeProgram([AnalysisSource.new("clean.v3", clean)], false);
+	t.assertz(true, successful.parsed);
+	t.assertz(true, successful.verified);
+	t.asserti(0, successful.diagnostics.length);
+}
+
+def test_malformed_literal_bound(t: Tester) {
+	for (count in [32768, 262144]) {
+		var buffer = StringBuilder.new().puts("def s = \"");
+		for (i < count) buffer.puts("a\\\"");
+		var text = buffer.toString(), start = System.ticksUs();
+		var map = AnalysisCoordinates.new(text);
+		t.asserti(8, map.offset(1, 9, false));
+		t.assert(System.ticksUs() - start < 1000000, "malformed literal replay must finish within one second");
+		start = System.ticksUs();
+		var result = AeneasAdapter.analyzeProgram([AnalysisSource.new("literal.v3", text)], false);
+		t.asserti(1, result.diagnostics.length);
+		if (result.diagnostics.length > 0) {
+			t.assert_string("invalid string literal", result.diagnostics[0].message);
+			t.asserti(8, result.diagnostics[0].beginOffset);
+			t.asserti(8, result.diagnostics[0].endOffset);
+		}
+		t.assert(System.ticksUs() - start < 1000000, "malformed literal analysis must finish within one second");
+	}
+}
+
+
+def test_binding_compiler_coordinates(t: Tester) {
+	var cases = [
+		"class C { def [x: int] -> int { return x; }\n/*\t*/ def f(c: C) -> int => c.[](1);\n}\n",
+		"class C { def [x: int] = y: int {}\n/*\t*/ def f(c: C) => c.[]=(1, 2);\n}\n"
+	];
+	var names = ["[]", "[]="], columns = [36, 29], liveColumns = [31, 24];
+	for (i < cases.length) {
+		var path = "binding-coordinates.v3", text = cases[i];
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text)], false);
+		t.assertz(true, a.verified);
+		t.asserti(0, a.diagnostics.length);
+		var uses = a.occurrences(path);
+		var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1,
+			[(path, uses)]), 0L);
+		var result = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, [path]);
+		if (result == null) return t.fail("binding result did not decode");
+		var decoded = result.snapshot.occurrences(path);
+		var prog = Program.new();
+		SystemCalls.install(prog);
+		prog.files = [path];
+		prog.inputs = [text];
+		var compilation = Compilation.new(Compiler.new(null), prog);
+		t.assertz(true, compilation.parse());
+		t.assertz(true, compilation.verify());
+		var original = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), true, true, prog).occurrences(path);
+		t.asserti(original.length, uses.length);
+		t.asserti(original.length, decoded.length);
+		if (original.length != uses.length || original.length != decoded.length) return;
+		var count = 0;
+		for (j < original.length) {
+			t.assert_string(original[j].toString(), uses[j].toString());
+			t.assert_string(original[j].toString(), decoded[j].toString());
+			if (!Strings.equal(uses[j].declaration.name, names[i])) continue;
+			count++;
+			for (o in [uses[j], decoded[j]]) {
+				t.asserti(2, o.range.beginLine);
+				t.asserti(2, o.range.endLine);
+				t.asserti(columns[i], o.range.beginColumn);
+				t.asserti(columns[i] + names[i].length, o.range.endColumn);
+				t.assert(o.declaration.kind == AnalysisDeclKind.METHOD, "indexing method target");
+				t.assert_string(path, o.declaration.range.path);
+				t.asserti(1, o.declaration.range.beginLine);
+				t.asserti(1, o.declaration.range.endLine);
+				t.asserti(15, o.declaration.range.beginColumn);
+				t.asserti(15 + names[i].length, o.declaration.range.endColumn);
+			}
+		}
+		t.asserti(1, count);
+		for (column = columns[i]; column < columns[i] + names[i].length; column++) {
+			for (d in [a.definitionAt(path, 2, column), result.snapshot.definitionAt(path, 2, column)]) {
+				if (d == null) return t.fail("operator definition missing at compiler column");
+				t.assert_string(names[i], d.name);
+				t.asserti(15, d.range.beginColumn);
+				t.asserti(15 + names[i].length, d.range.endColumn);
+			}
+		}
+		for (column in [columns[i] - 1, columns[i] + names[i].length, liveColumns[i]]) {
+			t.assert(a.definitionAt(path, 2, column) == null, "compiler lookup excludes adjacent and live columns");
+			t.assert(result.snapshot.definitionAt(path, 2, column) == null, "snapshot lookup excludes adjacent and live columns");
+		}
+		AnalysisTypeCache.release();
+	}
+}
