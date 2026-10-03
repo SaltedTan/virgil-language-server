@@ -109,11 +109,13 @@ async function start(): Promise<void> {
 async function stop(): Promise<void> {
   const running = client;
   client = undefined;
-  if (running === undefined || !running.isRunning()) return;
+  if (running === undefined) return;
   try {
-    await running.stop();
+    if (running.isRunning()) await running.stop();
   } catch (error) {
     output.error(`Stopping the server failed: ${describe(error)}`);
+  } finally {
+    (running.visibleDocuments as typeof running.visibleDocuments & vscode.Disposable).dispose();
   }
 }
 

@@ -9,14 +9,21 @@ const vm = require('node:vm');
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function extensionHost() {
   const clients = [];
   const commands = new Map();
   const events = [];
+  const tabListeners = new Set();
+  const editorListeners = new Set();
+  const subscribe = (listeners) => (callback) => {
+    listeners.add(callback);
+    return { dispose: () => listeners.delete(callback) };
+  };
   let configurationChanged;
   let nextStart;
   class LanguageClient {
@@ -27,21 +34,37 @@ function extensionHost() {
     }
     start() {
       if (this.starting) return this.starting;
+      this.visibleDocuments;
       this.state = 'starting';
       events.push(`start:${this.id}`);
       const gate = nextStart;
       nextStart = undefined;
       this.starting = (gate?.promise ?? Promise.resolve()).then(() => {
         this.state = 'running';
+      }, (error) => {
+        this.state = 'failed';
+        throw error;
       });
       return this.starting;
     }
     isRunning() { return this.state === 'running'; }
+    get visibleDocuments() {
+      if (!this.visibility) {
+        const scan = () => events.push(`scan:${this.id}`);
+        const subscriptions = [
+          vscode.window.tabGroups.onDidChangeTabs(scan),
+          vscode.window.onDidChangeVisibleTextEditors(scan),
+        ];
+        this.visibility = { dispose: () => subscriptions.forEach((item) => item.dispose()) };
+      }
+      return this.visibility;
+    }
     async stop() {
       assert.equal(this.state, 'running');
       events.push(`shutdown:${this.id}`, `exit:${this.id}`);
       this.state = 'stopped';
       this.starting = undefined;
+      if (this.failStop) throw new Error('shutdown failed');
     }
     connectionClosed() {
       this.state = 'initial';
@@ -54,6 +77,8 @@ function extensionHost() {
     window: {
       createOutputChannel: () => channel,
       showErrorMessage: () => Promise.resolve(undefined),
+      tabGroups: { onDidChangeTabs: subscribe(tabListeners) },
+      onDidChangeVisibleTextEditors: subscribe(editorListeners),
     },
     commands: {
       registerCommand(name, action) { commands.set(name, action); return {}; },
@@ -83,6 +108,11 @@ function extensionHost() {
     restart: () => commands.get('virgil.server.restart')(),
     configure: () => configurationChanged({ affectsConfiguration: () => true }),
     pauseStart() { nextStart = deferred(); return nextStart; },
+    changeVisibility() {
+      for (const callback of tabListeners) callback();
+      for (const callback of editorListeners) callback();
+    },
+    subscriptionCounts: () => [tabListeners.size, editorListeners.size],
   };
 }
 
@@ -96,6 +126,7 @@ for (const action of ['restart', 'configure', 'deactivate']) {
     const recovery = host.clients[0].connectionClosed();
     await settle();
     assert.equal(host.clients[0].state, 'starting');
+    assert.deepEqual(host.subscriptionCounts(), [1, 1]);
     const requested = action === 'deactivate' ? host.extension.deactivate() : host[action]();
     await settle();
     assert.equal(host.clients.length, 1);
@@ -108,6 +139,7 @@ for (const action of ['restart', 'configure', 'deactivate']) {
     assert.equal(host.clients.filter((client) => client.isRunning()).length, action === 'deactivate' ? 0 : 1);
     await host.extension.deactivate();
     assert.equal(host.clients.filter((client) => client.isRunning()).length, 0);
+    assert.deepEqual(host.subscriptionCounts(), [0, 0]);
   });
 }
 
@@ -122,6 +154,59 @@ test('a replaced client cannot start from a queued automatic recovery', async ()
   assert.equal(host.clients[0].state, 'initial');
   assert.equal(host.clients[1].state, 'running');
   await host.extension.deactivate();
+});
+
+for (const action of ['restart', 'configure']) {
+  test(`${action} releases retired visibility subscriptions`, async () => {
+    const host = extensionHost();
+    await host.activate();
+    for (let count = 0; count < 3; count++) {
+      await host[action]();
+      await settle();
+      assert.deepEqual(host.subscriptionCounts(), [1, 1]);
+      const before = host.events.length;
+      host.changeVisibility();
+      assert.deepEqual(host.events.slice(before), [`scan:${count + 1}`, `scan:${count + 1}`]);
+    }
+    await host.extension.deactivate();
+    assert.deepEqual(host.subscriptionCounts(), [0, 0]);
+    const before = host.events.length;
+    host.changeVisibility();
+    assert.equal(host.events.length, before);
+  });
+}
+
+test('retiring a stopped client releases visibility subscriptions', async () => {
+  const host = extensionHost();
+  await host.activate();
+  await host.clients[0].stop();
+  assert.deepEqual(host.subscriptionCounts(), [1, 1]);
+  await host.restart();
+  assert.deepEqual(host.subscriptionCounts(), [1, 1]);
+  await host.extension.deactivate();
+  assert.deepEqual(host.subscriptionCounts(), [0, 0]);
+});
+
+test('retiring a client after failed startup releases visibility subscriptions', async () => {
+  const host = extensionHost();
+  const gate = host.pauseStart();
+  const activation = host.activate();
+  await settle();
+  gate.reject(new Error('initialization failed'));
+  await activation;
+  assert.deepEqual(host.subscriptionCounts(), [1, 1]);
+  await host.extension.deactivate();
+  assert.deepEqual(host.subscriptionCounts(), [0, 0]);
+});
+
+test('retirement releases visibility subscriptions when shutdown fails', async () => {
+  const host = extensionHost();
+  await host.activate();
+  host.clients[0].failStop = true;
+  await host.restart();
+  assert.deepEqual(host.subscriptionCounts(), [1, 1]);
+  await host.extension.deactivate();
+  assert.deepEqual(host.subscriptionCounts(), [0, 0]);
 });
 
 test('deactivation waits for initial startup and sends shutdown then exit', async () => {
