@@ -139,7 +139,7 @@ Version 1 of `.virgil-lsp.json` is specified in [Configuration](docs/configurati
 Preserve these principles:
 
 - Without a config, provide single-file parsing, syntax diagnostics, and document symbols; clearly report that semantic workspace features are limited.
-- With a config, expand the declared globs relative to the config file and analyze exactly that project.
+- With a config, analyze exactly that project using the [configuration's pattern and root rules](docs/configuration.md#patterns).
 - Open documents override disk content.
 - Unknown compiler flags produce a configuration diagnostic rather than silently changing semantics.
 - A file that belongs to more than one project gets one analysis context per project, with a deterministic active context.
