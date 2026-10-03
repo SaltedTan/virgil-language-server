@@ -70,8 +70,8 @@ class AnalysisParseErrors extends ErrorGen {
 // Observes each parser skip for diagnostic offsets and, for outlines, for the
 // symbol syntax index. Created before the parser state, whose constructor skips.
 class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, coordinates: AnalysisTokenCoordinates) {
-	// Stack use is measured from here, so where parsing stops depends on the
-	// input, not on the caller or platform.
+	// Measure parser stack use from here rather than charging the caller's
+	// frames to it. Available stack and compiled frame sizes affect the cutoff.
 	private def stackBase = AnalysisSingleFileParser.stackPointer();
 	private def stackLimit = AnalysisSingleFileParser.stackLimit(stackBase);
 
@@ -209,9 +209,8 @@ class AnalysisParserState extends ParserState {
 // The per-file parser driver shared by parser diagnostics, document symbols,
 // and whole-program analysis, so all get the same recovery. {syntax} may be null.
 component AnalysisSingleFileParser {
-	// Native stack that parser recursion may use, half of the 2 MB stack:
-	// over 1,800 levels of nested brackets. Beyond it, the parser stops at the
-	// next token instead of overflowing.
+	// Cap parser recursion's native stack use. stackLimit may lower this to
+	// preserve STACK_RESERVE above the runtime's red zone.
 	def STACK_LIMIT = 1024 * 1024;
 	// Stack always left free, in case parsing starts deep in the stack.
 	def STACK_RESERVE = 64 * 1024;
