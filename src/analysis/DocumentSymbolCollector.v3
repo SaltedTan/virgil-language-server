@@ -16,14 +16,14 @@ class SymbolSyntaxIndex {
 	private var line: int;
 	private var column: int;
 
-	def skip(p: ParserState) {
-		finish(p);
-		Parser.skipToNextToken(p);
+	// Called after the parser skips whitespace and comments.
+	def start(p: ParserState) {
 		begin = p.curPos;
 		line = p.curLine;
 		column = p.curCol;
 	}
-	// advance1 at EOF does not call skipFunc, so flush that last delimiter.
+	// Called before each skip, and once after parsing: advance1 at EOF does
+	// not call skipFunc, so flush that last delimiter.
 	def finish(p: ParserState) {
 		if (begin >= 0 && p.curPos > begin) {
 			tokens.put(SymbolSyntaxToken.new(begin, p.curPos, line, column));

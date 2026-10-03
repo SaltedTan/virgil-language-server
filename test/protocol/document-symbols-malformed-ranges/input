@@ -1,0 +1,43 @@
+Content-Length: 58
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 177
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:malformed-ranges","languageId":"virgil","version":1,"text":"def f() { xs[...]; }\n"}}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 178
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":2},"contentChanges":[{"text":"def f() { xs[..+]; }\n"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 204
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":3},"contentChanges":[{"text":"component C { def f(xs: Array<byte>) { xs[]; } }"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":4,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 205
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":4},"contentChanges":[{"text":"component C { def f(xs: Array<byte>) { xs[.]; } }"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":5,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 206
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":5},"contentChanges":[{"text":"component C { def f(xs: Array<byte>) { xs[..]; } }"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":6,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 207
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":6},"contentChanges":[{"text":"component C { def f(xs: Array<byte>) { xs[...]; } }"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":7,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 208
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":7},"contentChanges":[{"text":"component C { def f(xs: Array<byte>) { xs[... ]; } }"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":8,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 209
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":8},"contentChanges":[{"text":"component C { def f(xs: Array<byte>) { xs[... 4]; } }"}]}}Content-Length: 125
+
+{"jsonrpc":"2.0","id":9,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 168
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:malformed-ranges","version":9},"contentChanges":[{"text":"def f() {}\n"}]}}Content-Length: 126
+
+{"jsonrpc":"2.0","id":10,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"untitled:malformed-ranges"}}}Content-Length: 45
+
+{"jsonrpc":"2.0","id":11,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}

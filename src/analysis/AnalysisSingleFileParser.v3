@@ -53,9 +53,21 @@ class AnalysisParseErrors extends ErrorGen {
 	}
 }
 
+// Observes each parser skip for diagnostic offsets and, for outlines, for the
+// symbol syntax index. Created before the parser state, whose constructor skips.
+class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex) {
+	def skip(p: ParserState) {
+		errors.record(p);
+		if (syntax != null) syntax.finish(p);
+		Parser.skipToNextToken(p);
+		errors.record(p);
+		if (syntax != null) syntax.start(p);
+	}
+}
+
 class AnalysisParserState extends ParserState {
-	new(file: VstFile, errors: AnalysisParseErrors)
-		super(file, errors, AnalysisSingleFileParser.skip, TypeCache.new()) { }
+	new(file: VstFile, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex)
+		super(file, errors, AnalysisParseSkipper.new(errors, syntax).skip, TypeCache.new()) { }
 
 	def token(len: int) -> Token {
 		var end = curPos + len;
@@ -67,16 +79,12 @@ class AnalysisParserState extends ParserState {
 	}
 }
 
+// The single-file parser driver shared by parser diagnostics and document
+// symbols, so both get the same recovery. {syntax} may be null.
 component AnalysisSingleFileParser {
-	def skip(p: ParserState) {
-		var errors = AnalysisParseErrors.!(p.ERROR);
-		errors.record(p);
-		Parser.skipToNextToken(p);
-		errors.record(p);
-	}
-	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors) -> VstFile {
+	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex) -> VstFile {
 		var file = VstFile.new(path, input);
-		var p = AnalysisParserState.new(file, errors);
+		var p = AnalysisParserState.new(file, errors, syntax);
 		p.enableFunExprs = CLOptions.FUN_EXPRS.get();
 		p.enableSimpleBodies = CLOptions.SIMPLE_BODIES.get();
 		p.enableOpenTypes = CLOptions.OPEN_TYPES.get();
@@ -84,6 +92,7 @@ component AnalysisSingleFileParser {
 		while (p.curByte != Parser.END) {
 			if (!Parser.parseToplevelDecl(p, file)) break;
 		}
+		if (syntax != null) syntax.finish(p);
 		if (file.synthetic != null) file.synthetic.members = Lists.reverse(file.synthetic.members);
 		return file;
 	}
