@@ -1,0 +1,47 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+component ProjectGlob {
+	// Greedy single-star matching, advancing by UTF-8 code points, not bytes.
+	def segment(pattern: string, name: string) -> bool {
+		if (name.length > 0 && name[0] == '.' && (pattern.length == 0 || pattern[0] != '.')) return false;
+		var p = 0, n = 0, star = -1, retry = 0;
+		while (n < name.length) {
+			if (p < pattern.length && pattern[p] == '*') { star = p++; retry = n; continue; }
+			if (p < pattern.length && pattern[p] == '?') {
+				var next = step(name, n);
+				if (next < 0) return false;
+				p++; n = next; continue;
+			}
+			if (p < pattern.length && pattern[p] == name[n]) { p++; n++; continue; }
+			if (star < 0) return false;
+			retry = step(name, retry);
+			if (retry < 0) return false;
+			n = retry; p = star + 1;
+		}
+		while (p < pattern.length && pattern[p] == '*') p++;
+		return p == pattern.length;
+	}
+	private def step(s: string, i: int) -> int {
+		if (i >= s.length) return -1;
+		var r = Utf8.decode1(s[i ...]);
+		return if(r.0 > 0, i + r.0, -1);
+	}
+	// Dynamic programming avoids exponential backtracking through multiple **.
+	def matches(pattern: string, path: string) -> bool {
+		var ps = Strings.split(pattern, "/", -1), ns = Strings.split(path, "/", -1);
+		var prev = Array<bool>.new(ns.length + 1);
+		prev[0] = true;
+		for (p in ps) {
+			var next = Array<bool>.new(ns.length + 1);
+			if (Strings.equal(p, "**")) {
+				next[0] = prev[0];
+				for (i < ns.length) next[i + 1] = prev[i + 1] || (next[i] && ns[i].length > 0 && ns[i][0] != '.');
+			} else {
+				for (i < ns.length) next[i + 1] = prev[i] && segment(p, ns[i]);
+			}
+			prev = next;
+		}
+		return prev[ns.length];
+	}
+}

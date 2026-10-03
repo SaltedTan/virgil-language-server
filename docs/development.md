@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Linux x86-64 (including WSL 2), or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`)
-- `git`, `make`, `bash`; Python 3.9+ for interactive protocol and editor tests
+- `git`, `make`, `bash`; Python 3.9+ for project-fixture preparation and cleanup, interactive protocol tests, and editor tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 - Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).
 - Optional: the [VS Code development client's prerequisites](../clients/vscode/README.md#setup).
@@ -53,7 +53,7 @@ exit, including failure or interruption.
 
 ### Development stdio requests
 
-Before M3's project model, **option 2a** provides an explicit whole-program trigger over `--stdio`. These requests are unstable development tools, not advertised capabilities. Neither publishes semantic diagnostics nor changes the automatic syntax-diagnostic behavior.
+Whole-program analysis has explicit-URI (**option 2a**) and project-context triggers over `--stdio`. These requests are unstable development tools, not advertised capabilities. Neither publishes semantic diagnostics nor changes the automatic syntax-diagnostic behavior.
 
 After `initialize`, send `virgil-lsp/analyze` with a nonempty `uris` array:
 
@@ -62,19 +62,23 @@ After `initialize`, send `virgil-lsp/analyze` with a nonempty `uris` array:
 ```
 
 - Each URI uses the [document store's identity rules](architecture.md#uri-identity-on-linux-and-macos). Duplicates after normalization are rejected. Current open overlays win, including empty and non-file overlays; otherwise a local file is read from disk. The source bytes are captured at submission; later edits do not alter that analysis.
-- The sources form one program in the given order. Missing/unreadable/over-budget sources and malformed parameters return `InvalidParams` (-32602). Disk reads are bounded before allocation; aggregate paths, source bytes, and a conservative metadata allowance must fit within 4 MiB, followed by the supervisor's exact frame-size check. The [client message limits](architecture.md#framing) leave room for analysis allocations and retained snapshots.
+- Sources form one program in the given order. Missing/unreadable/over-budget sources and malformed parameters return `InvalidParams` (-32602). Disk reads are bounded before allocation; aggregate paths, source bytes, and a conservative metadata allowance must fit within 4 MiB, followed by the supervisor's exact frame-size check. The [client message limits](architecture.md#framing) leave room for analysis allocations and retained snapshots.
 - Only one analysis may be outstanding. A second gets `InvalidParams` rather than being queued. Other requests keep receiving replies while startup, pipe transfer, or analysis is pending.
 - Completion returns `{"generation": 1, "diagnostics": [...], "documentVersions": [...]}` with the original request ID. Generations increase only for completed analyses, including analyses reporting syntax/type errors. Each diagnostic has `path` (or null), `beginLine`, `beginColumn`, `endLine`, `endColumn`, `kind` (or null), and `message`. These are **one-based compiler coordinates**, not LSP UTF-16 ranges; they have the same limitations as the unstable CLI's reports.
 - A crashed, timed-out, unavailable, or malformed worker returns `InternalError` (-32603). An over-budget result also returns `InternalError`, with a distinct too-large message. The message states the failure and that the previous snapshot is kept; stderr records the failure. ADR-0004 owns the [replacement policy](decisions/0004-analysis-worker-process.md#restart-policy), including its rationale for over-budget results, and [size limits and recovery guidance](decisions/0004-analysis-worker-process.md#supported-program-size).
 - Shutdown cancels pending analysis with `RequestCancelled` (-32800) before replying to `shutdown`; exit and EOF cancel and reap any worker. All preserve the previous snapshot.
 
-`virgil-lsp/snapshot` (no params required) returns the same response shape for the last completed analysis, or `null` if none exists. It reads only server-owned data, so it works during a hang, after a crash, and across routine replacements. Each `documentVersions` entry, in submission order, has the source's canonical `uri`, its captured overlay `version` (an integer, including zero or negative values), or `null` for a disk input, and a `current` boolean computed against the document store at the time of the reply. For example:
+Alternatively, submit the project for a document with `{"uri":"file:///absolute/shared.v3"}`. Its deterministic active context is selected. `uri` and `uris` are mutually exclusive. This expands and preflights the entire project before reading sources; overlays take precedence, and project disk reads reject symlinks. A document without a project or an empty expanded program gets `InvalidParams`. Projects with `compilerArgs` currently get an explicit unsupported-options error rather than silently analyzing with defaults; applying those options is separate M3 work.
+
+Project results add `"projectConfiguration":{"uri":"file:///absolute/.virgil-lsp.json","revision":1,"name":"server","current":true}`. The [analysis snapshot policy](architecture.md#analysis-snapshots-partly-present) owns context retention, its aggregate budget and eviction rules, and configuration-revision invalidation. A project or explicit-URI submission that cannot fit within that retention budget returns `InvalidParams`. An invalidated configuration revision makes the stamp and every source's `current` false. Stamps are server-owned and are not added to the worker protocol.
+
+`virgil-lsp/snapshot` (no params required) returns the same response shape for the last completed analysis, or `null` if none exists. It refreshes known configurations but reads analysis results only from server-owned data, so it works during a hang, after a crash, and across routine replacements. Each `documentVersions` entry, in submission order, has the source's canonical `uri`, its captured overlay `version` (an integer, including zero or negative values), or `null` for a disk input, and a `current` boolean computed against the document store at the time of the reply. For example:
 
 ```json
 {"generation":1,"diagnostics":[],"documentVersions":[{"uri":"file:///absolute/a.v3","version":3,"current":false},{"uri":"file:///absolute/b.v3","version":null,"current":true}]}
 ```
 
-The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-partly-present) defines `current`, including overlay invalidation and the assumptions for disk inputs, and records the remaining configuration-revision work. This remains deliberately stale inspection data: no semantic results are published or discarded by this request.
+The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-partly-present) defines `current`, including overlay invalidation and the assumptions for disk inputs, and configuration-revision invalidation. This remains deliberately stale inspection data: no semantic results are published or discarded by this request.
 
 `--stdio` accepts the same unstable `--worker-timeout-ms=<n>` and `--worker-max-analyses=<n>` policy overrides as the CLI `analyze` command. The default limits remain 10 seconds per analysis and 100 analyses per worker. No worker starts for ordinary syntax-only sessions.
 
@@ -85,6 +89,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/analysis/RetainProbe.v3` | Fresh-process live-heap regression for dropped analysis snapshots, including errors | `build/retain-probe [source.v3 ...]` (no arguments runs generated fixtures; see [measurements](architecture.md#adapter-retention-workaround-and-regression-probe)) |
 | `test/analysis/TypeDepthProbe.v3` | Analysis and subsequent tiny analysis of 100,000 inferred array and tuple levels, including lazy snapshot bindings | `build/type-depth-probe` (1 GB heap, default stack) |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory for compiler crash and hang cases; the crash traces on stderr are expected. Result-budget and malformed-result cases use the unit-test executable as a synthetic worker on the same pipes. | `build/unit-tests [glob]` |
+| `test/fixtures/projects/test_cleanup.py` | Fixture permission restoration and removal through `make clean`, independent of the build directory | `python3 test/fixtures/projects/test_cleanup.py` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses, lifecycle cleanup, and large JSON alongside analysis allocations and snapshot replacement | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/coordinates.py` | Exact worker diagnostic byte ranges, compiler-coordinate binding exports, CLI and stdio compatibility, allocation rejection/recovery, and bounded malformed-string replay | Standalone: `python3 test/protocol/coordinates.py build/virgil-lsp` (with `virgil-lsp-worker` beside it; not run by `make test`) |
@@ -116,7 +121,7 @@ def test_does_something(t: Tester) {
 }
 ```
 
-Run a subset with `build/unit-tests 'Thing:*'`.
+Run a subset with `build/unit-tests 'Thing:*'`. `make build/unit-tests` also prepares host-filesystem fixtures under `build/project-fixtures` (sparse oversized source, symlink cycle, linked file/directory, and FIFO). `ProjectExpansion:*`, `WorkspaceProjects:*`, and `LspProjectAnalysis:*` run on both Linux and macOS CI; they reuse the version-1 project fixtures, including the file shared by two programs.
 
 ## Learning the compiler front end
 

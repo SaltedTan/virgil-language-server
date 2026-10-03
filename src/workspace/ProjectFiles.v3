@@ -1,0 +1,125 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+class ProjectDirectory(names: Array<string>, types: HashMap<string, byte>, examined: int, overflow: bool) { }
+
+// No realpath: lexical document identity and no symlink traversal. Descriptors
+// anchor each path component, so renaming/replacing it cannot redirect a walk.
+component ProjectFiles {
+	def REGULAR = 0x8000;
+	def DIRECTORY = 0x4000;
+	def join(dir: string, name: string) -> string {
+		return Strings.format2(if(Strings.equal(dir, "/"), "%s%s", "%s/%s"), dir, name);
+	}
+	def parent(path: string) -> string {
+		var i = path.length - 1;
+		while (i > 0 && path[i] != '/') i--;
+		return if(i == 0, "/", Arrays.range(path, 0, i));
+	}
+	def uri(path: string) -> string {
+		var b = StringBuilder.new().puts("file://");
+		for (ch in path) {
+			if (ch == '/' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+				(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~') b.putc(ch);
+			else b.putc('%').putc(Chars.hexMap_u[ch >> 4]).putc(Chars.hexMap_u[ch & 15]);
+		}
+		return b.extract();
+	}
+	def open(path: string, directory: bool) -> int {
+		if (path == null || path.length == 0) return -1;
+		var fd = HostOs.openDirectoryRoot(path[0] == '/');
+		var parts = Strings.split(path, "/", -1);
+		for (i < parts.length) {
+			var part = parts[i];
+			if (part.length == 0 || Strings.equal(part, ".")) continue;
+			if (fd < 0) return fd;
+			if (Strings.equal(part, "..")) { HostOs.close(fd); return -1; }
+			var next = HostOs.openChild(fd, part, directory || i < parts.length - 1);
+			HostOs.close(fd);
+			fd = next;
+		}
+		return fd;
+	}
+	// An unreadable or symlinked config marker must not silently fall through
+	// to an ancestor's project. load() will report why it cannot be used.
+	def configMarker(path: string) -> bool {
+		var fd = open(path, false);
+		if (fd < 0) return fd != -2 && fd != -20; // ENOENT, ENOTDIR on both hosts
+		var info = HostOs.fileMetadata(fd);
+		HostOs.close(fd);
+		return info.0 == REGULAR || info.0 < 0;
+	}
+	def metadataError(kind: int) -> bool {
+		return kind < 0 && kind != -2 && kind != -20 && kind != HostOs.ELOOP;
+	}
+	def metadata(path: string) -> (int, long) {
+		if (path == null || path.length == 0) return (-1, -1L);
+		var slash = path.length - 1;
+		while (slash >= 0 && path[slash] != '/') slash--;
+		var dir = if(slash < 0, ".", if(slash == 0, "/", Arrays.range(path, 0, slash)));
+		var name = if(slash + 1 == path.length, ".", Arrays.range(path, slash + 1, path.length));
+		if (Strings.equal(name, "..")) return (-1, -1L);
+		var fd = open(dir, true);
+		if (fd < 0) return (fd, -1L);
+		var result = HostOs.childMetadata(fd, name);
+		HostOs.close(fd);
+		return result;
+	}
+	def load(path: string, budget: int) -> Array<byte> {
+		var fd = open(path, false);
+		if (fd < 0) return null;
+		var info = HostOs.fileMetadata(fd);
+		if (info.0 != REGULAR || info.1 < 0 || info.1 > budget) { HostOs.close(fd); return null; }
+		var b = StringBuilder.new(), chunk = Array<byte>.new(4096), ok = false;
+		while (true) {
+			var n = HostOs.read(fd, chunk);
+			if (n == HostOs.EINTR) continue;
+			if (n == 0) { ok = true; break; }
+			if (n < 0 || n > budget - b.length) break;
+			b.putr(chunk[0 ..+ n]);
+		}
+		HostOs.close(fd);
+		return if(ok, b.extract());
+	}
+	def list(path: string, maxEntries: int) -> ProjectDirectory {
+		var fd = open(path, true);
+		if (fd < 0) return ProjectDirectory.new(null, null, 0, false);
+		var names = Vector<string>.new(), types = Strings.newMap<byte>();
+		var buf = Array<byte>.new(8192), ok = false;
+		var examined = 0, overflow = false;
+		while (true) {
+			var n = HostOs.readDirectory(fd, buf);
+			if (n == HostOs.EINTR) continue;
+			if (n == 0) { ok = true; break; }
+			if (n < 0) break;
+			var at = 0;
+			while (at < n) {
+				var r = at + HostOs.directoryRecordOffset, start = at + HostOs.directoryNameOffset;
+				if (start >= n) break;
+				var len = int.view(buf[r]) | (int.view(buf[r + 1]) << 8);
+				if (len <= HostOs.directoryNameOffset || len > n - at) break;
+				var end = start;
+				while (end < at + len && buf[end] != 0) end++;
+				if (end == at + len) break;
+				var name = Arrays.range(buf, start, end);
+				if (!Strings.equal(name, ".") && !Strings.equal(name, "..")) {
+					if (++examined > maxEntries) { overflow = true; break; }
+					names.put(name);
+					types[name] = buf[at + HostOs.directoryTypeOffset];
+				}
+				at += len;
+			}
+			if (at != n) break;
+		}
+		HostOs.close(fd);
+		if (!ok) return ProjectDirectory.new(null, null, examined, overflow);
+		var result = names.extract();
+		return ProjectDirectory.new(Arrays.sort(result, 0, result.length, before), types, examined, false);
+	}
+	def before(a: string, b: string) -> bool {
+		for (i = 0; i < a.length && i < b.length; i++) {
+			if (a[i] != b[i]) return a[i] < b[i];
+		}
+		return a.length < b.length;
+	}
+}

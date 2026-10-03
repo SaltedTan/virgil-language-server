@@ -1,0 +1,40 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Configuration errors are not semantic compiler diagnostics. Report them even
+// when the JSON document isn't open, with byte ranges converted to UTF-16.
+class LspProjectDiagnostics(send: Array<byte> -> void) {
+	def update(c: WorkspaceConfig) {
+		var map = PositionMap.new(if(c.text != null, c.text, ""), PositionEncoding.UTF16);
+		var diagnostics = Array<JsonValue>.new(c.diagnostics.length);
+		for (i < diagnostics.length) {
+			var d = c.diagnostics[i], item = Strings.newMap<JsonValue>(), range = Strings.newMap<JsonValue>();
+			range["start"] = position(map.offsetToPosition(d.begin));
+			range["end"] = position(map.offsetToPosition(d.end));
+			item["range"] = JsonValue.JObject(range);
+			item["severity"] = JsonValue.Int(1);
+			item["source"] = JsonValue.String("virgil-lsp");
+			item["code"] = JsonValue.String(d.code.code);
+			item["message"] = JsonValue.String(d.message);
+			diagnostics[i] = JsonValue.JObject(item);
+		}
+		var params = Strings.newMap<JsonValue>();
+		params["uri"] = JsonValue.String(c.revision.uri);
+		params["diagnostics"] = JsonValue.JArray(diagnostics);
+		send(JsonRpcMessage.Notification("textDocument/publishDiagnostics", JsonRpcParams.ByName(params)).encode());
+		var invalid = c.diagnostics.length > 0;
+		if (invalid && !c.reportedInvalid) {
+			var warning = Strings.newMap<JsonValue>();
+			warning["type"] = JsonValue.Int(2);
+			warning["message"] = JsonValue.String(Strings.format1("Invalid project file %s; its semantic project contexts are disabled.", c.path));
+			send(JsonRpcMessage.Notification("window/showMessage", JsonRpcParams.ByName(warning)).encode());
+		}
+		c.reportedInvalid = invalid;
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+}

@@ -9,6 +9,7 @@
 // component returns negated. See docs/decisions/0004-analysis-worker-process.md.
 component HostOs {
 	def EINTR = -4;
+	def ELOOP = -62;
 	def EAGAIN = -35;
 	def SIGKILL = 9;
 	// Bits of a poll descriptor's events and revents.
@@ -39,12 +40,18 @@ component HostOs {
 	private def SYS_fcntl = 0x200005C;
 	private def SYS_poll = 0x20000E6;
 	private def SYS_proc_info = 0x2000150;
+	private def SYS_fstat64 = 0x2000153;
+	private def SYS_fstatat64 = 0x20001D6;
+	private def SYS_getdirentries64 = 0x2000158;
+	private def SYS_openat = 0x20001CF;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
 	private def F_DUPFD_CLOEXEC = 67;
 	private def O_NONBLOCK = 0x4;
 	private def O_CLOEXEC = 0x1000000;
+	private def O_DIRECTORY = 0x100000;
+	private def O_NOFOLLOW = 0x100;
 	private def X_OK = 1;
 	private def ITIMER_REAL = 0;
 	private def SIGPIPE = 13;
@@ -162,6 +169,35 @@ component HostOs {
 		}
 		return null;
 	}
+
+	// openat(O_NOFOLLOW) at every component also rejects symlink ancestors.
+	def openDirectoryRoot(absolute: bool) -> int {
+		var name = if(absolute, "/\x00", ".\x00");
+		return sys(SYS_open, (Pointer.atContents(name), O_CLOEXEC | O_DIRECTORY, 0));
+	}
+	def openChild(fd: int, name: string, directory: bool) -> int {
+		var z = Arrays.concat(name, "\x00");
+		return sys(SYS_openat, (fd, Pointer.atContents(z), O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW | if(directory, O_DIRECTORY, 0), 0));
+	}
+	def fileMetadata(fd: int) -> (int, long) {
+		var buf = Array<long>.new(18);
+		var result = sys(SYS_fstat64, (fd, Pointer.atContents(buf)));
+		if (result < 0) return (result, -1L);
+		return (int.view(buf[0] >> 32) & 0xF000, buf[12]);
+	}
+	def childMetadata(fd: int, name: string) -> (int, long) {
+		var buf = Array<long>.new(18), z = Arrays.concat(name, "\x00");
+		var result = sys(SYS_fstatat64, (fd, Pointer.atContents(z), Pointer.atContents(buf), 0x20));
+		if (result < 0) return (result, -1L);
+		return (int.view(buf[0] >> 32) & 0xF000, buf[12]);
+	}
+	def readDirectory(fd: int, buf: Array<byte>) -> int {
+		var base = Array<long>.new(1);
+		return sys(SYS_getdirentries64, (fd, Pointer.atContents(buf), buf.length, Pointer.atContents(base)));
+	}
+	def directoryNameOffset = 21;
+	def directoryTypeOffset = 20;
+	def directoryRecordOffset = 16;
 
 	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.
 	private def moveUp(fd: int) -> int {

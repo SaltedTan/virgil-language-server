@@ -1,7 +1,7 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Unadvertised development requests until M3 supplies the project model.
+// Unadvertised development requests: explicit URIs or one project context.
 // No semantic diagnostic publication or LSP coordinate conversion: diagnostics
 // use the compiler's one-based coordinates, just as the development CLI does.
 class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
@@ -9,6 +9,9 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 	private var pendingVersions: Array<AnalysisDocumentVersion>;
+	private var projects: WorkspaceProjects;
+	private var pendingProject: ProjectContext;
+	def withProjects(projects: WorkspaceProjects) -> this { this.projects = projects; }
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("virgil-lsp/analyze", analyze);
@@ -24,10 +27,25 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	}
 	private def begin(request: JsonRpcMessage.Request) -> JsonRpcError {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
-		if (params == null || !JsonValue.JArray.?(params["uris"])) return invalid("analyze params require a nonempty uris array");
-		var uris = JsonValue.JArray.!(params["uris"]).v;
-		if (uris.length == 0) return invalid("analyze params require a nonempty uris array");
 		if (pending) return invalid("an analysis is already running");
+		if (params == null) return invalid("analyze params require a nonempty uris array");
+		pendingProject = null;
+		var uris: Array<JsonValue>;
+		if (params.has("uri") && projects != null) {
+			if (!JsonValue.String.?(params["uri"]) || params.has("uris")) return invalid("provide either uri or uris");
+			var mapping = projects.forAnalysis(JsonValue.String.!(params["uri"]).v);
+			pendingProject = mapping.active;
+			if (pendingProject == null) return invalid("document has no matching project; single-file features remain available");
+			// Compiler option application is separate M3 work; never silently
+			// analyze with defaults when the config requests non-default flags.
+			if (pendingProject.definition.compilerArgs.length > 0) return invalid("project compilerArgs are not yet supported by the analysis worker");
+			uris = Array<JsonValue>.new(pendingProject.sources.length);
+			for (i < uris.length) uris[i] = JsonValue.String(ProjectFiles.uri(pendingProject.sources[i].path));
+		} else {
+			if (!JsonValue.JArray.?(params["uris"])) return invalid("analyze params require a nonempty uris array");
+			uris = JsonValue.JArray.!(params["uris"]).v;
+		}
+		if (uris.length == 0) return invalid("analyze params require a nonempty uris array");
 		// Validate every URI before reading files. Canonical duplicates would
 		// otherwise compile the same file twice with misleading diagnostics.
 		var keys = Array<string>.new(uris.length);
@@ -42,13 +60,16 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var sources = Array<AnalysisSource>.new(keys.length);
 		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
 		// Conservative metadata allowance, then the exact supervisor admission.
-		var bytes = 32L;
+		var bytes = 32L, snapshotBytes = 1024L;
 		for (i < keys.length) {
 			var path = DocumentUri.filePath(keys[i]);
 			if (path == null) path = keys[i];
 			bytes += long.view(path.length) + 16;
+			snapshotBytes += 256L + path.length + keys[i].length;
 			if (bytes > MAX_SOURCE_BYTES) return invalid("analysis sources exceed the analysis size budget");
-			var text = store.readBounded(keys[i], int.view(MAX_SOURCE_BYTES - bytes));
+			var budget = int.view(MAX_SOURCE_BYTES - bytes);
+			var text = if(pendingProject != null && store.overlay(keys[i]) == null,
+				ProjectFiles.load(path, budget), store.readBounded(keys[i], budget));
 			if (text == null) return invalid(Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
 			bytes += text.length;
 			sources[i] = AnalysisSource.new(path, text);
@@ -56,6 +77,8 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			var doc = store.overlay(keys[i]);
 			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
 		}
+		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
+			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
 		var outcome = supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
@@ -68,13 +91,20 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	// Reads the last good server-owned data even while the worker is hung or
 	// absent. This is a development inspection API, not a semantic LSP feature.
 	private def snapshot(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		if (projects != null) projects.refresh();
 		return JsonRpcReply.Result(encodeSnapshot(supervisor.snapshot));
 	}
 	def onPoll() {
 		var outcome = supervisor.onPoll();
 		if (!AnalysisOutcome.Pending.?(outcome) && pending) {
 			if (AnalysisOutcome.Completed.?(outcome)) {
-				AnalysisOutcome.Completed.!(outcome).snapshot.recordDocumentVersions(pendingVersions);
+				var snapshot = AnalysisOutcome.Completed.!(outcome).snapshot;
+				snapshot.recordDocumentVersions(pendingVersions);
+				if (pendingProject != null) {
+					if (projects != null) projects.refresh();
+					snapshot.recordProject(pendingProject);
+					pendingProject.snapshot = snapshot;
+				}
 			}
 			finish(reply(outcome));
 		}
@@ -88,6 +118,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		pending = false;
 		pendingId = JsonRpcId.Null;
 		pendingVersions = null;
+		pendingProject = null;
 		match (reply) {
 			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
 			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
@@ -110,12 +141,20 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		if (s == null) return JsonValue.Null;
 		var obj = Strings.newMap<JsonValue>();
 		obj["generation"] = JsonValue.Int(s.generation);
+		if (s.projectRevision != null) {
+			var stamp = Strings.newMap<JsonValue>();
+			stamp["uri"] = JsonValue.String(s.projectRevision.uri);
+			stamp["revision"] = JsonValue.Int(s.projectRevision.number);
+			stamp["name"] = JsonValue.String(s.projectName);
+			stamp["current"] = JsonValue.Bool(s.matchesProject());
+			obj["projectConfiguration"] = JsonValue.JObject(stamp);
+		}
 		var versions = Array<JsonValue>.new(s.documentVersions.length);
 		for (i < versions.length) {
 			var v = s.documentVersions[i], item = Strings.newMap<JsonValue>();
 			item["uri"] = JsonValue.String(v.uri);
 			item["version"] = if(v.identity == null, JsonValue.Null, JsonValue.Int(v.version));
-			item["current"] = JsonValue.Bool(v.matchesDocument(store));
+			item["current"] = JsonValue.Bool(s.matchesProject() && v.matchesDocument(store));
 			versions[i] = JsonValue.JObject(item);
 		}
 		obj["documentVersions"] = JsonValue.JArray(versions);

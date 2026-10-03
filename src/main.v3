@@ -87,6 +87,7 @@ component VirgilLsp {
 		var server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
 		server.documents.withReader(System.fileLoad).withBoundedReader(AnalysisSourceFiles.load);
 		server.warnDocumentSync = Log.warn;
+		server.warnProject = Log.warn;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
 		server.sendNotification = transport.send;

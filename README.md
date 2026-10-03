@@ -27,11 +27,11 @@ Completion, references, rename, and incremental analysis come after v0.1. Format
 
 ## Architecture
 
-The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) serves the development `analyze` command and the unadvertised [development stdio requests](docs/development.md#development-stdio-requests). `--stdio` provides syntax diagnostics and document symbols, with automatic semantic features still planned.
+The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) serves the development `analyze` command and the unadvertised [development stdio requests](docs/development.md#development-stdio-requests). `--stdio` provides syntax diagnostics, document symbols, and [project discovery and configuration diagnostics](docs/configuration.md), with automatic semantic features still planned.
 
 ## Building
 
-Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac with Rosetta 2, plus `git`, `make`, and `bash`. See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
+Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac with Rosetta 2, plus the [development prerequisites](docs/development.md#prerequisites). See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
 
 ```sh
 git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-server.git

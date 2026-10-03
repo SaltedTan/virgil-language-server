@@ -1,0 +1,171 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspProjectAnalysis:contexts_and_revisions", test_contexts_and_revisions),
+	T("LspProjectAnalysis:configuration_diagnostics", test_configuration_diagnostics),
+	T("LspProjectAnalysis:routine_events_reuse_expansion", test_routine_events_reuse_expansion),
+	T("LspProjectAnalysis:initialize_folders", test_initialize_folders),
+	T("LspProjectAnalysis:explicit_uris_above_project_limit", test_explicit_uris_above_project_limit),
+	()
+];
+class ProjectTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def base = ProjectTestFiles.repository("test/fixtures/projects/two-programs");
+	def uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var reply: Array<byte>;
+	def notifications = Vector<Array<byte>>.new();
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) reply = bytes;
+		else notifications.put(bytes);
+	}
+	def begin(t: Tester, documentUri: string) {
+		var params = Strings.newMap<JsonValue>();
+		params["uri"] = JsonValue.String(documentUri);
+		reply = null;
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+		t.assert(supervisor.busy(), "project request submitted");
+	}
+	def complete(t: Tester) -> AnalysisSnapshot {
+		var fds = Array<int>.new(4);
+		while (supervisor.busy()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, supervisor.pollTimeout());
+			server.pollAnalysis();
+		}
+		t.assert(reply != null, "analysis replied");
+		t.assert(supervisor.snapshot != null, "snapshot present");
+		return supervisor.snapshot;
+	}
+}
+def test_contexts_and_revisions(t: Tester) {
+	var s = ProjectTestSession.new();
+	var mapping = s.server.projects.forDocument(s.uri);
+	t.asserti(2, mapping.contexts.length);
+	s.begin(t, s.uri);
+	var serverSnapshot = s.complete(t);
+	if (serverSnapshot == null) { s.server.close(); return; }
+	t.assert_string("server", serverSnapshot.projectName);
+	t.assertz(true, serverSnapshot.matchesProject());
+	t.assertz(true, serverSnapshot.matchesDocument(s.server.documents, s.uri));
+	t.assert(serverSnapshot == mapping.contexts[0].snapshot, "server context owns its result");
+	s.begin(t, ProjectFiles.uri(ProjectFiles.join(s.base, "client/Program.v3")));
+	var clientSnapshot = s.complete(t);
+	t.assert_string("client", clientSnapshot.projectName);
+	t.assert(clientSnapshot == mapping.contexts[1].snapshot, "client context owns distinct result");
+	t.assert(serverSnapshot == mapping.contexts[0].snapshot, "client analysis did not replace server context");
+	var configUri = ProjectFiles.uri(ProjectFiles.join(s.base, ".virgil-lsp.json"));
+	s.begin(t, s.uri);
+	// Config changes between submission and completion, before any polling.
+	s.server.documents.open(configUri, "json", 1, "{\"version\":1,\"projects\":[]}");
+	var stale = s.complete(t);
+	t.assertz(false, stale.matchesProject());
+	t.assertz(false, stale.matchesDocument(s.server.documents, s.uri));
+	t.assertz(false, serverSnapshot.matchesProject());
+	var result = JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(s.reply).parseDocument()).v["result"]).v;
+	var stamp = JsonValue.JObject.!(result["projectConfiguration"]).v;
+	t.assertz(false, JsonValue.Bool.!(stamp["current"]).v);
+	t.assert_string(configUri, JsonValue.String.!(stamp["uri"]).v);
+	s.server.close();
+}
+def test_configuration_diagnostics(t: Tester) {
+	var s = ProjectTestSession.new(), config = ProjectFiles.join(s.base, ".virgil-lsp.json");
+	var uri = ProjectFiles.uri(config);
+	s.server.documents.open(uri, "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"virgilDependencies\":[\"lib/*.v3\"]}]}");
+	var c = s.server.projects.load(config);
+	t.asserti(1, c.diagnostics.length);
+	t.assert(c.diagnostics[0].code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "expansion config error");
+	t.asserti(2, s.notifications.length);
+	var msg = JsonValue.JObject.!(JsonRpcJsonParser.new(s.notifications[0]).parseDocument()).v;
+	t.assert_string("textDocument/publishDiagnostics", JsonValue.String.!(msg["method"]).v);
+	var params = JsonValue.JObject.!(msg["params"]).v;
+	t.assert_string(uri, JsonValue.String.!(params["uri"]).v);
+	var d = JsonValue.JObject.!(JsonValue.JArray.!(params["diagnostics"]).v[0]).v;
+	t.assert_string("MissingVirgilRoot", JsonValue.String.!(d["code"]).v);
+	t.assert_string("virgil-lsp", JsonValue.String.!(d["source"]).v);
+	s.server.projects.load(config);
+	t.asserti(2, s.notifications.length); // unchanged errors aren't republished
+	s.server.documents.change(uri, 2, "{\"version\":1,\"projects\":[]}");
+	s.server.projects.load(config);
+	t.asserti(3, s.notifications.length);
+	msg = JsonValue.JObject.!(JsonRpcJsonParser.new(s.notifications[2]).parseDocument()).v;
+	params = JsonValue.JObject.!(msg["params"]).v;
+	t.asserti(0, JsonValue.JArray.!(params["diagnostics"]).v.length);
+	s.server.close();
+}
+def test_routine_events_reuse_expansion(t: Tester) {
+	var s = ProjectTestSession.new(), mapping = s.server.projects.forDocument(s.uri);
+	t.asserti(2, mapping.contexts.length);
+	var cached = [mapping.contexts[0].sources, mapping.contexts[1].sources];
+	var text = System.fileLoad(ProjectFiles.join(s.base, "shared/Greeting.v3"));
+	var document = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	document["uri"] = JsonValue.String(s.uri);
+	document["languageId"] = JsonValue.String("virgil");
+	document["version"] = JsonValue.Int(1);
+	document["text"] = JsonValue.String(text);
+	params["textDocument"] = JsonValue.JObject(document);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	t.asserti(1, s.server.documents.overlay(s.uri).version);
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "open reuses expansion");
+	document = Strings.newMap<JsonValue>();
+	document["uri"] = JsonValue.String(s.uri);
+	document["version"] = JsonValue.Int(2);
+	var change = Strings.newMap<JsonValue>();
+	change["text"] = JsonValue.String(Strings.format1("%s\n", text));
+	params = Strings.newMap<JsonValue>();
+	params["textDocument"] = JsonValue.JObject(document);
+	params["contentChanges"] = JsonValue.JArray([JsonValue.JObject(change)]);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didChange", JsonRpcParams.ByName(params)).encode());
+	t.asserti(2, s.server.documents.overlay(s.uri).version);
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "edit reuses expansion");
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(2), "virgil-lsp/snapshot", JsonRpcParams.Absent).encode());
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "inspection reuses expansion");
+	s.begin(t, s.uri);
+	for (i < cached.length) {
+		t.assert(mapping.contexts[i].sources != cached[i], "submission refreshes expansion");
+		cached[i] = mapping.contexts[i].sources;
+	}
+	var snapshot = s.complete(t);
+	if (snapshot != null) {
+		t.assertz(true, snapshot.verified);
+		t.assertz(true, snapshot.matchesDocument(s.server.documents, s.uri));
+	}
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "completion reuses expansion");
+	s.server.close();
+}
+def test_initialize_folders(t: Tester) {
+	var server = LspServer.new(DocumentLimits.MAX_BYTES);
+	server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"file:///ignored\",\"workspaceFolders\":[{\"uri\":\"file:///z\",\"name\":\"z\"},{\"uri\":\"FILE://localhost/a/../b\",\"name\":\"b\"}]}}");
+	t.asserti(2, server.projects.folders.length);
+	t.assert_string("/b", server.projects.folders[0]);
+	t.assert_string("/z", server.projects.folders[1]);
+	server.close();
+}
+
+def test_explicit_uris_above_project_limit(t: Tester) {
+	var s = ProjectTestSession.new(), uris = Array<JsonValue>.new(ProjectLimits.MAX_FILES + 1);
+	for (i < uris.length) {
+		var uri = Strings.format1("untitled:empty-%d", i);
+		t.assert(s.server.documents.open(uri, "virgil", 1, "") == null, "empty overlay admitted");
+		uris[i] = JsonValue.String(uri);
+	}
+	var params = Strings.newMap<JsonValue>();
+	params["uris"] = JsonValue.JArray(uris);
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+	t.assertz(true, s.supervisor.busy());
+	if (s.supervisor.busy()) {
+		var snapshot = s.complete(t);
+		if (snapshot != null) t.asserti(uris.length, snapshot.paths.length);
+	}
+	s.server.close();
+}
