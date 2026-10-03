@@ -96,8 +96,8 @@ class AnalysisParserState extends ParserState {
 	}
 }
 
-// The single-file parser driver shared by parser diagnostics and document
-// symbols, so both get the same recovery. {syntax} may be null.
+// The per-file parser driver shared by parser diagnostics, document symbols,
+// and whole-program analysis, so all get the same recovery. {syntax} may be null.
 component AnalysisSingleFileParser {
 	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex,
 			typeCache: TypeCache, coordinates: AnalysisTokenCoordinates) -> VstFile {

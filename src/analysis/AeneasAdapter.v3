@@ -191,7 +191,7 @@ component AeneasAdapter {
 		prog.inputs = Array<Array<byte>>.new(sources.length);
 		for (i < sources.length) {
 			prog.files[i] = sources[i].path;
-			// A null input would make Compilation.parse() read the file from disk.
+			// Treat a missing capture as empty source to keep analysis independent of disk.
 			var input = sources[i].input;
 			prog.inputs[i] = if(input == null, Array<byte>.new(0), input);
 		}
