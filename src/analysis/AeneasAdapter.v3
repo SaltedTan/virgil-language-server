@@ -138,7 +138,7 @@ component AeneasAdapter {
 	// Parse one file in isolation. Does not verify, initialize, or generate code.
 	def parseFile(path: string, input: Array<byte>) -> FileParseResult {
 		var errors = AnalysisParseErrors.new(MAX_ERRORS);
-		var file = AnalysisSingleFileParser.parse(path, input, errors);
+		var file = AnalysisSingleFileParser.parse(path, input, errors, null);
 		var decls = file.classes.length + file.components.length + file.enums.length
 			+ file.layouts.length + file.packings.length;
 		var diagnostics = convertErrors(path, errors);
@@ -148,31 +148,18 @@ component AeneasAdapter {
 		}
 		return FileParseResult.new(path, diagnostics, decls);
 	}
-	// Parse current document bytes without verification. A failed parse yields
-	// no symbols: the compiler stops early and its partial VST is not an outline.
+	// Parse current document bytes without verification, through the same
+	// driver and recovery as {parseFile}. A failed parse yields no symbols:
+	// the compiler stops early and its partial VST is not an outline.
 	def documentSymbols(path: string, input: Array<byte>) -> Array<AnalysisDocumentSymbol> {
-		// The pinned parser reads past EOF for a trailing representation '#'.
-		// A whitespace sentinel avoids the trap and still reports a parse error.
-		if (input.length > 0 && input[input.length - 1] == '#') input = Arrays.concat(input, "\n");
 		// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
 		// line terminators the compiler understands; never mutate the overlay.
 		var normalized = Array<byte>.new(input.length);
 		for (i < input.length) normalized[i] = if(input[i] == '\r',
 			if(i + 1 < input.length && input[i + 1] == '\n', ' ', '\n'), input[i]);
-		input = normalized;
-		var errors = ErrorGen.new(MAX_ERRORS), file = VstFile.new(path, input);
-		var syntax = SymbolSyntaxIndex.new();
-		var p = ParserState.new(file, errors, syntax.skip, TypeCache.new());
-		p.enableFunExprs = CLOptions.FUN_EXPRS.get();
-		p.enableSimpleBodies = CLOptions.SIMPLE_BODIES.get();
-		p.enableOpenTypes = CLOptions.OPEN_TYPES.get();
-		p.enableDescriptors = CLOptions.DESCRIPTORS.get();
-		while (p.curByte != Parser.END) {
-			if (!Parser.parseToplevelDecl(p, file)) break;
-		}
-		syntax.finish(p);
+		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax);
 		if (errors.numErrors > 0) return [];
-		if (file.synthetic != null) file.synthetic.members = Lists.reverse(file.synthetic.members);
 		return DocumentSymbolCollector.new(file, syntax).collect();
 	}
 	// Parse and verify a whole program from in-memory sources, in the given

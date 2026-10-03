@@ -10,6 +10,8 @@ def X = [
 	T("AeneasAdapter:parse_rep_hint_eof", test_parse_rep_hint_eof),
 	T("AeneasAdapter:parse_rep_hint_ranges", test_parse_rep_hint_ranges),
 	T("AeneasAdapter:parse_missing_range_bounds", test_parse_missing_range_bounds),
+	T("AeneasAdapter:symbols_missing_range_bounds", test_symbols_missing_range_bounds),
+	T("AeneasAdapter:symbols_rep_hint_eof", test_symbols_rep_hint_eof),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
 	T("AeneasAdapter:analyze_type_error", test_analyze_type_error),
@@ -70,12 +72,16 @@ def test_parse_byte_offsets(t: Tester) {
 	}
 }
 
+// Expression-start "..." and "..+" in each context, between these strings.
+def RANGE_PREFIXES = ["def f() { xs[", "def f() { return xs[", "def f() { x = xs[",
+	"def f() { g(xs[", "def f() { var x = xs[", "def f() => xs[",
+	"def f() { if (xs[", "def f() { -xs[", "def f() { 1 + xs[", "def f() { xs[xs["];
+def RANGE_SUFFIXES = ["]; }", "]; }", "]; }", "]); }", "]; }", "];",
+	"]) {} }", "]; }", "]; }", "]]; }"];
+def VALID_RANGES = ["xs[0 ... 1]", "xs[0 ...]", "xs[0 ..+ 1]", "xs[0][1 ... 2]", "xs[0][1 ..+ 2]"];
+
 def test_parse_missing_range_bounds(t: Tester) {
-	var prefixes = ["def f() { xs[", "def f() { return xs[", "def f() { x = xs[",
-		"def f() { g(xs[", "def f() { var x = xs[", "def f() => xs[",
-		"def f() { if (xs[", "def f() { -xs[", "def f() { 1 + xs[", "def f() { xs[xs["];
-	var suffixes = ["]; }", "]; }", "]; }", "]); }", "]; }", "];",
-		"]) {} }", "]; }", "]; }", "]]; }"];
+	var prefixes = RANGE_PREFIXES, suffixes = RANGE_SUFFIXES;
 	for (i < prefixes.length) {
 		for (op in ["...", "..+"]) {
 			var text = StringBuilder.new().puts(prefixes[i]).puts(op).puts(suffixes[i]).toString();
@@ -89,10 +95,42 @@ def test_parse_missing_range_bounds(t: Tester) {
 			t.asserti(prefixes[i].length, d.endOffset);
 		}
 	}
-	for (expr in ["xs[0 ... 1]", "xs[0 ...]", "xs[0 ..+ 1]", "xs[0][1 ... 2]", "xs[0][1 ..+ 2]"]) {
+	for (expr in VALID_RANGES) {
 		var text = StringBuilder.new().puts("def f() { ").puts(expr).puts("; }").toString();
 		t.asserti(0, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
 	}
+}
+
+def test_symbols_missing_range_bounds(t: Tester) {
+	// The outline shares parseFile's recovery: a parse failure, not a trap.
+	for (i < RANGE_PREFIXES.length) {
+		for (op in ["...", "..+"]) {
+			for (line in ["", "// line\r\n", "// line\r"]) {
+				var text = StringBuilder.new().puts(line).puts(RANGE_PREFIXES[i]).puts(op)
+					.puts(RANGE_SUFFIXES[i]).toString();
+				t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+			}
+		}
+	}
+	for (expr in VALID_RANGES) {
+		var text = StringBuilder.new().puts("def f() { ").puts(expr).puts("; }").toString();
+		var symbols = AeneasAdapter.documentSymbols("range.v3", text);
+		t.asserti(1, symbols.length);
+		if (symbols.length == 1) t.assert_string("f", symbols[0].name);
+	}
+}
+
+def test_symbols_rep_hint_eof(t: Tester) {
+	// Bounded token extraction contains a trailing '#' without a sentinel.
+	var prefixes = ["class C ", "type T ", "type T { case C ",
+		"type T { case _ ", "layout L ", "layout L { +0 x: int ",
+		"def f() ", "def f() -> int ", "component C { def x ",
+		"component C { def f() { var x ", "", "class C\r\n"];
+	for (prefix in prefixes) {
+		var text = StringBuilder.new().puts(prefix).putc('#').toString();
+		t.asserti(0, AeneasAdapter.documentSymbols("hint.v3", text).length);
+	}
+	t.asserti(1, AeneasAdapter.documentSymbols("hint.v3", "class C #boxed {}").length);
 }
 
 def test_parse_rep_hint_eof(t: Tester) {

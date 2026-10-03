@@ -1,0 +1,41 @@
+Content-Length: 217
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 302
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":13,"line":0},"start":{"character":13,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":1}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":2,"result":[]}Content-Length: 302
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":13,"line":0},"start":{"character":13,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":2}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":3,"result":[]}Content-Length: 134
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"untitled:malformed-ranges","version":3}}Content-Length: 413
+
+{"jsonrpc":"2.0","id":4,"result":[{"children":[{"kind":6,"name":"f","range":{"end":{"character":46,"line":0},"start":{"character":14,"line":0}},"selectionRange":{"end":{"character":19,"line":0},"start":{"character":18,"line":0}}}],"kind":3,"name":"C","range":{"end":{"character":48,"line":0},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":11,"line":0},"start":{"character":10,"line":0}}}]}Content-Length: 459
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":42,"line":0},"start":{"character":42,"line":0}},"severity":1,"source":"aeneas"},{"code":"ParseError","message":"member expected","range":{"end":{"character":43,"line":0},"start":{"character":43,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":4}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":5,"result":[]}Content-Length: 302
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":42,"line":0},"start":{"character":42,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":5}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":6,"result":[]}Content-Length: 302
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":42,"line":0},"start":{"character":42,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":6}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":7,"result":[]}Content-Length: 302
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":42,"line":0},"start":{"character":42,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":7}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":8,"result":[]}Content-Length: 458
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":42,"line":0},"start":{"character":42,"line":0}},"severity":1,"source":"aeneas"},{"code":"ParseError","message":"\";\" expected","range":{"end":{"character":47,"line":0},"start":{"character":47,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:malformed-ranges","version":8}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":9,"result":[]}Content-Length: 134
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"untitled:malformed-ranges","version":9}}Content-Length: 216
+
+{"jsonrpc":"2.0","id":10,"result":[{"kind":6,"name":"f","range":{"end":{"character":10,"line":0},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}}}]}Content-Length: 39
+
+{"jsonrpc":"2.0","id":11,"result":null}
