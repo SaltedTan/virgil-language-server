@@ -5,6 +5,7 @@
 // No semantic diagnostic publication or LSP coordinate conversion: diagnostics
 // use the compiler's one-based coordinates, just as the development CLI does.
 class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
+	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 
@@ -44,8 +45,8 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			var path = DocumentUri.filePath(keys[i]);
 			if (path == null) path = keys[i];
 			bytes += long.view(path.length) + 16;
-			if (bytes > WorkerFraming.MAX_PAYLOAD) return invalid("analysis sources exceed the worker frame limit");
-			var text = store.readBounded(keys[i], int.view(WorkerFraming.MAX_PAYLOAD - bytes));
+			if (bytes > MAX_SOURCE_BYTES) return invalid("analysis sources exceed the analysis size budget");
+			var text = store.readBounded(keys[i], int.view(MAX_SOURCE_BYTES - bytes));
 			if (text == null) return invalid(Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
 			bytes += text.length;
 			sources[i] = AnalysisSource.new(path, text);

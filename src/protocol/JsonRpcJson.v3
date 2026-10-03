@@ -187,13 +187,7 @@ component JsonRpcJson {
 	// beyond 30,000 levels.
 	def MAX_DEPTH = 256;
 	// Maximum number of values in an incoming message, counting object keys.
-	// The parser keeps every value on the heap, and the most expensive shapes
-	// (small objects) cost up to about 200 bytes per value, so with the default
-	// 200 MB heap a message with about a million values can end the process.
-	// At this limit even those shapes, plus a string that fills the rest of a
-	// 16 MiB payload, parse with room to spare. No LSP message from a client
-	// comes close.
-	def MAX_VALUES = 500000;
+	def MAX_VALUES = 50000;
 
 	// Renders {v} as compact JSON. Object members are sorted by key, so the
 	// output is deterministic. Null strings, arrays, and maps render as null.

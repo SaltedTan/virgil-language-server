@@ -136,6 +136,91 @@ def error(session, id, code, text=""):
     assert text in msg["error"]["message"], msg
 
 
+def aeneas_uris():
+    root = Path("vendor/virgil")
+    files = sorted(root.glob("aeneas/src/*/*.v3"))
+    for pattern in (root / "aeneas/DEPS").read_text().split():
+        if not pattern.startswith("lib/test/"):
+            files.extend(Path(p) for p in sorted(glob.glob(str(root / pattern))))
+    return [p.resolve().as_uri() for p in files]
+
+
+def large_payload(method, id, params=None, values=49900, size=4 * 1024 * 1024):
+    params = {**(params or {}), "ignored": [{}] * values, "padding": ""}
+    msg = {"jsonrpc": "2.0", "id": id, "method": method, "params": params}
+    params["padding"] = "x" * (size - len(json.dumps(msg, separators=(",", ":")).encode()))
+    payload = json.dumps(msg, separators=(",", ":")).encode()
+    assert len(payload) == size
+    return payload
+
+
+def send_payload(session, payload):
+    session.raw(f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload)
+
+
+def memory_headroom(exe, work):
+    s = Session(exe, "--worker-timeout-ms=5000")
+    try:
+        s.initialize()
+        uris = aeneas_uris()
+        first = s.result(s.analyze(uris))
+        assert first == {"generation": 1, "diagnostics": []}, first
+        send_payload(s, large_payload("virgil-lsp/snapshot", "large-snapshot"))
+        assert s.result("large-snapshot") == first
+
+        pending = s.analyze(uris)
+        payload = large_payload("virgil-lsp/snapshot", "buffered-snapshot")
+        s.raw(f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload[:-1])
+        second = s.result(pending)
+        assert second == {"generation": 2, "diagnostics": []}, second
+        s.raw(payload[-1:])
+        assert s.result("buffered-snapshot") == second
+
+        source = work / "large-source.v3"
+        source.write_text("def a = 42; def b = a;\n//" + " " * (15 * 1024 * 1024))
+        send_payload(s, large_payload("virgil-lsp/analyze", "original-overflow", {"uris": [source.as_uri()]},
+                                      values=499900, size=16 * 1024 * 1024))
+        s.ping()
+        assert (str, "original-overflow") not in s.answered
+        s.snapshot(second)
+        send_payload(s, large_payload("virgil-lsp/analyze", "over-budget", {"uris": [source.as_uri()]}))
+        error(s, "over-budget", -32602, "size budget")
+        s.snapshot(second)
+        send_payload(s, large_payload("virgil-lsp/analyze", "too-many-values", {"uris": [source.as_uri()]}, values=499900))
+        error(s, None, -32700, "50000 values")
+        s.ping()
+
+        source.write_text("def a = 42; def b = a;\n//" + " " * (3 * 1024 * 1024))
+        send_payload(s, large_payload("virgil-lsp/analyze", "large-analysis", {"uris": [source.as_uri()]}))
+        good = s.result("large-analysis")
+        assert good == {"generation": 3, "diagnostics": []}, good
+        other = work / "other-source.v3"
+        other.write_text("def other = 1;\n//" + " " * (3 * 1024 * 1024))
+        send_payload(s, large_payload("virgil-lsp/analyze", "aggregate-budget",
+                                      {"uris": [source.as_uri(), other.as_uri()]}))
+        error(s, "aggregate-budget", -32602, "size budget")
+        s.snapshot(good)
+
+        first = s.result(s.analyze(uris))
+        assert first == {"generation": 4, "diagnostics": []}, first
+        source.write_text("class S extends S { def f() { me; } }\n//" + " " * (3 * 1024 * 1024))
+        send_payload(s, large_payload("virgil-lsp/analyze", "large-hang", {"uris": [source.as_uri()]}))
+        send_payload(s, large_payload("test/ping", "large-ping"))
+        error(s, "large-ping", -32601)
+        assert (str, "large-hang") not in s.answered
+        send_payload(s, large_payload("virgil-lsp/snapshot", "snapshot-during-hang"))
+        assert s.result("snapshot-during-hang") == first
+        error(s, "large-hang", -32603, "timed out")
+        s.snapshot(first)
+        final = s.result(s.analyze([Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri()]))
+        assert final == {"generation": 5, "diagnostics": []}, final
+        s.shutdown()
+        assert "longer than the limit of 4194304 bytes" in s.logs()
+        assert "HeapOverflow" not in s.logs(), s.logs()
+    finally:
+        s.close()
+
+
 def exercise(exe, work):
     s = Session(exe, "--worker-timeout-ms=5000", "--worker-max-analyses=8")
     try:
@@ -206,12 +291,7 @@ def exercise(exe, work):
 
         # Match the CLI's Aeneas file set: 20 full parse/verify/index analyses,
         # crossing multiple forced replacements while stdio keeps responding.
-        root = Path("vendor/virgil")
-        files = sorted(root.glob("aeneas/src/*/*.v3"))
-        for pattern in (root / "aeneas/DEPS").read_text().split():
-            if not pattern.startswith("lib/test/"):
-                files.extend(Path(p) for p in sorted(glob.glob(str(root / pattern))))
-        uris = [p.resolve().as_uri() for p in files]
+        uris = aeneas_uris()
         for generation in range(5, 25):
             pending = s.analyze(uris)
             s.ping()
@@ -281,7 +361,8 @@ def main():
         work = Path(directory).resolve()
         exercise(exe, work)
         startup_and_eof(exe, work)
-    print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, shutdown and startup passed")
+        memory_headroom(exe, work)
+    print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, shutdown, startup and memory headroom passed")
 
 
 if __name__ == "__main__":

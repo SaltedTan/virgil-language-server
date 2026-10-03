@@ -218,12 +218,12 @@ EXIT='{"jsonrpc":"2.0","method":"exit"}'
 # Golden transcripts in test/protocol/ cover the protocol over --stdio. The
 # cases here need input generated at run time or held open.
 
-# Five million zeros: under the default 16 MiB message limit, but far more
+# A million zeros: under the default 4 MiB message limit, but far more
 # values than the heap can hold once parsed. The message is answered with a
 # ParseError, and the next request is still read.
 {
     printf '{"jsonrpc":"2.0","id":2,"method":"x","params":['
-    yes '0,' | head -n 4999999 | tr -d '\n'
+    yes '0,' | head -n 999999 | tr -d '\n'
     printf '0]}'
 } > "$TMP/dense"
 {
@@ -236,7 +236,7 @@ EXIT='{"jsonrpc":"2.0","method":"exit"}'
 } > "$TMP/in"
 {
     frame "$INIT_RESULT"
-    frame '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON at byte 0: more than 500000 values"}}'
+    frame '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON at byte 0: more than 50000 values"}}'
     frame "$(not_found 3 small)"
     frame '{"jsonrpc":"2.0","id":4,"result":null}'
 } > "$TMP/want"
@@ -270,13 +270,13 @@ expect_stdio "stdio exits at exit without waiting for more input" 0 "$TMP/want" 
 expect "stdio rejects a bad message limit" 2 "" "invalid option" -- --stdio --max-message-bytes=0
 expect "stdio rejects a message limit over nine digits" 2 "" "invalid option" -- --stdio --max-message-bytes=1234567890
 expect "stdio rejects a message limit over the supported maximum" 2 "" \
-    "invalid option '--max-message-bytes=16777217': the supported maximum is 16777216 bytes" -- \
-    --stdio --max-message-bytes=16777217 < /dev/null
+    "invalid option '--max-message-bytes=4194305': the supported maximum is 4194304 bytes" -- \
+    --stdio --max-message-bytes=4194305 < /dev/null
 # The reproduction from #26: this limit used to be accepted, and the header
 # alone then ran out of heap.
 printf 'Content-Length: 999999999\r\n\r\n' > "$TMP/in"
 expect_stdio "stdio rejects a limit too large for the heap" 2 "$TMP/empty" \
-    "invalid option '--max-message-bytes=999999999': the supported maximum is 16777216 bytes" -- \
+    "invalid option '--max-message-bytes=999999999': the supported maximum is 4194304 bytes" -- \
     --max-message-bytes=999999999 < "$TMP/in"
 expect "stdio rejects unknown options" 2 "" "unknown option" -- --stdio --bogus
 
