@@ -5,6 +5,8 @@ def T = UnitTests.register;
 def X = [
 	T("DocumentUri:equivalent_files", test_uri_equivalent_files),
 	T("DocumentUri:encoding", test_uri_encoding),
+	T("DocumentUri:wsl_paths", test_uri_wsl_paths),
+	T("DocumentUri:windows_drive_form", test_uri_windows_drive_form),
 	T("DocumentUri:invalid_files", test_uri_invalid_files),
 	T("DocumentUri:opaque", test_uri_opaque),
 	()
@@ -34,6 +36,28 @@ def test_uri_encoding(t: Tester) {
 	t.assert_string("file:///tmp/a-._~09AZaz", DocumentUri.normalize("file:///tmp/a-._~09AZaz"));
 	// Decode once: a literal percent escape is not a slash.
 	t.assert_string("/tmp/%2F", DocumentUri.filePath("file:///tmp/%252F"));
+}
+
+def test_uri_wsl_paths(t: Tester) {
+	var uri = "file:///mnt/c/Users/Name/My%20Project/a.v3";
+	t.assert_string(uri, DocumentUri.normalize(uri));
+	t.assert_string("/mnt/c/Users/Name/My Project/a.v3", DocumentUri.filePath(uri));
+
+	var upper = "file:///mnt/c/Users/Name/a.v3", lower = "file:///mnt/c/users/Name/a.v3";
+	t.assert_string(upper, DocumentUri.normalize(upper));
+	t.assert_string(lower, DocumentUri.normalize(lower));
+	t.assert(upper != lower, "path case must be preserved for lexical identity");
+
+	var programs = "file:///mnt/c/Program%20Files%20(x86)/Virgil/a.v3";
+	t.assert_string("file:///mnt/c/Program%20Files%20%28x86%29/Virgil/a.v3", DocumentUri.normalize(programs));
+	t.assert_string("/mnt/c/Program Files (x86)/Virgil/a.v3", DocumentUri.filePath(programs));
+}
+
+def test_uri_windows_drive_form(t: Tester) {
+	var uri = "file:///c%3A/x.v3";
+	t.assert_string("file:///c%3A/x.v3", DocumentUri.normalize(uri));
+	// This is interpreted as a POSIX path, not converted to a native drive path.
+	t.assert_string("/c:/x.v3", DocumentUri.filePath(uri));
 }
 
 def test_uri_invalid_files(t: Tester) {

@@ -4,6 +4,7 @@
 def T = UnitTests.register;
 def X = [
 	T("DocumentStore:overlay_precedence", test_store_overlay_precedence),
+	T("DocumentStore:wsl_overlay_and_disk_fallback", test_store_wsl_overlay_and_disk_fallback),
 	T("DocumentStore:versions", test_store_versions),
 	T("DocumentStore:duplicate_open", test_store_duplicate_open),
 	T("DocumentStore:save", test_store_save),
@@ -44,6 +45,22 @@ def test_store_overlay_precedence(t: Tester) {
 	disk.bytes = null;
 	t.assert(store.read(uri) == null, "missing file must return null");
 	t.asserti(3, disk.calls);
+}
+
+def test_store_wsl_overlay_and_disk_fallback(t: Tester) {
+	var disk = DocumentReaderFake.new(), store = DocumentStore.new(disk.read, DocumentLimits.MAX_BYTES);
+	var uri = "file:///mnt/c/Users/Name/My%20Project/a.v3";
+	t.assert_string("disk", store.read(uri));
+	t.assert_string("/mnt/c/Users/Name/My Project/a.v3", disk.path);
+	t.asserti(1, disk.calls);
+
+	t.assert(store.open(uri, "virgil", 1, "overlay") == null, "open failed");
+	disk.bytes = "changed on disk";
+	t.assert_string("overlay", store.read(uri));
+	t.asserti(1, disk.calls);
+	t.assert(store.close(uri) == null, "close failed");
+	t.assert_string("changed on disk", store.read(uri));
+	t.asserti(2, disk.calls);
 }
 
 def test_store_versions(t: Tester) {
