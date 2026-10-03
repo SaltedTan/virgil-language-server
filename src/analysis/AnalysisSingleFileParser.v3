@@ -98,15 +98,15 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 // each expression statement. The parser builds chains of binary operators and
 // of member, call, and index suffixes in loops, so the stack limit does not
 // bound their depth. Each level of that recursion has its own token, which is
-// one of those counted here. Counts are kept per bracket level, as tuples,
-// argument lists, indices, and function bodies keep their own ranges, except
-// that a bracket holding a range operator adds its count to the enclosing one.
+// one of those counted here.
 class AnalysisExprChains {
 	private def kinds = Vector<byte>.new();  // the opening bracket of each level
 	private def counts = Vector<int>.new();  // each enclosing level's count
 	private def ranges = Vector<bool>.new(); // whether each enclosing level has a range operator
+	private def angles = Vector<int>.new();
 	private var count: int;
 	private var range: bool;
+	private var angle: int;
 	private var closedBrace: bool;
 	private var last = -1;
 
@@ -122,23 +122,43 @@ class AnalysisExprChains {
 			// The expression ends at a closed block unless the block is a
 			// function body that an operator or suffix follows.
 			closedBrace = false;
-			if (!continuesExpr(ch)) count = 0;
+			if (!continuesExpr(ch)) reset();
+		}
+		if (ch == ';' || ch == '}') {
+			while (kinds.length > 0 && kinds[kinds.length - 1] != '{') {
+				popTo(if(kinds[kinds.length - 1] == '(', ')', ']'));
+			}
 		}
 		match (ch) {
-			';' => count = 0;
+			';' => reset();
 			'{' => push(ch);
 			'(', '[' => {
 				// A call or index adds a level outside its brackets.
 				if (ch == '[' || !afterKeyword(p.input, prev)) count++;
 				var n = depth();
-				push(ch);
+				if (ch != '[' || p.peek(1) != ']') push(ch);
 				return n;
 			}
 			'}' => {
 				popTo(ch);
 				closedBrace = true;
 			}
-			')', ']' => popTo(ch);
+			')' => popTo(ch);
+			']' => if (prev < 0 || prev != pos - 1 || p.input[prev] != '[') popTo(ch);
+			',' => {
+				if (kinds.length > 0 && angle == 0) {
+					var kind = kinds[kinds.length - 1];
+					if (kind == '(' || (kind == '[' && !range)) reset();
+				}
+			}
+			'<' => {
+				count++;
+				angle++;
+			}
+			'>' => {
+				count++;
+				if (angle > 0) angle--;
+			}
 			'.' => {
 				count++;
 				if (p.peek(1) == '.' && (p.peek(2) == '.' || p.peek(2) == '+')) range = true;
@@ -147,30 +167,25 @@ class AnalysisExprChains {
 		}
 		return depth();
 	}
-	// A block level's count, or, within brackets holding a range operator,
-	// their count added to the enclosing level's. Other brackets keep their
-	// own ranges.
 	private def depth() -> int {
-		var n = count, r = range;
+		var n = count;
 		for (i = kinds.length - 1; i >= 0; i--) {
-			match (kinds[i]) {
-				'{' => return n;
-				'(' => return 0;
-				_ => {
-					if (!r) return 0;
-					n += counts[i];
-					r = ranges[i];
-				}
-			}
+			if (kinds[i] == '{') return n;
+			n += counts[i];
 		}
 		return n;
+	}
+	private def reset() {
+		count = 0;
+		range = false;
+		angle = 0;
 	}
 	private def push(kind: byte) {
 		kinds.put(kind);
 		counts.put(count);
 		ranges.put(range);
-		count = 0;
-		range = false;
+		angles.put(angle);
+		reset();
 	}
 	// Closes the innermost level that {close} closes. A parenthesis or index
 	// bracket closes only within the innermost block; levels left open inside
@@ -186,9 +201,11 @@ class AnalysisExprChains {
 		var inner = if(close == ']' && i == kinds.length - 1 && range, count);
 		count = counts[i] + inner;
 		range = ranges[i];
+		angle = angles[i];
 		kinds.resize(i);
 		counts.resize(i);
 		ranges.resize(i);
+		angles.resize(i);
 	}
 	// Whether the token at {pos} is a keyword whose parentheses are not a call.
 	private def afterKeyword(d: Array<byte>, pos: int) -> bool {

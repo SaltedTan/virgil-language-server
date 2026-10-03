@@ -198,7 +198,8 @@ def test_parse_long_chains(t: Tester) {
 	var limit = AnalysisSingleFileParser.CHAIN_LIMIT, head = "component M { def f() { ";
 	// (start, repeated, end, offset of the counted token in repeated, counted tokens in start)
 	var cases = [("x", " + x", "", 1, 0), ("x", ".y", "", 0, 0), ("x", "[0]", "", 0, 0),
-		("x", "()", "", 0, 0), ("x", " += 1", "", 1, 0), ("y[0 ... x", " + x", "]", 1, 2)];
+		("x", "[]", "", 0, 0), ("x", "()", "", 0, 0),
+		("x", " += 1", "", 1, 0), ("y[0 ... x", " + x", "]", 1, 2)];
 	for (c in cases) {
 		for (n in [limit - c.4, 100000]) {
 			var b = StringBuilder.new().puts(head).puts(c.0);
@@ -220,11 +221,35 @@ def test_parse_long_chains(t: Tester) {
 			t.asserti(stop, d.endOffset);
 		}
 	}
+	for (c in [("var getter = x.[]; 1", " + 1"), ("x.[]=; 1", " + 1"),
+		("x(1; 1", " + 1"), ("x[1; 1", " + 1"), ("x(1 1", " + 1"),
+		("x[1 1", " + 1"), ("x(1 x", ".m<A, B>()"),
+		("{ x(1 } 1", " + 1"), ("{ x[1 } 1", " + 1")]) {
+		var b = StringBuilder.new().puts(head).puts(c.0);
+		for (i < 30000) b.puts(c.1);
+		var text = b.puts("; } }").toString();
+		var r = AeneasAdapter.parseFile("chain.v3", text), found = false;
+		for (d in r.diagnostics) {
+			if (!Strings.equal(d.message, "expression too long; parsing stopped here")) continue;
+			found = true;
+			t.assert(d.beginOffset >= head.length + c.0.length && d.beginOffset < text.length,
+				"expected the stop inside the chain");
+			t.asserti(d.beginOffset, d.endOffset);
+		}
+		t.assert(found, "expected an expression too long diagnostic");
+		t.asserti(0, AeneasAdapter.documentSymbols("chain.v3", text).length);
+	}
+	t.assert(AeneasAdapter.parseFile("chain.v3", "]").diagnostics.length > 0,
+		"expected a diagnostic for an unmatched closing bracket");
+	t.asserti(0, AeneasAdapter.documentSymbols("chain.v3", "]").length);
 }
 
 // Lists and statements keep their own ranges, so they do not form chains.
 def test_parse_long_lists(t: Tester) {
 	var cases = [("def x = [", "(1, -2), ", "];"), ("def x = f(", "a + b, ", "0);"),
+		("def x = (", "a + b, ", "0);"), ("def x = [", "a + b, ", "0];"),
+		("def f() { x[", "a + b, ", "0]; }"), ("def x = f(", "x.m<A, B>() + 1, ", "0);"),
+		("def x = f(", "x[] + x.[] + x.[]=, ", "0);"),
 		("enum E { ", "A, ", "}"), ("def f() { ", "x + x; ", "}"),
 		("def f() { ", "if (a) {} ", "}")];
 	for (c in cases) {
