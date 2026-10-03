@@ -1,0 +1,13 @@
+Content-Length: 217
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 307
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"nesting too deep; parsing stopped here","range":{"end":{"character":1854,"line":0},"start":{"character":1854,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:row-13","version":1}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":2,"result":[]}Content-Length: 124
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"untitled:row-13","version":2}}Content-Length: 215
+
+{"jsonrpc":"2.0","id":3,"result":[{"kind":6,"name":"f","range":{"end":{"character":10,"line":0},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}}}]}Content-Length: 38
+
+{"jsonrpc":"2.0","id":4,"result":null}

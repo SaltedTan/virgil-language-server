@@ -11,6 +11,8 @@ def X = [
 	T("AeneasAdapter:parse_rep_hint_ranges", test_parse_rep_hint_ranges),
 	T("AeneasAdapter:parse_missing_range_bounds", test_parse_missing_range_bounds),
 	T("AeneasAdapter:symbols_missing_range_bounds", test_symbols_missing_range_bounds),
+	T("AeneasAdapter:parse_range_without_bounds", test_parse_range_without_bounds),
+	T("AeneasAdapter:parse_deep_nesting", test_parse_deep_nesting),
 	T("AeneasAdapter:symbols_rep_hint_eof", test_symbols_rep_hint_eof),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
@@ -117,6 +119,76 @@ def test_symbols_missing_range_bounds(t: Tester) {
 		var symbols = AeneasAdapter.documentSymbols("range.v3", text);
 		t.asserti(1, symbols.length);
 		if (symbols.length == 1) t.assert_string("f", symbols[0].name);
+	}
+}
+
+// Rows 20-24 of docs/aeneas-crash-paths.md: a failed start, then a range
+// operator without an end, in each context. A CRLF prefix first exhausts the
+// error limit in parseFile.
+def test_parse_range_without_bounds(t: Tester) {
+	for (i < RANGE_PREFIXES.length) {
+		for (start in ["0x ", "0x", "99999999999999999999 ", "... ", "..+ "]) {
+			for (op in ["...", "..+"]) {
+				for (lines in [0, AeneasAdapter.MAX_ERRORS]) {
+					var b = StringBuilder.new();
+					for (j < lines) b.puts("\r\n");
+					var text = b.puts(RANGE_PREFIXES[i]).puts(start).puts(op).puts(RANGE_SUFFIXES[i]).toString();
+					t.assert(AeneasAdapter.parseFile("range.v3", text).diagnostics.length > 0, "expected a diagnostic");
+					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+				}
+			}
+		}
+	}
+	// With an end, the range is left to the parser, which reports only the start.
+	for (i < RANGE_PREFIXES.length) {
+		for (start in ["0x ", "... ", "..+ "]) {
+			for (op in ["...", "..+"]) {
+				for (end in ["1", "n", "\"s\"", "'a'", "_", "++i"]) {
+					var text = StringBuilder.new().puts(RANGE_PREFIXES[i]).puts(start).puts(op)
+						.putc(' ').puts(end).puts(RANGE_SUFFIXES[i]).toString();
+					t.asserti(1, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
+					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+				}
+			}
+		}
+	}
+	for (op in ["...", "..+"]) {
+		for (end in ["'ab'", "\"unterminated", "_name", "__", "+i", "+"]) {
+			var text = StringBuilder.new().puts("def f() { xs[0x ").puts(op)
+				.putc(' ').puts(end).puts("]; }").toString();
+			t.assert(AeneasAdapter.parseFile("range.v3", text).diagnostics.length > 0, "expected a diagnostic");
+			t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+		}
+	}
+}
+
+// Row 13: nesting beyond the parser stack limit stops the parse with one
+// diagnostic; moderate nesting parses cleanly.
+def test_parse_deep_nesting(t: Tester) {
+	var cases = [("def x = ", "[", "", "]", ";"), ("def x = ", "(", "1", ")", ";"),
+		("def f() { ", "{", "", "}", " }"), ("def x = ", "!", "true", "", ";"),
+		("def f() { ", "while (a) ", "f();", "", " }"), ("var x: ", "A<", "int", ">", ";"),
+		("def f() { if (a) {} ", "else if (a) {} ", "", "", "}")];
+	for (c in cases) {
+		for (n in [1000, 50000]) {
+			var b = StringBuilder.new().puts(c.0);
+			for (i < n) b.puts(c.1);
+			b.puts(c.2);
+			for (i < n) b.puts(c.3);
+			var text = b.puts(c.4).toString();
+			var r = AeneasAdapter.parseFile("deep.v3", text);
+			if (n == 1000) {
+				t.asserti(0, r.diagnostics.length);
+				continue;
+			}
+			t.asserti(1, r.diagnostics.length);
+			if (r.diagnostics.length != 1) continue;
+			var d = r.diagnostics[0];
+			t.assert_string("nesting too deep; parsing stopped here", d.message);
+			t.assert(d.beginOffset > 0 && d.beginOffset < text.length, "expected the stop inside the input");
+			t.asserti(d.beginOffset, d.endOffset);
+			t.asserti(0, AeneasAdapter.documentSymbols("deep.v3", text).length);
+		}
 	}
 }
 
