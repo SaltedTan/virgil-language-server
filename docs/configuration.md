@@ -2,7 +2,7 @@
 
 A `.virgil-lsp.json` project file says which source files form each program in a repository. This page specifies version 1 of its format. [ADR-0005](decisions/0005-project-file-format.md) records why the format looks like this.
 
-The parser and its checks are implemented (`src/workspace/`). The server doesn't read project files while it runs yet. It will find the project file for each document, expand the patterns, and analyze projects in later M3 work ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55), [#58](https://github.com/SaltedTan/virgil-language-server/issues/58)). Rules that take effect only then are marked *(planned)*.
+The parser, bounded source expansion, workspace-folder discovery, and project contexts are implemented (`src/workspace/`). Configuration errors are published on the project file. Whole-program analysis is available through an [unadvertised development request](development.md#development-stdio-requests); automatic semantic diagnostic publication remains later M3 work ([#58](https://github.com/SaltedTan/virgil-language-server/issues/58)). Rules not yet implemented are marked *(planned)*.
 
 ## Why a project file
 
@@ -84,7 +84,7 @@ The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encod
 | `compilerArgs` | array of strings | `[]` | [Language options](#compiler-flags) for parsing and type checking. |
 | `target` | `null` | `null` | [Reserved](#target). Version 1 accepts only `null`. |
 
-All files selected by `sources`, `dependencies`, and `virgilDependencies` form one program. The files selected by `sources` are the project's *members*. When a file is a member of one project and only a dependency of another, the server uses the distinction to choose its active project. It also uses it to decide which closed files get diagnostics. *(planned)*
+All files selected by `sources`, `dependencies`, and `virgilDependencies` form one program. The files selected by `sources` are the project's *members*. When a file is a member of one project and only a dependency of another, the server uses the distinction to choose its active project. *(planned)* It will also use membership to decide which closed files get semantic diagnostics.
 
 ### Patterns
 
@@ -101,23 +101,28 @@ A pattern is a relative path whose segments are separated by `/`. Its segments m
 - Patterns in `sources`, `dependencies`, and `virgilDependencies` must end in `.v3`. `exclude` patterns may match any file, so `build/**` excludes everything under `build/`.
 - These are errors: an empty pattern, an absolute path (`/x.v3`), a backslash, an empty segment (`a//b.v3`, or a trailing `/`), a `.` or `..` segment, `**` inside a segment (`a**b`), and ASCII control characters (U+0000–U+001F and U+007F). `[`, `]`, `{`, and `}` are reserved for later syntax.
 
-*(planned)* Expansion selects regular files only:
+Expansion selects regular files on disk only (open overlays replace their contents at analysis submission):
 
 - `exclude` is matched against paths relative to the project file's directory. It removes files from `sources` and `dependencies`, but not from `virgilDependencies`, which list exactly the library files a project uses.
 - The program's files are those of `sources`, then `dependencies`, then `virgilDependencies`. Each pattern adds its matches in byte order of their paths, in the order the patterns are listed. A file that an earlier pattern already selected keeps its first place, and a file in both `sources` and `dependencies` is a member.
-- Limits on the number and total size of selected files, how symbolic links are followed, and what happens when a pattern matches nothing are specified with expansion ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55)).
+- A pattern matching nothing contributes no files and is not an error. Empty expanded programs remain available as contexts but cannot be submitted for analysis.
+- Each program may select at most **1,024 files**. Its source bytes, path bytes, and conservative wire metadata allowance must fit in **4 MiB**. File metadata and overlay lengths are checked for the *entire* selection before reading any source contents. Reads are bounded again, so files growing after enumeration cannot bypass admission. Rejected expansion returns no partial source list and reports a configuration diagnostic.
+- Traversal is limited to 10,000 directory entries/walk states, depth 64, and 4 MiB of visited path bytes per program. These bounds also stop pathological glob patterns. Workspace discovery has a separate 10,000-entry/depth-64 bound; reaching its limit logs a warning. Opening a document still searches for its nearest configuration.
+- A workspace retains at most 128 configuration files, 128 projects, 8,192 source references, 4 MiB of configuration text, and 4 MiB of source path bytes. Capacity failures disable the affected configuration rather than retaining a partial program.
+
+### Symbolic links
+
+Project discovery, configuration reads, expansion, and project source reads **never follow symbolic links**, including links to regular files and links in ancestor directories. Traversal opens each path component relative to an already-open directory descriptor with `O_NOFOLLOW`; it does not rely on a prior `stat` check. Links, FIFOs, sockets, and device files are not sources. A symlink cycle therefore cannot recurse or block. Hidden directories are entered only by explicit dot-prefixed pattern segments, not by `**`.
+
+This deliberately favors bounded, reproducible traversal over support for symlink-based dependency layouts. Use physical paths for workspace folders and the Virgil root. An unreadable or symlinked configuration marker reports `SourceIO` rather than silently falling through to an ancestor configuration. There is no `realpath` canonicalization: the document store retains its lexical URI identity rules, and the explicit-URI development API retains its existing disk-read policy. Files reachable through hard links keep their distinct lexical paths.
 
 ### The Virgil root
 
 `virgilDependencies` name files in a Virgil checkout or installation: the directory that holds Virgil's `lib/`, `rt/`, and `bin/`. Patterns are relative to that directory, as in `aeneas/DEPS`, which lists `lib/util/*.v3` and `lib/asm/x86-64/*.v3`. Other paths to the library need rewriting: `$VIRGIL_LIB/util/*.v3` in a build script, or `../../lib/util/*.v3` in the `DEPS` file of one of Virgil's apps, becomes `lib/util/*.v3`.
 
-A project file can't name the Virgil root, because its location differs from machine to machine. *(planned)* The server takes the root from the first of these that is set:
+A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If it is absent or invalid, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic.
 
-1. `virgilRoot` in the client's `initializationOptions`: an absolute path, set in the editor.
-2. The `VIRGIL_LOC` environment variable of the server process, which Virgil build scripts such as Wizard engine's `build.sh` also use.
-3. The parent of the directory that holds `v3c` on `PATH`, which those scripts also fall back to. The server only looks for the file and never runs it.
-
-The server logs which root it uses. If none is found, a project with `virgilDependencies` gets a configuration diagnostic.
+*(planned)* Fallback discovery will use `VIRGIL_LOC`, then the parent of the directory containing `v3c` on `PATH`, and log the chosen root. These fallbacks are not implemented yet; the server never runs `v3c` to discover a root.
 
 A repository that includes Virgil, for example as a submodule, can list the library in `dependencies` instead: `"vendor/virgil/lib/util/*.v3"`.
 
@@ -163,10 +168,32 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 | `DuplicateProjectName` | A `name` used by an earlier project |
 | `InvalidPattern` | A pattern that breaks the [pattern rules](#patterns) |
 | `UnsupportedCompilerFlag` | A `compilerArgs` entry that isn't a language option, or that repeats one or gives it a value other than true or false |
+| `ExpansionLimit` | Source count, traversal, project count, or retained source-list capacity exceeded |
+| `SourceBudget` | Aggregate source bytes, paths, and metadata exceed the analysis budget |
+| `SourceIO` | A selected file became unreadable/nonregular, directory enumeration failed or exceeded its entry bound, or configuration reading exceeded its size/capacity limits |
+| `MissingVirgilRoot` | `virgilDependencies` is present without a configured Virgil root |
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.
 
-*(planned)* The server publishes them with `textDocument/publishDiagnostics` for the project file's URI, with `source: "virgil-lsp"`, the code, error severity, and LSP ranges converted from the byte ranges. It replaces them when the file changes, and clears them when it is fixed or deleted. The file needn't be open in the editor, so the server also sends one `window/showMessage` warning each time a project file becomes invalid, because its projects' semantic features stop working.
+The server publishes them with `textDocument/publishDiagnostics` for the project file's URI, with `source: "virgil-lsp"`, the code, error severity, and UTF-16 LSP ranges converted from the byte ranges. It replaces them when it observes a change, and clears them when the file is fixed or deleted. The file needn't be open in the editor, so the server also sends one `window/showMessage` warning each time a project file becomes invalid, because its projects' semantic features stop working. Unchanged diagnostic lists are not republished.
+
+## Workspace folders and active projects
+
+`initialize.workspaceFolders` supplies the local workspace roots. A null or absent value falls back to `rootUri`; an empty array explicitly means no roots. Nonlocal/non-file URIs are ignored. Folder paths are normalized, deduplicated, and sorted; client folder order does not influence selection. Dynamic workspace-folder changes are not advertised or handled yet.
+
+The nearest `.virgil-lsp.json` in a document's ancestor directories is its governing file, using the same marker as `editors/nvim/virgil_lsp.lua`. Search stops at the deepest containing workspace folder, or at the filesystem root if no workspace folder contains the document. A nearer empty or invalid configuration does not fall through to a parent's project. Workspace configurations are discovered recursively on first use, excluding hidden directories and symlinks; configurations outside those discovered roots can also be loaded by opening a governed document.
+
+A file selected by several discovered projects has a separate `ProjectContext` (and retained analysis snapshot) for each program. The active one is chosen by:
+
+1. Membership in a project from the nearest configuration.
+2. Membership in another discovered project.
+3. Being a dependency of a discovered project.
+
+Ties use canonical configuration URI byte order, then project declaration order within that file. No map iteration order or client folder ordering participates. A file with no selected context stays in single-file mode.
+
+Known configurations are refreshed on document updates, project analysis submissions/completions, and development snapshot inspection. Accepted edits to open JSON configuration buffers take precedence over disk. A changed configuration gets a new revision token; all snapshots stamped with its old revision become stale, including analyses that were already pending. Restoring old bytes does not revive those results.
+
+**Follow-up:** dynamic `workspace/didChangeWatchedFiles` registration, background discovery of newly created configurations, and automatic reanalysis are not implemented. External configuration changes are noticed on the next refresh, not immediately. Restart the server to rediscover unopened configurations added elsewhere in the workspace.
 
 ## Security
 
@@ -177,8 +204,8 @@ Nothing in a project file can make the server download or execute code:
 - `compilerArgs` accepts only language options. Compiler actions (`-run`, `-test`), targets, output paths, runtime files, and field redefinitions are rejected.
 - Analysis only parses and type-checks ([ADR-0002](decisions/0002-pinned-virgil-adapter-boundary.md#decision)). It never initializes, compiles, or runs the program.
 
-The file does decide which files the server reads. *(planned)* Open editor buffers override the files on disk.
+The file does decide which files the server reads. Open editor buffers override selected files on disk.
 
 ## Without a project file
 
-The server falls back to single-file mode: parsing, syntax diagnostics, and document symbols. *(planned)* It also reports once that semantic features are limited.
+The server falls back to single-file mode: parsing, syntax diagnostics, and document symbols. Once per session, when a document has no active project, it logs that semantic features are limited. Configuration discovery itself does not start an analysis worker.

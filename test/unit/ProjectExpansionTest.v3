@@ -1,0 +1,241 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("ProjectExpansion:host_directory", test_host_directory),
+	T("ProjectExpansion:glob", test_glob),
+	T("ProjectExpansion:fixtures", test_expansion_fixtures),
+	T("ProjectExpansion:order_exclude_deduplicate", test_order_exclude),
+	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
+	T("ProjectExpansion:symlinks_and_special_files", test_symlinks),
+	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
+	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
+	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
+	T("WorkspaceProjects:active_precedence", test_active_precedence),
+	T("WorkspaceProjects:single_file_once", test_single_file_once),
+	()
+];
+def FIXTURES = "test/fixtures/projects";
+def absolute(relative: string) -> string {
+	return ProjectFiles.join(ProjectFiles.parent(ProjectFiles.parent(HostOs.executablePath())), relative);
+}
+def definition(text: string) -> ProjectDefinition {
+	return ProjectConfigParser.parse(Strings.format1("{\"version\":1,\"projects\":[%s]}", text)).config.projects[0];
+}
+def expand(base: string, root: string, defn: ProjectDefinition) -> ProjectExpansionResult {
+	return ProjectExpansion.new(null, ProjectLimits.MAX_FILES, ProjectLimits.MAX_BYTES).expand(base, root, defn);
+}
+def test_host_directory(t: Tester) {
+	var dir = ProjectFiles.join(FIXTURES, "two-programs");
+	var names = ProjectFiles.list(dir, 100);
+	t.assert(names != null, "directory syscall succeeds");
+	if (names == null) return;
+	t.asserti(4, names.length);
+	t.assert_string(".virgil-lsp.json", names[0]);
+	t.assert_string("client", names[1]);
+	t.assert_string("server", names[2]);
+	t.assert_string("shared", names[3]);
+	t.assert(ProjectFiles.list(dir, 3) == null, "bounded directory listing");
+	t.assert(ProjectFiles.list(ProjectFiles.join(dir, ".virgil-lsp.json"), 100) == null, "not a directory");
+	t.assertz(false, ProjectFiles.configMarker(ProjectFiles.join(dir, "missing/ancestor/.virgil-lsp.json")));
+	var path = ProjectFiles.join(dir, ".virgil-lsp.json"), text = System.fileLoad(path);
+	var info = ProjectFiles.metadata(path);
+	t.asserti(ProjectFiles.REGULAR, info.0);
+	t.assertl(long.view(text.length), info.1);
+	t.assert_string(text, ProjectFiles.load(path, text.length));
+	t.assert(ProjectFiles.load(path, text.length - 1) == null, "stat before load");
+	t.asserti(ProjectFiles.DIRECTORY, ProjectFiles.metadata(dir).0);
+	t.assert_string("file:///a/%23%3F%25%20%C3%A9.v3", ProjectFiles.uri("/a/#?% é.v3"));
+}
+def test_glob(t: Tester) {
+	for (pattern in ["*.v3", "?.v3", "**/*.v3", "**/**/?.v3"]) t.assertz(true, ProjectGlob.matches(pattern, "é.v3"));
+	t.assertz(false, ProjectGlob.matches("??.v3", "é.v3"));
+	t.assertz(true, ProjectGlob.matches("src/**/A?.v3", "src/a/b/A😀.v3"));
+	t.assertz(true, ProjectGlob.matches("src/**/A?.v3", "src/Aé.v3"));
+	t.assertz(false, ProjectGlob.matches("src/*.v3", "src/nested/A.v3"));
+	t.assertz(false, ProjectGlob.matches("**/*.v3", "src/.hidden/A.v3"));
+	t.assertz(false, ProjectGlob.matches("*.v3", ".hidden.v3"));
+	t.assertz(true, ProjectGlob.matches(".*.v3", ".hidden.v3"));
+	t.assertz(true, ProjectGlob.matches("**/.hidden/*.v3", "src/.hidden/A.v3"));
+	t.assertz(true, ProjectGlob.matches("build/**", "build/a/b.v3"));
+	t.assertz(true, ProjectGlob.matches("a*b*c.v3", "axbybc.v3"));
+	t.assertz(false, ProjectGlob.matches("a*b*c.v3", "axbybd.v3"));
+}
+def test_expansion_fixtures(t: Tester) {
+	var base = ProjectFiles.join(FIXTURES, "two-programs");
+	var config = ProjectConfigParser.parse(System.fileLoad(ProjectFiles.join(base, ".virgil-lsp.json"))).config;
+	for (p in config.projects) {
+		var r = expand(base, null, p);
+		t.asserti(0, r.diagnostics.length);
+		t.asserti(2, r.sources.length);
+		t.assert_string(ProjectFiles.join(base, Strings.format1("%s/Program.v3", p.name)), r.sources[0].path);
+		t.assert_string(ProjectFiles.join(base, "shared/Greeting.v3"), r.sources[1].path);
+	}
+	base = ProjectFiles.join(FIXTURES, "virgil-lib");
+	config = ProjectConfigParser.parse(System.fileLoad(ProjectFiles.join(base, ".virgil-lsp.json"))).config;
+	var r = expand(base, "vendor/virgil", config.projects[0]);
+	t.asserti(0, r.diagnostics.length);
+	t.assert(r.sources.length > 1, "fixture library sources expanded");
+	t.assert_string(ProjectFiles.join(base, "src/Words.v3"), r.sources[0].path);
+	t.assertz(false, r.sources[1].member);
+	var onlyLib = definition("{\"name\":\"p\",\"sources\":[\"src/*.v3\"],\"virgilDependencies\":[\"lib/util/*.v3\"],\"exclude\":[\"**\"]}");
+	var lib = expand(base, "vendor/virgil", onlyLib);
+	t.asserti(0, lib.diagnostics.length);
+	t.asserti(r.sources.length - 1, lib.sources.length);
+	t.assertz(false, lib.sources[0].member); // exclude does not apply to the Virgil root
+	r = expand(base, null, config.projects[0]);
+	t.asserti(1, r.diagnostics.length);
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "missing library root");
+}
+def test_order_exclude(t: Tester) {
+	var p = definition("{\"name\":\"p\",\"sources\":[\"shared/*.v3\",\"**/*.v3\"],\"dependencies\":[\"shared/*.v3\"],\"exclude\":[\"client/**\"]}");
+	var base = ProjectFiles.join(FIXTURES, "two-programs");
+	for (i < 3) {
+		var r = expand(base, null, p);
+		t.asserti(0, r.diagnostics.length);
+		t.asserti(2, r.sources.length);
+		t.assert_string(ProjectFiles.join(base, "shared/Greeting.v3"), r.sources[0].path);
+		t.assert_string(ProjectFiles.join(base, "server/Program.v3"), r.sources[1].path);
+		t.assertz(true, r.sources[0].member);
+	}
+	p = definition("{\"name\":\"p\",\"sources\":[\"absent/*.v3\"],\"dependencies\":[\"shared/*.v3\"]}");
+	var r = expand(base, null, p);
+	t.asserti(0, r.diagnostics.length); // zero matches is not an error
+	t.asserti(1, r.sources.length);
+	t.assertz(false, r.sources[0].member);
+}
+class NoSourceReads {
+	var calls: int;
+	def read(path: string, budget: int) -> Array<byte> { calls++; return ""; }
+}
+def test_limits_before_reads(t: Tester) {
+	var p = definition("{\"name\":\"p\",\"sources\":[\"**/*.v3\"]}");
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var spy = NoSourceReads.new(), store = DocumentStore.new(null, DocumentLimits.MAX_BYTES).withBoundedReader(spy.read);
+	var r = ProjectExpansion.new(store, 2, ProjectLimits.MAX_BYTES).expand(base, null, p);
+	t.asserti(0, r.sources.length);
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "file count limit");
+	r = ProjectExpansion.new(store, 100, 32).expand(base, null, p);
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_BUDGET, "aggregate metadata limit");
+	var first = ProjectFiles.join(base, "client/Program.v3");
+	store.open(ProjectFiles.uri(first), "virgil", 1, Array<byte>.new(10000));
+	r = ProjectExpansion.new(store, 100, 5000).expand(base, null, p);
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_BUDGET, "overlay budget before read");
+	t.asserti(0, spy.calls);
+	// The sparse input's on-disk length exceeds 4 MiB; expansion does not load it.
+	r = expand(ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures"), null, definition("{\"name\":\"p\",\"sources\":[\"large.v3\"]}"));
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_BUDGET, "disk stat size budget");
+}
+def test_symlinks(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	var p = definition("{\"name\":\"p\",\"sources\":[\"safe/**/*.v3\",\"linked/**/*.v3\",\"fifo.v3\"]}");
+	var r = expand(base, null, p);
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(1, r.sources.length);
+	t.assert_string(ProjectFiles.join(base, "safe/A.v3"), r.sources[0].path);
+	t.assert(ProjectFiles.load(ProjectFiles.join(base, "safe/link.v3"), 1000) == null, "no file links");
+	t.assert(ProjectFiles.load(ProjectFiles.join(base, "linked/A.v3"), 1000) == null, "no symlink ancestors");
+	t.assert(ProjectFiles.load(ProjectFiles.join(base, "fifo.v3"), 1000) == null, "no blocking on FIFO");
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var marker = ProjectFiles.join(base, "safe/.virgil-lsp.json");
+	t.assert_string(marker, w.nearest(ProjectFiles.join(base, "safe/A.v3")));
+	var config = w.load(marker);
+	t.assert(config.diagnostics[0].code == ProjectConfigCode.SOURCE_IO, "symlinked config is rejected, not followed or bypassed");
+	r = expand(base, null, definition("{\"name\":\"p\",\"sources\":[\"deep/**/*.v3\"]}"));
+	t.asserti(0, r.sources.length);
+	t.asserti(1, r.diagnostics.length);
+	t.assert(r.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "deep real trees are bounded too");
+}
+def workspaceParams(root: string) -> HashMap<string, JsonValue> {
+	var p = Strings.newMap<JsonValue>();
+	p["rootUri"] = JsonValue.String(ProjectFiles.uri(root));
+	return p;
+}
+def test_shared_contexts(t: Tester) {
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	w.initialize(workspaceParams(base));
+	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var doc = w.forDocument(uri);
+	t.assert_string(ProjectFiles.join(base, ".virgil-lsp.json"), doc.configPath);
+	t.asserti(2, doc.contexts.length);
+	t.assert_string("server", doc.active.definition.name);
+	t.assert(doc.contexts[0] != doc.contexts[1], "one distinct context per project");
+	t.assert(w.forDocument(uri).active == doc.active, "stable active context");
+	var server = w.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "server/Program.v3")));
+	t.asserti(1, server.contexts.length);
+	t.assert(server.active == doc.active, "same server context");
+}
+def test_workspace_roots(t: Tester) {
+	var root = absolute(FIXTURES), w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var params = workspaceParams("/ignored"), folder = Strings.newMap<JsonValue>();
+	folder["uri"] = JsonValue.String(ProjectFiles.uri(root));
+	params["workspaceFolders"] = JsonValue.JArray([JsonValue.JObject(folder), JsonValue.JObject(folder)]);
+	w.initialize(params);
+	t.asserti(1, w.folders.length);
+	t.assert_string(root, w.folders[0]);
+	t.assert_string(ProjectFiles.join(root, "two-programs/.virgil-lsp.json"), w.nearest(ProjectFiles.join(root, "two-programs/shared/Greeting.v3")));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES);
+	w = WorkspaceProjects.new(store);
+	w.initialize(workspaceParams(ProjectFiles.join(root, "two-programs/shared")));
+	t.assert(w.nearest(ProjectFiles.join(root, "two-programs/shared/Greeting.v3")) == null, "stop at containing folder boundary");
+	var nested = ProjectFiles.join(root, "two-programs/shared/.virgil-lsp.json");
+	store.open(ProjectFiles.uri(nested), "json", 1, "{\"version\":1,\"projects\":[]}");
+	t.assert_string(nested, w.nearest(ProjectFiles.join(root, "two-programs/shared/Greeting.v3")));
+}
+def test_configuration_revision(t: Tester) {
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var config = ProjectFiles.join(base, ".virgil-lsp.json"), uri = ProjectFiles.uri(config);
+	w.initialize(workspaceParams(base));
+	var c = w.load(config), context = c.contexts[0], old = c.revision;
+	var snapshot = AnalysisSnapshot.new(1, [], true, true, [], null, false, []);
+	snapshot.recordProject(context);
+	t.assertz(true, snapshot.matchesProject());
+	store.open(uri, "json", 1, "{\"version\":1,\"projects\":[]}");
+	w.refresh();
+	t.assertz(false, old.current);
+	t.assertz(false, snapshot.matchesProject());
+	t.assert(c.revision.number > old.number, "revision increases");
+	store.close(uri); w.refresh();
+	t.assertz(false, old.current); // restoring the same text cannot revive a result
+	t.asserti(2, c.contexts.length);
+	old = c.revision;
+	w.refresh();
+	t.assert(c.revision == old, "unchanged config keeps its revision");
+}
+def test_active_precedence(t: Tester) {
+	var root = absolute(FIXTURES), base = ProjectFiles.join(root, "two-programs");
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	w.initialize(workspaceParams(root));
+	var outer = ProjectFiles.join(root, ".virgil-lsp.json"), inner = ProjectFiles.join(base, ".virgil-lsp.json");
+	store.open(ProjectFiles.uri(outer), "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"outer\",\"sources\":[\"two-programs/**/*.v3\"]}]}");
+	w.load(outer);
+	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var doc = w.forDocument(uri);
+	t.asserti(3, doc.contexts.length);
+	t.assert_string("server", doc.active.definition.name); // nearer beats outer config URI order
+	store.open(ProjectFiles.uri(inner), "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"dep\",\"sources\":[\"none/*.v3\"],\"dependencies\":[\"shared/*.v3\"]},{\"name\":\"member\",\"sources\":[\"shared/*.v3\"]}]}");
+	doc = w.forDocument(uri);
+	t.asserti(3, doc.contexts.length);
+	t.assert_string("member", doc.active.definition.name); // membership beats earlier dependency
+	store.change(ProjectFiles.uri(inner), 2, "{\"version\":1,\"projects\":[]}");
+	t.assert(w.forDocument(uri).active == null, "empty nearest config does not fall through");
+	store.change(ProjectFiles.uri(inner), 3, "invalid");
+	t.assert(w.forDocument(uri).active == null, "invalid nearest config does not fall through");
+}
+class ProjectWarningRecorder {
+	var count: int;
+	def warn(text: string) { count++; }
+}
+def test_single_file_once(t: Tester) {
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES)), warnings = ProjectWarningRecorder.new();
+	w.warn = warnings.warn;
+	for (uri in ["untitled:first", "untitled:second", "file:///nonexistent/test.v3"]) {
+		var doc = w.forDocument(uri);
+		t.assert(doc.active == null, "single-file mode");
+		t.asserti(0, doc.contexts.length);
+	}
+	t.asserti(1, warnings.count);
+}

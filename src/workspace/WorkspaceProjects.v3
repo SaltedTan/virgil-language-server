@@ -1,0 +1,223 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Lightweight mutable token: snapshots retain no config/source text. Replacing
+// or deleting a configuration permanently invalidates all its old snapshots.
+class ProjectRevision(uri: string, number: int) { var current = true; }
+class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
+	var sources: Array<ProjectSource> = [];
+	var snapshot: AnalysisSnapshot;
+	def contains(path: string, memberOnly: bool) -> bool {
+		for (s in sources) { if(Strings.equal(path, s.path) && (!memberOnly || s.member)) return true; }
+		return false;
+	}
+}
+class WorkspaceConfig(path: string) {
+	var text: Array<byte>;
+	var revision: ProjectRevision;
+	var contexts: Array<ProjectContext> = [];
+	var diagnostics: Array<ProjectConfigDiagnostic> = [];
+	var published: string;
+	var unreadable: bool;
+	var reportedInvalid: bool;
+}
+class DocumentProjects(configPath: string, contexts: Array<ProjectContext>, active: ProjectContext) { }
+
+class WorkspaceProjects(store: DocumentStore) {
+	def FILE = ".virgil-lsp.json";
+	def MAX_CONFIGS = 128;
+	def MAX_PROJECTS = 128;
+	def MAX_RETAINED_BYTES = 4 * 1024 * 1024;
+	def MAX_SOURCE_REFERENCES = 8192;
+	def var folders: Array<string> = [];
+	var virgilRoot: string;
+	var warn: string -> void;
+	var onConfig: WorkspaceConfig -> void;
+	private var discovered: bool;
+	private def configs = Vector<WorkspaceConfig>.new();
+	private var nextRevision: int;
+	private var scanEntries: int;
+	private var scanWarned: bool;
+	private var singleFileWarned: bool;
+
+	// Called only after initialize's params have been validated. Folder order
+	// does not influence context selection. Nonlocal URIs are not disk roots.
+	def initialize(params: HashMap<string, JsonValue>) {
+		var roots = Vector<string>.new();
+		if (JsonValue.JArray.?(params["workspaceFolders"])) {
+			for (v in JsonValue.JArray.!(params["workspaceFolders"]).v) {
+				if (JsonValue.JObject.?(v)) addFolder(roots, JsonValue.JObject.!(v).v["uri"]);
+			}
+		} else addFolder(roots, params["rootUri"]);
+		folders = roots.extract();
+		folders = Arrays.sort(folders, 0, folders.length, ProjectFiles.before);
+		if (JsonValue.JObject.?(params["initializationOptions"])) {
+			var value = JsonValue.JObject.!(params["initializationOptions"]).v["virgilRoot"];
+			if (JsonValue.String.?(value)) {
+				var path = JsonValue.String.!(value).v;
+				if (path.length > 0 && path[0] == '/') virgilRoot = DocumentUri.filePath(ProjectFiles.uri(path));
+			}
+		}
+		// Discovery waits until after the initialize response, on first use.
+	}
+	private def addFolder(roots: Vector<string>, v: JsonValue) {
+		if (!JsonValue.String.?(v)) return;
+		var path = DocumentUri.filePath(JsonValue.String.!(v).v);
+		if (path == null) return;
+		for (i < roots.length) { if(Strings.equal(roots[i], path)) return; }
+		roots.put(path);
+	}
+	private def discoveryLimit() {
+		if (!scanWarned && warn != null) warn("workspace project discovery limit exceeded; open documents still discover their nearest project file");
+		scanWarned = true;
+	}
+	private def discover(dir: string, depth: int) {
+		if (scanEntries >= ProjectLimits.MAX_VISITS || depth > ProjectLimits.MAX_DEPTH || configs.length >= MAX_CONFIGS) { discoveryLimit(); return; }
+		var names = ProjectFiles.list(dir, ProjectLimits.MAX_VISITS - scanEntries);
+		if (names == null) return;
+		scanEntries += names.length;
+		for (name in names) {
+			var path = ProjectFiles.join(dir, name);
+			if (Strings.equal(name, FILE)) load(path);
+			else if (name.length > 0 && name[0] != '.' && ProjectFiles.metadata(path).0 == ProjectFiles.DIRECTORY) discover(path, depth + 1);
+		}
+	}
+	// A containing workspace folder bounds ancestor search. With no containing
+	// folder, walk to the filesystem root (matching the editor's root marker).
+	def nearest(path: string) -> string {
+		var dir = ProjectFiles.parent(path), boundary = "/";
+		for (root in folders) {
+			if ((Strings.equal(root, dir) || Strings.startsWith(dir, ProjectFiles.join(root, ""))) && root.length > boundary.length) boundary = root;
+		}
+		while (true) {
+			var config = ProjectFiles.join(dir, FILE);
+			if (store.overlay(ProjectFiles.uri(config)) != null || ProjectFiles.configMarker(config)) return config;
+			if (Strings.equal(dir, boundary) || Strings.equal(dir, "/")) break;
+			dir = ProjectFiles.parent(dir);
+		}
+		return null;
+	}
+	def refresh() {
+		if (!discovered) {
+			discovered = true;
+			for (root in folders) discover(root, 0);
+		}
+		for (i < configs.length) update(configs[i]);
+	}
+	def load(path: string) -> WorkspaceConfig {
+		for (i < configs.length) {
+			if (Strings.equal(configs[i].path, path)) { update(configs[i]); return configs[i]; }
+		}
+		if (configs.length >= MAX_CONFIGS) { discoveryLimit(); return null; }
+		var config = WorkspaceConfig.new(path);
+		configs.put(config);
+		update(config);
+		return config;
+	}
+	private def update(c: WorkspaceConfig) {
+		var uri = ProjectFiles.uri(c.path), overlay = store.overlay(uri);
+		var text = if(overlay != null, overlay.text, ProjectFiles.load(c.path, ProjectConfigParser.MAX_BYTES));
+		var retained = 0, projectCount = 0;
+		for (i < configs.length) {
+			var other = configs[i];
+			if (other == c) continue;
+			if (other.text != null) retained += other.text.length;
+			projectCount += other.contexts.length;
+		}
+		if (text != null && text.length > MAX_RETAINED_BYTES - retained) text = null;
+		var same = c.text == text || (c.text != null && text != null && Strings.equal(c.text, text));
+		var unreadable = false;
+		if (text == null) {
+			var fd = ProjectFiles.open(c.path, false);
+			unreadable = fd != -2; // ENOENT on both hosts means deletion, not an error.
+			if (fd >= 0) HostOs.close(fd);
+		}
+		var changed = c.revision == null || !same || c.unreadable != unreadable;
+		if (changed) {
+			if (c.revision != null) c.revision.current = false;
+			c.revision = ProjectRevision.new(uri, ++nextRevision);
+			c.text = text; c.unreadable = unreadable; c.contexts = []; c.diagnostics = [];
+			if (text == null) {
+				if (unreadable) c.diagnostics = [ProjectConfigDiagnostic.new(ProjectConfigCode.SOURCE_IO, 0, 0, "cannot read project file within the configuration size/capacity limits")];
+			} else {
+				var parsed = ProjectConfigParser.parse(text);
+				c.diagnostics = parsed.diagnostics;
+				if (parsed.config != null) {
+					var defs = parsed.config.projects;
+					if (defs.length > MAX_PROJECTS - projectCount) c.diagnostics = [ProjectConfigDiagnostic.new(ProjectConfigCode.EXPANSION_LIMIT, 0, 0, "too many projects in workspace")];
+					else {
+						c.contexts = Array<ProjectContext>.new(defs.length);
+						for (i < defs.length) c.contexts[i] = ProjectContext.new(c.revision, defs[i]);
+					}
+				}
+			}
+		}
+		if (c.contexts.length == 0) { publish(c); return; }
+		var diagnostics = Vector<ProjectConfigDiagnostic>.new(), references = 0, pathBytes = 0;
+		for (i < configs.length) {
+			if (configs[i] == c) continue;
+			for (ctx in configs[i].contexts) {
+				references += ctx.sources.length;
+				for (source in ctx.sources) pathBytes += source.path.length;
+			}
+		}
+		for (ctx in c.contexts) {
+			var expanded = ProjectExpansion.new(store, ProjectLimits.MAX_FILES, ProjectLimits.MAX_BYTES)
+				.expand(ProjectFiles.parent(c.path), virgilRoot, ctx.definition);
+			ctx.sources = expanded.sources;
+			references += ctx.sources.length;
+			for (source in ctx.sources) pathBytes += source.path.length;
+			if (references > MAX_SOURCE_REFERENCES || pathBytes > MAX_RETAINED_BYTES) {
+				diagnostics.put(ProjectConfigDiagnostic.new(ProjectConfigCode.EXPANSION_LIMIT, ctx.definition.begin, ctx.definition.end, "workspace source-list capacity exceeded"));
+				break;
+			}
+			for (d in expanded.diagnostics) { if(diagnostics.length < ProjectConfigParser.MAX_DIAGNOSTICS) diagnostics.put(d); }
+		}
+		c.diagnostics = diagnostics.extract();
+		// One invalid project invalidates the whole file, not just that program.
+		if (c.diagnostics.length > 0) { for(ctx in c.contexts) ctx.sources = []; }
+		publish(c);
+	}
+	private def publish(c: WorkspaceConfig) {
+		var b = StringBuilder.new().putd(c.revision.number);
+		for (d in c.diagnostics) b.put3("|%s:%d:%s", d.code.code, d.begin, d.message);
+		var signature = b.extract();
+		if (c.published != null && Strings.equal(c.published, signature)) return;
+		c.published = signature;
+		if (onConfig != null) onConfig(c);
+	}
+	def forDocument(uri: string) -> DocumentProjects {
+		var path = DocumentUri.filePath(uri), nearestPath: string;
+		if (path != null) nearestPath = nearest(path);
+		var governing = if(nearestPath != null, load(nearestPath));
+		refresh();
+		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
+		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);
+		if (path != null && !disabled) {
+			for (i < configs.length) {
+				var c = configs[i];
+				for (ctx in c.contexts) { if(ctx.contains(path, false)) contexts.put(ctx); }
+			}
+		}
+		var result = contexts.extract();
+		result = Arrays.sort(result, 0, result.length, contextBefore);
+		// Prefer membership in the nearest config, then any membership, then a
+		// dependency context. Ties: canonical config URI, then declaration order.
+		for (ctx in result) {
+			if (active == null || rank(ctx, path, nearestPath) < rank(active, path, nearestPath)) active = ctx;
+		}
+		if (active == null && !singleFileWarned) {
+			singleFileWarned = true;
+			if (warn != null) warn("Without a project file selecting this document, semantic features are limited; using single-file mode.");
+		}
+		return DocumentProjects.new(nearestPath, result, active);
+	}
+	private def rank(ctx: ProjectContext, path: string, nearestPath: string) -> int {
+		if (!ctx.contains(path, true)) return 2;
+		return if(nearestPath != null && Strings.equal(ctx.config.uri, ProjectFiles.uri(nearestPath)), 0, 1);
+	}
+	private def contextBefore(a: ProjectContext, b: ProjectContext) -> bool {
+		if (!Strings.equal(a.config.uri, b.config.uri)) return ProjectFiles.before(a.config.uri, b.config.uri);
+		return a.definition.begin < b.definition.begin;
+	}
+}

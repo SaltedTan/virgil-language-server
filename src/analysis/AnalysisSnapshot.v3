@@ -14,6 +14,15 @@ class AnalysisSnapshot {
 	// Submission provenance attached by the stdio server, never sent to the
 	// worker. Raw worker/CLI snapshots have no document-store provenance.
 	def var documentVersions: Array<AnalysisDocumentVersion> = [];
+	def var projectRevision: ProjectRevision;
+	def var projectName: string;
+	def recordProject(context: ProjectContext) {
+		projectRevision = context.config;
+		projectName = context.definition.name;
+	}
+	def matchesProject() -> bool {
+		return projectRevision == null || projectRevision.current;
+	}
 	def parsed: bool;	// parsing reported no errors, so verification ran
 	def verified: bool;	// parsing and verification both reported no errors
 	def diagnostics: Array<AnalysisDiagnostic>;
@@ -34,6 +43,7 @@ class AnalysisSnapshot {
 	// False for an unrecorded URI. Disk inputs are assumed current only while
 	// no overlay is open; external disk mutations are deliberately untracked.
 	def matchesDocument(store: DocumentStore, uri: string) -> bool {
+		if (!matchesProject()) return false;
 		var key = DocumentUri.normalize(uri);
 		if (key == null) return false;
 		for (v in documentVersions) {

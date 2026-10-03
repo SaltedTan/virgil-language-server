@@ -31,7 +31,7 @@ WORKER_HEAP ?= 384m
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 
-.PHONY: all test test-nvim check-virgil buildinfo clean
+.PHONY: all test test-nvim check-virgil buildinfo project-fixtures clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -53,7 +53,10 @@ $(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
 	$(V3C) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
-$(BUILD)/unit-tests: buildinfo $(TEST_SRC) $(SERVER_LIB)
+project-fixtures:
+	python3 test/fixtures/projects/prepare.py $(BUILD)
+
+$(BUILD)/unit-tests: buildinfo project-fixtures $(TEST_SRC) $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=unit-tests \
 	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS) $(VIRGIL)/lib/test/*.v3
 

@@ -18,7 +18,11 @@ enum ProjectConfigCode(code: string) {
 	INVALID_VALUE("InvalidValue"),
 	DUPLICATE_PROJECT_NAME("DuplicateProjectName"),
 	INVALID_PATTERN("InvalidPattern"),
-	UNSUPPORTED_COMPILER_FLAG("UnsupportedCompilerFlag")
+	UNSUPPORTED_COMPILER_FLAG("UnsupportedCompilerFlag"),
+	EXPANSION_LIMIT("ExpansionLimit"),
+	SOURCE_BUDGET("SourceBudget"),
+	SOURCE_IO("SourceIO"),
+	MISSING_VIRGIL_ROOT("MissingVirgilRoot")
 }
 
 // A problem in a project file, at its bytes from {begin} up to the exclusive

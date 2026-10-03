@@ -16,8 +16,9 @@ enum LspServerState {
 }
 
 // The LSP 3.17 lifecycle in front of a dispatcher. Each payload is checked
-// against the lifecycle state before the dispatcher routes it. Like the
-// dispatcher, it does no I/O. See docs/architecture.md.
+// against the lifecycle state before the dispatcher routes it. Transport I/O
+// is injected; project discovery uses bounded host filesystem access. See
+// docs/architecture.md.
 //
 // - Before a successful initialize, requests other than initialize get
 //   ServerNotInitialized, and notifications other than exit are dropped.
@@ -33,9 +34,13 @@ class LspServer {
 	// Handlers for the server's features are registered here.
 	def dispatcher = JsonRpcDispatcher.new();
 	def documents = DocumentStore.new(null, documentCapacity);
+	def projects = WorkspaceProjects.new(documents);
+	private var parserDiagnostics: LspParserDiagnostics;
+	private var projectDiagnostics: LspProjectDiagnostics;
 	private var documentWarning: Array<byte>;
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
+	var warnProject: string -> void;
 	// Notifications and deferred replies are separate from handle()'s replies.
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
@@ -56,20 +61,43 @@ class LspServer {
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
-		var diagnostics = LspParserDiagnostics.new(publishNotification);
-		documentSync.onUpdate = diagnostics.update;
-		documentSync.onClose = diagnostics.close;
+		parserDiagnostics = LspParserDiagnostics.new(publishNotification);
+		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
+		projects.warn = projectWarning;
+		projects.onConfig = projectDiagnostics.update;
+		documentSync.onUpdate = documentUpdated;
+		documentSync.onClose = documentClosed;
 	}
 	// Production attaches its worker supervisor; lifecycle-only tests need no OS.
 	def withAnalysis(supervisor: AnalysisSupervisor) -> this {
-		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification);
+		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification).withProjects(projects);
 		developmentAnalysis.register(dispatcher);
 	}
 	def pollAnalysis() {
 		if (developmentAnalysis != null) developmentAnalysis.onPoll();
 	}
+	private def documentUpdated(doc: DocumentOverlay) {
+		var path = DocumentUri.filePath(doc.uri);
+		if (path != null && Strings.endsWith(path, "/.virgil-lsp.json")) {
+			projects.load(path);
+			projects.refresh();
+			return;
+		}
+		projects.forDocument(doc.uri);
+		parserDiagnostics.update(doc);
+	}
+	private def documentClosed(doc: DocumentOverlay) {
+		var path = DocumentUri.filePath(doc.uri);
+		if (path != null && Strings.endsWith(path, "/.virgil-lsp.json")) {
+			projects.load(path);
+			projects.refresh();
+		} else parserDiagnostics.close(doc);
+	}
 	private def publishNotification(payload: Array<byte>) {
 		if (sendNotification != null) sendNotification(payload);
+	}
+	private def projectWarning(reason: string) {
+		if (warnProject != null) warnProject(reason);
 	}
 	private def ignoredDocumentSync(reason: string) {
 		if (warnDocumentSync != null) warnDocumentSync(reason);
@@ -152,6 +180,7 @@ class LspServer {
 		if (!JsonRpcParams.ByName.?(request.params)) {
 			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "initialize params must be an object"));
 		}
+		projects.initialize(JsonRpcParams.ByName.!(request.params).v);
 		state = LspServerState.RUNNING;
 		var serverInfo = Strings.newMap<JsonValue>();
 		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);

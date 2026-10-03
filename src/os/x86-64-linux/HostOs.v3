@@ -24,6 +24,9 @@ component HostOs {
 	private def SYS_write = 1;
 	private def SYS_open = 2;
 	private def SYS_close = 3;
+	private def SYS_fstat = 5;
+	private def SYS_getdents64 = 217;
+	private def SYS_openat = 257;
 	private def SYS_poll = 7;
 	private def SYS_rt_sigaction = 13;
 	private def SYS_setitimer = 38;
@@ -43,6 +46,8 @@ component HostOs {
 	private def F_DUPFD_CLOEXEC = 1030;
 	private def O_NONBLOCK = 0x800;
 	private def O_CLOEXEC = 0x80000;
+	private def O_DIRECTORY = 0x10000;
+	private def O_NOFOLLOW = 0x20000;
 	private def X_OK = 1;
 	private def ITIMER_REAL = 0;
 	private def SIGPIPE = 13;
@@ -147,6 +152,26 @@ component HostOs {
 		if (n <= 0 || n >= buf.length) return null;
 		return Arrays.range(buf, 0, n);
 	}
+
+	// Directory traversal never follows symlinks, including intermediate components.
+	def openDirectoryRoot(absolute: bool) -> int {
+		var name = if(absolute, "/\x00", ".\x00");
+		return sys(SYS_open, (Pointer.atContents(name), O_CLOEXEC | O_DIRECTORY, 0));
+	}
+	def openChild(fd: int, name: string, directory: bool) -> int {
+		var z = Arrays.concat(name, "\x00");
+		return sys(SYS_openat, (fd, Pointer.atContents(z), O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW | if(directory, O_DIRECTORY, 0), 0));
+	}
+	def fileMetadata(fd: int) -> (int, long) {
+		var buf = Array<long>.new(18);
+		if (sys(SYS_fstat, (fd, Pointer.atContents(buf))) < 0) return (0, -1L);
+		return (int.view(buf[3]) & 0xF000, buf[6]);
+	}
+	def readDirectory(fd: int, buf: Array<byte>) -> int {
+		return sys(SYS_getdents64, (fd, Pointer.atContents(buf), buf.length));
+	}
+	def directoryNameOffset = 19;
+	def directoryRecordOffset = 16;
 
 	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.
 	private def moveUp(fd: int) -> int {
