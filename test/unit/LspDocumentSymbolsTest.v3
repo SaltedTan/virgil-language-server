@@ -23,6 +23,8 @@ def running(t: Tester) -> LspServer {
 }
 def symbols(t: Tester, s: LspServer) -> Array<JsonValue> {
 	var parsed = JsonRpcJsonParser.new(s.handle(REQUEST));
+	// Server output can contain more values than the client input limit.
+	parsed.maxValues = int.max;
 	var obj = JsonValue.JObject.!(parsed.parseDocument()).v;
 	t.assert(parsed.ok, "symbol reply must be JSON");
 	t.assert(obj.has("result"), "symbol request must succeed");
