@@ -1,0 +1,135 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Drive the real worker explicitly: a document mutation happens after begin
+// and before any worker result can be accepted, without timing-dependent sleeps.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisDocumentVersions:pending_change", test_pending_change),
+	T("AnalysisDocumentVersions:pending_close", test_pending_close),
+	T("AnalysisDocumentVersions:disk_policy", test_disk_policy),
+	T("AnalysisDocumentVersions:rejected_events", test_rejected_events),
+	()
+];
+def URI = "file:///tmp/version%20test.v3";
+def ALIAS = "FILE://localhost/tmp/./version test.v3";
+
+class VersionTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	var disk: Array<byte> = "def disk = 1;";
+	var response: Array<byte>;
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		server.documents.withBoundedReader(readDisk);
+		server.handle("{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}");
+	}
+	def readDisk(path: string, maxBytes: int) -> Array<byte> {
+		return if(disk.length <= maxBytes, disk);
+	}
+	def receive(bytes: Array<byte>) { response = bytes; }
+	def begin(t: Tester) {
+		response = null;
+		t.assert(server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"virgil-lsp/analyze\",\"params\":{\"uris\":[\"FILE://localhost/tmp/./version test.v3\"]}}") == null, "deferred analysis");
+		t.assert(supervisor.busy(), "analysis is pending");
+	}
+	def complete(t: Tester) -> AnalysisSnapshot {
+		var fds = Array<int>.new(4);
+		while (supervisor.busy()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, supervisor.pollTimeout());
+			server.pollAnalysis();
+		}
+		t.assert(response != null, "deferred reply arrived");
+		var snapshot = supervisor.snapshot;
+		t.assert(snapshot != null, "worker completed");
+		return snapshot;
+	}
+	def inspect() -> JsonValue {
+		var bytes = server.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"virgil-lsp/snapshot\"}");
+		return JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v["result"];
+	}
+	def close() { server.close(); }
+}
+def checkStamp(t: Tester, result: JsonValue, overlay: bool, version: int, current: bool) {
+	var obj = JsonValue.JObject.!(result).v;
+	var stamps = JsonValue.JArray.!(obj["documentVersions"]).v;
+	t.asserti(1, stamps.length);
+	var stamp = JsonValue.JObject.!(stamps[0]).v;
+	t.assert_string(URI, JsonValue.String.!(stamp["uri"]).v);
+	if (overlay) t.asserti(version, JsonValue.Int.!(stamp["version"]).v);
+	else t.assert(JsonValue.Null.?(stamp["version"]), "disk version is null");
+	t.assertz(current, JsonValue.Bool.!(stamp["current"]).v);
+}
+def replyResult(bytes: Array<byte>) -> JsonValue {
+	return JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v["result"];
+}
+
+def test_pending_change(t: Tester) {
+	var s = VersionTestSession.new(), store = s.server.documents;
+	t.assert(store.open(ALIAS, "virgil", -10, "def overlay = 1;") == null, "open");
+	s.begin(t);
+	t.assert(store.change(URI, -9, "def changed = 2;") == null, "accepted change while pending");
+	var snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	t.assertz(false, snapshot.matchesDocument(store, ALIAS));
+	checkStamp(t, replyResult(s.response), true, -10, false);
+	checkStamp(t, s.inspect(), true, -10, false);
+	// New submissions capture the replacement rather than the old stamp.
+	s.begin(t);
+	snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	t.assertz(true, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), true, -9, true);
+	t.assertz(false, snapshot.matchesDocument(store, "untitled:absent"));
+	t.assertz(false, snapshot.matchesDocument(store, "file://remote/a"));
+	s.close();
+}
+def test_pending_close(t: Tester) {
+	var s = VersionTestSession.new(), store = s.server.documents;
+	store.open(URI, "virgil", 0, "def overlay = 1;");
+	s.begin(t);
+	t.assert(store.close(ALIAS) == null, "accepted close while pending");
+	var snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	t.assertz(false, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), true, 0, false);
+	// Version numbers restart on open. Reusing the number must not revive data.
+	store.open(ALIAS, "virgil", 0, "def different = 3;");
+	t.assertz(false, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), true, 0, false);
+	s.close();
+}
+def test_disk_policy(t: Tester) {
+	var s = VersionTestSession.new(), store = s.server.documents;
+	s.begin(t);
+	s.disk = "def externalEdit = 2;";
+	var snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	// External disk changes have no version. No stat/hash promise is made.
+	t.assertz(true, snapshot.matchesDocument(store, ALIAS));
+	checkStamp(t, s.inspect(), false, 0, true);
+	store.open(URI, "virgil", 1, "def open = 3;");
+	t.assertz(false, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), false, 0, false);
+	store.close(URI);
+	t.assertz(true, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), false, 0, true);
+	s.close();
+}
+def test_rejected_events(t: Tester) {
+	var s = VersionTestSession.new(), store = s.server.documents;
+	store.open(URI, "virgil", 2147483647, "def overlay = 1;");
+	s.begin(t);
+	t.assert(store.change(ALIAS, 2147483647, "ignored") != null, "equal version rejected");
+	t.assert(store.change(ALIAS, -2147483648, "ignored") != null, "wrapped version rejected");
+	t.assert(store.open(ALIAS, "virgil", 1, "ignored") != null, "duplicate open rejected");
+	t.assert(store.change(ALIAS, 2147483647, null) != null, "invalid change rejected");
+	t.assert(store.save(URI) == null, "save does not change version");
+	var snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	t.assertz(true, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), true, 2147483647, true);
+	s.close();
+}

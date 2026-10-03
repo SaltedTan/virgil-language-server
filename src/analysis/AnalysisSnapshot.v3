@@ -11,6 +11,9 @@ class AnalysisSnapshot {
 	def generation: int;
 	// The program's files in analysis order.
 	def paths: Array<string>;
+	// Submission provenance attached by the stdio server, never sent to the
+	// worker. Raw worker/CLI snapshots have no document-store provenance.
+	def var documentVersions: Array<AnalysisDocumentVersion> = [];
 	def parsed: bool;	// parsing reported no errors, so verification ran
 	def verified: bool;	// parsing and verification both reported no errors
 	def diagnostics: Array<AnalysisDiagnostic>;
@@ -22,6 +25,23 @@ class AnalysisSnapshot {
 	private def files = Strings.newMap<AnalysisSnapshotFile>();
 
 	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) { }
+
+	// Called once on completion, before exposing the snapshot to handlers.
+	def recordDocumentVersions(versions: Array<AnalysisDocumentVersion>) {
+		documentVersions = versions;
+	}
+
+	// False for an unrecorded URI. Disk inputs are assumed current only while
+	// no overlay is open; external disk mutations are deliberately untracked.
+	def matchesDocument(store: DocumentStore, uri: string) -> bool {
+		var key = DocumentUri.normalize(uri);
+		if (key == null) return false;
+		for (v in documentVersions) {
+			if (!Strings.equal(v.uri, key)) continue;
+			return v.matchesDocument(store);
+		}
+		return false;
+	}
 
 	// Records the occurrences of {path}, in source order (see AnalysisSnapshotFile).
 	def addFile(path: string, file: AnalysisSnapshotFile) {
@@ -43,6 +63,17 @@ class AnalysisSnapshot {
 		if (file == null) return null;
 		var i = file.find(line, column);
 		return if(i >= 0, declarations[file.targets[i]]);
+	}
+}
+
+// One canonical URI's submission stamp. A null identity denotes disk, not
+// overlay version zero (all integer overlay versions, including negative, work).
+// The token carries no source bytes and prevents close/reopen version reuse.
+class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersionIdentity) {
+	def matchesDocument(store: DocumentStore) -> bool {
+		var doc = store.overlay(uri);
+		if (identity == null) return doc == null;
+		return doc != null && doc.version == version && doc.identity == identity;
 	}
 }
 

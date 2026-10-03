@@ -8,6 +8,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
+	private var pendingVersions: Array<AnalysisDocumentVersion>;
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("virgil-lsp/analyze", analyze);
@@ -39,6 +40,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			keys[i] = key;
 		}
 		var sources = Array<AnalysisSource>.new(keys.length);
+		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
 		// Conservative metadata allowance, then the exact supervisor admission.
 		var bytes = 32L;
 		for (i < keys.length) {
@@ -50,11 +52,17 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			if (text == null) return invalid(Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
 			bytes += text.length;
 			sources[i] = AnalysisSource.new(path, text);
+			// Submission is synchronous: this is the overlay readBounded used.
+			var doc = store.overlay(keys[i]);
+			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
 		}
 		var outcome = supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
-			_ => return null;
+			_ => {
+				pendingVersions = versions;
+				return null;
+			}
 		}
 	}
 	// Reads the last good server-owned data even while the worker is hung or
@@ -64,7 +72,12 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	}
 	def onPoll() {
 		var outcome = supervisor.onPoll();
-		if (!AnalysisOutcome.Pending.?(outcome) && pending) finish(reply(outcome));
+		if (!AnalysisOutcome.Pending.?(outcome) && pending) {
+			if (AnalysisOutcome.Completed.?(outcome)) {
+				AnalysisOutcome.Completed.!(outcome).snapshot.recordDocumentVersions(pendingVersions);
+			}
+			finish(reply(outcome));
+		}
 	}
 	def close(reason: string) {
 		supervisor.close();
@@ -74,6 +87,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var id = pendingId;
 		pending = false;
 		pendingId = JsonRpcId.Null;
+		pendingVersions = null;
 		match (reply) {
 			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
 			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
@@ -96,6 +110,15 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		if (s == null) return JsonValue.Null;
 		var obj = Strings.newMap<JsonValue>();
 		obj["generation"] = JsonValue.Int(s.generation);
+		var versions = Array<JsonValue>.new(s.documentVersions.length);
+		for (i < versions.length) {
+			var v = s.documentVersions[i], item = Strings.newMap<JsonValue>();
+			item["uri"] = JsonValue.String(v.uri);
+			item["version"] = if(v.identity == null, JsonValue.Null, JsonValue.Int(v.version));
+			item["current"] = JsonValue.Bool(v.matchesDocument(store));
+			versions[i] = JsonValue.JObject(item);
+		}
+		obj["documentVersions"] = JsonValue.JArray(versions);
 		var diagnostics = Array<JsonValue>.new(s.diagnostics.length);
 		for (i < diagnostics.length) {
 			var d = s.diagnostics[i], item = Strings.newMap<JsonValue>();
