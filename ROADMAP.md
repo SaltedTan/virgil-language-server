@@ -204,7 +204,7 @@ Deliverables:
 - Single-file parser adapter for one open document. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
 - Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics. *(present; [publication contract](docs/architecture.md#parser-diagnostics))*
 - `textDocument/documentSymbol` using VST declarations; the `vctags` traversal is a useful model.
-- A manually launchable LazyVim config and VS Code development client.
+- A manually launchable LazyVim config and VS Code development client. *(present; [LazyVim](editors/nvim/README.md), [VS Code](clients/vscode/README.md))*
 
 Exit criteria:
 

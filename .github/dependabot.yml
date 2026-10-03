@@ -4,3 +4,13 @@ updates:
     directory: /
     schedule:
       interval: monthly
+  - package-ecosystem: npm
+    directory: /clients/vscode
+    schedule:
+      interval: monthly
+    ignore:
+      # These follow the minimum VS Code version (engines.vscode) and the
+      # Node.js version it ships; raise them together, by hand.
+      - dependency-name: "@types/vscode"
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]

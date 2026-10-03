@@ -67,3 +67,22 @@ jobs:
         run: |
           build/virgil-lsp --version
           file build/virgil-lsp
+
+  vscode-client:
+    name: VS Code client (type-check, linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: clients/vscode
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install dependencies from the lockfile
+        run: npm ci
+      - name: Type-check
+        run: npm run check

@@ -1,0 +1,99 @@
+{
+  "name": "virgil-lsp-vscode",
+  "displayName": "Virgil Language Server (development)",
+  "description": "Development client for the Virgil language server.",
+  "version": "0.0.0-dev",
+  "private": true,
+  "publisher": "virgil-language-server",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SaltedTan/virgil-language-server.git",
+    "directory": "clients/vscode"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The language server analyzes the workspace's source files, so it starts only in trusted workspaces."
+    }
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "virgil",
+        "aliases": [
+          "Virgil"
+        ],
+        "extensions": [
+          ".v3"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "virgil",
+        "scopeName": "source.virgil",
+        "path": "./syntaxes/virgil.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "virgil.server.restart",
+        "title": "Restart Language Server",
+        "category": "Virgil"
+      },
+      {
+        "command": "virgil.server.showOutput",
+        "title": "Show Language Server Output",
+        "category": "Virgil"
+      }
+    ],
+    "configuration": {
+      "title": "Virgil",
+      "properties": {
+        "virgil.server.path": {
+          "type": "string",
+          "default": "virgil-lsp",
+          "scope": "machine",
+          "markdownDescription": "The `virgil-lsp` executable: a command name looked up on `PATH`, or an absolute path (`~/` is expanded). `virgil-lsp-worker` must be in the same directory as the executable it resolves to. With Remote-SSH or Remote-WSL, set this in the remote settings."
+        },
+        "virgil.trace.server": {
+          "type": "string",
+          "enum": [
+            "messages",
+            "compact",
+            "verbose"
+          ],
+          "default": "messages",
+          "scope": "window",
+          "markdownDescription": "How much of each LSP message to record in the trace. The trace goes to the \"Virgil Language Server\" output channel while its log level is Trace: run **Developer: Set Log Level...** and choose Trace for that channel."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "check": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.91.0",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "$comment": "Written for this project from Virgil's lexical rules (vendor/virgil/doc/virgil-grammar.ebnf and the Aeneas lexer). Copyright 2026 The Virgil Language Server Authors. SPDX-License-Identifier: Apache-2.0",
+  "name": "Virgil",
+  "scopeName": "source.virgil",
+  "fileTypes": ["v3"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#characters" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#rep-hints" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.virgil",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.virgil",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.virgil",
+          "match": "\\\\(?:x[0-9A-Fa-f]{2}|[rnbt'\"\\\\])"
+        },
+        {
+          "name": "invalid.illegal.escape.virgil",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.virgil",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [{ "include": "#escapes" }]
+    },
+    "characters": {
+      "name": "string.quoted.single.virgil",
+      "match": "'(?:\\\\x[0-9A-Fa-f]{2}|\\\\[rnbt'\"\\\\]|[^'\\\\])'"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.virgil",
+          "match": "\\b0[xX][0-9A-Fa-f_]+[uU]?[lL]?\\b"
+        },
+        {
+          "name": "constant.numeric.binary.virgil",
+          "match": "\\b0[bB][01_]+[uU]?[lL]?\\b"
+        },
+        {
+          "name": "constant.numeric.float.virgil",
+          "match": "\\b[0-9][0-9_]*(?:\\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9]+)?[fFdD]\\b"
+        },
+        {
+          "name": "constant.numeric.float.virgil",
+          "match": "\\b[0-9][0-9_]*(?:\\.[0-9][0-9_]*(?:[eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)\\b"
+        },
+        {
+          "name": "constant.numeric.integer.virgil",
+          "match": "\\b[0-9][0-9_]*[uU]?[lL]?\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(def)\\s+([A-Za-z][A-Za-z0-9_]*)\\s*(?=[(<])",
+          "captures": {
+            "1": { "name": "storage.type.virgil" },
+            "2": { "name": "entity.name.function.virgil" }
+          }
+        },
+        {
+          "match": "\\b(class|component|enum|layout|type)\\s+([A-Za-z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.virgil" },
+            "2": { "name": "entity.name.type.virgil" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.virgil",
+          "match": "\\b(?:break|case|continue|else|for|if|match|return|while)\\b"
+        },
+        {
+          "name": "storage.type.virgil",
+          "match": "\\b(?:class|component|def|enum|fun|layout|packing|struct|type|var)\\b"
+        },
+        {
+          "name": "storage.modifier.virgil",
+          "match": "\\b(?:describes|descriptor|export|extends|import|private|thread)\\b"
+        },
+        {
+          "name": "keyword.operator.virgil",
+          "match": "\\b(?:in|new)\\b"
+        },
+        {
+          "name": "constant.language.virgil",
+          "match": "\\b(?:true|false|null)\\b"
+        },
+        {
+          "name": "variable.language.virgil",
+          "match": "\\b(?:this|super)\\b"
+        },
+        {
+          "name": "support.type.primitive.virgil",
+          "match": "\\b(?:void|bool|byte|short|int|long|float|double|string|[iu](?:[1-9]|[1-5][0-9]|6[0-4]))\\b"
+        }
+      ]
+    },
+    "rep-hints": {
+      "name": "entity.other.attribute-name.virgil",
+      "match": "#[A-Za-z][-A-Za-z0-9_]*"
+    }
+  }
+}
