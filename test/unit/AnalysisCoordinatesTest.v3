@@ -7,6 +7,8 @@ def X = [
 	T("AnalysisCoordinates:trailing_line_comment", test_trailing_line_comment),
 	T("AnalysisCoordinates:token_end_before_comment", test_token_end_before_comment),
 	T("AnalysisCoordinates:parser_coordinate_ambiguities", test_parser_coordinate_ambiguities),
+	T("AnalysisCoordinates:retrospective_tokens", test_retrospective_tokens),
+	T("AnalysisCoordinates:malformed_literal_bound", test_malformed_literal_bound),
 	T("AnalysisCoordinates:no_file", test_no_file),
 	T("AnalysisCoordinates:replay_boundaries", test_replay_boundaries),
 	()
@@ -66,7 +68,9 @@ def test_token_end_before_comment(t: Tester) {
 // from just a line/column pair, so whole-program parser errors reuse capture.
 def test_parser_coordinate_ambiguities(t: Tester) {
 	var cases = ["component C { def x = 1;", "/*\t*/ def f() => missing.[](in);",
-		"/*\t*/ def if // trailing\tcomment", "component C { def x = ; }"];
+		"/*\t*/ def if // trailing\tcomment", "component C { def x = ; }",
+		"component C {\n/*\t*/ def f() => C.[]// trailing\t😀",
+		"component C {\n/*\t*/ def f() => C.[]=// trailing\t😀"];
 	for (text in cases) {
 		var single = AeneasAdapter.parseFile("ambiguity.v3", text);
 		var whole = AeneasAdapter.analyzeProgram([AnalysisSource.new("ambiguity.v3", text)], false);
@@ -74,6 +78,7 @@ def test_parser_coordinate_ambiguities(t: Tester) {
 		for (i < whole.diagnostics.length) {
 			t.asserti(single.diagnostics[i].beginOffset, whole.diagnostics[i].beginOffset);
 			t.asserti(single.diagnostics[i].endOffset, whole.diagnostics[i].endOffset);
+			t.assert_string(single.diagnostics[i].toString(), whole.diagnostics[i].toString());
 		}
 	}
 }
@@ -104,4 +109,87 @@ def test_replay_boundaries(t: Tester) {
 	t.asserti(13, next.offset(2, 9, false));
 	// CR is an ordinary compiler byte; LSP alone treats it as a line end.
 	t.asserti(2, AnalysisCoordinates.new("a\rb").offset(1, 3, false));
+}
+
+
+def test_retrospective_tokens(t: Tester) {
+	for (op in ["[]", "[]="]) {
+		var prefix = "component C {\n/*\t*/ def f() => C.";
+		check(t, StringBuilder.new().puts(prefix).puts(op).puts(";\n}\n").toString(),
+			prefix.length, prefix.length + op.length, 1, 19);
+	}
+	var cases = [
+		"component C {\n/*\t*/ def f() => C.[]; def x: int = \"s\";\n}\n",
+		"class C { def [] -> int { return 1; }\n/*\t*/ def f(c: C) -> int => c.[];\n}\n",
+		"class C { def [] = x: int {}\n/*\t*/ def f(c: C) -> int => c.[]=;\n}\n",
+		"component C {\n/*\t*/ def f() -> int => ;\n}\n",
+		"component C {\n/*\t*/ def f() -> int => C.[](in);\n}\n"
+	];
+	var begins = [50, 66, 57, 38, 43], ends = [53, 70, 62, 38, 45];
+	for (i < cases.length) {
+		var text = cases[i], sources = [AnalysisSource.new("retrospective.v3", text)];
+		var a = AeneasAdapter.analyzeProgram(sources, false);
+		t.assert(a.diagnostics.length > 0, "expected retrospective diagnostic");
+		if (a.diagnostics.length == 0) continue;
+		t.asserti(begins[i], a.diagnostics[0].beginOffset);
+		t.asserti(ends[i], a.diagnostics[0].endOffset);
+		if (i == 0) {
+			t.asserti(2, a.diagnostics.length);
+			if (a.diagnostics.length == 2) {
+				t.asserti(33, a.diagnostics[1].beginOffset);
+				t.asserti(35, a.diagnostics[1].endOffset);
+			}
+		}
+		var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null), 0L);
+		var decoded = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["retrospective.v3"]);
+		if (decoded == null) return t.fail("retrospective result did not decode");
+		for (j < a.diagnostics.length) {
+			t.asserti(a.diagnostics[j].beginOffset, decoded.snapshot.diagnostics[j].beginOffset);
+			t.asserti(a.diagnostics[j].endOffset, decoded.snapshot.diagnostics[j].endOffset);
+		}
+		var prog = Program.new();
+		SystemCalls.install(prog);
+		prog.files = ["retrospective.v3"];
+		prog.inputs = [text];
+		var compilation = Compilation.new(Compiler.new(null), prog);
+		if (compilation.parse()) compilation.verify();
+		var original = Lists.reverse(prog.ERROR.errors), j = 0;
+		for (e = original; e != null; e = e.tail) {
+			t.assert(j < a.diagnostics.length, "compiler diagnostic retained");
+			if (j >= a.diagnostics.length) break;
+			var d = a.diagnostics[j++], r = e.head.range;
+			t.assert_string(e.head.description, d.message);
+			t.asserti(r.beginLine, d.beginLine);
+			t.asserti(r.beginColumn, d.beginColumn);
+			t.asserti(r.endLine, d.endLine);
+			t.asserti(r.endColumn, d.endColumn);
+		}
+		t.asserti(a.diagnostics.length, j);
+		AnalysisTypeCache.release();
+	}
+	var clean = "class C { def [x: int] -> int { return x; } def [x: int] = y: int {}\n/*\t*/ def f(c: C) -> int => c.[](1); def g(c: C) => c.[]=(1, 2);\n}\n";
+	var successful = AeneasAdapter.analyzeProgram([AnalysisSource.new("clean.v3", clean)], false);
+	t.assertz(true, successful.parsed);
+	t.assertz(true, successful.verified);
+	t.asserti(0, successful.diagnostics.length);
+}
+
+def test_malformed_literal_bound(t: Tester) {
+	for (count in [32768, 262144]) {
+		var buffer = StringBuilder.new().puts("def s = \"");
+		for (i < count) buffer.puts("a\\\"");
+		var text = buffer.toString(), start = System.ticksUs();
+		var map = AnalysisCoordinates.new(text);
+		t.asserti(8, map.offset(1, 9, false));
+		t.assert(System.ticksUs() - start < 1000000, "malformed literal replay must finish within one second");
+		start = System.ticksUs();
+		var result = AeneasAdapter.analyzeProgram([AnalysisSource.new("literal.v3", text)], false);
+		t.asserti(1, result.diagnostics.length);
+		if (result.diagnostics.length > 0) {
+			t.assert_string("invalid string literal", result.diagnostics[0].message);
+			t.asserti(8, result.diagnostics[0].beginOffset);
+			t.asserti(8, result.diagnostics[0].endOffset);
+		}
+		t.assert(System.ticksUs() - start < 1000000, "malformed literal analysis must finish within one second");
+	}
 }

@@ -6,7 +6,12 @@
 class AnalysisParseErrors extends ErrorGen {
 	var parser: ParserState;
 	def offsets = Vector<(int, int)>.new();
-	private def positions = Strings.newMap<int>();
+	private var positions = Strings.newMap<int>();
+
+	def startFile() {
+		parser = null;
+		positions = Strings.newMap<int>();
+	}
 
 	new(maxErrors: int) super(maxErrors) { }
 
@@ -17,8 +22,9 @@ class AnalysisParseErrors extends ErrorGen {
 		recordPosition(p.curLine, p.curCol, p.curPos);
 	}
 	def recordToken(token: Token, begin: int, end: int) {
-		recordPosition(token.beginLine, token.beginColumn, begin);
-		recordPosition(token.beginLine, token.beginColumn + token.image.length, end);
+		var range = token.range();
+		recordPosition(range.beginLine, range.beginColumn, begin);
+		recordPosition(range.endLine, range.endColumn, end);
 	}
 	private def recordPosition(line: int, column: int, pos: int) {
 		var key = coordinate(line, column);
@@ -55,19 +61,30 @@ class AnalysisParseErrors extends ErrorGen {
 
 // Observes each parser skip for diagnostic offsets and, for outlines, for the
 // symbol syntax index. Created before the parser state, whose constructor skips.
-class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex) {
+class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, coordinates: AnalysisTokenCoordinates) {
 	def skip(p: ParserState) {
 		errors.record(p);
 		if (syntax != null) syntax.finish(p);
 		Parser.skipToNextToken(p);
 		errors.record(p);
 		if (syntax != null) syntax.start(p);
+		if (coordinates != null) coordinates.record(p);
 	}
 }
 
 class AnalysisParserState extends ParserState {
-	new(file: VstFile, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex)
-		super(file, errors, AnalysisParseSkipper.new(errors, syntax).skip, TypeCache.new()) { }
+	def coordinates: AnalysisTokenCoordinates;
+	new(file: VstFile, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, typeCache: TypeCache, coordinates)
+		super(file, errors, AnalysisParseSkipper.new(errors, syntax, coordinates).skip, typeCache) { }
+
+	def tokenAt(start: int, end: int) -> Token {
+		var t = Token.new(fileName, Arrays.range(input, start, end), line(start), column(start));
+		if (coordinates != null) {
+			t = coordinates.token(t, start, end);
+			AnalysisParseErrors.!(ERROR).recordToken(t, start, end);
+		}
+		return t;
+	}
 
 	def token(len: int) -> Token {
 		var end = curPos + len;
@@ -82,9 +99,11 @@ class AnalysisParserState extends ParserState {
 // The single-file parser driver shared by parser diagnostics and document
 // symbols, so both get the same recovery. {syntax} may be null.
 component AnalysisSingleFileParser {
-	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex) -> VstFile {
+	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex,
+			typeCache: TypeCache, coordinates: AnalysisTokenCoordinates) -> VstFile {
 		var file = VstFile.new(path, input);
-		var p = AnalysisParserState.new(file, errors, syntax);
+		errors.startFile();
+		var p = AnalysisParserState.new(file, errors, syntax, typeCache, coordinates);
 		p.enableFunExprs = CLOptions.FUN_EXPRS.get();
 		p.enableSimpleBodies = CLOptions.SIMPLE_BODIES.get();
 		p.enableOpenTypes = CLOptions.OPEN_TYPES.get();

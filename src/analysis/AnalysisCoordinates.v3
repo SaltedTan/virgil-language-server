@@ -14,15 +14,16 @@ class AnalysisCoordinates {
 
 	new(input: Array<byte>) {
 		length = input.length;
-		var i = 0, line = 1, column = 1;
+		var i = 0, line = 1, column = 1, literalEnd = 0;
 		points.put((line, column, i));
 		while (i < length) {
 			var b = input[i];
-			if (b == '\"' || b == '\'') {
+			if (i >= literalEnd && (b == '\"' || b == '\'')) {
 				// The parser consumes a valid literal with advance(length), not
 				// the whitespace skipper. Comment markers and tabs are literal
 				// bytes here. Invalid literals leave the parser at their opener.
 				var size = if(b == '\"', Strings.parseLiteral(input, i).0, Chars.parseLiteral(input, i).0);
+				literalEnd = i + Ints.max(1, -size);
 				if (size > 0) {
 					i += size;
 					column += size;
@@ -104,25 +105,74 @@ class AnalysisCoordinates {
 	}
 }
 
+class AnalysisRetrospectiveToken extends Token {
+	def sourceLine: int;
+	def sourceColumn: int;
+	new(t: Token, sourceLine, sourceColumn)
+		super(t.fileName, t.image, t.beginLine, t.beginColumn) { }
+	def rangeOf(len: int) -> FileRange {
+		return FileRange.new(fileName, sourceLine, sourceColumn, sourceLine, sourceColumn + len);
+	}
+}
+
+class AnalysisTokenCoordinates {
+	private def positions = HashMap<int, (int, int)>.new(int.!<int>, int.==);
+	private def begins = Strings.newMap<(int, int, int)>();
+	private def ends = Strings.newMap<(int, int, int)>();
+	def record(p: ParserState) { positions[p.curPos] = (p.curLine, p.curCol); }
+	def token(t: Token, begin: int, end: int) -> Token {
+		var p = positions[begin];
+		begins[key(p.0, p.1)] = (t.beginLine, t.beginColumn, begin);
+		ends[key(p.0, p.1 + end - begin)] = (t.beginLine, t.beginColumn + end - begin, end);
+		return AnalysisRetrospectiveToken.new(t, p.0, p.1);
+	}
+	def diagnostic(d: AnalysisDiagnostic) -> AnalysisDiagnostic {
+		var point = d.beginLine == d.endLine && d.beginColumn == d.endColumn;
+		if (point && d.beginOffset >= 0 && d.endOffset >= 0) return d;
+		var bkey = key(d.beginLine, d.beginColumn), ekey = key(d.endLine, d.endColumn);
+		var b = (d.beginLine, d.beginColumn, d.beginOffset), e = (d.endLine, d.endColumn, d.endOffset);
+		if (begins.has(bkey)) b = begins[bkey];
+		if (ends.has(ekey)) e = ends[ekey];
+		if (point) {
+			if (begins.has(bkey)) e = b;
+			else if (ends.has(ekey)) b = e;
+		}
+		var result = AnalysisDiagnostic.new(d.path, b.0, b.1, e.0, e.1, d.kind, d.message);
+		result.beginOffset = if(d.beginOffset >= 0, d.beginOffset, b.2);
+		result.endOffset = if(d.endOffset >= 0, d.endOffset, e.2);
+		return result;
+	}
+	private def key(line: int, column: int) -> string { return Strings.format2("%d:%d", line, column); }
+}
+
 // Lazily builds one replay map per referenced source path, preserving the
 // first source if paths repeat, as the program's binding index does.
 class AnalysisSourceCoordinates {
 	private def inputs = Strings.newMap<Array<byte>>();
 	private def maps = Strings.newMap<AnalysisCoordinates>();
+	private def tokens = Strings.newMap<AnalysisTokenCoordinates>();
 	new(sources: Array<AnalysisSource>) {
 		for (s in sources) {
 			if (s.path != null && !inputs.has(s.path)) inputs[s.path] = if(s.input == null, Array<byte>.new(0), s.input);
 		}
 	}
-	def diagnostic(d: AnalysisDiagnostic) {
-		if (d.path == null || !inputs.has(d.path)) return;
+	def capture(path: string) -> AnalysisTokenCoordinates {
+		var result = AnalysisTokenCoordinates.new();
+		if (!tokens.has(path)) tokens[path] = result;
+		return result;
+	}
+	def diagnostic(d: AnalysisDiagnostic) -> AnalysisDiagnostic {
+		if (d.path == null || !inputs.has(d.path)) return d;
+		var captured = tokens[d.path];
+		if (captured != null) d = captured.diagnostic(d);
 		var map = maps[d.path];
 		if (map == null) {
 			map = AnalysisCoordinates.new(inputs[d.path]);
 			maps[d.path] = map;
 		}
 		var point = d.beginLine == d.endLine && d.beginColumn == d.endColumn;
-		d.beginOffset = map.offset(d.beginLine, d.beginColumn, point);
-		d.endOffset = map.offset(d.endLine, d.endColumn, point);
+		if (d.beginOffset < 0) d.beginOffset = map.offset(d.beginLine, d.beginColumn, point);
+		if (d.endOffset < 0) d.endOffset = map.offset(d.endLine, d.endColumn, point);
+		return d;
 	}
 }
