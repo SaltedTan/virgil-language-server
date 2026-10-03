@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Server-side document version stamps for stdio analysis snapshots, with a freshness helper and recorded versions/currentness in the development inspection replies. Accepted changes and closes invalidate overlay results; disk results assume freshness while closed. See [development stdio requests](docs/development.md#development-stdio-requests) for the disk policy and format.
 - Headless Neovim smoke test of the documented plain configuration in both CI jobs. See [Neovim testing](editors/nvim/README.md#headless-smoke-test) for coverage and local usage.
 - Asynchronous analysis workers in `--stdio`, triggered before M3 by the unadvertised development `virgil-lsp/analyze` request. Concurrent requests remain responsive during worker startup, crashes, and hangs; `virgil-lsp/snapshot` inspects retained results. No new capability or semantic diagnostic publication is advertised. See [development stdio requests](docs/development.md#development-stdio-requests) for lifecycle cleanup and request behavior.
 - A replaceable analysis worker and [ADR-0004](docs/decisions/0004-analysis-worker-process.md), which records its process model and restart policy. See [Analysis worker](docs/architecture.md#analysis-worker) for the current integration scope.

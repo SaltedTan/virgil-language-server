@@ -158,13 +158,19 @@ def send_payload(session, payload):
     session.raw(f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload)
 
 
+def expected_snapshot(generation, uris, version=None, current=True):
+    return {"generation": generation, "diagnostics": [], "documentVersions": [
+        {"uri": uri, "version": version, "current": current} for uri in uris
+    ]}
+
+
 def memory_headroom(exe, work):
     s = Session(exe, "--worker-timeout-ms=5000")
     try:
         s.initialize()
         uris = aeneas_uris()
         first = s.result(s.analyze(uris))
-        assert first == {"generation": 1, "diagnostics": []}, first
+        assert first == expected_snapshot(1, uris), first
         send_payload(s, large_payload("virgil-lsp/snapshot", "large-snapshot"))
         assert s.result("large-snapshot") == first
 
@@ -172,7 +178,7 @@ def memory_headroom(exe, work):
         payload = large_payload("virgil-lsp/snapshot", "buffered-snapshot")
         s.raw(f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload[:-1])
         second = s.result(pending)
-        assert second == {"generation": 2, "diagnostics": []}, second
+        assert second == expected_snapshot(2, uris), second
         s.raw(payload[-1:])
         assert s.result("buffered-snapshot") == second
 
@@ -193,7 +199,7 @@ def memory_headroom(exe, work):
         source.write_text("def a = 42; def b = a;\n//" + " " * (3 * 1024 * 1024))
         send_payload(s, large_payload("virgil-lsp/analyze", "large-analysis", {"uris": [source.as_uri()]}))
         good = s.result("large-analysis")
-        assert good == {"generation": 3, "diagnostics": []}, good
+        assert good == expected_snapshot(3, [source.as_uri()]), good
         other = work / "other-source.v3"
         other.write_text("def other = 1;\n//" + " " * (3 * 1024 * 1024))
         send_payload(s, large_payload("virgil-lsp/analyze", "aggregate-budget",
@@ -202,7 +208,7 @@ def memory_headroom(exe, work):
         s.snapshot(good)
 
         first = s.result(s.analyze(uris))
-        assert first == {"generation": 4, "diagnostics": []}, first
+        assert first == expected_snapshot(4, uris), first
         source.write_text("class S extends S { def f() { me; } }\n//" + " " * (3 * 1024 * 1024))
         send_payload(s, large_payload("virgil-lsp/analyze", "large-hang", {"uris": [source.as_uri()]}))
         send_payload(s, large_payload("test/ping", "large-ping"))
@@ -213,7 +219,7 @@ def memory_headroom(exe, work):
         error(s, "large-hang", -32603, "timed out")
         s.snapshot(first)
         final = s.result(s.analyze([Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri()]))
-        assert final == {"generation": 5, "diagnostics": []}, final
+        assert final == expected_snapshot(5, [Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri()]), final
         s.shutdown()
         assert "longer than the limit of 4194304 bytes" in s.logs()
         assert "HeapOverflow" not in s.logs(), s.logs()
@@ -245,11 +251,13 @@ def exercise(exe, work):
                                         "contentChanges": [{"text": "def changed: i32 = false;\n"}]},
                request=False)
         good = s.result(pending)
-        assert good == {"generation": 1, "diagnostics": []}, good
+        assert good == expected_snapshot(1, [uri], version=1, current=False), good
+        s.snapshot(good)
         s.send("textDocument/didClose", {"textDocument": {"uri": uri}}, request=False)
         diagnostic = s.result(s.analyze([uri]))
         assert diagnostic["generation"] == 2 and diagnostic["diagnostics"], diagnostic
         assert diagnostic["diagnostics"][0]["path"] == str(work / "overlay space.v3")
+        assert diagnostic["documentVersions"] == [{"uri": uri, "version": None, "current": True}]
 
         # Oversized disk input must be rejected before unchecked file allocation.
         huge = work / "huge.v3"
@@ -266,7 +274,8 @@ def exercise(exe, work):
         s.snapshot(diagnostic)
         good = s.result(s.analyze([Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri(),
                                    Path("test/fixtures/analysis/two-file/main.v3").resolve().as_uri()]))
-        assert good == {"generation": 3, "diagnostics": []}, good
+        assert good == expected_snapshot(3, [Path("test/fixtures/analysis/two-file/shapes.v3").resolve().as_uri(),
+                                             Path("test/fixtures/analysis/two-file/main.v3").resolve().as_uri()]), good
 
         # Warm worker: hang is active before either lightweight reply. Keep an
         # incomplete stdin frame buffered while the worker deadline expires.
@@ -287,7 +296,7 @@ def exercise(exe, work):
             "uri": "untitled:worker-test", "languageId": "virgil", "version": 1, "text": "",
         }}, request=False)
         good = s.result(s.analyze(["untitled:worker-test"]))
-        assert good == {"generation": 4, "diagnostics": []}, good
+        assert good == expected_snapshot(4, ["untitled:worker-test"], version=1), good
 
         # Match the CLI's Aeneas file set: 20 full parse/verify/index analyses,
         # crossing multiple forced replacements while stdio keeps responding.
@@ -296,7 +305,7 @@ def exercise(exe, work):
             pending = s.analyze(uris)
             s.ping()
             current = s.result(pending)
-            assert current == {"generation": generation, "diagnostics": []}, current
+            assert current == expected_snapshot(generation, uris), current
             s.snapshot(current)
 
         pending = s.analyze([hang])
