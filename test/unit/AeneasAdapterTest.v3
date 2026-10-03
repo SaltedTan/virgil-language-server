@@ -13,6 +13,8 @@ def X = [
 	T("AeneasAdapter:symbols_missing_range_bounds", test_symbols_missing_range_bounds),
 	T("AeneasAdapter:parse_range_without_bounds", test_parse_range_without_bounds),
 	T("AeneasAdapter:parse_deep_nesting", test_parse_deep_nesting),
+	T("AeneasAdapter:parse_long_chains", test_parse_long_chains),
+	T("AeneasAdapter:parse_long_lists", test_parse_long_lists),
 	T("AeneasAdapter:symbols_rep_hint_eof", test_symbols_rep_hint_eof),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
@@ -189,6 +191,47 @@ def test_parse_deep_nesting(t: Tester) {
 			t.asserti(d.beginOffset, d.endOffset);
 			t.asserti(0, AeneasAdapter.documentSymbols("deep.v3", text).length);
 		}
+	}
+}
+
+def test_parse_long_chains(t: Tester) {
+	var limit = AnalysisSingleFileParser.CHAIN_LIMIT, head = "component M { def f() { ";
+	// (start, repeated, end, offset of the counted token in repeated, counted tokens in start)
+	var cases = [("x", " + x", "", 1, 0), ("x", ".y", "", 0, 0), ("x", "[0]", "", 0, 0),
+		("x", "()", "", 0, 0), ("x", " += 1", "", 1, 0), ("y[0 ... x", " + x", "]", 1, 2)];
+	for (c in cases) {
+		for (n in [limit - c.4, 100000]) {
+			var b = StringBuilder.new().puts(head).puts(c.0);
+			for (i < n) b.puts(c.1);
+			var text = b.puts(c.2).puts("; } }").toString();
+			var r = AeneasAdapter.parseFile("chain.v3", text);
+			var symbols = AeneasAdapter.documentSymbols("chain.v3", text);
+			if (n < 100000) {
+				t.asserti(0, r.diagnostics.length);
+				t.asserti(1, symbols.length);
+				continue;
+			}
+			t.asserti(1, r.diagnostics.length);
+			if (r.diagnostics.length != 1) continue;
+			var d = r.diagnostics[0];
+			t.assert_string("expression too long; parsing stopped here", d.message);
+			var stop = head.length + c.0.length + (limit - c.4) * c.1.length + c.3;
+			t.asserti(stop, d.beginOffset);
+			t.asserti(stop, d.endOffset);
+		}
+	}
+}
+
+// Lists and statements keep their own ranges, so they do not form chains.
+def test_parse_long_lists(t: Tester) {
+	var cases = [("def x = [", "(1, -2), ", "];"), ("def x = f(", "a + b, ", "0);"),
+		("enum E { ", "A, ", "}"), ("def f() { ", "x + x; ", "}"),
+		("def f() { ", "if (a) {} ", "}")];
+	for (c in cases) {
+		var b = StringBuilder.new().puts(c.0);
+		for (i < 50000) b.puts(c.1);
+		var text = b.puts(c.2).toString();
+		t.asserti(0, AeneasAdapter.parseFile("list.v3", text).diagnostics.length);
 	}
 }
 

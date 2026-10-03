@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Over-budget analysis results now report that the program is too large rather than blaming a malformed worker. See ADR-0004 for the [replacement policy](docs/decisions/0004-analysis-worker-process.md#restart-policy) and [supported program size and recovery guidance](docs/decisions/0004-analysis-worker-process.md#supported-program-size).
+- Parser diagnostics and document symbols no longer kill the server on an expression statement with a very long chain of operators or member, index, or call suffixes; parsing stops there with a diagnostic. See [Aeneas crash paths](docs/aeneas-crash-paths.md) for the chain limit.
 - Parser diagnostics and document symbols now contain deep parser nesting and the remaining malformed-range traps. See [Aeneas crash paths](docs/aeneas-crash-paths.md) for the recovery behavior and containment limits.
 - Document symbols no longer kill the server on expression-start `...` or `..+` (for example, while typing `xs[...]`); the outline now shares the parser driver and recovery used for parser diagnostics. See [Document symbols](docs/architecture.md#document-symbols).
 - Whole-program diagnostics now retain exact UTF-8 byte ranges through the analysis worker, including tabs in block comments, trailing line-comment EOF errors, and multi-byte source text. Compiler display coordinates remain available for CLI reports; semantic diagnostic publication is still planned.
