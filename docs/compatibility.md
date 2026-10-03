@@ -51,6 +51,10 @@ The language server runs on the machine that holds the files, which isn't always
 | --- | --- | --- |
 | Neovim (plain config) | 0.11 (`vim.lsp.config`) | Headless smoke test: 0.11.6 locally and pinned in Linux CI; macOS CI uses Homebrew Neovim (0.11+) and logs its version |
 | LazyVim | 0.11 (`vim.lsp.config`) | Configuration provided, untested |
-| VS Code, including Remote-SSH and Remote-WSL | to be decided | Planned (M2) |
+| VS Code, including Remote-SSH and Remote-WSL | 1.91 (required by `vscode-languageclient` 10) | [Development client](../clients/vscode/README.md), type-checked in Linux CI. A [manual checklist](../clients/vscode/README.md#manual-checklist) covers Linux, Remote-SSH, Remote-WSL, and macOS; checked on Linux with VS Code 1.140 |
 
-Server and VS Code extension versions are released independently. This table will record which ranges work together.
+Server and VS Code extension versions are released independently. This table records which ranges work together.
+
+| VS Code extension | Server versions |
+| --- | --- |
+| `0.0.0-dev` (`clients/vscode` on `main`, unreleased) | `main` (unreleased, `0.0.0-dev`). The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, and `textDocument/documentSymbol`. |

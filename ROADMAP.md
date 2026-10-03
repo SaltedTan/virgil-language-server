@@ -204,7 +204,7 @@ Deliverables:
 - Single-file parser adapter for one open document. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
 - Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics. *(present; [publication contract](docs/architecture.md#parser-diagnostics))*
 - `textDocument/documentSymbol` using VST declarations; the `vctags` traversal is a useful model.
-- A manually launchable LazyVim config and VS Code development client.
+- A manually launchable LazyVim config and VS Code development client. *(present; [LazyVim](editors/nvim/README.md), [VS Code](clients/vscode/README.md))*
 
 Exit criteria:
 
@@ -296,7 +296,7 @@ Deliverables:
 
 - GitHub releases containing supported host binaries and SHA-256 checksums.
 - A clear support matrix: Linux x86-64 (also used by WSL 2 and SSH remotes) and Apple Silicon macOS, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
-- VS Code extension setting for an external server path during development.
+- VS Code extension setting for an external server path during development. *(present; [client settings](clients/vscode/README.md#settings))*
 - Later, platform-specific VSIX packages or verified binary download/install logic.
 - Marketplace README, changelog, privacy statement, and troubleshooting guide.
 - `nvim-lspconfig` pull request after the executable has a stable command, release URL, root markers, and documentation.
@@ -352,14 +352,11 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 
 ### Visual Studio Code
 
-Create a thin TypeScript extension using `vscode-languageclient/node`:
+The thin TypeScript development client is present. Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md).
 
-- contribute language ID `virgil` and extension `.v3`;
-- contribute comment/bracket configuration and a TextMate grammar;
-- start the same `virgil-lsp --stdio` executable;
-- expose `virgil.server.path`, `virgil.project.config`, and trace/log settings;
-- show actionable startup/configuration errors in an output channel;
-- stop the client cleanly on deactivation;
+Remaining work:
+
+- expose `virgil.project.config` once the server reads project files while it runs ([Configuration](docs/configuration.md));
 - add end-to-end extension-host tests for activation, diagnostics, definition, and hover.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.

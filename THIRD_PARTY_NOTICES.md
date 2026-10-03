@@ -19,3 +19,17 @@ Release archives that contain a `virgil-lsp` binary must include a copy of the A
 ## Adapted material
 
 `src/analysis/AnalysisSingleFileParser.v3` adapts the setup and top-level loop of [`Parser.parseFile`](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/Parser.v3#L102-L123), and from `ParserState` its [current and retrospective token extraction](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/ParserState.v3#L40-L55), [`advance`](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/ParserState.v3#L56-L61), [`error`](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/ParserState.v3#L159-L169), and [`errorAtOffset`](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/ParserState.v3#L178-L184), from Virgil revision `9945e4300bba2cd6d872c1a6f4ecfaa600f4be48`, under Apache License 2.0. It also mirrors the whitespace and comment skipping of [`Parser.skipToNextToken`](https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/Parser.v3#L1445-L1512). Its original notice, **Copyright 2011 Google Inc. All rights reserved.**, is preserved in the adapted file. See [Compiler adapter](docs/architecture.md#compiler-adapter) for implementation details.
+
+## VS Code development client (npm)
+
+`clients/vscode/` installs these packages from the npm registry with `npm ci`. Its `package-lock.json` is the record of exact versions: it pins the version and integrity hash of every package, including transitive ones, so dependency updates change it rather than this file. Nothing from these packages is committed or adapted, and no extension package (VSIX) is published yet. A VSIX would bundle the runtime packages, so their license texts must ship with it.
+
+| Package | License | Use |
+| --- | --- | --- |
+| [`vscode-languageclient`](https://github.com/microsoft/vscode-languageserver-node) | MIT | Runtime: the LSP client |
+| `vscode-languageserver-protocol`, `vscode-languageserver-types`, `vscode-languageserver-textdocument`, `vscode-jsonrpc` | MIT | Runtime, through `vscode-languageclient` |
+| `minimatch` | BlueOak-1.0.0 | Runtime, through `vscode-languageclient` |
+| `brace-expansion`, `balanced-match` | MIT | Runtime, through `minimatch` |
+| `semver` | ISC | Runtime, through `vscode-languageclient` |
+| [`typescript`](https://github.com/microsoft/TypeScript), with its platform package `@typescript/typescript-<platform>` | Apache-2.0 | Build tool |
+| `@types/vscode`, `@types/node`, `undici-types` | MIT | Type declarations for the build |

@@ -6,6 +6,7 @@
 - `git`, `make`, `bash`; Python 3.9+ for interactive protocol and editor tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 - Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).
+- Optional: the [VS Code development client's prerequisites](../clients/vscode/README.md#setup).
 
 ## Build and test
 
@@ -89,6 +90,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/protocol/coordinates.py` | Exact worker diagnostic byte ranges, compiler-coordinate binding exports, CLI and stdio compatibility, allocation rejection/recovery, and bounded malformed-string replay | Standalone: `python3 test/protocol/coordinates.py build/virgil-lsp` (with `virgil-lsp-worker` beside it; not run by `make test`) |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/e2e/nvim/` | Headless plain Neovim configuration | See [Neovim testing](../editors/nvim/README.md#headless-smoke-test) for coverage, commands, and skip policy |
+| `clients/vscode/` | Type-check in CI job `vscode-client`, lifecycle regression tests with a simulated extension host, and a [manual checklist](../clients/vscode/README.md#manual-checklist) | See [client development commands](../clients/vscode/README.md#development); not run by `make test` |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). `test/fixtures/projects/` holds whole repositories with project files. | — |
 
 The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
