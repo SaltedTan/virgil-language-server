@@ -100,10 +100,10 @@ See the [front-end-only adapter contract](docs/decisions/0002-pinned-virgil-adap
 
 ### Analysis snapshot
 
-Treat each successful analysis as an immutable snapshot containing:
+Treat each completed analysis as an immutable snapshot containing:
 
 - workspace/project configuration revision;
-- document versions used for the analysis;
+- document provenance: see the [analysis snapshot contract](docs/architecture.md#analysis-snapshots-partly-present) *(present for stdio submissions)*;
 - [server-owned snapshot data](docs/decisions/0004-analysis-worker-process.md#what-crosses-the-boundary), rather than compiler objects;
 - diagnostics grouped by URI;
 - declaration index: stable symbol key to declaration and source range;
@@ -111,7 +111,7 @@ Treat each successful analysis as an immutable snapshot containing:
 - reverse-reference index: declaration key to all occurrences;
 - type/signature display cache.
 
-Handlers read the newest snapshot whose document versions still match the request. If a new edit makes parsing fail, keep the last successful semantic snapshot for safe navigation while publishing current syntax errors. Never publish results from a completed but stale analysis revision.
+The [analysis snapshot contract](docs/architecture.md#analysis-snapshots-partly-present) owns freshness and planned publication/navigation behavior.
 
 ## Important correctness problems to solve first
 
