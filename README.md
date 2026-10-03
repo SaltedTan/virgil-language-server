@@ -36,7 +36,7 @@ Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac 
 ```sh
 git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-server.git
 cd virgil-language-server
-make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs all tests
+make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs available tests
 ```
 
 Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables.

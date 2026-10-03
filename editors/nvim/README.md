@@ -22,8 +22,9 @@ From the repository root, run `make test-nvim` (also included in `make test`).
 The test uses the plain configuration above with the built server on `PATH`
 and `--headless --clean -n` (no swap files). It checks client attachment, parser
 diagnostics published and cleared after an unsaved edit, document symbols, and
-a graceful server shutdown with exit status 0. Fixtures and editor state are
-copied into a temporary directory and removed afterward.
+a graceful server shutdown with exit status 0. The fixture is copied into a
+temporary directory; editor state is kept there, and the directory is removed
+afterward.
 
 The test skips with a message if Neovim is missing or older than 0.11. Set
 `REQUIRE_NVIM=1` to fail instead of skipping, as both CI jobs do. See the
