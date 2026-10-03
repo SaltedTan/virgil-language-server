@@ -140,9 +140,25 @@ def test_parse_range_without_bounds(t: Tester) {
 		}
 	}
 	// With an end, the range is left to the parser, which reports only the start.
-	for (expr in ["xs[0x ... 1]", "xs[0x ..+ n]", "xs[... ... 1]"]) {
-		var text = StringBuilder.new().puts("def f() { ").puts(expr).puts("; }").toString();
-		t.asserti(1, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
+	for (i < RANGE_PREFIXES.length) {
+		for (start in ["0x ", "... ", "..+ "]) {
+			for (op in ["...", "..+"]) {
+				for (end in ["1", "n", "\"s\"", "'a'", "_", "++i"]) {
+					var text = StringBuilder.new().puts(RANGE_PREFIXES[i]).puts(start).puts(op)
+						.putc(' ').puts(end).puts(RANGE_SUFFIXES[i]).toString();
+					t.asserti(1, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
+					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+				}
+			}
+		}
+	}
+	for (op in ["...", "..+"]) {
+		for (end in ["'ab'", "\"unterminated", "_name", "__", "+i", "+"]) {
+			var text = StringBuilder.new().puts("def f() { xs[0x ").puts(op)
+				.putc(' ').puts(end).puts("]; }").toString();
+			t.assert(AeneasAdapter.parseFile("range.v3", text).diagnostics.length > 0, "expected a diagnostic");
+			t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+		}
 	}
 }
 

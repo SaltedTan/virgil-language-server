@@ -172,6 +172,10 @@ class AnalysisParserState extends ParserState {
 		var ch = d[pos];
 		if (Char.isIdentStart(ch)) return true;
 		match (ch) {
+			'\'' => return Chars.parseLiteral(d, pos).0 > 0;
+			'\"' => return Strings.parseLiteral(d, pos).0 > 0;
+			'_' => return pos + 1 == d.length || !Char.isIdentMiddle(d[pos + 1]);
+			'+' => return pos + 1 < d.length && d[pos + 1] == '+';
 			'(', '[', '!', '~' => return true;
 			'-' => if (pos + 1 == d.length || !Char.isDecimal(d[pos + 1])) return true;
 			_ => if (!Char.isDecimal(ch)) return false;
