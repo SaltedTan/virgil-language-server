@@ -69,7 +69,7 @@ The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encod
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `version` | integer | Yes | The format version. Must be `1`. |
+| `version` | integer | Yes | The format version. Must be the integer literal `1`; `1.0` and `1e0` are unsupported. |
 | `projects` | array of project objects | Yes | The programs, in order. It may be empty: documents under the file then stay in [single-file mode](#without-a-project-file). |
 
 ### Project
@@ -123,7 +123,7 @@ A repository that includes Virgil, for example as a submodule, can list the libr
 
 ### Compiler flags
 
-`compilerArgs` accepts only the pinned compiler's language options, which change how Aeneas parses and type-checks a program:
+`compilerArgs` accepts only the pinned compiler's language options, which change how Aeneas parses and type-checks a program. The names and defaults below are generated from `CLOptions.langOpt` in the [pinned compiler](compatibility.md#virgil-revision), exposed by [`AeneasAdapter.languageOptions()`](../src/analysis/AeneasAdapter.v3):
 
 | Flag | Default | Notes |
 | --- | --- | --- |

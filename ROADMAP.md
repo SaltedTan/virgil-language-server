@@ -134,24 +134,7 @@ For the last item, use the per-document `PositionMap`; [Coordinates](docs/archit
 
 Virgil is a whole-program compiler: all participating `.v3` files are passed together. Recursively analyzing every `.v3` file in a repository is unsafe because one repository can contain separate programs, tests with duplicate declarations, and multiple targets.
 
-Introduce a versioned project file, `.virgil-lsp.json`. [Configuration](docs/configuration.md) specifies version 1, whose fields were chosen after studying real Virgil projects and `DEPS`/`TARGETS` usage ([ADR-0005](docs/decisions/0005-project-file-format.md)):
-
-```json
-{
-  "version": 1,
-  "projects": [
-    {
-      "name": "app",
-      "sources": ["src/**/*.v3"],
-      "dependencies": ["vendor/lib/**/*.v3"],
-      "virgilDependencies": ["lib/util/*.v3"],
-      "exclude": ["src/**/test/**"],
-      "compilerArgs": ["-lang:fun-exprs"],
-      "target": null
-    }
-  ]
-}
-```
+Version 1 of `.virgil-lsp.json` is specified in [Configuration](docs/configuration.md), including examples. Its fields were chosen after studying real Virgil projects and `DEPS`/`TARGETS` usage ([ADR-0005](docs/decisions/0005-project-file-format.md)). Project discovery, glob expansion, and analysis integration remain M3 work.
 
 Preserve these principles:
 

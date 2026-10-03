@@ -33,7 +33,7 @@ class ProjectJson(kind: ProjectJsonKind, begin: int, end: int) {
 class ProjectJsonMember(key: ProjectJson, value: ProjectJson) { }
 
 // Parses a project file into {ProjectJson} values. Strings, numbers, nesting
-// and size limits, and error reporting are those of {JsonRpcJsonParser}.
+// and value limits, and error reporting are those of {JsonRpcJsonParser}.
 class ProjectJsonParser extends JsonRpcJsonParser {
 	// The position just after the most recently consumed token.
 	private var tokenEnd: int;

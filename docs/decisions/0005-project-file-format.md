@@ -37,7 +37,7 @@ Constraints from the compiler and the server:
 - Nothing in a project file can make the server download or execute code. No field names a command, a URL, or an environment variable. Patterns can't leave the project file's directory or the Virgil root. Compiler actions and targets are rejected, and analysis stays front-end only ([ADR-0002](0002-pinned-virgil-adapter-boundary.md)).
 - A shared repository's project file contains no machine-specific paths. Each user configures the Virgil root once, in the editor or the environment.
 - Native-target code, such as Wizard's x86-64 engine, can't be verified in version 1. Users can describe the target-independent builds, and per-target analysis needs a later version.
-- Applying `compilerArgs` means setting process-wide state. The worker does it before each analysis, and the server's single-file parser needs the same flags for documents in a project. Until projects are mapped to documents, both use the defaults.
+- Applying `compilerArgs` will mean setting process-wide state before each analysis and single-file parse of a project's documents. Both currently use the defaults; [Configuration](../configuration.md#compiler-flags) owns the planned flag application rules.
 - A Virgil update that adds or removes a language option changes which files are valid. [Compatibility](../compatibility.md) records the pinned revision.
 
 ## Alternatives considered

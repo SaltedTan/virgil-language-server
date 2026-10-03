@@ -68,7 +68,7 @@ The UID limit leaves 2^28 IDs of headroom, while one analysis of the Aeneas sour
 
 **Option 2a is the pre-M3 trigger:** the unadvertised, development-only requests `virgil-lsp/analyze` and `virgil-lsp/snapshot` submit analysis and inspect retained server-owned results. [Development stdio requests](../development.md#development-stdio-requests) owns their unstable formats, input capture, concurrency, failure, and lifecycle behavior.
 
-This is not automatic semantic analysis of edits: there is no project configuration, version-gated publication, semantic capability, or semantic diagnostic notification yet. M3 will supply those. Interactive [protocol transcripts](../../test/protocol/worker.py) exercise a compiler crash, a hang with concurrent replies and fragmented stdin, 20 Aeneas analyses across replacements, retained snapshot reads, lifecycle cleanup, and a worker that never handshakes. Both platform CI jobs run these tests.
+This is not automatic semantic analysis of edits: [project configuration](../configuration.md) is not integrated into analysis, and there is no version-gated publication, semantic capability, or semantic diagnostic notification yet. M3 will supply those. Interactive [protocol transcripts](../../test/protocol/worker.py) exercise a compiler crash, a hang with concurrent replies and fragmented stdin, 20 Aeneas analyses across replacements, retained snapshot reads, lifecycle cleanup, and a worker that never handshakes. Both platform CI jobs run these tests.
 
 ### Measurements
 
