@@ -12,6 +12,7 @@ def X = [
 	T("AnalysisWire:truncated_messages", test_truncated_messages),
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
 	T("AnalysisWire:result_allocation_budget", test_result_allocation_budget),
+	T("AnalysisWire:result_index_string_budget", test_result_index_string_budget),
 	T("AnalysisWire:wrong_kind", test_wrong_kind),
 	()
 ];
@@ -242,6 +243,23 @@ def declaration(kind: int, path: int) -> DataWriter {
 	var w = DataWriter.new().put_sleb32(1).put_sleb32(4).puta("p.v3");
 	w.put_sleb32(1).putb(kind).put_sleb32(1).putb('x').put_sleb32(path);
 	return w.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2);
+}
+
+// Index strings are retained in the snapshot, without diagnostic JSON copies.
+// Charging them for JSON escaping rejects this otherwise small valid result.
+def test_result_index_string_budget(t: Tester) {
+	var text = Array<byte>.new(600 * 1024);
+	for (i < text.length) text[i] = 'x';
+	var index = DataWriter.new().put_sleb32(1).put_sleb32(text.length).puta(text);
+	index.put_sleb32(1).putb(0).put_sleb32(text.length).puta(text).put_sleb32(0);
+	index.puta("\x01\x01\x01\x02").put_sleb32(1).put_sleb32(0).put_sleb32(1);
+	index.puta("\x01\x01\x01\x02\x00");
+	var decoded = AnalysisWire.decodeResult(result(0, index), 1, [text]);
+	if (decoded == null) return t.fail("index strings within the allocation budget were rejected");
+	var definition = decoded.snapshot.definitionAt(text, 1, 1);
+	if (definition == null) return t.fail("decoded index cannot resolve its occurrence");
+	t.assert(Strings.equal(text, definition.name), "declaration name is preserved");
+	t.assert(Strings.equal(text, definition.range.path), "declaration path is preserved");
 }
 
 def test_result_allocation_budget(t: Tester) {
