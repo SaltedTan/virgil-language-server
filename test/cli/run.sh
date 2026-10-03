@@ -109,19 +109,6 @@ expect "analyze rejects a bad worker analysis limit" 2 "" "invalid option" -- \
 # so the fixture programs are analyzed from the file lists their project files
 # describe.
 P=$FIXTURES/projects
-expect "check-config accepts the two-program fixture" 0 'two-programs/\.virgil-lsp\.json: ok, 2 projects: server, client$' "" -- \
-    check-config "$P/two-programs/.virgil-lsp.json"
-expect "check-config accepts the Virgil library fixture" 0 'virgil-lib/\.virgil-lsp\.json: ok, 1 project: words$' "" -- \
-    check-config "$P/virgil-lib/.virgil-lsp.json"
-printf '{\n  "version": 1,\n  "projects": [{"name": "a", "sources": ["../a.v3"], "main": "x"}]\n}\n' > "$TMP/bad.json"
-expect "check-config reports a diagnostic at its line and column" 1 \
-    "^$TMP/bad\\.json:3:42: InvalidPattern: a pattern must not contain '\\.' or '\\.\\.' segments$" "" -- \
-    check-config "$TMP/bad.json"
-check_stream stdout "$TMP/out" "^$TMP/bad\\.json:3:54: UnknownField: unknown field 'main' in a project; " && \
-    [ "$(wc -l < "$TMP/out")" -eq 2 ]
-finish "check-config reports every diagnostic" $(( $? == 0 ))
-expect "check-config missing file" 1 "" "cannot read file" -- check-config "$TMP/missing.json"
-expect "check-config needs a file" 2 "" "Usage: virgil-lsp" -- check-config
 TWO=$P/two-programs
 expect "the server program verifies alone" 0 '^ok: 2 files parsed and verified$' "" -- \
     analyze "$TWO/server/Program.v3" "$TWO/shared/Greeting.v3"

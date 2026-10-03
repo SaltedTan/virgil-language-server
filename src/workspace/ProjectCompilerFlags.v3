@@ -5,20 +5,8 @@
 // language options, which change how Aeneas parses and verifies a program.
 // Other flags select compiler actions, targets, outputs, code generation, the
 // runtime, or initial field values, which analysis doesn't use.
-// {AeneasAdapter.languageOptions} must report the same names and defaults; a
-// unit test checks this.
 component ProjectCompilerFlags {
 	def PREFIX = "-lang:";
-	// Each option's name after {PREFIX}, and its default.
-	def LANGUAGE_OPTIONS = [
-		("read-only-arrays", false),
-		("covariant-arrays", false),
-		("open-types", false),
-		("legacy-infer", true),
-		("fun-exprs", true),
-		("simple-bodies", true),
-		("descriptors", false)
-	];
 	private def NAMES = listNames();
 
 	// Returns null if {arg} is an accepted flag whose option {seen} does not
@@ -53,14 +41,15 @@ component ProjectCompilerFlags {
 		return null;
 	}
 	def isLanguageOption(name: string) -> bool {
-		for (o in LANGUAGE_OPTIONS) if (Strings.equal(o.0, name)) return true;
+		for (o in AeneasAdapter.languageOptions()) if (Strings.equal(o.0, name)) return true;
 		return false;
 	}
 	private def listNames() -> string {
 		var buf = StringBuilder.new();
-		for (i < LANGUAGE_OPTIONS.length) {
+		var options = AeneasAdapter.languageOptions();
+		for (i < options.length) {
 			if (i > 0) buf.puts(", ");
-			buf.puts(PREFIX).puts(LANGUAGE_OPTIONS[i].0);
+			buf.puts(PREFIX).puts(options[i].0);
 		}
 		return buf.toString();
 	}

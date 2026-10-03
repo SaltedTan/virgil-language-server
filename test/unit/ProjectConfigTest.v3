@@ -24,7 +24,6 @@ def X = [
 	T("ProjectConfig:invalid_patterns", test_invalid_patterns),
 	T("ProjectConfig:compiler_flags", test_compiler_flags),
 	T("ProjectConfig:invalid_compiler_flags", test_invalid_compiler_flags),
-	T("ProjectConfig:language_options_match_compiler", test_language_options_match_compiler),
 	T("ProjectConfig:no_code_execution", test_no_code_execution),
 	T("ProjectConfig:diagnostic_order", test_diagnostic_order),
 	T("ProjectConfig:diagnostic_limit", test_diagnostic_limit),
@@ -150,11 +149,7 @@ def test_no_projects(t: Tester) {
 
 def test_byte_order_mark(t: Tester) {
 	var text = "\xEF\xBB\xBF{\"version\": 1, \"projects\": [{\"name\": \"a\", \"sources\": [\"a.v3\"]}]}";
-	var config = valid(t, text);
-	if (config.projects.length != 1) return t.fail("expected one project");
-	var s = config.projects[0].sources[0];
-	t.assert_string("\"a.v3\"", Arrays.range(text, s.begin, s.end));
-	// Only a byte order mark at the start is ignored.
+	invalid(t, text, "InvalidJson@0");
 	invalid(t, " \xEF\xBB\xBF{}", "InvalidJson@1");
 }
 
@@ -211,6 +206,11 @@ def test_size_limit(t: Tester) {
 	var r = ProjectConfigParser.parse(over);
 	t.assert(r.config == null, "expected no model for an oversized file");
 	t.assert_string("InvalidJson@0", render(over, r.diagnostics));
+	if (r.diagnostics.length == 1) assertContains(t, r.diagnostics[0].message, "larger than 262144 bytes");
+	var large = Array<byte>.new(64 * 1024 * 1024);
+	r = ProjectConfigParser.parse(large);
+	t.assert(r.config == null, "expected no model for a 64 MiB file");
+	t.assert_string("InvalidJson@0", render(large, r.diagnostics));
 	if (r.diagnostics.length == 1) assertContains(t, r.diagnostics[0].message, "larger than 262144 bytes");
 }
 
@@ -404,7 +404,7 @@ def checkFlags(t: Tester, args: Array<string>, problem: string) {
 }
 
 def test_compiler_flags(t: Tester) {
-	for (o in ProjectCompilerFlags.LANGUAGE_OPTIONS) {
+	for (o in AeneasAdapter.languageOptions()) {
 		var flag = Strings.format1("-lang:%s", o.0);
 		checkFlags(t, [flag], null);
 		checkFlags(t, [Strings.format1("%s=true", flag)], null);
@@ -441,21 +441,6 @@ def test_invalid_compiler_flags(t: Tester) {
 	invalid(t, oneProject(cat(["\"name\": \"a\", \"sources\": [\"a.v3\"], ",
 		"\"compilerArgs\": [\"-lang:descriptors\", \"-O2\", \"-lang:descriptors=false\", \"-lang:open-types\"]"])),
 		"UnsupportedCompilerFlag:\"-O2\" | UnsupportedCompilerFlag:\"-lang:descriptors=false\"");
-}
-
-def test_language_options_match_compiler(t: Tester) {
-	var compiler = AeneasAdapter.languageOptions();
-	var ours = ProjectCompilerFlags.LANGUAGE_OPTIONS;
-	t.asserti(compiler.length, ours.length);
-	for (i < compiler.length) {
-		var found = false;
-		for (o in ours) {
-			if (!Strings.equal(o.0, compiler[i].0)) continue;
-			found = true;
-			if (o.1 != compiler[i].1) t.fail1("the default of -lang:%s differs from the compiler's", o.0);
-		}
-		if (!found) t.fail1("the compiler's -lang:%s is not accepted", compiler[i].0);
-	}
 }
 
 // The file is data: it names files to read and language options from a fixed

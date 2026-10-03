@@ -32,7 +32,6 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 build/virgil-lsp --version
 build/virgil-lsp parse path/to/file.v3    # development command: syntax diagnostics
 build/virgil-lsp analyze a.v3 b.v3        # development command: parse and verify as one program
-build/virgil-lsp check-config .virgil-lsp.json  # development command: check a project file
 build/virgil-lsp --stdio                  # LSP over stdio
 ```
 
@@ -50,8 +49,6 @@ parse/verify timings on stderr. Otherwise it reports the input set and run numbe
 the exit status for a failed command, and the command's stderr, then exits non-zero
 without printing a summary for that input set. Temporary files are cleaned up on
 exit, including failure or interruption.
-
-`check-config` parses and checks project files against [version 1 of the format](configuration.md), and prints each [configuration diagnostic](configuration.md#configuration-diagnostics) as `file:line:column: Code: message`. It reads only the files it is given, and exits with status 1 if any is invalid or unreadable.
 
 ### Development stdio requests
 

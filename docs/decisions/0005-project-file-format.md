@@ -27,7 +27,7 @@ Constraints from the compiler and the server:
 3. **Patterns are relative, `/`-separated globs with `*`, `?`, and whole-segment `**`.** They can't be absolute, contain `..`, or use `\`. `[`, `]`, `{`, and `}` are reserved for later syntax. Wildcards don't match names that start with a dot. Patterns that select source files must end in `.v3`.
 4. **`sources` and `dependencies` describe ownership.** Both are compiled into the program. Only `sources` makes a file a member of the project, which decides a shared file's active project and which closed files get diagnostics.
 5. **Virgil library files go in `virgilDependencies`, relative to the Virgil root**, written as in `aeneas/DEPS` (`lib/util/*.v3`). The project file can't name the root. The server takes it from the client's `initializationOptions.virgilRoot`, then `VIRGIL_LOC`, then the parent of the directory holding `v3c` on `PATH`. It never runs `v3c`, and it logs the root it uses.
-6. **`compilerArgs` accepts only the pinned compiler's language options**, as `-lang:<name>`, `-lang:<name>=true`, or `-lang:<name>=false`, each at most once. They apply to every analysis of the project and to single-file parsing of documents whose active project it is. A unit test keeps the accepted list equal to the pinned compiler's.
+6. **`compilerArgs` accepts only the pinned compiler's language options**, as `-lang:<name>`, `-lang:<name>=true`, or `-lang:<name>=false`, each at most once. They apply to every analysis of the project and to single-file parsing of documents whose active project it is. The adapter supplies the accepted options from the pinned compiler.
 7. **`target` must be `null`.** Version 1 analyzes every project without a target.
 8. **Configuration diagnostics have byte ranges.** `src/workspace/ProjectJson.v3` parses the file into values that record their byte ranges and keep repeated keys. The token decoding and limits are those of `JsonRpcJson`. The server will publish configuration diagnostics with `textDocument/publishDiagnostics` on the project file's URI, and send one `window/showMessage` warning when a project file becomes invalid.
 9. **The parser does no file-system access.** `ProjectConfigParser.parse` takes the file's bytes and returns either a model or its diagnostics. Finding project files, reading them, and expanding patterns are separate ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55)).
@@ -38,8 +38,7 @@ Constraints from the compiler and the server:
 - A shared repository's project file contains no machine-specific paths. Each user configures the Virgil root once, in the editor or the environment.
 - Native-target code, such as Wizard's x86-64 engine, can't be verified in version 1. Users can describe the target-independent builds, and per-target analysis needs a later version.
 - Applying `compilerArgs` means setting process-wide state. The worker does it before each analysis, and the server's single-file parser needs the same flags for documents in a project. Until projects are mapped to documents, both use the defaults.
-- A Virgil update that adds or removes a language option changes which files are valid, and the unit test points that out. [Compatibility](../compatibility.md) records the pinned revision.
-- `virgil-lsp check-config` lets users check a file before the server reads project files.
+- A Virgil update that adds or removes a language option changes which files are valid. [Compatibility](../compatibility.md) records the pinned revision.
 
 ## Alternatives considered
 

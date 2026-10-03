@@ -2,11 +2,7 @@
 
 A `.virgil-lsp.json` project file says which source files form each program in a repository. This page specifies version 1 of its format. [ADR-0005](decisions/0005-project-file-format.md) records why the format looks like this.
 
-The parser and its checks are implemented (`src/workspace/`). The server doesn't read project files while it runs yet. It will find the project file for each document, expand the patterns, and analyze projects in later M3 work ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55), [#58](https://github.com/SaltedTan/virgil-language-server/issues/58)). Rules that take effect only then are marked *(planned)*. To check a project file now, run:
-
-```sh
-virgil-lsp check-config path/to/.virgil-lsp.json
-```
+The parser and its checks are implemented (`src/workspace/`). The server doesn't read project files while it runs yet. It will find the project file for each document, expand the patterns, and analyze projects in later M3 work ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55), [#58](https://github.com/SaltedTan/virgil-language-server/issues/58)). Rules that take effect only then are marked *(planned)*.
 
 ## Why a project file
 
@@ -67,7 +63,7 @@ The [fixture projects](../test/fixtures/projects/) are smaller, complete example
 
 ## File format
 
-The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encoded in UTF-8. Comments and trailing commas aren't allowed. A UTF-8 byte order mark at the start is ignored. A file may be at most 262,144 bytes (256 KiB), and it has the server's other JSON limits: arrays and objects may nest at most 256 deep, and the file may hold at most 50,000 values. A file that lists patterns, not files, is far smaller.
+The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encoded in UTF-8. Comments, trailing commas, and a UTF-8 byte order mark aren't allowed. A file may be at most 262,144 bytes (256 KiB), and it has the server's other JSON limits: arrays and objects may nest at most 256 deep, and the file may hold at most 50,000 values. A file that lists patterns, not files, is far smaller.
 
 ### Top level
 
@@ -139,7 +135,7 @@ A repository that includes Virgil, for example as a submodule, can list the libr
 | `-lang:read-only-arrays` | `false` | Unstable builds only |
 | `-lang:covariant-arrays` | `false` | Unstable builds only |
 
-The server's pinned Aeneas is an unstable build (`Version.UNSTABLE`), so it accepts all of these. A unit test keeps this list equal to the pinned compiler's language options. A Virgil update that adds or removes one changes it.
+The server's pinned Aeneas is an unstable build (`Version.UNSTABLE`), so it accepts all of these. The parser takes the accepted options from the pinned compiler through `AeneasAdapter.languageOptions()`. A Virgil update that adds or removes one changes it.
 
 - Write a flag as `-lang:<name>`, which sets it to true, or as `-lang:<name>=true` or `-lang:<name>=false`. Any other value is an error, although `v3c` would read it as false.
 - Each option may appear once per project. Flags apply in the order given, as in `v3c`.
@@ -169,8 +165,6 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 | `UnsupportedCompilerFlag` | A `compilerArgs` entry that isn't a language option, or that repeats one or gives it a value other than true or false |
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.
-
-`virgil-lsp check-config <file>...` prints them as `file:line:column: Code: message`, with one-based lines and columns, and columns counted in characters. It exits with status 0 if every file is valid, 1 if any isn't, and 2 for a usage error.
 
 *(planned)* The server publishes them with `textDocument/publishDiagnostics` for the project file's URI, with `source: "virgil-lsp"`, the code, error severity, and LSP ranges converted from the byte ranges. It replaces them when the file changes, and clears them when it is fixed or deleted. The file needn't be open in the editor, so the server also sends one `window/showMessage` warning each time a project file becomes invalid, because its projects' semantic features stop working.
 

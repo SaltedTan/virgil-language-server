@@ -177,7 +177,6 @@ Golden transcripts and handler-level unit tests cover all supported declaration 
 
 - `ProjectJsonParser` (`ProjectJson.v3`) parses the file into `ProjectJson` values that record their UTF-8 byte ranges and keep object members in order, including repeated keys. It extends `JsonRpcJsonParser`, so string escapes, numbers, and the nesting and value limits are those of [JSON-RPC messages](#json-limitations-and-workarounds).
 - `ProjectConfigParser.parse(bytes)` (`ProjectConfig.v3`) checks the values against version 1. It returns a `ProjectConfig` model, or `ProjectConfigDiagnostic`s with codes and byte ranges, but never both. `ProjectPatterns` checks pattern syntax, and `ProjectCompilerFlags` checks `compilerArgs` against the language options.
-- The development command `check-config` prints the diagnostics with one-based lines and character columns, through `PositionMap`.
 
 *(planned)* Finding the project file for a document, expanding its patterns, choosing active projects, publishing configuration diagnostics on the project file's URI, and applying `compilerArgs` ([#55](https://github.com/SaltedTan/virgil-language-server/issues/55), [#58](https://github.com/SaltedTan/virgil-language-server/issues/58)).
 

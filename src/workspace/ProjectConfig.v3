@@ -23,11 +23,7 @@ enum ProjectConfigCode(code: string) {
 
 // A problem in a project file, at its bytes from {begin} up to the exclusive
 // {end}. An empty range marks a point, such as the end of the file.
-class ProjectConfigDiagnostic(code: ProjectConfigCode, begin: int, end: int, message: string) {
-	def render(buf: StringBuilder) -> StringBuilder {
-		return buf.puts(code.code).puts(": ").puts(message);
-	}
-}
+class ProjectConfigDiagnostic(code: ProjectConfigCode, begin: int, end: int, message: string) { }
 
 // A glob from a project file, with the bytes of the JSON string that held it.
 class ProjectPattern(text: string, begin: int, end: int) { }
@@ -48,7 +44,6 @@ class ProjectConfig(projects: Array<ProjectDefinition>) { }
 class ProjectConfigResult(config: ProjectConfig, diagnostics: Array<ProjectConfigDiagnostic>) { }
 
 component ProjectConfigParser {
-	def FILE_NAME = ".virgil-lsp.json";
 	def VERSION = 1;
 	// A project file lists patterns, not files, so it is small. Even a file
 	// naming every Aeneas source explicitly is about 10 KB.
@@ -64,11 +59,7 @@ component ProjectConfigParser {
 				Strings.format1("the project file is larger than %d bytes", MAX_BYTES));
 			return v.result(null);
 		}
-		var start = 0;
-		// RFC 8259 allows a parser to ignore a UTF-8 byte order mark.
-		if (text.length >= 3 && text[0] == 0xEF && text[1] == 0xBB && text[2] == 0xBF) start = 3;
 		var p = ProjectJsonParser.new(text);
-		if (start > 0) p.skip(start);
 		var root = p.parseFile();
 		if (root == null) {
 			var at = if(p.error_pos < text.length, p.error_pos, text.length);
