@@ -72,8 +72,8 @@ class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration)
 	}
 }
 
-// Measurements of one whole-program analysis. {globalTypesAdded} is -1 when
-// global-cache statistics were not requested.
+// Measurements of one whole-program analysis. {globalTypesAdded} counts retained
+// global types after cleanup, or is -1 when statistics were not requested.
 class AnalysisStats(parseUs: int, verifyUs: int, uidsUsed: int, globalTypesAdded: int) { }
 
 // The result of parsing and verifying a whole program. It keeps the syntax
@@ -181,6 +181,7 @@ component AeneasAdapter {
 	// Never initializes, runs reachability, or generates code.
 	// {collectStats} enables the expensive process-wide type-cache counts.
 	def analyzeProgram(sources: Array<AnalysisSource>, collectStats: bool) -> ProgramAnalysis {
+		AnalysisTypeCache.prepare();
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
 		var prog = Program.new();
 		// Without a target, Aeneas provides a synthetic System component, as
@@ -203,6 +204,9 @@ component AeneasAdapter {
 		// verifying the truncated tree would report spurious errors.
 		var verified = parsed && compilation.verify();
 		var t2 = System.ticksUs();
+		// Drop process-wide roots even when parsing or verification failed.
+		// The result still owns its VST; dropping that result makes it collectible.
+		AnalysisTypeCache.release();
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
 		return ProgramAnalysis.new(convertErrors(null, prog.ERROR), stats, parsed, verified, prog);

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Whole-program analyses no longer leave verified programs rooted in Aeneas's global type cache or its superseded, statically allocated bucket arrays. Dropped snapshots return close to the pre-analysis live-heap baseline; a fresh-process regression covers repeated analyses and error paths. See [compiler constraints](docs/architecture.md#known-constraints-of-the-compiler-front-end).
 - Occurrence collection reports uses only once in default match cases, lambda bodies (including nested lambdas and field initializers), and superclass arguments shared with constructors.
 - Match-case names and enum parameter fields now resolve in the [occurrence index](docs/architecture.md#compiler-adapter).
 - Bound aggregate open-document overlays and warn clients when admission is rejected. See [Document store](docs/architecture.md#document-store) for the supported capacity, recovery policy, and parsing headroom.

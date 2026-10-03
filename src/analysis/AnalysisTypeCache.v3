@@ -1,0 +1,64 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Work around two retention paths in the pinned compiler without changing it.
+// Only parse/verify may populate this cache; returned snapshots are queried but
+// never passed back into compiler phases. Analyses must remain serialized.
+component AnalysisTypeCache {
+	private var prepared = false;
+
+	def prepare() {
+		if (prepared) return;
+		prepared = true;
+		var cache = TypeUtil.globalCache;
+		// Component initialization runs at compile time. The initial arrays live
+		// in the executable's data segment, and every element is a permanent GC
+		// root, even after TypeCache.rebalance replaces the array. Move the table
+		// to runtime-allocated arrays BEFORE an analysis can grow it. Clear the
+		// old root slots while preserving all interned builtin type identities.
+		cache.singleBuckets = detach(cache.singleBuckets);
+		cache.multiBuckets = detach(cache.multiBuckets);
+	}
+
+	private def detach(buckets: Array<Type>) -> Array<Type> {
+		var copy = Arrays.dup(buckets);
+		for (i < buckets.length) buckets[i] = null;
+		return copy;
+	}
+
+	def release() {
+		var cache = TypeUtil.globalCache;
+		prune(cache.singleBuckets);
+		prune(cache.multiBuckets);
+	}
+
+	private def prune(buckets: Array<Type>) {
+		for (i < buckets.length) {
+			var previous: Type;
+			var next: Type;
+			for (t = buckets[i]; t != null; t = next) {
+				next = t.link;
+				if (isGlobal(t)) {
+					previous = t;
+				} else {
+					if (previous == null) buckets[i] = next;
+					else previous.link = next;
+					t.link = null;
+				}
+			}
+		}
+	}
+
+	private def isGlobal(t: Type) -> bool {
+		var tc = t.typeCon;
+		if (tc.typeCache != TypeUtil.globalCache) return false;
+		// Enum constructors use the global cache too, but hold source declarations.
+		if (tc.kind == Kind.ENUM || tc.kind == Kind.ENUM_SET) return false;
+		// TypeCon chooses a cache from immediate constructors, missing program
+		// dependencies nested inside builtin tuples, arrays and function types.
+		for (l = t.nested; l != null; l = l.tail) {
+			if (!isGlobal(l.head)) return false;
+		}
+		return true;
+	}
+}

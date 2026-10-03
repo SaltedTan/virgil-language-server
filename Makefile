@@ -39,7 +39,14 @@ $(BUILD)/unit-tests: buildinfo $(TEST_SRC) $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=unit-tests \
 	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS) $(VIRGIL)/lib/test/*.v3
 
-test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests
+# A separate process is essential: prior analyses could hide the initial static
+# cache roots in the heap baseline. The probe also accepts source-file arguments.
+$(BUILD)/retain-probe: buildinfo test/analysis/RetainProbe.v3 $(SERVER_LIB)
+	$(V3C) -output=$(BUILD) -program-name=retain-probe \
+	  test/analysis/RetainProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
+test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests $(BUILD)/retain-probe
+	$(BUILD)/retain-probe
 	$(BUILD)/unit-tests
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp

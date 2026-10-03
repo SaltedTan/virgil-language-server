@@ -1,0 +1,87 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Run in a fresh process so a warm-up cannot hide the permanently rooted initial
+// cache buckets. With no arguments, exercise generated clean/error programs.
+// With file arguments, measure that program (semantic errors are permitted).
+// Uses only the server-owned adapter API, not Aeneas compiler types.
+component AnalysisRetainProbe {
+	def main(args: Array<string>) -> int {
+		var sources: Array<AnalysisSource>;
+		if (args.length == 0) {
+			var buf = StringBuilder.new();
+			for (i < 128) {
+				buf.put1("class C%d {\n", i);
+				buf.puts("def id<T>(x: T) -> T { return x; }\n");
+				buf.puts("def call<T>(x: T) -> T { return id(x); }\n");
+				buf.put2("def pairs() -> Array<(C%d, C%d)> { return []; }\n}\n", i, i);
+				buf.put1("enum E%d { A, B }\n", i);
+				buf.put3("def enums%d(e: E%d) -> Array<E%d> { return [e]; }\n", i, i, i);
+			}
+			sources = [AnalysisSource.new("generated.v3", buf.extract())];
+		} else {
+			sources = Array<AnalysisSource>.new(args.length);
+			for (i < args.length) {
+				var input = System.fileLoad(args[i]);
+				if (input == null) {
+					System.puts(Strings.format1("cannot load %s\n", args[i]));
+					return 1;
+				}
+				sources[i] = AnalysisSource.new(args[i], input);
+			}
+		}
+		var before = liveBytes();
+		report("before", before);
+		for (i < 4) {
+			if (!analyze(sources, if(args.length == 0, 0, -1))) return 1;
+			if (!checkHeap("after dropped analysis", before)) return 1;
+		}
+		if (args.length == 0) {
+			if (!analyzeWithError(sources, "def broken() { missing; }", 1)) return 1;
+			if (!checkHeap("after verification error", before)) return 1;
+			if (!analyzeWithError(sources, "def broken( {", 2)) return 1;
+			if (!checkHeap("after parse error", before)) return 1;
+		}
+		if (!analyze([AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], 0)) return 1;
+		if (!checkHeap("after unrelated tiny program", before)) return 1;
+		// Keep the caller's source bytes live across every GC, including the last.
+		var bytes = 0;
+		for (s in sources) bytes += s.input.length;
+		System.puts(Strings.format1("source bytes kept live: %d\n", bytes));
+		return 0;
+	}
+
+	// Return from every frame holding the snapshot before measuring the heap.
+	// expected: -1 permits semantic errors, 0 clean, 1 verification error, 2 parse error.
+	def analyze(sources: Array<AnalysisSource>, expected: int) -> bool #no-inline {
+		var a = AeneasAdapter.analyzeProgram(sources, false);
+		var ok = if(expected == -1, a.parsed,
+			if(expected == 0, a.verified,
+				if(expected == 1, a.parsed && !a.verified, !a.parsed)));
+		if (!ok) System.puts("unexpected analysis outcome\n");
+		return ok;
+	}
+
+	def analyzeWithError(sources: Array<AnalysisSource>, text: string, expected: int) -> bool #no-inline {
+		return analyze(Arrays.concat(sources, [AnalysisSource.new("error.v3", text)]), expected);
+	}
+
+	def liveBytes() -> long {
+		RiGc.forceGC();
+		return Semispace.fromSpaceUsed();
+	}
+
+	def report(label: string, bytes: long) {
+		System.puts(Strings.format2("%s: %d bytes live\n", label, bytes));
+	}
+
+	def checkHeap(label: string, before: long) -> bool {
+		var after = liveBytes();
+		report(label, after);
+		// Allow builtin operator caches and bounded bucket-table growth, but not
+		// a verified VST. This fixture retains megabytes without the workaround.
+		if (after - before <= 256 * 1024) return true;
+		System.puts("FAIL: analysis retained more than 256 KiB above baseline\n");
+		return false;
+	}
+}
