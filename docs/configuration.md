@@ -103,7 +103,7 @@ A pattern is a relative path whose segments are separated by `/`. Its segments m
 
 Expansion selects regular files on disk only (open overlays replace their contents at analysis submission):
 
-- `exclude` is matched against paths relative to the project file's directory. It removes files from `sources` and `dependencies`, but not from `virgilDependencies`, which list exactly the library files a project uses.
+- `exclude` is matched against paths relative to the project file's directory. It removes matching files and prunes matching directories before inspection or traversal for `sources` and `dependencies`, but not for `virgilDependencies`, which list exactly the library files a project uses.
 - The program's files are those of `sources`, then `dependencies`, then `virgilDependencies`. Each pattern adds its matches in byte order of their paths, in the order the patterns are listed. A file that an earlier pattern already selected keeps its first place, and a file in both `sources` and `dependencies` is a member.
 - A pattern matching nothing contributes no files and is not an error. Empty expanded programs remain available as contexts but cannot be submitted for analysis.
 - Each program may select at most **1,024 files**. Its source bytes, path bytes, and conservative wire metadata allowance must fit in **4 MiB**. File metadata and overlay lengths are checked for the *entire* selection before reading any source contents. Reads are bounded again, so files growing after enumeration cannot bypass admission. Rejected expansion returns no partial source list and reports a configuration diagnostic.
@@ -170,7 +170,7 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 | `UnsupportedCompilerFlag` | A `compilerArgs` entry that isn't a language option, or that repeats one or gives it a value other than true or false |
 | `ExpansionLimit` | Source count, traversal (including directory-entry overflow), project count, or retained source-list capacity exceeded |
 | `SourceBudget` | Aggregate source bytes, paths, and metadata exceed the analysis budget |
-| `SourceIO` | A matching source or directory could not be accessed or inspected, a selected file became unreadable/nonregular, directory enumeration failed, or configuration reading exceeded its size/capacity limits |
+| `SourceIO` | A selected, non-excluded source could not be opened or inspected, a selected file became nonregular, a directory required for traversal could not be listed, or configuration reading exceeded its size/capacity limits |
 | `MissingVirgilRoot` | `virgilDependencies` is present without a configured Virgil root |
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.

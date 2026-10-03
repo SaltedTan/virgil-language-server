@@ -196,6 +196,7 @@ component HostOs {
 		return sys(SYS_getdirentries64, (fd, Pointer.atContents(buf), buf.length, Pointer.atContents(base)));
 	}
 	def directoryNameOffset = 21;
+	def directoryTypeOffset = 20;
 	def directoryRecordOffset = 16;
 
 	// Moves {fd} to a close-on-exec descriptor numbered at least MIN_FD.

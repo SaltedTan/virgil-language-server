@@ -1,7 +1,7 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-class ProjectDirectory(names: Array<string>, examined: int, overflow: bool) { }
+class ProjectDirectory(names: Array<string>, types: HashMap<string, byte>, examined: int, overflow: bool) { }
 
 // No realpath: lexical document identity and no symlink traversal. Descriptors
 // anchor each path component, so renaming/replacing it cannot redirect a walk.
@@ -62,14 +62,6 @@ component ProjectFiles {
 		var fd = open(dir, true);
 		if (fd < 0) return (fd, -1L);
 		var result = HostOs.childMetadata(fd, name);
-		if (result.0 == REGULAR || result.0 == DIRECTORY) {
-			var child = HostOs.openChild(fd, name, result.0 == DIRECTORY);
-			if (child < 0) result = (child, -1L);
-			else {
-				result = HostOs.fileMetadata(child);
-				HostOs.close(child);
-			}
-		}
 		HostOs.close(fd);
 		return result;
 	}
@@ -91,8 +83,9 @@ component ProjectFiles {
 	}
 	def list(path: string, maxEntries: int) -> ProjectDirectory {
 		var fd = open(path, true);
-		if (fd < 0) return ProjectDirectory.new(null, 0, false);
-		var names = Vector<string>.new(), buf = Array<byte>.new(8192), ok = false;
+		if (fd < 0) return ProjectDirectory.new(null, null, 0, false);
+		var names = Vector<string>.new(), types = Strings.newMap<byte>();
+		var buf = Array<byte>.new(8192), ok = false;
 		var examined = 0, overflow = false;
 		while (true) {
 			var n = HostOs.readDirectory(fd, buf);
@@ -112,15 +105,16 @@ component ProjectFiles {
 				if (!Strings.equal(name, ".") && !Strings.equal(name, "..")) {
 					if (++examined > maxEntries) { overflow = true; break; }
 					names.put(name);
+					types[name] = buf[at + HostOs.directoryTypeOffset];
 				}
 				at += len;
 			}
 			if (at != n) break;
 		}
 		HostOs.close(fd);
-		if (!ok) return ProjectDirectory.new(null, examined, overflow);
+		if (!ok) return ProjectDirectory.new(null, null, examined, overflow);
 		var result = names.extract();
-		return ProjectDirectory.new(Arrays.sort(result, 0, result.length, before), examined, false);
+		return ProjectDirectory.new(Arrays.sort(result, 0, result.length, before), types, examined, false);
 	}
 	def before(a: string, b: string) -> bool {
 		for (i = 0; i < a.length && i < b.length; i++) {

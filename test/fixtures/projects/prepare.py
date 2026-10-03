@@ -8,6 +8,12 @@ import socket
 import sys
 
 root = Path(sys.argv[1]) / "project-fixtures"
+if len(sys.argv) == 3 and sys.argv[2] == "--cleanup":
+    for relative in ["unreadable-directories/blocked", "ignored-entries/build"]:
+        directory = root / relative
+        if not directory.is_symlink() and directory.is_dir():
+            directory.chmod(0o700)
+    sys.exit(0)
 (root / "safe").mkdir(parents=True, exist_ok=True)
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")
 with (root / "large.v3").open("wb") as output:
@@ -74,3 +80,27 @@ for name in ["readable", "blocked"]:
     directory.chmod(0o700)
     (directory / "A.v3").write_text("def value = 1;\n", encoding="utf-8")
 (unreadable_directories / "blocked").chmod(0)
+
+ignored_entries = root / "ignored-entries"
+ignored_entries.mkdir(exist_ok=True)
+for name in ["A.v3", "B.v3", "README.md"]:
+    path = ignored_entries / name
+    if path.exists():
+        path.chmod(0o600)
+    path.write_text("def value = 1;\n", encoding="utf-8")
+for name in ["B.v3", "README.md"]:
+    (ignored_entries / name).chmod(0)
+excluded_directory = ignored_entries / "build"
+excluded_directory.mkdir(exist_ok=True)
+excluded_directory.chmod(0o700)
+(excluded_directory / "Generated.v3").write_text("def generated = 1;\n", encoding="utf-8")
+excluded_directory.chmod(0)
+
+unrelated_files = root / "unrelated-files"
+unrelated_files.mkdir(exist_ok=True)
+for name in ["A.v3", "README.md"]:
+    path = unrelated_files / name
+    if path.exists():
+        path.chmod(0o600)
+    path.write_text("def value = 1;\n", encoding="utf-8")
+(unrelated_files / "README.md").chmod(0)

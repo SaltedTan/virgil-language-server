@@ -10,6 +10,7 @@ def X = [
 	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
 	T("ProjectExpansion:symlinks_and_special_files", test_symlinks),
 	T("ProjectExpansion:unreadable_matches", test_unreadable_matches),
+	T("ProjectExpansion:unrelated_and_excluded_entries", test_unrelated_and_excluded_entries),
 	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
@@ -41,6 +42,8 @@ def test_host_directory(t: Tester) {
 	t.assert_string("client", names[1]);
 	t.assert_string("server", names[2]);
 	t.assert_string("shared", names[3]);
+	t.asserti(8, listing.types[".virgil-lsp.json"]);
+	t.asserti(4, listing.types["shared"]);
 	listing = ProjectFiles.list(dir, 3);
 	t.assertz(true, listing.overflow);
 	t.asserti(4, listing.examined);
@@ -385,8 +388,10 @@ def test_snapshot_budget(t: Tester) {
 def test_unreadable_matches(t: Tester) {
 	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
 	var files = ProjectFiles.join(base, "unreadable-files"), directories = ProjectFiles.join(base, "unreadable-directories");
-	t.asserti(-13, ProjectFiles.metadata(ProjectFiles.join(files, "B.v3")).0);
-	t.asserti(-13, ProjectFiles.metadata(ProjectFiles.join(directories, "blocked")).0);
+	t.asserti(ProjectFiles.REGULAR, ProjectFiles.metadata(ProjectFiles.join(files, "B.v3")).0);
+	t.asserti(-13, ProjectFiles.open(ProjectFiles.join(files, "B.v3"), false));
+	t.asserti(ProjectFiles.DIRECTORY, ProjectFiles.metadata(ProjectFiles.join(directories, "blocked")).0);
+	t.assert(ProjectFiles.list(ProjectFiles.join(directories, "blocked"), 100).names == null, "required unreadable directory cannot be listed");
 	var fd = ProjectFiles.open(files, true);
 	t.assert(fd >= 0, "readable parent opened");
 	if (fd >= 0) {
@@ -429,4 +434,44 @@ def test_unreadable_matches(t: Tester) {
 	w.initialize(workspaceParams(directories));
 	w.refresh();
 	t.asserti(1, warnings.count);
+}
+
+def test_unrelated_and_excluded_entries(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	var files = ProjectFiles.join(base, "ignored-entries"), unrelated = ProjectFiles.join(base, "unrelated-files");
+	t.asserti(-13, ProjectFiles.open(ProjectFiles.join(files, "README.md"), false));
+	t.asserti(-13, ProjectFiles.open(ProjectFiles.join(files, "B.v3"), false));
+	for (field in ["sources", "dependencies", "virgilDependencies"]) {
+		var json = if(Strings.equal(field, "sources"),
+			"{\"name\":\"p\",\"sources\":[\"**/*.v3\"]}",
+			Strings.format1("{\"name\":\"p\",\"sources\":[\"A.v3\"],\"%s\":[\"**/*.v3\"]}", field));
+		var standalone = expand(unrelated, unrelated, definition(json));
+		t.asserti(0, standalone.diagnostics.length);
+		t.asserti(1, standalone.sources.length);
+		if (standalone.sources.length == 1) t.assert_string(ProjectFiles.join(unrelated, "A.v3"), standalone.sources[0].path);
+		for (pattern in ["A.v3", "?.v3", "*.v3", "**/*.v3", "**/**/?.v3"]) {
+			var json = if(Strings.equal(field, "sources"),
+				Strings.format1("{\"name\":\"p\",\"sources\":[\"%s\"],\"exclude\":[\"B.v3\",\"build/**\"]}", pattern),
+				Strings.format2("{\"name\":\"p\",\"sources\":[\"A.v3\"],\"%s\":[\"%s\"],\"exclude\":[\"B.v3\",\"build/**\"]}", field, pattern));
+			var r = expand(files, files, definition(json));
+			var libraryExcluded = Strings.equal(field, "virgilDependencies") && !Strings.equal(pattern, "A.v3");
+			if (libraryExcluded) {
+				t.asserti(0, r.sources.length);
+				t.asserti(1, r.diagnostics.length);
+				if (r.diagnostics.length == 1) t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_IO, "library inputs do not use project exclusions");
+			} else {
+				t.asserti(0, r.diagnostics.length);
+				t.asserti(1, r.sources.length);
+				if (r.sources.length == 1) t.assert_string(ProjectFiles.join(files, "A.v3"), r.sources[0].path);
+			}
+		}
+	}
+	var r = expand(files, null, definition("{\"name\":\"p\",\"sources\":[\"build/*.v3\",\"A.v3\"],\"exclude\":[\"build/**\"]}"));
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(1, r.sources.length);
+	var directories = ProjectFiles.join(base, "unreadable-directories");
+	r = expand(directories, null, definition("{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"exclude\":[\"blocked/**\"]}"));
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(1, r.sources.length);
+	if (r.sources.length == 1) t.assert_string(ProjectFiles.join(directories, "readable/A.v3"), r.sources[0].path);
 }
