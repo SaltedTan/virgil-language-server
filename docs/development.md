@@ -73,7 +73,7 @@ After `initialize`, send `virgil-lsp/analyze` with a nonempty `uris` array:
 {"generation":1,"diagnostics":[],"documentVersions":[{"uri":"file:///absolute/a.v3","version":3,"current":false},{"uri":"file:///absolute/b.v3","version":null,"current":true}]}
 ```
 
-An accepted overlay change or close makes its captured result stale. A close/reopen at the same version cannot revive it. Rejected changes, duplicate opens, and saves leave freshness unchanged. Disk inputs are **assumed current while no overlay is open**; opening an overlay makes them stale, and closing it restores assumed freshness. External disk changes, deletion, size, and modification time are not tracked. `current` is per-source, not a claim that the whole program's dependencies are current. This remains deliberately stale inspection data: no semantic results are published or discarded by this request. Configuration revisions are not yet recorded (project configuration is still in flight in issue #53).
+The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-partly-present) defines `current`, including overlay invalidation and the assumptions for disk inputs, and records the remaining configuration-revision work. This remains deliberately stale inspection data: no semantic results are published or discarded by this request.
 
 `--stdio` accepts the same unstable `--worker-timeout-ms=<n>` and `--worker-max-analyses=<n>` policy overrides as the CLI `analyze` command. The default limits remain 10 seconds per analysis and 100 analyses per worker. No worker starts for ordinary syntax-only sessions.
 
