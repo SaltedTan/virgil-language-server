@@ -21,13 +21,13 @@ Two properties of the Virgil runtime shape the answer:
 ### Processes
 
 1. **Two executables from the same sources.** `virgil-lsp` is the server. `virgil-lsp-worker` runs analyses and nothing else. Its entry point is `src/worker/WorkerMain.v3`, and it is compiled with its own heap (`WORKER_HEAP` in the `Makefile`, 384 MB; see [Measurements](#measurements)). The server keeps the default heap.
-2. **The server never parses or verifies a whole program.** Only the worker calls `AeneasAdapter.analyzeProgram`, and so `Compilation.parse()` and `verify()`. Virgil compiles only reachable code, so the verifier isn't even in the server executable (306 KB, against 607 KB for the worker, on Linux). Single-file parsing (`parseFile`, document symbols) stays in the server. It provides syntax diagnostics while a worker restarts, and has its own, smaller set of [known crash paths](../aeneas-crash-paths.md).
+2. **The server never parses or verifies a whole program.** Of the two product executables, only the worker calls `AeneasAdapter.analyzeProgram`, and so `Compilation.parse()` and `verify()`; adapter tests and probes still call it directly. This supersedes the in-process whole-program analysis portion of [ADR-0001](0001-virgil-native-server.md), retaining its choice of Virgil and the compiler's semantics. Virgil compiles only reachable code, so the verifier isn't even in the server executable (306 KB, against 607 KB for the worker, on Linux). Single-file parsing (`parseFile`, document symbols) stays in the server and has its own, smaller set of [known crash paths](../aeneas-crash-paths.md). Keeping it in-process allows syntax diagnostics independently of worker availability once stdio integration lands.
 3. **Starting a worker.** The server looks for `virgil-lsp-worker` in its own executable's directory. On Linux it reads `/proc/self/exe`; on macOS it calls `proc_info` with `PROC_PIDPATHINFO`, as `proc_pidpath()` does. `src/os/<target>/HostOs.v3` holds the system calls for each target, and the `Makefile` compiles the one for the host. The server creates two pipes and moves their descriptors to 10 and above, close-on-exec. It then forks and `execve`s the worker with the argument `--serve` and an empty environment. In the child, descriptor 0 is `/dev/null`, descriptors 1 and 2 are the server's standard error, and descriptors 3 and 4 carry requests and results. A worker can therefore never write to the server's standard output, which belongs to the protocol. The server checks that the file is executable before forking; a child that still cannot `execve` exits with status 127. The supervising process ignores `SIGPIPE`, so that writing to a dead worker fails with `EPIPE` instead of killing it.
 4. **Handshake.** A worker starts by sending its protocol version, server version, source revision, and heap size. The server refuses a worker whose version or revision differs from its own (a stale or mismatched executable) and reports why.
 
 ### Channel and framing
 
-Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions, and `AnalysisWire.PROTOCOL_VERSION` changes with the layout.
+Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `RESULT` starts with fixed-width request ID, analysis count, and UID counter (32 bits each), then live heap bytes (64 bits), all little-endian. Its flags and declaration-kind tags are single bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions, and `AnalysisWire.PROTOCOL_VERSION` changes with the layout.
 
 | Message | Direction | Contents |
 | --- | --- | --- |
@@ -49,14 +49,16 @@ Analyses run one at a time. A worker starts on demand, before an analysis, and i
 | --- | --- | --- |
 | It exits, traps, or closes its result pipe during an analysis | — | Failed: crashed |
 | An analysis runs past the wall-clock limit, or a start sends no handshake in time | 10 s each | Failed: timed out, or unavailable for a start |
-| It sends a malformed message | — | Failed: malformed |
+| It sends a malformed result payload | — | Failed: malformed |
 | After a completed analysis, its analysis count reaches the limit | 100 | Completed |
 | After a completed analysis, its UID counter reaches the limit | 2^28 | Completed |
 | After a completed analysis, its live heap (after a forced collection, excluding the result) reaches the limit | ⅛ of its heap (48 MB) | Completed |
 
 Each worker also arms a timer (`setitimer`) for twice the time limit plus a second while it analyzes, and `SIGALRM` ends it. The server's limit normally expires first. The timer matters when the supervising process dies during an analysis: an idle orphan reads the end of its request pipe and exits, but one caught in a compiler loop would otherwise run forever.
 
-A request larger than the frame limit fails before anything is sent. If no worker can be started, the analysis fails as unavailable, and the next analysis tries again. Failures are logged to standard error as warnings, with the process ID and how the process ended. Routine replacements get an informational line. A failure never stops the supervising process. The most recent snapshot stays current and answers queries, and the next analysis runs in a new worker. The worker inherits standard error, so its trap message and stack trace appear in the server's log.
+Before allocating the encoded request, the supervisor measures its aggregate size with `AnalysisWire.analyzeFrameSize`: framing, message metadata, file counts, path lengths and bytes, and source lengths and bytes. If the payload would exceed the frame limit, it returns `TOO_LARGE` without starting or replacing a worker, sending bytes, or changing the current snapshot. The existing worker can handle the next accepted request. `AnalysisSupervisor:request_too_large`, `AnalysisSupervisor:request_size_boundary`, `AnalysisSupervisor:aggregate_request_too_large`, and `AnalysisSupervisor:oversized_request_keeps_snapshot` cover this admission rule.
+
+If no worker can be started, the analysis fails as unavailable, and the next analysis tries again. Worker startup and execution failures are logged to standard error as warnings, with the process ID and exit status when available. Invalid frame lengths or truncated frames close the result stream and are reported as crashes; malformed result payloads are reported as malformed. Routine replacements get an informational line. A failure never stops the supervising process. The most recent snapshot stays current and answers queries, and the next analysis after a worker failure runs in a new worker. The worker inherits standard error, so its trap message and stack trace appear in the server's log.
 
 The UID limit leaves 2^28 IDs of headroom, while one analysis of the Aeneas sources uses 32,462. The count limit is a backstop against growth that the live-heap check cannot see, such as the UID counter itself; replacing a worker costs well under a millisecond. The live-heap limit catches a retention leak long before it can overflow the heap: without #12's cleanup, one analysis of the Aeneas sources retained about 70 MB.
 
@@ -84,13 +86,13 @@ Run in process before the worker existed, the same analysis ran out of heap at 1
 ## Consequences
 
 - A compiler trap, an endless loop, or a leak ends or slows only the worker. The supervisor reports it, keeps the last snapshot, and continues.
-- Releases must ship `virgil-lsp-worker` next to `virgil-lsp` (M7). The handshake rejects a pair from different builds.
+- Releases must preserve the [executable placement](../../README.md#building) (M7). The handshake rejects a pair from different builds.
 - Each new host target needs a `src/os/<target>/HostOs.v3`.
 - Every analysis copies its sources into the worker and its results back. For the Aeneas sources that is 2.9 MB and 2.0 MB, which takes a few milliseconds.
 - A worker's resident memory approaches 384 MB on programs the size of the Aeneas sources. A program needing more than about 190 MB of live heap, about twice the Aeneas sources, overflows the worker heap. Every such analysis is reported as a crash until `WORKER_HEAP` is raised.
 - A result can be at most 16 MiB. That bounds what decoding it allocates in the server's 200 MB heap. The stdio integration must budget for snapshots alongside the [document store's headroom](../architecture.md#document-store).
 - The time limit uses `System.ticksMs()`, which reads the wall clock (`gettimeofday`). A clock change during an analysis can shorten or lengthen the limit.
-- `analyze` no longer traps when the compiler does. The worker's trap message and stack trace still appear on standard error, followed by the supervisor's report and exit status 1.
+- `analyze` no longer traps when the compiler does; [Running](../development.md#running) owns its failure output and exit behavior.
 
 ## Alternatives considered
 

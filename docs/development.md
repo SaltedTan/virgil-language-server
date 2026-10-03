@@ -15,14 +15,14 @@ make test       # builds and runs all suites listed below
 make clean
 ```
 
-Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)). `virgil-lsp` starts `virgil-lsp-worker` from its own directory to parse and verify whole programs, so keep the two together. `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` prints the target it would use. It accepts these overrides:
+Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` prints the target it would use. It accepts these overrides:
 
 | Variable | Purpose |
 | --- | --- |
 | `VIRGIL` | Use a different Virgil checkout, e.g. `make VIRGIL=~/src/virgil` |
 | `VIRGIL_V3C` | Use a specific Aeneas binary, e.g. a bootstrapped `bin/current/x86-64-linux/Aeneas` |
 | `V3C_TARGET` | Force a target such as `x86-64-darwin`. The `Makefile` also uses it to choose `src/os/<target>/`. |
-| `WORKER_HEAP` | `Makefile` only: the analysis worker's heap, e.g. `make WORKER_HEAP=1g` (default `384m`, see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements)) |
+| `WORKER_HEAP` | `Makefile` only: the analysis worker's heap, e.g. `make WORKER_HEAP=1g` (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements) for the default and its measurements) |
 
 ## Running
 
@@ -33,7 +33,7 @@ build/virgil-lsp analyze a.v3 b.v3        # development command: parse and verif
 build/virgil-lsp --stdio                  # LSP over stdio
 ```
 
-`analyze` runs the compiler spike: the files are read, then parsed and verified together in an [analysis worker](architecture.md#analysis-worker) process, and semantic diagnostics are printed. `--bindings` also prints each indexed use and its source declaration according to the [binding contract](architecture.md#compiler-adapter). `--stats` prints timing and compiler global-state counters, as measured in the worker, to stderr. `--repeat=<n>` runs the analysis n times and fails if any run differs; workers are replaced between runs as the [restart policy](decisions/0004-analysis-worker-process.md#restart-policy) requires. `--worker-timeout-ms=<n>` and `--worker-max-analyses=<n>` set the policy's time and analysis-count limits, for testing. If the worker crashes or times out, its stack trace (if any) and the supervisor's report go to stderr, and the command exits with status 1. For example:
+`analyze` runs the compiler spike: the files are read, then parsed and verified together in an [analysis worker](architecture.md#analysis-worker) process, and semantic diagnostics are printed. `--bindings` also prints each indexed use and its source declaration according to the [binding contract](architecture.md#compiler-adapter). `--stats` prints timing and compiler global-state counters, as measured in the worker, to stderr. `--repeat=<n>` runs the analysis n times and fails if any run differs; workers are replaced between runs as the [restart policy](decisions/0004-analysis-worker-process.md#restart-policy) requires. `--worker-timeout-ms=<n>` and `--worker-max-analyses=<n>` set the policy's time and analysis-count limits, for testing; like `--repeat`, they accept positive decimal values of at most nine digits and can raise or lower the defaults. If the worker crashes or times out, its stack trace (if any) and the supervisor's report go to stderr, and the command exits with status 1. An oversized request also exits with status 1; the worker protocol's [request admission rule](decisions/0004-analysis-worker-process.md#restart-policy) includes paths and encoding overhead, not just source bytes. For example:
 
 ```sh
 build/virgil-lsp analyze --bindings test/fixtures/analysis/two-file/*.v3

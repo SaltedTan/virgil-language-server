@@ -10,11 +10,11 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 ## Why
 
-Virgil has a self-hosted compiler but no editor intelligence for unsaved buffers. Running `v3c` on save gives diagnostics for saved files only. It can't provide go-to-definition or hover, which need the compiler's bound syntax tree. This project runs Aeneas's parser and verifier inside a long-lived server process, so editors get the compiler's real semantics instead of a reimplementation.
+Virgil has a self-hosted compiler but no editor intelligence for unsaved buffers. Running `v3c` on save gives diagnostics for saved files only. It can't provide go-to-definition or hover, which need the compiler's bound syntax tree. This project uses Aeneas's front end so editors can get the compiler's real semantics instead of a reimplementation; see the [process model](docs/decisions/0004-analysis-worker-process.md).
 
 ## v0.1 scope
 
-One `virgil-lsp` executable, used by both LazyVim/Neovim and VS Code, providing:
+One server, used by both LazyVim/Neovim and VS Code, providing:
 
 - `.v3` file detection
 - parser and type-checker diagnostics for unsaved buffers
@@ -27,16 +27,7 @@ Completion, references, rename, and incremental analysis come after v0.1. Format
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    E["VS Code or Neovim"] --> P["LSP and JSON-RPC layer"]
-    P --> W["Versioned documents and workspace"]
-    W --> A["Aeneas parse and verify adapter, in a worker process"]
-    A --> S["Immutable snapshot and symbol index"]
-    S --> P
-```
-
-One server process owns the protocol, the in-memory document overlays, and the semantic index. Whole-program parsing and verification run in a replaceable worker process, so that a compiler crash or hang cannot take the server down. Editor integrations stay thin and contain no language semantics. All compiler access goes through a single adapter (`src/analysis/`). See [docs/architecture.md](docs/architecture.md) and the [decision records](docs/decisions/).
+The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) currently serves the development `analyze` command; `--stdio` provides syntax diagnostics and document symbols, with semantic features still planned.
 
 ## Building
 
@@ -47,6 +38,8 @@ git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-serv
 cd virgil-language-server
 make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs all tests
 ```
+
+Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables.
 
 Try the current development command:
 

@@ -98,7 +98,7 @@ component AnalysisWire {
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
 	// diagnostics, and, if {files} is not null, a path table, the distinct
 	// declarations, and the occurrences of each file in source order as
-	// ranges and declaration indexes. Call setLiveBytes before sending.
+	// ranges and declaration indexes. Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);

@@ -43,7 +43,7 @@ Starting from scratch does not require pretending prior work is invisible. Study
 
 ### v0.1 goal
 
-A user can install one server binary, open a configured Virgil project in either LazyVim or VS Code, and receive:
+A user can install the server following the [build and executable placement guidance](README.md#building), open a configured Virgil project in either LazyVim or VS Code, and receive:
 
 - `.v3` file detection;
 - parser and type-checker diagnostics for unsaved buffers;
@@ -72,20 +72,11 @@ A user can install one server binary, open a configured Virgil project in either
 
 ## Recommended architecture
 
-```mermaid
-flowchart TD
-    E["VS Code or Neovim"] --> P["LSP and JSON-RPC layer"]
-    P --> W["Versioned documents and workspace"]
-    W --> A["Aeneas parse and verify adapter"]
-    A --> S["Immutable snapshot and symbol index"]
-    S --> P
-```
-
-One process should own the protocol, in-memory document overlays, compiler front end, and semantic index. Both editors start that process over standard input/output. Editor integrations should not contain language semantics.
+See the [architecture overview](docs/architecture.md#overview) and [ADR-0004](docs/decisions/0004-analysis-worker-process.md) for the process model and compiler boundary.
 
 ### Why keep the server in Virgil
 
-- It can directly use `Parser.parseFile`, `Compilation.parse()`, `Compilation.verify()`, `VstFile`, `ErrorGen`, `VarExpr.varbind`, `TypeRef.binding`, and expression type fields.
+- The compiler adapter can directly use Aeneas's parser, verifier, and bound syntax tree; see the [adapter boundary](docs/decisions/0002-pinned-virgil-adapter-boundary.md).
 - It avoids translating or duplicating the language's rapidly changing semantics.
 - Aeneas is already self-hosted, so the server can share the compiler's actual semantic model.
 - A single native executable is easy for Neovim and VS Code to launch.
@@ -105,7 +96,7 @@ You do not need to understand Aeneas's optimizer or backends. The relevant path 
 | Errors             | Structured compiler errors               | [`Error.v3`](https://github.com/titzer/virgil/blob/master/aeneas/src/main/Error.v3)                                                                                                  | `textDocument/publishDiagnostics`                               |
 | LSP serialization  | JSON values, parser, builder, renderer   | [`JsonParser.v3`](https://github.com/titzer/virgil/blob/master/lib/file/json/JsonParser.v3)                                                                                          | JSON-RPC payloads                                               |
 
-`Compilation.compile()` runs parsing, verification, initialization, reachability, and emission. The server should stop after parsing and verification. Create a compiler adapter that builds a fresh `Program` and calls only `parse()` and `verify()`; do not run initializers or a target backend.
+See the [front-end-only adapter contract](docs/decisions/0002-pinned-virgil-adapter-boundary.md#decision) for which compiler phases may run, and [ADR-0004](docs/decisions/0004-analysis-worker-process.md#processes) for where they run.
 
 ### Analysis snapshot
 
@@ -113,7 +104,7 @@ Treat each successful analysis as an immutable snapshot containing:
 
 - workspace/project configuration revision;
 - document versions used for the analysis;
-- `Program` and verified VST;
+- [server-owned snapshot data](docs/decisions/0004-analysis-worker-process.md#what-crosses-the-boundary), rather than compiler objects;
 - diagnostics grouped by URI;
 - declaration index: stable symbol key to declaration and source range;
 - occurrence index: source range to semantic binding;
@@ -246,11 +237,12 @@ Deliverables:
 - Source/dependency glob expansion and workspace-folder support.
 - Fresh `Program` construction with all disk sources plus unsaved overlays.
 - Parse-and-verify-only compiler adapter.
+- Stdio integration of the [analysis worker](docs/architecture.md#analysis-worker), before semantic diagnostics run on unsaved edits.
 - `ErrorGen` conversion to diagnostics grouped by document.
 - Analysis revision/version gate so stale runs cannot overwrite new results.
 - Initial performance measurements against a small project and the Virgil compiler sources.
 
-Start synchronously and analyze on save if necessary. Do not add threads or incremental invalidation until repeatable full analysis works. If on-change whole-program verification is already fast enough, add a short debounce; otherwise keep fast per-file parsing on change and semantic verification on save.
+Integrate the worker before unsaved semantic analysis, keeping the stdio loop responsive while it runs as described in [ADR-0004](docs/decisions/0004-analysis-worker-process.md#first-clients). Analyze on save if necessary. Do not add threads or incremental invalidation until repeatable full analysis works. If on-change whole-program verification is already fast enough, add a short debounce; otherwise keep fast per-file parsing on change and semantic verification on save.
 
 Exit criteria:
 
@@ -306,7 +298,7 @@ Deliverables may include:
 - Optional Aeneas `EDITOR` parser mode with synchronization at top-level, member, statement, and delimiter boundaries.
 - Synthetic missing nodes/tokens where they improve completion without hiding diagnostics.
 - Per-file parse caches and dependency invalidation.
-- Background analysis or a worker process if synchronous analysis blocks protocol responsiveness.
+- Further background analysis scheduling improvements if protocol responsiveness needs them; worker integration belongs to M3.
 - Cancellation checkpoints and result-version rejection.
 - Memory caps and cache eviction.
 
@@ -541,7 +533,7 @@ Additional policies:
 | Risk                                                 | Consequence                                                             | Mitigation and trigger                                                                                                                                                                 |
 | ---------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Aeneas parser stops early on incomplete input        | Completion and navigation disappear while typing                        | Keep last good snapshot; add single-file syntax path; design an editor recovery mode after v0.1                                                                                        |
-| Whole-program verification is too slow on change     | Editor stalls or diagnostics lag                                        | Measure first; parse on change and verify on save; debounce; later worker/caching if thresholds are exceeded                                                                           |
+| Whole-program verification is too slow on change     | Editor stalls or diagnostics lag                                        | Measure first; parse on change and verify on save; debounce; tune worker scheduling or caching if thresholds are exceeded                                                              |
 | Compiler internals change                            | Frequent breakage after submodule updates                               | Isolate all compiler calls behind one adapter; pin revisions; run scheduled compatibility CI; optionally propose a query API upstream without making your roadmap depend on acceptance |
 | Compiler and LSP columns differ                      | Diagnostics/navigation point to wrong text                              | Dedicated byte/display-column/UTF-16 mapper with adversarial fixtures                                                                                                                  |
 | Raw protocol implementation is subtly wrong          | VS Code or Neovim disconnects                                           | Transcript tests, both-client smoke tests, strict stdout discipline, never advertise unfinished features                                                                               |
