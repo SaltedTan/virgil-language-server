@@ -1,7 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // Copyright 2011 Google Inc. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-// Parser driver adapted from the pinned Aeneas Parser.v3; see THIRD_PARTY_NOTICES.md.
+// Parser driver adapted from the pinned Aeneas Parser.v3 and ParserState.v3;
+// see THIRD_PARTY_NOTICES.md.
 
 class AnalysisParseErrors extends ErrorGen {
 	var parser: ParserState;
@@ -10,8 +11,12 @@ class AnalysisParseErrors extends ErrorGen {
 
 	def startFile() {
 		parser = null;
+		stopped = false;
 		positions = Strings.newMap<int>();
 	}
+	// Set once the parser has been stopped early. Later errors describe the
+	// cut, not the source, and are dropped.
+	var stopped: bool;
 
 	new(maxErrors: int) super(maxErrors) { }
 
@@ -31,6 +36,7 @@ class AnalysisParseErrors extends ErrorGen {
 		if (!positions.has(key)) positions[key] = pos;
 	}
 	def addError(range: FileRange, sourceLine: string, error: string, msg: string) {
+		if (stopped) return;
 		var begin = -1, end = -1;
 		if (range != null && parser != null) {
 			if (range.beginLine == parser.curLine && range.endLine == parser.curLine &&
@@ -44,11 +50,13 @@ class AnalysisParseErrors extends ErrorGen {
 		offsets.put((begin, end));
 		errors = List.new(Error.new(range, sourceLine, error, msg), errors);
 		incErrors();
-		if (parser != null && Strings.equal(msg, "invalid start of expression") &&
-			parser.curByte == '.' && parser.peek(1) == '.' &&
-			(parser.peek(2) == '.' || parser.peek(2) == '+')) {
-			parser.advance(3);
-		}
+	}
+	// Reports {msg} at the current point and moves {p} to EOF, so the parser
+	// unwinds as it would for input that ended here.
+	def stop(p: ParserState, msg: string) {
+		p.error(msg);
+		stopped = true;
+		p.setPos(p.input.length, p.curLine, p.curCol);
 	}
 	private def coordinate(line: int, column: int) -> string {
 		return Strings.format2("%d:%d", line, column);
@@ -62,6 +70,11 @@ class AnalysisParseErrors extends ErrorGen {
 // Observes each parser skip for diagnostic offsets and, for outlines, for the
 // symbol syntax index. Created before the parser state, whose constructor skips.
 class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, coordinates: AnalysisTokenCoordinates) {
+	// Stack use is measured from here, so where parsing stops depends on the
+	// input, not on the caller or platform.
+	private def stackBase = AnalysisSingleFileParser.stackPointer();
+	private def stackLimit = AnalysisSingleFileParser.stackLimit(stackBase);
+
 	def skip(p: ParserState) {
 		errors.record(p);
 		if (syntax != null) syntax.finish(p);
@@ -69,10 +82,17 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 		errors.record(p);
 		if (syntax != null) syntax.start(p);
 		if (coordinates != null) coordinates.record(p);
+		// Every level of parser recursion consumes a token, and so skips.
+		if (!errors.stopped && stackBase - AnalysisSingleFileParser.stackPointer() > stackLimit) {
+			errors.stop(p, "nesting too deep; parsing stopped here");
+		}
 	}
 }
 
 class AnalysisParserState extends ParserState {
+	// Set by a malformed number until the parser has skipped past it.
+	private var numberFailed: bool;
+
 	def coordinates: AnalysisTokenCoordinates;
 	new(file: VstFile, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, typeCache: TypeCache, coordinates)
 		super(file, errors, AnalysisParseSkipper.new(errors, syntax, coordinates).skip, typeCache) { }
@@ -94,11 +114,104 @@ class AnalysisParserState extends ParserState {
 		advance(t.image.length);
 		return t;
 	}
+	// The overrides below restate ParserState's methods, as Virgil cannot call
+	// an overridden method, and add range recovery. A term that fails to parse
+	// leaves an expression without a start, and Parser.parseIndexSuffix then
+	// accepts a range operator. Parser.parseExprStmt traps on the range of a
+	// RangeExpr that has neither bound.
+	def advance(len: int) -> int {
+		var p = setPos(curPos + len, curLine, curCol + len);
+		skipFunc(this);
+		// A term's number starts with a digit, which parseNumber consumes even
+		// when the literal is malformed. Layouts and packings also call it on
+		// other bytes, which it leaves.
+		if (numberFailed) {
+			numberFailed = false;
+			if (len > 0) skipBoundlessRanges();
+		}
+		return p;
+	}
+	// Recovery at an expression start runs even past the error limit, but not
+	// for an error repeated at one position. The position recorded for that
+	// check is taken after recovery.
+	def error(msg: string) {
+		var limited = ERROR.numErrors >= ERROR.maxErrors, q = curPos;
+		for (l = errors; !limited && l != null; l = l.tail) {
+			if (l.head == q) return; // only generate one error per position
+			if (l.head < q) break;   // assume errors are sorted
+		}
+		if (!limited) errorAt(range(), msg);
+		// The malformed operator itself is consumed, so the parser moves on.
+		if (Strings.equal(msg, "invalid start of expression") && atRangeOperator()) {
+			advance(3);
+			skipBoundlessRanges();
+		}
+		if (!limited) errors = List<int>.new(curPos, errors);
+	}
+	// Only parseNumber reports here; it then advances past the malformed
+	// literal and returns null.
+	def errorAtOffset(offset: int, msg: string) {
+		curPos = curPos + offset;
+		curCol = curCol + offset;
+		error(msg);
+		curPos = curPos - offset;
+		curCol = curCol - offset;
+		numberFailed = true;
+	}
+	// Consumes the range operators that would build a range without bounds.
+	private def skipBoundlessRanges() {
+		while (atRangeOperator() && !termAt(tokenAfter(curPos + 3))) advance(3);
+	}
+	private def atRangeOperator() -> bool {
+		return curByte == '.' && peek(1) == '.' && (peek(2) == '.' || peek(2) == '+');
+	}
+	// Whether Parser.parseTerm certainly returns an expression at {pos}.
+	private def termAt(pos: int) -> bool {
+		var d = input;
+		if (pos >= d.length) return false;
+		var ch = d[pos];
+		if (Char.isIdentStart(ch)) return true;
+		match (ch) {
+			'(', '[', '!', '~' => return true;
+			'-' => if (pos + 1 == d.length || !Char.isDecimal(d[pos + 1])) return true;
+			_ => if (!Char.isDecimal(ch)) return false;
+		}
+		var np = NumberParser.new(d[pos ...]);
+		np.accept_width = true;
+		return np.parse();
+	}
+	// Where Parser.skipToNextToken, which this mirrors without side effects,
+	// would stop after {pos}.
+	private def tokenAfter(pos: int) -> int {
+		var d = input, max = d.length;
+		while (pos < max) {
+			var ch = d[pos];
+			if (ch == '/' && pos + 1 < max && d[pos + 1] == '/') {
+				while (pos < max && d[pos] != '\n') pos++;
+			} else if (ch == '/' && pos + 1 < max && d[pos + 1] == '*') {
+				pos += 2;
+				while (pos < max && !(d[pos] == '*' && pos + 1 < max && d[pos + 1] == '/')) pos++;
+				pos += 2;
+			} else if (ch <= ' ' || ch > '~') {
+				pos++; // whitespace, or an invalid character that the skipper reports
+			} else {
+				break;
+			}
+		}
+		return pos;
+	}
 }
 
 // The per-file parser driver shared by parser diagnostics, document symbols,
 // and whole-program analysis, so all get the same recovery. {syntax} may be null.
 component AnalysisSingleFileParser {
+	// Native stack that parser recursion may use, half of the 2 MB stack:
+	// over 1,800 levels of nested brackets. Beyond it, the parser stops at the
+	// next token instead of overflowing.
+	def STACK_LIMIT = 1024 * 1024;
+	// Stack always left free, in case parsing starts deep in the stack.
+	def STACK_RESERVE = 64 * 1024;
+
 	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex,
 			typeCache: TypeCache, coordinates: AnalysisTokenCoordinates) -> VstFile {
 		var file = VstFile.new(path, input);
@@ -114,5 +227,14 @@ component AnalysisSingleFileParser {
 		if (syntax != null) syntax.finish(p);
 		if (file.synthetic != null) file.synthetic.members = Lists.reverse(file.synthetic.members);
 		return file;
+	}
+	def stackPointer() -> Pointer {
+		return CiRuntime.callerSp();
+	}
+	// The stack that parsing from {base} may use: STACK_LIMIT, unless less is
+	// left above STACK_RESERVE and the native runtime's red zone.
+	def stackLimit(base: Pointer) -> long {
+		var free = base - RiRuntime.stackRedZoneEnd - STACK_RESERVE;
+		return if(free < STACK_LIMIT, free, STACK_LIMIT);
 	}
 }
