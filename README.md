@@ -27,7 +27,7 @@ Completion, references, rename, and incremental analysis come after v0.1. Format
 
 ## Architecture
 
-The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) currently serves the development `analyze` command; `--stdio` provides syntax diagnostics and document symbols, with semantic features still planned.
+The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) serves the development `analyze` command and the unadvertised [development stdio requests](docs/development.md#development-stdio-requests). `--stdio` provides syntax diagnostics and document symbols, with automatic semantic features still planned.
 
 ## Building
 

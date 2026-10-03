@@ -72,6 +72,11 @@ component HostOs {
 		var fd = sys(SYS_open, (Pointer.atContents("/dev/null\x00"), O_CLOEXEC, 0));
 		return if(fd < 0, fd, moveUp(fd));
 	}
+	// Source admission must not block opening a FIFO, nor inherit its fd.
+	def openRead(path: string) -> int {
+		var name = Arrays.concat(path, "\x00");
+		return sys(SYS_open, (Pointer.atContents(name), O_NONBLOCK | O_CLOEXEC, 0));
+	}
 	def setNonblocking(fd: int) -> bool {
 		var flags = sys(SYS_fcntl, (fd, F_GETFL, 0));
 		return flags >= 0 && sys(SYS_fcntl, (fd, F_SETFL, flags | O_NONBLOCK)) >= 0;

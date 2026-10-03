@@ -1,0 +1,23 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Bounded disk fallback for the development stdio request. Unlike fileLoad,
+// never allocates from an unchecked on-disk length (or waits opening a FIFO).
+component AnalysisSourceFiles {
+	def load(path: string, maxBytes: int) -> Array<byte> {
+		if (maxBytes < 0) return null;
+		var fd = HostOs.openRead(path);
+		if (fd < 0) return null;
+		var chunk = Array<byte>.new(64 * 1024), text = StringBuilder.new();
+		var ok = false;
+		while (true) {
+			var n = HostOs.read(fd, chunk);
+			if (n == HostOs.EINTR) continue;
+			if (n == 0) { ok = true; break; }
+			if (n < 0 || n > maxBytes - text.length) break;
+			text.putr(chunk[0 ..+ n]);
+		}
+		HostOs.close(fd);
+		return if(ok, text.extract());
+	}
+}

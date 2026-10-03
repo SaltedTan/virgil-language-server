@@ -1,0 +1,51 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("AnalysisSourceFiles:bounded_reads", test_bounded_reads),
+	T("DocumentStore:bounded_overlay_and_disk", test_bounded_overlay_and_disk),
+	()
+];
+
+def test_bounded_reads(t: Tester) {
+	var path = "test/fixtures/analysis/two-file/main.v3", text = System.fileLoad(path);
+	if (text == null) return t.fail("missing fixture");
+	t.assert_string(text, AnalysisSourceFiles.load(path, text.length));
+	t.assert_string(text, AnalysisSourceFiles.load(path, text.length + 1));
+	t.assert(AnalysisSourceFiles.load(path, text.length - 1) == null, "reject over budget");
+	t.assert(AnalysisSourceFiles.load(path, 0) == null, "zero budget");
+	t.assert(AnalysisSourceFiles.load(path, -1) == null, "negative budget");
+	t.assert(AnalysisSourceFiles.load("/nonexistent/source.v3", 10) == null, "missing file");
+	// Each rejected read must close its descriptor.
+	for (i < 100) t.assert(AnalysisSourceFiles.load(path, 0) == null, "rejected repeatedly");
+	t.assert_string(text, AnalysisSourceFiles.load(path, text.length));
+}
+
+class BoundedReaderFake {
+	var calls: int;
+	var limit: int;
+	def read(path: string, maxBytes: int) -> Array<byte> {
+		calls++;
+		limit = maxBytes;
+		return if(maxBytes >= 4, "disk");
+	}
+}
+
+def test_bounded_overlay_and_disk(t: Tester) {
+	var disk = BoundedReaderFake.new();
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES).withBoundedReader(disk.read);
+	var uri = "file:///tmp/budget.v3";
+	t.assert_string("disk", store.readBounded(uri, 4));
+	t.asserti(4, disk.limit);
+	t.assert(store.readBounded(uri, 3) == null, "disk budget propagated");
+	t.asserti(3, disk.limit);
+	t.assert(store.open(uri, "virgil", 1, "overlay") == null, "open");
+	t.assert_string("overlay", store.readBounded(uri, 7));
+	t.assert(store.readBounded(uri, 4) == null, "over-budget overlay does not fall back to disk");
+	t.asserti(2, disk.calls);
+	t.assert(store.change(uri, 2, "") == null, "empty overlay");
+	t.assert_string("", store.readBounded(uri, 0));
+	t.assert(store.readBounded("untitled:missing", 100) == null, "no disk for opaque URI");
+	t.asserti(2, disk.calls);
+}

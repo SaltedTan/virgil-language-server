@@ -30,6 +30,7 @@ component VirgilLsp {
 		buf.puts("  --version          Print the server version and pinned Virgil revision.\n");
 		buf.puts("  --help             Print this summary.\n\n");
 		buf.puts("Development commands (unstable):\n");
+		buf.puts("  --stdio also accepts the worker policy options below.\n");
 		buf.puts("  parse <file.v3>... Parse files with Aeneas and print syntax diagnostics.\n");
 		buf.puts("  analyze [options] <file.v3>...\n");
 		buf.puts("                     Parse and verify the files as one program and print diagnostics.\n");
@@ -55,6 +56,7 @@ component VirgilLsp {
 	}
 	def stdio(args: Array<string>) -> int {
 		var maxPayload = LspFraming.DEFAULT_MAX_PAYLOAD;
+		var limits = AnalysisWorkerLimits.new();
 		for (arg in args) {
 			if (Strings.startsWith(arg, "--max-message-bytes=")) {
 				var start = "--max-message-bytes=".length, p = Ints.parseDecimal(arg, start);
@@ -69,29 +71,54 @@ component VirgilLsp {
 					return 2;
 				}
 				maxPayload = p.1;
+			} else if (Strings.startsWith(arg, "--worker-timeout-ms=")) {
+				if ((limits.timeoutMs = positiveOption(arg, "--worker-timeout-ms=")) < 0) return 2;
+			} else if (Strings.startsWith(arg, "--worker-max-analyses=")) {
+				if ((limits.maxAnalyses = positiveOption(arg, "--worker-max-analyses=")) < 0) return 2;
 			} else {
 				Log.error2("unknown option '%s'; run '%s --help'", arg, BuildInfo.NAME);
 				return 2;
 			}
 		}
-		var server = LspServer.new(DocumentLimits.MAX_BYTES);
-		server.documents.withReader(System.fileLoad);
+		HostOs.ignoreSigpipe();
+		var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), limits);
+		supervisor.warn = Log.warn;
+		supervisor.info = Log.info;
+		var server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+		server.documents.withReader(System.fileLoad).withBoundedReader(AnalysisSourceFiles.load);
 		server.warnDocumentSync = Log.warn;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
 		server.sendNotification = transport.send;
 		var buf = Array<byte>.new(64 * 1024);
-		while (true) {
-			var n = System.read(STDIN, buf);
-			if (n <= 0) {
-				// The end of the input, or a read error, which can't be told apart.
-				transport.close();
-				break;
+		var fds = Array<int>.new(6);
+		while (transport.failure == null && !server.exited()) {
+			fds[0] = STDIN;
+			fds[1] = HostOs.POLLIN;
+			var count = 1 + supervisor.pollFds(fds, 2);
+			var r = HostOs.poll(fds, count, supervisor.pollTimeout());
+			if (r == HostOs.EINTR) continue;
+			if (r < 0) {
+				Log.error1("poll failed (errno %d)", -r);
+				server.close();
+				supervisor.close();
+				return 1;
 			}
-			if (!transport.receive(buf[0 ..+ n])) break;
+			if ((fds[1] >> 16) != 0) {
+				var n = HostOs.read(STDIN, buf);
+				if (n == HostOs.EINTR || n == HostOs.EAGAIN) continue;
+				if (n <= 0) {
+					transport.close();
+					break;
+				}
+				if (!transport.receive(buf[0 ..+ n])) break;
+			}
+			// Even a continuously readable stdin must not starve the deadline.
+			server.pollAnalysis();
 		}
 		// Ends the session if exit wasn't received, so the exit status is known.
 		server.close();
+		supervisor.close();
 		if (transport.failure != null) {
 			Log.error(transport.failure);
 			return 1;
@@ -165,6 +192,11 @@ component VirgilLsp {
 			var snapshot: AnalysisSnapshot;
 			match (supervisor.analyze(sources, flags)) {
 				Completed(s) => snapshot = s;
+				Pending => {
+					Log.error("analysis returned without completing");
+					status = 1;
+					break;
+				}
 				Failed(failure, reason) => {
 					Log.error2("analysis run %d failed: %s", run + 1, reason);
 					status = 1;

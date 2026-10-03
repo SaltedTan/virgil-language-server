@@ -1,0 +1,125 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Unadvertised development requests until M3 supplies the project model.
+// No semantic diagnostic publication or LSP coordinate conversion: diagnostics
+// use the compiler's one-based coordinates, just as the development CLI does.
+class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
+	private var pending: bool;
+	private var pendingId: JsonRpcId;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onDeferredRequest("virgil-lsp/analyze", analyze);
+		dispatcher.onRequest("virgil-lsp/snapshot", snapshot);
+		dispatcher.onNotification("$/cancelRequest", cancel);
+	}
+	private def analyze(request: JsonRpcMessage.Request) {
+		var error = begin(request);
+		if (error != null) send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
+		else {
+			pending = true;
+			pendingId = request.id;
+		}
+	}
+	private def begin(request: JsonRpcMessage.Request) -> JsonRpcError {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		if (params == null || !JsonValue.JArray.?(params["uris"])) return invalid("analyze params require a nonempty uris array");
+		var uris = JsonValue.JArray.!(params["uris"]).v;
+		if (uris.length == 0) return invalid("analyze params require a nonempty uris array");
+		if (pending) return invalid("an analysis is already running");
+		// Validate every URI before reading files. Canonical duplicates would
+		// otherwise compile the same file twice with misleading diagnostics.
+		var keys = Array<string>.new(uris.length);
+		var seen = Strings.newMap<bool>();
+		for (i < uris.length) {
+			if (!JsonValue.String.?(uris[i])) return invalid("uris must contain only valid document URIs");
+			var key = DocumentUri.normalize(JsonValue.String.!(uris[i]).v);
+			if (key == null || seen.has(key)) return invalid("uris must be valid and distinct after normalization");
+			seen[key] = true;
+			keys[i] = key;
+		}
+		var sources = Array<AnalysisSource>.new(keys.length);
+		// Conservative metadata allowance, then the exact supervisor admission.
+		var bytes = 32L;
+		for (i < keys.length) {
+			var path = DocumentUri.filePath(keys[i]);
+			if (path == null) path = keys[i];
+			bytes += long.view(path.length) + 16;
+			if (bytes > WorkerFraming.MAX_PAYLOAD) return invalid("analysis sources exceed the worker frame limit");
+			var text = store.readBounded(keys[i], int.view(WorkerFraming.MAX_PAYLOAD - bytes));
+			if (text == null) return invalid(Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
+			bytes += text.length;
+			sources[i] = AnalysisSource.new(path, text);
+		}
+		var outcome = supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES);
+		match (outcome) {
+			Failed(failure, reason) => return workerError(reason);
+			_ => return null;
+		}
+	}
+	// Reads the last good server-owned data even while the worker is hung or
+	// absent. This is a development inspection API, not a semantic LSP feature.
+	private def snapshot(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		return JsonRpcReply.Result(encodeSnapshot(supervisor.snapshot));
+	}
+	def onPoll() {
+		var outcome = supervisor.onPoll();
+		if (!AnalysisOutcome.Pending.?(outcome) && pending) finish(reply(outcome));
+	}
+	def close(reason: string) {
+		supervisor.close();
+		if (pending) finish(JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
+	}
+	private def cancel(notification: JsonRpcMessage.Notification) {
+		if (!pending || !JsonRpcParams.ByName.?(notification.params)) return;
+		var id = JsonRpcParams.ByName.!(notification.params).v["id"];
+		var matches = false;
+		match (pendingId) {
+			Int(v) => matches = JsonValue.Int.?(id) && JsonValue.Int.!(id).v == v;
+			String(v) => matches = JsonValue.String.?(id) && Strings.equal(JsonValue.String.!(id).v, v);
+			Null => ;
+		}
+		if (matches) close("the analysis request was cancelled");
+	}
+	private def finish(reply: JsonRpcReply) {
+		var id = pendingId;
+		pending = false;
+		pendingId = JsonRpcId.Null;
+		match (reply) {
+			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
+			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
+		}
+	}
+	private def invalid(message: string) -> JsonRpcError {
+		return JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, message);
+	}
+	private def workerError(reason: string) -> JsonRpcError {
+		return JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, Strings.format1("%s; previous snapshot kept", reason));
+	}
+	private def reply(outcome: AnalysisOutcome) -> JsonRpcReply {
+		match (outcome) {
+			Completed(s) => return JsonRpcReply.Result(encodeSnapshot(s));
+			Failed(failure, reason) => return JsonRpcReply.Error(workerError(reason));
+			Pending => return JsonRpcReply.Error(workerError("analysis is still pending"));
+		}
+	}
+	private def encodeSnapshot(s: AnalysisSnapshot) -> JsonValue {
+		if (s == null) return JsonValue.Null;
+		var obj = Strings.newMap<JsonValue>();
+		obj["generation"] = JsonValue.Int(s.generation);
+		var diagnostics = Array<JsonValue>.new(s.diagnostics.length);
+		for (i < diagnostics.length) {
+			var d = s.diagnostics[i], item = Strings.newMap<JsonValue>();
+			item["path"] = if(d.path == null, JsonValue.Null, JsonValue.String(d.path));
+			item["beginLine"] = JsonValue.Int(d.beginLine);
+			item["beginColumn"] = JsonValue.Int(d.beginColumn);
+			item["endLine"] = JsonValue.Int(d.endLine);
+			item["endColumn"] = JsonValue.Int(d.endColumn);
+			item["kind"] = if(d.kind == null, JsonValue.Null, JsonValue.String(d.kind));
+			item["message"] = JsonValue.String(Strings.nonnull(d.message));
+			diagnostics[i] = JsonValue.JObject(item);
+		}
+		obj["diagnostics"] = JsonValue.JArray(diagnostics);
+		return JsonValue.JObject(obj);
+	}
+}

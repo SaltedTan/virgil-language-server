@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Asynchronous analysis workers in `--stdio`, triggered before M3 by the unadvertised development `virgil-lsp/analyze` request. Concurrent requests remain responsive during worker startup, crashes, and hangs; `virgil-lsp/snapshot` inspects retained results, and cancellation/shutdown reaps pending workers. No new capability or semantic diagnostic publication is advertised. See [development stdio requests](docs/development.md#development-stdio-requests).
 - A replaceable analysis worker and [ADR-0004](docs/decisions/0004-analysis-worker-process.md), which records its process model and restart policy. See [Analysis worker](docs/architecture.md#analysis-worker) for the current integration scope.
 - Single-file parser diagnostics for unsaved document overlays, with corrected comment offsets. See [Parser diagnostics](docs/architecture.md#parser-diagnostics) for publication behavior and [Compiler adapter](docs/architecture.md#compiler-adapter) for parsing and recovery details.
 - Hierarchical VST-derived document symbols for open, unsaved buffers. See [Document symbols](docs/architecture.md#document-symbols) for supported declarations, ranges, and failure behavior.

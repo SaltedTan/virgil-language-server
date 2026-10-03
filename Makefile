@@ -74,6 +74,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	$(BUILD)/unit-tests
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp
+	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
 
 clean:
 	rm -rf $(BUILD)

@@ -7,6 +7,7 @@
 def T = UnitTests.register;
 def X = [
 	T("AnalysisSupervisor:completes", test_completes),
+	T("AnalysisSupervisor:async_busy_and_cancel", test_async_busy_and_cancel),
 	T("AnalysisSupervisor:crash_keeps_snapshot", test_crash_keeps_snapshot),
 	T("AnalysisSupervisor:enum_case_crash", test_enum_case_crash),
 	T("AnalysisSupervisor:hang_times_out", test_hang_times_out),
@@ -63,6 +64,7 @@ def load(t: Tester, paths: Array<string>) -> Array<AnalysisSource> {
 }
 def completed(t: Tester, outcome: AnalysisOutcome) -> AnalysisSnapshot {
 	match (outcome) {
+		Pending => t.fail("expected a completed outcome");
 		Completed(snapshot) => return snapshot;
 		Failed(failure, reason) => t.fail2("expected a snapshot, got %s: %s", failure.name, reason);
 	}
@@ -70,6 +72,7 @@ def completed(t: Tester, outcome: AnalysisOutcome) -> AnalysisSnapshot {
 }
 def assertFailed(t: Tester, want: AnalysisFailure, outcome: AnalysisOutcome) {
 	match (outcome) {
+		Pending => t.fail("expected a completed outcome");
 		Completed(snapshot) => t.fail1("expected %s, got a snapshot", want.name);
 		Failed(failure, reason) => if (failure != want) t.fail3("expected %s, got %s: %s", want.name, failure.name, reason);
 	}
@@ -89,6 +92,39 @@ def contains(log: Vector<string>, text: string) -> bool {
 		}
 	}
 	return false;
+}
+
+def test_async_busy_and_cancel(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	t.assert(AnalysisOutcome.Pending.?(s.begin(good, ALL)), "accepted asynchronously");
+	t.assert(s.busy(), "busy during startup");
+	assertFailed(t, AnalysisFailure.BUSY, s.begin(good, ALL));
+	var fds = Array<int>.new(4);
+	var outcome: AnalysisOutcome = AnalysisOutcome.Pending;
+	while (AnalysisOutcome.Pending.?(outcome)) {
+		var count = s.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.pollTimeout());
+		outcome = s.onPoll();
+	}
+	var first = completed(t, outcome);
+	if (first == null) return s.close();
+	t.assertz(false, s.busy());
+	t.asserti(-1, s.pollTimeout());
+	t.asserti(0, s.pollFds(fds, 0));
+	assertQueries(t, first);
+	t.assert(AnalysisOutcome.Pending.?(s.begin([AnalysisSource.new("hang.v3", "class S extends S { def f() { me; } }")], ALL)), "accepted hang");
+	s.close();
+	t.assertz(false, s.busy());
+	t.assert(s.snapshot == first, "cancel preserves snapshot");
+	assertQueries(t, first);
+	var next = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (next == null) return;
+	t.asserti(2, next.generation);
+	t.asserti(2, s.workersStarted);
+	assertQueries(t, next);
 }
 
 def test_completes(t: Tester) {

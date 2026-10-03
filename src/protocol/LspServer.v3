@@ -36,9 +36,10 @@ class LspServer {
 	private var documentWarning: Array<byte>;
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
-	// Server-initiated notifications are separate from handle()'s replies.
+	// Notifications and deferred replies are separate from handle()'s replies.
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
+	private var developmentAnalysis: LspDevelopmentAnalysis;
 	private def documentSymbols = LspDocumentSymbols.new(documents);
 	def var state = LspServerState.UNINITIALIZED;
 	// The process exit status, once {exited} is true.
@@ -58,6 +59,14 @@ class LspServer {
 		var diagnostics = LspParserDiagnostics.new(publishNotification);
 		documentSync.onUpdate = diagnostics.update;
 		documentSync.onClose = diagnostics.close;
+	}
+	// Production attaches its worker supervisor; lifecycle-only tests need no OS.
+	def withAnalysis(supervisor: AnalysisSupervisor) -> this {
+		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification);
+		developmentAnalysis.register(dispatcher);
+	}
+	def pollAnalysis() {
+		if (developmentAnalysis != null) developmentAnalysis.onPoll();
 	}
 	private def publishNotification(payload: Array<byte>) {
 		if (sendNotification != null) sendNotification(payload);
@@ -178,8 +187,9 @@ class LspServer {
 		state = LspServerState.EXITED;
 		failPending("the server exited");
 	}
-	// Completes the requests the server sent and the client hasn't answered.
+	// Cancels incoming analysis and outstanding server-to-client requests.
 	private def failPending(msg: string) {
+		if (developmentAnalysis != null) developmentAnalysis.close(msg);
 		dispatcher.pending.failAll(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, msg));
 	}
 }
