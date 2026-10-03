@@ -202,7 +202,7 @@ Project submissions also record a `ProjectRevision` token (configuration URI and
 
 ## JSON-RPC messages
 
-`src/protocol/` models JSON-RPC 2.0 messages. It works on the JSON payload of one message and does no I/O. [Framing](#framing) splits the input stream into payloads.
+The JSON-RPC 2.0 message model in `src/protocol/` works on the JSON payload of one message and does no I/O. LSP handlers also perform document and project access. [Framing](#framing) splits the input stream into payloads.
 
 | File | Contents |
 | --- | --- |

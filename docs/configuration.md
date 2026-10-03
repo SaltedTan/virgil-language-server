@@ -120,7 +120,7 @@ This deliberately favors bounded, reproducible traversal over support for symlin
 
 `virgilDependencies` name files in a Virgil checkout or installation: the directory that holds Virgil's `lib/`, `rt/`, and `bin/`. Patterns are relative to that directory, as in `aeneas/DEPS`, which lists `lib/util/*.v3` and `lib/asm/x86-64/*.v3`. Other paths to the library need rewriting: `$VIRGIL_LIB/util/*.v3` in a build script, or `../../lib/util/*.v3` in the `DEPS` file of one of Virgil's apps, becomes `lib/util/*.v3`.
 
-A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If it is absent or invalid, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic.
+A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If the option is absent or isn't an absolute path string, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic. An absolute root whose required directories cannot be listed instead reports `SourceIO`.
 
 *(planned)* Fallback discovery will use `VIRGIL_LOC`, then the parent of the directory containing `v3c` on `PATH`, and log the chosen root. These fallbacks are not implemented yet; the server never runs `v3c` to discover a root.
 
@@ -158,7 +158,7 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 
 | Code | Reported for |
 | --- | --- |
-| `InvalidJson` | Text that isn't JSON, or a file over the size, nesting, or value limits |
+| `InvalidJson` | Text that isn't JSON or exceeds the nesting or value limits, or an open configuration buffer over the file-size limit that fits within configuration retention capacity |
 | `UnsupportedVersion` | A `version` other than 1. Nothing else is checked, because a later version may define other fields. |
 | `UnknownField` | A field this version doesn't define, such as `virgilRoot` or `$schema` |
 | `DuplicateField` | A field that appears twice in one object, even if one spelling uses JSON escapes |
