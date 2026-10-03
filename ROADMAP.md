@@ -500,7 +500,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 14. Build declaration and occurrence indexes from verified bindings.
 15. Implement go-to-definition.
 16. Implement hover.
-17. Add headless Neovim E2E test and LazyVim documentation.
+17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
 18. Add VS Code client E2E test and prerelease packaging.
 
 Issues 4–10 are good candidates for small, reviewable pull requests. Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.

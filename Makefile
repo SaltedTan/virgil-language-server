@@ -31,7 +31,7 @@ WORKER_HEAP ?= 384m
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 
-.PHONY: all test check-virgil buildinfo clean
+.PHONY: all test test-nvim check-virgil buildinfo clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -75,6 +75,11 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp
 	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
+	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
+
+# Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
+test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
+	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
 
 clean:
 	rm -rf $(BUILD)
