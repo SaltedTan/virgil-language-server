@@ -33,7 +33,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var uris: Array<JsonValue>;
 		if (params.has("uri") && projects != null) {
 			if (!JsonValue.String.?(params["uri"]) || params.has("uris")) return invalid("provide either uri or uris");
-			var mapping = projects.forDocument(JsonValue.String.!(params["uri"]).v);
+			var mapping = projects.forAnalysis(JsonValue.String.!(params["uri"]).v);
 			pendingProject = mapping.active;
 			if (pendingProject == null) return invalid("document has no matching project; single-file features remain available");
 			// Compiler option application is separate M3 work; never silently

@@ -116,23 +116,26 @@ class WorkspaceProjects(store: DocumentStore) {
 		return null;
 	}
 	def refresh() {
+		refreshConfigs(false);
+	}
+	private def refreshConfigs(preflight: bool) {
 		pruneDeleted();
 		if (!discovered) {
 			discovered = true;
 			for (root in folders) discover(root, 0);
 		}
-		for (i < configs.length) update(configs[i]);
-		for (i < configs.length) { if(configs[i].capacityRejected) update(configs[i]); }
+		for (i < configs.length) update(configs[i], preflight);
+		for (i < configs.length) { if(configs[i].capacityRejected) update(configs[i], false); }
 	}
 	def load(path: string) -> WorkspaceConfig {
 		pruneDeleted();
 		for (i < configs.length) {
-			if (Strings.equal(configs[i].path, path)) { update(configs[i]); return configs[i]; }
+			if (Strings.equal(configs[i].path, path)) { update(configs[i], false); return configs[i]; }
 		}
 		if (configs.length >= MAX_CONFIGS) { discoveryLimit(); return null; }
 		var config = WorkspaceConfig.new(path);
 		configs.put(config);
-		update(config);
+		update(config, false);
 		return config;
 	}
 	private def pruneDeleted() {
@@ -143,7 +146,7 @@ class WorkspaceProjects(store: DocumentStore) {
 				var fd = ProjectFiles.open(c.path, false);
 				if (fd >= 0) HostOs.close(fd);
 				if (fd == -2 || fd == -20) {
-					update(c);
+					update(c, false);
 					c.revision.current = false;
 					continue;
 				}
@@ -174,7 +177,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		return true;
 	}
-	private def update(c: WorkspaceConfig) {
+	private def update(c: WorkspaceConfig, preflight: bool) {
 		var uri = ProjectFiles.uri(c.path), overlay = store.overlay(uri);
 		var text = if(overlay != null, overlay.text, ProjectFiles.load(c.path, ProjectConfigParser.MAX_BYTES));
 		var retained = 0, projectCount = 0;
@@ -216,6 +219,7 @@ class WorkspaceProjects(store: DocumentStore) {
 			}
 		}
 		if (c.contexts.length == 0) { publish(c); return; }
+		if (!changed && !preflight) return;
 		var diagnostics = Vector<ProjectConfigDiagnostic>.new(), references = 0, pathBytes = 0;
 		for (i < configs.length) {
 			if (configs[i] == c) continue;
@@ -250,9 +254,15 @@ class WorkspaceProjects(store: DocumentStore) {
 		if (onConfig != null) onConfig(c);
 	}
 	def forDocument(uri: string) -> DocumentProjects {
+		return projectsFor(uri, false);
+	}
+	def forAnalysis(uri: string) -> DocumentProjects {
+		return projectsFor(uri, true);
+	}
+	private def projectsFor(uri: string, preflight: bool) -> DocumentProjects {
 		var path = DocumentUri.filePath(uri), nearestPath: string;
 		if (path != null) nearestPath = nearest(path);
-		refresh();
+		refreshConfigs(preflight);
 		var governing = if(nearestPath != null, load(nearestPath));
 		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
 		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);

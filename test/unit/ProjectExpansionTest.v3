@@ -14,6 +14,7 @@ def X = [
 	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
+	T("WorkspaceProjects:cached_expansion_preflight", test_cached_expansion_preflight),
 	T("WorkspaceProjects:active_precedence", test_active_precedence),
 	T("WorkspaceProjects:single_file_once", test_single_file_once),
 	T("WorkspaceProjects:configuration_capacity_recovery", test_configuration_capacity_recovery),
@@ -215,6 +216,31 @@ def test_configuration_revision(t: Tester) {
 	old = c.revision;
 	w.refresh();
 	t.assert(c.revision == old, "unchanged config keeps its revision");
+}
+def test_cached_expansion_preflight(t: Tester) {
+	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, 2 * ProjectLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	w.initialize(workspaceParams(base));
+	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var doc = w.forDocument(uri), c = w.load(doc.configPath), revision = c.revision;
+	t.asserti(2, doc.contexts.length);
+	var cached = doc.active.sources;
+	t.assert(store.open(uri, "virgil", 1, Array<byte>.new(ProjectLimits.MAX_BYTES)) == null, "large overlay admitted to document store");
+	t.assert(w.forDocument(uri).active == doc.active, "routine mapping uses cached selection");
+	t.assert(doc.active.sources == cached, "routine refresh retains source list");
+	t.asserti(0, c.diagnostics.length);
+	t.assert(w.forAnalysis(uri).active == null, "submission rechecks source budget");
+	t.asserti(2, c.diagnostics.length);
+	for (d in c.diagnostics) t.assert(d.code == ProjectConfigCode.SOURCE_BUDGET, "preflight reports oversized overlay in each project");
+	for (ctx in c.contexts) t.asserti(0, ctx.sources.length);
+	t.assert(c.revision == revision, "source changes preserve configuration revision");
+	store.close(uri);
+	w.refresh();
+	t.asserti(2, c.diagnostics.length);
+	doc = w.forAnalysis(uri);
+	t.asserti(2, doc.contexts.length);
+	t.asserti(0, c.diagnostics.length);
+	t.assert(c.revision == revision, "preflight recovery preserves configuration revision");
 }
 def test_active_precedence(t: Tester) {
 	var root = absolute(FIXTURES), base = ProjectFiles.join(root, "two-programs");

@@ -5,6 +5,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspProjectAnalysis:contexts_and_revisions", test_contexts_and_revisions),
 	T("LspProjectAnalysis:configuration_diagnostics", test_configuration_diagnostics),
+	T("LspProjectAnalysis:routine_events_reuse_expansion", test_routine_events_reuse_expansion),
 	T("LspProjectAnalysis:initialize_folders", test_initialize_folders),
 	T("LspProjectAnalysis:explicit_uris_above_project_limit", test_explicit_uris_above_project_limit),
 	()
@@ -100,6 +101,46 @@ def test_configuration_diagnostics(t: Tester) {
 	msg = JsonValue.JObject.!(JsonRpcJsonParser.new(s.notifications[2]).parseDocument()).v;
 	params = JsonValue.JObject.!(msg["params"]).v;
 	t.asserti(0, JsonValue.JArray.!(params["diagnostics"]).v.length);
+	s.server.close();
+}
+def test_routine_events_reuse_expansion(t: Tester) {
+	var s = ProjectTestSession.new(), mapping = s.server.projects.forDocument(s.uri);
+	t.asserti(2, mapping.contexts.length);
+	var cached = [mapping.contexts[0].sources, mapping.contexts[1].sources];
+	var text = System.fileLoad(ProjectFiles.join(s.base, "shared/Greeting.v3"));
+	var document = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	document["uri"] = JsonValue.String(s.uri);
+	document["languageId"] = JsonValue.String("virgil");
+	document["version"] = JsonValue.Int(1);
+	document["text"] = JsonValue.String(text);
+	params["textDocument"] = JsonValue.JObject(document);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	t.asserti(1, s.server.documents.overlay(s.uri).version);
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "open reuses expansion");
+	document = Strings.newMap<JsonValue>();
+	document["uri"] = JsonValue.String(s.uri);
+	document["version"] = JsonValue.Int(2);
+	var change = Strings.newMap<JsonValue>();
+	change["text"] = JsonValue.String(Strings.format1("%s\n", text));
+	params = Strings.newMap<JsonValue>();
+	params["textDocument"] = JsonValue.JObject(document);
+	params["contentChanges"] = JsonValue.JArray([JsonValue.JObject(change)]);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didChange", JsonRpcParams.ByName(params)).encode());
+	t.asserti(2, s.server.documents.overlay(s.uri).version);
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "edit reuses expansion");
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(2), "virgil-lsp/snapshot", JsonRpcParams.Absent).encode());
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "inspection reuses expansion");
+	s.begin(t, s.uri);
+	for (i < cached.length) {
+		t.assert(mapping.contexts[i].sources != cached[i], "submission refreshes expansion");
+		cached[i] = mapping.contexts[i].sources;
+	}
+	var snapshot = s.complete(t);
+	if (snapshot != null) {
+		t.assertz(true, snapshot.verified);
+		t.assertz(true, snapshot.matchesDocument(s.server.documents, s.uri));
+	}
+	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "completion reuses expansion");
 	s.server.close();
 }
 def test_initialize_folders(t: Tester) {

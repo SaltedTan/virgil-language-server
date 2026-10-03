@@ -11,7 +11,7 @@ from pathlib import Path
 
 class FixtureCleanupTest(unittest.TestCase):
     def test_make_clean_removes_restricted_fixtures(self):
-        with tempfile.TemporaryDirectory(prefix="project-clean-", dir="build") as parent:
+        with tempfile.TemporaryDirectory(prefix="project-clean-", dir=Path.cwd()) as parent:
             build = (Path(parent) / "output").relative_to(Path.cwd())
             subprocess.run(
                 [sys.executable, "test/fixtures/projects/prepare.py", str(build)],
