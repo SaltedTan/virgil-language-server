@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import time
 
-from worker import Session
+from worker import Session, expected_snapshot
 
 
 def leb(value):
@@ -264,7 +264,7 @@ def main():
                 session.send('textDocument/didChange', dict(textDocument=dict(uri=uri, version=2),
                              contentChanges=[dict(text='component C {}')]), request=False)
                 recovered = session.result(session.analyze([uri]))
-                assert recovered == dict(generation=2, diagnostics=[]), recovered
+                assert recovered == expected_snapshot(2, [uri], version=2), recovered
                 session.snapshot(recovered)
                 evidence.append(dict(scenario='oversized diagnostic allocation guard',
                                      unresolvedNameBytes=600000, rejected=rejected, recovered=recovered))
