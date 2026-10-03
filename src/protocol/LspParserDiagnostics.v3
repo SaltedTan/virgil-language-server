@@ -3,38 +3,54 @@
 
 // Synchronous, single-file syntax diagnostics for the accepted overlay. No
 // disk reads or verification. UTF-16 is the protocol default; negotiation is
-// not yet implemented. Each publication replaces the complete previous list.
-class LspParserDiagnostics(send: Array<byte> -> void) {
+// not yet implemented. {LspDiagnosticLists} merges them with the URI's
+// current semantic diagnostics and publishes the complete list.
+class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	def update(doc: DocumentOverlay) {
 		var path = DocumentUri.filePath(doc.uri);
 		if (path == null) path = doc.uri;
 		var result = AeneasAdapter.parseFile(path, doc.text);
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
-		var diagnostics = Array<JsonValue>.new(result.diagnostics.length);
-		for (i < diagnostics.length) {
-			var d = result.diagnostics[i];
-			var range = Strings.newMap<JsonValue>();
-			range["start"] = position(map.offsetToPosition(d.beginOffset));
-			range["end"] = position(map.offsetToPosition(d.endOffset));
-			var diagnostic = Strings.newMap<JsonValue>();
-			diagnostic["range"] = JsonValue.JObject(range);
-			diagnostic["severity"] = JsonValue.Int(1); // DiagnosticSeverity.Error
-			diagnostic["source"] = JsonValue.String("aeneas");
-			if (d.kind != null) diagnostic["code"] = JsonValue.String(d.kind);
-			diagnostic["message"] = JsonValue.String(Strings.nonnull(d.message));
-			diagnostics[i] = JsonValue.JObject(diagnostic);
-		}
-		publish(doc, diagnostics);
+		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
+		for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
+		lists.parsed(doc, diagnostics);
 	}
 	def close(doc: DocumentOverlay) {
-		publish(doc, []);
+		lists.closed(doc);
 	}
-	private def publish(doc: DocumentOverlay, diagnostics: Array<JsonValue>) {
-		var params = Strings.newMap<JsonValue>();
-		params["uri"] = JsonValue.String(doc.uri);
-		params["version"] = JsonValue.Int(doc.version);
-		params["diagnostics"] = JsonValue.JArray(diagnostics);
-		send(JsonRpcMessage.Notification("textDocument/publishDiagnostics", JsonRpcParams.ByName(params)).encode());
+}
+
+// One LSP diagnostic and the identity used to merge sources: its byte range,
+// code, and message. A whole-program parse error that repeats a single-file
+// one has the same identity.
+class LspDiagnostic(key: string, value: JsonValue) { }
+
+component LspDiagnostics {
+	// An Aeneas error, with a UTF-16 range from its exact byte offsets.
+	def compiler(map: PositionMap, d: AnalysisDiagnostic) -> LspDiagnostic {
+		var range = offsets(map, d);
+		return make(map, range.0, range.1, 1, "aeneas", d.kind, Strings.nonnull(d.message));
+	}
+	// The diagnostic's byte offsets, or its compiler coordinates mapped to
+	// offsets if it has none.
+	def offsets(map: PositionMap, d: AnalysisDiagnostic) -> (int, int) {
+		var begin = d.beginOffset, end = d.endOffset;
+		if (begin < 0) begin = map.compilerToOffset(d.beginLine, d.beginColumn);
+		if (end < 0) end = map.compilerToOffset(d.endLine, d.endColumn);
+		return (begin, end);
+	}
+	def make(map: PositionMap, begin: int, end: int, severity: int, source: string, code: string, message: string) -> LspDiagnostic {
+		var range = Strings.newMap<JsonValue>();
+		range["start"] = position(map.offsetToPosition(begin));
+		range["end"] = position(map.offsetToPosition(end));
+		var diagnostic = Strings.newMap<JsonValue>();
+		diagnostic["range"] = JsonValue.JObject(range);
+		diagnostic["severity"] = JsonValue.Int(severity); // DiagnosticSeverity
+		diagnostic["source"] = JsonValue.String(source);
+		if (code != null) diagnostic["code"] = JsonValue.String(code);
+		diagnostic["message"] = JsonValue.String(message);
+		var key = StringBuilder.new().put2("%d:%d:", begin, end).puts(Strings.nonnull(code)).putc(':').puts(message).extract();
+		return LspDiagnostic.new(key, JsonValue.JObject(diagnostic));
 	}
 	private def position(p: LspPosition) -> JsonValue {
 		var obj = Strings.newMap<JsonValue>();

@@ -222,9 +222,9 @@ Deliverables:
 - Fresh `Program` construction with all disk sources plus unsaved overlays.
 - Parse-and-verify-only compiler adapter.
 - Stdio integration of the [analysis worker](docs/architecture.md#analysis-worker), before semantic diagnostics run on unsaved edits.
-- `ErrorGen` conversion to diagnostics grouped by document.
-- Analysis revision/version gate so stale runs cannot overwrite new results.
-- Initial performance measurements against a small project and the Virgil compiler sources.
+- `ErrorGen` conversion to diagnostics grouped by document. *(present; [semantic diagnostics](docs/architecture.md#semantic-diagnostics))*
+- Analysis revision/version gate so stale runs cannot overwrite new results. *(present)*
+- Initial performance measurements against a small project and the Virgil compiler sources. *(present; [measurements](docs/architecture.md#semantic-diagnostics))*
 
 Integrate the worker before unsaved semantic analysis, keeping the stdio loop responsive while it runs as described in [ADR-0004](docs/decisions/0004-analysis-worker-process.md#first-clients). Analyze on save if necessary. Do not add threads or incremental invalidation until repeatable full analysis works. If on-change whole-program verification is already fast enough, add a short debounce; otherwise keep fast per-file parsing on change and semantic verification on save.
 
@@ -477,7 +477,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 10. Implement document symbols from the VST.
 11. Specify `.virgil-lsp.json` and add fixture projects.
 12. Build a fresh parse/verify-only `Program` from disk plus overlays.
-13. Publish whole-project semantic diagnostics.
+13. Publish whole-project semantic diagnostics. *(present)*
 14. Build declaration and occurrence indexes from verified bindings.
 15. Implement go-to-definition.
 16. Implement hover.

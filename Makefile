@@ -78,6 +78,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	python3 test/fixtures/projects/test_cleanup.py
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp
+	python3 test/diagnostics/run.py $(BUILD)/virgil-lsp
 	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
 

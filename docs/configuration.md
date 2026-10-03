@@ -2,7 +2,7 @@
 
 A `.virgil-lsp.json` project file says which source files form each program in a repository. This page specifies version 1 of its format. [ADR-0005](decisions/0005-project-file-format.md) records why the format looks like this.
 
-The parser, bounded source expansion, workspace-folder discovery, and project contexts are implemented (`src/workspace/`). Configuration errors are published on the project file. Whole-program analysis is available through an [unadvertised development request](development.md#development-stdio-requests); automatic semantic diagnostic publication remains later M3 work ([#58](https://github.com/SaltedTan/virgil-language-server/issues/58)). Rules not yet implemented are marked *(planned)*.
+The parser, bounded source expansion, workspace-folder discovery, and project contexts are implemented (`src/workspace/`). Configuration errors are published on the project file. Configured projects get automatic [semantic diagnostics](architecture.md#semantic-diagnostics), and whole-program analysis is also available through an [unadvertised development request](development.md#development-stdio-requests). Rules not yet implemented are marked *(planned)*.
 
 ## Why a project file
 
@@ -84,7 +84,7 @@ The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encod
 | `compilerArgs` | array of strings | `[]` | [Language options](#compiler-flags) for parsing and type checking. |
 | `target` | `null` | `null` | [Reserved](#target). Version 1 accepts only `null`. |
 
-All files selected by `sources`, `dependencies`, and `virgilDependencies` form one program. The files selected by `sources` are the project's *members*. When a file is a member of one project and only a dependency of another, the server uses the distinction to choose its active project. *(planned)* It will also use membership to decide which closed files get semantic diagnostics.
+All files selected by `sources`, `dependencies`, and `virgilDependencies` form one program. The files selected by `sources` are the project's *members*. When a file is a member of one project and only a dependency of another, the server uses the distinction to choose its active project. A file's [semantic diagnostics](architecture.md#semantic-diagnostics), open or closed, come from its active project.
 
 ### Patterns
 
@@ -191,9 +191,9 @@ A file selected by several discovered projects has a separate `ProjectContext` (
 
 Ties use canonical configuration URI byte order, then project declaration order within that file. No map iteration order or client folder ordering participates. A file with no selected context stays in single-file mode.
 
-Known configuration bytes are refreshed on document updates, project analysis submissions/completions, and development snapshot inspection. Expanded source lists and expansion diagnostics are cached until their configuration changes or an explicit project analysis request refreshes them. Ordinary source edits, inspection, and completion reuse those lists; project submissions repeat expansion and budget checks before reading sources. Accepted edits to open JSON configuration buffers take precedence over disk. A changed configuration gets a new revision token; all snapshots stamped with its old revision become stale, including analyses that were already pending. Restoring old bytes does not revive those results.
+Known configuration bytes are refreshed on document updates, project analysis submissions/completions (including automatic analyses), and development snapshot inspection. Expanded source lists and expansion diagnostics are cached until their configuration changes or an explicit project analysis request refreshes them. Ordinary source edits, automatic analyses, inspection, and completion reuse those lists; development project submissions repeat expansion and budget checks before reading sources. Accepted edits to open JSON configuration buffers take precedence over disk. A changed configuration gets a new revision token; all snapshots stamped with its old revision become stale, including analyses that were already pending. Restoring old bytes does not revive those results.
 
-**Follow-up:** dynamic `workspace/didChangeWatchedFiles` registration, background discovery of newly created configurations, and automatic reanalysis are not implemented. External configuration changes are noticed on the next refresh, not immediately. Restart the server to rediscover unopened configurations added elsewhere in the workspace.
+**Follow-up:** dynamic `workspace/didChangeWatchedFiles` registration, background discovery of newly created configurations, and reanalysis when a closed file or configuration changes on disk are not implemented. External configuration changes are noticed on the next refresh, not immediately. Restart the server to rediscover unopened configurations added elsewhere in the workspace.
 
 ## Security
 

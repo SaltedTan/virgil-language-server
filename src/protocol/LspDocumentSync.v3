@@ -7,7 +7,9 @@
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	var capacityWarning: string -> void;
 	// Accepted events only; retained records identify the version analyzed or closed.
-	var onUpdate: DocumentOverlay -> void;
+	var onOpen: DocumentOverlay -> void;
+	var onChange: DocumentOverlay -> void;
+	var onSave: DocumentOverlay -> void;
 	var onClose: DocumentOverlay -> void;
 
 	def register(dispatcher: JsonRpcDispatcher) {
@@ -35,7 +37,7 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 		var reason = store.open(uri, JsonValue.String.!(doc["languageId"]).v,
 			JsonValue.Int.!(doc["version"]).v, JsonValue.String.!(doc["text"]).v);
 		ignored(n, reason);
-		if (reason == null && onUpdate != null) onUpdate(store.overlay(uri));
+		if (reason == null && onOpen != null) onOpen(store.overlay(uri));
 	}
 	private def didChange(n: JsonRpcMessage.Notification) {
 		var params = members(n), doc = objectMember(params, "textDocument");
@@ -70,7 +72,7 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 		var uri = JsonValue.String.!(doc["uri"]).v;
 		var reason = store.change(uri, JsonValue.Int.!(doc["version"]).v, text);
 		ignored(n, reason);
-		if (reason == null && onUpdate != null) onUpdate(store.overlay(uri));
+		if (reason == null && onChange != null) onChange(store.overlay(uri));
 	}
 	private def didSave(n: JsonRpcMessage.Notification) {
 		var params = members(n), uri = documentUri(params);
@@ -79,7 +81,9 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			return;
 		}
 		// Unsolicited save text is not versioned and cannot overwrite edits.
-		ignored(n, store.save(uri));
+		var reason = store.save(uri);
+		ignored(n, reason);
+		if (reason == null && onSave != null) onSave(store.overlay(uri));
 	}
 	private def didClose(n: JsonRpcMessage.Notification) {
 		var uri = documentUri(members(n));

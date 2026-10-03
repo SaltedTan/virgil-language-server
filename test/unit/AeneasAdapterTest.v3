@@ -34,6 +34,7 @@ def X = [
 	T("AeneasAdapter:lazy_bindings_after_cache_cleanup", test_lazy_bindings_after_cache_cleanup),
 	T("AeneasAdapter:shared_nested_tuple_cleanup", test_shared_nested_tuple_cleanup),
 	T("AeneasAdapter:optional_global_stats", test_optional_global_stats),
+	T("AeneasAdapter:program_error_limit", test_program_error_limit),
 	()
 ];
 
@@ -623,4 +624,15 @@ def test_optional_global_stats(t: Tester) {
 	var again = AeneasAdapter.analyzeProgram(sources, false);
 	t.asserti(-1, again.stats.globalTypesAdded);
 	t.assert_string(renderAnalysis(measured, ["stats.v3"]), renderAnalysis(again, ["stats.v3"]));
+}
+
+def test_program_error_limit(t: Tester) {
+	t.asserti(Program.new().ERROR.maxErrors, AeneasAdapter.PROGRAM_MAX_ERRORS);
+	// Verification stops at the next declaration once the limit is reached.
+	var source = StringBuilder.new().puts("component A {\n\tdef f() {\n");
+	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 5) source.put1("\t\tvar x%d: int = missing;\n", i);
+	source.puts("\t}\n}\ncomponent B {\n\tdef g() -> int { return later; }\n}\n");
+	var r = AeneasAdapter.analyzeProgram([AnalysisSource.new("limit.v3", source.toString())], false);
+	t.assert(r.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS, "reaches the limit");
+	for (d in r.diagnostics) t.assert(!Strings.equal(d.message, "identifier \"later\" cannot be found"), "B is not verified");
 }

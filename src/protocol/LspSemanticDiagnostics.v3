@@ -1,0 +1,246 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// An automatic analysis the supervisor is running. The sources were dropped
+// once the worker request held a copy; {inputs} keeps their provenance.
+class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) { }
+// A context waiting to be analyzed once {due} (System.ticksMs) has passed.
+class LspSemanticWait(context: ProjectContext) {
+	var due: int;
+}
+
+// Automatic whole-program analysis of configured projects and publication of
+// its diagnostics. See docs/architecture.md#semantic-diagnostics.
+//
+// - Opening, saving, or closing a project document schedules each context
+//   containing it at once; a change schedules them after DEBOUNCE_MS, and
+//   every further change restarts that interval.
+// - At most one analysis runs. Each context has at most one more waiting,
+//   which captures the latest sources only when it starts. A development
+//   request that arrives meanwhile waits for the running analysis and starts
+//   before any waiting context.
+// - A completed analysis is published only if its configuration revision and
+//   every captured document are still current. Each file's diagnostics come
+//   from the context that owns it (WorkspaceProjects.owners), so analyzing
+//   one project never changes another project's files.
+// - A failure keeps every published list, is logged, and is reported to the
+//   user once until an analysis completes again.
+class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, supervisor: AnalysisSupervisor,
+		lists: LspDiagnosticLists, send: Array<byte> -> void) {
+	// See "Semantic diagnostics" in docs/architecture.md for the measurements.
+	def DEBOUNCE_MS = 200;
+	var warn: string -> void;
+	var info: string -> void;
+	var development: LspDevelopmentAnalysis;
+	private var running: LspSemanticRun;
+	private var waiting = Vector<LspSemanticWait>.new();
+	private def changedConfigs = Vector<WorkspaceConfig>.new();
+	private var failureReported: bool;
+	private var closed: bool;
+
+	def schedule(contexts: Array<ProjectContext>, debounce: bool) {
+		enqueue(contexts, debounce);
+		update();
+	}
+	// Called for WorkspaceProjects.onConfig, possibly during a refresh; the
+	// change is applied by the next update.
+	def configChanged(c: WorkspaceConfig) {
+		if (!closed) changedConfigs.put(c);
+	}
+	// True while the supervisor runs an analysis or a context waits.
+	def busy() -> bool {
+		return supervisor.busy() || waiting.length > 0;
+	}
+	// The poll timeout: the supervisor's deadline, or the next due context.
+	def pollTimeout() -> int {
+		var timeout = supervisor.pollTimeout();
+		if (closed || supervisor.busy()) return timeout;
+		var now = System.ticksMs();
+		for (i < waiting.length) {
+			var remaining = Ints.max(0, waiting[i].due - now);
+			if (timeout < 0 || remaining < timeout) timeout = remaining;
+		}
+		return timeout;
+	}
+	// Called after every poll. Completes the supervisor's analysis for its
+	// submitter, then starts the next one.
+	def onPoll() {
+		var outcome = supervisor.onPoll();
+		if (!AnalysisOutcome.Pending.?(outcome)) {
+			if (running != null) complete(outcome);
+			else if (development != null) development.complete(outcome);
+		}
+		update();
+	}
+	// Stops scheduling; the caller closes the supervisor.
+	def close() {
+		closed = true;
+		running = null;
+		waiting.clear();
+		changedConfigs.clear();
+	}
+	private def enqueue(contexts: Array<ProjectContext>, debounce: bool) {
+		if (closed) return;
+		var due = System.ticksMs() + if(debounce, DEBOUNCE_MS);
+		for (ctx in contexts) {
+			var wait: LspSemanticWait;
+			for (i < waiting.length) { if(waiting[i].context == ctx) wait = waiting[i]; }
+			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
+			wait.due = due;
+		}
+	}
+	private def update() {
+		if (closed) return;
+		reconcile();
+		startNext();
+	}
+	// Applies configuration changes: lists owned by replaced or deleted
+	// contexts are cleared, and new contexts with open documents are scheduled.
+	private def reconcile() {
+		if (changedConfigs.length == 0) return;
+		var changed = changedConfigs.extract();
+		lists.clearOwned(null, null);
+		var open = lists.openUris(), contexts = Vector<ProjectContext>.new();
+		for (c in changed) {
+			for (ctx in c.contexts) {
+				if (!ctx.config.current) continue;
+				for (uri in open) {
+					var path = DocumentUri.filePath(uri);
+					if (path != null && ctx.contains(path, false)) {
+						contexts.put(ctx);
+						break;
+					}
+				}
+			}
+		}
+		enqueue(contexts.extract(), false);
+	}
+	private def startNext() {
+		while (!closed && !supervisor.busy()) {
+			if (development != null && development.startQueued()) return;
+			var now = System.ticksMs(), next: LspSemanticWait;
+			var rest = Vector<LspSemanticWait>.new();
+			for (i < waiting.length) {
+				var w = waiting[i];
+				if (next == null && w.due - now <= 0) next = w;
+				else rest.put(w);
+			}
+			if (next == null) return;
+			waiting = rest;
+			start(next.context);
+		}
+	}
+	private def start(ctx: ProjectContext) {
+		// A replaced configuration's context has a current successor.
+		if (!ctx.config.current || ctx.sources.length == 0) return;
+		// Compiler option application is separate work; never silently
+		// analyze with defaults when the config requests non-default flags.
+		if (ctx.definition.compilerArgs.length > 0) return failed(ctx, "project compilerArgs are not yet supported by the analysis worker");
+		var keys = Array<string>.new(ctx.sources.length);
+		for (i < keys.length) {
+			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
+			if (keys[i] == null) return failed(ctx, Strings.format1("cannot form a document URI for %s", ctx.sources[i].path));
+		}
+		var captured = LspAnalysisCapture.capture(store, keys, true);
+		if (captured.1 != null) return failed(ctx, captured.1);
+		var inputs = captured.0;
+		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
+			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
+		}
+		var outcome = supervisor.begin(inputs.sources, AnalysisWire.WANT_OCCURRENCES);
+		inputs.sources = null;
+		match (outcome) {
+			Failed(failure, reason) => failed(ctx, reason);
+			_ => running = LspSemanticRun.new(ctx, keys, inputs);
+		}
+	}
+	private def complete(outcome: AnalysisOutcome) {
+		var run = running, ctx = run.context;
+		running = null;
+		match (outcome) {
+			Completed(snapshot) => {
+				snapshot.recordDocumentVersions(run.inputs.versions);
+				// Notice a configuration replaced on disk before trusting the result.
+				projects.refresh();
+				snapshot.recordProject(ctx);
+				ctx.snapshot = snapshot;
+				failureReported = false;
+				publish(run, snapshot);
+			}
+			Failed(failure, reason) => failed(ctx, reason);
+			Pending => ;
+		}
+	}
+	private def publish(run: LspSemanticRun, snapshot: AnalysisSnapshot) {
+		var ctx = run.context, inputs = run.inputs;
+		if (!snapshot.matchesProject()) return discard(ctx, snapshot, "its project configuration changed");
+		for (v in inputs.versions) {
+			if (!v.matchesDocument(store)) return discard(ctx, snapshot, Strings.format1("%s changed after its sources were captured", v.uri));
+		}
+		var paths = snapshot.paths, owners = projects.owners(paths), index = Strings.newMap<int>();
+		for (i < paths.length) { if(!index.has(paths[i])) index[paths[i]] = i; }
+		var found = Array<Vector<LspDiagnostic>>.new(paths.length);
+		var maps = Array<PositionMap>.new(paths.length);
+		var last = -1, lastDiagnostic: AnalysisDiagnostic;
+		for (d in snapshot.diagnostics) {
+			if (d.path == null || !index.has(d.path)) {
+				log(warn, Strings.format2("project %s reported a diagnostic without a source document: %s", ctx.definition.name, d.toString()));
+				continue;
+			}
+			var i = index[d.path];
+			if (owners[i] != ctx) continue;
+			if (maps[i] == null) {
+				var text = sourceText(run, i);
+				if (text == null) return discard(ctx, snapshot, Strings.format1("%s changed on disk after its sources were captured", run.keys[i]));
+				maps[i] = PositionMap.new(text, PositionEncoding.UTF16);
+				found[i] = Vector<LspDiagnostic>.new();
+			}
+			found[i].put(LspDiagnostics.compiler(maps[i], d));
+			last = i;
+			lastDiagnostic = d;
+		}
+		// At its error limit Aeneas stops checking, hiding errors in later
+		// declarations and files; say so where the last reported error is.
+		if (last >= 0 && snapshot.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS) {
+			var range = LspDiagnostics.offsets(maps[last], lastDiagnostic);
+			found[last].put(LspDiagnostics.make(maps[last], range.0, range.1, 3, "virgil-lsp", "ErrorLimit",
+				Strings.format1("Aeneas stops checking after %d errors, so errors elsewhere in this program may be missing.", AeneasAdapter.PROGRAM_MAX_ERRORS)));
+		}
+		var keep = Strings.newMap<bool>();
+		for (i < paths.length) {
+			if (owners[i] != ctx || keep.has(run.keys[i])) continue;
+			keep[run.keys[i]] = true;
+			lists.semantic(run.keys[i], ctx, if(found[i] != null, found[i].extract(), []));
+		}
+		lists.clearOwned(ctx, keep);
+	}
+	// The analyzed text of source {i}: its unchanged overlay, or the disk file
+	// if it still has the captured length and hash. Null if it changed.
+	private def sourceText(run: LspSemanticRun, i: int) -> Array<byte> {
+		var v = run.inputs.versions[i];
+		if (v.identity != null) {
+			var doc = store.overlay(v.uri);
+			return if(doc != null && doc.identity == v.identity, doc.text);
+		}
+		var path = DocumentUri.filePath(v.uri);
+		var text = if(path != null, ProjectFiles.load(path, LspAnalysisCapture.MAX_SOURCE_BYTES));
+		return if(LspAnalysisCapture.sameDisk(run.inputs, i, text), text);
+	}
+	private def discard(ctx: ProjectContext, snapshot: AnalysisSnapshot, why: string) {
+		log(info, Strings.format3("discarded analysis %d of project %s: %s", snapshot.generation, ctx.definition.name, why));
+	}
+	private def failed(ctx: ProjectContext, reason: string) {
+		log(warn, Strings.format2("automatic analysis of project %s failed: %s; published diagnostics are kept", ctx.definition.name, reason));
+		if (failureReported) return;
+		failureReported = true;
+		var params = Strings.newMap<JsonValue>();
+		params["type"] = JsonValue.Int(2); // MessageType.Warning
+		params["message"] = JsonValue.String(Strings.format2(
+			"Semantic diagnostics for project %s could not be updated: %s. The last published diagnostics are kept; see the server log.",
+			ctx.definition.name, reason));
+		send(JsonRpcMessage.Notification("window/showMessage", JsonRpcParams.ByName(params)).encode());
+	}
+	private def log(sink: string -> void, msg: string) {
+		if (sink != null) sink(msg);
+	}
+}

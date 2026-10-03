@@ -1,0 +1,204 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Automatic analysis with the real worker. Each test settles by polling until
+// no analysis runs or waits, so results never depend on timing. The golden
+// transcripts in test/diagnostics/ cover publication through stdio.
+def T = UnitTests.register;
+def X = [
+	T("LspSemanticDiagnostics:failure_keeps_diagnostics", test_failure_keeps_diagnostics),
+	T("LspSemanticDiagnostics:error_limit_notice", test_error_limit_notice),
+	T("LspSemanticDiagnostics:development_request_waits", test_development_request_waits),
+	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
+	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
+	()
+];
+class SemanticTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def base = ProjectTestFiles.repository("test/fixtures/projects/two-file");
+	def main = System.fileLoad(ProjectFiles.join(base, "main.v3"));
+	def shapes = System.fileLoad(ProjectFiles.join(base, "shapes.v3"));
+	def messages = Vector<HashMap<string, JsonValue>>.new();
+	def warnings = Vector<string>.new();
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		server.warnProject = warn;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	}
+	def warn(msg: string) { warnings.put(msg); }
+	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.pollAnalysis();
+		}
+	}
+	// Removes and returns the messages received so far.
+	def take() -> Array<HashMap<string, JsonValue>> {
+		return messages.extract();
+	}
+}
+def method(m: HashMap<string, JsonValue>) -> string {
+	return if(JsonValue.String.?(m["method"]), JsonValue.String.!(m["method"]).v);
+}
+def params(m: HashMap<string, JsonValue>) -> HashMap<string, JsonValue> {
+	return JsonValue.JObject.!(m["params"]).v;
+}
+// The diagnostics of the last publication for {uri} in {messages}, or null.
+def published(messages: Array<HashMap<string, JsonValue>>, uri: string) -> Array<JsonValue> {
+	var result: Array<JsonValue>;
+	for (m in messages) {
+		if (!Strings.equal("textDocument/publishDiagnostics", method(m))) continue;
+		var p = params(m);
+		if (Strings.equal(uri, JsonValue.String.!(p["uri"]).v)) result = JsonValue.JArray.!(p["diagnostics"]).v;
+	}
+	return result;
+}
+def count(messages: Array<HashMap<string, JsonValue>>, name: string) -> int {
+	var n = 0;
+	for (m in messages) { if(Strings.equal(name, method(m))) n++; }
+	return n;
+}
+def field(d: JsonValue, key: string) -> JsonValue {
+	return JsonValue.JObject.!(d).v[key];
+}
+def renamed(s: SemanticTestSession) -> string {
+	return replace(s.shapes, "def square(", "def squared(");
+}
+def replace(text: string, from: string, to: string) -> string {
+	for (i = 0; i + from.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + from.length), from)) {
+			return Strings.format3("%s%s%s", Arrays.range(text, 0, i), to, Arrays.range(text, i + from.length, text.length));
+		}
+	}
+	return text;
+}
+def test_failure_keeps_diagnostics(t: Tester) {
+	var s = SemanticTestSession.new(), mainUri = s.uri("main.v3");
+	s.open("shapes.v3", 1, renamed(s));
+	s.settle();
+	var errors = published(s.take(), mainUri);
+	t.assert(errors != null && errors.length > 0, "closed main.v3 reports the renamed member");
+	// The pinned verifier traps on this literal (docs/aeneas-crash-paths.md).
+	var crash = Strings.format1("%s\ndef x: i32 = 0i;\n", renamed(s));
+	s.change("shapes.v3", 2, crash);
+	s.settle();
+	var messages = s.take();
+	t.assert(published(messages, mainUri) == null, "a crash keeps main.v3's published list");
+	t.asserti(1, count(messages, "window/showMessage"));
+	var told = false;
+	for (w in s.warnings.extract()) told = told || Strings.startsWith(w, "automatic analysis of project shapes failed: the analysis worker crashed");
+	t.assert(told, "the failure is logged");
+	s.change("shapes.v3", 3, Strings.format1("%s\n", crash));
+	s.settle();
+	t.asserti(0, count(s.take(), "window/showMessage"));
+	// A completed analysis ends the failure; the next one is reported again.
+	s.change("shapes.v3", 4, renamed(s));
+	s.settle();
+	messages = s.take();
+	t.assert(published(messages, mainUri) == null, "unchanged list is not republished");
+	t.asserti(0, count(messages, "window/showMessage"));
+	s.change("shapes.v3", 5, crash);
+	s.settle();
+	t.asserti(1, count(s.take(), "window/showMessage"));
+	s.server.close();
+}
+def test_error_limit_notice(t: Tester) {
+	var s = SemanticTestSession.new(), text = StringBuilder.new().puts("component Main {\n\tdef main() -> int {\n");
+	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 5) text.put1("\t\tvar x%d: int = missing;\n", i);
+	text.puts("\t\treturn 0;\n\t}\n}\n");
+	s.open("main.v3", 1, text.toString());
+	s.settle();
+	var list = published(s.take(), s.uri("main.v3"));
+	t.assert(list != null && list.length > AeneasAdapter.PROGRAM_MAX_ERRORS, "errors and a notice");
+	if (list == null || list.length < 2) return s.server.close();
+	var notice = list[list.length - 1], last = list[list.length - 2];
+	t.assert_string("ErrorLimit", JsonValue.String.!(field(notice, "code")).v);
+	t.assert_string("virgil-lsp", JsonValue.String.!(field(notice, "source")).v);
+	t.asserti(3, JsonValue.Int.!(field(notice, "severity")).v);
+	var a = JsonRpcJson.render(StringBuilder.new(), field(notice, "range")).toString();
+	var b = JsonRpcJson.render(StringBuilder.new(), field(last, "range")).toString();
+	t.assert_string(b, a);
+	s.server.close();
+}
+def test_development_request_waits(t: Tester) {
+	var s = SemanticTestSession.new();
+	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
+	t.assert(s.supervisor.busy(), "opening starts an analysis at once");
+	var params = Strings.newMap<JsonValue>();
+	params["uri"] = JsonValue.String(s.uri("main.v3"));
+	t.assert(s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode()) == null, "deferred");
+	s.settle();
+	var messages = s.take(), reply = -1, publication = -1;
+	for (i < messages.length) {
+		if (messages[i].has("id")) reply = i;
+		else {
+			var list = published([messages[i]], s.uri("main.v3"));
+			if (list != null && list.length > 0) publication = i;
+		}
+	}
+	t.assert(reply >= 0 && messages[reply].has("result"), "the request completes");
+	t.assert(publication >= 0 && publication < reply, "after the automatic analysis it waited for");
+	if (reply >= 0 && messages[reply].has("result")) {
+		var result = JsonValue.JObject.!(messages[reply]["result"]).v;
+		t.asserti(2, JsonValue.Int.!(result["generation"]).v);
+	}
+	s.server.close();
+}
+def test_debounce_timeout(t: Tester) {
+	var s = SemanticTestSession.new();
+	s.open("main.v3", 1, s.main);
+	s.settle();
+	s.change("main.v3", 2, Strings.format1("%s\n", s.main));
+	t.assertz(false, s.supervisor.busy());
+	t.assertz(true, s.server.analyzing());
+	var timeout = s.server.pollTimeout();
+	t.assert(timeout > 0 && timeout <= 200, "waits for the debounce interval");
+	s.settle();
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+def test_shutdown_stops_scheduling(t: Tester) {
+	var s = SemanticTestSession.new();
+	s.open("main.v3", 1, s.main);
+	s.change("main.v3", 2, Strings.format1("%s\n", s.main));
+	t.assertz(true, s.server.analyzing());
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.Absent).encode());
+	t.assertz(false, s.server.analyzing());
+	t.asserti(-1, s.server.pollTimeout());
+	s.take();
+	s.server.pollAnalysis();
+	t.asserti(0, s.take().length);
+	s.server.close();
+}

@@ -1,0 +1,60 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The sources of one stdio submission, captured together with their
+// provenance. Disk inputs also record their length and a 64-bit FNV-1a hash,
+// so that text read again to convert ranges can be checked against what the
+// worker analyzed. Overlay inputs record -1 and rely on their version stamp.
+// Submitters drop {sources} once the worker request holds a copy.
+class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, lengths: Array<int>, hashes: Array<u64>, snapshotBytes: long) {
+	var sources: Array<AnalysisSource>;
+}
+
+// Captures whole-program inputs for the development request and automatic
+// project analysis. Open overlays win; otherwise the file is read from disk
+// within the remaining source budget, through ProjectFiles for project
+// submissions (which rejects symlinks).
+component LspAnalysisCapture {
+	// Aggregate paths, source bytes, and a conservative metadata allowance.
+	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+
+	// Returns the inputs for canonical document URIs {keys}, or null and the
+	// reason they cannot be captured.
+	def capture(store: DocumentStore, keys: Array<string>, project: bool) -> (LspAnalysisInputs, string) {
+		var sources = Array<AnalysisSource>.new(keys.length);
+		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
+		var lengths = Array<int>.new(keys.length), hashes = Array<u64>.new(keys.length);
+		// Conservative metadata allowance, then the exact supervisor admission.
+		var bytes = 32L, snapshotBytes = 1024L;
+		for (i < keys.length) {
+			var path = DocumentUri.filePath(keys[i]);
+			if (path == null) path = keys[i];
+			bytes += long.view(path.length) + 16;
+			snapshotBytes += 256L + path.length + keys[i].length;
+			if (bytes > MAX_SOURCE_BYTES) return (null, "analysis sources exceed the analysis size budget");
+			var budget = int.view(MAX_SOURCE_BYTES - bytes);
+			// Capture is synchronous: this is the overlay readBounded uses.
+			var doc = store.overlay(keys[i]);
+			var text = if(project && doc == null, ProjectFiles.load(path, budget), store.readBounded(keys[i], budget));
+			if (text == null) return (null, Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
+			bytes += text.length;
+			sources[i] = AnalysisSource.new(path, text);
+			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
+			lengths[i] = if(doc != null, -1, text.length);
+			if (doc == null) hashes[i] = hash(text);
+		}
+		var inputs = LspAnalysisInputs.new(versions, lengths, hashes, snapshotBytes);
+		inputs.sources = sources;
+		return (inputs, null);
+	}
+	// 64-bit FNV-1a.
+	def hash(text: Array<byte>) -> u64 {
+		var h = 0xcbf29ce484222325ul;
+		for (b in text) h = (h ^ b) * 0x100000001b3ul;
+		return h;
+	}
+	// True if {text} is the disk input captured at index {i}.
+	def sameDisk(inputs: LspAnalysisInputs, i: int, text: Array<byte>) -> bool {
+		return text != null && inputs.lengths[i] == text.length && inputs.hashes[i] == hash(text);
+	}
+}

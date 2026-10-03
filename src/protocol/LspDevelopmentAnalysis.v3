@@ -4,11 +4,13 @@
 // Unadvertised development requests: explicit URIs or one project context.
 // No semantic diagnostic publication or LSP coordinate conversion: diagnostics
 // use the compiler's one-based coordinates, just as the development CLI does.
+// A request that arrives during an automatic analysis keeps its captured
+// sources and starts next; {LspSemanticDiagnostics} drives the supervisor.
 class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
-	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 	private var pendingVersions: Array<AnalysisDocumentVersion>;
+	private var queued: Array<AnalysisSource>;
 	private var projects: WorkspaceProjects;
 	private var pendingProject: ProjectContext;
 	def withProjects(projects: WorkspaceProjects) -> this { this.projects = projects; }
@@ -57,35 +59,37 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			seen[key] = true;
 			keys[i] = key;
 		}
-		var sources = Array<AnalysisSource>.new(keys.length);
-		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
-		// Conservative metadata allowance, then the exact supervisor admission.
-		var bytes = 32L, snapshotBytes = 1024L;
-		for (i < keys.length) {
-			var path = DocumentUri.filePath(keys[i]);
-			if (path == null) path = keys[i];
-			bytes += long.view(path.length) + 16;
-			snapshotBytes += 256L + path.length + keys[i].length;
-			if (bytes > MAX_SOURCE_BYTES) return invalid("analysis sources exceed the analysis size budget");
-			var budget = int.view(MAX_SOURCE_BYTES - bytes);
-			var text = if(pendingProject != null && store.overlay(keys[i]) == null,
-				ProjectFiles.load(path, budget), store.readBounded(keys[i], budget));
-			if (text == null) return invalid(Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
-			bytes += text.length;
-			sources[i] = AnalysisSource.new(path, text);
-			// Submission is synchronous: this is the overlay readBounded used.
-			var doc = store.overlay(keys[i]);
-			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
-		}
+		var captured = LspAnalysisCapture.capture(store, keys, pendingProject != null);
+		if (captured.1 != null) return invalid(captured.1);
+		var inputs = captured.0;
 		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
-			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
-		var outcome = supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES);
+			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
+		if (supervisor.busy()) {
+			queued = inputs.sources;
+			pendingVersions = inputs.versions;
+			return null;
+		}
+		var outcome = supervisor.begin(inputs.sources, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
 			_ => {
-				pendingVersions = versions;
+				pendingVersions = inputs.versions;
 				return null;
 			}
+		}
+	}
+	// Starts a request that waited for an automatic analysis. Returns true if
+	// the supervisor accepted it.
+	def startQueued() -> bool {
+		if (queued == null) return false;
+		var sources = queued;
+		queued = null;
+		match (supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES)) {
+			Failed(failure, reason) => {
+				finish(JsonRpcReply.Error(workerError(reason)));
+				return false;
+			}
+			_ => return true;
 		}
 	}
 	// Reads the last good server-owned data even while the worker is hung or
@@ -94,9 +98,9 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		if (projects != null) projects.refresh();
 		return JsonRpcReply.Result(encodeSnapshot(supervisor.snapshot));
 	}
-	def onPoll() {
-		var outcome = supervisor.onPoll();
-		if (!AnalysisOutcome.Pending.?(outcome) && pending) {
+	// Handles the outcome of this request's analysis.
+	def complete(outcome: AnalysisOutcome) {
+		if (pending) {
 			if (AnalysisOutcome.Completed.?(outcome)) {
 				var snapshot = AnalysisOutcome.Completed.!(outcome).snapshot;
 				snapshot.recordDocumentVersions(pendingVersions);
@@ -111,6 +115,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	}
 	def close(reason: string) {
 		supervisor.close();
+		queued = null;
 		if (pending) finish(JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
 	}
 	private def finish(reply: JsonRpcReply) {

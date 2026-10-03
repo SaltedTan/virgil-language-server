@@ -130,6 +130,11 @@ class AnalysisFileIndex(file: VstFile) {
 
 component AeneasAdapter {
 	def MAX_ERRORS = 100;
+	// Program.ERROR's limit, which the adapter cannot replace. Once a program
+	// has this many errors, parsing stops recording them and verification
+	// stops at the next declaration.
+	// AeneasAdapter:program_error_limit checks it against the pinned compiler.
+	def PROGRAM_MAX_ERRORS = 15;
 	// Parse/verify do not mutate compiler configuration. Each analysis still
 	// owns a fresh Program and Compilation; only this default configuration
 	// is reused. Per-project CLOptions configuration remains future work.

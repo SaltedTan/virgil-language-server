@@ -35,12 +35,15 @@ class LspServer {
 	def dispatcher = JsonRpcDispatcher.new();
 	def documents = DocumentStore.new(null, documentCapacity);
 	def projects = WorkspaceProjects.new(documents);
+	private var diagnosticLists: LspDiagnosticLists;
 	private var parserDiagnostics: LspParserDiagnostics;
 	private var projectDiagnostics: LspProjectDiagnostics;
+	private var semanticDiagnostics: LspSemanticDiagnostics;
 	private var documentWarning: Array<byte>;
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
 	var warnProject: string -> void;
+	var infoAnalysis: string -> void;
 	// Notifications and deferred replies are separate from handle()'s replies.
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
@@ -61,37 +64,79 @@ class LspServer {
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
-		parserDiagnostics = LspParserDiagnostics.new(publishNotification);
+		diagnosticLists = LspDiagnosticLists.new(documents, publishNotification);
+		parserDiagnostics = LspParserDiagnostics.new(diagnosticLists);
 		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
 		projects.warn = projectWarning;
-		projects.onConfig = projectDiagnostics.update;
-		documentSync.onUpdate = documentUpdated;
+		projects.onConfig = configChanged;
+		documentSync.onOpen = documentOpened;
+		documentSync.onChange = documentChanged;
+		documentSync.onSave = documentSaved;
 		documentSync.onClose = documentClosed;
 	}
-	// Production attaches its worker supervisor; lifecycle-only tests need no OS.
+	// Production attaches its worker supervisor; lifecycle-only tests need no
+	// OS. Automatic semantic diagnostics and the development requests share it.
 	def withAnalysis(supervisor: AnalysisSupervisor) -> this {
 		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification).withProjects(projects);
 		developmentAnalysis.register(dispatcher);
+		semanticDiagnostics = LspSemanticDiagnostics.new(documents, projects, supervisor, diagnosticLists, publishNotification);
+		semanticDiagnostics.development = developmentAnalysis;
+		semanticDiagnostics.warn = projectWarning;
+		semanticDiagnostics.info = analysisInfo;
 	}
+	// Called after every poll, including a timeout.
 	def pollAnalysis() {
-		if (developmentAnalysis != null) developmentAnalysis.onPoll();
+		if (semanticDiagnostics != null) semanticDiagnostics.onPoll();
 	}
-	private def documentUpdated(doc: DocumentOverlay) {
-		var path = DocumentUri.filePath(doc.uri);
-		if (path != null && Strings.endsWith(path, "/.virgil-lsp.json")) {
-			projects.load(path);
-			projects.refresh();
-			return;
-		}
-		projects.forDocument(doc.uri);
+	// True while an analysis runs or waits to run.
+	def analyzing() -> bool {
+		return semanticDiagnostics != null && semanticDiagnostics.busy();
+	}
+	// The poll timeout in milliseconds, or -1 to wait indefinitely.
+	def pollTimeout() -> int {
+		return if(semanticDiagnostics != null, semanticDiagnostics.pollTimeout(), -1);
+	}
+	private def configChanged(c: WorkspaceConfig) {
+		projectDiagnostics.update(c);
+		if (semanticDiagnostics != null) semanticDiagnostics.configChanged(c);
+	}
+	private def documentOpened(doc: DocumentOverlay) {
+		documentUpdated(doc, false);
+	}
+	private def documentChanged(doc: DocumentOverlay) {
+		documentUpdated(doc, true);
+	}
+	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
+		if (reloadProjectFile(doc)) return;
+		var mapping = projects.forDocument(doc.uri);
 		parserDiagnostics.update(doc);
+		if (semanticDiagnostics != null) semanticDiagnostics.schedule(mapping.contexts, debounce);
+	}
+	private def documentSaved(doc: DocumentOverlay) {
+		if (semanticDiagnostics != null && !isProjectFile(doc)) {
+			semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
+		}
 	}
 	private def documentClosed(doc: DocumentOverlay) {
+		if (reloadProjectFile(doc)) return;
+		parserDiagnostics.close(doc);
+		if (semanticDiagnostics != null) semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
+	}
+	// Reloads the configuration of a local project file buffer, which has
+	// configuration diagnostics instead. Returns false for other documents.
+	private def reloadProjectFile(doc: DocumentOverlay) -> bool {
+		if (!isProjectFile(doc)) return false;
+		projects.load(DocumentUri.filePath(doc.uri));
+		projects.refresh();
+		if (semanticDiagnostics != null) semanticDiagnostics.schedule([], false);
+		return true;
+	}
+	private def isProjectFile(doc: DocumentOverlay) -> bool {
 		var path = DocumentUri.filePath(doc.uri);
-		if (path != null && Strings.endsWith(path, "/.virgil-lsp.json")) {
-			projects.load(path);
-			projects.refresh();
-		} else parserDiagnostics.close(doc);
+		return path != null && Strings.endsWith(path, "/.virgil-lsp.json");
+	}
+	private def analysisInfo(msg: string) {
+		if (infoAnalysis != null) infoAnalysis(msg);
 	}
 	private def publishNotification(payload: Array<byte>) {
 		if (sendNotification != null) sendNotification(payload);
@@ -218,6 +263,7 @@ class LspServer {
 	}
 	// Cancels incoming analysis and outstanding server-to-client requests.
 	private def failPending(msg: string) {
+		if (semanticDiagnostics != null) semanticDiagnostics.close();
 		if (developmentAnalysis != null) developmentAnalysis.close(msg);
 		dispatcher.pending.failAll(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, msg));
 	}
