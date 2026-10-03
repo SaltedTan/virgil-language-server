@@ -51,6 +51,7 @@ exit, including failure or interruption.
 | Location | What | How it runs |
 | --- | --- | --- |
 | `test/analysis/RetainProbe.v3` | Fresh-process live-heap regression for dropped analysis snapshots, including errors | `build/retain-probe [source.v3 ...]` (no arguments runs generated fixtures; see [measurements](architecture.md#adapter-retention-workaround-and-regression-probe)) |
+| `test/analysis/TypeDepthProbe.v3` | Analysis and subsequent tiny analysis of 100,000 inferred array and tuple levels, including lazy snapshot bindings | `build/type-depth-probe` (1 GB heap, default stack) |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`) | `build/unit-tests [glob]` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |

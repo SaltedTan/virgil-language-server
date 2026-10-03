@@ -45,8 +45,13 @@ $(BUILD)/retain-probe: buildinfo test/analysis/RetainProbe.v3 $(SERVER_LIB)
 	$(V3C) -output=$(BUILD) -program-name=retain-probe \
 	  test/analysis/RetainProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
-test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests $(BUILD)/retain-probe
+$(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LIB)
+	$(V3C) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
+	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
+test: $(BUILD)/virgil-lsp $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(BUILD)/retain-probe
+	$(BUILD)/type-depth-probe
 	$(BUILD)/unit-tests
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp

@@ -52,21 +52,32 @@ component AnalysisTypeCache {
 
 	private def isGlobal(t: Type, memo: HashMap<Type, bool>) -> bool {
 		if (memo.has(t)) return memo[t];
-		var tc = t.typeCon;
-		// Enum constructors use the global cache too, but hold source declarations.
-		var global = tc.typeCache == TypeUtil.globalCache
-			&& tc.kind != Kind.ENUM && tc.kind != Kind.ENUM_SET;
-		// TypeCon chooses a cache from immediate constructors, missing program
-		// dependencies nested inside builtin tuples, arrays and function types.
-		if (global) {
-			for (l = t.nested; l != null; l = l.tail) {
-				if (!isGlobal(l.head, memo)) {
+		var work = Vector<(Type, List<Type>)>.new().put((t, t.nested));
+		while (work.length > 0) {
+			var i = work.length - 1, current = work[i].0, nested = work[i].1;
+			if (!memo.has(current)) {
+				var tc = current.typeCon;
+				// Enum constructors use the global cache too, but hold source declarations.
+				var global = tc.typeCache == TypeUtil.globalCache
+					&& tc.kind != Kind.ENUM && tc.kind != Kind.ENUM_SET;
+				// TypeCon chooses a cache from immediate constructors, missing program
+				// dependencies nested inside builtin tuples, arrays and function types.
+				if (global && nested != null) {
+					if (!memo.has(nested.head)) {
+						work.put((nested.head, nested.head.nested));
+						continue;
+					}
+					if (memo[nested.head]) {
+						work[i] = (current, nested.tail);
+						continue;
+					}
 					global = false;
-					break;
 				}
+				memo[current] = global;
 			}
+			work[i] = (null, null);
+			work.length--;
 		}
-		memo[t] = global;
-		return global;
+		return memo[t];
 	}
 }

@@ -1,0 +1,40 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+component AnalysisTypeDepthProbe {
+	def DEPTH = 100000;
+
+	def main(args: Array<string>) -> int {
+		for (tuples in [false, true]) {
+			var path = if(tuples, "deep-tuples.v3", "deep-arrays.v3");
+			var buf = StringBuilder.new().puts("def nested() {\nvar a0 = 1;\n");
+			for (i = 1; i <= DEPTH; i++) {
+				if (tuples) buf.put2("var a%d = (a%d, 1);\n", i, i - 1);
+				else buf.put2("var a%d = [a%d];\n", i, i - 1);
+			}
+			buf.puts("}\n");
+			var nested = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, buf.extract())], true);
+			if (!nested.verified || nested.diagnostics.length != 0 || nested.stats.globalTypesAdded < DEPTH - 100) {
+				System.puts("FAIL: deeply nested inferred types were not verified and retained\n");
+				return 1;
+			}
+			var count = AeneasAdapter.globalTypeCount();
+			var tiny = AeneasAdapter.analyzeProgram(
+				[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], false);
+			if (!tiny.verified || tiny.diagnostics.length != 0 || AeneasAdapter.globalTypeCount() < count) {
+				System.puts("FAIL: subsequent tiny analysis did not preserve builtin types\n");
+				return 1;
+			}
+			RiGc.forceGC();
+			var decl = nested.definitionAt(path, DEPTH + 2, 16);
+			if (decl == null || decl.kind != AnalysisDeclKind.LOCAL
+					|| !Strings.equal(decl.name, "a99999") || !Strings.equal(decl.range.path, path)
+					|| decl.range.beginLine != DEPTH + 1 || decl.range.beginColumn != 5) {
+				System.puts("FAIL: lazy snapshot binding lost after deep type cleanup\n");
+				return 1;
+			}
+			System.puts(if(tuples, "deep tuples: ok\n", "deep arrays: ok\n"));
+		}
+		return 0;
+	}
+}
