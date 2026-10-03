@@ -3,7 +3,6 @@
 
 import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
@@ -27,13 +26,24 @@ let client: LanguageClient | undefined;
 // Starts and stops run one at a time, in the order they were requested.
 let queue: Promise<void> = Promise.resolve();
 
+class QueuedLanguageClient extends LanguageClient {
+  override start(): Promise<void> {
+    return enqueue(async () => {
+      if (client === this) await this.startInQueue();
+    });
+  }
+
+  startInQueue(): Promise<void> {
+    return super.start();
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): Promise<void> {
   const channel = vscode.window.createOutputChannel(CHANNEL_NAME, { log: true });
   output = ignoreWriteFailures(channel);
   context.subscriptions.push(
     channel,
     vscode.commands.registerCommand('virgil.server.restart', () => enqueue(restart)),
-    vscode.commands.registerCommand('virgil.server.showOutput', () => output.show()),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration(SERVER_PATH_SETTING)) {
         output.info(`${SERVER_PATH_SETTING} changed; restarting the server`);
@@ -83,15 +93,15 @@ async function start(): Promise<void> {
     outputChannel: output,
   };
   // The client ID `virgil` makes the client read `virgil.trace.server`.
-  const started = new LanguageClient('virgil', CHANNEL_NAME, serverOptions, clientOptions);
+  const started = new QueuedLanguageClient('virgil', CHANNEL_NAME, serverOptions, clientOptions);
+  client = started;
   output.info(`Starting ${executable} --stdio`);
   try {
-    await started.start();
+    await started.startInQueue();
   } catch (error) {
     reportStartupFailure(error);
     return;
   }
-  client = started;
   const info = started.initializeResult?.serverInfo;
   output.info(`Started ${info?.name ?? 'the server'} ${info?.version ?? '(no version reported)'}`);
 }
@@ -168,17 +178,13 @@ async function findExecutable(setting: string): Promise<string> {
   if (setting === '') {
     throw new StartupError(`${SERVER_PATH_SETTING} is empty. Set it to virgil-lsp or to an absolute path.`);
   }
-  let candidate = setting;
-  if (candidate === '~' || candidate.startsWith('~/')) {
-    candidate = path.join(os.homedir(), candidate.slice(1));
-  }
-  if (path.isAbsolute(candidate)) {
-    if (await isExecutableFile(candidate)) return candidate;
+  if (path.isAbsolute(setting)) {
+    if (await isExecutableFile(setting)) return setting;
     throw new StartupError(
-      `${candidate} (from ${SERVER_PATH_SETTING}) is missing or not an executable file.`,
+      `${setting} (from ${SERVER_PATH_SETTING}) is missing or not an executable file.`,
     );
   }
-  if (candidate.includes(path.sep)) {
+  if (setting.includes(path.sep)) {
     throw new StartupError(
       `${SERVER_PATH_SETTING} must be a command name or an absolute path, not the relative path ${setting}.`,
     );
@@ -186,11 +192,11 @@ async function findExecutable(setting: string): Promise<string> {
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
     // An empty entry would mean the extension host's working directory.
     if (dir === '' || !path.isAbsolute(dir)) continue;
-    const file = path.join(dir, candidate);
+    const file = path.join(dir, setting);
     if (await isExecutableFile(file)) return file;
   }
   throw new StartupError(
-    `${candidate} was not found on the extension host's PATH (with Remote-SSH or Remote-WSL, the remote machine's). `
+    `${setting} was not found on the extension host's PATH (with Remote-SSH or Remote-WSL, the remote machine's). `
     + `Install it there, or set ${SERVER_PATH_SETTING} to its absolute path.`,
   );
 }

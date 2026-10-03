@@ -37,14 +37,14 @@ The extension runs only in [trusted workspaces](https://code.visualstudio.com/do
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `virgil.server.path` | `virgil-lsp` | A command name looked up on the extension host's `PATH`, or an absolute path (`~/` is expanded). Relative paths are rejected. This is a machine setting: set it in user settings, or in the remote settings with Remote-SSH and Remote-WSL. Workspace settings can't change it. Changing it restarts the server. |
+| `virgil.server.path` | `virgil-lsp` | A command name looked up on the extension host's `PATH`, or an absolute path. Relative paths are rejected. This is a machine setting: set it in user settings, or in the remote settings with Remote-SSH and Remote-WSL. Workspace settings can't change it. Changing it restarts the server. |
 | `virgil.trace.server` | `messages` | How much of each LSP message the trace records: `messages`, `compact`, or `verbose`. |
 
 To record the trace, set the output channel's log level to Trace: run **Developer: Set Log Level...**, choose "Virgil Language Server", then Trace. The trace stops when you set the level back to Info.
 
 The `virgil.project.config` setting described in the [ROADMAP](../../ROADMAP.md#visual-studio-code) will be added once the server reads project files while it runs ([Configuration](../../docs/configuration.md)).
 
-Commands: **Virgil: Restart Language Server** and **Virgil: Show Language Server Output**.
+Command: **Virgil: Restart Language Server**.
 
 ## Startup checks
 
@@ -64,6 +64,7 @@ If a check fails, or the server doesn't start, the extension writes the reason t
 
 ```sh
 npm run check     # type-check only, as CI does
+npm test          # compile and run lifecycle regression tests
 npm run watch     # recompile on change
 ```
 
@@ -85,5 +86,6 @@ For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Re
 8. Set `virgil.server.path` to a nonexistent absolute path. The output channel reports that the file is missing or not executable, and an error notification appears. Restore the setting.
 9. With a copy of `virgil-lsp` in a directory without `virgil-lsp-worker`, point `virgil.server.path` at the copy. The output channel reports the missing worker. Restore the setting.
 10. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit.
+11. Close any buffers that contain a known parser crash input, then terminate the server process to trigger automatic recovery. During recovery, separately try **Virgil: Restart Language Server**, changing `virgil.server.path`, and closing the window. Each action waits for recovery to finish; restart and configuration changes stop the recovered server before starting its replacement, and closing the window sends `shutdown` then `exit` to the recovered server. Confirm that only one server remains after a restart and none remains after closing the window.
 
 Record the VS Code version, the platform, and the server version in the pull request.

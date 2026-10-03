@@ -53,11 +53,6 @@
         "command": "virgil.server.restart",
         "title": "Restart Language Server",
         "category": "Virgil"
-      },
-      {
-        "command": "virgil.server.showOutput",
-        "title": "Show Language Server Output",
-        "category": "Virgil"
       }
     ],
     "configuration": {
@@ -67,7 +62,7 @@
           "type": "string",
           "default": "virgil-lsp",
           "scope": "machine",
-          "markdownDescription": "The `virgil-lsp` executable: a command name looked up on `PATH`, or an absolute path (`~/` is expanded). `virgil-lsp-worker` must be in the same directory as the executable it resolves to. With Remote-SSH or Remote-WSL, set this in the remote settings."
+          "markdownDescription": "The `virgil-lsp` executable: a command name looked up on `PATH`, or an absolute path. `virgil-lsp-worker` must be in the same directory as the executable it resolves to. With Remote-SSH or Remote-WSL, set this in the remote settings."
         },
         "virgil.trace.server": {
           "type": "string",
@@ -86,7 +81,8 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "check": "tsc -p . --noEmit"
+    "check": "tsc -p . --noEmit",
+    "test": "npm run compile && node --test test/*.cjs"
   },
   "dependencies": {
     "vscode-languageclient": "10.1.2"
