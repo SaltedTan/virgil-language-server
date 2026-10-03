@@ -38,9 +38,7 @@ class AnalysisSnapshot {
 		if (key == null) return false;
 		for (v in documentVersions) {
 			if (!Strings.equal(v.uri, key)) continue;
-			var doc = store.overlay(key);
-			if (v.identity == null) return doc == null;
-			return doc != null && doc.version == v.version && doc.identity == v.identity;
+			return v.matchesDocument(store);
 		}
 		return false;
 	}
@@ -71,7 +69,13 @@ class AnalysisSnapshot {
 // One canonical URI's submission stamp. A null identity denotes disk, not
 // overlay version zero (all integer overlay versions, including negative, work).
 // The token carries no source bytes and prevents close/reopen version reuse.
-class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersionIdentity) { }
+class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersionIdentity) {
+	def matchesDocument(store: DocumentStore) -> bool {
+		var doc = store.overlay(uri);
+		if (identity == null) return doc == null;
+		return doc != null && doc.version == version && doc.identity == identity;
+	}
+}
 
 // Measurements of the analysis that produced a snapshot, taken in the worker.
 // Fields that were not requested are -1.

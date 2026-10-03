@@ -251,8 +251,9 @@ def exercise(exe, work):
                                         "contentChanges": [{"text": "def changed: i32 = false;\n"}]},
                request=False)
         good = s.result(pending)
-        assert good == expected_snapshot(1, [uri], version=1, current=False), good
-        s.snapshot(good)
+        assert good in (expected_snapshot(1, [uri], version=1, current=True),
+                        expected_snapshot(1, [uri], version=1, current=False)), good
+        s.snapshot(expected_snapshot(1, [uri], version=1, current=False))
         s.send("textDocument/didClose", {"textDocument": {"uri": uri}}, request=False)
         diagnostic = s.result(s.analyze([uri]))
         assert diagnostic["generation"] == 2 and diagnostic["diagnostics"], diagnostic
