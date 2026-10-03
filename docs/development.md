@@ -32,6 +32,7 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 build/virgil-lsp --version
 build/virgil-lsp parse path/to/file.v3    # development command: syntax diagnostics
 build/virgil-lsp analyze a.v3 b.v3        # development command: parse and verify as one program
+build/virgil-lsp check-config .virgil-lsp.json  # development command: check a project file
 build/virgil-lsp --stdio                  # LSP over stdio
 ```
 
@@ -49,6 +50,8 @@ parse/verify timings on stderr. Otherwise it reports the input set and run numbe
 the exit status for a failed command, and the command's stderr, then exits non-zero
 without printing a summary for that input set. Temporary files are cleaned up on
 exit, including failure or interruption.
+
+`check-config` parses and checks project files against [version 1 of the format](configuration.md), and prints each [configuration diagnostic](configuration.md#configuration-diagnostics) as `file:line:column: Code: message`. It reads only the files it is given, and exits with status 1 if any is invalid or unreadable.
 
 ### Development stdio requests
 
@@ -88,7 +91,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses, lifecycle cleanup, and large JSON alongside analysis allocations and snapshot replacement | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/e2e/nvim/` | Headless plain Neovim configuration | See [Neovim testing](../editors/nvim/README.md#headless-smoke-test) for coverage, commands, and skip policy |
-| `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
+| `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). `test/fixtures/projects/` holds whole repositories with project files. | — |
 
 The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
 

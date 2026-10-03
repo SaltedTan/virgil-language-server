@@ -1,0 +1,67 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The compiler flags a version 1 project file accepts: the pinned compiler's
+// language options, which change how Aeneas parses and verifies a program.
+// Other flags select compiler actions, targets, outputs, code generation, the
+// runtime, or initial field values, which analysis doesn't use.
+// {AeneasAdapter.languageOptions} must report the same names and defaults; a
+// unit test checks this.
+component ProjectCompilerFlags {
+	def PREFIX = "-lang:";
+	// Each option's name after {PREFIX}, and its default.
+	def LANGUAGE_OPTIONS = [
+		("read-only-arrays", false),
+		("covariant-arrays", false),
+		("open-types", false),
+		("legacy-infer", true),
+		("fun-exprs", true),
+		("simple-bodies", true),
+		("descriptors", false)
+	];
+	private def NAMES = listNames();
+
+	// Returns null if {arg} is an accepted flag whose option {seen} does not
+	// hold yet, and adds the option to {seen}. Otherwise returns the problem.
+	def check(arg: string, seen: HashMap<string, bool>) -> string {
+		if (arg.length == 0 || arg[0] != '-') {
+			return Strings.format1("'%s' is not a compiler flag; list source files in sources", arg);
+		}
+		var eq = arg.length;
+		for (i < arg.length) {
+			if (arg[i] == '=') {
+				eq = i;
+				break;
+			}
+		}
+		var flag = Arrays.range(arg, 0, eq);
+		if (!Strings.startsWith(flag, PREFIX)) {
+			return Strings.format1("unsupported compiler flag '%s'; version 1 accepts only language options (-lang:)", flag);
+		}
+		var option = Arrays.range(flag, PREFIX.length, flag.length);
+		if (!isLanguageOption(option)) {
+			return Strings.format2("unknown language option '%s'; the language options are %s", flag, NAMES);
+		}
+		if (eq < arg.length) {
+			var value = Arrays.range(arg, eq + 1, arg.length);
+			if (!Strings.equal(value, "true") && !Strings.equal(value, "false")) {
+				return Strings.format1("the value of '%s' must be true or false", flag);
+			}
+		}
+		if (seen.has(option)) return Strings.format1("'%s' is given more than once", flag);
+		seen[option] = true;
+		return null;
+	}
+	def isLanguageOption(name: string) -> bool {
+		for (o in LANGUAGE_OPTIONS) if (Strings.equal(o.0, name)) return true;
+		return false;
+	}
+	private def listNames() -> string {
+		var buf = StringBuilder.new();
+		for (i < LANGUAGE_OPTIONS.length) {
+			if (i > 0) buf.puts(", ");
+			buf.puts(PREFIX).puts(LANGUAGE_OPTIONS[i].0);
+		}
+		return buf.toString();
+	}
+}

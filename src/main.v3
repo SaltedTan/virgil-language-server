@@ -16,6 +16,7 @@ component VirgilLsp {
 		if (Strings.equal(cmd, "--stdio")) return stdio(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "parse")) return parse(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "analyze")) return analyze(Arrays.range(args, 1, args.length));
+		if (Strings.equal(cmd, "check-config")) return checkConfig(Arrays.range(args, 1, args.length));
 		Log.error2("unknown argument '%s'; run '%s --help'", cmd, BuildInfo.NAME);
 		return 2;
 	}
@@ -32,6 +33,8 @@ component VirgilLsp {
 		buf.puts("Development commands (unstable):\n");
 		buf.puts("  --stdio also accepts the worker policy options below.\n");
 		buf.puts("  parse <file.v3>... Parse files with Aeneas and print syntax diagnostics.\n");
+		buf.put1("  check-config <%s>...\n", ProjectConfigParser.FILE_NAME);
+		buf.puts("                     Check project files and print configuration diagnostics.\n");
 		buf.puts("  analyze [options] <file.v3>...\n");
 		buf.puts("                     Parse and verify the files as one program and print diagnostics.\n");
 		buf.puts("    --bindings       Also print each bound use and the declaration it resolves to.\n");
@@ -146,6 +149,37 @@ component VirgilLsp {
 			}
 			if (result.diagnostics.length > 0) failed = true;
 			else System.puts(Strings.format2("%s: ok, %d top-level declarations\n", path, result.declarationCount));
+		}
+		return if(failed, 1, 0);
+	}
+	def checkConfig(paths: Array<string>) -> int {
+		if (paths.length == 0) return usage(2);
+		var failed = false;
+		for (path in paths) {
+			var input = System.fileLoad(path);
+			if (input == null) {
+				Log.error1("cannot read file '%s'", path);
+				failed = true;
+				continue;
+			}
+			var result = ProjectConfigParser.parse(input);
+			var buf = StringBuilder.new();
+			if (result.config == null) {
+				// One-based lines, and columns counted in characters.
+				var map = PositionMap.new(input, PositionEncoding.UTF32);
+				for (d in result.diagnostics) {
+					var at = map.offsetToPosition(d.begin);
+					buf.put3("%s:%d:%d: ", path, at.line + 1, at.character + 1);
+					d.render(buf).ln();
+				}
+				failed = true;
+			} else {
+				var projects = result.config.projects;
+				buf.put3("%s: ok, %d %s", path, projects.length, if(projects.length == 1, "project", "projects"));
+				for (i < projects.length) buf.puts(if(i == 0, ": ", ", ")).puts(projects[i].name);
+				buf.ln();
+			}
+			System.puts(buf.toString());
 		}
 		return if(failed, 1, 0);
 	}

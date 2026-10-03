@@ -1,0 +1,10 @@
+// The client program. Declares the same top-level name as server/Program.v3,
+// so the two programs cannot be analyzed as one.
+component Program {
+	def main() -> int {
+		var greeting = Greeting.text("client");
+		System.puts(greeting);
+		System.ln();
+		return greeting.length;
+	}
+}

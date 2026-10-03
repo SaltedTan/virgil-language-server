@@ -162,6 +162,19 @@ component AeneasAdapter {
 		if (errors.numErrors > 0) return [];
 		return DocumentSymbolCollector.new(file, syntax).collect();
 	}
+	// The pinned compiler's language options, without their "lang:" prefix,
+	// and their defaults, in declaration order. The project file accepts
+	// these flags ({ProjectCompilerFlags}).
+	def languageOptions() -> Array<(string, bool)> {
+		var options = Vector<(string, bool)>.new();
+		for (l = Lists.reverse(CLOptions.langOpt.list); l != null; l = l.tail) {
+			var opt = l.head.0, name = opt.name;
+			if (Strings.startsWith(name, "lang:")) name = Arrays.range(name, 5, name.length);
+			// Every language option is boolean; another kind reports false.
+			options.put((name, Option<bool>.?(opt) && Option<bool>.!(opt).init));
+		}
+		return options.extract();
+	}
 	// Parse and verify a whole program from in-memory sources, in the given
 	// order. Builds a fresh {Program} each time and runs only
 	// {Compilation.parse()} and, if parsing succeeded, {Compilation.verify()}.

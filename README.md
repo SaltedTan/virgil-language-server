@@ -47,6 +47,7 @@ Try the current development command:
 build/virgil-lsp --version
 build/virgil-lsp parse test/fixtures/syntax/tab-error.v3
 build/virgil-lsp analyze --bindings test/fixtures/analysis/two-file/*.v3
+build/virgil-lsp check-config test/fixtures/projects/two-programs/.virgil-lsp.json
 ```
 
 See [docs/development.md](docs/development.md) for details.

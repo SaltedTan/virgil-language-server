@@ -1,0 +1,296 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The project file, .virgil-lsp.json: its model, and the parser that checks
+// it against version 1 of the format. docs/configuration.md specifies the
+// format, and docs/decisions/0005-project-file-format.md records why.
+// Nothing here reads the file system: callers pass the file's bytes.
+
+// The rule that a configuration diagnostic reports. {code} is its stable name,
+// shown to users and sent as the LSP diagnostic code.
+enum ProjectConfigCode(code: string) {
+	INVALID_JSON("InvalidJson"),
+	UNSUPPORTED_VERSION("UnsupportedVersion"),
+	UNKNOWN_FIELD("UnknownField"),
+	DUPLICATE_FIELD("DuplicateField"),
+	MISSING_FIELD("MissingField"),
+	WRONG_TYPE("WrongType"),
+	INVALID_VALUE("InvalidValue"),
+	DUPLICATE_PROJECT_NAME("DuplicateProjectName"),
+	INVALID_PATTERN("InvalidPattern"),
+	UNSUPPORTED_COMPILER_FLAG("UnsupportedCompilerFlag")
+}
+
+// A problem in a project file, at its bytes from {begin} up to the exclusive
+// {end}. An empty range marks a point, such as the end of the file.
+class ProjectConfigDiagnostic(code: ProjectConfigCode, begin: int, end: int, message: string) {
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.puts(code.code).puts(": ").puts(message);
+	}
+}
+
+// A glob from a project file, with the bytes of the JSON string that held it.
+class ProjectPattern(text: string, begin: int, end: int) { }
+
+// One program in a project file. {begin} and {end} cover its JSON object.
+// {sources}, {dependencies}, and {exclude} are relative to the directory that
+// contains the project file, and {virgilDependencies} to the Virgil root.
+// {compilerArgs} holds validated language options, in the order given.
+class ProjectDefinition(name: string, begin: int, end: int,
+		sources: Array<ProjectPattern>, dependencies: Array<ProjectPattern>, exclude: Array<ProjectPattern>,
+		virgilDependencies: Array<ProjectPattern>, compilerArgs: Array<string>) { }
+
+// A valid version 1 project file. Programs keep the file's order.
+class ProjectConfig(projects: Array<ProjectDefinition>) { }
+
+// Either a project model or the problems that prevent one: {config} is
+// non-null exactly when {diagnostics} is empty.
+class ProjectConfigResult(config: ProjectConfig, diagnostics: Array<ProjectConfigDiagnostic>) { }
+
+component ProjectConfigParser {
+	def FILE_NAME = ".virgil-lsp.json";
+	def VERSION = 1;
+	// A project file lists patterns, not files, so it is small. Even a file
+	// naming every Aeneas source explicitly is about 10 KB.
+	def MAX_BYTES = 256 * 1024;
+	// Reporting stops after this many diagnostics.
+	def MAX_DIAGNOSTICS = 100;
+
+	// Parses and validates the bytes of a project file.
+	def parse(text: Array<byte>) -> ProjectConfigResult {
+		var v = ProjectConfigValidator.new();
+		if (text.length > MAX_BYTES) {
+			v.error(ProjectConfigCode.INVALID_JSON, 0, 0,
+				Strings.format1("the project file is larger than %d bytes", MAX_BYTES));
+			return v.result(null);
+		}
+		var start = 0;
+		// RFC 8259 allows a parser to ignore a UTF-8 byte order mark.
+		if (text.length >= 3 && text[0] == 0xEF && text[1] == 0xBB && text[2] == 0xBF) start = 3;
+		var p = ProjectJsonParser.new(text);
+		if (start > 0) p.skip(start);
+		var root = p.parseFile();
+		if (root == null) {
+			var at = if(p.error_pos < text.length, p.error_pos, text.length);
+			v.error(ProjectConfigCode.INVALID_JSON, at, at, Strings.format1("invalid JSON: %s", p.error_msg));
+			return v.result(null);
+		}
+		return v.result(v.file(root));
+	}
+}
+
+// Checks a parsed project file and builds its model. Diagnostics come out in
+// source order: a missing member is reported at its object's opening brace,
+// before the object's members.
+class ProjectConfigValidator {
+	def diagnostics = Vector<ProjectConfigDiagnostic>.new();
+	private def names = Strings.newMap<bool>();
+
+	def result(config: ProjectConfig) -> ProjectConfigResult {
+		if (diagnostics.length > 0) config = null;
+		return ProjectConfigResult.new(config, diagnostics.extract());
+	}
+	def error(code: ProjectConfigCode, begin: int, end: int, message: string) {
+		if (diagnostics.length < ProjectConfigParser.MAX_DIAGNOSTICS) {
+			diagnostics.put(ProjectConfigDiagnostic.new(code, begin, end, message));
+		}
+	}
+	def errorAt(code: ProjectConfigCode, node: ProjectJson, message: string) {
+		error(code, node.begin, node.end, message);
+	}
+	def file(root: ProjectJson) -> ProjectConfig {
+		if (root.kind != ProjectJsonKind.OBJECT) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, root,
+				Strings.format1("the project file must hold a JSON object, not %s", root.kind.article));
+			return null;
+		}
+		// A later version may define other members, so nothing else is
+		// checked until the version is known.
+		if (!version(root)) return null;
+		var projects: Array<ProjectDefinition>;
+		var seen = Strings.newMap<bool>();
+		missing(root, "projects", "the project file");
+		for (m in root.members) {
+			if (!firstMember(m, seen)) continue;
+			var key = m.key.text;
+			if (Strings.equal(key, "version")) continue;
+			if (Strings.equal(key, "projects")) projects = projectList(m.value);
+			else unknown(m, "the project file", "version, projects");
+		}
+		return if(projects != null, ProjectConfig.new(projects));
+	}
+	// Checks the version. Returns false, after reporting why, unless it is
+	// {ProjectConfigParser.VERSION}.
+	private def version(root: ProjectJson) -> bool {
+		var m = root.member("version");
+		if (m == null) {
+			missing(root, "version", "the project file");
+			return false;
+		}
+		var n = m.value;
+		if (n.kind != ProjectJsonKind.NUMBER) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("version must be a number, not %s", n.kind.article));
+			return false;
+		}
+		if (!n.integer || n.intValue != ProjectConfigParser.VERSION) {
+			errorAt(ProjectConfigCode.UNSUPPORTED_VERSION, n, Strings.format1(
+				"unsupported version; this server reads version %d project files", ProjectConfigParser.VERSION));
+			return false;
+		}
+		return true;
+	}
+	private def projectList(n: ProjectJson) -> Array<ProjectDefinition> {
+		if (n.kind != ProjectJsonKind.ARRAY) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("projects must be an array, not %s", n.kind.article));
+			return null;
+		}
+		var projects = Vector<ProjectDefinition>.new();
+		for (e in n.elements) {
+			var p = project(e);
+			if (p != null) projects.put(p);
+		}
+		return projects.extract();
+	}
+	private def project(n: ProjectJson) -> ProjectDefinition {
+		if (n.kind != ProjectJsonKind.OBJECT) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("a project must be an object, not %s", n.kind.article));
+			return null;
+		}
+		var name: string, sources: Array<ProjectPattern>;
+		var dependencies: Array<ProjectPattern> = [], exclude: Array<ProjectPattern> = [];
+		var virgilDependencies: Array<ProjectPattern> = [], args: Array<string> = [];
+		var seen = Strings.newMap<bool>();
+		missing(n, "name", "a project");
+		missing(n, "sources", "a project");
+		for (m in n.members) {
+			if (!firstMember(m, seen)) continue;
+			var key = m.key.text, value = m.value;
+			if (Strings.equal(key, "name")) {
+				name = projectName(value);
+			} else if (Strings.equal(key, "sources")) {
+				sources = patterns(value, "sources", true);
+				if (sources != null && sources.length == 0) {
+					errorAt(ProjectConfigCode.INVALID_VALUE, value, "sources must list at least one pattern");
+				}
+			} else if (Strings.equal(key, "dependencies")) {
+				dependencies = patterns(value, "dependencies", true);
+			} else if (Strings.equal(key, "virgilDependencies")) {
+				virgilDependencies = patterns(value, "virgilDependencies", true);
+			} else if (Strings.equal(key, "exclude")) {
+				exclude = patterns(value, "exclude", false);
+			} else if (Strings.equal(key, "compilerArgs")) {
+				args = compilerArgs(value);
+			} else if (Strings.equal(key, "target")) {
+				target(value);
+			} else {
+				unknown(m, "a project", "name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target");
+			}
+		}
+		if (name == null || sources == null || dependencies == null || exclude == null
+			|| virgilDependencies == null || args == null) return null;
+		return ProjectDefinition.new(name, n.begin, n.end, sources, dependencies, exclude, virgilDependencies, args);
+	}
+	private def projectName(n: ProjectJson) -> string {
+		if (n.kind != ProjectJsonKind.STRING) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, n, Strings.format1("name must be a string, not %s", n.kind.article));
+			return null;
+		}
+		var s = n.text;
+		if (s.length == 0) {
+			errorAt(ProjectConfigCode.INVALID_VALUE, n, "name must not be empty");
+			return null;
+		}
+		for (ch in s) {
+			if (!isNameChar(ch)) {
+				errorAt(ProjectConfigCode.INVALID_VALUE, n,
+					"name may contain only ASCII letters, digits, '.', '_', and '-'");
+				return null;
+			}
+		}
+		if (names.has(s)) {
+			errorAt(ProjectConfigCode.DUPLICATE_PROJECT_NAME, n,
+				Strings.format1("another project is already named '%s'", s));
+			return null;
+		}
+		names[s] = true;
+		return s;
+	}
+	// Returns the strings of an array, or null after reporting why it is not
+	// an array of strings.
+	private def strings(n: ProjectJson, field: string) -> Array<ProjectJson> {
+		if (n.kind != ProjectJsonKind.ARRAY) {
+			errorAt(ProjectConfigCode.WRONG_TYPE, n,
+				Strings.format2("%s must be an array of strings, not %s", field, n.kind.article));
+			return null;
+		}
+		var ok = true;
+		for (e in n.elements) {
+			if (e.kind != ProjectJsonKind.STRING) {
+				errorAt(ProjectConfigCode.WRONG_TYPE, e,
+					Strings.format2("%s must contain only strings, not %s", field, e.kind.article));
+				ok = false;
+			}
+		}
+		return if(ok, n.elements);
+	}
+	private def patterns(n: ProjectJson, field: string, sourceFiles: bool) -> Array<ProjectPattern> {
+		var elements = strings(n, field);
+		if (elements == null) return null;
+		var result = Array<ProjectPattern>.new(elements.length), ok = true;
+		for (i < elements.length) {
+			var e = elements[i];
+			var problem = ProjectPatterns.check(e.text, sourceFiles);
+			if (problem != null) {
+				errorAt(ProjectConfigCode.INVALID_PATTERN, e, problem);
+				ok = false;
+			}
+			result[i] = ProjectPattern.new(e.text, e.begin, e.end);
+		}
+		return if(ok, result);
+	}
+	private def compilerArgs(n: ProjectJson) -> Array<string> {
+		var elements = strings(n, "compilerArgs");
+		if (elements == null) return null;
+		var result = Array<string>.new(elements.length), ok = true;
+		var seen = Strings.newMap<bool>();
+		for (i < elements.length) {
+			var e = elements[i];
+			var problem = ProjectCompilerFlags.check(e.text, seen);
+			if (problem != null) {
+				errorAt(ProjectConfigCode.UNSUPPORTED_COMPILER_FLAG, e, problem);
+				ok = false;
+			}
+			result[i] = e.text;
+		}
+		return if(ok, result);
+	}
+	private def target(n: ProjectJson) {
+		if (n.kind == ProjectJsonKind.NULL) return;
+		errorAt(ProjectConfigCode.INVALID_VALUE, n,
+			"target must be null; version 1 analyzes every project without a target");
+	}
+	// Reports a member whose key repeats an earlier one in the same object.
+	// Returns true for the first occurrence of a key.
+	private def firstMember(m: ProjectJsonMember, seen: HashMap<string, bool>) -> bool {
+		var key = m.key.text;
+		if (seen.has(key)) {
+			errorAt(ProjectConfigCode.DUPLICATE_FIELD, m.key, Strings.format1("'%s' appears more than once in this object", key));
+			return false;
+		}
+		seen[key] = true;
+		return true;
+	}
+	private def unknown(m: ProjectJsonMember, where: string, known: string) {
+		errorAt(ProjectConfigCode.UNKNOWN_FIELD, m.key,
+			Strings.format3("unknown field '%s' in %s; the fields are %s", m.key.text, where, known));
+	}
+	private def missing(obj: ProjectJson, key: string, where: string) {
+		if (obj.member(key) != null) return;
+		error(ProjectConfigCode.MISSING_FIELD, obj.begin, obj.begin + 1,
+			Strings.format2("%s must have a '%s' field", where, key));
+	}
+	private def isNameChar(ch: byte) -> bool {
+		return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+			|| ch == '.' || ch == '_' || ch == '-';
+	}
+}

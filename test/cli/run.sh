@@ -105,6 +105,35 @@ expect "analyze rejects a bad worker timeout" 2 "" "invalid option" -- analyze -
 expect "analyze rejects a bad worker analysis limit" 2 "" "invalid option" -- \
     analyze --worker-max-analyses=x "$A/two-file/main.v3"
 
+# Project files (docs/configuration.md). Glob expansion is not implemented yet,
+# so the fixture programs are analyzed from the file lists their project files
+# describe.
+P=$FIXTURES/projects
+expect "check-config accepts the two-program fixture" 0 'two-programs/\.virgil-lsp\.json: ok, 2 projects: server, client$' "" -- \
+    check-config "$P/two-programs/.virgil-lsp.json"
+expect "check-config accepts the Virgil library fixture" 0 'virgil-lib/\.virgil-lsp\.json: ok, 1 project: words$' "" -- \
+    check-config "$P/virgil-lib/.virgil-lsp.json"
+printf '{\n  "version": 1,\n  "projects": [{"name": "a", "sources": ["../a.v3"], "main": "x"}]\n}\n' > "$TMP/bad.json"
+expect "check-config reports a diagnostic at its line and column" 1 \
+    "^$TMP/bad\\.json:3:42: InvalidPattern: a pattern must not contain '\\.' or '\\.\\.' segments$" "" -- \
+    check-config "$TMP/bad.json"
+check_stream stdout "$TMP/out" "^$TMP/bad\\.json:3:54: UnknownField: unknown field 'main' in a project; " && \
+    [ "$(wc -l < "$TMP/out")" -eq 2 ]
+finish "check-config reports every diagnostic" $(( $? == 0 ))
+expect "check-config missing file" 1 "" "cannot read file" -- check-config "$TMP/missing.json"
+expect "check-config needs a file" 2 "" "Usage: virgil-lsp" -- check-config
+TWO=$P/two-programs
+expect "the server program verifies alone" 0 '^ok: 2 files parsed and verified$' "" -- \
+    analyze "$TWO/server/Program.v3" "$TWO/shared/Greeting.v3"
+expect "the client program verifies alone" 0 '^ok: 2 files parsed and verified$' "" -- \
+    analyze "$TWO/client/Program.v3" "$TWO/shared/Greeting.v3"
+expect "the two programs are not one program" 1 'client/Program\.v3:3:11: TypeRedefined: type "Program" redefined' "" -- \
+    analyze "$TWO/server/Program.v3" "$TWO/client/Program.v3" "$TWO/shared/Greeting.v3"
+expect "the Virgil library fixture verifies with lib/util" 0 '^ok: [0-9]+ files parsed and verified$' "" -- \
+    analyze "$P/virgil-lib/src/Words.v3" "$ROOT"/vendor/virgil/lib/util/*.v3
+expect "the Virgil library fixture needs lib/util" 1 'Words\.v3:5:29: UnresolvedIdentifier: identifier "Vector" cannot be found' "" -- \
+    analyze "$P/virgil-lib/src/Words.v3"
+
 # Whole-program analysis runs in virgil-lsp-worker, next to the executable
 # (docs/decisions/0004-analysis-worker-process.md). A verifier trap or hang
 # ends only the worker; the command reports it and stdout stays clean.
