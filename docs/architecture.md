@@ -173,9 +173,9 @@ Golden transcripts and handler-level unit tests cover all supported declaration 
 
 [ADR-0004](decisions/0004-analysis-worker-process.md) owns the process model, IPC contract, restart policy, and heap measurements. `AnalysisSupervisor` (`src/worker/AnalysisSupervisor.v3`) decodes worker results into an `AnalysisSnapshot`; see [Analysis snapshots](#analysis-snapshots-partly-present) for the server-owned representation.
 
-The development `analyze` command and the stdio server share the supervisor's asynchronous startup/analysis state machine. **Option 2a** is the pre-M3 trigger: the unadvertised `virgil-lsp/analyze` request submits an explicit set of URIs, taking current overlay bytes or bounded disk reads. It returns generation and compiler-coordinate diagnostics on completion, or an error preserving the previous snapshot. No worker starts until requested. A second concurrent analysis is rejected; shutdown, exit, EOF, and matching cancellation stop pending work and reap the worker.
+The development `analyze` command and the stdio server share the supervisor's asynchronous startup/analysis state machine. **Option 2a** is the pre-M3 trigger: the unadvertised `virgil-lsp/analyze` request submits an explicit set of URIs, taking current overlay bytes or bounded disk reads. It returns generation and compiler-coordinate diagnostics on completion, or an error preserving the previous snapshot. No worker starts until requested. A second concurrent analysis is rejected; shutdown, exit, and EOF stop pending work and reap the worker.
 
-`virgil-lsp/snapshot` is an unadvertised read-only inspection request for the retained generation and diagnostics, including during a hang or after a crash. This proves server-owned results remain usable without a live worker; it does not promise freshness against current overlays. [Development stdio requests](development.md#development-stdio-requests) owns the formats, limits, and errors. The [interactive protocol transcripts](../test/protocol/worker.py) check concurrent responses during startup and a hanging analysis, crash recovery, fragmented stdin at timeout, cancellation, and 20 Aeneas analyses across routine replacements.
+`virgil-lsp/snapshot` is an unadvertised read-only inspection request for the retained generation and diagnostics, including during a hang or after a crash. This proves server-owned results remain usable without a live worker; it does not promise freshness against current overlays. [Development stdio requests](development.md#development-stdio-requests) owns the formats, limits, and errors. The [interactive protocol transcripts](../test/protocol/worker.py) check concurrent responses during startup and a hanging analysis, crash recovery, fragmented stdin at timeout, lifecycle cleanup, and 20 Aeneas analyses across routine replacements.
 
 ## Analysis snapshots *(partly present)*
 
@@ -198,7 +198,7 @@ The development `analyze` command and the stdio server share the supervisor's as
 | `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 | `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, and converts byte ranges with `PositionMap`. |
 | `LspParserDiagnostics.v3` | Publishes [parser diagnostics](#parser-diagnostics) for accepted overlays and clears them on close. |
-| `LspDevelopmentAnalysis.v3` | Unadvertised analysis submission, deferred completion/cancellation, and retained-snapshot inspection. |
+| `LspDevelopmentAnalysis.v3` | Unadvertised analysis submission, deferred completion, lifecycle cancellation, and retained-snapshot inspection. |
 
 The decoder checks each member for presence and type before reading it. A missing `HashMap` key returns a default `JsonValue` instead of failing, and a failed cast ends the process. Once the [lifecycle](#lifecycle) has admitted a message, it is handled as follows:
 
@@ -305,7 +305,7 @@ The end of the input is treated like `exit` because a client that sent `shutdown
 
 ### Cancellation
 
-Once decoded as a valid notification, `$/cancelRequest` never gets a response, regardless of the contents of its params. Malformed envelopes follow the [JSON-RPC validation contract](#json-rpc-messages). Most handlers reply synchronously; cancellation of an already answered request has no effect. The development analysis request is deferred: a cancellation matching its pending ID and ID type kills/reaps the worker, replies to the original request with `RequestCancelled` (-32800), and preserves the last snapshot. Invalid parameters and nonmatching IDs are ignored. Before `initialize` and after `shutdown` it is dropped like other notifications. A request with the method `$/cancelRequest` is unregistered and follows the request rules in the lifecycle table above.
+Once decoded as a valid notification, `$/cancelRequest` is ignored and never gets a response, regardless of the contents of its params. Malformed envelopes follow the [JSON-RPC validation contract](#json-rpc-messages). Before `initialize` and after `shutdown` it is dropped like other notifications. A request with the method `$/cancelRequest` is unregistered and follows the request rules in the lifecycle table above. Pending development analyses are cancelled only at shutdown, exit, or EOF; these lifecycle transitions kill/reap the worker, reply to the original request with `RequestCancelled` (-32800), and preserve the last snapshot.
 
 ## Protocol invariants
 

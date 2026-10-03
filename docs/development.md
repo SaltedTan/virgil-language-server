@@ -63,7 +63,7 @@ After `initialize`, send `virgil-lsp/analyze` with a nonempty `uris` array:
 - Only one analysis may be outstanding. A second gets `InvalidParams` rather than being queued. Other requests keep receiving replies while startup, pipe transfer, or analysis is pending.
 - Completion returns `{"generation": 1, "diagnostics": [...]}` with the original request ID. Generations increase only for completed analyses, including analyses reporting syntax/type errors. Each diagnostic has `path` (or null), `beginLine`, `beginColumn`, `endLine`, `endColumn`, `kind` (or null), and `message`. These are **one-based compiler coordinates**, not LSP UTF-16 ranges; they have the same limitations as the unstable CLI's reports.
 - A crashed, timed-out, unavailable, or malformed worker returns `InternalError` (-32603). The message states the failure and that the previous snapshot is kept; stderr records the process failure. The next analysis starts a new worker.
-- `$/cancelRequest` with the pending ID (matching both value and integer/string type) kills that analysis and returns `RequestCancelled` (-32800). Shutdown also cancels it before replying to `shutdown`; exit and EOF cancel and reap any worker. All preserve the previous snapshot.
+- Shutdown cancels pending analysis with `RequestCancelled` (-32800) before replying to `shutdown`; exit and EOF cancel and reap any worker. All preserve the previous snapshot.
 
 `virgil-lsp/snapshot` (no params required) returns the same generation-and-diagnostics object for the last completed analysis, or `null` if none exists. It reads only server-owned data, so it works during a hang, after a crash, and across routine replacements. This is deliberately stale inspection data, not a promise that semantic results match the current overlays; document-version gates remain M3 work.
 
@@ -77,7 +77,7 @@ After `initialize`, send `virgil-lsp/analyze` with a nonempty `uris` array:
 | `test/analysis/TypeDepthProbe.v3` | Analysis and subsequent tiny analysis of 100,000 inferred array and tuple levels, including lazy snapshot bindings | `build/type-depth-probe` (1 GB heap, default stack) |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory and makes it crash and hang; the crash traces on stderr are expected. | `build/unit-tests [glob]` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
-| `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses, cancellation and shutdown | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
+| `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses, shutdown, exit and EOF cleanup | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). | — |
 

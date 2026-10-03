@@ -11,7 +11,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("virgil-lsp/analyze", analyze);
 		dispatcher.onRequest("virgil-lsp/snapshot", snapshot);
-		dispatcher.onNotification("$/cancelRequest", cancel);
 	}
 	private def analyze(request: JsonRpcMessage.Request) {
 		var error = begin(request);
@@ -69,17 +68,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	def close(reason: string) {
 		supervisor.close();
 		if (pending) finish(JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
-	}
-	private def cancel(notification: JsonRpcMessage.Notification) {
-		if (!pending || !JsonRpcParams.ByName.?(notification.params)) return;
-		var id = JsonRpcParams.ByName.!(notification.params).v["id"];
-		var matches = false;
-		match (pendingId) {
-			Int(v) => matches = JsonValue.Int.?(id) && JsonValue.Int.!(id).v == v;
-			String(v) => matches = JsonValue.String.?(id) && Strings.equal(JsonValue.String.!(id).v, v);
-			Null => ;
-		}
-		if (matches) close("the analysis request was cancelled");
 	}
 	private def finish(reply: JsonRpcReply) {
 		var id = pendingId;

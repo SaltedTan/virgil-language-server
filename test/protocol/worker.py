@@ -218,16 +218,7 @@ def exercise(exe, work):
             current = s.result(pending)
             assert current == {"generation": generation, "diagnostics": []}, current
             s.snapshot(current)
-        good = current
 
-        # Cancellation matches IDs by type and leaves last good data intact.
-        pending = s.analyze([hang], id=900)
-        s.send("$/cancelRequest", {"id": "900"}, request=False)
-        s.ping()
-        assert (int, pending) not in s.answered, "wrong ID type cancelled the analysis"
-        s.send("$/cancelRequest", {"id": pending}, request=False)
-        error(s, pending, -32800)
-        s.snapshot(good)
         pending = s.analyze([hang])
         shutdown = s.send("shutdown")
         error(s, pending, -32800, "shutting down")
@@ -290,7 +281,7 @@ def main():
         work = Path(directory).resolve()
         exercise(exe, work)
         startup_and_eof(exe, work)
-    print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, cancellation and startup passed")
+    print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, shutdown and startup passed")
 
 
 if __name__ == "__main__":

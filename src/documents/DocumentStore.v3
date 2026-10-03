@@ -39,9 +39,7 @@ class DocumentStore {
 		if (doc != null) return if(doc.text.length <= maxBytes, doc.text);
 		var path = DocumentUri.filePath(uri);
 		if (path == null) return null;
-		if (boundedReader != null) return boundedReader(path, maxBytes);
-		var text = if(reader != null, reader(path));
-		return if(text != null && text.length <= maxBytes, text);
+		return if(boundedReader != null, boundedReader(path, maxBytes));
 	}
 	private def overlays = Strings.newMap<DocumentOverlay>();
 
