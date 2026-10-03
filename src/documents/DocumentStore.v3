@@ -18,6 +18,7 @@ class DocumentOverlay(uri: string, languageId: string, version: int, text: Array
 // Mutation methods return null on success, or a reason for ignoring the event.
 class DocumentStore {
 	private var reader: string -> Array<byte>;
+	private var boundedReader: (string, int) -> Array<byte>;
 
 	private var capacity: int;
 	private var used: long;
@@ -27,6 +28,18 @@ class DocumentStore {
 	// The stdio entry point supplies its disk reader; tests supply a fake.
 	def withReader(reader: string -> Array<byte>) -> this {
 		this.reader = reader;
+	}
+	def withBoundedReader(reader: (string, int) -> Array<byte>) -> this {
+		boundedReader = reader;
+	}
+	// Development whole-program inputs have an aggregate wire-size budget.
+	// Production supplies a reader that enforces it before allocating a file.
+	def readBounded(uri: string, maxBytes: int) -> Array<byte> {
+		var doc = overlay(uri);
+		if (doc != null) return if(doc.text.length <= maxBytes, doc.text);
+		var path = DocumentUri.filePath(uri);
+		if (path == null) return null;
+		return if(boundedReader != null, boundedReader(path, maxBytes));
 	}
 	private def overlays = Strings.newMap<DocumentOverlay>();
 

@@ -6,12 +6,12 @@ component LspFraming {
 	// The longest header section accepted, including the empty line that ends it.
 	def MAX_HEADER_BYTES = 8192;
 	// The default limit on the payload of one incoming message.
-	def DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
+	def DEFAULT_MAX_PAYLOAD = 4 * 1024 * 1024;
 	// The highest payload limit the server supports with its default 200 MB
 	// heap. Body bytes must be bounded along with {JsonRpcJson.MAX_VALUES}
 	// before parsing the whole message. See docs/architecture.md#framing for
 	// the supported memory budget.
-	def MAX_SUPPORTED_PAYLOAD = 16 * 1024 * 1024;
+	def MAX_SUPPORTED_PAYLOAD = 4 * 1024 * 1024;
 }
 
 // One result of reading the client's byte stream. See {LspFrameReader.next}.

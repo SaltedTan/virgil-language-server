@@ -12,7 +12,8 @@ type JsonRpcReply {
 // payload, if any. It does no I/O; the caller frames and writes the reply.
 //
 // - A request gets exactly one response with its original ID: the handler's
-//   result or error, or MethodNotFound if no handler is registered.
+//   result or error, or MethodNotFound if no handler is registered. A deferred
+//   handler owns sending its response exactly once through its injected sink.
 // - A notification never gets a response. Unknown notifications are ignored.
 // - An invalid payload gets a ParseError or InvalidRequest error response.
 // - A response from the client completes the server request it answers in
@@ -20,6 +21,7 @@ type JsonRpcReply {
 //   reported to the ignored-response handler, if there is one.
 class JsonRpcDispatcher {
 	private def requestHandlers = Strings.newMap<JsonRpcMessage.Request -> JsonRpcReply>();
+	private def deferredHandlers = Strings.newMap<JsonRpcMessage.Request -> void>();
 	private def notificationHandlers = Strings.newMap<JsonRpcMessage.Notification -> void>();
 	private var ignoredResponseHandler: string -> void;
 	// The requests the server has sent to the client. Send them with
@@ -28,6 +30,9 @@ class JsonRpcDispatcher {
 
 	def onRequest(method: string, handler: JsonRpcMessage.Request -> JsonRpcReply) -> this {
 		requestHandlers[method] = handler;
+	}
+	def onDeferredRequest(method: string, handler: JsonRpcMessage.Request -> void) -> this {
+		deferredHandlers[method] = handler;
 	}
 	def onNotification(method: string, handler: JsonRpcMessage.Notification -> void) -> this {
 		notificationHandlers[method] = handler;
@@ -63,13 +68,18 @@ class JsonRpcDispatcher {
 	}
 	private def answer(request: JsonRpcMessage.Request, unsupportedNumbers: bool) -> Array<byte> {
 		var handler = requestHandlers[request.method];
-		if (handler == null) {
+		var deferred = deferredHandlers[request.method];
+		if (handler == null && deferred == null) {
 			return error(request.id, JsonRpcErrorCode.METHOD_NOT_FOUND,
 				Strings.format1("method not found: %s", request.method));
 		}
 		if (unsupportedNumbers) {
 			return error(request.id, JsonRpcErrorCode.INVALID_PARAMS,
 				"params contain a number that is not a 32-bit integer");
+		}
+		if (deferred != null) {
+			deferred(request);
+			return null;
 		}
 		match (handler(request)) {
 			Result(v) => return JsonRpcMessage.Response(request.id, v).encode();

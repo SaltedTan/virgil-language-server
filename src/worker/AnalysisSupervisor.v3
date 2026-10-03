@@ -3,153 +3,174 @@
 
 // Why an analysis produced no snapshot.
 enum AnalysisFailure {
-	UNAVAILABLE,	// no worker could be started
-	CRASHED,	// the worker ended during the analysis
-	TIMED_OUT,	// the analysis exceeded the wall-clock limit, so the worker was killed
-	MALFORMED,	// the worker's reply was not a valid result, so the worker was killed
-	TOO_LARGE	// the request would exceed WorkerFraming.MAX_PAYLOAD; nothing was sent
+	UNAVAILABLE,	// startup or handshake failed
+	CRASHED,	// the worker ended during analysis
+	TIMED_OUT,	// killed at the analysis wall-clock limit
+	MALFORMED,	// killed after an invalid result
+	TOO_LARGE,	// request exceeded the frame limit; nothing sent
+	BUSY		// another analysis is outstanding; nothing changed
 }
 
-// The outcome of one analysis request.
 type AnalysisOutcome {
+	case Pending; // only the asynchronous API returns this
 	case Completed(snapshot: AnalysisSnapshot);
 	case Failed(failure: AnalysisFailure, reason: string);
 }
 
-// The limits of the restart policy. A worker is replaced once an analysis
-// leaves it at or over a limit. The defaults come from measurements recorded
-// in docs/decisions/0004-analysis-worker-process.md; tests lower them.
+// Defaults measured in docs/decisions/0004-analysis-worker-process.md.
 class AnalysisWorkerLimits {
-	// Wall clock for one analysis.
+	// Wall clock for one analysis, including writing its request.
 	var timeoutMs = 10000;
-	// Wall clock from starting a worker to its handshake. Under Rosetta 2,
-	// the first start of an executable includes its translation.
+	// Includes first-start Rosetta translation.
 	var startTimeoutMs = 10000;
-	// Analyses per worker.
 	var maxAnalyses = 100;
-	// Aeneas's process-wide UID counter. Verification fails once it reaches
-	// 2^29, and no analysis uses anywhere near 2^28 of them.
+	// Verification fails at 2^29; leave at least 2^28 IDs of headroom.
 	var maxUid = 1 << 28;
-	// Live heap after an analysis, in bytes. The default, -1, means an eighth
-	// of the worker's heap.
+	// -1 means an eighth of the worker's heap.
 	var maxLiveBytes = -1L;
 }
 
-// Runs whole-program analyses in a replaceable virgil-lsp-worker process and
-// keeps the most recent snapshot. The server process never parses or verifies
-// a whole program itself: a crash, hang, or leak in the compiler ends only a
-// worker, which is replaced for the next analysis. Analyses run one at a time.
-// See docs/decisions/0004-analysis-worker-process.md.
+// Single-threaded, nonblocking supervisor. begin() admits one analysis;
+// pollFds(), pollTimeout(), and onPoll() drive both startup and analysis.
+// Only successful replies replace the server-owned snapshot. The CLI uses
+// analyze(), a synchronous wrapper around exactly the same state machine.
 class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
-	// Receive worker failures (warn) and routine replacements (info), for stderr.
 	var warn: string -> void;
 	var info: string -> void;
-	// The snapshot of the most recent completed analysis, or null. A failed
-	// analysis leaves the previous snapshot here.
+	// Last completed analysis, even after failure or cancellation, or null.
 	def var snapshot: AnalysisSnapshot;
-	// How many worker processes have been started.
 	def var workersStarted: int;
 	private var worker: WorkerProcess;
 	private var heapBytes: long;
 	private var nextId = 1;
 	private var generation: int;
-	private def pollFds = Array<int>.new(4);
+	private var starting: bool;
+	private var deadline: int;
+	private var request: Range<byte>;
+	private var paths: Array<string>;
+	private var activeId: int;
+	private var pending: bool;
 
-	// Analyzes {sources} as one program, with AnalysisWire request {flags}.
-	// Starts a worker first if none is running.
-	def analyze(sources: Array<AnalysisSource>, flags: int) -> AnalysisOutcome {
+	def busy() -> bool { return pending; }
+
+	// Returns an immediate failure or Pending if accepted. A busy rejection never
+	// disturbs the existing request; there is no unbounded analysis queue.
+	def begin(sources: Array<AnalysisSource>, flags: int) -> AnalysisOutcome {
+		if (pending) return AnalysisOutcome.Failed(AnalysisFailure.BUSY, "an analysis is already running");
 		var id = nextId++;
 		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, sources) - WorkerFraming.HEADER_BYTES;
 		if (size > WorkerFraming.MAX_PAYLOAD) {
-			var reason = Strings.format2("the request takes %d bytes, more than the limit of %d bytes", size, WorkerFraming.MAX_PAYLOAD);
-			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, reason);
+			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE,
+				Strings.format2("the request takes %d bytes, more than the limit of %d bytes", size, WorkerFraming.MAX_PAYLOAD));
 		}
-		var request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, sources);
 		if (worker == null) {
-			var error = startWorker();
+			var error: string;
+			if (workerPath == null) error = "cannot start the analysis worker: the server's executable path is unknown";
+			else {
+				var started = WorkerProcesses.start(workerPath);
+				worker = started.0;
+				if (worker == null) error = Strings.format1("cannot start the analysis worker: %s", started.1);
+			}
 			if (error != null) {
 				log(warn, error);
 				return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, error);
 			}
+			workersStarted++;
+			starting = true;
+			deadline = System.ticksMs() + limits.startTimeoutMs;
 		}
-		var deadline = System.ticksMs() + limits.timeoutMs;
-		worker.send(request);
-		match (await(deadline)) {
+		activeId = id;
+		paths = Array<string>.new(sources.length);
+		for (i < paths.length) paths[i] = sources[i].path;
+		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, sources);
+		pending = true;
+		if (!starting) sendRequest();
+		return AnalysisOutcome.Pending;
+	}
+	def pollFds(fds: Array<int>, index: int) -> int {
+		return if(pending, worker.pollFds(fds, index), 0);
+	}
+	// -1 means an indefinite wait when idle, otherwise the remaining deadline.
+	def pollTimeout() -> int {
+		return if(pending, Ints.max(0, deadline - System.ticksMs()), -1);
+	}
+	// Called after poll (including a timeout). Returns Pending until completed.
+	def onPoll() -> AnalysisOutcome {
+		if (!pending) return AnalysisOutcome.Pending;
+		if (deadline - System.ticksMs() <= 0) {
+			if (starting) return discard(AnalysisFailure.UNAVAILABLE, "sent no handshake before the startup deadline");
+			return discard(AnalysisFailure.TIMED_OUT,
+				Strings.format1("exceeded the analysis time limit of %d ms and was killed", limits.timeoutMs));
+		}
+		match (worker.onPoll()) {
 			Message(payload) => {
-				var paths = Array<string>.new(sources.length);
-				for (i < paths.length) paths[i] = sources[i].path;
+				if (starting) {
+					var hello = AnalysisWire.decodeHello(payload);
+					if (hello == null) return discard(AnalysisFailure.UNAVAILABLE, "sent a malformed handshake");
+					if (hello.protocol != AnalysisWire.PROTOCOL_VERSION
+						|| !Strings.equal(hello.version, BuildInfo.VERSION)
+						|| !Strings.equal(hello.revision, BuildInfo.REVISION)) {
+						return discard(AnalysisFailure.UNAVAILABLE, "is from a different build");
+					}
+					heapBytes = hello.heapBytes;
+					starting = false;
+					sendRequest();
+					return AnalysisOutcome.Pending;
+				}
 				var result = AnalysisWire.decodeResult(payload, generation + 1, paths);
-				if (result == null || result.id != id) {
+				if (result == null || result.id != activeId) {
 					return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				}
 				generation++;
 				snapshot = result.snapshot;
+				clearPending();
 				retireIfOverLimit(result.state);
 				return AnalysisOutcome.Completed(snapshot);
 			}
 			Closed(reason) => {
-				var msg = if(reason == null, "crashed during an analysis", Strings.format1("crashed during an analysis: %s", reason));
-				return discard(AnalysisFailure.CRASHED, msg);
+				var what = if(starting, "closed its result pipe before its handshake", "crashed during an analysis");
+				if (reason != null) what = Strings.format2("%s: %s", what, reason);
+				return discard(if(starting, AnalysisFailure.UNAVAILABLE, AnalysisFailure.CRASHED), what);
 			}
-			TimedOut => {
-				var msg = Strings.format1("exceeded the analysis time limit of %d ms and was killed", limits.timeoutMs);
-				return discard(AnalysisFailure.TIMED_OUT, msg);
-			}
-			None => return discard(AnalysisFailure.CRASHED, "stopped responding");
+			_ => return AnalysisOutcome.Pending;
 		}
 	}
-	// Ends the worker, if one is running.
+	// Synchronous development CLI and unit-test client.
+	def analyze(sources: Array<AnalysisSource>, flags: int) -> AnalysisOutcome {
+		var outcome = begin(sources, flags);
+		var fds = Array<int>.new(4);
+		while (AnalysisOutcome.Pending.?(outcome)) {
+			var count = pollFds(fds, 0);
+			var r = HostOs.poll(fds, count, pollTimeout());
+			if (r < 0 && r != HostOs.EINTR) {
+				return discard(AnalysisFailure.CRASHED, Strings.format1("poll failed (errno %d)", -r));
+			}
+			outcome = onPoll();
+		}
+		return outcome;
+	}
+	// Cancels outstanding work and reaps the process, preserving the snapshot.
 	def close() {
 		if (worker != null) worker.terminate();
 		worker = null;
+		starting = false;
+		clearPending();
 	}
-	// Starts a worker and checks its handshake. Returns null or the reason it failed.
-	private def startWorker() -> string {
-		if (workerPath == null) return "cannot start the analysis worker: the server's executable path is unknown";
-		var started = WorkerProcesses.start(workerPath);
-		if (started.0 == null) return Strings.format1("cannot start the analysis worker: %s", started.1);
-		worker = started.0;
-		workersStarted++;
-		var problem: string;
-		match (await(System.ticksMs() + limits.startTimeoutMs)) {
-			Message(payload) => {
-				var hello = AnalysisWire.decodeHello(payload);
-				if (hello == null) problem = "sent a malformed handshake";
-				else if (hello.protocol != AnalysisWire.PROTOCOL_VERSION
-						|| !Strings.equal(hello.version, BuildInfo.VERSION)
-						|| !Strings.equal(hello.revision, BuildInfo.REVISION)) {
-					problem = Strings.format3("is from a different build (%s %s), but the server is %s",
-						hello.version, hello.revision, Strings.format2("%s %s", BuildInfo.VERSION, BuildInfo.REVISION));
-				} else {
-					heapBytes = hello.heapBytes;
-					return null;
-				}
-			}
-			Closed(reason) => problem = if(reason == null, "closed its result pipe before its handshake", Strings.format1("failed before its handshake: %s", reason));
-			TimedOut => problem = Strings.format1("sent no handshake within %d ms", limits.startTimeoutMs);
-			None => problem = "did not start";
-		}
-		var pid = worker.pid, status = worker.terminate();
-		worker = null;
-		return Strings.format3("analysis worker %s (process %d) %s", workerPath, pid, Strings.format2("%s; it ended with %s", problem, status));
+	private def clearPending() {
+		pending = false;
+		request = null;
+		paths = null;
 	}
-	// Waits until the worker sends a message or ends, or {deadline} passes.
-	private def await(deadline: int) -> WorkerEvent {
-		while (true) {
-			var remaining = deadline - System.ticksMs();
-			if (remaining <= 0) return WorkerEvent.TimedOut;
-			var count = worker.pollFds(pollFds, 0);
-			var r = HostOs.poll(pollFds, count, remaining);
-			if (r < 0 && r != HostOs.EINTR) return WorkerEvent.Closed(Strings.format1("poll failed (errno %d)", -r));
-			var event = worker.onPoll();
-			if (!WorkerEvent.None.?(event)) return event;
-		}
-		return WorkerEvent.None;
+	private def sendRequest() {
+		deadline = System.ticksMs() + limits.timeoutMs;
+		worker.send(request);
+		request = null;
 	}
-	// Ends the worker after a failed analysis and reports the failure.
 	private def discard(failure: AnalysisFailure, what: string) -> AnalysisOutcome {
 		var pid = worker.pid, status = worker.terminate();
 		worker = null;
+		starting = false;
+		clearPending();
 		var buf = StringBuilder.new();
 		buf.put3("analysis worker %d %s; it ended with %s", pid, what, status);
 		if (snapshot != null) buf.put1("; snapshot %d is kept", snapshot.generation);
@@ -163,10 +184,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 			TIMED_OUT => return "the analysis worker timed out";
 			MALFORMED => return "the analysis worker sent a malformed result";
 			TOO_LARGE => return "the request is too large";
+			BUSY => return "an analysis is already running";
 		}
 	}
-	// Replaces the worker once it reaches a limit, so that the next analysis
-	// starts in a fresh process.
 	private def retireIfOverLimit(state: AnalysisWorkerState) {
 		var maxLive = if(limits.maxLiveBytes >= 0, limits.maxLiveBytes, heapBytes / 8);
 		var why: string;
@@ -176,9 +196,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 			why = Strings.format2("because its UID counter reached %d (limit %d)", state.uidNext, limits.maxUid);
 		} else if (state.liveBytes >= maxLive) {
 			why = Strings.format2("because its live heap reached %d bytes (limit %d)", state.liveBytes, maxLive);
-		} else {
-			return;
-		}
+		} else return;
 		var pid = worker.pid;
 		worker.terminate();
 		worker = null;

@@ -9,6 +9,7 @@
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
 	def PROTOCOL_VERSION = 1;
+	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
 	// The argument that makes the worker serve a server.
@@ -51,7 +52,7 @@ component AnalysisWire {
 	}
 	def decodeHello(payload: Array<byte>) -> AnalysisWorkerHello {
 		var r = AnalysisWireReader.new(payload, HELLO);
-		var hello = AnalysisWorkerHello.new(r.readInt(), r.readString(), r.readString(), r.readLong());
+		var hello = AnalysisWorkerHello.new(r.readInt(), r.readString(1), r.readString(1), r.readLong());
 		return if(r.finish(), hello);
 	}
 
@@ -87,9 +88,9 @@ component AnalysisWire {
 	def decodeAnalyze(payload: Array<byte>) -> AnalysisWorkerRequest {
 		var r = AnalysisWireReader.new(payload, ANALYZE);
 		var id = r.readInt(), flags = r.readInt(), timeoutMs = r.readInt();
-		var sources = Array<AnalysisSource>.new(r.readCount(2));
+		var sources = Array<AnalysisSource>.new(r.readCount(2, 128));
 		for (i < sources.length) {
-			var path = r.readString();
+			var path = r.readString(1);
 			sources[i] = AnalysisSource.new(path, r.readBytes());
 		}
 		return if(r.finish(), AnalysisWorkerRequest.new(id, flags, timeoutMs, sources));
@@ -167,31 +168,31 @@ component AnalysisWire {
 		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
 		var flags = r.readByte();
 		var stats = AnalysisSnapshotStats.new(r.readInt(), r.readInt(), r.readInt(), r.readInt(), uidNext, r.readInt(), r.readInt());
-		var diagnostics = Array<AnalysisDiagnostic>.new(r.readCount(7));
+		var diagnostics = Array<AnalysisDiagnostic>.new(r.readCount(7, 2048));
 		for (i < diagnostics.length) {
-			var path = r.readString();
+			var path = r.readString(32);
 			var bl = r.readInt(), bc = r.readInt(), el = r.readInt(), ec = r.readInt();
-			var kind = r.readString();
-			diagnostics[i] = AnalysisDiagnostic.new(path, bl, bc, el, ec, kind, r.readString());
+			var kind = r.readString(32);
+			diagnostics[i] = AnalysisDiagnostic.new(path, bl, bc, el, ec, kind, r.readString(32));
 		}
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];
 		var table: Array<string> = [];
 		if (hasOccurrences) {
-			table = Array<string>.new(r.readCount(1));
-			for (i < table.length) table[i] = r.readString();
-			declarations = Array<AnalysisDeclaration>.new(r.readCount(7));
+			table = Array<string>.new(r.readCount(1, 64));
+			for (i < table.length) table[i] = r.readString(1);
+			declarations = Array<AnalysisDeclaration>.new(r.readCount(7, 128));
 			for (i < declarations.length) {
-				var kind = r.readKind(), name = r.readString(), path = r.readPath(table);
+				var kind = r.readKind(), name = r.readString(1), path = r.readPath(table);
 				declarations[i] = AnalysisDeclaration.new(kind, name, r.readRange(path));
 			}
 		}
 		var snapshot = AnalysisSnapshot.new(generation, paths, (flags & PARSED) != 0,
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
-			for (n = r.readCount(2); n > 0 && r.ok(); n--) {
+			for (n = r.readCount(2, 256); n > 0 && r.ok(); n--) {
 				// Each occurrence is four range ints and a declaration index.
-				var path = r.readPath(table), count = r.readCount(5);
+				var path = r.readPath(table), count = r.readCount(5, 20);
 				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count);
 				for (i < count) {
 					for (j < 4) ranges[4 * i + j] = r.readInt();
@@ -250,9 +251,11 @@ class AnalysisWorkerResult(id: int, state: AnalysisWorkerState, snapshot: Analys
 // actually present, so that a malformed message is rejected without trapping.
 class AnalysisWireReader {
 	private var r: DataReader;
+	private var remaining: long;
 
 	new(payload: Array<byte>, kind: byte) {
 		r = DataReader.new(payload);
+		remaining = if(kind == AnalysisWire.RESULT, long.view(AnalysisWire.MAX_RESULT_ALLOCATION), long.max);
 		if (r.read1() != kind) r.fail("unexpected message kind");
 	}
 	def ok() -> bool {
@@ -279,26 +282,37 @@ class AnalysisWireReader {
 	}
 	// A count of items, each of which takes at least {itemBytes} more bytes,
 	// so that a count can't make the reader allocate beyond the message's size.
-	def readCount(itemBytes: int) -> int {
+	def readCount(itemBytes: int, allocationBytes: int) -> int {
 		var n = r.read_sleb32();
 		if (n < 0 || n > r.available() / itemBytes) {
 			r.fail("invalid count");
 			return 0;
 		}
-		return n;
+		return if(reserve(64 + long.view(n) * allocationBytes), n, 0);
 	}
-	def readString() -> string {
+	// Index strings need only snapshot storage. Diagnostic strings also need
+	// room for JSON escaping and response buffers, charged at 32 bytes per byte.
+	def readString(allocationBytes: int) -> string {
 		var n = r.read_sleb32();
 		if (n == -1) return null;
 		if (n < -1 || n > r.available()) {
 			r.fail("invalid string length");
 			return null;
 		}
-		return r.readN(n);
+		return if(reserve(64 + long.view(allocationBytes) * n), r.readN(n));
 	}
 	def readBytes() -> Array<byte> {
-		var n = readCount(1);
+		var n = readCount(1, 1);
 		return if(r.ok, r.readN(n), []);
+	}
+	private def reserve(bytes: long) -> bool {
+		if (!r.ok) return false;
+		if (bytes > remaining) {
+			r.fail("result exceeds the allocation budget");
+			return false;
+		}
+		remaining -= bytes;
+		return true;
 	}
 	def readPath(table: Array<string>) -> string {
 		var i = r.read_sleb32();
