@@ -15,6 +15,14 @@ def X = [
 	()
 ];
 
+// Coordinate comparisons require a successfully decoded snapshot.
+def decodedResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisWorkerResult {
+	match (AnalysisWire.decodeResult(payload, generation, paths)) {
+		Decoded(result) => return result;
+		_ => return null;
+	}
+}
+
 // Assert both worker-side and decoded offsets, and the resulting UTF-16 LSP
 // range. No semantic publication is needed to exercise the complete boundary.
 def check(t: Tester, text: string, begin: int, end: int, line: int, character: int) {
@@ -24,7 +32,7 @@ def check(t: Tester, text: string, begin: int, end: int, line: int, character: i
 	if (a.diagnostics.length == 0) return;
 	var w = AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null);
 	var frame = AnalysisWire.finishResult(w, 0L);
-	var result = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["coordinates.v3"]);
+	var result = decodedResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["coordinates.v3"]);
 	if (result == null) return t.fail("result did not decode");
 	var map = PositionMap.new(text, PositionEncoding.UTF16);
 	for (d in [a.diagnostics[0], result.snapshot.diagnostics[0]]) {
@@ -91,7 +99,7 @@ def test_no_file(t: Tester) {
 	t.asserti(-1, d.endOffset);
 	var a = ProgramAnalysis.new([d], AnalysisStats.new(0, 0, 0, -1), false, false, null);
 	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null), 0L);
-	var r = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, []);
+	var r = decodedResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, []);
 	if (r == null) return t.fail("non-file result did not decode");
 	t.assert(r.snapshot.diagnostics[0].path == null, "null path preserved");
 	t.asserti(-1, r.snapshot.diagnostics[0].beginOffset);
@@ -142,7 +150,7 @@ def test_retrospective_tokens(t: Tester) {
 			}
 		}
 		var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null), 0L);
-		var decoded = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["retrospective.v3"]);
+		var decoded = decodedResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, ["retrospective.v3"]);
 		if (decoded == null) return t.fail("retrospective result did not decode");
 		for (j < a.diagnostics.length) {
 			t.asserti(a.diagnostics[j].beginOffset, decoded.snapshot.diagnostics[j].beginOffset);
@@ -210,7 +218,7 @@ def test_binding_compiler_coordinates(t: Tester) {
 		var uses = a.occurrences(path);
 		var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1,
 			[(path, uses)]), 0L);
-		var result = AnalysisWire.decodeResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, [path]);
+		var result = decodedResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, [path]);
 		if (result == null) return t.fail("binding result did not decode");
 		var decoded = result.snapshot.occurrences(path);
 		var prog = Program.new();
