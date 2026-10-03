@@ -16,6 +16,9 @@ def X = [
 	T("AnalysisSupervisor:missing_worker", test_missing_worker),
 	T("AnalysisSupervisor:not_a_worker", test_not_a_worker),
 	T("AnalysisSupervisor:request_too_large", test_request_too_large),
+	T("AnalysisSupervisor:request_size_boundary", test_request_size_boundary),
+	T("AnalysisSupervisor:aggregate_request_too_large", test_aggregate_request_too_large),
+	T("AnalysisSupervisor:oversized_request_keeps_snapshot", test_oversized_request_keeps_snapshot),
 	T("AnalysisSupervisor:default_worker_path", test_default_worker_path),
 	()
 ];
@@ -229,9 +232,47 @@ def test_not_a_worker(t: Tester) {
 
 def test_request_too_large(t: Tester) {
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
-	var big = Array<byte>.new(WorkerFraming.MAX_PAYLOAD);
+	var big = Array<byte>.new(60 * 1024 * 1024);
 	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], ALL));
 	t.asserti(0, s.workersStarted);
+}
+
+def test_request_size_boundary(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), null), s = sl.0;
+	var bytes = Array<byte>.new(WorkerFraming.MAX_PAYLOAD - 12);
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new(null, bytes)], 0));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("x", bytes)], 0));
+	t.asserti(0, s.workersStarted);
+}
+
+def test_aggregate_request_too_large(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), null), s = sl.0;
+	var bytes = Array<byte>.new(1024 * 1024);
+	var sources = Array<AnalysisSource>.new(2048);
+	for (i < sources.length) sources[i] = AnalysisSource.new("big.v3", bytes);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, ALL));
+	for (i < sources.length) sources[i] = AnalysisSource.new(bytes, null);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, ALL));
+	t.asserti(0, s.workersStarted);
+}
+
+def test_oversized_request_keeps_snapshot(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	var first = completed(t, s.analyze(good, ALL));
+	if (first == null) return s.close();
+	var big = Array<byte>.new(WorkerFraming.MAX_PAYLOAD);
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], ALL));
+	t.assert(s.snapshot == first, "the last snapshot is kept");
+	assertQueries(t, first);
+	var next = completed(t, s.analyze(good, ALL));
+	s.close();
+	if (next == null) return;
+	t.asserti(2, next.generation);
+	t.asserti(1, s.workersStarted);
+	t.asserti(0, sl.1.warnings.length);
+	assertQueries(t, next);
 }
 
 def test_default_worker_path(t: Tester) {

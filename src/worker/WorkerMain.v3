@@ -10,10 +10,6 @@ component VirgilLspWorker {
 
 	def main(args: Array<string>) -> int {
 		Log.program = NAME;
-		if (args.length == 1 && Strings.equal(args[0], "--version")) {
-			System.puts(Strings.format3("%s %s\n  source revision: %s\n", NAME, BuildInfo.VERSION, BuildInfo.REVISION));
-			return 0;
-		}
 		if (args.length != 1 || !Strings.equal(args[0], AnalysisWire.WORKER_ARG)) {
 			Log.error2("%s is started by %s and is not run directly", NAME, BuildInfo.NAME);
 			return 2;

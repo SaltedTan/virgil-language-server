@@ -58,12 +58,13 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// Analyzes {sources} as one program, with AnalysisWire request {flags}.
 	// Starts a worker first if none is running.
 	def analyze(sources: Array<AnalysisSource>, flags: int) -> AnalysisOutcome {
-		var id = nextId++, request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, sources);
-		var size = request.length - WorkerFraming.HEADER_BYTES;
+		var id = nextId++;
+		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, sources) - WorkerFraming.HEADER_BYTES;
 		if (size > WorkerFraming.MAX_PAYLOAD) {
 			var reason = Strings.format2("the request takes %d bytes, more than the limit of %d bytes", size, WorkerFraming.MAX_PAYLOAD);
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, reason);
 		}
+		var request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, sources);
 		if (worker == null) {
 			var error = startWorker();
 			if (error != null) {

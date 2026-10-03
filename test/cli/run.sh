@@ -154,7 +154,6 @@ EXE=$EXE_SAVED
 EXE_SAVED=$EXE
 EXE=$WORKER
 expect "worker refuses to run without a server" 2 "" 'virgil-lsp-worker: error: virgil-lsp-worker is started by virgil-lsp' --
-expect "worker reports its version" 0 '^virgil-lsp-worker [0-9]+\.[0-9]+\.[0-9]+' "" -- --version
 EXE=$EXE_SAVED
 
 # Many analyses of the Aeneas sources in one command, across replaced workers:

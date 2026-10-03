@@ -5,6 +5,7 @@ def T = UnitTests.register;
 def X = [
 	T("AnalysisWire:hello_round_trip", test_hello_round_trip),
 	T("AnalysisWire:analyze_round_trip", test_analyze_round_trip),
+	T("AnalysisWire:analyze_frame_size", test_analyze_frame_size),
 	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
@@ -67,7 +68,9 @@ def test_analyze_round_trip(t: Tester) {
 	var sources = [AnalysisSource.new("a.v3", "class A { }\n"), AnalysisSource.new("empty.v3", null),
 		AnalysisSource.new(null, "\x00\xFF")];
 	var flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
-	var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(99, flags, 2500, sources)));
+	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, sources);
+	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, sources));
+	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 	if (r == null) return t.fail("request did not decode");
 	t.asserti(99, r.id);
 	t.asserti(flags, r.flags);
@@ -79,6 +82,25 @@ def test_analyze_round_trip(t: Tester) {
 	t.asserti(0, r.sources[1].input.length);
 	t.assert(r.sources[2].path == null, "null path");
 	t.assert_string("\x00\xFF", r.sources[2].input);
+}
+
+def test_analyze_frame_size(t: Tester) {
+	var values = [int.min, -8193, -8192, -65, -64, -1, 0, 63, 64, 8191, 8192, int.max];
+	for (value in values) {
+		var sources = [AnalysisSource.new(null, null), AnalysisSource.new("", "")];
+		var frame = AnalysisWire.encodeAnalyze(value, value, value, sources);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, sources));
+	}
+	for (length in [0, 63, 64, 8191, 8192]) {
+		var bytes = Array<byte>.new(length);
+		var sources = [AnalysisSource.new(bytes, bytes)];
+		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, sources);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, sources));
+		sources = Array<AnalysisSource>.new(length);
+		for (i < sources.length) sources[i] = AnalysisSource.new(null, null);
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, sources);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, sources));
+	}
 }
 
 // The snapshot answers every query as the analysis it was encoded from does.

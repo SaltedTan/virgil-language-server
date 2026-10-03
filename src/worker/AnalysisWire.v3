@@ -55,6 +55,25 @@ component AnalysisWire {
 		return if(r.finish(), hello);
 	}
 
+	def analyzeFrameSize(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) -> long {
+		var size = long.view(WorkerFraming.HEADER_BYTES) + 1
+			+ sleb32Size(id) + sleb32Size(flags) + sleb32Size(timeoutMs) + sleb32Size(sources.length);
+		for (s in sources) {
+			var pathLength = if(s.path == null, -1, s.path.length);
+			var inputLength = if(s.input == null, 0, s.input.length);
+			size += sleb32Size(pathLength) + long.view(if(pathLength < 0, 0, pathLength));
+			size += sleb32Size(inputLength) + long.view(inputLength);
+		}
+		return size;
+	}
+	private def sleb32Size(value: int) -> int {
+		var size = 1;
+		while (value < -64 || value > 63) {
+			value = value >> 7;
+			size++;
+		}
+		return size;
+	}
 	def encodeAnalyze(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) -> Range<byte> {
 		var w = WorkerFraming.start().putb(ANALYZE);
 		w.put_sleb32(id).put_sleb32(flags).put_sleb32(timeoutMs).put_sleb32(sources.length);
