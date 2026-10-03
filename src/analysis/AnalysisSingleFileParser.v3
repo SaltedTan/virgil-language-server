@@ -88,7 +88,7 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 		// Every level of parser recursion consumes a token, and so skips.
 		if (stackBase - AnalysisSingleFileParser.stackPointer() > stackLimit) {
 			errors.stop(p, "nesting too deep; parsing stopped here");
-		} else if (chains.next(p) > chainLimit) {
+		} else if (chains.next(p, AnalysisParserState.!(p).tokenEnd) > chainLimit) {
 			errors.stop(p, "expression too long; parsing stopped here");
 		}
 	}
@@ -102,9 +102,11 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 class AnalysisExprChains {
 	private def kinds = Vector<byte>.new();  // the opening bracket of each level
 	private def counts = Vector<int>.new();  // each enclosing level's count
+	private def totals = Vector<int>.new();
 	private def ranges = Vector<bool>.new(); // whether each enclosing level has a range operator
 	private def angles = Vector<int>.new();
 	private var count: int;
+	private var enclosing: int;
 	private var range: bool;
 	private var angle: int;
 	private var closedBrace: bool;
@@ -113,11 +115,17 @@ class AnalysisExprChains {
 	// Counts the token at the current position, once, and returns the depth
 	// that Expr.range() recursion may reach from its bracket level, or 0 if
 	// the token was already counted.
-	def next(p: ParserState) -> int {
+	def next(p: ParserState, tokenEnd: int) -> int {
 		var pos = p.curPos, ch = p.curByte;
 		if (pos <= last || pos >= p.input.length) return 0;
 		var prev = last;
 		last = pos;
+		if (prev >= 0 && tokenEnd <= prev) {
+			match (p.input[prev]) {
+				'<' => angle++;
+				'>' => if (angle > 0) angle--;
+			}
+		}
 		if (closedBrace) {
 			// The expression ends at a closed block unless the block is a
 			// function body that an operator or suffix follows.
@@ -151,14 +159,6 @@ class AnalysisExprChains {
 					if (kind == '(' || (kind == '[' && !range)) reset();
 				}
 			}
-			'<' => {
-				count++;
-				angle++;
-			}
-			'>' => {
-				count++;
-				if (angle > 0) angle--;
-			}
 			'.' => {
 				count++;
 				if (p.peek(1) == '.' && (p.peek(2) == '.' || p.peek(2) == '+')) range = true;
@@ -168,12 +168,7 @@ class AnalysisExprChains {
 		return depth();
 	}
 	private def depth() -> int {
-		var n = count;
-		for (i = kinds.length - 1; i >= 0; i--) {
-			if (kinds[i] == '{') return n;
-			n += counts[i];
-		}
-		return n;
+		return count + enclosing;
 	}
 	private def reset() {
 		count = 0;
@@ -183,8 +178,10 @@ class AnalysisExprChains {
 	private def push(kind: byte) {
 		kinds.put(kind);
 		counts.put(count);
+		totals.put(enclosing);
 		ranges.put(range);
 		angles.put(angle);
+		enclosing = if(kind != '{', depth());
 		reset();
 	}
 	// Closes the innermost level that {close} closes. A parenthesis or index
@@ -200,10 +197,12 @@ class AnalysisExprChains {
 		if (i < 0) return;
 		var inner = if(close == ']' && i == kinds.length - 1 && range, count);
 		count = counts[i] + inner;
+		enclosing = totals[i];
 		range = ranges[i];
 		angle = angles[i];
 		kinds.resize(i);
 		counts.resize(i);
+		totals.resize(i);
 		ranges.resize(i);
 		angles.resize(i);
 	}
@@ -230,6 +229,7 @@ class AnalysisExprChains {
 class AnalysisParserState extends ParserState {
 	// Set by a malformed number until the parser has skipped past it.
 	private var numberFailed: bool;
+	var tokenEnd: int;
 
 	def coordinates: AnalysisTokenCoordinates;
 	new(file: VstFile, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, typeCache: TypeCache, coordinates)
@@ -249,6 +249,7 @@ class AnalysisParserState extends ParserState {
 		if (end > input.length) end = input.length;
 		var t = Token.new(fileName, Arrays.range(input, curPos, end), curLine, curCol);
 		AnalysisParseErrors.!(ERROR).recordToken(t, curPos, end);
+		tokenEnd = end;
 		advance(t.image.length);
 		return t;
 	}

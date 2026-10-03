@@ -15,6 +15,8 @@ def X = [
 	T("AeneasAdapter:parse_deep_nesting", test_parse_deep_nesting),
 	T("AeneasAdapter:parse_long_chains", test_parse_long_chains),
 	T("AeneasAdapter:parse_long_lists", test_parse_long_lists),
+	T("AeneasAdapter:parse_comparison_lists", test_parse_comparison_lists),
+	T("AeneasAdapter:parse_nested_long_list", test_parse_nested_long_list),
 	T("AeneasAdapter:symbols_rep_hint_eof", test_symbols_rep_hint_eof),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
@@ -199,7 +201,9 @@ def test_parse_long_chains(t: Tester) {
 	// (start, repeated, end, offset of the counted token in repeated, counted tokens in start)
 	var cases = [("x", " + x", "", 1, 0), ("x", ".y", "", 0, 0), ("x", "[0]", "", 0, 0),
 		("x", "[]", "", 0, 0), ("x", "()", "", 0, 0),
-		("x", " += 1", "", 1, 0), ("y[0 ... x", " + x", "]", 1, 2)];
+		("x", " += 1", "", 1, 0), ("y[0 ... x", " + x", "]", 1, 2),
+		("y[0 ... z[0 ..+ x", " + x", "]]", 1, 4),
+		("1 + fun() { return 0; }", " + x", "", 1, 2)];
 	for (c in cases) {
 		for (n in [limit - c.4, 100000]) {
 			var b = StringBuilder.new().puts(head).puts(c.0);
@@ -224,6 +228,8 @@ def test_parse_long_chains(t: Tester) {
 	for (c in [("var getter = x.[]; 1", " + 1"), ("x.[]=; 1", " + 1"),
 		("x(1; 1", " + 1"), ("x[1; 1", " + 1"), ("x(1 1", " + 1"),
 		("x[1 1", " + 1"), ("x(1 x", ".m<A, B>()"),
+		("x(1 x", ".m<A<B, C>, D>()"), ("x(1 x", ".m<(A, B), C>()"),
+		("x(1 x", ".!<A, B>()"), ("x[1 x", ".?<A, B>()"),
 		("{ x(1 } 1", " + 1"), ("{ x[1 } 1", " + 1")]) {
 		var b = StringBuilder.new().puts(head).puts(c.0);
 		for (i < 30000) b.puts(c.1);
@@ -258,6 +264,35 @@ def test_parse_long_lists(t: Tester) {
 		var text = b.puts(c.2).toString();
 		t.asserti(0, AeneasAdapter.parseFile("list.v3", text).diagnostics.length);
 	}
+}
+
+def test_parse_comparison_lists(t: Tester) {
+	var cases = [("def x = [", "true];"), ("def x = f(", "true);"),
+		("def x = (", "true);"), ("def f() { x[", "true]; }")];
+	var items = ["a < b, ", "a <= b, ", "a << b, ", "a > b, ", "a >= b, ",
+		"a >> b, ", "a >>> b, ", "1<2, ", "1<=2, ", "1<<2, ", "(a)<b, ", "x.<(a, b), ",
+		"x.m<A<B, C>, D>(), ", "x.!<(A, B), C>(), "];
+	for (c in cases) {
+		for (item in items) {
+			var b = StringBuilder.new().puts(c.0);
+			for (i < AnalysisSingleFileParser.CHAIN_LIMIT + 1) b.puts(item);
+			var text = b.puts(c.1).toString();
+			t.asserti(0, AeneasAdapter.parseFile("list.v3", text).diagnostics.length);
+			t.asserti(1, AeneasAdapter.documentSymbols("list.v3", text).length);
+		}
+	}
+}
+
+def test_parse_nested_long_list(t: Tester) {
+	var b = StringBuilder.new().puts("def x = ");
+	for (i < 1000) b.putc('(');
+	b.putc('[');
+	for (i < 50000) b.puts("a + b, ");
+	b.putc(']');
+	for (i < 1000) b.putc(')');
+	var text = b.putc(';').toString();
+	t.asserti(0, AeneasAdapter.parseFile("list.v3", text).diagnostics.length);
+	t.asserti(1, AeneasAdapter.documentSymbols("list.v3", text).length);
 }
 
 def test_symbols_rep_hint_eof(t: Tester) {
