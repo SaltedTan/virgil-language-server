@@ -120,6 +120,9 @@ class WorkspaceProjects(store: DocumentStore) {
 	}
 	private def refreshConfigs(preflight: bool) {
 		pruneDeleted();
+		if (preflight) {
+			for (i < configs.length) { for(ctx in configs[i].contexts) ctx.sources = []; }
+		}
 		if (!discovered) {
 			discovered = true;
 			for (root in folders) discover(root, 0);

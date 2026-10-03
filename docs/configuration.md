@@ -108,7 +108,7 @@ Expansion selects regular files on disk only (open overlays replace their conten
 - A pattern matching nothing contributes no files and is not an error. Empty expanded programs remain available as contexts but cannot be submitted for analysis.
 - Each program may select at most **1,024 files**. Its source bytes, path bytes, and conservative wire metadata allowance must fit in **4 MiB**. File metadata and overlay lengths are checked for the *entire* selection before reading any source contents. Reads are bounded again, so files growing after enumeration cannot bypass admission. Rejected expansion returns no partial source list and reports a configuration diagnostic.
 - Traversal is limited to 10,000 directory entries/walk states, depth 64, and 4 MiB of visited path bytes per program. These bounds also stop pathological glob patterns. Workspace discovery has a separate 10,000-entry/depth-64 bound; reaching its limit logs a warning. Opening a document still searches for its nearest configuration.
-- A workspace retains at most 128 configuration files, 128 projects, 8,192 source references, 4 MiB of configuration text, and 4 MiB of source path bytes. Capacity failures disable the affected configuration rather than retaining a partial program.
+- A workspace retains at most 128 configuration files, 128 projects, 8,192 source references, 4 MiB of configuration text, and 4 MiB of source path bytes. Explicit preflight releases cached source lists before rebuilding them, so aggregate admission counts selections from the new pass and capacity transfers between configurations take effect together. Capacity failures disable the affected configuration rather than retaining a partial program.
 
 ### Symbolic links
 

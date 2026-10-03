@@ -15,6 +15,7 @@ def X = [
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
 	T("WorkspaceProjects:cached_expansion_preflight", test_cached_expansion_preflight),
+	T("WorkspaceProjects:aggregate_preflight_transfer", test_aggregate_preflight_transfer),
 	T("WorkspaceProjects:active_precedence", test_active_precedence),
 	T("WorkspaceProjects:single_file_once", test_single_file_once),
 	T("WorkspaceProjects:configuration_capacity_recovery", test_configuration_capacity_recovery),
@@ -24,9 +25,6 @@ def X = [
 	()
 ];
 def FIXTURES = "test/fixtures/projects";
-def absolute(relative: string) -> string {
-	return ProjectFiles.join(ProjectFiles.parent(ProjectFiles.parent(HostOs.executablePath())), relative);
-}
 def definition(text: string) -> ProjectDefinition {
 	return ProjectConfigParser.parse(Strings.format1("{\"version\":1,\"projects\":[%s]}", text)).config.projects[0];
 }
@@ -123,7 +121,7 @@ class NoSourceReads {
 }
 def test_limits_before_reads(t: Tester) {
 	var p = definition("{\"name\":\"p\",\"sources\":[\"**/*.v3\"]}");
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var spy = NoSourceReads.new(), store = DocumentStore.new(null, DocumentLimits.MAX_BYTES).withBoundedReader(spy.read);
 	var r = ProjectExpansion.new(store, 2, ProjectLimits.MAX_BYTES).expand(base, null, p);
 	t.asserti(0, r.sources.length);
@@ -165,7 +163,7 @@ def workspaceParams(root: string) -> HashMap<string, JsonValue> {
 	return p;
 }
 def test_shared_contexts(t: Tester) {
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
 	w.initialize(workspaceParams(base));
 	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
@@ -180,7 +178,7 @@ def test_shared_contexts(t: Tester) {
 	t.assert(server.active == doc.active, "same server context");
 }
 def test_workspace_roots(t: Tester) {
-	var root = absolute(FIXTURES), w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var root = ProjectTestFiles.repository(FIXTURES), w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
 	var params = workspaceParams("/ignored"), folder = Strings.newMap<JsonValue>();
 	folder["uri"] = JsonValue.String(ProjectFiles.uri(root));
 	params["workspaceFolders"] = JsonValue.JArray([JsonValue.JObject(folder), JsonValue.JObject(folder)]);
@@ -197,7 +195,7 @@ def test_workspace_roots(t: Tester) {
 	t.assert_string(nested, w.nearest(ProjectFiles.join(root, "two-programs/shared/Greeting.v3")));
 }
 def test_configuration_revision(t: Tester) {
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
 	var config = ProjectFiles.join(base, ".virgil-lsp.json"), uri = ProjectFiles.uri(config);
 	w.initialize(workspaceParams(base));
@@ -218,7 +216,7 @@ def test_configuration_revision(t: Tester) {
 	t.assert(c.revision == old, "unchanged config keeps its revision");
 }
 def test_cached_expansion_preflight(t: Tester) {
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var store = DocumentStore.new(null, 2 * ProjectLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
 	w.initialize(workspaceParams(base));
 	var uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
@@ -242,8 +240,57 @@ def test_cached_expansion_preflight(t: Tester) {
 	t.asserti(0, c.diagnostics.length);
 	t.assert(c.revision == revision, "preflight recovery preserves configuration revision");
 }
+def moveFixture(t: Tester, from: string, to: string) -> bool {
+	var pid = HostOs.spawn(["/bin/mv\x00", Arrays.concat(from, "\x00"), Arrays.concat(to, "\x00")], [0, 1, 2]);
+	t.assert(pid > 0, "fixture move started");
+	if (pid <= 0) return false;
+	var status = Array<int>.new(1);
+	t.asserti(pid, HostOs.wait(pid, status));
+	t.asserti(0, status[0]);
+	return status[0] == 0;
+}
+def test_aggregate_preflight_transfer(t: Tester) {
+	var fixtures = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	for (scenario in [("aggregate-references", 512), ("aggregate-paths", 256)]) {
+		var base = ProjectFiles.join(fixtures, scenario.0), a = ProjectFiles.join(base, "A"), b = ProjectFiles.join(base, "B");
+		var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+		var first = w.load(ProjectFiles.join(a, ".virgil-lsp.json")), second = w.load(ProjectFiles.join(b, ".virgil-lsp.json"));
+		t.asserti(0, first.diagnostics.length);
+		t.asserti(0, second.diagnostics.length);
+		var from: string;
+		for (s in second.contexts[0].sources) { if(Strings.endsWith(s.path, "/Move.v3")) from = s.path; }
+		t.assert(from != null, "transfer file selected");
+		if (from == null || first.contexts[0].sources.length == 0) return;
+		var to = ProjectFiles.join(ProjectFiles.parent(first.contexts[0].sources[0].path), "Move.v3");
+		var uri = ProjectFiles.uri(first.contexts[0].sources[0].path), revision = first.revision;
+		if (!moveFixture(t, from, to)) return;
+		w.forDocument(uri);
+		for (c in [first, second]) { for(ctx in c.contexts) t.asserti(scenario.1, ctx.sources.length); }
+		t.assert(w.forAnalysis(uri).active != null, "same preflight admits released capacity");
+		t.asserti(0, first.diagnostics.length);
+		t.asserti(0, second.diagnostics.length);
+		for (ctx in first.contexts) t.asserti(scenario.1 + 1, ctx.sources.length);
+		for (ctx in second.contexts) t.asserti(scenario.1 - 1, ctx.sources.length);
+		t.assert(first.revision == revision, "source transfer keeps configuration revision");
+		var spare = ProjectFiles.join(base, "Spare.txt"), extra = ProjectFiles.join(ProjectFiles.parent(to), "Extra.v3");
+		if (moveFixture(t, spare, extra)) {
+			w.forAnalysis(uri);
+			t.asserti(1, second.diagnostics.length);
+			if (second.diagnostics.length > 0) t.assert(second.diagnostics[0].code == ProjectConfigCode.EXPANSION_LIMIT, "fresh aggregate overflow rejected");
+			for (ctx in second.contexts) t.asserti(0, ctx.sources.length);
+			moveFixture(t, extra, spare);
+			w.forAnalysis(uri);
+			t.asserti(0, first.diagnostics.length);
+			t.asserti(0, second.diagnostics.length);
+			for (ctx in second.contexts) t.asserti(scenario.1 - 1, ctx.sources.length);
+		}
+		moveFixture(t, to, from);
+		w.forAnalysis(uri);
+		for (c in [first, second]) { for(ctx in c.contexts) t.asserti(scenario.1, ctx.sources.length); }
+	}
+}
 def test_active_precedence(t: Tester) {
-	var root = absolute(FIXTURES), base = ProjectFiles.join(root, "two-programs");
+	var root = ProjectTestFiles.repository(FIXTURES), base = ProjectFiles.join(root, "two-programs");
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
 	w.initialize(workspaceParams(root));
 	var outer = ProjectFiles.join(root, ".virgil-lsp.json"), inner = ProjectFiles.join(base, ".virgil-lsp.json");
@@ -286,7 +333,7 @@ def projectDefinitions(count: int) -> string {
 	return text.puts("]}").extract();
 }
 def test_configuration_capacity_recovery(t: Tester) {
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
 	var first: WorkspaceConfig;
 	for (i < w.MAX_CONFIGS) {
@@ -310,7 +357,7 @@ def test_configuration_capacity_recovery(t: Tester) {
 	t.assert(w.load(direct) != null, "direct load also releases deleted records");
 }
 def test_project_capacity_recovery(t: Tester) {
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
 	var retry = ProjectFiles.join(base, "retry.json"), full = ProjectFiles.join(base, "full.json");
 	store.open(ProjectFiles.uri(retry), "json", 1, "{\"version\":1,\"projects\":[]}");
@@ -378,7 +425,7 @@ def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	}
 }
 def test_snapshot_budget(t: Tester) {
-	var base = absolute(ProjectFiles.join(FIXTURES, "two-programs"));
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
 	var path = ProjectFiles.join(base, "snapshot.json");
 	store.open(ProjectFiles.uri(path), "json", 1, projectDefinitions(33));

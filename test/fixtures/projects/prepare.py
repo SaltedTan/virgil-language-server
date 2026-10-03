@@ -2,9 +2,11 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 """Create host-filesystem cases (including sparse files and FIFOs) for both CI hosts."""
+import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import sys
 
 root = Path(sys.argv[1]) / "project-fixtures"
@@ -15,6 +17,7 @@ if len(sys.argv) == 3 and sys.argv[2] == "--cleanup":
             directory.chmod(0o700)
     sys.exit(0)
 (root / "safe").mkdir(parents=True, exist_ok=True)
+(root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")
 with (root / "large.v3").open("wb") as output:
     output.truncate(4 * 1024 * 1024 + 1)
@@ -57,8 +60,43 @@ special_socket = root / "safe" / "socket.v3"
 if special_socket.exists():
     special_socket.unlink()
 with socket.socket(socket.AF_UNIX) as endpoint:
-    endpoint.bind(str(special_socket))
+    original_directory = Path.cwd()
+    try:
+        os.chdir(special_socket.parent)
+        endpoint.bind(special_socket.name)
+    finally:
+        os.chdir(original_directory)
 special_socket.chmod(0)
+
+for case, projects, files, path_length in [
+    ("aggregate-references", 8, 512, None),
+    ("aggregate-paths", 12, 256, 682),
+]:
+    base = root / case
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(exist_ok=True)
+    (base / "Spare.txt").write_text("def spare = 1;\n", encoding="utf-8")
+    for side in ["A", "B"]:
+        directory = base / side
+        directory.mkdir(exist_ok=True)
+        (directory / ".virgil-lsp.json").write_text(
+            json.dumps({"version": 1, "projects": [
+                {"name": f"p{index}", "sources": ["**/*.v3"]}
+                for index in range(projects)
+            ]}),
+            encoding="utf-8",
+        )
+        remaining = 0 if path_length is None else path_length - len(str(directory.absolute())) - len("/F000.v3")
+        while remaining > 0:
+            length = remaining - 1 if remaining <= 201 else min(200, remaining - 3)
+            directory /= "d" * length
+            remaining -= length + 1
+        directory.mkdir(parents=True, exist_ok=True)
+        for index in range(files - (side == "B")):
+            (directory / f"F{index:03d}.v3").write_text("def value = 1;\n", encoding="utf-8")
+        if side == "B":
+            (directory / "Move.v3").write_text("def move = 1;\n", encoding="utf-8")
 
 unreadable_files = root / "unreadable-files"
 unreadable_files.mkdir(exist_ok=True)

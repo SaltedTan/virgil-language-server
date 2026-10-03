@@ -13,7 +13,7 @@ def X = [
 class ProjectTestSession {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
 	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
-	def base = ProjectFiles.join(ProjectFiles.parent(ProjectFiles.parent(HostOs.executablePath())), "test/fixtures/projects/two-programs");
+	def base = ProjectTestFiles.repository("test/fixtures/projects/two-programs");
 	def uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
 	var reply: Array<byte>;
 	def notifications = Vector<Array<byte>>.new();
