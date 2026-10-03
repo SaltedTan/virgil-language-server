@@ -9,6 +9,7 @@ def X = [
 	T("ProjectExpansion:order_exclude_deduplicate", test_order_exclude),
 	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
 	T("ProjectExpansion:symlinks_and_special_files", test_symlinks),
+	T("ProjectExpansion:unreadable_matches", test_unreadable_matches),
 	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
@@ -379,4 +380,53 @@ def test_snapshot_budget(t: Tester) {
 	t.assert(contexts[32].snapshot == latest, "rejection preserves supervisor last good result");
 	t.assertz(true, w.admitSnapshot(null, latest, reserve));
 	t.assert(contexts[32].snapshot == latest, "explicit URI admission preserves latest result");
+}
+
+def test_unreadable_matches(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	var files = ProjectFiles.join(base, "unreadable-files"), directories = ProjectFiles.join(base, "unreadable-directories");
+	t.asserti(-13, ProjectFiles.metadata(ProjectFiles.join(files, "B.v3")).0);
+	t.asserti(-13, ProjectFiles.metadata(ProjectFiles.join(directories, "blocked")).0);
+	var fd = ProjectFiles.open(files, true);
+	t.assert(fd >= 0, "readable parent opened");
+	if (fd >= 0) {
+		var meta = HostOs.childMetadata(fd, "B.v3");
+		t.asserti(ProjectFiles.REGULAR, meta.0);
+		HostOs.close(fd);
+		t.assert(HostOs.fileMetadata(fd).0 < 0, "descriptor metadata failure preserved");
+		t.assert(HostOs.childMetadata(fd, "B.v3").0 < 0, "relative metadata failure preserved");
+	}
+	for (field in ["sources", "dependencies", "virgilDependencies"]) {
+		for (selection in [(files, "*.v3"), (directories, "*/*.v3"), (directories, "**/*.v3")]) {
+			var json = if(Strings.equal(field, "sources"),
+				Strings.format1("{\"name\":\"p\",\"sources\":[\"%s\"]}", selection.1),
+				Strings.format3("{\"name\":\"p\",\"sources\":[\"%s\"],\"%s\":[\"%s\"]}", if(Strings.equal(selection.1, "*.v3"), "A.v3", "readable/A.v3"), field, selection.1));
+			var p = definition(json), r = expand(selection.0, selection.0, p);
+			var patterns = if(Strings.equal(field, "sources"), p.sources, if(Strings.equal(field, "dependencies"), p.dependencies, p.virgilDependencies));
+			t.asserti(0, r.sources.length);
+			t.asserti(1, r.diagnostics.length);
+			if (r.diagnostics.length == 1) {
+				t.assert(r.diagnostics[0].code == ProjectConfigCode.SOURCE_IO, "unreadable match invalidates every source list");
+				t.asserti(patterns[0].begin, r.diagnostics[0].begin);
+				t.asserti(patterns[0].end, r.diagnostics[0].end);
+			}
+		}
+	}
+	var r = expand(files, null, definition("{\"name\":\"p\",\"sources\":[\"*.v3\"],\"exclude\":[\"B.v3\"]}"));
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(1, r.sources.length);
+	r = expand(files, null, definition("{\"name\":\"p\",\"sources\":[\"absent.v3\"]}"));
+	t.asserti(0, r.diagnostics.length);
+	t.asserti(0, r.sources.length);
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	var config = w.load(ProjectFiles.join(files, ".virgil-lsp.json"));
+	t.asserti(1, config.diagnostics.length);
+	if (config.diagnostics.length == 1) t.assert(config.diagnostics[0].code == ProjectConfigCode.SOURCE_IO, "unreadable program disables configuration");
+	t.asserti(0, config.contexts[0].sources.length);
+	var warnings = ProjectWarningRecorder.new();
+	w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	w.warn = warnings.warn;
+	w.initialize(workspaceParams(directories));
+	w.refresh();
+	t.asserti(1, warnings.count);
 }

@@ -72,8 +72,10 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 		if (pathBytes > ProjectLimits.MAX_PATH_BYTES) { error(ProjectConfigCode.EXPANSION_LIMIT, "project traversal path budget exceeded"); return; }
 		visited[key] = true;
 		if (at == parts.length) {
-			if (ProjectFiles.metadata(path).0 != ProjectFiles.REGULAR) return;
 			for (e in exclusions) { if(ProjectGlob.matches(e.text, relative)) return; }
+			var meta = ProjectFiles.metadata(path);
+			if (ProjectFiles.metadataError(meta.0)) { error(ProjectConfigCode.SOURCE_IO, Strings.format1("cannot inspect readable project source: %s", path)); return; }
+			if (meta.0 != ProjectFiles.REGULAR) return;
 			if (!matches.has(path) && !seen.has(path)) {
 				if (found.length + sources.length >= maxFiles) { error(ProjectConfigCode.EXPANSION_LIMIT, "project selects too many source files"); return; }
 				matches[path] = true; found.put(path);
@@ -92,7 +94,9 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 			var rel = if(relative.length == 0, entry, ProjectFiles.join(relative, entry));
 			var child = ProjectFiles.join(base, rel);
 			if (recursive || at + 1 < parts.length) {
-				if (ProjectFiles.metadata(child).0 != ProjectFiles.DIRECTORY) continue;
+				var meta = ProjectFiles.metadata(child);
+				if (ProjectFiles.metadataError(meta.0)) { error(ProjectConfigCode.SOURCE_IO, Strings.format1("cannot inspect readable project directory: %s", child)); return; }
+				if (meta.0 != ProjectFiles.DIRECTORY) continue;
 			}
 			walk(base, rel, parts, if(recursive, at, at + 1), depth + 1);
 		}

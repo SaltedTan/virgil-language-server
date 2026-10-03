@@ -4,6 +4,7 @@
 """Create host-filesystem cases (including sparse files and FIFOs) for both CI hosts."""
 import os
 from pathlib import Path
+import socket
 import sys
 
 root = Path(sys.argv[1]) / "project-fixtures"
@@ -41,3 +42,35 @@ other.mkdir(exist_ok=True)
     encoding="utf-8",
 )
 (other / "B.v3").write_text("def b = 1;\n", encoding="utf-8")
+
+special_fifo = root / "safe" / "fifo.v3"
+if not special_fifo.exists():
+    os.mkfifo(special_fifo)
+special_fifo.chmod(0)
+special_socket = root / "safe" / "socket.v3"
+if special_socket.exists():
+    special_socket.unlink()
+with socket.socket(socket.AF_UNIX) as endpoint:
+    endpoint.bind(str(special_socket))
+special_socket.chmod(0)
+
+unreadable_files = root / "unreadable-files"
+unreadable_files.mkdir(exist_ok=True)
+for name in ["A.v3", "B.v3"]:
+    path = unreadable_files / name
+    if path.exists():
+        path.chmod(0o600)
+    path.write_text("def value = 1;\n", encoding="utf-8")
+(unreadable_files / "B.v3").chmod(0)
+(unreadable_files / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
+unreadable_directories = root / "unreadable-directories"
+unreadable_directories.mkdir(exist_ok=True)
+for name in ["readable", "blocked"]:
+    directory = unreadable_directories / name
+    directory.mkdir(exist_ok=True)
+    directory.chmod(0o700)
+    (directory / "A.v3").write_text("def value = 1;\n", encoding="utf-8")
+(unreadable_directories / "blocked").chmod(0)

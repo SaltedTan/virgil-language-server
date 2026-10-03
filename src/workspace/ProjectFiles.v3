@@ -47,12 +47,29 @@ component ProjectFiles {
 		if (fd < 0) return fd != -2 && fd != -20; // ENOENT, ENOTDIR on both hosts
 		var info = HostOs.fileMetadata(fd);
 		HostOs.close(fd);
-		return info.0 == REGULAR;
+		return info.0 == REGULAR || info.0 < 0;
+	}
+	def metadataError(kind: int) -> bool {
+		return kind < 0 && kind != -2 && kind != -20 && kind != HostOs.ELOOP;
 	}
 	def metadata(path: string) -> (int, long) {
-		var fd = open(path, false);
-		if (fd < 0) return (0, -1L);
-		var result = HostOs.fileMetadata(fd);
+		if (path == null || path.length == 0) return (-1, -1L);
+		var slash = path.length - 1;
+		while (slash >= 0 && path[slash] != '/') slash--;
+		var dir = if(slash < 0, ".", if(slash == 0, "/", Arrays.range(path, 0, slash)));
+		var name = if(slash + 1 == path.length, ".", Arrays.range(path, slash + 1, path.length));
+		if (Strings.equal(name, "..")) return (-1, -1L);
+		var fd = open(dir, true);
+		if (fd < 0) return (fd, -1L);
+		var result = HostOs.childMetadata(fd, name);
+		if (result.0 == REGULAR || result.0 == DIRECTORY) {
+			var child = HostOs.openChild(fd, name, result.0 == DIRECTORY);
+			if (child < 0) result = (child, -1L);
+			else {
+				result = HostOs.fileMetadata(child);
+				HostOs.close(child);
+			}
+		}
 		HostOs.close(fd);
 		return result;
 	}

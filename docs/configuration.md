@@ -168,9 +168,9 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 | `DuplicateProjectName` | A `name` used by an earlier project |
 | `InvalidPattern` | A pattern that breaks the [pattern rules](#patterns) |
 | `UnsupportedCompilerFlag` | A `compilerArgs` entry that isn't a language option, or that repeats one or gives it a value other than true or false |
-| `ExpansionLimit` | Source count, traversal, project count, or retained source-list capacity exceeded |
+| `ExpansionLimit` | Source count, traversal (including directory-entry overflow), project count, or retained source-list capacity exceeded |
 | `SourceBudget` | Aggregate source bytes, paths, and metadata exceed the analysis budget |
-| `SourceIO` | A selected file became unreadable/nonregular, directory enumeration failed or exceeded its entry bound, or configuration reading exceeded its size/capacity limits |
+| `SourceIO` | A matching source or directory could not be accessed or inspected, a selected file became unreadable/nonregular, directory enumeration failed, or configuration reading exceeded its size/capacity limits |
 | `MissingVirgilRoot` | `virgilDependencies` is present without a configured Virgil root |
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.
