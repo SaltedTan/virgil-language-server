@@ -63,7 +63,7 @@ The [fixture projects](../test/fixtures/projects/) are smaller, complete example
 
 ## File format
 
-The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encoded in UTF-8. Comments, trailing commas, and a UTF-8 byte order mark aren't allowed. A file may be at most 262,144 bytes (256 KiB), and it has the server's other JSON limits: arrays and objects may nest at most 256 deep, and the file may hold at most 50,000 values. A file that lists patterns, not files, is far smaller.
+The file is JSON as in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), encoded in UTF-8. Comments, trailing commas, and a UTF-8 byte order mark aren't allowed. A file may be at most 262,144 bytes (256 KiB), and it has the server's other JSON limits: arrays and objects may nest at most 256 deep, and the file may hold at most 50,000 values, counting object keys. A file that lists patterns, not files, is far smaller.
 
 ### Top level
 
@@ -99,7 +99,7 @@ A pattern is a relative path whose segments are separated by `/`. Its segments m
 - A wildcard never matches a name that starts with `.`. Write the dot to match one, as in `.github/*.v3`. `**` therefore doesn't enter directories such as `.git`.
 - Matching is case-sensitive. A character is one UTF-8 encoded code point.
 - Patterns in `sources`, `dependencies`, and `virgilDependencies` must end in `.v3`. `exclude` patterns may match any file, so `build/**` excludes everything under `build/`.
-- These are errors: an empty pattern, an absolute path (`/x.v3`), a backslash, an empty segment (`a//b.v3`, or a trailing `/`), a `.` or `..` segment, `**` inside a segment (`a**b`), and control characters. `[`, `]`, `{`, and `}` are reserved for later syntax.
+- These are errors: an empty pattern, an absolute path (`/x.v3`), a backslash, an empty segment (`a//b.v3`, or a trailing `/`), a `.` or `..` segment, `**` inside a segment (`a**b`), and ASCII control characters (U+0000–U+001F and U+007F). `[`, `]`, `{`, and `}` are reserved for later syntax.
 
 *(planned)* Expansion selects regular files only:
 
@@ -127,13 +127,13 @@ A repository that includes Virgil, for example as a submodule, can list the libr
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `-lang:fun-exprs` | `true` | Setting it to true also sets `-lang:simple-bodies` to true. |
-| `-lang:simple-bodies` | `true` | |
-| `-lang:legacy-infer` | `true` | |
-| `-lang:descriptors` | `false` | Unstable builds only |
-| `-lang:open-types` | `false` | Unstable builds only |
 | `-lang:read-only-arrays` | `false` | Unstable builds only |
 | `-lang:covariant-arrays` | `false` | Unstable builds only |
+| `-lang:open-types` | `false` | Unstable builds only |
+| `-lang:legacy-infer` | `true` |  |
+| `-lang:fun-exprs` | `true` | Setting it to true also sets `-lang:simple-bodies` to true. |
+| `-lang:simple-bodies` | `true` |  |
+| `-lang:descriptors` | `false` | Unstable builds only |
 
 The server's pinned Aeneas is an unstable build (`Version.UNSTABLE`), so it accepts all of these. The parser takes the accepted options from the pinned compiler through `AeneasAdapter.languageOptions()`. A Virgil update that adds or removes one changes it.
 
