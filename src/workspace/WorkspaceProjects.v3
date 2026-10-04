@@ -259,6 +259,13 @@ class WorkspaceProjects(store: DocumentStore) {
 	def forDocument(uri: string) -> DocumentProjects {
 		return projectsFor(uri, false);
 	}
+	def loadedContexts() -> Array<ProjectContext> {
+		var result = Vector<ProjectContext>.new();
+		for (i < configs.length) {
+			for (ctx in configs[i].contexts) { if(ctx.config.current) result.put(ctx); }
+		}
+		return result.extract();
+	}
 	def forAnalysis(uri: string) -> DocumentProjects {
 		return projectsFor(uri, true);
 	}

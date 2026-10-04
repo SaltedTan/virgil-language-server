@@ -20,13 +20,13 @@ closed_shared = root / "closed-shared"
 shutil.copytree(Path(__file__).parent / "two-programs", closed_shared, dirs_exist_ok=True)
 shared = closed_shared / "shared" / "Greeting.v3"
 shared.write_text(shared.read_text().replace("return who;", "return missing;"), encoding="utf-8")
-for name in ["ownership-reassignment", "ownership-removal"]:
+for name in ["ownership-reassignment", "ownership-removal", "ownership-project-transfer"]:
     base = root / name
     (base / "shared").mkdir(parents=True, exist_ok=True)
-    (base / ".virgil-lsp.json").write_text(
-        '{"version":1,"projects":[{"name":"parent","sources":["main.v3","shared/Greeting.v3"]}]}',
-        encoding="utf-8",
-    )
+    projects = [{"name": "parent", "sources": ["main.v3", "shared/Greeting.v3"]}]
+    if name == "ownership-project-transfer":
+        projects.append({"name": "closed", "sources": ["shared/Other.v3"]})
+    (base / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": projects}), encoding="utf-8")
     (base / "main.v3").write_text("component Main { def main() -> int { return 0; } }\n", encoding="utf-8")
     (base / "shared" / "Greeting.v3").write_text(
         "component Greeting { def text(who: string) -> string { return missing; } }\n", encoding="utf-8",

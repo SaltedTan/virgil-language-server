@@ -60,12 +60,6 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 			if (if(owner != null, o == owner, !o.config.current)) semantic(uri, null, []);
 		}
 	}
-	// URIs whose lists are open documents, sorted.
-	def openUris() -> Array<string> {
-		var result = Vector<string>.new();
-		for (uri in uris()) { if(store.overlay(uri) != null) result.put(uri); }
-		return result.extract();
-	}
 	private def uris() -> Array<string> {
 		var result = Vector<string>.new();
 		lists.apply(collect(result, _, _));

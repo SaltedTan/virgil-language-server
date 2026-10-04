@@ -11,6 +11,8 @@ def X = [
 	T("LspSemanticDiagnostics:development_request_rejected_when_busy", test_development_request_rejected_when_busy),
 	T("LspSemanticDiagnostics:closed_shared_owner", test_closed_shared_owner),
 	T("LspSemanticDiagnostics:configuration_reassigns_closed_file", test_configuration_reassigns_closed_file),
+	T("LspSemanticDiagnostics:configuration_transfers_between_projects", test_configuration_transfers_between_projects),
+	T("LspSemanticDiagnostics:configuration_events_schedule_loaded_projects", test_configuration_events_schedule_loaded_projects),
 	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
@@ -355,4 +357,55 @@ def test_hidden_configuration_blocks_parent(t: Tester) {
 		t.assert(s.server.projects.forDocument(ProjectFiles.uri(hidden)).active == owners[1], "document and publication ownership agree");
 		s.server.close();
 	}
+}
+def test_configuration_transfers_between_projects(t: Tester) {
+	var s = OwnershipTestSession.new("ownership-project-transfer");
+	s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+	s.settle();
+	s.expectOwner(t, "parent");
+	var initial = System.fileLoad(ProjectFiles.join(s.base, ".virgil-lsp.json"));
+	var transferred = "{\"version\":1,\"projects\":[{\"name\":\"parent\",\"sources\":[\"main.v3\"]},{\"name\":\"closed\",\"sources\":[\"shared/Greeting.v3\",\"shared/Other.v3\"]}]}";
+	s.open(".virgil-lsp.json", 1, transferred);
+	s.settle();
+	s.expectOwner(t, "closed");
+	s.change(".virgil-lsp.json", 2, initial);
+	s.settle();
+	s.expectOwner(t, "parent");
+	s.change(".virgil-lsp.json", 3, transferred);
+	s.settle();
+	s.expectOwner(t, "closed");
+	s.closeDocument(".virgil-lsp.json");
+	s.settle();
+	s.expectOwner(t, "parent");
+	s.open(".virgil-lsp.json", 4, "{\"version\":1,\"projects\":[{\"name\":\"parent\",\"sources\":[\"main.v3\"]},{\"name\":\"closed\",\"sources\":[\"shared/Other.v3\"]}]}");
+	s.settle();
+	var errors = published(s.messages.extract(), s.uri("shared/Greeting.v3"));
+	t.assert(errors != null && errors.length == 0, "a file removed from every project is cleared");
+	t.assert(s.server.projects.forDocument(s.uri("shared/Greeting.v3")).active == null, "no owner remains");
+	s.server.close();
+}
+def test_configuration_events_schedule_loaded_projects(t: Tester) {
+	var s = OwnershipTestSession.new("ownership-project-transfer");
+	var text = System.fileLoad(ProjectFiles.join(s.base, ".virgil-lsp.json"));
+	s.open(".virgil-lsp.json", 1, text);
+	s.settle();
+	var contexts = s.server.projects.loadedContexts(), generations = Array<int>.new(contexts.length);
+	t.asserti(2, contexts.length);
+	t.assert(s.server.documents.overlay(s.uri("main.v3")) == null, "no source document is open");
+	for (i < contexts.length) {
+		t.assert(contexts[i].snapshot != null, "configuration open analyzes every loaded project");
+		if (contexts[i].snapshot != null) generations[i] = contexts[i].snapshot.generation;
+	}
+	s.change(".virgil-lsp.json", 2, text);
+	s.settle();
+	for (i < contexts.length) {
+		t.assert(contexts[i].snapshot != null && contexts[i].snapshot.generation > generations[i], "unchanged configuration text still schedules every project");
+		if (contexts[i].snapshot != null) generations[i] = contexts[i].snapshot.generation;
+	}
+	s.closeDocument(".virgil-lsp.json");
+	s.settle();
+	for (i < contexts.length) {
+		t.assert(contexts[i].snapshot != null && contexts[i].snapshot.generation > generations[i], "configuration close schedules every loaded project");
+	}
+	s.server.close();
 }

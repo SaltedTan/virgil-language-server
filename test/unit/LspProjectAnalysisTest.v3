@@ -30,6 +30,13 @@ class ProjectTestSession {
 		else notifications.put(bytes);
 	}
 	def begin(t: Tester, documentUri: string) {
+		server.pollAnalysis();
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.pollAnalysis();
+		}
 		var params = Strings.newMap<JsonValue>();
 		params["uri"] = JsonValue.String(documentUri);
 		reply = null;
@@ -130,12 +137,6 @@ def test_routine_events_reuse_expansion(t: Tester) {
 	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "edit reuses expansion");
 	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(2), "virgil-lsp/snapshot", JsonRpcParams.Absent).encode());
 	for (i < cached.length) t.assert(mapping.contexts[i].sources == cached[i], "inspection reuses expansion");
-	var fds = Array<int>.new(4);
-	while (s.server.analyzing()) {
-		var count = s.supervisor.pollFds(fds, 0);
-		HostOs.poll(fds, count, s.server.pollTimeout());
-		s.server.pollAnalysis();
-	}
 	s.begin(t, s.uri);
 	for (i < cached.length) {
 		t.assert(mapping.contexts[i].sources != cached[i], "submission refreshes expansion");

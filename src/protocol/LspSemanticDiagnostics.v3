@@ -37,7 +37,20 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	private var closed: bool;
 
 	def schedule(contexts: Array<ProjectContext>, debounce: bool) {
-		enqueue(contexts, debounce);
+		if (closed) return;
+		var selected = Vector<ProjectContext>.new();
+		for (ctx in contexts) selected.put(ctx);
+		for (i = 0; i < selected.length; i++) {
+			var paths = Array<string>.new(selected[i].sources.length);
+			for (j < paths.length) paths[j] = selected[i].sources[j].path;
+			for (owner in projects.owners(paths)) {
+				if (owner == null) continue;
+				var included = false;
+				for (j < selected.length) included = included || selected[j] == owner;
+				if (!included) selected.put(owner);
+			}
+		}
+		enqueue(selected.extract(), debounce);
 		update();
 	}
 	// Called for WorkspaceProjects.onConfig, possibly during a refresh; the
@@ -80,19 +93,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	private def enqueue(contexts: Array<ProjectContext>, debounce: bool) {
 		if (closed) return;
 		var due = System.ticksMs() + if(debounce, DEBOUNCE_MS);
-		var selected = Vector<ProjectContext>.new();
-		for (ctx in contexts) selected.put(ctx);
-		for (i = 0; i < selected.length; i++) {
-			var paths = Array<string>.new(selected[i].sources.length);
-			for (j < paths.length) paths[j] = selected[i].sources[j].path;
-			for (owner in projects.owners(paths)) {
-				if (owner == null) continue;
-				var included = false;
-				for (j < selected.length) included = included || selected[j] == owner;
-				if (!included) selected.put(owner);
-			}
-		}
-		for (ctx in selected.extract()) {
+		for (ctx in contexts) {
 			var wait: LspSemanticWait;
 			for (i < waiting.length) { if(waiting[i].context == ctx) wait = waiting[i]; }
 			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
@@ -104,21 +105,11 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		reconcile();
 		startNext();
 	}
-	// Applies configuration changes: lists owned by replaced or deleted
-	// contexts are cleared, and new contexts with open documents are scheduled.
 	private def reconcile() {
 		if (!configurationChanged) return;
 		configurationChanged = false;
 		lists.clearOwned(null, null);
-		var open = lists.openUris(), contexts = Vector<ProjectContext>.new();
-		for (uri in open) {
-			for (ctx in projects.forDocument(uri).contexts) {
-				var included = false;
-				for (i < contexts.length) included = included || contexts[i] == ctx;
-				if (!included) contexts.put(ctx);
-			}
-		}
-		enqueue(contexts.extract(), false);
+		enqueue(projects.loadedContexts(), false);
 	}
 	private def startNext() {
 		while (!closed && !supervisor.busy()) {

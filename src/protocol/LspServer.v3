@@ -128,7 +128,10 @@ class LspServer {
 		if (!isProjectFile(doc)) return false;
 		projects.load(DocumentUri.filePath(doc.uri));
 		projects.refresh();
-		if (semanticDiagnostics != null) semanticDiagnostics.schedule([], false);
+		if (semanticDiagnostics != null) {
+			semanticDiagnostics.configChanged();
+			semanticDiagnostics.schedule([], false);
+		}
 		return true;
 	}
 	private def isProjectFile(doc: DocumentOverlay) -> bool {
