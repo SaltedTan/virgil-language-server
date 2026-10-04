@@ -80,7 +80,7 @@ Project results add `"projectConfiguration":{"uri":"file:///absolute/.virgil-lsp
 
 The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-partly-present) defines `current`, including overlay invalidation and the assumptions for disk inputs, and configuration-revision invalidation. This remains deliberately stale inspection data: no semantic results are published or discarded by this request.
 
-`--stdio` accepts the same unstable `--worker-timeout-ms=<n>` and `--worker-max-analyses=<n>` policy overrides as the CLI `analyze` command. They also apply to automatic analyses. The default limits remain 10 seconds per analysis and 100 analyses per worker. No worker starts until a project document is opened or a development request arrives.
+`--stdio` accepts the same unstable `--worker-timeout-ms=<n>` and `--worker-max-analyses=<n>` policy overrides as the CLI `analyze` command. They also apply to automatic analyses. See the [restart policy](decisions/0004-analysis-worker-process.md#restart-policy) for the defaults and [semantic diagnostics](architecture.md#semantic-diagnostics) for automatic scheduling triggers.
 
 ## Tests
 

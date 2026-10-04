@@ -11,18 +11,6 @@ class LspSemanticWait(context: ProjectContext) {
 
 // Automatic whole-program analysis of configured projects and publication of
 // its diagnostics. See docs/architecture.md#semantic-diagnostics.
-//
-// - Opening, saving, or closing a project document schedules each context
-//   containing it at once; a change schedules them after DEBOUNCE_MS, and
-//   every further change restarts that interval.
-// - At most one analysis runs. Each context has at most one more waiting,
-//   which captures the latest sources only when it starts.
-// - A completed analysis is published only if its configuration revision and
-//   every captured document are still current. Each file's diagnostics come
-//   from the context that owns it (WorkspaceProjects.owners), so analyzing
-//   one project never changes another project's files.
-// - A failure keeps every published list, is logged, and is reported to the
-//   user once until an analysis completes again.
 class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, supervisor: AnalysisSupervisor,
 		lists: LspDiagnosticLists, send: Array<byte> -> void) {
 	// See "Semantic diagnostics" in docs/architecture.md for the measurements.
