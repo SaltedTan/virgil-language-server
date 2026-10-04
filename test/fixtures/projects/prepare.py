@@ -16,6 +16,10 @@ if len(sys.argv) == 3 and sys.argv[2] == "--cleanup":
         if not directory.is_symlink() and directory.is_dir():
             directory.chmod(0o700)
     sys.exit(0)
+closed_shared = root / "closed-shared"
+shutil.copytree(Path(__file__).parent / "two-programs", closed_shared, dirs_exist_ok=True)
+shared = closed_shared / "shared" / "Greeting.v3"
+shared.write_text(shared.read_text().replace("return who;", "return missing;"), encoding="utf-8")
 (root / "safe").mkdir(parents=True, exist_ok=True)
 (root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")

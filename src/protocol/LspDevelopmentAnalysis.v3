@@ -4,13 +4,10 @@
 // Unadvertised development requests: explicit URIs or one project context.
 // No semantic diagnostic publication or LSP coordinate conversion: diagnostics
 // use the compiler's one-based coordinates, just as the development CLI does.
-// A request that arrives during an automatic analysis keeps its captured
-// sources and starts next; {LspSemanticDiagnostics} drives the supervisor.
 class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 	private var pendingVersions: Array<AnalysisDocumentVersion>;
-	private var queued: Array<AnalysisSource>;
 	private var projects: WorkspaceProjects;
 	private var pendingProject: ProjectContext;
 	def withProjects(projects: WorkspaceProjects) -> this { this.projects = projects; }
@@ -64,11 +61,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var inputs = captured.0;
 		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
 			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
-		if (supervisor.busy()) {
-			queued = inputs.sources;
-			pendingVersions = inputs.versions;
-			return null;
-		}
 		var outcome = supervisor.begin(inputs.sources, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
@@ -76,20 +68,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 				pendingVersions = inputs.versions;
 				return null;
 			}
-		}
-	}
-	// Starts a request that waited for an automatic analysis. Returns true if
-	// the supervisor accepted it.
-	def startQueued() -> bool {
-		if (queued == null) return false;
-		var sources = queued;
-		queued = null;
-		match (supervisor.begin(sources, AnalysisWire.WANT_OCCURRENCES)) {
-			Failed(failure, reason) => {
-				finish(JsonRpcReply.Error(workerError(reason)));
-				return false;
-			}
-			_ => return true;
 		}
 	}
 	// Reads the last good server-owned data even while the worker is hung or
@@ -115,7 +93,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	}
 	def close(reason: string) {
 		supervisor.close();
-		queued = null;
 		if (pending) finish(JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
 	}
 	private def finish(reply: JsonRpcReply) {

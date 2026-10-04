@@ -8,7 +8,8 @@ def T = UnitTests.register;
 def X = [
 	T("LspSemanticDiagnostics:failure_keeps_diagnostics", test_failure_keeps_diagnostics),
 	T("LspSemanticDiagnostics:error_limit_notice", test_error_limit_notice),
-	T("LspSemanticDiagnostics:development_request_waits", test_development_request_waits),
+	T("LspSemanticDiagnostics:development_request_rejected_when_busy", test_development_request_rejected_when_busy),
+	T("LspSemanticDiagnostics:closed_shared_owner", test_closed_shared_owner),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	()
@@ -152,28 +153,29 @@ def test_error_limit_notice(t: Tester) {
 	t.assert_string(b, a);
 	s.server.close();
 }
-def test_development_request_waits(t: Tester) {
+def test_development_request_rejected_when_busy(t: Tester) {
 	var s = SemanticTestSession.new();
 	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
 	t.assert(s.supervisor.busy(), "opening starts an analysis at once");
 	var params = Strings.newMap<JsonValue>();
 	params["uri"] = JsonValue.String(s.uri("main.v3"));
-	t.assert(s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode()) == null, "deferred");
-	s.settle();
-	var messages = s.take(), reply = -1, publication = -1;
-	for (i < messages.length) {
-		if (messages[i].has("id")) reply = i;
-		else {
-			var list = published([messages[i]], s.uri("main.v3"));
-			if (list != null && list.length > 0) publication = i;
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+	var rejected = false;
+	for (m in s.take()) {
+		if (!m.has("id")) continue;
+		t.assert(m.has("error"), "a busy development request fails immediately");
+		if (m.has("error")) {
+			var error = JsonValue.JObject.!(m["error"]).v;
+			t.asserti(JsonRpcErrorCode.INTERNAL_ERROR, JsonValue.Int.!(error["code"]).v);
+			rejected = true;
 		}
 	}
-	t.assert(reply >= 0 && messages[reply].has("result"), "the request completes");
-	t.assert(publication >= 0 && publication < reply, "after the automatic analysis it waited for");
-	if (reply >= 0 && messages[reply].has("result")) {
-		var result = JsonValue.JObject.!(messages[reply]["result"]).v;
-		t.asserti(2, JsonValue.Int.!(result["generation"]).v);
-	}
+	t.assert(rejected, "the request was rejected before polling");
+	s.settle();
+	var messages = s.take(), list = published(messages, s.uri("main.v3"));
+	t.assert(list != null && list.length > 0, "automatic diagnostics still publish");
+	for (m in messages) t.assert(!m.has("id"), "no deferred development reply");
+	t.asserti(1, s.supervisor.snapshot.generation);
 	s.server.close();
 }
 def test_debounce_timeout(t: Tester) {
@@ -201,4 +203,44 @@ def test_shutdown_stops_scheduling(t: Tester) {
 	s.server.pollAnalysis();
 	t.asserti(0, s.take().length);
 	s.server.close();
+}
+def test_closed_shared_owner(t: Tester) {
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/closed-shared");
+	var sharedUri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var clientPath = ProjectFiles.join(base, "client/Program.v3"), clientUri = ProjectFiles.uri(clientPath);
+	var messages = Vector<HashMap<string, JsonValue>>.new();
+	server.sendNotification = fun (bytes: Array<byte>) -> void {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	};
+	HostOs.ignoreSigpipe();
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(initialize)).encode());
+	var doc = Strings.newMap<JsonValue>(), open = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(clientUri);
+	doc["languageId"] = JsonValue.String("virgil");
+	doc["version"] = JsonValue.Int(1);
+	doc["text"] = JsonValue.String(System.fileLoad(clientPath));
+	open["textDocument"] = JsonValue.JObject(doc);
+	server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(open)).encode());
+	var fds = Array<int>.new(4);
+	while (server.analyzing()) {
+		var count = supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, server.pollTimeout());
+		server.pollAnalysis();
+	}
+	var received = messages.extract(), errors = published(received, sharedUri);
+	t.assert(server.documents.overlay(sharedUri) == null, "shared source remains closed");
+	t.assert(errors != null && errors.length > 0, "opening only the client publishes closed shared errors");
+	if (errors != null && errors.length > 0) {
+		t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(errors[0], "code")).v);
+	}
+	var clientErrors = published(received, clientUri);
+	t.assert(clientErrors != null && clientErrors.length == 0, "shared errors are grouped separately");
+	var owner = server.projects.forDocument(sharedUri).active;
+	t.assert_string("server", owner.definition.name);
+	t.assert(owner.snapshot != null, "the selected owner was analyzed");
+	server.close();
 }

@@ -20,8 +20,7 @@ last line, standard input is closed; the server must exit with the expected
 status and write nothing more. Every receive has a deadline, but no expected
 message depends on timing: a result can only follow the input before it.
 
-Usage: test/diagnostics/run.py <path-to-virgil-lsp> [--update] [case ...]
---update rewrites the recv lines with the messages actually received.
+Usage: test/diagnostics/run.py <path-to-virgil-lsp> [case ...]
 """
 
 import json
@@ -46,16 +45,6 @@ def substitute(value, version):
         return [substitute(v, version) for v in value]
     if isinstance(value, dict):
         return {k: substitute(v, version) for k, v in value.items()}
-    return value
-
-
-def generalize(value, version):
-    if isinstance(value, str):
-        return value.replace(ROOT, "@ROOT@").replace(version, "@VERSION@")
-    if isinstance(value, list):
-        return [generalize(v, version) for v in value]
-    if isinstance(value, dict):
-        return {k: generalize(v, version) for k, v in value.items()}
     return value
 
 
@@ -117,15 +106,13 @@ class Session:
         self.err.close()
 
 
-def run(exe, path, version, update):
+def run(exe, path, version):
     lines = path.read_text().splitlines()
-    out = []
     session = Session(exe)
     try:
         status, patterns = 0, []
         for line in lines:
             if not line.strip() or line.startswith("#"):
-                out.append(line)
                 continue
             step = json.loads(line)
             (kind, value), = step.items()
@@ -133,23 +120,17 @@ def run(exe, path, version, update):
                 session.send(substitute(value, version))
             elif kind == "recv":
                 got = session.receive()
-                if update:
-                    line = json.dumps({"recv": generalize(got, version)}, separators=(",", ":"))
-                else:
-                    assert got == substitute(value, version), ("unexpected message", got)
+                assert got == substitute(value, version), ("unexpected message", got)
             elif kind == "stderr":
                 patterns.append(value)
             elif kind == "status":
                 status = value
             else:
                 raise AssertionError(f"unknown step {kind}")
-            out.append(line)
         assert session.finish() == status, ("exit status", session.proc.returncode)
         logs = session.logs()
         for pattern in patterns:
             assert re.search(pattern, logs), ("stderr does not match", pattern)
-        if update:
-            path.write_text("\n".join(out) + "\n")
     except BaseException:
         print(f"FAIL: {path.name}", file=sys.stderr)
         for kind, message in session.transcript:
@@ -163,12 +144,10 @@ def run(exe, path, version, update):
 def main():
     args = sys.argv[1:]
     exe = Path(args.pop(0)).resolve()
-    update = "--update" in args
-    names = [a for a in args if a != "--update"]
     version = subprocess.run([str(exe), "--version"], capture_output=True, text=True, check=True).stdout.split()[1]
-    cases = [DIR / f"{n}.jsonl" for n in names] or sorted(DIR.glob("*.jsonl"))
+    cases = [DIR / f"{n}.jsonl" for n in args] or sorted(DIR.glob("*.jsonl"))
     for case in cases:
-        run(exe, case, version, update)
+        run(exe, case, version)
     print(f"diagnostics: {len(cases)} transcripts passed")
 
 
