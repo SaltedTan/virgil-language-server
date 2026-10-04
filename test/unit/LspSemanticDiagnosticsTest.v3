@@ -10,6 +10,8 @@ def X = [
 	T("LspSemanticDiagnostics:error_limit_notice", test_error_limit_notice),
 	T("LspSemanticDiagnostics:development_request_rejected_when_busy", test_development_request_rejected_when_busy),
 	T("LspSemanticDiagnostics:closed_shared_owner", test_closed_shared_owner),
+	T("LspSemanticDiagnostics:configuration_reassigns_closed_file", test_configuration_reassigns_closed_file),
+	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	()
@@ -243,4 +245,114 @@ def test_closed_shared_owner(t: Tester) {
 	t.assert_string("server", owner.definition.name);
 	t.assert(owner.snapshot != null, "the selected owner was analyzed");
 	server.close();
+}
+class OwnershipTestSession(fixture: string) {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+	def messages = Vector<HashMap<string, JsonValue>>.new();
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var initialize = Strings.newMap<JsonValue>();
+		initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(initialize)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	}
+	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String(if(Strings.endsWith(name, ".json"), "json", "virgil"));
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def closeDocument(name: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		notify("textDocument/didClose", doc, null);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.pollAnalysis();
+		}
+	}
+	def expectOwner(t: Tester, name: string) {
+		var received = Array<HashMap<string, JsonValue>>.new(messages.length);
+		for (i < received.length) received[i] = messages[i];
+		var shared = uri("shared/Greeting.v3"), errors = published(received, shared);
+		t.assert(server.documents.overlay(shared) == null, "shared file remains closed");
+		t.assert(errors != null && errors.length > 0, "the new owner publishes closed-file errors");
+		if (errors != null && errors.length > 0) t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(errors[0], "code")).v);
+		var owner = server.projects.forDocument(shared).active;
+		t.assert(owner != null, "shared file has an owner");
+		if (owner != null) {
+			t.assert_string(name, owner.definition.name);
+			t.assert(owner.snapshot != null, "the owner was analyzed");
+		}
+	}
+}
+def test_configuration_reassigns_closed_file(t: Tester) {
+	for (fixture in ["ownership-reassignment", "ownership-removal"]) {
+		var s = OwnershipTestSession.new(fixture), config = "shared/.virgil-lsp.json";
+		s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+		s.settle();
+		var removal = Strings.equal(fixture, "ownership-removal");
+		s.expectOwner(t, if(removal, "parent", "nested"));
+		var nested = "{\"version\":1,\"projects\":[{\"name\":\"nested\",\"sources\":[\"Greeting.v3\",\"Other.v3\"]}]}";
+		var other = "{\"version\":1,\"projects\":[{\"name\":\"nested\",\"sources\":[\"Other.v3\"]}]}";
+		s.open(config, 1, if(removal, nested, other));
+		s.settle();
+		s.expectOwner(t, if(removal, "nested", "parent"));
+		s.change(config, 2, if(removal, other, nested));
+		s.settle();
+		s.expectOwner(t, if(removal, "parent", "nested"));
+		s.change(config, 3, "{\"version\":1,\"projects\":[{\"name\":\"replacement\",\"sources\":[\"Greeting.v3\",\"Other.v3\"]}]}");
+		s.settle();
+		s.expectOwner(t, "replacement");
+		s.closeDocument(config);
+		s.settle();
+		s.expectOwner(t, if(Strings.equal(fixture, "ownership-removal"), "parent", "nested"));
+		s.open(".virgil-lsp.json", 1, "{\"version\":1,\"projects\":[{\"name\":\"parent\",\"sources\":[\"main.v3\"]}]}");
+		s.settle();
+		s.open(config, 4, "{\"version\":1,\"projects\":[]}");
+		s.settle();
+		var errors = published(s.messages.extract(), s.uri("shared/Greeting.v3"));
+		t.assert(errors != null && errors.length == 0, "a file leaving every project is cleared");
+		t.assert(s.server.projects.forDocument(s.uri("shared/Greeting.v3")).active == null, "shared file has no remaining project");
+		s.server.close();
+	}
+}
+def test_hidden_configuration_blocks_parent(t: Tester) {
+	for (fixture in ["ownership-hidden-empty", "ownership-hidden-invalid"]) {
+		var s = OwnershipTestSession.new(fixture), hidden = ProjectFiles.join(s.base, ".hidden/A.v3");
+		s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+		s.settle();
+		t.assert(published(s.messages.extract(), ProjectFiles.uri(hidden)) == null, "a nearer hidden configuration suppresses parent diagnostics");
+		t.assert(s.supervisor.snapshot != null, "the parent was analyzed");
+		if (s.supervisor.snapshot != null) t.assert(s.supervisor.snapshot.diagnostics.length > 0, "the closed input contains a compiler error");
+		var owners = s.server.projects.owners([ProjectFiles.join(s.base, "main.v3"), hidden]);
+		t.assert(owners[0] != null && owners[1] == null, "only the unblocked source has an owner");
+		t.assert(s.server.projects.forDocument(ProjectFiles.uri(hidden)).active == owners[1], "document and publication ownership agree");
+		s.server.close();
+	}
 }

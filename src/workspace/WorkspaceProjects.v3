@@ -266,9 +266,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		var path = DocumentUri.filePath(uri), nearestPath: string;
 		if (path != null) nearestPath = nearest(path);
 		refreshConfigs(preflight);
-		var governing = if(nearestPath != null, load(nearestPath));
-		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);
-		var selection = select(path, nearestPath, disabled);
+		var selection = select(path, nearestPath);
 		var active = selection.1;
 		if (active != null) active.lastUsed = ++nextUse;
 		if (active == null && !singleFileWarned) {
@@ -277,24 +275,20 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		return DocumentProjects.new(nearestPath, selection.0, active);
 	}
-	// The context whose analysis supplies each path's semantic diagnostics: the
-	// active context forDocument would select, without refreshing, loading, or
-	// recording use. An unloaded nearest configuration does not disable a path.
 	def owners(paths: Array<string>) -> Array<ProjectContext> {
 		var result = Array<ProjectContext>.new(paths.length);
 		var nearestByDir = Strings.newMap<string>();
 		for (i < paths.length) {
 			var dir = ProjectFiles.parent(paths[i]);
 			if (!nearestByDir.has(dir)) nearestByDir[dir] = nearest(paths[i]);
-			var nearestPath = nearestByDir[dir], governing: WorkspaceConfig;
-			for (j < configs.length) { if(nearestPath != null && Strings.equal(configs[j].path, nearestPath)) governing = configs[j]; }
-			var disabled = governing != null && (governing.diagnostics.length > 0 || governing.contexts.length == 0);
-			result[i] = select(paths[i], nearestPath, disabled).1;
+			result[i] = select(paths[i], nearestByDir[dir]).1;
 		}
 		return result;
 	}
 	// Contexts containing {path} in deterministic order, and the active one.
-	private def select(path: string, nearestPath: string, disabled: bool) -> (Array<ProjectContext>, ProjectContext) {
+	private def select(path: string, nearestPath: string) -> (Array<ProjectContext>, ProjectContext) {
+		var governing = if(nearestPath != null, load(nearestPath));
+		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);
 		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
 		if (path != null && !disabled) {
 			for (i < configs.length) {

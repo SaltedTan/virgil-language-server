@@ -66,11 +66,6 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 		for (uri in uris()) { if(store.overlay(uri) != null) result.put(uri); }
 		return result.extract();
 	}
-	// The diagnostics last published for {uri}, for tests.
-	def published(uri: string) -> Array<byte> {
-		var list = lists[DocumentUri.normalize(uri)];
-		return if(list != null, list.sent);
-	}
 	private def uris() -> Array<string> {
 		var result = Vector<string>.new();
 		lists.apply(collect(result, _, _));

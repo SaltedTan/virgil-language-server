@@ -98,7 +98,7 @@ class LspServer {
 	}
 	private def configChanged(c: WorkspaceConfig) {
 		projectDiagnostics.update(c);
-		if (semanticDiagnostics != null) semanticDiagnostics.configChanged(c);
+		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
 	}
 	private def documentOpened(doc: DocumentOverlay) {
 		documentUpdated(doc, false);

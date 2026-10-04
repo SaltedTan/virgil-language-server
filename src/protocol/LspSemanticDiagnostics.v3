@@ -32,7 +32,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	var development: LspDevelopmentAnalysis;
 	private var running: LspSemanticRun;
 	private var waiting = Vector<LspSemanticWait>.new();
-	private def changedConfigs = Vector<WorkspaceConfig>.new();
+	private var configurationChanged: bool;
 	private var failureReported: bool;
 	private var closed: bool;
 
@@ -42,8 +42,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	}
 	// Called for WorkspaceProjects.onConfig, possibly during a refresh; the
 	// change is applied by the next update.
-	def configChanged(c: WorkspaceConfig) {
-		if (!closed) changedConfigs.put(c);
+	def configChanged() {
+		if (!closed) configurationChanged = true;
 	}
 	// True while the supervisor runs an analysis or a context waits.
 	def busy() -> bool {
@@ -75,7 +75,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		closed = true;
 		running = null;
 		waiting.clear();
-		changedConfigs.clear();
+		configurationChanged = false;
 	}
 	private def enqueue(contexts: Array<ProjectContext>, debounce: bool) {
 		if (closed) return;
@@ -107,20 +107,15 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	// Applies configuration changes: lists owned by replaced or deleted
 	// contexts are cleared, and new contexts with open documents are scheduled.
 	private def reconcile() {
-		if (changedConfigs.length == 0) return;
-		var changed = changedConfigs.extract();
+		if (!configurationChanged) return;
+		configurationChanged = false;
 		lists.clearOwned(null, null);
 		var open = lists.openUris(), contexts = Vector<ProjectContext>.new();
-		for (c in changed) {
-			for (ctx in c.contexts) {
-				if (!ctx.config.current) continue;
-				for (uri in open) {
-					var path = DocumentUri.filePath(uri);
-					if (path != null && ctx.contains(path, false)) {
-						contexts.put(ctx);
-						break;
-					}
-				}
+		for (uri in open) {
+			for (ctx in projects.forDocument(uri).contexts) {
+				var included = false;
+				for (i < contexts.length) included = included || contexts[i] == ctx;
+				if (!included) contexts.put(ctx);
 			}
 		}
 		enqueue(contexts.extract(), false);
