@@ -273,7 +273,8 @@ class WorkspaceProjects(store: DocumentStore) {
 		var path = DocumentUri.filePath(uri), nearestPath: string;
 		if (path != null) nearestPath = nearest(path);
 		refreshConfigs(preflight);
-		var selection = select(path, nearestPath);
+		var governing = if(nearestPath != null, load(nearestPath));
+		var selection = select(path, nearestPath, governing);
 		var active = selection.1;
 		if (active != null) active.lastUsed = ++nextUse;
 		if (active == null && !singleFileWarned) {
@@ -285,16 +286,21 @@ class WorkspaceProjects(store: DocumentStore) {
 	def owners(paths: Array<string>) -> Array<ProjectContext> {
 		var result = Array<ProjectContext>.new(paths.length);
 		var nearestByDir = Strings.newMap<string>();
+		var governingByPath = Strings.newMap<WorkspaceConfig>();
 		for (i < paths.length) {
 			var dir = ProjectFiles.parent(paths[i]);
 			if (!nearestByDir.has(dir)) nearestByDir[dir] = nearest(paths[i]);
-			result[i] = select(paths[i], nearestByDir[dir]).1;
+			var nearestPath = nearestByDir[dir], governing: WorkspaceConfig;
+			if (nearestPath != null) {
+				if (!governingByPath.has(nearestPath)) governingByPath[nearestPath] = load(nearestPath);
+				governing = governingByPath[nearestPath];
+			}
+			result[i] = select(paths[i], nearestPath, governing).1;
 		}
 		return result;
 	}
 	// Contexts containing {path} in deterministic order, and the active one.
-	private def select(path: string, nearestPath: string) -> (Array<ProjectContext>, ProjectContext) {
-		var governing = if(nearestPath != null, load(nearestPath));
+	private def select(path: string, nearestPath: string, governing: WorkspaceConfig) -> (Array<ProjectContext>, ProjectContext) {
 		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);
 		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
 		if (path != null && !disabled) {
