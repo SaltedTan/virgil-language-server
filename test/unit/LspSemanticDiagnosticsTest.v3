@@ -13,6 +13,7 @@ def X = [
 	T("LspSemanticDiagnostics:configuration_reassigns_closed_file", test_configuration_reassigns_closed_file),
 	T("LspSemanticDiagnostics:configuration_transfers_between_projects", test_configuration_transfers_between_projects),
 	T("LspSemanticDiagnostics:configuration_events_schedule_loaded_projects", test_configuration_events_schedule_loaded_projects),
+	T("LspSemanticDiagnostics:configuration_edits_drop_obsolete_waiters", test_configuration_edits_drop_obsolete_waiters),
 	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
@@ -408,4 +409,50 @@ def test_configuration_events_schedule_loaded_projects(t: Tester) {
 		t.assert(contexts[i].snapshot != null && contexts[i].snapshot.generation > generations[i], "configuration close schedules every loaded project");
 	}
 	s.server.close();
+}
+def test_configuration_edits_drop_obsolete_waiters(t: Tester) {
+	HostOs.ignoreSigpipe();
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), projects = WorkspaceProjects.new(store);
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var send = fun (bytes: Array<byte>) -> void { };
+	var lists = LspDiagnosticLists.new(store, send);
+	var semantic = LspSemanticDiagnostics.new(store, projects, supervisor, lists, send);
+	projects.onConfig = fun (config: WorkspaceConfig) -> void { semantic.configChanged(); };
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/ownership-project-transfer");
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	projects.initialize(initialize);
+	var mapping = projects.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "main.v3")));
+	semantic.schedule(mapping.contexts, false);
+	t.assert(supervisor.busy(), "the initial analysis stays pending without polling");
+	t.asserti(1, semantic.waitingCount());
+	var configPath = ProjectFiles.join(base, ".virgil-lsp.json"), configUri = ProjectFiles.uri(configPath);
+	var text = System.fileLoad(configPath), previous = projects.loadedContexts();
+	for (version = 1; version <= 16; version++) {
+		text = Strings.format1("%s ", text);
+		var error = if(version == 1, store.open(configUri, "json", version, text), store.change(configUri, version, text));
+		t.assert(error == null, "configuration edit accepted");
+		projects.refresh();
+		var current = projects.loadedContexts();
+		t.asserti(2, current.length);
+		for (ctx in previous) t.assert(!ctx.config.current, "the preceding revision is obsolete");
+		semantic.schedule([], false);
+		t.assert(supervisor.busy(), "configuration edits leave the running analysis alone");
+		t.asserti(current.length, semantic.waitingCount());
+		semantic.schedule(current, true);
+		t.asserti(current.length, semantic.waitingCount());
+		semantic.schedule(previous, false);
+		t.asserti(current.length, semantic.waitingCount());
+		previous = current;
+	}
+	var fds = Array<int>.new(4);
+	while (semantic.busy()) {
+		var count = supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, semantic.pollTimeout());
+		semantic.onPoll();
+	}
+	t.asserti(0, semantic.waitingCount());
+	for (ctx in projects.loadedContexts()) t.assert(ctx.snapshot != null, "every latest project is analyzed");
+	semantic.close();
+	supervisor.close();
 }

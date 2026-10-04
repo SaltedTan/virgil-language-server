@@ -60,7 +60,10 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	}
 	// True while the supervisor runs an analysis or a context waits.
 	def busy() -> bool {
-		return supervisor.busy() || waiting.length > 0;
+		return supervisor.busy() || waitingCount() > 0;
+	}
+	def waitingCount() -> int {
+		return waiting.length;
 	}
 	// The poll timeout: the supervisor's deadline, or the next due context.
 	def pollTimeout() -> int {
@@ -92,8 +95,12 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	}
 	private def enqueue(contexts: Array<ProjectContext>, debounce: bool) {
 		if (closed) return;
+		var current = Vector<LspSemanticWait>.new();
+		for (i < waiting.length) { if(waiting[i].context.config.current) current.put(waiting[i]); }
+		waiting = current;
 		var due = System.ticksMs() + if(debounce, DEBOUNCE_MS);
 		for (ctx in contexts) {
+			if (!ctx.config.current) continue;
 			var wait: LspSemanticWait;
 			for (i < waiting.length) { if(waiting[i].context == ctx) wait = waiting[i]; }
 			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
