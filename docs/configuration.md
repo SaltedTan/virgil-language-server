@@ -193,7 +193,7 @@ Ties use canonical configuration URI byte order, then project declaration order 
 
 Known configuration bytes are refreshed on document updates, project analysis submissions/completions (including automatic analyses), and development snapshot inspection. Expanded source lists and expansion diagnostics are cached until their configuration changes or an explicit project analysis request refreshes them. Ordinary source edits, automatic analyses, inspection, and completion reuse those lists; development project submissions repeat expansion and budget checks before reading sources. Accepted edits to open JSON configuration buffers take precedence over disk. A changed configuration gets a new revision token; all snapshots stamped with its old revision become stale, including analyses that were already pending. Restoring old bytes does not revive those results.
 
-**Follow-up:** dynamic `workspace/didChangeWatchedFiles` registration, background discovery of newly created configurations, and reanalysis when a closed file or configuration changes on disk are not implemented. External configuration changes are noticed on the next refresh, not immediately. Restart the server to rediscover unopened configurations added elsewhere in the workspace.
+**Follow-up:** dynamic `workspace/didChangeWatchedFiles` registration, background discovery of newly created configurations, and automatic detection of external disk changes are not implemented. Closed-source edits are read on the next scheduled analysis; external configuration changes are noticed on the next refresh and reschedule loaded projects, not immediately. Restart the server to rediscover unopened configurations added elsewhere in the workspace.
 
 ## Security
 
