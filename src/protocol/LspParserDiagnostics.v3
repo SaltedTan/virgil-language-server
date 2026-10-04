@@ -28,16 +28,7 @@ class LspDiagnostic(key: string, value: JsonValue) { }
 component LspDiagnostics {
 	// An Aeneas error, with a UTF-16 range from its exact byte offsets.
 	def compiler(map: PositionMap, d: AnalysisDiagnostic) -> LspDiagnostic {
-		var range = offsets(map, d);
-		return make(map, range.0, range.1, 1, "aeneas", d.kind, Strings.nonnull(d.message));
-	}
-	// The diagnostic's byte offsets, or its compiler coordinates mapped to
-	// offsets if it has none.
-	def offsets(map: PositionMap, d: AnalysisDiagnostic) -> (int, int) {
-		var begin = d.beginOffset, end = d.endOffset;
-		if (begin < 0) begin = map.compilerToOffset(d.beginLine, d.beginColumn);
-		if (end < 0) end = map.compilerToOffset(d.endLine, d.endColumn);
-		return (begin, end);
+		return make(map, d.beginOffset, d.endOffset, 1, "aeneas", d.kind, Strings.nonnull(d.message));
 	}
 	def make(map: PositionMap, begin: int, end: int, severity: int, source: string, code: string, message: string) -> LspDiagnostic {
 		var range = Strings.newMap<JsonValue>();
