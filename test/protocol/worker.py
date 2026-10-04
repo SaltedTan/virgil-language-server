@@ -165,8 +165,8 @@ def expected_snapshot(generation, uris, version=None, current=True):
 
 
 def memory_headroom(exe, work):
-    # Aeneas analyses keep the default time limit, which has headroom on the
-    # slowest CI runner; the hang checks use a short limit in sessions of their own.
+    # Aeneas analyses keep the default time limit; separate hang sessions use a
+    # short limit so their watchdog checks finish promptly on slower CI runners.
     s = Session(exe)
     try:
         s.initialize()
