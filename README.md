@@ -6,11 +6,11 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: pre-alpha (M1 protocol foundation in progress).** The repository builds an executable that links the Aeneas front end. From the command line it can report syntax and type errors for a set of files, and follow a name to its declaration. The [protocol foundation](docs/architecture.md#json-rpc-messages) supports LSP framing and the [LSP lifecycle](docs/architecture.md#lifecycle) (`initialize`, `shutdown`, `exit`) over `--stdio`, plus [versioned full-text document synchronization](docs/architecture.md#document-store) with bounded in-memory overlays; that document-store contract covers capacity warnings and how to recover synchronization. [Document symbols](docs/architecture.md#document-symbols) provide a hierarchical outline of the current unsaved buffer. Single-file [parser diagnostics](docs/architecture.md#parser-diagnostics) are published for unsaved overlays on open/change and cleared on fix/close. Semantic diagnostics and other language features are not implemented yet. See the [framing contract](docs/architecture.md#framing) for payload limits and [ROADMAP.md](ROADMAP.md) for the plan.
+> **Status: pre-alpha.** The repository builds an executable that links the Aeneas front end. From the command line it can report syntax and type errors for a set of files, and follow a name to its declaration. The [protocol foundation](docs/architecture.md#json-rpc-messages) supports LSP framing and the [LSP lifecycle](docs/architecture.md#lifecycle) (`initialize`, `shutdown`, `exit`) over `--stdio`, plus [versioned full-text document synchronization](docs/architecture.md#document-store) with bounded in-memory overlays; that document-store contract covers capacity warnings and how to recover synchronization. [Document symbols](docs/architecture.md#document-symbols) provide a hierarchical outline of the current unsaved buffer. Single-file [parser diagnostics](docs/architecture.md#parser-diagnostics) are published for unsaved overlays on open/change and cleared on fix/close. Files in a [configured project](docs/configuration.md) also get whole-program [semantic diagnostics](docs/architecture.md#semantic-diagnostics), including for unsaved buffers. Other language features are not implemented yet. See the [framing contract](docs/architecture.md#framing) for payload limits and [ROADMAP.md](ROADMAP.md) for the plan.
 
 ## Why
 
-Virgil has a self-hosted compiler but no editor intelligence for unsaved buffers. Running `v3c` on save gives diagnostics for saved files only. It can't provide go-to-definition or hover, which need the compiler's bound syntax tree. This project uses Aeneas's front end so editors can get the compiler's real semantics instead of a reimplementation; see the [process model](docs/decisions/0004-analysis-worker-process.md).
+Virgil has a self-hosted compiler. Running `v3c` on save gives diagnostics for saved files only. It can't provide go-to-definition or hover, which need the compiler's bound syntax tree. This project uses Aeneas's front end so editors can get the compiler's real semantics instead of a reimplementation; see the [process model](docs/decisions/0004-analysis-worker-process.md).
 
 ## v0.1 scope
 
@@ -27,7 +27,7 @@ Completion, references, rename, and incremental analysis come after v0.1. Format
 
 ## Architecture
 
-The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) serves the development `analyze` command and the unadvertised [development stdio requests](docs/development.md#development-stdio-requests). `--stdio` provides syntax diagnostics, document symbols, and [project discovery and configuration diagnostics](docs/configuration.md), with automatic semantic features still planned.
+The [architecture guide](docs/architecture.md) describes the server and its compiler adapter. The [analysis worker](docs/architecture.md#analysis-worker) serves the development `analyze` command and the unadvertised [development stdio requests](docs/development.md#development-stdio-requests). `--stdio` provides syntax and semantic diagnostics, document symbols, and [project discovery and configuration diagnostics](docs/configuration.md), with semantic navigation still planned.
 
 ## Building
 

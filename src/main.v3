@@ -88,6 +88,7 @@ component VirgilLsp {
 		server.documents.withReader(System.fileLoad).withBoundedReader(AnalysisSourceFiles.load);
 		server.warnDocumentSync = Log.warn;
 		server.warnProject = Log.warn;
+		server.infoAnalysis = Log.info;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
 		server.sendNotification = transport.send;
@@ -97,7 +98,7 @@ component VirgilLsp {
 			fds[0] = STDIN;
 			fds[1] = HostOs.POLLIN;
 			var count = 1 + supervisor.pollFds(fds, 2);
-			var r = HostOs.poll(fds, count, supervisor.pollTimeout());
+			var r = HostOs.poll(fds, count, server.pollTimeout());
 			if (r == HostOs.EINTR) continue;
 			if (r < 0) {
 				Log.error1("poll failed (errno %d)", -r);

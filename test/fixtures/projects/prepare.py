@@ -16,6 +16,37 @@ if len(sys.argv) == 3 and sys.argv[2] == "--cleanup":
         if not directory.is_symlink() and directory.is_dir():
             directory.chmod(0o700)
     sys.exit(0)
+closed_shared = root / "closed-shared"
+shutil.copytree(Path(__file__).parent / "two-programs", closed_shared, dirs_exist_ok=True)
+shared = closed_shared / "shared" / "Greeting.v3"
+shared.write_text(shared.read_text().replace("return who;", "return missing;"), encoding="utf-8")
+for name in ["ownership-reassignment", "ownership-removal", "ownership-project-transfer"]:
+    base = root / name
+    (base / "shared").mkdir(parents=True, exist_ok=True)
+    projects = [{"name": "parent", "sources": ["main.v3", "shared/Greeting.v3"]}]
+    if name == "ownership-project-transfer":
+        projects.append({"name": "closed", "sources": ["shared/Other.v3"]})
+    (base / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": projects}), encoding="utf-8")
+    (base / "main.v3").write_text("component Main { def main() -> int { return 0; } }\n", encoding="utf-8")
+    (base / "shared" / "Greeting.v3").write_text(
+        "component Greeting { def text(who: string) -> string { return missing; } }\n", encoding="utf-8",
+    )
+    (base / "shared" / "Other.v3").write_text("def other = 1;\n", encoding="utf-8")
+    if name == "ownership-reassignment":
+        (base / "shared" / ".virgil-lsp.json").write_text(
+            '{"version":1,"projects":[{"name":"nested","sources":["Greeting.v3","Other.v3"]}]}',
+            encoding="utf-8",
+        )
+for name, config in [("ownership-hidden-empty", '{"version":1,"projects":[]}'), ("ownership-hidden-invalid", "{")]:
+    base = root / name
+    (base / ".hidden").mkdir(parents=True, exist_ok=True)
+    (base / ".virgil-lsp.json").write_text(
+        '{"version":1,"projects":[{"name":"parent","sources":["main.v3",".hidden/A.v3"]}]}',
+        encoding="utf-8",
+    )
+    (base / "main.v3").write_text("component Main { def main() -> int { return 0; } }\n", encoding="utf-8")
+    (base / ".hidden" / "A.v3").write_text("def hidden = missing;\n", encoding="utf-8")
+    (base / ".hidden" / ".virgil-lsp.json").write_text(config, encoding="utf-8")
 (root / "safe").mkdir(parents=True, exist_ok=True)
 (root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")

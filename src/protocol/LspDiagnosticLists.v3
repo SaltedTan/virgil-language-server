@@ -1,0 +1,96 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// What the client was last sent for one canonical URI, and its two sources.
+class LspUriDiagnostics(uri: string) {
+	var parser: Array<LspDiagnostic> = [];
+	var semantic: Array<LspDiagnostic> = [];
+	// The context whose analysis supplied {semantic}, or null.
+	var owner: ProjectContext;
+	// The last publication, or null if the client holds no diagnostics.
+	var sent: Array<byte>;
+}
+
+// publishDiagnostics replaces a URI's whole list, so every list for a URI is
+// published here: its current parser diagnostics followed by the semantic
+// diagnostics of the newest analysis still current for it, without
+// repeating a parser diagnostic. Parser updates always publish, as before;
+// semantic updates publish only when the list changes. Open documents carry
+// their overlay version; closed project files carry none.
+class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
+	private def lists = Strings.newMap<LspUriDiagnostics>();
+
+	// An accepted open or change. Earlier semantic results described other
+	// text, so they no longer apply until a new analysis completes.
+	def parsed(doc: DocumentOverlay, diagnostics: Array<LspDiagnostic>) {
+		var list = get(doc.uri);
+		list.parser = diagnostics;
+		list.semantic = [];
+		list.owner = null;
+		publish(list, doc, true);
+	}
+	// An accepted close publishes an empty list with the last open version,
+	// without reading the disk; a later analysis may report the file again.
+	def closed(doc: DocumentOverlay) {
+		var list = get(doc.uri);
+		list.parser = [];
+		list.semantic = [];
+		list.owner = null;
+		publish(list, doc, true);
+		lists.remove(doc.uri);
+	}
+	// Replaces the semantic diagnostics of canonical {uri} with {owner}'s.
+	def semantic(uri: string, owner: ProjectContext, diagnostics: Array<LspDiagnostic>) {
+		var list = lists[uri];
+		if (list == null) {
+			if (diagnostics.length == 0) return;
+			list = get(uri);
+		}
+		list.semantic = diagnostics;
+		list.owner = if(diagnostics.length > 0, owner);
+		publish(list, store.overlay(uri), false);
+	}
+	// Clears semantic diagnostics owned by {owner} for URIs not in {keep}, or
+	// by any context whose configuration revision is no longer current when
+	// {owner} is null.
+	def clearOwned(owner: ProjectContext, keep: HashMap<string, bool>) {
+		for (uri in uris()) {
+			var list = lists[uri], o = list.owner;
+			if (o == null || (keep != null && keep.has(uri))) continue;
+			if (if(owner != null, o == owner, !o.config.current)) semantic(uri, null, []);
+		}
+	}
+	private def uris() -> Array<string> {
+		var result = Vector<string>.new();
+		lists.apply(collect(result, _, _));
+		var keys = result.extract();
+		return Arrays.sort(keys, 0, keys.length, ProjectFiles.before);
+	}
+	private def collect(result: Vector<string>, uri: string, list: LspUriDiagnostics) {
+		result.put(uri);
+	}
+	private def get(uri: string) -> LspUriDiagnostics {
+		var list = lists[uri];
+		if (list == null) lists[uri] = list = LspUriDiagnostics.new(uri);
+		return list;
+	}
+	private def publish(list: LspUriDiagnostics, doc: DocumentOverlay, always: bool) {
+		var items = Vector<JsonValue>.new(), seen = Strings.newMap<bool>();
+		for (d in list.parser) {
+			items.put(d.value);
+			seen[d.key] = true;
+		}
+		for (d in list.semantic) { if(!seen.has(d.key)) items.put(d.value); }
+		var params = Strings.newMap<JsonValue>();
+		params["uri"] = JsonValue.String(list.uri);
+		if (doc != null) params["version"] = JsonValue.Int(doc.version);
+		params["diagnostics"] = JsonValue.JArray(items.extract());
+		var payload = JsonRpcMessage.Notification("textDocument/publishDiagnostics", JsonRpcParams.ByName(params)).encode();
+		var empty = list.parser.length == 0 && list.semantic.length == 0;
+		if (!always && (if(list.sent == null, empty, Arrays.equal(list.sent, payload)))) return;
+		send(payload);
+		list.sent = if(!empty || doc != null, payload);
+		// A closed file without diagnostics needs no record.
+		if (empty && doc == null) lists.remove(list.uri);
+	}
+}

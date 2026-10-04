@@ -1,0 +1,458 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Automatic analysis with the real worker. Each test settles by polling until
+// no analysis runs or waits, so results never depend on timing. The golden
+// transcripts in test/diagnostics/ cover publication through stdio.
+def T = UnitTests.register;
+def X = [
+	T("LspSemanticDiagnostics:failure_keeps_diagnostics", test_failure_keeps_diagnostics),
+	T("LspSemanticDiagnostics:error_limit_notice", test_error_limit_notice),
+	T("LspSemanticDiagnostics:development_request_rejected_when_busy", test_development_request_rejected_when_busy),
+	T("LspSemanticDiagnostics:closed_shared_owner", test_closed_shared_owner),
+	T("LspSemanticDiagnostics:configuration_reassigns_closed_file", test_configuration_reassigns_closed_file),
+	T("LspSemanticDiagnostics:configuration_transfers_between_projects", test_configuration_transfers_between_projects),
+	T("LspSemanticDiagnostics:configuration_events_schedule_loaded_projects", test_configuration_events_schedule_loaded_projects),
+	T("LspSemanticDiagnostics:configuration_edits_drop_obsolete_waiters", test_configuration_edits_drop_obsolete_waiters),
+	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
+	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
+	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
+	()
+];
+class SemanticTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def base = ProjectTestFiles.repository("test/fixtures/projects/two-file");
+	def main = System.fileLoad(ProjectFiles.join(base, "main.v3"));
+	def shapes = System.fileLoad(ProjectFiles.join(base, "shapes.v3"));
+	def messages = Vector<HashMap<string, JsonValue>>.new();
+	def warnings = Vector<string>.new();
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		server.warnProject = warn;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	}
+	def warn(msg: string) { warnings.put(msg); }
+	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.pollAnalysis();
+		}
+	}
+	// Removes and returns the messages received so far.
+	def take() -> Array<HashMap<string, JsonValue>> {
+		return messages.extract();
+	}
+}
+def method(m: HashMap<string, JsonValue>) -> string {
+	return if(JsonValue.String.?(m["method"]), JsonValue.String.!(m["method"]).v);
+}
+def params(m: HashMap<string, JsonValue>) -> HashMap<string, JsonValue> {
+	return JsonValue.JObject.!(m["params"]).v;
+}
+// The diagnostics of the last publication for {uri} in {messages}, or null.
+def published(messages: Array<HashMap<string, JsonValue>>, uri: string) -> Array<JsonValue> {
+	var result: Array<JsonValue>;
+	for (m in messages) {
+		if (!Strings.equal("textDocument/publishDiagnostics", method(m))) continue;
+		var p = params(m);
+		if (Strings.equal(uri, JsonValue.String.!(p["uri"]).v)) result = JsonValue.JArray.!(p["diagnostics"]).v;
+	}
+	return result;
+}
+def count(messages: Array<HashMap<string, JsonValue>>, name: string) -> int {
+	var n = 0;
+	for (m in messages) { if(Strings.equal(name, method(m))) n++; }
+	return n;
+}
+def field(d: JsonValue, key: string) -> JsonValue {
+	return JsonValue.JObject.!(d).v[key];
+}
+def renamed(s: SemanticTestSession) -> string {
+	return replace(s.shapes, "def square(", "def squared(");
+}
+def replace(text: string, from: string, to: string) -> string {
+	for (i = 0; i + from.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + from.length), from)) {
+			return Strings.format3("%s%s%s", Arrays.range(text, 0, i), to, Arrays.range(text, i + from.length, text.length));
+		}
+	}
+	return text;
+}
+def test_failure_keeps_diagnostics(t: Tester) {
+	var s = SemanticTestSession.new(), mainUri = s.uri("main.v3");
+	s.open("shapes.v3", 1, renamed(s));
+	s.settle();
+	var errors = published(s.take(), mainUri);
+	t.assert(errors != null && errors.length > 0, "closed main.v3 reports the renamed member");
+	// The pinned verifier traps on this literal (docs/aeneas-crash-paths.md).
+	var crash = Strings.format1("%s\ndef x: i32 = 0i;\n", renamed(s));
+	s.change("shapes.v3", 2, crash);
+	s.settle();
+	var messages = s.take();
+	t.assert(published(messages, mainUri) == null, "a crash keeps main.v3's published list");
+	t.asserti(1, count(messages, "window/showMessage"));
+	var told = false;
+	for (w in s.warnings.extract()) told = told || Strings.startsWith(w, "automatic analysis of project shapes failed: the analysis worker crashed");
+	t.assert(told, "the failure is logged");
+	s.change("shapes.v3", 3, Strings.format1("%s\n", crash));
+	s.settle();
+	t.asserti(0, count(s.take(), "window/showMessage"));
+	// A completed analysis ends the failure; the next one is reported again.
+	s.change("shapes.v3", 4, renamed(s));
+	s.settle();
+	messages = s.take();
+	t.assert(published(messages, mainUri) == null, "unchanged list is not republished");
+	t.asserti(0, count(messages, "window/showMessage"));
+	s.change("shapes.v3", 5, crash);
+	s.settle();
+	t.asserti(1, count(s.take(), "window/showMessage"));
+	s.server.close();
+}
+def test_error_limit_notice(t: Tester) {
+	var s = SemanticTestSession.new(), text = StringBuilder.new().puts("component Main {\n\tdef main() -> int {\n");
+	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 5) text.put1("\t\tvar x%d: int = missing;\n", i);
+	text.puts("\t\treturn 0;\n\t}\n}\n");
+	s.open("main.v3", 1, text.toString());
+	s.settle();
+	var list = published(s.take(), s.uri("main.v3"));
+	t.assert(list != null && list.length > AeneasAdapter.PROGRAM_MAX_ERRORS, "errors and a notice");
+	if (list == null || list.length < 2) return s.server.close();
+	var notice = list[list.length - 1], last = list[list.length - 2];
+	t.assert_string("ErrorLimit", JsonValue.String.!(field(notice, "code")).v);
+	t.assert_string("virgil-lsp", JsonValue.String.!(field(notice, "source")).v);
+	t.asserti(3, JsonValue.Int.!(field(notice, "severity")).v);
+	var a = JsonRpcJson.render(StringBuilder.new(), field(notice, "range")).toString();
+	var b = JsonRpcJson.render(StringBuilder.new(), field(last, "range")).toString();
+	t.assert_string(b, a);
+	s.server.close();
+}
+def test_development_request_rejected_when_busy(t: Tester) {
+	var s = SemanticTestSession.new();
+	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
+	t.assert(s.supervisor.busy(), "opening starts an analysis at once");
+	var params = Strings.newMap<JsonValue>();
+	params["uri"] = JsonValue.String(s.uri("main.v3"));
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+	var rejected = false;
+	for (m in s.take()) {
+		if (!m.has("id")) continue;
+		t.assert(m.has("error"), "a busy development request fails immediately");
+		if (m.has("error")) {
+			var error = JsonValue.JObject.!(m["error"]).v;
+			t.asserti(JsonRpcErrorCode.INTERNAL_ERROR, JsonValue.Int.!(error["code"]).v);
+			rejected = true;
+		}
+	}
+	t.assert(rejected, "the request was rejected before polling");
+	s.settle();
+	var messages = s.take(), list = published(messages, s.uri("main.v3"));
+	t.assert(list != null && list.length > 0, "automatic diagnostics still publish");
+	for (m in messages) t.assert(!m.has("id"), "no deferred development reply");
+	t.asserti(1, s.supervisor.snapshot.generation);
+	s.server.close();
+}
+def test_debounce_timeout(t: Tester) {
+	var s = SemanticTestSession.new();
+	s.open("main.v3", 1, s.main);
+	s.settle();
+	s.change("main.v3", 2, Strings.format1("%s\n", s.main));
+	t.assertz(false, s.supervisor.busy());
+	t.assertz(true, s.server.analyzing());
+	var timeout = s.server.pollTimeout();
+	t.assert(timeout > 0 && timeout <= 200, "waits for the debounce interval");
+	s.settle();
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+def test_shutdown_stops_scheduling(t: Tester) {
+	var s = SemanticTestSession.new();
+	s.open("main.v3", 1, s.main);
+	s.change("main.v3", 2, Strings.format1("%s\n", s.main));
+	t.assertz(true, s.server.analyzing());
+	s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.Absent).encode());
+	t.assertz(false, s.server.analyzing());
+	t.asserti(-1, s.server.pollTimeout());
+	s.take();
+	s.server.pollAnalysis();
+	t.asserti(0, s.take().length);
+	s.server.close();
+}
+def test_closed_shared_owner(t: Tester) {
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/closed-shared");
+	var sharedUri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
+	var clientPath = ProjectFiles.join(base, "client/Program.v3"), clientUri = ProjectFiles.uri(clientPath);
+	var messages = Vector<HashMap<string, JsonValue>>.new();
+	server.sendNotification = fun (bytes: Array<byte>) -> void {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	};
+	HostOs.ignoreSigpipe();
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(initialize)).encode());
+	var doc = Strings.newMap<JsonValue>(), open = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(clientUri);
+	doc["languageId"] = JsonValue.String("virgil");
+	doc["version"] = JsonValue.Int(1);
+	doc["text"] = JsonValue.String(System.fileLoad(clientPath));
+	open["textDocument"] = JsonValue.JObject(doc);
+	server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(open)).encode());
+	var fds = Array<int>.new(4);
+	while (server.analyzing()) {
+		var count = supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, server.pollTimeout());
+		server.pollAnalysis();
+	}
+	var received = messages.extract(), errors = published(received, sharedUri);
+	t.assert(server.documents.overlay(sharedUri) == null, "shared source remains closed");
+	t.assert(errors != null && errors.length > 0, "opening only the client publishes closed shared errors");
+	if (errors != null && errors.length > 0) {
+		t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(errors[0], "code")).v);
+	}
+	var clientErrors = published(received, clientUri);
+	t.assert(clientErrors != null && clientErrors.length == 0, "shared errors are grouped separately");
+	var owner = server.projects.forDocument(sharedUri).active;
+	t.assert_string("server", owner.definition.name);
+	t.assert(owner.snapshot != null, "the selected owner was analyzed");
+	server.close();
+}
+class OwnershipTestSession(fixture: string) {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+	def messages = Vector<HashMap<string, JsonValue>>.new();
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var initialize = Strings.newMap<JsonValue>();
+		initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(initialize)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	}
+	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String(if(Strings.endsWith(name, ".json"), "json", "virgil"));
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def closeDocument(name: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		notify("textDocument/didClose", doc, null);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.pollAnalysis();
+		}
+	}
+	def expectOwner(t: Tester, name: string) {
+		var received = Array<HashMap<string, JsonValue>>.new(messages.length);
+		for (i < received.length) received[i] = messages[i];
+		var shared = uri("shared/Greeting.v3"), errors = published(received, shared);
+		t.assert(server.documents.overlay(shared) == null, "shared file remains closed");
+		t.assert(errors != null && errors.length > 0, "the new owner publishes closed-file errors");
+		if (errors != null && errors.length > 0) t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(errors[0], "code")).v);
+		var owner = server.projects.forDocument(shared).active;
+		t.assert(owner != null, "shared file has an owner");
+		if (owner != null) {
+			t.assert_string(name, owner.definition.name);
+			t.assert(owner.snapshot != null, "the owner was analyzed");
+		}
+	}
+}
+def test_configuration_reassigns_closed_file(t: Tester) {
+	for (fixture in ["ownership-reassignment", "ownership-removal"]) {
+		var s = OwnershipTestSession.new(fixture), config = "shared/.virgil-lsp.json";
+		s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+		s.settle();
+		var removal = Strings.equal(fixture, "ownership-removal");
+		s.expectOwner(t, if(removal, "parent", "nested"));
+		var nested = "{\"version\":1,\"projects\":[{\"name\":\"nested\",\"sources\":[\"Greeting.v3\",\"Other.v3\"]}]}";
+		var other = "{\"version\":1,\"projects\":[{\"name\":\"nested\",\"sources\":[\"Other.v3\"]}]}";
+		s.open(config, 1, if(removal, nested, other));
+		s.settle();
+		s.expectOwner(t, if(removal, "nested", "parent"));
+		s.change(config, 2, if(removal, other, nested));
+		s.settle();
+		s.expectOwner(t, if(removal, "parent", "nested"));
+		s.change(config, 3, "{\"version\":1,\"projects\":[{\"name\":\"replacement\",\"sources\":[\"Greeting.v3\",\"Other.v3\"]}]}");
+		s.settle();
+		s.expectOwner(t, "replacement");
+		s.closeDocument(config);
+		s.settle();
+		s.expectOwner(t, if(Strings.equal(fixture, "ownership-removal"), "parent", "nested"));
+		s.open(".virgil-lsp.json", 1, "{\"version\":1,\"projects\":[{\"name\":\"parent\",\"sources\":[\"main.v3\"]}]}");
+		s.settle();
+		s.open(config, 4, "{\"version\":1,\"projects\":[]}");
+		s.settle();
+		var errors = published(s.messages.extract(), s.uri("shared/Greeting.v3"));
+		t.assert(errors != null && errors.length == 0, "a file leaving every project is cleared");
+		t.assert(s.server.projects.forDocument(s.uri("shared/Greeting.v3")).active == null, "shared file has no remaining project");
+		s.server.close();
+	}
+}
+def test_hidden_configuration_blocks_parent(t: Tester) {
+	for (fixture in ["ownership-hidden-empty", "ownership-hidden-invalid"]) {
+		var s = OwnershipTestSession.new(fixture), hidden = ProjectFiles.join(s.base, ".hidden/A.v3");
+		s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+		s.settle();
+		t.assert(published(s.messages.extract(), ProjectFiles.uri(hidden)) == null, "a nearer hidden configuration suppresses parent diagnostics");
+		t.assert(s.supervisor.snapshot != null, "the parent was analyzed");
+		if (s.supervisor.snapshot != null) t.assert(s.supervisor.snapshot.diagnostics.length > 0, "the closed input contains a compiler error");
+		var owners = s.server.projects.owners([ProjectFiles.join(s.base, "main.v3"), hidden]);
+		t.assert(owners[0] != null && owners[1] == null, "only the unblocked source has an owner");
+		t.assert(s.server.projects.forDocument(ProjectFiles.uri(hidden)).active == owners[1], "document and publication ownership agree");
+		s.server.close();
+	}
+}
+def test_configuration_transfers_between_projects(t: Tester) {
+	var s = OwnershipTestSession.new("ownership-project-transfer");
+	s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+	s.settle();
+	s.expectOwner(t, "parent");
+	var initial = System.fileLoad(ProjectFiles.join(s.base, ".virgil-lsp.json"));
+	var transferred = "{\"version\":1,\"projects\":[{\"name\":\"parent\",\"sources\":[\"main.v3\"]},{\"name\":\"closed\",\"sources\":[\"shared/Greeting.v3\",\"shared/Other.v3\"]}]}";
+	s.open(".virgil-lsp.json", 1, transferred);
+	s.settle();
+	s.expectOwner(t, "closed");
+	s.change(".virgil-lsp.json", 2, initial);
+	s.settle();
+	s.expectOwner(t, "parent");
+	s.change(".virgil-lsp.json", 3, transferred);
+	s.settle();
+	s.expectOwner(t, "closed");
+	s.closeDocument(".virgil-lsp.json");
+	s.settle();
+	s.expectOwner(t, "parent");
+	s.open(".virgil-lsp.json", 4, "{\"version\":1,\"projects\":[{\"name\":\"parent\",\"sources\":[\"main.v3\"]},{\"name\":\"closed\",\"sources\":[\"shared/Other.v3\"]}]}");
+	s.settle();
+	var errors = published(s.messages.extract(), s.uri("shared/Greeting.v3"));
+	t.assert(errors != null && errors.length == 0, "a file removed from every project is cleared");
+	t.assert(s.server.projects.forDocument(s.uri("shared/Greeting.v3")).active == null, "no owner remains");
+	s.server.close();
+}
+def test_configuration_events_schedule_loaded_projects(t: Tester) {
+	var s = OwnershipTestSession.new("ownership-project-transfer");
+	var text = System.fileLoad(ProjectFiles.join(s.base, ".virgil-lsp.json"));
+	s.open(".virgil-lsp.json", 1, text);
+	s.settle();
+	var contexts = s.server.projects.loadedContexts(), generations = Array<int>.new(contexts.length);
+	t.asserti(2, contexts.length);
+	t.assert(s.server.documents.overlay(s.uri("main.v3")) == null, "no source document is open");
+	for (i < contexts.length) {
+		t.assert(contexts[i].snapshot != null, "configuration open analyzes every loaded project");
+		if (contexts[i].snapshot != null) generations[i] = contexts[i].snapshot.generation;
+	}
+	s.change(".virgil-lsp.json", 2, text);
+	s.settle();
+	for (i < contexts.length) {
+		t.assert(contexts[i].snapshot != null && contexts[i].snapshot.generation > generations[i], "unchanged configuration text still schedules every project");
+		if (contexts[i].snapshot != null) generations[i] = contexts[i].snapshot.generation;
+	}
+	s.closeDocument(".virgil-lsp.json");
+	s.settle();
+	for (i < contexts.length) {
+		t.assert(contexts[i].snapshot != null && contexts[i].snapshot.generation > generations[i], "configuration close schedules every loaded project");
+	}
+	s.server.close();
+}
+def test_configuration_edits_drop_obsolete_waiters(t: Tester) {
+	HostOs.ignoreSigpipe();
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), projects = WorkspaceProjects.new(store);
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var send = fun (bytes: Array<byte>) -> void { };
+	var lists = LspDiagnosticLists.new(store, send);
+	var semantic = LspSemanticDiagnostics.new(store, projects, supervisor, lists, send);
+	projects.onConfig = fun (config: WorkspaceConfig) -> void { semantic.configChanged(); };
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/ownership-project-transfer");
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	projects.initialize(initialize);
+	var mapping = projects.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "main.v3")));
+	semantic.schedule(mapping.contexts, false);
+	t.assert(supervisor.busy(), "the initial analysis stays pending without polling");
+	t.asserti(1, semantic.waitingCount());
+	var configPath = ProjectFiles.join(base, ".virgil-lsp.json"), configUri = ProjectFiles.uri(configPath);
+	var text = System.fileLoad(configPath), previous = projects.loadedContexts();
+	for (version = 1; version <= 16; version++) {
+		text = Strings.format1("%s ", text);
+		var error = if(version == 1, store.open(configUri, "json", version, text), store.change(configUri, version, text));
+		t.assert(error == null, "configuration edit accepted");
+		projects.refresh();
+		var current = projects.loadedContexts();
+		t.asserti(2, current.length);
+		for (ctx in previous) t.assert(!ctx.config.current, "the preceding revision is obsolete");
+		semantic.schedule([], false);
+		t.assert(supervisor.busy(), "configuration edits leave the running analysis alone");
+		t.asserti(current.length, semantic.waitingCount());
+		semantic.schedule(current, true);
+		t.asserti(current.length, semantic.waitingCount());
+		semantic.schedule(previous, false);
+		t.asserti(current.length, semantic.waitingCount());
+		previous = current;
+	}
+	var fds = Array<int>.new(4);
+	while (semantic.busy()) {
+		var count = supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, semantic.pollTimeout());
+		semantic.onPoll();
+	}
+	t.asserti(0, semantic.waitingCount());
+	for (ctx in projects.loadedContexts()) t.assert(ctx.snapshot != null, "every latest project is analyzed");
+	semantic.close();
+	supervisor.close();
+}

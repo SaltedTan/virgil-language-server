@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "shapes",
+      "sources": ["*.v3"]
+    }
+  ]
+}

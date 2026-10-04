@@ -42,7 +42,7 @@ The extension runs only in [trusted workspaces](https://code.visualstudio.com/do
 
 To record the trace, set the output channel's log level to Trace: run **Developer: Set Log Level...**, choose "Virgil Language Server", then Trace. The trace stops when you set the level back to Info.
 
-The `virgil.project.config` setting described in the [ROADMAP](../../ROADMAP.md#visual-studio-code) will be added once the server reads project files while it runs ([Configuration](../../docs/configuration.md)).
+The `virgil.project.config` setting described in the [ROADMAP](../../ROADMAP.md#visual-studio-code) is planned. See [Configuration](../../docs/configuration.md) for the server's current project discovery behavior.
 
 Command: **Virgil: Restart Language Server**.
 

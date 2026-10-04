@@ -176,6 +176,13 @@ def test_shared_contexts(t: Tester) {
 	var server = w.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "server/Program.v3")));
 	t.asserti(1, server.contexts.length);
 	t.assert(server.active == doc.active, "same server context");
+	// Semantic diagnostics of each file come from the context forDocument selects.
+	var owners = w.owners([ProjectFiles.join(base, "client/Program.v3"), ProjectFiles.join(base, "shared/Greeting.v3"),
+		ProjectFiles.join(base, "server/Program.v3"), ProjectFiles.join(base, "Unlisted.v3")]);
+	t.assert(owners[0] == doc.contexts[1], "client file owned by the client context");
+	t.assert(owners[1] == doc.active, "shared file owned by the active context");
+	t.assert(owners[2] == doc.active, "server file owned by the server context");
+	t.assert(owners[3] == null, "no owner outside every project");
 }
 def test_workspace_roots(t: Tester) {
 	var root = ProjectTestFiles.repository(FIXTURES), w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));

@@ -259,6 +259,13 @@ class WorkspaceProjects(store: DocumentStore) {
 	def forDocument(uri: string) -> DocumentProjects {
 		return projectsFor(uri, false);
 	}
+	def loadedContexts() -> Array<ProjectContext> {
+		var result = Vector<ProjectContext>.new();
+		for (i < configs.length) {
+			for (ctx in configs[i].contexts) { if(ctx.config.current) result.put(ctx); }
+		}
+		return result.extract();
+	}
 	def forAnalysis(uri: string) -> DocumentProjects {
 		return projectsFor(uri, true);
 	}
@@ -267,8 +274,35 @@ class WorkspaceProjects(store: DocumentStore) {
 		if (path != null) nearestPath = nearest(path);
 		refreshConfigs(preflight);
 		var governing = if(nearestPath != null, load(nearestPath));
-		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
+		var selection = select(path, nearestPath, governing);
+		var active = selection.1;
+		if (active != null) active.lastUsed = ++nextUse;
+		if (active == null && !singleFileWarned) {
+			singleFileWarned = true;
+			if (warn != null) warn("Without a project file selecting this document, semantic features are limited; using single-file mode.");
+		}
+		return DocumentProjects.new(nearestPath, selection.0, active);
+	}
+	def owners(paths: Array<string>) -> Array<ProjectContext> {
+		var result = Array<ProjectContext>.new(paths.length);
+		var nearestByDir = Strings.newMap<string>();
+		var governingByPath = Strings.newMap<WorkspaceConfig>();
+		for (i < paths.length) {
+			var dir = ProjectFiles.parent(paths[i]);
+			if (!nearestByDir.has(dir)) nearestByDir[dir] = nearest(paths[i]);
+			var nearestPath = nearestByDir[dir], governing: WorkspaceConfig;
+			if (nearestPath != null) {
+				if (!governingByPath.has(nearestPath)) governingByPath[nearestPath] = load(nearestPath);
+				governing = governingByPath[nearestPath];
+			}
+			result[i] = select(paths[i], nearestPath, governing).1;
+		}
+		return result;
+	}
+	// Contexts containing {path} in deterministic order, and the active one.
+	private def select(path: string, nearestPath: string, governing: WorkspaceConfig) -> (Array<ProjectContext>, ProjectContext) {
 		var disabled = nearestPath != null && (governing == null || governing.diagnostics.length > 0 || governing.contexts.length == 0);
+		var contexts = Vector<ProjectContext>.new(), active: ProjectContext;
 		if (path != null && !disabled) {
 			for (i < configs.length) {
 				var c = configs[i];
@@ -282,12 +316,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		for (ctx in result) {
 			if (active == null || rank(ctx, path, nearestPath) < rank(active, path, nearestPath)) active = ctx;
 		}
-		if (active != null) active.lastUsed = ++nextUse;
-		if (active == null && !singleFileWarned) {
-			singleFileWarned = true;
-			if (warn != null) warn("Without a project file selecting this document, semantic features are limited; using single-file mode.");
-		}
-		return DocumentProjects.new(nearestPath, result, active);
+		return (result, active);
 	}
 	private def rank(ctx: ProjectContext, path: string, nearestPath: string) -> int {
 		if (!ctx.contains(path, true)) return 2;

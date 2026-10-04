@@ -30,6 +30,13 @@ class ProjectTestSession {
 		else notifications.put(bytes);
 	}
 	def begin(t: Tester, documentUri: string) {
+		server.pollAnalysis();
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.pollAnalysis();
+		}
 		var params = Strings.newMap<JsonValue>();
 		params["uri"] = JsonValue.String(documentUri);
 		reply = null;
