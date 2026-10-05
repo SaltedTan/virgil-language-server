@@ -1,0 +1,28 @@
+# A new project file and a new workspace folder are discovered without a restart.
+# Workspace folder one has no project file yet; folder two is not in the workspace.
+{"write":["one/x.v3","component X {}\n"]}
+{"write":["one/sub/b.v3","component B {\n\tdef f() -> int { return \"s\"; }\n}\n"]}
+{"write":["two/.virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"*.v3\"]}]}"]}
+{"write":["two/c.v3","component C {\n\tdef g() -> bool { return 1; }\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspaceFolders":[{"uri":"@TMP@/one","name":"one"}],"capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/one/x.v3","languageId":"virgil","version":1,"text":"component X {}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/one/x.v3","version":1}}}
+# A project file created on disk is discovered, and its project is analyzed. The
+# client registered no watchers, but its file events are handled all the same.
+{"write":["one/sub/.virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"sub\",\"sources\":[\"*.v3\"]}]}"]}
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/one/sub/.virgil-lsp.json","type":1}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/one/sub/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"TypeError","message":"expected int in return statement, got Array<byte>","range":{"end":{"character":28,"line":1},"start":{"character":25,"line":1}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/one/sub/b.v3"}}}
+# Adding a workspace folder discovers its project files.
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[{"uri":"@TMP@/two","name":"two"}],"removed":[]}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/two/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"TypeError","message":"expected bool in return statement, got int","range":{"end":{"character":27,"line":1},"start":{"character":26,"line":1}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/two/c.v3"}}}
+# Removing it forgets them, which clears their diagnostics.
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[],"removed":[{"uri":"@TMP@/two","name":"two"}]}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/two/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/two/c.v3"}}}
+{"send":{"jsonrpc":"2.0","id":2,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}

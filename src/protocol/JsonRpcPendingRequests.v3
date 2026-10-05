@@ -13,9 +13,12 @@
 //   largest int, the count starts again at 1.
 // - Each request completes exactly once: with the client's result or error,
 //   with an error if the response can't be used, or with the error given to
-//   {failAll}. It is removed from the table before its callback runs, so the
-//   callback may send further requests.
-// - A response that matches no outstanding request completes nothing.
+//   {expire} or {failAll}. It is removed from the table before its callback
+//   runs, so the callback may send further requests.
+// - A response that matches no outstanding request completes nothing,
+//   including a late response to a request that has expired.
+// - A request sent with a deadline expires once {expire} is called at or after
+//   it. Deadlines are System.ticksMs() values, which the caller passes in.
 class JsonRpcPendingRequests {
 	private def callbacks = HashMap<int, JsonRpcPendingRequest>.new(int.!<int>, int.==);
 	private var outstanding: int;
@@ -31,10 +34,40 @@ class JsonRpcPendingRequests {
 	// {onComplete} is called once, with its result or error. Returns the
 	// encoded request, which the caller frames and writes.
 	def send(method: string, params: JsonRpcParams, onComplete: JsonRpcReply -> void) -> Array<byte> {
+		return record(method, params, onComplete, false, 0);
+	}
+	// Like {send}, but the request also expires at {deadline} (see {expire}).
+	def sendBy(method: string, params: JsonRpcParams, deadline: int, onComplete: JsonRpcReply -> void) -> Array<byte> {
+		return record(method, params, onComplete, true, deadline);
+	}
+	// The milliseconds from {now} until the earliest deadline, 0 if one has
+	// passed, or -1 if no outstanding request has one.
+	def timeout(now: int) -> int {
+		var result = -1;
+		for (l = Maps.valueList(callbacks); l != null; l = l.tail) {
+			var request = l.head;
+			if (!request.timed) continue;
+			var remaining = Ints.max(0, request.deadline - now);
+			if (result < 0 || remaining < result) result = remaining;
+		}
+		return result;
+	}
+	// Completes with {error} the requests outstanding when this call starts
+	// whose deadline is at or before {now}, as {failAll} does.
+	def expire(now: int, error: JsonRpcError) {
+		for (l = Maps.valueList(callbacks); l != null; l = l.tail) {
+			var request = l.head;
+			if (!request.timed || request.deadline - now > 0) continue;
+			if (callbacks[request.id] != request) continue;
+			var callback = take(request.id);
+			if (callback != null) callback(JsonRpcReply.Error(error));
+		}
+	}
+	private def record(method: string, params: JsonRpcParams, onComplete: JsonRpcReply -> void, timed: bool, deadline: int) -> Array<byte> {
 		var id = nextId;
 		while (callbacks.has(id)) id = after(id);
 		nextId = after(id);
-		callbacks[id] = JsonRpcPendingRequest.new(id, onComplete);
+		callbacks[id] = JsonRpcPendingRequest.new(id, onComplete, timed, deadline);
 		outstanding++;
 		return JsonRpcMessage.Request(JsonRpcId.Int(id), method, params).encode();
 	}
@@ -97,4 +130,4 @@ class JsonRpcPendingRequests {
 	}
 }
 
-private class JsonRpcPendingRequest(id: int, callback: JsonRpcReply -> void) { }
+private class JsonRpcPendingRequest(id: int, callback: JsonRpcReply -> void, timed: bool, deadline: int) { }

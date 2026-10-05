@@ -2,7 +2,7 @@
 # "descriptors" sets -lang:descriptors; "read-only" and "defaults" share shared/Table.v3,
 # which needs -lang:read-only-arrays, and only "read-only" sets it.
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/compiler-flags","capabilities":{}}}}
-{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
 {"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
 # The descriptor clause parses with the project's -lang:descriptors, so no syntax error.
 # Loading the configuration analyzes every project. Only "defaults" reports an error: it

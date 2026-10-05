@@ -39,7 +39,7 @@ class VersionTestSession {
 		while (supervisor.busy()) {
 			var count = supervisor.pollFds(fds, 0);
 			HostOs.poll(fds, count, supervisor.pollTimeout());
-			server.pollAnalysis();
+			server.onPoll();
 		}
 		t.assert(response != null, "deferred reply arrived");
 		var snapshot = supervisor.snapshot;
@@ -116,6 +116,18 @@ def test_disk_policy(t: Tester) {
 	store.close(URI);
 	t.assertz(true, snapshot.matchesDocument(store, URI));
 	checkStamp(t, s.inspect(), false, 0, true);
+	// A disk change the client reports makes it stale for good. Reports about
+	// other files don't.
+	store.diskChanged("file:///tmp/other.v3");
+	t.assertz(true, snapshot.matchesDocument(store, URI));
+	store.diskChanged(ALIAS);
+	t.assertz(false, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), false, 0, false);
+	// The next analysis records the new stamp.
+	s.begin(t);
+	snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	t.assertz(true, snapshot.matchesDocument(store, URI));
 	s.close();
 }
 def test_rejected_events(t: Tester) {

@@ -7,6 +7,8 @@ component DocumentLimits {
 	def MAX_BYTES = 1024 * 1024;
 	def RECORD_BYTES = 256;
 	def EXCEEDED = "aggregate open-document capacity exceeded; close documents or reduce text and retry";
+	// Files whose disk changes are tracked one by one; see DocumentStore.diskChanged.
+	def MAX_DISK_STAMPS = 8192;
 }
 
 // An accepted version of an open document. Treat text bytes as read-only.
@@ -47,6 +49,11 @@ class DocumentStore {
 		return if(boundedReader != null, boundedReader(path, maxBytes));
 	}
 	private def overlays = Strings.newMap<DocumentOverlay>();
+	// Disk stamps of files the client reported changed on disk. Files never
+	// reported share {diskEpoch}, which every stamp loses when the map is full.
+	private var diskStamps = Strings.newMap<DocumentVersionIdentity>();
+	private var diskStampCount: int;
+	private var diskEpoch = DocumentVersionIdentity.new();
 
 	def overlay(uri: string) -> DocumentOverlay {
 		var key = DocumentUri.normalize(uri);
@@ -91,6 +98,27 @@ class DocumentStore {
 	private def cost(uri: string, languageId: string, text: Array<byte>) -> long {
 		return long.view(DocumentLimits.RECORD_BYTES) + long.view(uri.length) +
 			long.view(languageId.length) + long.view(text.length);
+	}
+	// The current stamp of {uri}'s file on disk. Analyses record it for disk
+	// inputs; a later {diskChanged} for the file replaces it.
+	def diskStamp(uri: string) -> DocumentVersionIdentity {
+		var key = DocumentUri.normalize(uri);
+		var stamp = if(key != null, diskStamps[key]);
+		return if(stamp != null, stamp, diskEpoch);
+	}
+	// Records that {uri}'s file changed, appeared, or disappeared on disk.
+	// Beyond MAX_DISK_STAMPS files, every disk stamp is replaced instead.
+	def diskChanged(uri: string) {
+		var key = DocumentUri.normalize(uri);
+		if (key == null || DocumentUri.filePath(key) == null) return;
+		if (!diskStamps.has(key) && diskStampCount >= DocumentLimits.MAX_DISK_STAMPS) {
+			diskStamps = Strings.newMap<DocumentVersionIdentity>();
+			diskStampCount = 0;
+			diskEpoch = DocumentVersionIdentity.new();
+			return;
+		}
+		if (!diskStamps.has(key)) diskStampCount++;
+		diskStamps[key] = DocumentVersionIdentity.new();
 	}
 	def save(uri: string) -> string {
 		if (overlay(uri) == null) return "document is not open";

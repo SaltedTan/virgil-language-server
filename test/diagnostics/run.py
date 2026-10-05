@@ -13,9 +13,14 @@ one session of "virgil-lsp --stdio". Every line is a JSON object with one key:
   {"recv": message}       The next message from the server must equal this.
   {"stderr": "regex"}     Standard error must match this, after the session.
   {"status": n}           The expected exit status (default 0).
+  {"write": [path, text]} Writes a file in the transcript's temporary
+                          directory, creating its parent directories.
+  {"remove": path}        Removes a file from the temporary directory.
 
 Lines starting with # are comments. In strings, @ROOT@ stands for the file
-URI of test/fixtures/projects and @VERSION@ for the server version. After the
+URI of test/fixtures/projects, @TMP@ for the file URI of the transcript's own
+temporary directory, @TMPDIR@ for its path, and @VERSION@ for the server
+version. The temporary directory starts empty. After the
 last line, standard input is closed; the server must exit with the expected
 status and write nothing more. Every receive has a deadline, but no expected
 message depends on timing: a result can only follow the input before it.
@@ -38,13 +43,15 @@ ROOT = (DIR.parent / "fixtures" / "projects").resolve().as_uri()
 DEADLINE = 60
 
 
-def substitute(value, version):
+def substitute(value, names):
     if isinstance(value, str):
-        return value.replace("@ROOT@", ROOT).replace("@VERSION@", version)
+        for name, replacement in names.items():
+            value = value.replace(name, replacement)
+        return value
     if isinstance(value, list):
-        return [substitute(v, version) for v in value]
+        return [substitute(v, names) for v in value]
     if isinstance(value, dict):
-        return {k: substitute(v, version) for k, v in value.items()}
+        return {k: substitute(v, names) for k, v in value.items()}
     return value
 
 
@@ -108,6 +115,11 @@ class Session:
 
 def run(exe, path, version):
     lines = path.read_text().splitlines()
+    # The server never follows symbolic links, so use the physical path (on
+    # macOS, /var is a link to /private/var).
+    tmp = tempfile.TemporaryDirectory()
+    tmpdir = Path(os.path.realpath(tmp.name))
+    names = {"@ROOT@": ROOT, "@TMPDIR@": str(tmpdir), "@TMP@": tmpdir.as_uri(), "@VERSION@": version}
     session = Session(exe)
     try:
         status, patterns = 0, []
@@ -117,10 +129,18 @@ def run(exe, path, version):
             step = json.loads(line)
             (kind, value), = step.items()
             if kind == "send":
-                session.send(substitute(value, version))
+                session.send(substitute(value, names))
             elif kind == "recv":
                 got = session.receive()
-                assert got == substitute(value, version), ("unexpected message", got)
+                assert got == substitute(value, names), ("unexpected message", got)
+            elif kind == "write":
+                file = tmpdir / value[0]
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(value[1], encoding="utf-8")
+                session.transcript.append(("write", value[0]))
+            elif kind == "remove":
+                (tmpdir / value).unlink()
+                session.transcript.append(("remove", value))
             elif kind == "stderr":
                 patterns.append(value)
             elif kind == "status":
@@ -139,6 +159,7 @@ def run(exe, path, version):
         raise
     finally:
         session.close()
+        tmp.cleanup()
 
 
 def main():

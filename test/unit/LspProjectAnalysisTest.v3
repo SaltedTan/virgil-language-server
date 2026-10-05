@@ -33,12 +33,12 @@ class ProjectTestSession(fixture: string) {
 		else notifications.put(bytes);
 	}
 	def begin(t: Tester, documentUri: string) {
-		server.pollAnalysis();
+		server.onPoll();
 		var fds = Array<int>.new(4);
 		while (server.analyzing()) {
 			var count = supervisor.pollFds(fds, 0);
 			HostOs.poll(fds, count, server.pollTimeout());
-			server.pollAnalysis();
+			server.onPoll();
 		}
 		var params = Strings.newMap<JsonValue>();
 		params["uri"] = JsonValue.String(documentUri);
@@ -51,7 +51,7 @@ class ProjectTestSession(fixture: string) {
 		while (supervisor.busy()) {
 			var count = supervisor.pollFds(fds, 0);
 			HostOs.poll(fds, count, supervisor.pollTimeout());
-			server.pollAnalysis();
+			server.onPoll();
 		}
 		t.assert(reply != null, "analysis replied");
 		t.assert(supervisor.snapshot != null, "snapshot present");

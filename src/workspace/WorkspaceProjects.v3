@@ -124,6 +124,92 @@ class WorkspaceProjects(store: DocumentStore) {
 	def refresh() {
 		refreshConfigs(false);
 	}
+	// Refreshes every configuration and expands its sources again, for files
+	// created or deleted on disk.
+	def reexpand() {
+		refreshConfigs(true);
+	}
+	// Loads the configuration at {path}, reported created or changed on disk,
+	// if it isn't loaded and discovery would find it: inside a workspace folder,
+	// within the depth bound, and in no hidden directory.
+	def watched(path: string) {
+		for (i < configs.length) { if(Strings.equal(configs[i].path, path)) return; }
+		var root = folderOf(path);
+		if (root == null) return;
+		var depth = 0;
+		for (dir = ProjectFiles.parent(path); !Strings.equal(dir, root); dir = ProjectFiles.parent(dir)) {
+			var slash = dir.length - 1;
+			while (slash > 0 && dir[slash] != '/') slash--;
+			if (slash + 1 >= dir.length || dir[slash + 1] == '.' || ++depth > ProjectLimits.MAX_DEPTH) return;
+		}
+		load(path);
+	}
+	// The current contexts with a source at {path} or below it.
+	def affected(path: string) -> Array<ProjectContext> {
+		var result = Vector<ProjectContext>.new(), below = ProjectFiles.join(path, "");
+		for (i < configs.length) {
+			for (ctx in configs[i].contexts) {
+				if (!ctx.config.current) continue;
+				for (s in ctx.sources) {
+					if (Strings.equal(s.path, path) || Strings.startsWith(s.path, below)) { result.put(ctx); break; }
+				}
+			}
+		}
+		return result.extract();
+	}
+	// Applies a workspace-folder change, given as folder URIs; nonlocal URIs are
+	// ignored, as in initialize. Removals apply first. Configurations that only
+	// removed folders contained are forgotten. If discovery has already run,
+	// added folders are discovered now, each with a fresh scan budget.
+	def changeFolders(added: Array<string>, removed: Array<string>) {
+		var gone = Vector<string>.new(), roots = Vector<string>.new();
+		for (uri in removed) addFolder(gone, JsonValue.String(uri));
+		var dropped = gone.extract();
+		for (root in folders) {
+			var keep = true;
+			for (d in dropped) keep = keep && !Strings.equal(d, root);
+			if (keep) roots.put(root);
+		}
+		var kept = roots.length, fresh = Vector<string>.new();
+		for (uri in added) addFolder(roots, JsonValue.String(uri));
+		for (i = kept; i < roots.length; i++) fresh.put(roots[i]);
+		folders = roots.extract();
+		folders = Arrays.sort(folders, 0, folders.length, ProjectFiles.before);
+		if (dropped.length > 0) {
+			var live = Vector<WorkspaceConfig>.new();
+			for (i < configs.length) {
+				var c = configs[i];
+				if (within(dropped, c.path) && !within(folders, c.path)) forget(c);
+				else live.put(c);
+			}
+			configs = live;
+		}
+		if (!discovered) return;
+		for (i < fresh.length) {
+			scanEntries = 0;
+			discover(fresh[i], 0);
+		}
+	}
+	// The deepest workspace folder containing {path}, or null.
+	private def folderOf(path: string) -> string {
+		var result: string;
+		for (root in folders) {
+			if (Strings.startsWith(path, ProjectFiles.join(root, "")) && (result == null || root.length > result.length)) result = root;
+		}
+		return result;
+	}
+	private def within(roots: Array<string>, path: string) -> bool {
+		for (root in roots) { if(Strings.startsWith(path, ProjectFiles.join(root, ""))) return true; }
+		return false;
+	}
+	// Retires {c}'s projects and clears its published diagnostics.
+	private def forget(c: WorkspaceConfig) {
+		if (c.revision != null) c.revision.current = false;
+		c.revision = ProjectRevision.new(ProjectFiles.uri(c.path), ++nextRevision);
+		c.revision.current = false;
+		c.text = null; c.contexts = []; c.diagnostics = [];
+		publish(c);
+	}
 	private def refreshConfigs(preflight: bool) {
 		pruneDeleted();
 		if (preflight) {

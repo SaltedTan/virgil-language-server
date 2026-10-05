@@ -22,6 +22,9 @@ def X = [
 	T("WorkspaceProjects:project_capacity_recovery", test_project_capacity_recovery),
 	T("WorkspaceProjects:discovery_overflow", test_discovery_overflow),
 	T("WorkspaceProjects:snapshot_budget", test_snapshot_budget),
+	T("WorkspaceProjects:watched_configurations", test_watched_configurations),
+	T("WorkspaceProjects:folder_changes", test_folder_changes),
+	T("WorkspaceProjects:affected_contexts", test_affected_contexts),
 	()
 ];
 def FIXTURES = "test/fixtures/projects";
@@ -418,6 +421,94 @@ def test_discovery_overflow(t: Tester) {
 	var mapping = w.forDocument(ProjectFiles.uri(ProjectFiles.join(other, "B.v3")));
 	t.assert(mapping.active != null, "nearest project remains discoverable after shared scan budget is exhausted");
 	t.asserti(1, configs.calls);
+}
+def foldersParams(roots: Array<string>) -> HashMap<string, JsonValue> {
+	var params = Strings.newMap<JsonValue>(), folders = Array<JsonValue>.new(roots.length);
+	for (i < roots.length) {
+		var folder = Strings.newMap<JsonValue>();
+		folder["uri"] = JsonValue.String(ProjectFiles.uri(roots[i]));
+		folders[i] = JsonValue.JObject(folder);
+	}
+	params["workspaceFolders"] = JsonValue.JArray(folders);
+	return params;
+}
+def test_watched_configurations(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures");
+	var wide = ProjectFiles.join(base, "scan-a"), other = ProjectFiles.join(base, "scan-b");
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES)), configs = ProjectConfigRecorder.new();
+	w.warn = ProjectWarningRecorder.new().warn; w.onConfig = configs.update;
+	// scan-a exhausts the discovery budget, so scan-b's configuration is missed.
+	w.initialize(foldersParams([wide, other]));
+	w.refresh();
+	t.asserti(0, configs.calls);
+	// A configuration outside the workspace folders is left for documents to find.
+	w.watched(ProjectFiles.join(base, "ownership-hidden-empty/.virgil-lsp.json"));
+	t.asserti(0, configs.calls);
+	// A reported configuration that discovery missed is loaded, once.
+	var config = ProjectFiles.join(other, ".virgil-lsp.json");
+	w.watched(config);
+	t.asserti(1, configs.calls);
+	w.watched(config);
+	t.asserti(1, configs.calls);
+	// As in discovery, configurations in hidden directories are not loaded.
+	var hidden = ProjectFiles.join(base, "ownership-hidden-empty");
+	w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES)); configs = ProjectConfigRecorder.new();
+	w.onConfig = configs.update;
+	w.initialize(workspaceParams(hidden));
+	w.refresh();
+	t.asserti(1, configs.calls);
+	w.watched(ProjectFiles.join(hidden, ".hidden/.virgil-lsp.json"));
+	t.asserti(1, configs.calls);
+}
+def test_folder_changes(t: Tester) {
+	var root = ProjectTestFiles.repository(FIXTURES);
+	var file = ProjectFiles.join(root, "two-file"), programs = ProjectFiles.join(root, "two-programs");
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES)), configs = ProjectConfigRecorder.new();
+	w.onConfig = configs.update;
+	w.initialize(workspaceParams(file));
+	// Before discovery has run, a change only records the folders. Removals
+	// apply before additions.
+	w.changeFolders([ProjectFiles.uri(programs)], []);
+	t.asserti(2, w.folders.length);
+	w.changeFolders([], [ProjectFiles.uri(programs)]);
+	t.asserti(1, w.folders.length);
+	w.changeFolders([ProjectFiles.uri(programs)], [ProjectFiles.uri(programs)]);
+	w.changeFolders([], [ProjectFiles.uri(programs)]);
+	t.asserti(1, w.folders.length);
+	t.asserti(0, configs.calls);
+	w.refresh();
+	t.asserti(1, configs.calls);
+	var shapes = w.loadedContexts();
+	t.asserti(1, shapes.length);
+	// Afterwards, an added folder is discovered at once. Duplicates and nonlocal
+	// URIs are ignored.
+	w.changeFolders([ProjectFiles.uri(programs), ProjectFiles.uri(programs), "untitled:x"], []);
+	t.asserti(2, w.folders.length);
+	t.asserti(2, configs.calls);
+	var all = w.loadedContexts();
+	t.asserti(3, all.length);
+	// Removing a folder forgets the configurations only it contained, which
+	// retires their contexts.
+	w.changeFolders([], [ProjectFiles.uri(programs)]);
+	t.asserti(1, w.folders.length);
+	t.asserti(3, configs.calls);
+	for (ctx in all) t.assertz(ctx == shapes[0], ctx.config.current);
+	t.asserti(1, w.loadedContexts().length);
+	// A configuration that a remaining folder contains is kept.
+	w.changeFolders([ProjectFiles.uri(root)], [ProjectFiles.uri(file)]);
+	t.assertz(true, shapes[0].config.current);
+	t.assert(w.loadedContexts().length > 3, "the parent folder's configurations are discovered");
+}
+def test_affected_contexts(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var w = WorkspaceProjects.new(DocumentStore.new(null, DocumentLimits.MAX_BYTES));
+	w.initialize(workspaceParams(base));
+	w.refresh();
+	t.asserti(2, w.affected(ProjectFiles.join(base, "shared/Greeting.v3")).length);
+	t.asserti(1, w.affected(ProjectFiles.join(base, "server")).length);
+	t.asserti(2, w.affected(base).length);
+	t.asserti(0, w.affected(ProjectFiles.join(base, "shared/Gree")).length);
+	t.asserti(0, w.affected(ProjectFiles.join(base, "missing.v3")).length);
 }
 def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(7);

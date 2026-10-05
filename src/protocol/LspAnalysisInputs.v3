@@ -40,6 +40,7 @@ component LspAnalysisCapture {
 			bytes += text.length;
 			sources[i] = AnalysisSource.new(path, text);
 			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
+			if (doc == null) versions[i].disk = store.diskStamp(keys[i]);
 			lengths[i] = if(doc != null, -1, text.length);
 			if (doc == null) hashes[i] = hash(text);
 		}

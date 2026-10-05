@@ -2,7 +2,7 @@
 # the change in the same read arrives first, so version 1's unresolved name is never
 # published. Version 2's type error is, after the debounce interval.
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/two-file","capabilities":{}}}}
-{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
 {"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
 {"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","languageId":"virgil","version":1,"text":"// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.square(3);\n\t\tvar total = r.area();\n\t\treturn total + missing;\n\t}\n}\n"}}},{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":2},"contentChanges":[{"text":"// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.square(3);\n\t\tvar total: int = r;\n\t\treturn total + r.width;\n\t}\n}\n"}]}}]}
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/.virgil-lsp.json"}}}

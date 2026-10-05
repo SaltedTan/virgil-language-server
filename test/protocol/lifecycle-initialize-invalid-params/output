@@ -2,8 +2,8 @@ Content-Length: 96
 
 {"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"initialize params must be an object"}}Content-Length: 90
 
-{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"the server is not initialized"}}Content-Length: 217
+{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"the server is not initialized"}}Content-Length: 296
 
-{"jsonrpc":"2.0","id":3,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
+{"jsonrpc":"2.0","id":3,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
 
 {"jsonrpc":"2.0","id":4,"result":null}

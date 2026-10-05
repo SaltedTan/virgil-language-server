@@ -1,6 +1,6 @@
-Content-Length: 217
+Content-Length: 296
 
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 314
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 314
 
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"expected type, variable, or method declaration","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"aeneas"}],"uri":"file:///tmp/a%20b.v3","version":1}}Content-Length: 1483
 

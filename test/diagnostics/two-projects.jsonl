@@ -1,7 +1,7 @@
 # Two projects share shared/Greeting.v3 and both declare a top-level Program. Analyzed
 # together they would report TypeRedefined; each project's results stay with its files.
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/two-programs","capabilities":{}}}}
-{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
 {"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
 # Unsaved client/Program.v3 uses an undeclared name.
 {"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-programs/client/Program.v3","languageId":"virgil","version":1,"text":"// The client program. Declares the same top-level name as server/Program.v3,\n// so the two programs cannot be analyzed as one.\ncomponent Program {\n\tdef main() -> int {\n\t\tvar greeting = Greeting.text(missing);\n\t\tSystem.puts(greeting);\n\t\tSystem.ln();\n\t\treturn greeting.length;\n\t}\n}\n"}}}}
