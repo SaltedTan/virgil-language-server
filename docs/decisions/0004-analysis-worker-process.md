@@ -32,7 +32,7 @@ Requests and results each use one pipe. A frame is a 4-byte little-endian payloa
 | Message | Direction | Contents |
 | --- | --- | --- |
 | `HELLO` | worker → server | Protocol version, server version, source revision, heap bytes |
-| `ANALYZE` | server → worker | Request ID, flags (collect occurrences, collect statistics), the server's time limit, then each file's path and bytes, in program order |
+| `ANALYZE` | server → worker | Request ID, flags (collect occurrences, collect statistics), the server's time limit, the program's [language options](../configuration.md#compiler-flags) in the order given, then each file's path and bytes, in program order |
 | `RESULT` | worker → server | Request ID, and the worker's analysis count, UID counter, and live heap; parse/verify flags and statistics; diagnostics; a path table; each distinct declaration once; each file's occurrences as ranges and declaration indexes |
 
 The server's pipe ends are nonblocking. The stdio event loop polls standard input and the worker pipes together, using the startup or analysis deadline as its poll timeout. Startup, including the handshake, and request transmission are asynchronous too. It therefore never waits on a worker that has stopped reading or writing. The decoder bounds every count by the bytes that remain in the message, and every index by its table. A malformed message is rejected without trapping, and the worker that sent it is killed.

@@ -58,7 +58,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		var alarm = 2L * request.timeoutMs + 1000;
 		HostOs.setAlarm(if(request.timeoutMs <= 0, 0, if(alarm > int.max, int.max, int.view(alarm))));
 		var stats = (request.flags & AnalysisWire.WANT_STATS) != 0;
-		var analysis = AeneasAdapter.analyzeProgram(request.sources, stats);
+		var analysis = AeneasAdapter.analyzeProgram(request.sources, request.options, stats);
 		var files: Array<(string, Array<AnalysisOccurrence>)>, collectUs = -1;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
 			// Each distinct path once; a repeated path keeps the first file's

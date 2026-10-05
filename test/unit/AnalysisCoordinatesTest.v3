@@ -27,7 +27,7 @@ def decodedResult(payload: Array<byte>, generation: int, paths: Array<string>) -
 // range. No semantic publication is needed to exercise the complete boundary.
 def check(t: Tester, text: string, begin: int, end: int, line: int, character: int) {
 	var sources = [AnalysisSource.new("coordinates.v3", text)];
-	var a = AeneasAdapter.analyzeProgram(sources, false);
+	var a = AeneasAdapter.analyzeProgram(sources, [], false);
 	t.assert(a.diagnostics.length > 0, "expected a diagnostic");
 	if (a.diagnostics.length == 0) return;
 	var w = AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null);
@@ -81,8 +81,8 @@ def test_parser_coordinate_ambiguities(t: Tester) {
 		"component C {\n/*\t*/ def f() => C.[]// trailing\t😀",
 		"component C {\n/*\t*/ def f() => C.[]=// trailing\t😀"];
 	for (text in cases) {
-		var single = AeneasAdapter.parseFile("ambiguity.v3", text);
-		var whole = AeneasAdapter.analyzeProgram([AnalysisSource.new("ambiguity.v3", text)], false);
+		var single = AeneasAdapter.parseFile("ambiguity.v3", text, []);
+		var whole = AeneasAdapter.analyzeProgram([AnalysisSource.new("ambiguity.v3", text)], [], false);
 		t.asserti(single.diagnostics.length, whole.diagnostics.length);
 		for (i < whole.diagnostics.length) {
 			t.asserti(single.diagnostics[i].beginOffset, whole.diagnostics[i].beginOffset);
@@ -137,7 +137,7 @@ def test_retrospective_tokens(t: Tester) {
 	var begins = [50, 66, 57, 38, 43], ends = [53, 70, 62, 38, 45];
 	for (i < cases.length) {
 		var text = cases[i], sources = [AnalysisSource.new("retrospective.v3", text)];
-		var a = AeneasAdapter.analyzeProgram(sources, false);
+		var a = AeneasAdapter.analyzeProgram(sources, [], false);
 		t.assert(a.diagnostics.length > 0, "expected retrospective diagnostic");
 		if (a.diagnostics.length == 0) continue;
 		t.asserti(begins[i], a.diagnostics[0].beginOffset);
@@ -177,7 +177,7 @@ def test_retrospective_tokens(t: Tester) {
 		AnalysisTypeCache.release();
 	}
 	var clean = "class C { def [x: int] -> int { return x; } def [x: int] = y: int {}\n/*\t*/ def f(c: C) -> int => c.[](1); def g(c: C) => c.[]=(1, 2);\n}\n";
-	var successful = AeneasAdapter.analyzeProgram([AnalysisSource.new("clean.v3", clean)], false);
+	var successful = AeneasAdapter.analyzeProgram([AnalysisSource.new("clean.v3", clean)], [], false);
 	t.assertz(true, successful.parsed);
 	t.assertz(true, successful.verified);
 	t.asserti(0, successful.diagnostics.length);
@@ -192,7 +192,7 @@ def test_malformed_literal_bound(t: Tester) {
 		t.asserti(8, map.offset(1, 9, false));
 		t.assert(System.ticksUs() - start < 1000000, "malformed literal replay must finish within one second");
 		start = System.ticksUs();
-		var result = AeneasAdapter.analyzeProgram([AnalysisSource.new("literal.v3", text)], false);
+		var result = AeneasAdapter.analyzeProgram([AnalysisSource.new("literal.v3", text)], [], false);
 		t.asserti(1, result.diagnostics.length);
 		if (result.diagnostics.length > 0) {
 			t.assert_string("invalid string literal", result.diagnostics[0].message);
@@ -212,7 +212,7 @@ def test_binding_compiler_coordinates(t: Tester) {
 	var names = ["[]", "[]="], columns = [36, 29], liveColumns = [31, 24];
 	for (i < cases.length) {
 		var path = "binding-coordinates.v3", text = cases[i];
-		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text)], false);
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text)], [], false);
 		t.assertz(true, a.verified);
 		t.asserti(0, a.diagnostics.length);
 		var uses = a.occurrences(path);

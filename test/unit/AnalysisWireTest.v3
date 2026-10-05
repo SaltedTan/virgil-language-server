@@ -77,13 +77,17 @@ def test_analyze_round_trip(t: Tester) {
 	var sources = [AnalysisSource.new("a.v3", "class A { }\n"), AnalysisSource.new("empty.v3", null),
 		AnalysisSource.new(null, "\x00\xFF")];
 	var flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
-	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, sources);
-	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, sources));
+	var options = ["-lang:simple-bodies=false", "-lang:fun-exprs", "-lang:descriptors"];
+	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, options, sources);
+	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, options, sources));
 	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 	if (r == null) return t.fail("request did not decode");
 	t.asserti(99, r.id);
 	t.asserti(flags, r.flags);
 	t.asserti(2500, r.timeoutMs);
+	// Options keep their order, which decides their effect.
+	t.asserti(options.length, r.options.length);
+	for (i < options.length) t.assert_string(options[i], r.options[i]);
 	t.asserti(3, r.sources.length);
 	t.assert_string("a.v3", r.sources[0].path);
 	t.assert_string("class A { }\n", r.sources[0].input);
@@ -97,18 +101,22 @@ def test_analyze_frame_size(t: Tester) {
 	var values = [int.min, -8193, -8192, -65, -64, -1, 0, 63, 64, 8191, 8192, int.max];
 	for (value in values) {
 		var sources = [AnalysisSource.new(null, null), AnalysisSource.new("", "")];
-		var frame = AnalysisWire.encodeAnalyze(value, value, value, sources);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, sources));
+		var frame = AnalysisWire.encodeAnalyze(value, value, value, [], sources);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, [], sources));
 	}
 	for (length in [0, 63, 64, 8191, 8192]) {
 		var bytes = Array<byte>.new(length);
 		var sources = [AnalysisSource.new(bytes, bytes)];
-		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, sources);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, sources));
+		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], sources);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], sources));
+		var options = Array<string>.new(length);
+		for (i < options.length) options[i] = "-lang:descriptors";
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, options, []);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, options, []));
 		sources = Array<AnalysisSource>.new(length);
 		for (i < sources.length) sources[i] = AnalysisSource.new(null, null);
-		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, sources);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, sources));
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], sources);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], sources));
 	}
 }
 
@@ -116,7 +124,7 @@ def test_analyze_frame_size(t: Tester) {
 def test_result_matches_analysis(t: Tester) {
 	var sources = load(t, [SHAPES, MAIN]);
 	if (sources == null) return;
-	var analysis = AeneasAdapter.analyzeProgram(sources, false);
+	var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
 	var rt = roundTrip(sources, analysis, true), result = rt.1;
 	if (result == null) return t.fail("result did not decode");
 	t.asserti(7, result.id);
@@ -162,7 +170,7 @@ def test_result_with_errors(t: Tester) {
 	for (paths in [[SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
 		var sources = load(t, paths);
 		if (sources == null) return;
-		var analysis = AeneasAdapter.analyzeProgram(sources, true);
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], true);
 		var r = roundTrip(sources, analysis, true).1;
 		if (r == null) return t.fail("result did not decode");
 		var s = r.snapshot;
@@ -182,7 +190,7 @@ def test_result_with_errors(t: Tester) {
 def test_result_without_occurrences(t: Tester) {
 	var sources = load(t, [SHAPES, MAIN]);
 	if (sources == null) return;
-	var r = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, false), false).1;
+	var r = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, [], false), false).1;
 	if (r == null) return t.fail("result did not decode");
 	var s = r.snapshot;
 	t.assertz(false, s.hasOccurrences);
@@ -197,7 +205,7 @@ def test_truncated_messages(t: Tester) {
 	var sources = load(t, [SHAPES, MAIN]);
 	if (sources == null) return;
 	var paths = [SHAPES, MAIN];
-	var result = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, false), true).0;
+	var result = roundTrip(sources, AeneasAdapter.analyzeProgram(sources, [], false), true).0;
 	for (n < result.length) {
 		t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(Arrays.range(result, 0, n), 1, paths)),
 			Strings.format1("result cut to %d bytes is malformed", n));
@@ -206,7 +214,7 @@ def test_truncated_messages(t: Tester) {
 	for (n < hello.length) {
 		if (AnalysisWire.decodeHello(Arrays.range(hello, 0, n)) != null) return t.fail1("decoded a hello cut to %d bytes", n);
 	}
-	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, sources));
+	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, ["-lang:descriptors"], sources));
 	for (n < request.length) {
 		if (AnalysisWire.decodeAnalyze(Arrays.range(request, 0, n)) != null) return t.fail1("decoded a request cut to %d bytes", n);
 	}
@@ -216,13 +224,22 @@ def test_truncated_messages(t: Tester) {
 
 // Counts and indexes beyond the message are rejected before allocating.
 def test_invalid_counts_and_indexes(t: Tester) {
-	// A request claiming a billion files.
+	// Requests claiming a billion options or files.
 	var w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(1000000000);
+	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "option count");
+	w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(0).put_sleb32(1000000000);
 	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "file count");
 	// A file whose contents are longer than the message.
-	w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(1);
+	w = DataWriter.new().putb(AnalysisWire.ANALYZE).put_sleb32(1).put_sleb32(0).put_sleb32(1000).put_sleb32(0).put_sleb32(1);
 	w.put_sleb32(1).putb('a').put_sleb32(100).putb('x');
 	t.assert(AnalysisWire.decodeAnalyze(w.extract()) == null, "content length");
+	// Options that a project file would reject, which the worker never applies.
+	var rejected: Array<Array<string>> = [[null], ["-O2"], ["-lang:unknown"], ["-lang:descriptors=yes"],
+		["-lang:descriptors", "-lang:descriptors=false"], ["descriptors.v3"]];
+	for (options in rejected) {
+		var payload = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, options, []));
+		t.assert(AnalysisWire.decodeAnalyze(payload) == null, "rejected option");
+	}
 	// Results with a huge diagnostic count, a bad path index, a bad declaration
 	// kind, and an occurrence pointing past the declarations.
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(1000000000, null), 1, [])), "diagnostic count");

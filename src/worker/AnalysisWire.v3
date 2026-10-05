@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 2;
+	def PROTOCOL_VERSION = 3;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -22,7 +22,9 @@ component AnalysisWire {
 	// source revision, and heap size in bytes.
 	def HELLO: byte = 1;
 	// Server to worker: request ID, flags, the server's time limit in
-	// milliseconds, file count, then each file's path and contents.
+	// milliseconds, the count and strings of the program's language options
+	// in the order given (see AeneasAdapter.setLanguageOptions), file count,
+	// then each file's path and contents.
 	def ANALYZE: byte = 2;
 	// Worker to server: see encodeResult.
 	def RESULT: byte = 3;
@@ -56,9 +58,11 @@ component AnalysisWire {
 		return if(r.finish(), hello);
 	}
 
-	def analyzeFrameSize(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) -> long {
+	def analyzeFrameSize(id: int, flags: int, timeoutMs: int, options: Array<string>, sources: Array<AnalysisSource>) -> long {
 		var size = long.view(WorkerFraming.HEADER_BYTES) + 1
-			+ sleb32Size(id) + sleb32Size(flags) + sleb32Size(timeoutMs) + sleb32Size(sources.length);
+			+ sleb32Size(id) + sleb32Size(flags) + sleb32Size(timeoutMs)
+			+ sleb32Size(options.length) + sleb32Size(sources.length);
+		for (o in options) size += sleb32Size(o.length) + long.view(o.length);
 		for (s in sources) {
 			var pathLength = if(s.path == null, -1, s.path.length);
 			var inputLength = if(s.input == null, 0, s.input.length);
@@ -75,9 +79,11 @@ component AnalysisWire {
 		}
 		return size;
 	}
-	def encodeAnalyze(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) -> Range<byte> {
+	def encodeAnalyze(id: int, flags: int, timeoutMs: int, options: Array<string>, sources: Array<AnalysisSource>) -> Range<byte> {
 		var w = WorkerFraming.start().putb(ANALYZE);
-		w.put_sleb32(id).put_sleb32(flags).put_sleb32(timeoutMs).put_sleb32(sources.length);
+		w.put_sleb32(id).put_sleb32(flags).put_sleb32(timeoutMs).put_sleb32(options.length);
+		for (o in options) putString(w, o);
+		w.put_sleb32(sources.length);
 		for (s in sources) {
 			putString(w, s.path);
 			var input = if(s.input == null, Array<byte>.new(0), s.input);
@@ -85,15 +91,23 @@ component AnalysisWire {
 		}
 		return WorkerFraming.finish(w);
 	}
+	// Returns null for a malformed request, including one with a language
+	// option that a project file would not accept.
 	def decodeAnalyze(payload: Array<byte>) -> AnalysisWorkerRequest {
 		var r = AnalysisWireReader.new(payload, ANALYZE);
 		var id = r.readInt(), flags = r.readInt(), timeoutMs = r.readInt();
+		var options = Array<string>.new(r.readCount(1, 64)), seen = Strings.newMap<bool>();
+		for (i < options.length) {
+			var o = r.readString(1);
+			if (o == null || ProjectCompilerFlags.check(o, seen) != null) return null;
+			options[i] = o;
+		}
 		var sources = Array<AnalysisSource>.new(r.readCount(2, 128));
 		for (i < sources.length) {
 			var path = r.readString(1);
 			sources[i] = AnalysisSource.new(path, r.readBytes());
 		}
-		return if(r.finish(), AnalysisWorkerRequest.new(id, flags, timeoutMs, sources));
+		return if(r.finish(), AnalysisWorkerRequest.new(id, flags, timeoutMs, options, sources));
 	}
 
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
@@ -251,7 +265,7 @@ component AnalysisWire {
 class AnalysisWorkerHello(protocol: int, version: string, revision: string, heapBytes: long) { }
 
 // A decoded ANALYZE request.
-class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, sources: Array<AnalysisSource>) { }
+class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<string>, sources: Array<AnalysisSource>) { }
 
 // What a worker reports about itself with each result, for the restart policy.
 // {liveBytes} is measured after a collection, excluding the result itself.

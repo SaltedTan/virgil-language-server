@@ -123,9 +123,6 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	private def start(ctx: ProjectContext) {
 		// A replaced configuration's context has a current successor.
 		if (!ctx.config.current || ctx.sources.length == 0) return;
-		// Compiler option application is separate work; never silently
-		// analyze with defaults when the config requests non-default flags.
-		if (ctx.definition.compilerArgs.length > 0) return failed(ctx, "project compilerArgs are not yet supported by the analysis worker");
 		var keys = Array<string>.new(ctx.sources.length);
 		for (i < keys.length) {
 			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
@@ -137,7 +134,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
 			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
 		}
-		var outcome = supervisor.begin(inputs.sources, AnalysisWire.WANT_OCCURRENCES);
+		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);
 		inputs.sources = null;
 		match (outcome) {
 			Failed(failure, reason) => failed(ctx, reason);

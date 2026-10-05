@@ -1,0 +1,7 @@
+// Shared by the "read-only" and "defaults" projects. The array<T> type exists
+// only with -lang:read-only-arrays, which only "read-only" sets.
+component Table {
+	def first(a: array<int>) -> int {
+		return a[0];
+	}
+}

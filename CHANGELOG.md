@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A project's `compilerArgs` now apply to its whole-program analyses and to parsing its open documents, so projects with flags such as `-lang:descriptors` get correct syntax diagnostics, document symbols, and semantic diagnostics. Projects with different flags share one analysis worker, and a configuration change republishes the syntax diagnostics it affects. The worker protocol is now version 3. See [Compiler flags](docs/configuration.md#compiler-flags).
 - The editor clients send the Virgil root, so projects with `virgilDependencies` work: VS Code from the machine setting `virgil.virgilRoot` or else `VIRGIL_LOC`, and the Neovim configurations from `VIRGIL_LOC`. Both also send `.virgil-lsp.json` buffers, so configuration diagnostics follow unsaved edits, and VS Code now activates in workspaces that contain a project file. The planned `virgil.project.config` setting was dropped. See [The Virgil root](docs/configuration.md#the-virgil-root).
 - Automatic semantic diagnostics for configured projects and unsaved buffers. See [Semantic diagnostics](docs/architecture.md#semantic-diagnostics) for scheduling, publication, freshness limits, failure recovery, and measurements.
 

@@ -1,22 +1,52 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Synchronous, single-file syntax diagnostics for the accepted overlay. No
-// disk reads or verification. UTF-16 is the protocol default; negotiation is
-// not yet implemented. {LspDiagnosticLists} merges them with the URI's
+// Synchronous, single-file syntax diagnostics for the accepted overlay, parsed
+// with the language options of the document's active project. No disk reads
+// or verification. UTF-16 is the protocol default; negotiation is not yet
+// implemented. {LspDiagnosticLists} merges them with the URI's
 // current semantic diagnostics and publishes the complete list.
 class LspParserDiagnostics(lists: LspDiagnosticLists) {
-	def update(doc: DocumentOverlay) {
+	// The language options each open document was last parsed with, by URI.
+	private def parsedWith = Strings.newMap<Array<string>>();
+
+	def update(doc: DocumentOverlay, options: Array<string>) {
 		var path = DocumentUri.filePath(doc.uri);
 		if (path == null) path = doc.uri;
-		var result = AeneasAdapter.parseFile(path, doc.text);
+		var result = AeneasAdapter.parseFile(path, doc.text, options);
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
 		for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
+		parsedWith[doc.uri] = options;
 		lists.parsed(doc, diagnostics);
 	}
 	def close(doc: DocumentOverlay) {
+		parsedWith.remove(doc.uri);
 		lists.closed(doc);
+	}
+	// After a configuration change, parses again each open document whose
+	// active project now has different language options, and republishes its
+	// diagnostics in URI order. Documents without a file path are always in
+	// single-file mode.
+	def reparse(store: DocumentStore, projects: WorkspaceProjects) {
+		var found = Vector<string>.new();
+		parsedWith.apply(collectFile(found, _, _));
+		var uris = found.extract();
+		uris = Arrays.sort(uris, 0, uris.length, ProjectFiles.before);
+		var owners = projects.owners(Arrays.map(uris, DocumentUri.filePath));
+		for (i < uris.length) {
+			var doc = store.overlay(uris[i]);
+			var options: Array<string> = if(owners[i] != null, owners[i].definition.compilerArgs, []);
+			if (doc != null && !sameOptions(parsedWith[uris[i]], options)) update(doc, options);
+		}
+	}
+	private def collectFile(uris: Vector<string>, uri: string, options: Array<string>) {
+		if (DocumentUri.filePath(uri) != null) uris.put(uri);
+	}
+	private def sameOptions(a: Array<string>, b: Array<string>) -> bool {
+		if (a.length != b.length) return false;
+		for (i < a.length) if (!Strings.equal(a[i], b[i])) return false;
+		return true;
 	}
 }
 
