@@ -5,7 +5,9 @@
 A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
 - contributes the `virgil` language for `.v3` files, with comment and bracket configuration and a small TextMate grammar;
-- starts `virgil-lsp --stdio` for `virgil` documents (saved files and untitled buffers);
+- starts `virgil-lsp --stdio` when a `virgil` document opens or the workspace contains a `.virgil-lsp.json` project file;
+- sends the server `virgil` documents (saved files and untitled buffers) and `.virgil-lsp.json` buffers, so that configuration diagnostics follow unsaved edits to project files;
+- sends the [Virgil root](#settings) that project files' `virgilDependencies` are relative to;
 - reports startup problems, the server's stderr, and the optional message trace in the "Virgil Language Server" output channel;
 - sends `shutdown` and then `exit` when it is deactivated, for example when the window closes;
 - runs on the workspace side (`extensionKind: ["workspace"]`), so that with Remote-SSH and Remote-WSL the server starts on the remote machine, next to the files ([ADR-0003](../../docs/decisions/0003-supported-platforms.md)).
@@ -38,11 +40,14 @@ The extension runs only in [trusted workspaces](https://code.visualstudio.com/do
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `virgil.server.path` | `virgil-lsp` | A command name looked up on the extension host's `PATH`, or an absolute path. Relative paths are rejected. This is a machine setting: set it in user settings, or in the remote settings with Remote-SSH and Remote-WSL. Workspace settings can't change it. Changing it restarts the server. |
+| `virgil.virgilRoot` | empty | The absolute physical path of the Virgil checkout or installation, the directory that holds `lib/`. Project files' `virgilDependencies`, such as `lib/util/*.v3`, are relative to it ([Configuration](../../docs/configuration.md#the-virgil-root)). When empty, the extension uses `VIRGIL_LOC` from the extension host's environment: with Remote-SSH or Remote-WSL, the remote machine's. A machine setting, like `virgil.server.path`. Changing it restarts the server; a change to `VIRGIL_LOC` needs a new window. |
 | `virgil.trace.server` | `messages` | How much of each LSP message the trace records: `messages`, `compact`, or `verbose`. |
 
 To record the trace, set the output channel's log level to Trace: run **Developer: Set Log Level...**, choose "Virgil Language Server", then Trace. The trace stops when you set the level back to Info.
 
-The `virgil.project.config` setting described in the [ROADMAP](../../ROADMAP.md#visual-studio-code) is planned. See [Configuration](../../docs/configuration.md) for the server's current project discovery behavior.
+At startup, the output channel names the Virgil root and where it came from, or says there is none. Without one, a project file with `virgilDependencies` gets a `MissingVirgilRoot` diagnostic, and its documents stay in single-file mode. A relative `virgil.virgilRoot` isn't sent: the extension shows a warning instead, and doesn't fall back to `VIRGIL_LOC`.
+
+There is no setting for the project file: the server uses the nearest `.virgil-lsp.json` above each document ([Configuration](../../docs/configuration.md#workspace-folders-and-active-projects)).
 
 Command: **Virgil: Restart Language Server**.
 
@@ -72,20 +77,23 @@ CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm t
 
 ## Manual checklist
 
-Run it on each platform before a release, and after changes to the extension or to server startup and shutdown. Use a copy of the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) (`cp -R test/e2e/nvim/fixture /tmp/virgil-check`), so that edits don't touch the checkout. Its `bad.v3` contains a syntax error on line 3.
+Run it on each platform before a release, and after changes to the extension or to server startup and shutdown. Use a copy of the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) (`cp -R test/e2e/nvim/fixture /tmp/virgil-check`), so that edits don't touch the checkout. Its `bad.v3` contains a syntax error on line 3. Its project file defines a project `words`, which uses Virgil's `lib/util`. Set `virgil.virgilRoot` to the absolute path of the checkout's `vendor/virgil` before you start.
 
 For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Remote-WSL** (from Windows into WSL 2), and **macOS** (Apple Silicon, with Rosetta 2):
 
 1. Open the fixture folder with the extension loaded (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language.
-2. The "Virgil Language Server" output channel shows `Starting <path> --stdio` and `Started virgil-lsp <version>`. With a remote, `<path>` is on the remote machine.
+2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine.
 3. The Problems view shows one error, "invalid start of expression" from `aeneas`, at line 3, column 27.
 4. Without saving, replace the file's contents with `component C { def value = 1; }`. The error disappears.
 5. The Outline view shows the component `C`.
 6. Undo the edit. The error comes back without saving.
-7. Run **Virgil: Restart Language Server**. The output channel shows `Server process exited successfully`, which means the server exited with status 0 after `shutdown` and `exit`, and then the start messages again. Closing the window stops the server the same way.
-8. Set `virgil.server.path` to a nonexistent absolute path. The output channel reports that the file is missing or not executable, and an error notification appears. Restore the setting.
-9. With a copy of `virgil-lsp` in a directory without `virgil-lsp-worker`, point `virgil.server.path` at the copy. The output channel reports the missing worker. Restore the setting.
-10. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit.
-11. Close any buffers that contain a known parser crash input, then terminate the server process to trigger automatic recovery. During recovery, separately try **Virgil: Restart Language Server**, changing `virgil.server.path`, and closing the window. Each action waits for recovery to finish; restart and configuration changes stop the recovered server before starting its replacement, and closing the window sends `shutdown` then `exit` to the recovered server. Confirm that only one server remains after a restart and none remains after closing the window.
+7. Open `words/Words.v3`. The Problems view shows one error for it, "expected int in var initialization, got Array<byte>" from `aeneas`, on line 7. Without the library, it would also report that `StringBuilder` cannot be found.
+8. Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. The Problems view shows an `UnknownField` error from `virgil-lsp` on that line. Undo the edit; the error disappears.
+9. Clear `virgil.virgilRoot`, with `VIRGIL_LOC` unset. The server restarts, the output channel says there is no Virgil root, and `.virgil-lsp.json` gets a `MissingVirgilRoot` error. Restore the setting.
+10. Run **Virgil: Restart Language Server**. The output channel shows `Server process exited successfully`, which means the server exited with status 0 after `shutdown` and `exit`, and then the start messages again. Closing the window stops the server the same way.
+11. Set `virgil.server.path` to a nonexistent absolute path. The output channel reports that the file is missing or not executable, and an error notification appears. Restore the setting.
+12. With a copy of `virgil-lsp` in a directory without `virgil-lsp-worker`, point `virgil.server.path` at the copy. The output channel reports the missing worker. Restore the setting.
+13. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit.
+14. Close any buffers that contain a known parser crash input, then terminate the server process to trigger automatic recovery. During recovery, separately try **Virgil: Restart Language Server**, changing `virgil.server.path`, and closing the window. Each action waits for recovery to finish; restart and configuration changes stop the recovered server before starting its replacement, and closing the window sends `shutdown` then `exit` to the recovered server. Confirm that only one server remains after a restart and none remains after closing the window.
 
 Record the VS Code version, the platform, and the server version in the pull request.

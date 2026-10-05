@@ -14,6 +14,9 @@ import {
 
 const CHANNEL_NAME = 'Virgil Language Server';
 const SERVER_PATH_SETTING = 'virgil.server.path';
+const VIRGIL_ROOT_SETTING = 'virgil.virgilRoot';
+// Settings read only when the server starts.
+const RESTART_SETTINGS = [SERVER_PATH_SETTING, VIRGIL_ROOT_SETTING];
 // The server starts this executable from the directory of its own resolved
 // path (/proc/self/exe on Linux, proc_pidpath on macOS).
 const WORKER_NAME = 'virgil-lsp-worker';
@@ -45,8 +48,9 @@ export function activate(context: vscode.ExtensionContext): Promise<void> {
     channel,
     vscode.commands.registerCommand('virgil.server.restart', () => enqueue(restart)),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration(SERVER_PATH_SETTING)) {
-        output.info(`${SERVER_PATH_SETTING} changed; restarting the server`);
+      const changed = RESTART_SETTINGS.find((setting) => event.affectsConfiguration(setting));
+      if (changed !== undefined) {
+        output.info(`${changed} changed; restarting the server`);
         void enqueue(restart);
       }
     }),
@@ -83,11 +87,15 @@ async function start(): Promise<void> {
     // The stdio transport appends `--stdio` to the arguments.
     transport: TransportKind.stdio,
   };
+  const virgilRoot = resolveVirgilRoot();
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: 'file', language: 'virgil' },
       { scheme: 'untitled', language: 'virgil' },
+      // Project files, so that configuration diagnostics follow unsaved edits.
+      { scheme: 'file', pattern: '**/.virgil-lsp.json' },
     ],
+    initializationOptions: virgilRoot === undefined ? {} : { virgilRoot },
     // The client also writes the server's stderr here and, while the
     // channel's log level is Trace, the message trace.
     outputChannel: output,
@@ -174,6 +182,35 @@ async function resolveServer(): Promise<string> {
     );
   }
   return executable;
+}
+
+// Returns the Virgil root for projects' virgilDependencies: the setting, or
+// else VIRGIL_LOC from the extension host's environment. The server ignores a
+// root that isn't an absolute path, so such a value is reported and not sent.
+function resolveVirgilRoot(): string | undefined {
+  const setting = vscode.workspace.getConfiguration().get<string>(VIRGIL_ROOT_SETTING, '').trim();
+  if (setting !== '') {
+    if (path.isAbsolute(setting)) {
+      output.info(`Virgil root: ${setting} (from ${VIRGIL_ROOT_SETTING})`);
+      return setting;
+    }
+    const message = `${VIRGIL_ROOT_SETTING} must be an absolute path, not ${setting}. `
+      + 'Projects with virgilDependencies stay disabled until it is fixed.';
+    output.warn(message);
+    void vscode.window.showWarningMessage(`Virgil: ${message}`);
+    return undefined;
+  }
+  const env = (process.env.VIRGIL_LOC ?? '').trim();
+  if (env !== '' && path.isAbsolute(env)) {
+    output.info(`Virgil root: ${env} (from VIRGIL_LOC)`);
+    return env;
+  }
+  output.info(
+    env === ''
+      ? `No Virgil root: neither ${VIRGIL_ROOT_SETTING} nor VIRGIL_LOC is set`
+      : `No Virgil root: ignoring VIRGIL_LOC, which is not an absolute path: ${env}`,
+  );
+  return undefined;
 }
 
 async function findExecutable(setting: string): Promise<string> {

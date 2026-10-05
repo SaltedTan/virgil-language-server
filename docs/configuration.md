@@ -122,7 +122,12 @@ This deliberately favors bounded, reproducible traversal over support for symlin
 
 A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If the option is absent or isn't an absolute path string, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic. An absolute root whose required directories cannot be listed instead reports `SourceIO`.
 
-*(planned)* Fallback discovery will use `VIRGIL_LOC`, then the parent of the directory containing `v3c` on `PATH`, and log the chosen root. These fallbacks are not implemented yet; the server never runs `v3c` to discover a root.
+The editor clients set the option:
+
+- **VS Code:** the machine setting `virgil.virgilRoot`, or, when it is empty, `VIRGIL_LOC` from the extension host's environment. With Remote-SSH or Remote-WSL, that is the remote machine's environment. The client logs the root it sends, and changing the setting restarts the server ([client settings](../clients/vscode/README.md#settings)).
+- **Neovim:** `init_options.virgilRoot`, which the shipped configurations take from `VIRGIL_LOC` ([Neovim setup](../editors/nvim/README.md#the-virgil-root)).
+
+The server doesn't look for a root itself: it never reads `VIRGIL_LOC` or runs `v3c`. The native runtime doesn't pass the environment to the program (`vendor/virgil/rt/native/RiRuntime.v3` ignores `envp`), so the defaults live in the clients' configuration, where they are visible.
 
 A repository that includes Virgil, for example as a submodule, can list the library in `dependencies` instead: `"vendor/virgil/lib/util/*.v3"`.
 
@@ -191,7 +196,7 @@ A file selected by several discovered projects has a separate `ProjectContext` (
 
 Ties use canonical configuration URI byte order, then project declaration order within that file. No map iteration order or client folder ordering participates. A file with no selected context stays in single-file mode.
 
-Known configuration bytes are refreshed on document updates, project analysis submissions/completions (including automatic analyses), and development snapshot inspection. Expanded source lists and expansion diagnostics are cached until their configuration changes or an explicit project analysis request refreshes them. Ordinary source edits, automatic analyses, inspection, and completion reuse those lists; development project submissions repeat expansion and budget checks before reading sources. Accepted edits to open JSON configuration buffers take precedence over disk. A changed configuration gets a new revision token; all snapshots stamped with its old revision become stale, including analyses that were already pending. Restoring old bytes does not revive those results.
+Known configuration bytes are refreshed on document updates, project analysis submissions/completions (including automatic analyses), and development snapshot inspection. Expanded source lists and expansion diagnostics are cached until their configuration changes or an explicit project analysis request refreshes them. Ordinary source edits, automatic analyses, inspection, and completion reuse those lists; development project submissions repeat expansion and budget checks before reading sources. Accepted edits to open JSON configuration buffers take precedence over disk. The VS Code client and the shipped Neovim configurations send `.virgil-lsp.json` buffers to the server, so configuration diagnostics follow unsaved edits. A changed configuration gets a new revision token; all snapshots stamped with its old revision become stale, including analyses that were already pending. Restoring old bytes does not revive those results.
 
 **Follow-up:** dynamic `workspace/didChangeWatchedFiles` registration, background discovery of newly created configurations, and automatic detection of external disk changes are not implemented. Closed-source edits are read on the next scheduled analysis; external configuration changes are noticed on the next refresh and reschedule loaded projects, not immediately. Restart the server to rediscover unopened configurations added elsewhere in the workspace.
 

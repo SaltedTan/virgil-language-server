@@ -1,0 +1,10 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+// Uses StringBuilder from Virgil's lib/util, which the project file names
+// relative to the Virgil root. The type error needs the library to resolve.
+component Words {
+	def join(a: string, b: string) -> int {
+		var line: int = StringBuilder.new().puts(a).putc(' ').puts(b).toString();
+		return line;
+	}
+}
