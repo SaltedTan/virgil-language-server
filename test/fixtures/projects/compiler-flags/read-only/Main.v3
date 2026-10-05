@@ -1,0 +1,5 @@
+component Main {
+	def main() -> int {
+		return Table.first([1, 2, 3]);
+	}
+}

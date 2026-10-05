@@ -151,7 +151,9 @@ The server's pinned Aeneas is an unstable build (`Version.UNSTABLE`), so it acce
 - Each option may appear once per project. Flags apply in the order given, as in `v3c`.
 - Every other flag is an error, including real `v3c` flags such as `-O2`, `-heap-size`, `-target`, `-redef-field`, `-rt.files`, and `-run`. They select compiler actions, targets, outputs, code generation, the runtime, or initial field values, which analysis doesn't use. Copy only the `-lang:` flags from a build script.
 
-*(planned)* Aeneas keeps these options in process-wide state (`CLOptions`). The analysis worker sets a project's flags before each of its analyses. The server's single-file parser uses the flags of a document's active project, so that syntax diagnostics and document symbols agree with whole-program analysis. A document in no project uses the defaults.
+Aeneas keeps these options in process-wide state (`CLOptions`). Each analysis of a project sends its flags to the analysis worker, which applies them before parsing and verification and restores the defaults afterwards. Projects with different flags therefore share one worker, and a file in several projects is analyzed with each project's flags in turn. Its semantic diagnostics come from its [active project](#workspace-folders-and-active-projects).
+
+The server parses an open document with the flags of its active project, so that syntax diagnostics and document symbols agree with whole-program analysis. It restores the defaults after each parse. A document in no project, or under a project file with errors, uses the defaults. When a configuration change gives an open document's active project different flags, the server parses the document again and republishes its diagnostics. The development `analyze` command and explicit `uris` in the [development request](development.md#development-stdio-requests) always use the defaults.
 
 ### Target
 

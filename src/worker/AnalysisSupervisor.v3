@@ -55,10 +55,12 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 
 	// Returns an immediate failure or Pending if accepted. A busy rejection never
 	// disturbs the existing request; there is no unbounded analysis queue.
-	def begin(sources: Array<AnalysisSource>, flags: int) -> AnalysisOutcome {
+	// {options} are the program's language options, which apply only to this
+	// analysis: the worker restores the defaults after each one.
+	def begin(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
 		if (pending) return AnalysisOutcome.Failed(AnalysisFailure.BUSY, "an analysis is already running");
 		var id = nextId++;
-		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, sources) - WorkerFraming.HEADER_BYTES;
+		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, options, sources) - WorkerFraming.HEADER_BYTES;
 		if (size > WorkerFraming.MAX_PAYLOAD) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE,
 				Strings.format2("the request takes %d bytes, more than the limit of %d bytes", size, WorkerFraming.MAX_PAYLOAD));
@@ -82,7 +84,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		activeId = id;
 		paths = Array<string>.new(sources.length);
 		for (i < paths.length) paths[i] = sources[i].path;
-		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, sources);
+		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources);
 		pending = true;
 		if (!starting) sendRequest();
 		return AnalysisOutcome.Pending;
@@ -144,8 +146,8 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		}
 	}
 	// Synchronous development CLI and unit-test client.
-	def analyze(sources: Array<AnalysisSource>, flags: int) -> AnalysisOutcome {
-		var outcome = begin(sources, flags);
+	def analyze(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
+		var outcome = begin(sources, options, flags);
 		var fds = Array<int>.new(4);
 		while (AnalysisOutcome.Pending.?(outcome)) {
 			var count = pollFds(fds, 0);

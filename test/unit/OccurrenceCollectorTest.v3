@@ -29,7 +29,7 @@ component OccurrenceCollectorTest {
 			t.fail1("cannot read %s; run the unit tests from the repository root", path);
 			return null;
 		}
-		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, input)], false);
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, input)], [], false);
 		if (a != null) {
 			t.asserti(0, a.diagnostics.length);
 			t.assertz(true, a.verified);
@@ -114,7 +114,7 @@ component OccurrenceCollectorTest {
 	def unresolved_match_cases(t: Tester) {
 		var path = "unresolved-patterns.v3";
 		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-			"type T { case Local; }\nenum E { X }\ncomponent M {\n    def f(t: T) { match (t) { Missing => return; } }\n    def g(e: E) { match (e) { Missing => return; } }\n}\n")], false);
+			"type T { case Local; }\nenum E { X }\ncomponent M {\n    def f(t: T) { match (t) { Missing => return; } }\n    def g(e: E) { match (e) { Missing => return; } }\n}\n")], [], false);
 		t.assertz(true, a.parsed);
 		t.assertz(false, a.verified);
 		t.assert(a.diagnostics.length > 0, "expected unresolved case diagnostics");
@@ -128,7 +128,7 @@ component OccurrenceCollectorTest {
 		var path = Strings.format1("test/fixtures/analysis/duplicate-uses/%s.v3", name);
 		var bytes = System.fileLoad(path);
 		t.assert(bytes != null, "fixture must be readable from the repository root");
-		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, bytes)], false);
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, bytes)], [], false);
 		t.asserti(0, a.diagnostics.length);
 		t.assertz(true, a.verified);
 		return (a, path);

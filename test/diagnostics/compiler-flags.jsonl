@@ -1,0 +1,34 @@
+# Each project's compilerArgs apply to its own analyses and to parsing its documents.
+# "descriptors" sets -lang:descriptors; "read-only" and "defaults" share shared/Table.v3,
+# which needs -lang:read-only-arrays, and only "read-only" sets it.
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/compiler-flags","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+# The descriptor clause parses with the project's -lang:descriptors, so no syntax error.
+# Loading the configuration analyzes every project. Only "defaults" reports an error: it
+# analyzes the shared file without read-only arrays, and its own Main.v3 fails to call it.
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/compiler-flags/descriptors/Described.v3","languageId":"virgil","version":1,"text":"// A descriptor clause parses only with -lang:descriptors.\nclass Kind describes Shape { }\nclass Shape descriptor Kind { }\ncomponent Shapes {\n\tdef none: Shape;\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/.virgil-lsp.json","diagnostics":[]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/descriptors/Described.v3","diagnostics":[],"version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/defaults/Main.v3","diagnostics":[{"range":{"start":{"line":2,"character":21},"end":{"line":2,"character":30}},"severity":1,"source":"aeneas","code":"TypeError","message":"expected array in call, got Array<int>"}]}}}
+# The outline uses the same options.
+{"send":{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"@ROOT@/compiler-flags/descriptors/Described.v3"}}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":[{"name":"Kind","kind":5,"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":30}},"selectionRange":{"start":{"line":1,"character":6},"end":{"line":1,"character":10}}},{"name":"Shape","kind":5,"range":{"start":{"line":2,"character":0},"end":{"line":2,"character":31}},"selectionRange":{"start":{"line":2,"character":6},"end":{"line":2,"character":11}}},{"name":"Shapes","kind":3,"range":{"start":{"line":3,"character":0},"end":{"line":5,"character":1}},"selectionRange":{"start":{"line":3,"character":10},"end":{"line":3,"character":16}},"children":[{"name":"none","kind":8,"range":{"start":{"line":4,"character":1},"end":{"line":4,"character":17}},"selectionRange":{"start":{"line":4,"character":5},"end":{"line":4,"character":9}}}]}]}}
+# An unsaved project file without -lang:descriptors parses the open document again at once.
+# The configuration change clears the old projects' diagnostics and analyzes them again.
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/compiler-flags/.virgil-lsp.json","languageId":"json","version":1,"text":"{\n  \"version\": 1,\n  \"projects\": [\n    {\n      \"name\": \"descriptors\",\n      \"sources\": [\"descriptors/*.v3\"],\n      \"compilerArgs\": []\n    },\n    {\n      \"name\": \"read-only\",\n      \"sources\": [\"read-only/*.v3\", \"shared/*.v3\"],\n      \"compilerArgs\": [\"-lang:read-only-arrays\"]\n    },\n    {\n      \"name\": \"defaults\",\n      \"sources\": [\"defaults/*.v3\", \"shared/*.v3\"]\n    }\n  ]\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/.virgil-lsp.json","diagnostics":[]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/defaults/Main.v3","diagnostics":[]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/descriptors/Described.v3","diagnostics":[{"range":{"start":{"line":1,"character":11},"end":{"line":1,"character":11}},"severity":1,"source":"aeneas","code":"ParseError","message":"\"{\" expected"}],"version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/defaults/Main.v3","diagnostics":[{"range":{"start":{"line":2,"character":21},"end":{"line":2,"character":30}},"severity":1,"source":"aeneas","code":"TypeError","message":"expected array in call, got Array<int>"}]}}}
+{"send":{"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"@ROOT@/compiler-flags/descriptors/Described.v3"}}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":[]}}
+# Closing it restores the file on disk and its options, which clears the syntax error.
+{"send":{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOT@/compiler-flags/.virgil-lsp.json"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/.virgil-lsp.json","diagnostics":[]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/defaults/Main.v3","diagnostics":[]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/descriptors/Described.v3","diagnostics":[],"version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"@ROOT@/compiler-flags/defaults/Main.v3","diagnostics":[{"range":{"start":{"line":2,"character":21},"end":{"line":2,"character":30}},"severity":1,"source":"aeneas","code":"TypeError","message":"expected array in call, got Array<int>"}]}}}
+{"send":{"jsonrpc":"2.0","id":4,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}

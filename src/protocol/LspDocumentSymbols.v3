@@ -1,7 +1,9 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-class LspDocumentSymbols(store: DocumentStore) {
+// Outlines parse the overlay with the language options of the document's
+// active project, as its syntax diagnostics do.
+class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
 	}
@@ -15,7 +17,8 @@ class LspDocumentSymbols(store: DocumentStore) {
 		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
 		if (overlay == null) return JsonRpcReply.Result(JsonValue.JArray([]));
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
-		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text);
+		var options = projects.forDocument(overlay.uri).compilerArgs();
+		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text, options);
 		return JsonRpcReply.Result(encodeSymbols(symbols, map));
 	}
 	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {

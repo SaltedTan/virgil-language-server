@@ -4,7 +4,7 @@
 """Drive exact diagnostic ranges through the real worker and CLI.
 
 Usage: python3 test/protocol/coordinates.py build/virgil-lsp [--evidence-dir DIR]
-The worker's v2 wire response is the executable interface for byte offsets;
+The worker's v3 wire response is the executable interface for byte offsets;
 the development CLI and stdio API intentionally retain compiler coordinates.
 """
 
@@ -81,7 +81,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 2, self.hello
+        assert self.hello["protocol"] == 3, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -100,9 +100,12 @@ class Worker:
             assert data, ("worker closed its output", self.proc.poll())
             self.buffer += data
 
-    def analyze(self, sources, flags=0):
+    def analyze(self, sources, flags=0, options=()):
         self.next_id += 1
-        payload = b"\x02" + leb(self.next_id) + leb(flags) + leb(2000) + leb(len(sources))
+        payload = b"\x02" + leb(self.next_id) + leb(flags) + leb(2000) + leb(len(options))
+        for option in options:
+            payload += string(option)
+        payload += leb(len(sources))
         for path, text in sources:
             payload += string(path) + string(text)
         self.proc.stdin.write(struct.pack("<I", len(payload)) + payload)
@@ -161,8 +164,8 @@ def main():
     worker = Worker(exe.with_name("virgil-lsp-worker"))
     evidence.append(dict(hello=worker.hello))
 
-    def check(name, text, spans, flags=0, path="ranges.v3"):
-        result = worker.analyze([(path, text)], flags)
+    def check(name, text, spans, flags=0, path="ranges.v3", options=()):
+        result = worker.analyze([(path, text)], flags, options)
         actual = [(d["beginOffset"], d["endOffset"]) for d in result["diagnostics"]]
         assert actual == spans, (name, actual, spans, result)
         raw = text.encode()
@@ -198,6 +201,13 @@ def main():
         ]
         for text, spans in cases:
             check("expression enclosing retrospective token", text, spans)
+        # Language options reach the worker's parser and verifier, and last
+        # for one analysis: the same text is checked again without them.
+        described = '/*\t😀*/ class D describes C { }\nclass C descriptor D { }\n'
+        begin = described.encode().index(b'describes')
+        check("descriptor clause without -lang:descriptors", described, [(begin, begin)])
+        check("descriptor clause with -lang:descriptors", described, [], options=["-lang:descriptors"])
+        check("descriptor clause after an analysis with options", described, [(begin, begin)])
         unnamed = check("source without a captured filename", 'component C { def x: int = "s"; }',
                         [(-1, -1)], path=None)
         assert unnamed['diagnostics'][0]['path'] == '<null>', unnamed
@@ -293,7 +303,7 @@ def main():
         if args.evidence_dir:
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
             (args.evidence_dir / 'coordinates-live.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + '\n')
-    print('Real worker offsets, CLI coordinates, binding exports, stdio overlays, allocation guard, and malformed-string bounds passed.')
+    print('Real worker offsets, language options, CLI coordinates, binding exports, stdio overlays, allocation guard, and malformed-string bounds passed.')
 
 
 if __name__ == '__main__':

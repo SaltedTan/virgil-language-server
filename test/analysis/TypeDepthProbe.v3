@@ -13,14 +13,14 @@ component AnalysisTypeDepthProbe {
 				else buf.put2("var a%d = [a%d];\n", i, i - 1);
 			}
 			buf.puts("}\n");
-			var nested = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, buf.extract())], true);
+			var nested = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, buf.extract())], [], true);
 			if (!nested.verified || nested.diagnostics.length != 0 || nested.stats.globalTypesAdded < DEPTH - 100) {
 				System.puts("FAIL: deeply nested inferred types were not verified and retained\n");
 				return 1;
 			}
 			var count = AeneasAdapter.globalTypeCount();
 			var tiny = AeneasAdapter.analyzeProgram(
-				[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], false);
+				[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], [], false);
 			if (!tiny.verified || tiny.diagnostics.length != 0 || AeneasAdapter.globalTypeCount() < count) {
 				System.puts("FAIL: subsequent tiny analysis did not preserve builtin types\n");
 				return 1;

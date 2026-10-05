@@ -57,7 +57,7 @@ component AnalysisRetainProbe {
 	// Return from every frame holding the snapshot before measuring the heap.
 	// expected: -1 permits semantic errors, 0 clean, 1 verification error, 2 parse error.
 	def analyze(sources: Array<AnalysisSource>, expected: int) -> bool #no-inline {
-		var a = AeneasAdapter.analyzeProgram(sources, false);
+		var a = AeneasAdapter.analyzeProgram(sources, [], false);
 		var ok = if(expected == -1, a.parsed,
 			if(expected == 0, a.verified,
 				if(expected == 1, a.parsed && !a.verified, !a.parsed)));

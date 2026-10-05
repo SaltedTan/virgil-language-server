@@ -7,6 +7,7 @@
 def T = UnitTests.register;
 def X = [
 	T("AnalysisSupervisor:completes", test_completes),
+	T("AnalysisSupervisor:options_per_analysis", test_options_per_analysis),
 	T("AnalysisSupervisor:async_busy_and_cancel", test_async_busy_and_cancel),
 	T("AnalysisSupervisor:crash_keeps_snapshot", test_crash_keeps_snapshot),
 	T("AnalysisSupervisor:enum_case_crash", test_enum_case_crash),
@@ -100,9 +101,9 @@ def test_async_busy_and_cancel(t: Tester) {
 	var good = load(t, [SHAPES, MAIN]);
 	if (good == null) return;
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
-	t.assert(AnalysisOutcome.Pending.?(s.begin(good, ALL)), "accepted asynchronously");
+	t.assert(AnalysisOutcome.Pending.?(s.begin(good, [], ALL)), "accepted asynchronously");
 	t.assert(s.busy(), "busy during startup");
-	assertFailed(t, AnalysisFailure.BUSY, s.begin(good, ALL));
+	assertFailed(t, AnalysisFailure.BUSY, s.begin(good, [], ALL));
 	var fds = Array<int>.new(4);
 	var outcome: AnalysisOutcome = AnalysisOutcome.Pending;
 	while (AnalysisOutcome.Pending.?(outcome)) {
@@ -116,12 +117,12 @@ def test_async_busy_and_cancel(t: Tester) {
 	t.asserti(-1, s.pollTimeout());
 	t.asserti(0, s.pollFds(fds, 0));
 	assertQueries(t, first);
-	t.assert(AnalysisOutcome.Pending.?(s.begin([AnalysisSource.new("hang.v3", "class S extends S { def f() { me; } }")], ALL)), "accepted hang");
+	t.assert(AnalysisOutcome.Pending.?(s.begin([AnalysisSource.new("hang.v3", "class S extends S { def f() { me; } }")], [], ALL)), "accepted hang");
 	s.close();
 	t.assertz(false, s.busy());
 	t.assert(s.snapshot == first, "cancel preserves snapshot");
 	assertQueries(t, first);
-	var next = completed(t, s.analyze(good, ALL));
+	var next = completed(t, s.analyze(good, [], ALL));
 	s.close();
 	if (next == null) return;
 	t.asserti(2, next.generation);
@@ -133,8 +134,8 @@ def test_completes(t: Tester) {
 	var good = load(t, [SHAPES, MAIN]);
 	if (good == null) return;
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
-	var a = completed(t, s.analyze(good, ALL));
-	var b = completed(t, s.analyze(good, ALL));
+	var a = completed(t, s.analyze(good, [], ALL));
+	var b = completed(t, s.analyze(good, [], ALL));
 	s.close();
 	if (a == null || b == null) return;
 	t.asserti(1, a.generation);
@@ -151,19 +152,37 @@ def test_completes(t: Tester) {
 // The issue #13 reproduction: verification traps on `def x: i32 = 0i;`.
 // The worker dies; the supervisor reports it, keeps the last snapshot, and
 // serves the next analysis from a new worker.
+// Projects with different language options share one worker. Each analysis
+// gets its own options, and the worker restores the defaults after it.
+def test_options_per_analysis(t: Tester) {
+	var s = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()).0;
+	var sources = [AnalysisSource.new("read-only.v3", "component M {\n\tdef first(a: array<int>) -> int { return a[0]; }\n}\n")];
+	var runs: Array<Array<string>> = [["-lang:read-only-arrays"], [], ["-lang:read-only-arrays"], []];
+	for (options in runs) {
+		var snapshot = completed(t, s.analyze(sources, options, ALL));
+		if (snapshot == null) break;
+		t.assertz(options.length > 0, snapshot.verified);
+		if (options.length == 0) {
+			t.assert(snapshot.diagnostics.length > 0 && Strings.equal("UnresolvedType", snapshot.diagnostics[0].kind),
+				"array is not a type without the option");
+		}
+	}
+	t.asserti(1, s.workersStarted);
+	s.close();
+}
 def test_crash_keeps_snapshot(t: Tester) {
 	var good = load(t, [SHAPES, MAIN]), crash = load(t, [CRASH]);
 	if (good == null || crash == null) return;
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
-	var first = completed(t, s.analyze(good, ALL));
+	var first = completed(t, s.analyze(good, [], ALL));
 	if (first == null) return s.close();
 	var start = System.ticksMs();
-	assertFailed(t, AnalysisFailure.CRASHED, s.analyze(crash, ALL));
+	assertFailed(t, AnalysisFailure.CRASHED, s.analyze(crash, [], ALL));
 	t.assert(System.ticksMs() - start < 5000, "a crash is reported promptly");
 	t.assert(s.snapshot == first, "the last snapshot is kept");
 	assertQueries(t, first);
 	t.assert(contains(sl.1.warnings, "crashed during an analysis; it ended with exit status 255; snapshot 1 is kept"), "crash logged");
-	var next = completed(t, s.analyze(good, ALL));
+	var next = completed(t, s.analyze(good, [], ALL));
 	s.close();
 	if (next == null) return;
 	t.asserti(2, next.generation);
@@ -175,9 +194,9 @@ def test_enum_case_crash(t: Tester) {
 	var good = load(t, [SHAPES, MAIN]);
 	if (good == null) return;
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
-	assertFailed(t, AnalysisFailure.CRASHED, s.analyze([AnalysisSource.new("enum.v3", "enum E { A(6) }\n")], ALL));
+	assertFailed(t, AnalysisFailure.CRASHED, s.analyze([AnalysisSource.new("enum.v3", "enum E { A(6) }\n")], [], ALL));
 	t.assert(s.snapshot == null, "no snapshot yet");
-	t.assert(completed(t, s.analyze(good, ALL)) != null, "recovered");
+	t.assert(completed(t, s.analyze(good, [], ALL)) != null, "recovered");
 	s.close();
 }
 
@@ -189,15 +208,15 @@ def test_hang_times_out(t: Tester) {
 	var limits = AnalysisWorkerLimits.new();
 	limits.timeoutMs = 500;
 	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
-	var first = completed(t, s.analyze(good, ALL));
+	var first = completed(t, s.analyze(good, [], ALL));
 	var start = System.ticksMs();
-	assertFailed(t, AnalysisFailure.TIMED_OUT, s.analyze(hang, ALL));
+	assertFailed(t, AnalysisFailure.TIMED_OUT, s.analyze(hang, [], ALL));
 	var elapsed = System.ticksMs() - start;
 	t.assert(elapsed >= 500 && elapsed < 5000, Strings.format1("timed out after %d ms", elapsed));
 	t.assert(s.snapshot == first, "the last snapshot is kept");
 	t.assert(contains(sl.1.warnings, "exceeded the analysis time limit of 500 ms and was killed; it ended with signal 9"), "timeout logged");
 	if (first != null) assertQueries(t, first);
-	t.assert(completed(t, s.analyze(good, ALL)) != null, "recovered");
+	t.assert(completed(t, s.analyze(good, [], ALL)) != null, "recovered");
 	t.asserti(2, s.workersStarted);
 	s.close();
 }
@@ -209,7 +228,7 @@ def test_replaces_after_max_analyses(t: Tester) {
 	limits.maxAnalyses = 2;
 	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
 	for (i < 5) {
-		var snapshot = completed(t, s.analyze(good, ALL));
+		var snapshot = completed(t, s.analyze(good, [], ALL));
 		if (snapshot == null) return s.close();
 		assertQueries(t, snapshot);
 	}
@@ -225,11 +244,11 @@ def test_replaces_at_uid_limit(t: Tester) {
 	if (good == null) return;
 	var limits = AnalysisWorkerLimits.new();
 	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
-	var first = completed(t, s.analyze(good, ALL));
+	var first = completed(t, s.analyze(good, [], ALL));
 	if (first == null) return s.close();
 	// The second analysis in a worker passes this; a new worker's first does not.
 	limits.maxUid = first.stats.uidNext + 1;
-	var second = completed(t, s.analyze(good, ALL)), third = completed(t, s.analyze(good, ALL));
+	var second = completed(t, s.analyze(good, [], ALL)), third = completed(t, s.analyze(good, [], ALL));
 	s.close();
 	if (second == null || third == null) return;
 	t.assert(second.stats.uidNext > first.stats.uidNext, "the counter grows in one worker");
@@ -244,8 +263,8 @@ def test_replaces_at_live_heap_limit(t: Tester) {
 	var limits = AnalysisWorkerLimits.new();
 	limits.maxLiveBytes = 0;
 	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
-	t.assert(completed(t, s.analyze(good, ALL)) != null, "first");
-	t.assert(completed(t, s.analyze(good, ALL)) != null, "second");
+	t.assert(completed(t, s.analyze(good, [], ALL)) != null, "first");
+	t.assert(completed(t, s.analyze(good, [], ALL)) != null, "second");
 	s.close();
 	t.asserti(2, s.workersStarted);
 	t.assert(contains(sl.1.infos, "because its live heap reached"), "replacement logged");
@@ -253,17 +272,17 @@ def test_replaces_at_live_heap_limit(t: Tester) {
 
 def test_missing_worker(t: Tester) {
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), "/nonexistent/virgil-lsp-worker"), s = sl.0;
-	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], ALL));
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], [], ALL));
 	t.asserti(0, s.workersStarted);
 	t.assert(contains(sl.1.warnings, "cannot execute /nonexistent/virgil-lsp-worker"), "start failure logged");
 	sl = newSupervisor(AnalysisWorkerLimits.new(), null);
-	assertFailed(t, AnalysisFailure.UNAVAILABLE, sl.0.analyze([AnalysisSource.new("a.v3", "")], ALL));
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, sl.0.analyze([AnalysisSource.new("a.v3", "")], [], ALL));
 }
 
 // An executable that exits without the handshake is not used as a worker.
 def test_not_a_worker(t: Tester) {
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), "/usr/bin/true"), s = sl.0;
-	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], ALL));
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new("a.v3", "")], [], ALL));
 	t.asserti(1, s.workersStarted);
 	t.assert(contains(sl.1.warnings, "closed its result pipe before its handshake; it ended with exit status 0"), "handshake failure logged");
 }
@@ -271,15 +290,15 @@ def test_not_a_worker(t: Tester) {
 def test_request_too_large(t: Tester) {
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
 	var big = Array<byte>.new(60 * 1024 * 1024);
-	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], ALL));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], [], ALL));
 	t.asserti(0, s.workersStarted);
 }
 
 def test_request_size_boundary(t: Tester) {
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), null), s = sl.0;
-	var bytes = Array<byte>.new(WorkerFraming.MAX_PAYLOAD - 12);
-	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new(null, bytes)], 0));
-	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("x", bytes)], 0));
+	var bytes = Array<byte>.new(WorkerFraming.MAX_PAYLOAD - 13);
+	assertFailed(t, AnalysisFailure.UNAVAILABLE, s.analyze([AnalysisSource.new(null, bytes)], [], 0));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("x", bytes)], [], 0));
 	t.asserti(0, s.workersStarted);
 }
 
@@ -288,9 +307,9 @@ def test_aggregate_request_too_large(t: Tester) {
 	var bytes = Array<byte>.new(1024 * 1024);
 	var sources = Array<AnalysisSource>.new(2048);
 	for (i < sources.length) sources[i] = AnalysisSource.new("big.v3", bytes);
-	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, ALL));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, [], ALL));
 	for (i < sources.length) sources[i] = AnalysisSource.new(bytes, null);
-	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, ALL));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze(sources, [], ALL));
 	t.asserti(0, s.workersStarted);
 }
 
@@ -298,13 +317,13 @@ def test_oversized_request_keeps_snapshot(t: Tester) {
 	var good = load(t, [SHAPES, MAIN]);
 	if (good == null) return;
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
-	var first = completed(t, s.analyze(good, ALL));
+	var first = completed(t, s.analyze(good, [], ALL));
 	if (first == null) return s.close();
 	var big = Array<byte>.new(WorkerFraming.MAX_PAYLOAD);
-	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], ALL));
+	assertFailed(t, AnalysisFailure.TOO_LARGE, s.analyze([AnalysisSource.new("big.v3", big)], [], ALL));
 	t.assert(s.snapshot == first, "the last snapshot is kept");
 	assertQueries(t, first);
-	var next = completed(t, s.analyze(good, ALL));
+	var next = completed(t, s.analyze(good, [], ALL));
 	s.close();
 	if (next == null) return;
 	t.asserti(2, next.generation);
@@ -319,9 +338,9 @@ def test_oversized_request_keeps_snapshot(t: Tester) {
 def test_over_budget_result_keeps_snapshot(t: Tester) {
 	var sl = newSupervisor(AnalysisWorkerLimits.new(), HostOs.executablePath()), s = sl.0;
 	var good = [AnalysisSource.new("good", "")];
-	var first = completed(t, s.analyze(good, ALL));
+	var first = completed(t, s.analyze(good, [], ALL));
 	if (first == null) return s.close();
-	var outcome = s.analyze([AnalysisSource.new("too-large", "")], ALL);
+	var outcome = s.analyze([AnalysisSource.new("too-large", "")], [], ALL);
 	assertFailed(t, AnalysisFailure.TOO_LARGE, outcome);
 	match (outcome) {
 		Failed(failure, reason) => {
@@ -338,7 +357,7 @@ def test_over_budget_result_keeps_snapshot(t: Tester) {
 	t.assert(contains(sl.1.warnings, "result exceeding the allocation budget"), "budget failure logged");
 	t.assert(contains(sl.1.warnings, "snapshot 1 is kept"), "snapshot preservation logged");
 	t.assert(!contains(sl.1.warnings, "malformed"), "log does not blame worker corruption");
-	var next = completed(t, s.analyze(good, ALL));
+	var next = completed(t, s.analyze(good, [], ALL));
 	s.close();
 	if (next == null) return;
 	t.asserti(2, next.generation);
@@ -349,12 +368,12 @@ def test_malformed_result_replaces_worker(t: Tester) {
 	for (mode in ["malformed", "wrong-id"]) {
 		var sl = newSupervisor(AnalysisWorkerLimits.new(), HostOs.executablePath()), s = sl.0;
 		var good = [AnalysisSource.new("good", "")];
-		var first = completed(t, s.analyze(good, ALL));
+		var first = completed(t, s.analyze(good, [], ALL));
 		if (first == null) return s.close();
-		assertFailed(t, AnalysisFailure.MALFORMED, s.analyze([AnalysisSource.new(mode, "")], ALL));
+		assertFailed(t, AnalysisFailure.MALFORMED, s.analyze([AnalysisSource.new(mode, "")], [], ALL));
 		t.assert(s.snapshot == first, "malformed result preserves snapshot");
 		t.assert(contains(sl.1.warnings, "sent a malformed result and was killed"), "malformed result still kills worker");
-		var next = completed(t, s.analyze(good, ALL));
+		var next = completed(t, s.analyze(good, [], ALL));
 		s.close();
 		if (next == null) return;
 		t.asserti(2, next.generation);

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "descriptors",
+      "sources": ["descriptors/*.v3"],
+      "compilerArgs": ["-lang:descriptors"]
+    },
+    {
+      "name": "read-only",
+      "sources": ["read-only/*.v3", "shared/*.v3"],
+      "compilerArgs": ["-lang:read-only-arrays"]
+    },
+    {
+      "name": "defaults",
+      "sources": ["defaults/*.v3", "shared/*.v3"]
+    }
+  ]
+}

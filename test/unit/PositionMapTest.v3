@@ -332,7 +332,7 @@ def test_multiline_range(t: Tester) {
 // Checks that the position of the first diagnostic for {text} is at the
 // first byte of {token}, which must occur once.
 def checkAeneasColumn(t: Tester, text: string, token: string) {
-	var r = AeneasAdapter.parseFile("columns.v3", text);
+	var r = AeneasAdapter.parseFile("columns.v3", text, []);
 	if (r.diagnostics.length == 0) return t.fail1("expected a syntax error in %s", text);
 	var d = r.diagnostics[0];
 	var offset = indexOf(text, token);
@@ -364,7 +364,7 @@ def test_matches_aeneas_columns(t: Tester) {
 // Diagnostic consumers use adapter byte offsets, not compiler column reversal.
 def test_analysis_block_comment_offsets(t: Tester) {
 	var text = "component C {\n/*\t*/ def x = ;\n}\n";
-	var r = AeneasAdapter.parseFile("comment-columns.v3", text);
+	var r = AeneasAdapter.parseFile("comment-columns.v3", text, []);
 	if (r.diagnostics.length == 0) return t.fail("expected a syntax error");
 	var d = r.diagnostics[0];
 	t.asserti(2, d.beginLine);
