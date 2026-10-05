@@ -4,7 +4,8 @@
 #
 # Golden transcript tests: runs "virgil-lsp --stdio" on recorded input bytes
 # and compares standard output byte for byte. Each directory next to this
-# script is one case:
+# script is one case, except __pycache__, which the Python tests that import
+# worker.py leave here:
 #
 #   input        The bytes written to standard input.
 #   input.<n>    Instead of input: parts written one after another, numbered
@@ -69,6 +70,10 @@ feed() {
 run_case() {
     local c=$1 ok=1 want got pat n
     local -a args=()
+    if [ ! -f "$c/status" ]; then
+        echo "  status: missing"
+        return 1
+    fi
     if [ -f "$c/args" ]; then read -r -a args < "$c/args"; fi
     "$EXE" --stdio ${args[@]+"${args[@]}"} < <(feed "$c") > "$TMP/out" 2> "$TMP/err"
     got=$?
@@ -107,6 +112,7 @@ run_case() {
 pass=0
 fail=0
 for c in "$DIR"/*/; do
+    [ "$(basename "$c")" = __pycache__ ] && continue
     if run_case "$c" > "$TMP/report"; then
         pass=$((pass + 1))
     else
