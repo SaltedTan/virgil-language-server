@@ -175,7 +175,9 @@ expect "worker refuses to run without a server" 2 "" 'virgil-lsp-worker: error: 
 EXE=$EXE_SAVED
 
 # Many analyses of the Aeneas sources in one command, across replaced workers:
-# every run must report the same diagnostics and all 162,929 bindings.
+# every run must report the same diagnostics and the same bindings as the
+# first. The count depends on the Virgil revision (162,929 at the pinned one),
+# so take it from the first analysis rather than pinning it here.
 VIRGIL=$ROOT/vendor/virgil
 aeneas=("$VIRGIL"/aeneas/src/*/*.v3)
 for dep in $(grep -v '^lib/test/' "$VIRGIL/aeneas/DEPS"); do
@@ -185,9 +187,11 @@ expect "analyze repeats the Aeneas sources across replaced workers" 0 \
     "^ok: ${#aeneas[@]} files parsed and verified$" \
     'replacing analysis worker [0-9]+ after 8 analyses \(limit 8\)' -- \
     analyze --bindings --stats --repeat=20 --worker-max-analyses=8 "${aeneas[@]}"
-[ "$(grep -c 'replacing analysis worker' "$TMP/err")" -eq 2 ] && \
-    [ "$(grep -Ec '^virgil-lsp: analysis [0-9]+: parse [0-9]+ us, verify [0-9]+ us, 162929 bindings' "$TMP/err")" -eq 20 ] && \
-    [ "$(grep -c ' -> ' "$TMP/out")" -eq 162929 ]
+bindings=$(sed -En 's/^virgil-lsp: analysis 1: parse [0-9]+ us, verify [0-9]+ us, ([0-9]+) bindings .*/\1/p' "$TMP/err")
+[ "${bindings:-0}" -gt 100000 ] && \
+    [ "$(grep -c 'replacing analysis worker' "$TMP/err")" -eq 2 ] && \
+    [ "$(grep -Ec "^virgil-lsp: analysis [0-9]+: parse [0-9]+ us, verify [0-9]+ us, $bindings bindings" "$TMP/err")" -eq 20 ] && \
+    [ "$(grep -c ' -> ' "$TMP/out")" -eq "$bindings" ]
 finish "analyze repeats report every binding from each worker" $(( $? == 0 ))
 
 # A complete report spans the header and both files. Pin its bytes so buffer
