@@ -27,7 +27,9 @@
     }
   },
   "main": "./out/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "workspaceContains:**/.virgil-lsp.json"
+  ],
   "contributes": {
     "languages": [
       {
@@ -63,6 +65,12 @@
           "default": "virgil-lsp",
           "scope": "machine",
           "markdownDescription": "The `virgil-lsp` executable: a command name looked up on `PATH`, or an absolute path. `virgil-lsp-worker` must be in the same directory as the executable it resolves to. With Remote-SSH or Remote-WSL, set this in the remote settings."
+        },
+        "virgil.virgilRoot": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "The absolute path of the Virgil checkout or installation (the directory that holds `lib/`) that project files' `virgilDependencies` are relative to. When empty, the `VIRGIL_LOC` environment variable of the extension host is used. With Remote-SSH or Remote-WSL, set this in the remote settings."
         },
         "virgil.trace.server": {
           "type": "string",

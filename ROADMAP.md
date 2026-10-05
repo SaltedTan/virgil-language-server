@@ -356,7 +356,6 @@ The thin TypeScript development client is present. Its implemented behavior, set
 
 Remaining work:
 
-- expose `virgil.project.config` once the server reads project files while it runs ([Configuration](docs/configuration.md));
 - add end-to-end extension-host tests for activation, diagnostics, definition, and hover.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.

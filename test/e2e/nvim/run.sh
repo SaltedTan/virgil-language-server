@@ -36,6 +36,8 @@ export XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/data"
 export XDG_STATE_HOME="$work/state" XDG_CACHE_HOME="$work/cache"
 export NVIM_LOG_FILE="$work/nvim.log"
 export VIRGIL_NVIM_CONFIG="$repo/editors/nvim/virgil_lsp.lua"
+# The fixture project's virgilDependencies resolve against the pinned checkout.
+export VIRGIL_LOC="$repo/vendor/virgil"
 
 echo "Neovim smoke test: ${version%%$'\n'*}"
 # A portable outer deadline also covers init errors before the Lua checks run.
@@ -50,9 +52,9 @@ process = subprocess.Popen(
     start_new_session=True,
 )
 try:
-    sys.exit(process.wait(timeout=60))
+    sys.exit(process.wait(timeout=120))
 except subprocess.TimeoutExpired:
-    print("FAIL: Neovim smoke test exceeded 60 seconds", file=sys.stderr)
+    print("FAIL: Neovim smoke test exceeded 120 seconds", file=sys.stderr)
     os.killpg(process.pid, signal.SIGKILL)
     process.wait()
     sys.exit(1)

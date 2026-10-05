@@ -1,1 +1,10 @@
-{"version":1,"projects":[]}
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "words",
+      "sources": ["words/*.v3"],
+      "virgilDependencies": ["lib/util/*.v3"]
+    }
+  ]
+}
