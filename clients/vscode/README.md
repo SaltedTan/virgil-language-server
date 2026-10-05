@@ -63,12 +63,12 @@ If a check fails, or the server doesn't start, the extension writes the reason t
 ## Development
 
 ```sh
-npm run check     # type-check only, as CI does
+npm run check     # type-check only
 npm test          # compile and run lifecycle regression tests
 npm run watch     # recompile on change
 ```
 
-CI installs the dependencies with `npm ci` and type-checks the extension on Linux. Extension Host end-to-end tests and VSIX packaging are planned (ROADMAP backlog item 18). Until then, use the manual checklist below.
+CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux. Extension Host end-to-end tests and VSIX packaging are planned (ROADMAP backlog item 18). Until then, use the manual checklist below.
 
 ## Manual checklist
 

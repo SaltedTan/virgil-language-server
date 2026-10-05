@@ -80,6 +80,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	test/protocol/run.sh $(BUILD)/virgil-lsp
 	python3 test/diagnostics/run.py $(BUILD)/virgil-lsp
 	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
+	python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
 
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.

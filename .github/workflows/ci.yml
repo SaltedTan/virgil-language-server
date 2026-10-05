@@ -69,7 +69,7 @@ jobs:
           file build/virgil-lsp
 
   vscode-client:
-    name: VS Code client (type-check, linux)
+    name: VS Code client (type-check and test, linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -86,3 +86,5 @@ jobs:
         run: npm ci
       - name: Type-check
         run: npm run check
+      - name: Lifecycle tests
+        run: npm test
