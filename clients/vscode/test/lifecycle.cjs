@@ -28,6 +28,7 @@ function extensionHost({ settings = {}, env = {} } = {}) {
   let nextStart;
   const values = { 'virgil.server.path': '/server/virgil-lsp', ...settings };
   const warnings = [];
+  const watchers = [];
   class LanguageClient {
     constructor(id, name, serverOptions, clientOptions) {
       this.options = clientOptions;
@@ -90,6 +91,11 @@ function extensionHost({ settings = {}, env = {} } = {}) {
     workspace: {
       getConfiguration: () => ({ get: (key, fallback) => values[key] ?? fallback }),
       onDidChangeConfiguration(callback) { configurationChanged = callback; return {}; },
+      createFileSystemWatcher(pattern) {
+        const watcher = { pattern, disposed: false, dispose() { this.disposed = true; } };
+        watchers.push(watcher);
+        return watcher;
+      },
     },
   };
   const module = { exports: {} };
@@ -108,7 +114,7 @@ function extensionHost({ settings = {}, env = {} } = {}) {
     },
   });
   return {
-    extension: module.exports, clients, events, values, warnings,
+    extension: module.exports, clients, events, values, warnings, watchers,
     activate: () => module.exports.activate({ subscriptions: [] }),
     restart: () => commands.get('virgil.server.restart')(),
     // Changes the given setting, or every setting.
@@ -282,4 +288,18 @@ test('project files are sent to the server with Virgil documents', async () => {
     { scheme: 'file', pattern: '**/.virgil-lsp.json' },
   ]);
   await host.extension.deactivate();
+});
+
+test('project files and sources are watched for each client, and released with it', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const patterns = ['**/.virgil-lsp.json', '**/*.v3'];
+  assert.deepEqual(host.watchers.map((w) => w.pattern), patterns);
+  assert.equal(host.clients[0].options.synchronize.fileEvents.length, 2);
+  host.clients[0].options.synchronize.fileEvents.forEach((w, i) => assert.equal(w, host.watchers[i]));
+  await host.restart();
+  assert.deepEqual(host.watchers.map((w) => [w.pattern, w.disposed]),
+    [[patterns[0], true], [patterns[1], true], [patterns[0], false], [patterns[1], false]]);
+  await host.extension.deactivate();
+  assert.ok(host.watchers.every((w) => w.disposed));
 });

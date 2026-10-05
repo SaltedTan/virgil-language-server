@@ -88,6 +88,7 @@ component VirgilLsp {
 		server.documents.withReader(System.fileLoad).withBoundedReader(AnalysisSourceFiles.load);
 		server.warnDocumentSync = Log.warn;
 		server.warnProject = Log.warn;
+		server.infoProject = Log.info;
 		server.infoAnalysis = Log.info;
 		server.dispatcher.onIgnoredResponse(warnIgnoredResponse);
 		var transport = LspTransport.new(server.handle, server.exited, maxPayload, System.write(STDOUT, _), Log.warn);
@@ -116,7 +117,7 @@ component VirgilLsp {
 				if (!transport.receive(buf[0 ..+ n])) break;
 			}
 			// Even a continuously readable stdin must not starve the deadline.
-			server.pollAnalysis();
+			server.onPoll();
 		}
 		// Ends the session if exit wasn't received, so the exit status is known.
 		server.close();

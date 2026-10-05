@@ -17,6 +17,7 @@ def X = [
 	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
+	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
 	()
 ];
 class SemanticTestSession {
@@ -67,7 +68,7 @@ class SemanticTestSession {
 		while (server.analyzing()) {
 			var count = supervisor.pollFds(fds, 0);
 			HostOs.poll(fds, count, server.pollTimeout());
-			server.pollAnalysis();
+			server.onPoll();
 		}
 	}
 	// Removes and returns the messages received so far.
@@ -196,6 +197,34 @@ def test_debounce_timeout(t: Tester) {
 	t.assertz(false, s.server.analyzing());
 	s.server.close();
 }
+def test_disk_change_discards_result(t: Tester) {
+	var s = SemanticTestSession.new(), infos = InfoRecorder.new();
+	s.server.infoAnalysis = infos.info;
+	s.open("shapes.v3", 1, renamed(s));
+	t.assertz(true, s.supervisor.busy());
+	// Closed main.v3, which the running analysis read, is reported changed on disk.
+	var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	change["uri"] = JsonValue.String(s.uri("main.v3"));
+	change["type"] = JsonValue.Int(2);
+	params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+	s.server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	t.assertz(true, s.server.analyzing());
+	s.settle();
+	var discarded = 0;
+	for (i < infos.messages.length) {
+		var m = infos.messages[i];
+		if (Strings.startsWith(m, "discarded analysis ") && Strings.endsWith(m, "main.v3 changed after its sources were captured")) discarded++;
+	}
+	t.asserti(1, discarded);
+	// The analysis the report scheduled publishes main.v3's errors.
+	var errors = published(s.take(), s.uri("main.v3"));
+	t.assert(errors != null && errors.length > 0, "the rescheduled analysis publishes");
+	s.server.close();
+}
+class InfoRecorder {
+	def messages = Vector<string>.new();
+	def info(msg: string) { messages.put(msg); }
+}
 def test_shutdown_stops_scheduling(t: Tester) {
 	var s = SemanticTestSession.new();
 	s.open("main.v3", 1, s.main);
@@ -205,7 +234,7 @@ def test_shutdown_stops_scheduling(t: Tester) {
 	t.assertz(false, s.server.analyzing());
 	t.asserti(-1, s.server.pollTimeout());
 	s.take();
-	s.server.pollAnalysis();
+	s.server.onPoll();
 	t.asserti(0, s.take().length);
 	s.server.close();
 }
@@ -234,7 +263,7 @@ def test_closed_shared_owner(t: Tester) {
 	while (server.analyzing()) {
 		var count = supervisor.pollFds(fds, 0);
 		HostOs.poll(fds, count, server.pollTimeout());
-		server.pollAnalysis();
+		server.onPoll();
 	}
 	var received = messages.extract(), errors = published(received, sharedUri);
 	t.assert(server.documents.overlay(sharedUri) == null, "shared source remains closed");
@@ -296,7 +325,7 @@ class OwnershipTestSession(fixture: string) {
 		while (server.analyzing()) {
 			var count = supervisor.pollFds(fds, 0);
 			HostOs.poll(fds, count, server.pollTimeout());
-			server.pollAnalysis();
+			server.onPoll();
 		}
 	}
 	def expectOwner(t: Tester, name: string) {

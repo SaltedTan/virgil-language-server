@@ -30,6 +30,12 @@ Or replace `vim.env.VIRGIL_LOC` with the path. Without a root, a project file wi
 
 Both configurations also attach the server to `.virgil-lsp.json` buffers, so configuration diagnostics follow unsaved edits. That is why `filetypes` includes `json`: the `root_dir` function skips every other JSON buffer, so the server never sees other JSON files.
 
+## Changes on disk
+
+The server notices changes made outside the editor, such as a checkout, only from `workspace/didChangeWatchedFiles` file events ([changes on disk](../../docs/configuration.md#changes-on-disk)). It asks for them when the client declares `workspace.didChangeWatchedFiles.dynamicRegistration`. Neovim 0.11.6 on Linux declares it false (`:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles`), so with these configurations the server refreshes projects when they are used instead: a project file fixed on disk is noticed when a `.v3` buffer is next opened, changed, or saved, and a source created or deleted outside Neovim when a project file changes. Restart the server (`:LspRestart` with nvim-lspconfig) after a checkout that adds or removes files.
+
+`vim.lsp.buf.add_workspace_folder()` and `vim.lsp.buf.remove_workspace_folder()` send `workspace/didChangeWorkspaceFolders`, which the server handles.
+
 ## Headless smoke test
 
 From the repository root, run `make test-nvim` (also included in `make test`).

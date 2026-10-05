@@ -1,6 +1,6 @@
 # A two-file project: unresolved names and type errors from unsaved content, then fixed.
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/two-file","capabilities":{}}}}
-{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
 {"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
 # Unsaved main.v3 assigns a Rect to an int and uses an undeclared name. Opening analyzes
 # at once: configuration and parser lists first, then the semantic list.

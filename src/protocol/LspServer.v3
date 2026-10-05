@@ -43,12 +43,17 @@ class LspServer {
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
 	var warnProject: string -> void;
+	var infoProject: string -> void;
 	var infoAnalysis: string -> void;
 	// Notifications and deferred replies are separate from handle()'s replies.
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
 	private def documentSymbols = LspDocumentSymbols.new(documents);
+	// Watched-file and workspace-folder notifications, and the watcher registration.
+	def workspaceEvents = LspWorkspaceEvents.new(documents, projects);
+	// Completes a server request whose deadline has passed.
+	private def REQUEST_TIMEOUT = JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "the client did not answer in time");
 	def var state = LspServerState.UNINITIALIZED;
 	// The process exit status, once {exited} is true.
 	def var exitStatus: int;
@@ -59,11 +64,16 @@ class LspServer {
 	new(documentCapacity) {
 		dispatcher
 			.onRequest("initialize", initialize)
+			.onNotification("initialized", initialized)
 			.onRequest("shutdown", shutdown);
 		documentSync = LspDocumentSync.new(documents, ignoredDocumentSync);
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
+		workspaceEvents.register(dispatcher);
+		workspaceEvents.schedule = scheduleWatched;
+		workspaceEvents.warn = projectWarning;
+		workspaceEvents.info = projectInfo;
 		diagnosticLists = LspDiagnosticLists.new(documents, publishNotification);
 		parserDiagnostics = LspParserDiagnostics.new(diagnosticLists);
 		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
@@ -84,9 +94,11 @@ class LspServer {
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;
 	}
-	// Called after every poll, including a timeout.
-	def pollAnalysis() {
+	// Called after every poll, including a timeout. Completes analyses and
+	// expires server requests the client hasn't answered in time.
+	def onPoll() {
 		if (semanticDiagnostics != null) semanticDiagnostics.onPoll();
+		if (dispatcher.pending.count() > 0) dispatcher.pending.expire(System.ticksMs(), REQUEST_TIMEOUT);
 	}
 	// True while an analysis runs or waits to run.
 	def analyzing() -> bool {
@@ -94,7 +106,10 @@ class LspServer {
 	}
 	// The poll timeout in milliseconds, or -1 to wait indefinitely.
 	def pollTimeout() -> int {
-		return if(semanticDiagnostics != null, semanticDiagnostics.pollTimeout(), -1);
+		var analysis = if(semanticDiagnostics != null, semanticDiagnostics.pollTimeout(), -1);
+		var requests = dispatcher.pending.timeout(System.ticksMs());
+		if (analysis < 0 || (requests >= 0 && requests < analysis)) return requests;
+		return analysis;
 	}
 	private def configChanged(c: WorkspaceConfig) {
 		projectDiagnostics.update(c);
@@ -134,9 +149,17 @@ class LspServer {
 		}
 		return true;
 	}
+	// Disk changes are debounced like edits, so that a burst of file events
+	// (a checkout, say) analyzes each project once.
+	private def scheduleWatched(contexts: Array<ProjectContext>) {
+		if (semanticDiagnostics != null) semanticDiagnostics.schedule(contexts, true);
+	}
 	private def isProjectFile(doc: DocumentOverlay) -> bool {
 		var path = DocumentUri.filePath(doc.uri);
 		return path != null && Strings.endsWith(path, "/.virgil-lsp.json");
+	}
+	private def projectInfo(msg: string) {
+		if (infoProject != null) infoProject(msg);
 	}
 	private def analysisInfo(msg: string) {
 		if (infoAnalysis != null) infoAnalysis(msg);
@@ -228,7 +251,10 @@ class LspServer {
 		if (!JsonRpcParams.ByName.?(request.params)) {
 			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "initialize params must be an object"));
 		}
-		projects.initialize(JsonRpcParams.ByName.!(request.params).v);
+		var params = JsonRpcParams.ByName.!(request.params).v;
+		projects.initialize(params);
+		var watched = member(member(member(params, "capabilities"), "workspace"), "didChangeWatchedFiles");
+		workspaceEvents.dynamicWatchers = watched != null && watched["dynamicRegistration"] == JsonValue.Bool(true);
 		state = LspServerState.RUNNING;
 		var serverInfo = Strings.newMap<JsonValue>();
 		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);
@@ -244,9 +270,25 @@ class LspServer {
 		var capabilities = Strings.newMap<JsonValue>();
 		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
+		var folders = Strings.newMap<JsonValue>();
+		folders["supported"] = JsonValue.Bool(true);
+		folders["changeNotifications"] = JsonValue.Bool(true);
+		var workspace = Strings.newMap<JsonValue>();
+		workspace["workspaceFolders"] = JsonValue.JObject(folders);
+		capabilities["workspace"] = JsonValue.JObject(workspace);
 		result["capabilities"] = JsonValue.JObject(capabilities);
 		result["serverInfo"] = JsonValue.JObject(serverInfo);
 		return JsonRpcReply.Result(JsonValue.JObject(result));
+	}
+	// The object member {key} of {obj}, or null.
+	private def member(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	// The client's first notification after initialize.
+	private def initialized(n: JsonRpcMessage.Notification) {
+		var request = workspaceEvents.initialized(dispatcher.pending);
+		if (request != null) publishNotification(request);
 	}
 	private def shutdown(request: JsonRpcMessage.Request) -> JsonRpcReply {
 		state = LspServerState.SHUTTING_DOWN;

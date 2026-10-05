@@ -20,16 +20,22 @@ const RESTART_SETTINGS = [SERVER_PATH_SETTING, VIRGIL_ROOT_SETTING];
 // The server starts this executable from the directory of its own resolved
 // path (/proc/self/exe on Linux, proc_pidpath on macOS).
 const WORKER_NAME = 'virgil-lsp-worker';
+// Files whose changes on disk the server needs to hear about: project files
+// and sources. The server registers the same watchers dynamically.
+const WATCHED_FILES = ['**/.virgil-lsp.json', '**/*.v3'];
 
 // A startup problem the user can fix. Its message says how.
 class StartupError extends Error {}
 
 let output: vscode.LogOutputChannel;
-let client: LanguageClient | undefined;
+let client: QueuedLanguageClient | undefined;
 // Starts and stops run one at a time, in the order they were requested.
 let queue: Promise<void> = Promise.resolve();
 
 class QueuedLanguageClient extends LanguageClient {
+  // The client stops listening to its file watchers but doesn't dispose them.
+  watchers: vscode.Disposable[] = [];
+
   override start(): Promise<void> {
     return enqueue(async () => {
       if (client === this) await this.startInQueue();
@@ -88,6 +94,7 @@ async function start(): Promise<void> {
     transport: TransportKind.stdio,
   };
   const virgilRoot = resolveVirgilRoot();
+  const watchers = WATCHED_FILES.map((pattern) => vscode.workspace.createFileSystemWatcher(pattern));
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: 'file', language: 'virgil' },
@@ -96,12 +103,17 @@ async function start(): Promise<void> {
       { scheme: 'file', pattern: '**/.virgil-lsp.json' },
     ],
     initializationOptions: virgilRoot === undefined ? {} : { virgilRoot },
+    // Changes made outside the editor, such as a checkout, refresh projects.
+    // The client batches these events with those of the server's own
+    // registration, and the server handles a repeated event once.
+    synchronize: { fileEvents: watchers },
     // The client also writes the server's stderr here and, while the
     // channel's log level is Trace, the message trace.
     outputChannel: output,
   };
   // The client ID `virgil` makes the client read `virgil.trace.server`.
   const started = new QueuedLanguageClient('virgil', CHANNEL_NAME, serverOptions, clientOptions);
+  started.watchers = watchers;
   client = started;
   output.info(`Starting ${executable} --stdio`);
   try {
@@ -124,6 +136,7 @@ async function stop(): Promise<void> {
     output.error(`Stopping the server failed: ${describe(error)}`);
   } finally {
     (running.visibleDocuments as typeof running.visibleDocuments & vscode.Disposable).dispose();
+    for (const watcher of running.watchers) watcher.dispose();
   }
 }
 

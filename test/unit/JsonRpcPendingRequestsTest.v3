@@ -15,6 +15,8 @@ def X = [
 	T("JsonRpcPendingRequests:fail_all", test_fail_all),
 	T("JsonRpcPendingRequests:fail_all_reentrant", test_fail_all_reentrant),
 	T("JsonRpcPendingRequests:fail_all_recycled_ids", test_fail_all_recycled_ids),
+	T("JsonRpcPendingRequests:deadlines", test_deadlines),
+	T("JsonRpcPendingRequests:deadlines_wrap", test_deadlines_wrap),
 	T("JsonRpcDispatcher:response_completes_request", test_dispatch_response_completes),
 	T("JsonRpcDispatcher:ignored_responses", test_dispatch_ignored_responses),
 	T("JsonRpcDispatcher:response_unsupported_numbers", test_dispatch_response_unsupported_numbers),
@@ -243,6 +245,50 @@ def test_fail_all(t: Tester) {
 	// With nothing outstanding, there is nothing to fail.
 	p.failAll(JsonRpcError.new(-32800, "again"));
 	recs[0].expect(t, [failed]);
+}
+
+def test_deadlines(t: Tester) {
+	var p = JsonRpcPendingRequests.new(), late = JsonRpcError.new(-32603, "late");
+	var untimed = CompletionRecorder.new(), b = CompletionRecorder.new(), c = CompletionRecorder.new();
+	t.asserti(-1, p.timeout(0));
+	p.send("a", JsonRpcParams.Absent, untimed.onComplete);
+	t.asserti(-1, p.timeout(0));
+	p.sendBy("b", JsonRpcParams.Absent, 100, b.onComplete);
+	p.sendBy("c", JsonRpcParams.Absent, 50, c.onComplete);
+	t.asserti(50, p.timeout(0));
+	t.asserti(0, p.timeout(70));
+	// A request expires at its deadline, not before.
+	p.expire(49, late);
+	t.asserti(3, p.count());
+	p.expire(50, late);
+	var expired = "error {\"code\":-32603,\"message\":\"late\"}";
+	c.expect(t, [expired]);
+	b.expect(t, NONE);
+	t.asserti(50, p.timeout(50));
+	// A response before the deadline completes the request as usual.
+	expectCompleted(t, p, response(2, JsonValue.Int(2)), false);
+	b.expect(t, ["result 2"]);
+	t.asserti(-1, p.timeout(1000));
+	// A request without a deadline never expires, and a late response to an
+	// expired one completes nothing.
+	p.expire(1000000, late);
+	untimed.expect(t, NONE);
+	t.asserti(1, p.count());
+	expectIgnored(t, p, response(3, JsonValue.Null), "no outstanding request has id 3");
+	c.expect(t, [expired]);
+}
+
+def test_deadlines_wrap(t: Tester) {
+	// System.ticksMs() wraps, so deadlines compare by difference.
+	var p = JsonRpcPendingRequests.new(), rec = CompletionRecorder.new();
+	var now = int.max - 10;
+	p.sendBy("a", JsonRpcParams.Absent, now + 20, rec.onComplete);
+	t.asserti(20, p.timeout(now));
+	p.expire(now, JsonRpcError.new(-32603, "late"));
+	t.asserti(1, p.count());
+	p.expire(now + 20, JsonRpcError.new(-32603, "late"));
+	t.asserti(0, p.count());
+	rec.expect(t, ["error {\"code\":-32603,\"message\":\"late\"}"]);
 }
 
 // When it completes, completes the request with ID {other} and sends a new

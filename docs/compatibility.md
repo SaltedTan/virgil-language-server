@@ -57,4 +57,4 @@ Server and VS Code extension versions are released independently. This table rec
 
 | VS Code extension | Server versions |
 | --- | --- |
-| `0.0.0-dev` (`clients/vscode` on `main`, unreleased) | `main` (unreleased, `0.0.0-dev`). The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, and `textDocument/documentSymbol`. |
+| `0.0.0-dev` (`clients/vscode` on `main`, unreleased) | `main` (unreleased, `0.0.0-dev`). The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. |

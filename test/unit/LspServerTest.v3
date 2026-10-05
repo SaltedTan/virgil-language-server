@@ -16,6 +16,9 @@ def X = [
 	T("LspServer:cancel_request", test_cancel_request),
 	T("LspServer:shutdown_fails_pending", test_shutdown_fails_pending),
 	T("LspServer:exit_fails_pending", test_exit_fails_pending),
+	T("LspServer:watcher_registration", test_watcher_registration),
+	T("LspServer:watcher_registration_failure", test_watcher_registration_failure),
+	T("LspServer:workspace_events_invalid", test_workspace_events_invalid),
 	()
 ];
 
@@ -39,7 +42,7 @@ def errorReply(id: string, code: int, msg: string) -> string {
 	return Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,\"message\":\"%s\"}}", id, code, msg);
 }
 def initializeResult() -> string {
-	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"documentSymbolProvider\":true,\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
+	return Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"documentSymbolProvider\":true,\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}},\"workspace\":{\"workspaceFolders\":{\"changeNotifications\":true,\"supported\":true}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
 		BuildInfo.NAME, BuildInfo.VERSION);
 }
 def SHUTDOWN_RESULT = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":null}";
@@ -74,7 +77,7 @@ def test_initialize_result(t: Tester) {
 	// echoed.
 	s = LspServer.new(DocumentLimits.MAX_BYTES);
 	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"method\":\"initialize\",\"params\":{}}",
-		Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"result\":{\"capabilities\":{\"documentSymbolProvider\":true,\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
+		Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":\"i\",\"result\":{\"capabilities\":{\"documentSymbolProvider\":true,\"textDocumentSync\":{\"change\":1,\"openClose\":true,\"save\":{\"includeText\":false}},\"workspace\":{\"workspaceFolders\":{\"changeNotifications\":true,\"supported\":true}}},\"serverInfo\":{\"name\":\"%s\",\"version\":\"%s\"}}}",
 			BuildInfo.NAME, BuildInfo.VERSION));
 }
 
@@ -253,4 +256,117 @@ def test_exit_fails_pending(t: Tester) {
 	t.asserti(0, s.dispatcher.pending.count());
 	t.asserti(2, rec.replies.length);
 	if (rec.replies.length == 2) t.assert_string("-32800 the server exited", rec.replies[1]);
+}
+
+def INITIALIZED = "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}";
+def REGISTRATION = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"client/registerCapability\",\"params\":{\"registrations\":[{\"id\":\"virgil-lsp/watched-files\",\"method\":\"workspace/didChangeWatchedFiles\",\"registerOptions\":{\"watchers\":[{\"globPattern\":\"**/.virgil-lsp.json\"},{\"globPattern\":\"**/*.v3\"}]}}]}}";
+def REGISTRATION_FAILED = "client/registerCapability for watched files failed: %s; project files and sources are refreshed only when they are used";
+// What a server sent outside its replies, and logged.
+class ServerLog {
+	def sent = Vector<string>.new();
+	def warnings = Vector<string>.new();
+	def infos = Vector<string>.new();
+	def send(payload: Array<byte>) { sent.put(payload); }
+	def warn(msg: string) { warnings.put(msg); }
+	def info(msg: string) { infos.put(msg); }
+}
+// Returns a running server whose client declares {capabilities}.
+def loggedServer(t: Tester, capabilities: string) -> (LspServer, ServerLog) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES), log = ServerLog.new();
+	s.sendNotification = log.send;
+	s.warnProject = log.warn;
+	s.infoProject = log.info;
+	expectServerReply(t, s, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":%s}}", capabilities),
+		initializeResult());
+	return (s, log);
+}
+def DYNAMIC = "{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":true}}}";
+def expectStrings(t: Tester, expected: Array<string>, got: Vector<string>) {
+	t.asserti(expected.length, got.length);
+	for (i < expected.length) {
+		if (i < got.length) t.assert_string(expected[i], got[i]);
+	}
+}
+
+def test_watcher_registration(t: Tester) {
+	// Without dynamic registration, initialized sends nothing.
+	var caps = ["{}", "{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":false}}}",
+		"{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":1}}}", "{\"workspace\":[]}"];
+	for (c in caps) {
+		var r = loggedServer(t, c), s = r.0, log = r.1;
+		expectServerReply(t, s, INITIALIZED, null);
+		t.asserti(0, log.sent.length);
+		t.asserti(0, s.dispatcher.pending.count());
+		t.asserti(-1, s.pollTimeout());
+	}
+	// With it, the first initialized registers the watchers, with a deadline.
+	var r = loggedServer(t, DYNAMIC), s = r.0, log = r.1;
+	expectServerReply(t, s, INITIALIZED, null);
+	expectServerReply(t, s, INITIALIZED, null);
+	expectStrings(t, [REGISTRATION], log.sent);
+	t.asserti(1, s.dispatcher.pending.count());
+	var timeout = s.pollTimeout();
+	t.assert(timeout >= 0 && timeout <= s.workspaceEvents.REGISTRATION_TIMEOUT_MS, "the registration bounds the poll timeout");
+	s.onPoll();
+	t.asserti(1, s.dispatcher.pending.count());
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", null);
+	t.asserti(0, s.dispatcher.pending.count());
+	t.asserti(-1, s.pollTimeout());
+	expectStrings(t, ["the client watches project files and sources"], log.infos);
+	t.asserti(0, log.warnings.length);
+}
+
+def test_watcher_registration_failure(t: Tester) {
+	// An error response.
+	var r = loggedServer(t, DYNAMIC), s = r.0, log = r.1;
+	expectServerReply(t, s, INITIALIZED, null);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"no\"}}", null);
+	expectStrings(t, [Strings.format1(REGISTRATION_FAILED, "-32601 no")], log.warnings);
+	t.asserti(0, log.infos.length);
+	// No response in time. A late one completes nothing.
+	r = loggedServer(t, DYNAMIC); s = r.0; log = r.1;
+	s.workspaceEvents.registrationTimeoutMs = 0;
+	expectServerReply(t, s, INITIALIZED, null);
+	t.asserti(0, s.pollTimeout());
+	s.onPoll();
+	t.asserti(0, s.dispatcher.pending.count());
+	expectStrings(t, [Strings.format1(REGISTRATION_FAILED, "-32603 the client did not answer in time")], log.warnings);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", null);
+	t.asserti(1, log.warnings.length);
+	t.asserti(0, log.infos.length);
+	// Shutdown before a response.
+	r = loggedServer(t, DYNAMIC); s = r.0; log = r.1;
+	expectServerReply(t, s, INITIALIZED, null);
+	expectServerReply(t, s, SHUTDOWN, SHUTDOWN_RESULT);
+	expectStrings(t, [Strings.format1(REGISTRATION_FAILED, "-32800 the server is shutting down")], log.warnings);
+}
+
+def test_workspace_events_invalid(t: Tester) {
+	var r = loggedServer(t, "{}"), s = r.0, log = r.1;
+	var watched = "ignored workspace/didChangeWatchedFiles: ", folders = "ignored workspace/didChangeWorkspaceFolders: ";
+	var cases = [
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{}}", "invalid params"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":{}}}", "invalid params"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":1,\"type\":1}]}}",
+			"invalid file event (expected uri and type)"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file:///a.v3\",\"type\":1},{\"uri\":\"file:///b.v3\"}]}}",
+			"invalid file event (expected uri and type)"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"file:///a.v3\",\"type\":0}]}}",
+			"invalid file change type"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{}}", "invalid workspace folders change"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":{\"added\":[]}}}", "invalid workspace folders change"),
+		("{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":{\"added\":[{\"name\":\"x\"}],\"removed\":[]}}}",
+			"invalid workspace folders change")
+	];
+	var expected = Vector<string>.new();
+	for (c in cases) {
+		expectServerReply(t, s, c.0, null);
+		expected.put(Strings.format2("%s%s", if(Strings.startsWith(c.0, "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\""), watched, folders), c.1));
+	}
+	// Valid events about nonlocal URIs, and empty changes, do nothing.
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[{\"uri\":\"untitled:a.v3\",\"type\":2}]}}", null);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":[]}}", null);
+	expectServerReply(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":{\"added\":[{\"uri\":\"untitled:x\",\"name\":\"x\"}],\"removed\":[]}}}", null);
+	expectStrings(t, expected.extract(), log.warnings);
+	t.asserti(0, log.sent.length);
 }

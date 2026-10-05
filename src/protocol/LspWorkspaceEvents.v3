@@ -1,0 +1,147 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Notifications that project files, sources, or workspace folders changed
+// outside the open documents, and the watcher registration that asks a client
+// to send them. Malformed notifications are ignored as a whole and reported
+// through {warn}. See "Changes on disk" and "Workspace folders and active
+// projects" in docs/configuration.md.
+class LspWorkspaceEvents(store: DocumentStore, projects: WorkspaceProjects) {
+	def REGISTRATION_ID = "virgil-lsp/watched-files";
+	def WATCHED = ["**/.virgil-lsp.json", "**/*.v3"];
+	// Production waits this long for the client to answer the registration.
+	def REGISTRATION_TIMEOUT_MS = 10000;
+	// FileChangeType values.
+	def CREATED = 1;
+	def CHANGED = 2;
+	def DELETED = 3;
+	// Schedules analysis of the contexts the events affect, after a debounce
+	// interval. Null without analysis.
+	var schedule: Array<ProjectContext> -> void;
+	var warn: string -> void;
+	var info: string -> void;
+	// The client can register watchers dynamically; set by initialize.
+	var dynamicWatchers: bool;
+	var registrationTimeoutMs = REGISTRATION_TIMEOUT_MS;
+	private var registered: bool;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher
+			.onNotification("workspace/didChangeWatchedFiles", didChangeWatchedFiles)
+			.onNotification("workspace/didChangeWorkspaceFolders", didChangeWorkspaceFolders);
+	}
+	// Called for the initialized notification. Asks a client that supports it
+	// to watch project files and sources, once per session. Returns the
+	// encoded request, or null if there is none to send.
+	def initialized(pending: JsonRpcPendingRequests) -> Array<byte> {
+		if (!dynamicWatchers || registered) return null;
+		registered = true;
+		var watchers = Array<JsonValue>.new(WATCHED.length);
+		for (i < watchers.length) {
+			var w = Strings.newMap<JsonValue>();
+			w["globPattern"] = JsonValue.String(WATCHED[i]);
+			watchers[i] = JsonValue.JObject(w);
+		}
+		var options = Strings.newMap<JsonValue>();
+		options["watchers"] = JsonValue.JArray(watchers);
+		var registration = Strings.newMap<JsonValue>();
+		registration["id"] = JsonValue.String(REGISTRATION_ID);
+		registration["method"] = JsonValue.String("workspace/didChangeWatchedFiles");
+		registration["registerOptions"] = JsonValue.JObject(options);
+		var params = Strings.newMap<JsonValue>();
+		params["registrations"] = JsonValue.JArray([JsonValue.JObject(registration)]);
+		return pending.sendBy("client/registerCapability", JsonRpcParams.ByName(params),
+			System.ticksMs() + registrationTimeoutMs, registrationDone);
+	}
+	private def registrationDone(reply: JsonRpcReply) {
+		match (reply) {
+			Result(v) => log(info, "the client watches project files and sources");
+			Error(e) => log(warn, Strings.format2(
+				"client/registerCapability for watched files failed: %d %s; project files and sources are refreshed only when they are used",
+				e.code, e.message));
+		}
+	}
+	private def didChangeWatchedFiles(n: JsonRpcMessage.Notification) {
+		var params = byName(n.params);
+		if (params == null || !JsonValue.JArray.?(params["changes"]) || JsonValue.JArray.!(params["changes"]).v == null) {
+			return ignored(n, "invalid params");
+		}
+		var changes = JsonValue.JArray.!(params["changes"]).v;
+		for (change in changes) {
+			var e = object(change);
+			if (e == null || !JsonValue.String.?(e["uri"]) || JsonValue.String.!(e["uri"]).v == null || !JsonValue.Int.?(e["type"])) {
+				return ignored(n, "invalid file event (expected uri and type)");
+			}
+			var kind = JsonValue.Int.!(e["type"]).v;
+			if (kind < CREATED || kind > DELETED) return ignored(n, "invalid file change type");
+		}
+		var config = false, membership = false;
+		var paths = Vector<string>.new();
+		for (change in changes) {
+			var e = object(change), uri = JsonValue.String.!(e["uri"]).v, kind = JsonValue.Int.!(e["type"]).v;
+			var path = DocumentUri.filePath(uri);
+			if (path == null) continue;
+			if (Strings.endsWith(path, "/.virgil-lsp.json")) {
+				config = true;
+				if (kind != DELETED) projects.watched(path);
+			} else if (Strings.endsWith(path, ".v3")) {
+				store.diskChanged(uri);
+				if (kind != CHANGED) membership = true;
+				// An open overlay replaces the disk file, so its analyses are unaffected.
+				else if (store.overlay(uri) != null) continue;
+				paths.put(path);
+			} else if (kind == DELETED) {
+				// Perhaps a directory that held sources.
+				membership = true;
+				paths.put(path);
+			}
+		}
+		if (!config && !membership && paths.length == 0) return;
+		var contexts = Vector<ProjectContext>.new();
+		affected(contexts, paths);
+		if (membership) projects.reexpand();
+		else projects.refresh();
+		affected(contexts, paths);
+		if (schedule != null) schedule(contexts.extract());
+	}
+	private def affected(contexts: Vector<ProjectContext>, paths: Vector<string>) {
+		for (i < paths.length) {
+			for (ctx in projects.affected(paths[i])) {
+				var known = false;
+				for (j < contexts.length) known = known || contexts[j] == ctx;
+				if (!known) contexts.put(ctx);
+			}
+		}
+	}
+	private def didChangeWorkspaceFolders(n: JsonRpcMessage.Notification) {
+		var params = byName(n.params);
+		var event = object(if(params != null, params["event"]));
+		var added = folderUris(event, "added"), removed = folderUris(event, "removed");
+		if (added == null || removed == null) return ignored(n, "invalid workspace folders change");
+		projects.changeFolders(added, removed);
+		if (schedule != null) schedule([]);
+	}
+	// The URIs of the folders in {event}'s {key} array, or null if it is invalid.
+	private def folderUris(event: HashMap<string, JsonValue>, key: string) -> Array<string> {
+		if (event == null || !JsonValue.JArray.?(event[key]) || JsonValue.JArray.!(event[key]).v == null) return null;
+		var folders = JsonValue.JArray.!(event[key]).v, result = Array<string>.new(folders.length);
+		for (i < folders.length) {
+			var f = object(folders[i]);
+			if (f == null || !JsonValue.String.?(f["uri"]) || JsonValue.String.!(f["uri"]).v == null) return null;
+			result[i] = JsonValue.String.!(f["uri"]).v;
+		}
+		return result;
+	}
+	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
+		log(warn, Strings.format2("ignored %s: %s", n.method, reason));
+	}
+	private def byName(params: JsonRpcParams) -> HashMap<string, JsonValue> {
+		return if(JsonRpcParams.ByName.?(params), JsonRpcParams.ByName.!(params).v);
+	}
+	private def object(v: JsonValue) -> HashMap<string, JsonValue> {
+		return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v);
+	}
+	private def log(sink: string -> void, msg: string) {
+		if (sink != null) sink(msg);
+	}
+}

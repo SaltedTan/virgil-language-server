@@ -92,7 +92,7 @@ class Session:
 
     def initialize(self):
         result = self.result(self.send("initialize", {}))
-        assert set(result["capabilities"]) == {"textDocumentSync", "documentSymbolProvider"}
+        assert set(result["capabilities"]) == {"textDocumentSync", "documentSymbolProvider", "workspace"}
 
     def snapshot(self, expected, timeout=3):
         assert self.result(self.send("virgil-lsp/snapshot"), timeout) == expected

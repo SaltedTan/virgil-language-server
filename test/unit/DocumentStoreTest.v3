@@ -12,6 +12,7 @@ def X = [
 	T("DocumentStore:capacity", test_store_capacity),
 	T("DocumentStore:metadata_capacity", test_store_metadata_capacity),
 	T("DocumentStore:resize_capacity", test_store_resize_capacity),
+	T("DocumentStore:disk_stamps", test_store_disk_stamps),
 	()
 ];
 
@@ -204,4 +205,29 @@ def test_store_resize_capacity(t: Tester) {
 		t.assert_string(otherText, store.read(uris[6]));
 		t.asserti(1, store.overlay(uris[6]).version);
 	}
+}
+
+def test_store_disk_stamps(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES);
+	var a = "file:///tmp/a%20b.v3", alias = "FILE://localhost/tmp/a b.v3", b = "file:///tmp/b.v3";
+	// Files never reported share a stamp until one is reported.
+	var initial = store.diskStamp(a);
+	t.assert(initial == store.diskStamp(b), "unreported files share the initial stamp");
+	store.diskChanged(alias);
+	var changed = store.diskStamp(a);
+	t.assert(changed != initial, "a reported change replaces the stamp");
+	t.assert(store.diskStamp(b) == initial, "other files keep theirs");
+	store.diskChanged(a);
+	t.assert(store.diskStamp(a) != changed, "every report replaces it");
+	// Nonlocal URIs have no disk file.
+	store.diskChanged("untitled:x");
+	t.assert(store.diskStamp(b) == initial, "nonlocal reports change nothing");
+	// Beyond the tracked file limit, every stamp is replaced instead.
+	for (i = 1; i < DocumentLimits.MAX_DISK_STAMPS; i++) store.diskChanged(Strings.format1("file:///tmp/f%d.v3", i));
+	var full = store.diskStamp(a);
+	t.assert(store.diskStamp(b) == initial, "the limit is not reached yet");
+	store.diskChanged(b);
+	t.assert(store.diskStamp(a) != full, "an overflow replaces tracked stamps");
+	t.assert(store.diskStamp(b) != initial, "and the shared one");
+	t.assert(store.diskStamp(a) == store.diskStamp(b), "and starts sharing again");
 }

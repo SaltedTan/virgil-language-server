@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - The editor clients send the Virgil root, so projects with `virgilDependencies` work: VS Code from the machine setting `virgil.virgilRoot` or else `VIRGIL_LOC`, and the Neovim configurations from `VIRGIL_LOC`. Both also send `.virgil-lsp.json` buffers, so configuration diagnostics follow unsaved edits, and VS Code now activates in workspaces that contain a project file. The planned `virgil.project.config` setting was dropped. See [The Virgil root](docs/configuration.md#the-virgil-root).
+- The server notices changes made outside the editor. It handles `workspace/didChangeWatchedFiles`: project files created, fixed, or deleted on disk republish their diagnostics, new project files are discovered, and sources created, changed, or deleted on disk update their projects and are analyzed again. It registers the watchers itself with clients that support dynamic registration, and the VS Code client also watches project files and sources. It advertises and handles workspace-folder changes. Clients without file events, such as Neovim 0.11 on Linux, keep refreshing projects on use. See [Changes on disk](docs/configuration.md#changes-on-disk).
 - Automatic semantic diagnostics for configured projects and unsaved buffers. See [Semantic diagnostics](docs/architecture.md#semantic-diagnostics) for scheduling, publication, freshness limits, failure recovery, and measurements.
 
 ### Fixed

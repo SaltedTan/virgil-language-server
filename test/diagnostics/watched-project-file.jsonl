@@ -1,0 +1,24 @@
+# A project file fixed on disk clears its diagnostics.
+# The reproduction from issue #83, with a client that registers watchers dynamically.
+{"write":[".virgil-lsp.json","{\"version\": 1, \"projects\": [{\"name\": \"p\", \"sources\": [\"*.v3\"], \"bogus\": 1}]}\n"]}
+{"write":["a.v3","component A {\n\tdef f() -> int { return missing; }\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{"workspace":{"didChangeWatchedFiles":{"dynamicRegistration":true}}}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+# After initialized, the server asks the client to watch project files and sources.
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+{"recv":{"jsonrpc":"2.0","id":1,"method":"client/registerCapability","params":{"registrations":[{"id":"virgil-lsp/watched-files","method":"workspace/didChangeWatchedFiles","registerOptions":{"watchers":[{"globPattern":"**/.virgil-lsp.json"},{"globPattern":"**/*.v3"}]}}]}}}
+{"send":{"jsonrpc":"2.0","id":1,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/a.v3","languageId":"virgil","version":1,"text":"component A {\n\tdef f() -> int { return missing; }\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"UnknownField","message":"unknown field 'bogus' in a project; the fields are name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target","range":{"end":{"character":70,"line":0},"start":{"character":63,"line":0}},"severity":1,"source":"virgil-lsp"}],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"window/showMessage","params":{"message":"Invalid project file @TMPDIR@/.virgil-lsp.json; its semantic project contexts are disabled.","type":2}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/a.v3","version":1}}}
+# Fixing the file on disk clears its diagnostics without an edit to a .v3 document, and
+# the project it now defines is analyzed.
+{"write":[".virgil-lsp.json","{\"version\": 1, \"projects\": [{\"name\": \"p\", \"sources\": [\"*.v3\"]}]}\n"]}
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/.virgil-lsp.json","type":2}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"UnresolvedIdentifier","message":"identifier \"missing\" cannot be found","range":{"end":{"character":32,"line":1},"start":{"character":25,"line":1}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/a.v3","version":1}}}
+{"send":{"jsonrpc":"2.0","id":2,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}
+{"stderr":"the client watches project files and sources"}

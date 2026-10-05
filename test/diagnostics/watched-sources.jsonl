@@ -1,0 +1,34 @@
+# Sources created, changed, and deleted on disk refresh their project.
+# Project p selects *.v3. main.v3 uses shapes.v3, which has a type error.
+{"write":[".virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"*.v3\"]}]}"]}
+{"write":["shapes.v3","component Shapes {\n\tdef side() -> int { return \"s\"; }\n}\n"]}
+{"write":["main.v3","component Main {\n\tdef main() -> int { return Shapes.side(); }\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/main.v3","languageId":"virgil","version":1,"text":"component Main {\n\tdef main() -> int { return Shapes.side(); }\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"TypeError","message":"expected int in return statement, got Array<byte>","range":{"end":{"character":31,"line":1},"start":{"character":28,"line":1}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/shapes.v3"}}}
+# A deleted source leaves its project: its diagnostics are cleared, and main.v3 no longer
+# resolves Shapes.
+{"remove":"shapes.v3"}
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/shapes.v3","type":3}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"UnresolvedIdentifier","message":"identifier \"Shapes\" cannot be found","range":{"end":{"character":34,"line":1},"start":{"character":28,"line":1}},"severity":1,"source":"aeneas"},{"code":"UnresolvedMember","message":"expression of type <null> has no such member \"side\"","range":{"end":{"character":39,"line":1},"start":{"character":35,"line":1}},"severity":1,"source":"aeneas"},{"code":"TypeError","message":"expected int in return statement, got ?","range":{"end":{"character":41,"line":1},"start":{"character":28,"line":1}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/main.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/shapes.v3"}}}
+# A created source joins the project.
+{"write":["shapes.v3","component Shapes {\n\tdef side() -> int { return 3; }\n}\n"]}
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/shapes.v3","type":1}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":1}}}
+# A source changed on disk is analyzed again. Duplicate events count once.
+{"write":["shapes.v3","component Shapes {\n\tdef side() -> int { return true; }\n}\n"]}
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/shapes.v3","type":2},{"uri":"@TMP@/shapes.v3","type":2}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"TypeError","message":"expected int in return statement, got bool","range":{"end":{"character":32,"line":1},"start":{"character":28,"line":1}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/shapes.v3"}}}
+# A disk change to an open document is ignored: its overlay is what gets analyzed.
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/main.v3","type":2}]}}}
+# An unknown change type is logged and the notification ignored.
+{"send":{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/main.v3","type":4}]}}}
+{"send":{"jsonrpc":"2.0","id":2,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}
+{"stderr":"ignored workspace/didChangeWatchedFiles: invalid file change type"}
