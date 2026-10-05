@@ -24,7 +24,13 @@ class WorkspaceConfig(path: string) {
 	var capacityRejected: bool;
 	var rejectedAvailable: int;
 }
-class DocumentProjects(configPath: string, contexts: Array<ProjectContext>, active: ProjectContext) { }
+class DocumentProjects(configPath: string, contexts: Array<ProjectContext>, active: ProjectContext) {
+	// The language options for parsing the document on its own: its active
+	// project's, or none in single-file mode.
+	def compilerArgs() -> Array<string> {
+		return if(active != null, active.definition.compilerArgs, []);
+	}
+}
 
 class WorkspaceProjects(store: DocumentStore) {
 	def FILE = ".virgil-lsp.json";

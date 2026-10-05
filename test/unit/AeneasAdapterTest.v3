@@ -35,17 +35,20 @@ def X = [
 	T("AeneasAdapter:shared_nested_tuple_cleanup", test_shared_nested_tuple_cleanup),
 	T("AeneasAdapter:optional_global_stats", test_optional_global_stats),
 	T("AeneasAdapter:program_error_limit", test_program_error_limit),
+	T("AeneasAdapter:language_options_parse", test_language_options_parse),
+	T("AeneasAdapter:language_options_verify", test_language_options_verify),
+	T("AeneasAdapter:language_options_order", test_language_options_order),
 	()
 ];
 
 def test_parse_clean(t: Tester) {
-	var r = AeneasAdapter.parseFile("clean.v3", "component C { def f() -> int { return 1; } }\nclass D { }\n");
+	var r = AeneasAdapter.parseFile("clean.v3", "component C { def f() -> int { return 1; } }\nclass D { }\n", []);
 	t.asserti(0, r.diagnostics.length);
 	t.asserti(2, r.declarationCount);
 }
 
 def test_parse_error_location(t: Tester) {
-	var r = AeneasAdapter.parseFile("bad.v3", "component C {\n\tdef f( { }\n}\n");
+	var r = AeneasAdapter.parseFile("bad.v3", "component C {\n\tdef f( { }\n}\n", []);
 	if (r.diagnostics.length == 0) return t.fail("expected a syntax error");
 	var d = r.diagnostics[0];
 	t.assert(Strings.equal("bad.v3", d.path), "diagnostic path");
@@ -55,7 +58,7 @@ def test_parse_error_location(t: Tester) {
 // Aeneas reports tab-expanded display columns, which the position mapper must
 // translate. This test pins the current behaviour so that changes are noticed.
 def test_parse_tab_columns(t: Tester) {
-	var r = AeneasAdapter.parseFile("tabs.v3", "component C {\n\tdef x = ;\n}\n");
+	var r = AeneasAdapter.parseFile("tabs.v3", "component C {\n\tdef x = ;\n}\n", []);
 	if (r.diagnostics.length == 0) return t.fail("expected a syntax error");
 	var d = r.diagnostics[0];
 	t.asserti(2, d.beginLine);
@@ -68,7 +71,7 @@ def test_parse_byte_offsets(t: Tester) {
 		"/*\t*/ def if // trailing\tcomment", "/*\t*/ def f() => missing.[](in);"];
 	var begins = [28, cases[1].length, 10, 10, 28], ends = [28, cases[1].length, 12, 12, 30];
 	for (i < cases.length) {
-		var r = AeneasAdapter.parseFile("offsets.v3", cases[i]);
+		var r = AeneasAdapter.parseFile("offsets.v3", cases[i], []);
 		t.assert(r.diagnostics.length > 0, "expected a parse error");
 		t.asserti(begins[i], r.diagnostics[0].beginOffset);
 		t.asserti(ends[i], r.diagnostics[0].endOffset);
@@ -88,7 +91,7 @@ def test_parse_missing_range_bounds(t: Tester) {
 	for (i < prefixes.length) {
 		for (op in ["...", "..+"]) {
 			var text = StringBuilder.new().puts(prefixes[i]).puts(op).puts(suffixes[i]).toString();
-			var r = AeneasAdapter.parseFile("range.v3", text);
+			var r = AeneasAdapter.parseFile("range.v3", text, []);
 			t.assert(r.diagnostics.length > 0, "expected a missing range bound diagnostic");
 			if (r.diagnostics.length == 0) continue;
 			var d = r.diagnostics[0];
@@ -100,7 +103,7 @@ def test_parse_missing_range_bounds(t: Tester) {
 	}
 	for (expr in VALID_RANGES) {
 		var text = StringBuilder.new().puts("def f() { ").puts(expr).puts("; }").toString();
-		t.asserti(0, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
+		t.asserti(0, AeneasAdapter.parseFile("range.v3", text, []).diagnostics.length);
 	}
 }
 
@@ -111,13 +114,13 @@ def test_symbols_missing_range_bounds(t: Tester) {
 			for (line in ["", "// line\r\n", "// line\r"]) {
 				var text = StringBuilder.new().puts(line).puts(RANGE_PREFIXES[i]).puts(op)
 					.puts(RANGE_SUFFIXES[i]).toString();
-				t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+				t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text, []).length);
 			}
 		}
 	}
 	for (expr in VALID_RANGES) {
 		var text = StringBuilder.new().puts("def f() { ").puts(expr).puts("; }").toString();
-		var symbols = AeneasAdapter.documentSymbols("range.v3", text);
+		var symbols = AeneasAdapter.documentSymbols("range.v3", text, []);
 		t.asserti(1, symbols.length);
 		if (symbols.length == 1) t.assert_string("f", symbols[0].name);
 	}
@@ -134,8 +137,8 @@ def test_parse_range_without_bounds(t: Tester) {
 					var b = StringBuilder.new();
 					for (j < lines) b.puts("\r\n");
 					var text = b.puts(RANGE_PREFIXES[i]).puts(start).puts(op).puts(RANGE_SUFFIXES[i]).toString();
-					t.assert(AeneasAdapter.parseFile("range.v3", text).diagnostics.length > 0, "expected a diagnostic");
-					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+					t.assert(AeneasAdapter.parseFile("range.v3", text, []).diagnostics.length > 0, "expected a diagnostic");
+					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text, []).length);
 				}
 			}
 		}
@@ -147,8 +150,8 @@ def test_parse_range_without_bounds(t: Tester) {
 				for (end in ["1", "n", "\"s\"", "'a'", "_", "++i"]) {
 					var text = StringBuilder.new().puts(RANGE_PREFIXES[i]).puts(start).puts(op)
 						.putc(' ').puts(end).puts(RANGE_SUFFIXES[i]).toString();
-					t.asserti(1, AeneasAdapter.parseFile("range.v3", text).diagnostics.length);
-					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+					t.asserti(1, AeneasAdapter.parseFile("range.v3", text, []).diagnostics.length);
+					t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text, []).length);
 				}
 			}
 		}
@@ -157,8 +160,8 @@ def test_parse_range_without_bounds(t: Tester) {
 		for (end in ["'ab'", "\"unterminated", "_name", "__", "+i", "+"]) {
 			var text = StringBuilder.new().puts("def f() { xs[0x ").puts(op)
 				.putc(' ').puts(end).puts("]; }").toString();
-			t.assert(AeneasAdapter.parseFile("range.v3", text).diagnostics.length > 0, "expected a diagnostic");
-			t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text).length);
+			t.assert(AeneasAdapter.parseFile("range.v3", text, []).diagnostics.length > 0, "expected a diagnostic");
+			t.asserti(0, AeneasAdapter.documentSymbols("range.v3", text, []).length);
 		}
 	}
 }
@@ -177,7 +180,7 @@ def test_parse_deep_nesting(t: Tester) {
 			b.puts(c.2);
 			for (i < n) b.puts(c.3);
 			var text = b.puts(c.4).toString();
-			var r = AeneasAdapter.parseFile("deep.v3", text);
+			var r = AeneasAdapter.parseFile("deep.v3", text, []);
 			if (n == 1000) {
 				t.asserti(0, r.diagnostics.length);
 				continue;
@@ -188,7 +191,7 @@ def test_parse_deep_nesting(t: Tester) {
 			t.assert_string("nesting too deep; parsing stopped here", d.message);
 			t.assert(d.beginOffset > 0 && d.beginOffset < text.length, "expected the stop inside the input");
 			t.asserti(d.beginOffset, d.endOffset);
-			t.asserti(0, AeneasAdapter.documentSymbols("deep.v3", text).length);
+			t.asserti(0, AeneasAdapter.documentSymbols("deep.v3", text, []).length);
 		}
 	}
 }
@@ -201,9 +204,9 @@ def test_symbols_rep_hint_eof(t: Tester) {
 		"component C { def f() { var x ", "", "class C\r\n"];
 	for (prefix in prefixes) {
 		var text = StringBuilder.new().puts(prefix).putc('#').toString();
-		t.asserti(0, AeneasAdapter.documentSymbols("hint.v3", text).length);
+		t.asserti(0, AeneasAdapter.documentSymbols("hint.v3", text, []).length);
 	}
-	t.asserti(1, AeneasAdapter.documentSymbols("hint.v3", "class C #boxed {}").length);
+	t.asserti(1, AeneasAdapter.documentSymbols("hint.v3", "class C #boxed {}", []).length);
 }
 
 def test_parse_rep_hint_eof(t: Tester) {
@@ -213,7 +216,7 @@ def test_parse_rep_hint_eof(t: Tester) {
 		"component C { def f() { var x "];
 	for (prefix in prefixes) {
 		var text = StringBuilder.new().puts(prefix).putc('#').toString();
-		var r = AeneasAdapter.parseFile("hint.v3", text);
+		var r = AeneasAdapter.parseFile("hint.v3", text, []);
 		var found = false;
 		for (d in r.diagnostics) {
 			if (Strings.equal(d.message, "identifier expected")) {
@@ -224,7 +227,7 @@ def test_parse_rep_hint_eof(t: Tester) {
 		}
 		t.assert(found, "expected a missing hint identifier diagnostic");
 	}
-	t.asserti(0, AeneasAdapter.parseFile("hint.v3", "class C #boxed {}").diagnostics.length);
+	t.asserti(0, AeneasAdapter.parseFile("hint.v3", "class C #boxed {}", []).diagnostics.length);
 }
 
 def test_parse_rep_hint_ranges(t: Tester) {
@@ -235,7 +238,7 @@ def test_parse_rep_hint_ranges(t: Tester) {
 	for (prefix in prefixes) {
 		for (suffix in ["if {}", "if", "if // trailing\tcomment"]) {
 			var text = StringBuilder.new().puts(prefix).putc('#').puts(suffix).toString();
-			var r = AeneasAdapter.parseFile("hint.v3", text);
+			var r = AeneasAdapter.parseFile("hint.v3", text, []);
 			var found = false;
 			for (d in r.diagnostics) {
 				if (Strings.equal(d.message, "keyword \"if\" cannot be used as identifier")) {
@@ -254,7 +257,7 @@ def test_parse_rep_hint_ranges(t: Tester) {
 		"component C { def f() { var x #boxed = 1; } }",
 		"/*\t*/ def f() => missing.[](1);", "/*\t*/ def f() => missing.[]=(1, 2);"];
 	for (text in clean) {
-		var r = AeneasAdapter.parseFile("hint.v3", text);
+		var r = AeneasAdapter.parseFile("hint.v3", text, []);
 		t.asserti(0, r.diagnostics.length);
 		t.assert(r.declarationCount > 0, "expected a parsed declaration");
 	}
@@ -278,7 +281,7 @@ def analyzeFiles(t: Tester, paths: Array<string>) -> ProgramAnalysis {
 		}
 		sources[i] = AnalysisSource.new(paths[i], input);
 	}
-	return AeneasAdapter.analyzeProgram(sources, false);
+	return AeneasAdapter.analyzeProgram(sources, [], false);
 }
 def assertDiagnostic(t: Tester, a: ProgramAnalysis, kind: string, path: string, line: int, column: int) {
 	if (a.diagnostics.length == 0) return t.fail1("expected a %s diagnostic", kind);
@@ -364,7 +367,7 @@ def test_analyze_in_memory_only(t: Tester) {
 		AnalysisSource.new("no/such/dir/a.v3", "component A { def f() -> int { return B.new().g(); } }\n"),
 		AnalysisSource.new("no/such/dir/b.v3", "class B { def g() -> int { return 1; } }\n"),
 		AnalysisSource.new("no/such/dir/empty.v3", null)
-	], false);
+	], [], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertDefinition(t, a, "no/such/dir/a.v3", 1, 39, AnalysisDeclKind.CLASS, "B", "no/such/dir/b.v3", 1, 7);
@@ -374,7 +377,7 @@ def test_analyze_in_memory_only(t: Tester) {
 // ExceptionInInitialization if the adapter ran Compilation.init().
 def test_analyze_runs_no_initializers(t: Tester) {
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("init.v3",
-		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")], false);
+		"component Init {\n\tdef zero() -> int { return 0; }\n\tdef x: int = 1 / zero();\n}\n")], [], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 }
@@ -405,7 +408,7 @@ def test_binding_lookup(t: Tester) {
 def test_binding_captured_local(t: Tester) {
 	var path = "captures.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"def compute(seed: int) -> int {\n    var total = 0;\n    var f = fun () => total + total;\n    var g = fun () => fun () => total + seed;\n    return f() + g()();\n}\n")], false);
+		"def compute(seed: int) -> int {\n    var total = 0;\n    var f = fun () => total + total;\n    var g = fun () => fun () => total + seed;\n    return f() + g()();\n}\n")], [], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertSingleDefinition(t, a, path, 3, 23, AnalysisDeclKind.LOCAL, "total", path, 2, 9);
@@ -423,7 +426,7 @@ def test_binding_capture_contexts(t: Tester) {
 		var a = AeneasAdapter.analyzeProgram([
 			AnalysisSource.new(path, source),
 			AnalysisSource.new("error.v3", if(broken == 0, "", "def broken() -> int { return missing; }\n"))
-		], false);
+		], [], false);
 		t.assertz(true, a.parsed);
 		t.assertz(broken == 0, a.verified);
 		t.assertz(broken != 0, a.diagnostics.length > 0);
@@ -444,7 +447,7 @@ def test_binding_capture_contexts(t: Tester) {
 def test_binding_explicit_constructor(t: Tester) {
 	var path = "constructor.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"class Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], false);
+		"class Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], [], false);
 	t.asserti(0, a.diagnostics.length);
 	assertDefinition(t, a, path, 2, 34, AnalysisDeclKind.CONSTRUCTOR, "new", path, 1, 14);
 }
@@ -453,7 +456,7 @@ def test_binding_explicit_constructor(t: Tester) {
 def test_binding_exports(t: Tester) {
 	var path = "exports.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"export def main() { }\ndef helper() { }\nexport helper;\nexport \"alias\" = helper;\n")], false);
+		"export def main() { }\ndef helper() { }\nexport helper;\nexport \"alias\" = helper;\n")], [], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	t.assert(a.definitionAt(path, 1, 12) == null, "an export declaration is not a use of itself");
@@ -465,7 +468,7 @@ def test_binding_exports(t: Tester) {
 def test_binding_exports_after_semantic_errors(t: Tester) {
 	var path = "invalid-exports.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"def main() { }\nexport def main() { }\nexport def answer: int = 42;\nexport def left: int = 1, right: int = 2;\nexport \"inline-alias\" def helper() { }\ndef named() { }\nexport named;\nexport \"named-main\" = main;\nexport \"named-helper\" = helper;\nexport \"named-answer\" = answer;\nclass Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], false);
+		"def main() { }\nexport def main() { }\nexport def answer: int = 42;\nexport def left: int = 1, right: int = 2;\nexport \"inline-alias\" def helper() { }\ndef named() { }\nexport named;\nexport \"named-main\" = main;\nexport \"named-helper\" = helper;\nexport \"named-answer\" = answer;\nclass Rect { new() { } }\ndef make() -> Rect { return Rect.new(); }\n")], [], false);
 	t.assertz(true, a.parsed);
 	t.assertz(false, a.verified);
 	t.assert(a.diagnostics.length > 0, "expected semantic errors");
@@ -488,7 +491,7 @@ def test_binding_exports_after_semantic_errors(t: Tester) {
 def test_binding_this_class(t: Tester) {
 	var path = "this.v3";
 	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path,
-		"class Rect(width: int) { def area() -> int { return this.width; } }\nclass Box {\n    var width: int;\n    new(width: int) { this.width = width; }\n    def area() -> int { var f = fun () => this.width; return f(); }\n}\n")], false);
+		"class Rect(width: int) { def area() -> int { return this.width; } }\nclass Box {\n    var width: int;\n    new(width: int) { this.width = width; }\n    def area() -> int { var f = fun () => this.width; return f(); }\n}\n")], [], false);
 	t.asserti(0, a.diagnostics.length);
 	t.assertz(true, a.verified);
 	assertDefinition(t, a, path, 1, 53, AnalysisDeclKind.CLASS, "Rect", path, 1, 7);
@@ -567,7 +570,7 @@ def test_cached_binding_index(t: Tester) {
 	var broken = analyzeFiles(t, [SHAPES, SYNTAX_ERROR]);
 	if (broken == null) return;
 	t.assert(broken.definitionAt(SHAPES, 10, 24) == null, "parse failure has no binding index");
-	var empty = AeneasAdapter.analyzeProgram([AnalysisSource.new("empty.v3", "")], false);
+	var empty = AeneasAdapter.analyzeProgram([AnalysisSource.new("empty.v3", "")], [], false);
 	t.assert(empty.occurrences("empty.v3") == empty.occurrences("empty.v3"), "empty index is cached too");
 	t.assert(empty.definitionAt("empty.v3", 1, 1) == null, "empty index has no definition");
 }
@@ -578,14 +581,14 @@ def test_lazy_bindings_after_cache_cleanup(t: Tester) {
 	var path = "snapshot.v3";
 	var sources = [AnalysisSource.new(path,
 		"class Box<T>(value: T) {}\nenum E { A, B }\ncomponent C {\n    def id<T>(x: T) -> T { return x; }\n    def use(b: Box<E>) -> E { return id(b.value); }\n}\n")];
-	var first = AeneasAdapter.analyzeProgram(sources, false);
+	var first = AeneasAdapter.analyzeProgram(sources, [], false);
 	t.assertz(true, first.verified);
 	analyzeFiles(t, [SHAPES, MAIN]);
 	analyzeFiles(t, [SHAPES, UNRESOLVED]);
 	RiGc.forceGC();
 	assertDefinition(t, first, path, 5, 38, AnalysisDeclKind.METHOD, "id", path, 4, 9);
 	assertDefinition(t, first, path, 5, 43, AnalysisDeclKind.FIELD, "value", path, 1, 14);
-	var second = AeneasAdapter.analyzeProgram(sources, false);
+	var second = AeneasAdapter.analyzeProgram(sources, [], false);
 	t.assert_string(renderAnalysis(first, [path]), renderAnalysis(second, [path]));
 }
 
@@ -597,13 +600,13 @@ def test_shared_nested_tuple_cleanup(t: Tester) {
 	var sources = [AnalysisSource.new(path, buf.extract())];
 	for (collectStats in [false, true]) {
 		var start = System.ticksUs();
-		var nested = AeneasAdapter.analyzeProgram(sources, collectStats);
+		var nested = AeneasAdapter.analyzeProgram(sources, [], collectStats);
 		t.assert(System.ticksUs() - start < 5000000, "shared tuple analysis must finish within five seconds");
 		t.assertz(true, nested.verified);
 		t.asserti(0, nested.diagnostics.length);
 		start = System.ticksUs();
 		var tiny = AeneasAdapter.analyzeProgram(
-			[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], collectStats);
+			[AnalysisSource.new("tiny.v3", "def tiny() -> int { return 1; }")], [], collectStats);
 		t.assert(System.ticksUs() - start < 5000000, "subsequent tiny analysis must finish within five seconds");
 		t.assertz(true, tiny.verified);
 		t.asserti(0, tiny.diagnostics.length);
@@ -614,14 +617,14 @@ def test_shared_nested_tuple_cleanup(t: Tester) {
 
 def test_optional_global_stats(t: Tester) {
 	var sources = [AnalysisSource.new("stats.v3", "class C { }\ncomponent S { def f(c: C) -> C { return c; } }\n")];
-	var unmeasured = AeneasAdapter.analyzeProgram(sources, false);
+	var unmeasured = AeneasAdapter.analyzeProgram(sources, [], false);
 	t.asserti(-1, unmeasured.stats.globalTypesAdded);
 	var before = AeneasAdapter.globalTypeCount();
-	var measured = AeneasAdapter.analyzeProgram(sources, true);
+	var measured = AeneasAdapter.analyzeProgram(sources, [], true);
 	t.asserti(AeneasAdapter.globalTypeCount() - before, measured.stats.globalTypesAdded);
 	t.assert(measured.stats.globalTypesAdded >= 0, "requested global stats must be available");
 	t.assert_string(renderAnalysis(unmeasured, ["stats.v3"]), renderAnalysis(measured, ["stats.v3"]));
-	var again = AeneasAdapter.analyzeProgram(sources, false);
+	var again = AeneasAdapter.analyzeProgram(sources, [], false);
 	t.asserti(-1, again.stats.globalTypesAdded);
 	t.assert_string(renderAnalysis(measured, ["stats.v3"]), renderAnalysis(again, ["stats.v3"]));
 }
@@ -632,7 +635,91 @@ def test_program_error_limit(t: Tester) {
 	var source = StringBuilder.new().puts("component A {\n\tdef f() {\n");
 	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 5) source.put1("\t\tvar x%d: int = missing;\n", i);
 	source.puts("\t}\n}\ncomponent B {\n\tdef g() -> int { return later; }\n}\n");
-	var r = AeneasAdapter.analyzeProgram([AnalysisSource.new("limit.v3", source.toString())], false);
+	var r = AeneasAdapter.analyzeProgram([AnalysisSource.new("limit.v3", source.toString())], [], false);
 	t.assert(r.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS, "reaches the limit");
 	for (d in r.diagnostics) t.assert(!Strings.equal(d.message, "identifier \"later\" cannot be found"), "B is not verified");
+}
+
+// The fixture from issue #80: a descriptor clause parses only with -lang:descriptors.
+def DESCRIBED = "class D { }\nclass C descriptor D { }\ncomponent M { def x: C; }\n";
+// Read-only array types exist only with -lang:read-only-arrays.
+def READ_ONLY = "component M {\n\tdef first(a: array<int>) -> int { return a[0]; }\n}\n";
+// Legacy inference unifies the element types and then rejects both arrays;
+// without it, the array literal's type cannot be inferred.
+def NESTED_ARRAYS = "class P { }\nclass A extends P { }\nclass B extends P { }\ncomponent M {\n\tdef pick(a: A, b: B) {\n\t\tvar x = [[a], [b]];\n\t}\n}\n";
+
+def assertDefaultOptions(t: Tester) {
+	for (l = CLOptions.langOpt.list; l != null; l = l.tail) {
+		var opt = Option<bool>.!(l.head.0);
+		if (opt.val != opt.init) t.fail1("%s was not restored to its default", opt.name);
+	}
+}
+def kinds(diagnostics: Array<AnalysisDiagnostic>) -> string {
+	var buf = StringBuilder.new();
+	for (d in diagnostics) buf.puts(d.kind).putc(' ');
+	return buf.toString();
+}
+def test_language_options_parse(t: Tester) {
+	var plain = AeneasAdapter.parseFile("described.v3", DESCRIBED, []);
+	t.asserti(1, plain.diagnostics.length);
+	if (plain.diagnostics.length == 1) {
+		var d = plain.diagnostics[0];
+		t.assert_string("ParseError", d.kind);
+		t.asserti(2, d.beginLine);
+		t.asserti(9, d.beginColumn);
+	}
+	t.asserti(0, AeneasAdapter.documentSymbols("described.v3", DESCRIBED, []).length);
+	assertDefaultOptions(t);
+	var described = AeneasAdapter.parseFile("described.v3", DESCRIBED, ["-lang:descriptors"]);
+	t.asserti(0, described.diagnostics.length);
+	t.asserti(3, described.declarationCount);
+	assertDefaultOptions(t);
+	t.asserti(3, AeneasAdapter.documentSymbols("described.v3", DESCRIBED, ["-lang:descriptors"]).length);
+	assertDefaultOptions(t);
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new("described.v3", DESCRIBED)], ["-lang:descriptors"], false);
+	t.assertz(true, a.parsed);
+	assertDefaultOptions(t);
+}
+def test_language_options_verify(t: Tester) {
+	var sources = [AnalysisSource.new("read-only.v3", READ_ONLY)];
+	// Analyses with different options alternate in one process, as projects
+	// do in one worker; each sees only its own options.
+	for (i < 2) {
+		var plain = AeneasAdapter.analyzeProgram(sources, [], false);
+		t.assertz(false, plain.verified);
+		t.assert(plain.diagnostics.length > 0 && Strings.equal("UnresolvedType", plain.diagnostics[0].kind), "array is not a type by default");
+		var readOnly = AeneasAdapter.analyzeProgram(sources, ["-lang:read-only-arrays"], false);
+		t.assertz(true, readOnly.verified);
+		t.asserti(0, readOnly.diagnostics.length);
+		assertDefaultOptions(t);
+	}
+	sources = [AnalysisSource.new("nested.v3", NESTED_ARRAYS)];
+	var legacy = AeneasAdapter.analyzeProgram(sources, [], false);
+	t.assert_string("TypeError TypeError ", kinds(legacy.diagnostics));
+	var current = AeneasAdapter.analyzeProgram(sources, ["-lang:legacy-infer=false"], false);
+	t.assert_string("TypeInferError ", kinds(current.diagnostics));
+	assertDefaultOptions(t);
+	t.assert_string("TypeError TypeError ", kinds(AeneasAdapter.analyzeProgram(sources, ["-lang:legacy-infer=true"], false).diagnostics));
+}
+def test_language_options_order(t: Tester) {
+	// Flags apply in order, as in v3c; -lang:fun-exprs also sets -lang:simple-bodies.
+	AeneasAdapter.setLanguageOptions(["-lang:simple-bodies=false", "-lang:fun-exprs"]);
+	t.assertz(true, CLOptions.SIMPLE_BODIES.val);
+	AeneasAdapter.setLanguageOptions(["-lang:fun-exprs", "-lang:simple-bodies=false"]);
+	t.assertz(true, CLOptions.FUN_EXPRS.val);
+	t.assertz(false, CLOptions.SIMPLE_BODIES.val);
+	// Each call starts from the defaults.
+	AeneasAdapter.setLanguageOptions(["-lang:fun-exprs=false", "-lang:descriptors", "-lang:legacy-infer=false"]);
+	t.assertz(false, CLOptions.FUN_EXPRS.val);
+	t.assertz(true, CLOptions.SIMPLE_BODIES.val);
+	t.assertz(true, CLOptions.DESCRIPTORS.val);
+	t.assertz(false, CLOptions.LEGACY_INFER.val);
+	AeneasAdapter.resetLanguageOptions();
+	assertDefaultOptions(t);
+	AeneasAdapter.setLanguageOptions(["-lang:read-only-arrays", "-lang:covariant-arrays", "-lang:open-types"]);
+	t.assertz(true, CLOptions.READONLY_ARRAYS.val);
+	t.assertz(true, CLOptions.COVARIANT_ARRAYS.val);
+	t.assertz(true, CLOptions.OPEN_TYPES.val);
+	AeneasAdapter.setLanguageOptions([]);
+	assertDefaultOptions(t);
 }

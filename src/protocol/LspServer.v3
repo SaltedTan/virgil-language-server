@@ -40,6 +40,9 @@ class LspServer {
 	private var projectDiagnostics: LspProjectDiagnostics;
 	private var semanticDiagnostics: LspSemanticDiagnostics;
 	private var documentWarning: Array<byte>;
+	// Set when a configuration changes, which may change the language
+	// options of open documents; see reparseDocuments.
+	private var configurationChanged: bool;
 	// The caller supplies stderr logging; unit tests may record warnings.
 	var warnDocumentSync: string -> void;
 	var warnProject: string -> void;
@@ -49,7 +52,7 @@ class LspServer {
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
-	private def documentSymbols = LspDocumentSymbols.new(documents);
+	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	// Watched-file and workspace-folder notifications, and the watcher registration.
 	def workspaceEvents = LspWorkspaceEvents.new(documents, projects);
 	// Completes a server request whose deadline has passed.
@@ -98,6 +101,7 @@ class LspServer {
 	// expires server requests the client hasn't answered in time.
 	def onPoll() {
 		if (semanticDiagnostics != null) semanticDiagnostics.onPoll();
+		reparseDocuments();
 		if (dispatcher.pending.count() > 0) dispatcher.pending.expire(System.ticksMs(), REQUEST_TIMEOUT);
 	}
 	// True while an analysis runs or waits to run.
@@ -114,6 +118,14 @@ class LspServer {
 	private def configChanged(c: WorkspaceConfig) {
 		projectDiagnostics.update(c);
 		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
+		configurationChanged = true;
+	}
+	// Configurations change during a refresh, so open documents are parsed
+	// again only once the payload or poll that refreshed them is handled.
+	private def reparseDocuments() {
+		if (!configurationChanged) return;
+		configurationChanged = false;
+		parserDiagnostics.reparse(documents, projects);
 	}
 	private def documentOpened(doc: DocumentOverlay) {
 		documentUpdated(doc, false);
@@ -124,7 +136,7 @@ class LspServer {
 	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
 		if (reloadProjectFile(doc)) return;
 		var mapping = projects.forDocument(doc.uri);
-		parserDiagnostics.update(doc);
+		parserDiagnostics.update(doc, mapping.compilerArgs());
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(mapping.contexts, debounce);
 	}
 	private def documentSaved(doc: DocumentOverlay) {
@@ -207,6 +219,7 @@ class LspServer {
 			_ => ;
 		}
 		var reply = dispatcher.dispatch(input);
+		reparseDocuments();
 		// A synchronization notification has no reply. Capacity rejection instead
 		// sends a server notification, without inventing a JSON-RPC response id.
 		if (documentWarning != null) {

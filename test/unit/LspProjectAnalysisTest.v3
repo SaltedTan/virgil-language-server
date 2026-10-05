@@ -8,12 +8,15 @@ def X = [
 	T("LspProjectAnalysis:routine_events_reuse_expansion", test_routine_events_reuse_expansion),
 	T("LspProjectAnalysis:initialize_folders", test_initialize_folders),
 	T("LspProjectAnalysis:explicit_uris_above_project_limit", test_explicit_uris_above_project_limit),
+	T("LspProjectAnalysis:compiler_args_per_project", test_compiler_args_per_project),
+	T("LspProjectAnalysis:compiler_args_change_reparses", test_compiler_args_change_reparses),
 	()
 ];
-class ProjectTestSession {
+// A server for the fixture project directory {fixture}.
+class ProjectTestSession(fixture: string) {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
 	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
-	def base = ProjectTestFiles.repository("test/fixtures/projects/two-programs");
+	def base = ProjectTestFiles.repository(Strings.format1("test/fixtures/projects/%s", fixture));
 	def uri = ProjectFiles.uri(ProjectFiles.join(base, "shared/Greeting.v3"));
 	var reply: Array<byte>;
 	def notifications = Vector<Array<byte>>.new();
@@ -56,7 +59,7 @@ class ProjectTestSession {
 	}
 }
 def test_contexts_and_revisions(t: Tester) {
-	var s = ProjectTestSession.new();
+	var s = ProjectTestSession.new("two-programs");
 	var mapping = s.server.projects.forDocument(s.uri);
 	t.asserti(2, mapping.contexts.length);
 	s.begin(t, s.uri);
@@ -86,7 +89,7 @@ def test_contexts_and_revisions(t: Tester) {
 	s.server.close();
 }
 def test_configuration_diagnostics(t: Tester) {
-	var s = ProjectTestSession.new(), config = ProjectFiles.join(s.base, ".virgil-lsp.json");
+	var s = ProjectTestSession.new("two-programs"), config = ProjectFiles.join(s.base, ".virgil-lsp.json");
 	var uri = ProjectFiles.uri(config);
 	s.server.documents.open(uri, "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"virgilDependencies\":[\"lib/*.v3\"]}]}");
 	var c = s.server.projects.load(config);
@@ -111,7 +114,7 @@ def test_configuration_diagnostics(t: Tester) {
 	s.server.close();
 }
 def test_routine_events_reuse_expansion(t: Tester) {
-	var s = ProjectTestSession.new(), mapping = s.server.projects.forDocument(s.uri);
+	var s = ProjectTestSession.new("two-programs"), mapping = s.server.projects.forDocument(s.uri);
 	t.asserti(2, mapping.contexts.length);
 	var cached = [mapping.contexts[0].sources, mapping.contexts[1].sources];
 	var text = System.fileLoad(ProjectFiles.join(s.base, "shared/Greeting.v3"));
@@ -160,7 +163,7 @@ def test_initialize_folders(t: Tester) {
 }
 
 def test_explicit_uris_above_project_limit(t: Tester) {
-	var s = ProjectTestSession.new(), uris = Array<JsonValue>.new(ProjectLimits.MAX_FILES + 1);
+	var s = ProjectTestSession.new("two-programs"), uris = Array<JsonValue>.new(ProjectLimits.MAX_FILES + 1);
 	for (i < uris.length) {
 		var uri = Strings.format1("untitled:empty-%d", i);
 		t.assert(s.server.documents.open(uri, "virgil", 1, "") == null, "empty overlay admitted");
@@ -175,4 +178,86 @@ def test_explicit_uris_above_project_limit(t: Tester) {
 		if (snapshot != null) t.asserti(uris.length, snapshot.paths.length);
 	}
 	s.server.close();
+}
+
+// shared/Table.v3 belongs to two projects with different language options.
+// Each analysis applies its own project's options, in the same worker.
+def test_compiler_args_per_project(t: Tester) {
+	var s = ProjectTestSession.new("compiler-flags");
+	var shared = ProjectFiles.uri(ProjectFiles.join(s.base, "shared/Table.v3"));
+	var defaults = ProjectFiles.uri(ProjectFiles.join(s.base, "defaults/Main.v3"));
+	var described = ProjectFiles.uri(ProjectFiles.join(s.base, "descriptors/Described.v3"));
+	t.asserti(2, s.server.projects.forDocument(shared).contexts.length);
+	for (round < 2) {
+		// The shared file's active project is "read-only", declared first.
+		s.begin(t, shared);
+		var readOnly = s.complete(t);
+		t.assert_string("read-only", readOnly.projectName);
+		t.assertz(true, readOnly.verified);
+		s.begin(t, defaults);
+		var plain = s.complete(t);
+		t.assert_string("defaults", plain.projectName);
+		t.assertz(false, plain.verified);
+		var unresolved = false;
+		for (d in plain.diagnostics) unresolved = unresolved || (Strings.equal("UnresolvedType", d.kind) && Strings.endsWith(d.path, "/shared/Table.v3"));
+		t.assert(unresolved, "array<int> is unresolved without -lang:read-only-arrays");
+	}
+	s.begin(t, described);
+	var descriptors = s.complete(t);
+	t.assert_string("descriptors", descriptors.projectName);
+	t.assertz(true, descriptors.verified);
+	t.asserti(1, s.supervisor.workersStarted);
+	s.server.close();
+}
+
+def openDocument(s: ProjectTestSession, uri: string, languageId: string, text: string) {
+	var document = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	document["uri"] = JsonValue.String(uri);
+	document["languageId"] = JsonValue.String(languageId);
+	document["version"] = JsonValue.Int(1);
+	document["text"] = JsonValue.String(text);
+	params["textDocument"] = JsonValue.JObject(document);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+}
+// The parser diagnostics published for each URI in {s}'s notifications, which are cleared.
+def takeParsed(s: ProjectTestSession) -> HashMap<string, Array<JsonValue>> {
+	var result = Strings.newMap<Array<JsonValue>>();
+	for (i < s.notifications.length) {
+		var msg = JsonValue.JObject.!(JsonRpcJsonParser.new(s.notifications[i]).parseDocument()).v;
+		if (!Strings.equal("textDocument/publishDiagnostics", JsonValue.String.!(msg["method"]).v)) continue;
+		var params = JsonValue.JObject.!(msg["params"]).v;
+		result[JsonValue.String.!(params["uri"]).v] = JsonValue.JArray.!(params["diagnostics"]).v;
+	}
+	s.notifications.clear();
+	return result;
+}
+// A configuration change parses again only the open documents whose active
+// project's language options changed.
+def test_compiler_args_change_reparses(t: Tester) {
+	var s = ProjectTestSession.new("compiler-flags");
+	var described = ProjectFiles.uri(ProjectFiles.join(s.base, "descriptors/Described.v3"));
+	var readOnly = ProjectFiles.uri(ProjectFiles.join(s.base, "read-only/Main.v3"));
+	var config = ProjectFiles.join(s.base, ".virgil-lsp.json");
+	var text = System.fileLoad(ProjectFiles.join(s.base, "descriptors/Described.v3"));
+	openDocument(s, described, "virgil", text);
+	openDocument(s, readOnly, "virgil", System.fileLoad(ProjectFiles.join(s.base, "read-only/Main.v3")));
+	openDocument(s, "untitled:described", "virgil", text);
+	var parsed = takeParsed(s);
+	t.asserti(0, parsed[described].length);
+	t.asserti(1, parsed["untitled:described"].length);
+	var edited = replace(System.fileLoad(config), "\"compilerArgs\": [\"-lang:descriptors\"]", "\"compilerArgs\": []");
+	openDocument(s, ProjectFiles.uri(config), "json", edited);
+	parsed = takeParsed(s);
+	t.assert(parsed.has(described) && parsed[described].length == 1, "the descriptor clause is now a syntax error");
+	t.assertz(false, parsed.has(readOnly));
+	t.assertz(false, parsed.has("untitled:described"));
+	s.server.close();
+}
+def replace(text: string, from: string, to: string) -> string {
+	for (i = 0; i + from.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + from.length), from)) {
+			return Strings.format3("%s%s%s", Arrays.range(text, 0, i), to, Arrays.range(text, i + from.length, text.length));
+		}
+	}
+	return null;
 }

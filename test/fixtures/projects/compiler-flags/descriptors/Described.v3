@@ -1,0 +1,6 @@
+// A descriptor clause parses only with -lang:descriptors.
+class Kind describes Shape { }
+class Shape descriptor Kind { }
+component Shapes {
+	def none: Shape;
+}

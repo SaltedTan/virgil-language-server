@@ -142,7 +142,7 @@ component VirgilLsp {
 				failed = true;
 				continue;
 			}
-			var result = AeneasAdapter.parseFile(path, input);
+			var result = AeneasAdapter.parseFile(path, input, []);
 			for (d in result.diagnostics) {
 				System.puts(d.toString());
 				System.ln();
@@ -193,7 +193,7 @@ component VirgilLsp {
 		var firstHash: u64, status = 0;
 		for (run < repeat) {
 			var snapshot: AnalysisSnapshot;
-			match (supervisor.analyze(sources, flags)) {
+			match (supervisor.analyze(sources, [], flags)) {
 				Completed(s) => snapshot = s;
 				Pending => {
 					Log.error("analysis returned without completing");

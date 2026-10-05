@@ -137,13 +137,17 @@ component AeneasAdapter {
 	def PROGRAM_MAX_ERRORS = 15;
 	// Parse/verify do not mutate compiler configuration. Each analysis still
 	// owns a fresh Program and Compilation; only this default configuration
-	// is reused. Per-project CLOptions configuration remains future work.
+	// is reused. Language options live in CLOptions instead; see
+	// setLanguageOptions.
 	private def compiler = Compiler.new(null);
 
-	// Parse one file in isolation. Does not verify, initialize, or generate code.
-	def parseFile(path: string, input: Array<byte>) -> FileParseResult {
+	// Parse one file in isolation with language options {options} (see
+	// setLanguageOptions). Does not verify, initialize, or generate code.
+	def parseFile(path: string, input: Array<byte>, options: Array<string>) -> FileParseResult {
 		var errors = AnalysisParseErrors.new(MAX_ERRORS);
+		setLanguageOptions(options);
 		var file = AnalysisSingleFileParser.parse(path, input, errors, null, TypeCache.new(), null);
+		resetLanguageOptions();
 		var decls = file.classes.length + file.components.length + file.enums.length
 			+ file.layouts.length + file.packings.length;
 		var diagnostics = convertErrors(path, errors);
@@ -156,14 +160,16 @@ component AeneasAdapter {
 	// Parse current document bytes without verification, through the same
 	// driver and recovery as {parseFile}. A failed parse yields no symbols:
 	// the compiler stops early and its partial VST is not an outline.
-	def documentSymbols(path: string, input: Array<byte>) -> Array<AnalysisDocumentSymbol> {
+	def documentSymbols(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisDocumentSymbol> {
 		// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
 		// line terminators the compiler understands; never mutate the overlay.
 		var normalized = Array<byte>.new(input.length);
 		for (i < input.length) normalized[i] = if(input[i] == '\r',
 			if(i + 1 < input.length && input[i + 1] == '\n', ' ', '\n'), input[i]);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		setLanguageOptions(options);
 		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
+		resetLanguageOptions();
 		if (errors.numErrors > 0) return [];
 		return DocumentSymbolCollector.new(file, syntax).collect();
 	}
@@ -180,13 +186,37 @@ component AeneasAdapter {
 		}
 		return options.extract();
 	}
+	// Sets Aeneas's process-wide language options to their defaults, then
+	// applies {args} in order, as v3c does. Each is a flag that
+	// {ProjectCompilerFlags} accepts: -lang:<name>, -lang:<name>=true, or
+	// -lang:<name>=false. Setting -lang:fun-exprs also sets
+	// -lang:simple-bodies, through the option's own handler.
+	def setLanguageOptions(args: Array<string>) {
+		resetLanguageOptions();
+		for (arg in args) {
+			var t = CLOptions.options.parseOption(arg), name = t.0;
+			for (l = CLOptions.langOpt.list; l != null; l = l.tail) {
+				if (Strings.equal(l.head.0.name, name)) l.head.0.parse(t.1);
+			}
+		}
+	}
+	// Restores every language option's default. Each parse and analysis
+	// restores them when it ends, so that no project's options outlive it.
+	def resetLanguageOptions() {
+		for (l = CLOptions.langOpt.list; l != null; l = l.tail) {
+			var opt = l.head.0;
+			if (Option<bool>.?(opt)) Option<bool>.!(opt).val = Option<bool>.!(opt).init;
+		}
+	}
 	// Parse and verify a whole program from in-memory sources, in the given
-	// order. Builds a fresh {Program} each time and runs only
-	// the shared parser and, if parsing succeeded, {Compilation.verify()}.
+	// order, with language options {options} (see setLanguageOptions).
+	// Builds a fresh {Program} each time and runs only the shared parser and,
+	// if parsing succeeded, {Compilation.verify()}.
 	// Never initializes, runs reachability, or generates code.
 	// {collectStats} enables the expensive process-wide type-cache counts.
-	def analyzeProgram(sources: Array<AnalysisSource>, collectStats: bool) -> ProgramAnalysis {
+	def analyzeProgram(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
 		AnalysisTypeCache.prepare();
+		setLanguageOptions(options);
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
 		var prog = Program.new();
 		// Without a target, Aeneas provides a synthetic System component, as
@@ -211,6 +241,7 @@ component AeneasAdapter {
 		// verifying the truncated tree would report spurious errors.
 		var verified = parsed && compilation.verify();
 		var t2 = System.ticksUs();
+		resetLanguageOptions();
 		// Drop process-wide roots even when parsing or verification failed.
 		// The result still owns its VST; dropping that result makes it collectible.
 		AnalysisTypeCache.release();

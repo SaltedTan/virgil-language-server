@@ -35,9 +35,6 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			var mapping = projects.forAnalysis(JsonValue.String.!(params["uri"]).v);
 			pendingProject = mapping.active;
 			if (pendingProject == null) return invalid("document has no matching project; single-file features remain available");
-			// Compiler option application is separate M3 work; never silently
-			// analyze with defaults when the config requests non-default flags.
-			if (pendingProject.definition.compilerArgs.length > 0) return invalid("project compilerArgs are not yet supported by the analysis worker");
 			uris = Array<JsonValue>.new(pendingProject.sources.length);
 			for (i < uris.length) uris[i] = JsonValue.String(ProjectFiles.uri(pendingProject.sources[i].path));
 		} else {
@@ -61,7 +58,9 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var inputs = captured.0;
 		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
 			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
-		var outcome = supervisor.begin(inputs.sources, AnalysisWire.WANT_OCCURRENCES);
+		// Explicit URIs form no project, so they use the default language options.
+		var options: Array<string> = if(pendingProject != null, pendingProject.definition.compilerArgs, []);
+		var outcome = supervisor.begin(inputs.sources, options, AnalysisWire.WANT_OCCURRENCES);
 		match (outcome) {
 			Failed(failure, reason) => return workerError(reason);
 			_ => {
