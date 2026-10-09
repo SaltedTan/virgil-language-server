@@ -4,7 +4,7 @@
 
 | Server version | Pinned Virgil revision | Notes |
 | --- | --- | --- |
-| `main` (unreleased) | [`9945e430`](https://github.com/titzer/virgil/commit/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48) (2026-09-30) | Required CI |
+| `main` (unreleased) | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Required CI |
 
 The scheduled `virgil-master` workflow builds and tests against current upstream `master` as an advisory signal. A failure there does not block merges.
 
