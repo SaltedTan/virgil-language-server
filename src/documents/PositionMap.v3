@@ -179,7 +179,7 @@ class PositionMap {
 	// comments (tabs included) as one column, and does not advance columns
 	// inside line comments. Compiler columns after a block-comment tab on the
 	// same line, and EOF after a trailing line comment, do not map exactly.
-	// https://github.com/titzer/virgil/blob/9945e4300bba2cd6d872c1a6f4ecfaa600f4be48/aeneas/src/vst/Parser.v3#L1444-L1511
+	// https://github.com/titzer/virgil/blob/7cf038fc13a5474836bec8b14c7a3e796fd07fa5/aeneas/src/vst/Parser.v3#L1444-L1511
 	// Single-file parser diagnostics therefore use adapter byte offsets instead.
 	private def nextColumn(c: int, b: byte) -> int {
 		return if(b == '\t', 1 + ((c + 8) / 8) * 8, c + 1);

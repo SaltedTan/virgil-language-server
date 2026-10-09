@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Pinned Virgil moved from `9945e430` to [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08). The server and worker now include upstream's garbage-collector fix for forwarding pointers in 64-bit heaps above 4 GiB, where the macOS build's heap lives. The compiler front end is unchanged, so diagnostics, bindings, and document symbols are identical.
 - The development `analyze` command now uses the analysis worker, with timeout and analysis-count tuning options; see [Running](docs/development.md#running) for options and failure output. `make` also builds `build/virgil-lsp-worker`; see [Building](README.md#building) for executable placement.
 - Analysis adapter caches a lazy per-file binding index and binary-searches definition queries, reuses compiler configuration across analyses, and counts the global type cache only for requested statistics. The development `analyze --bindings` command reuses its report buffer without copying each file's output.
 
