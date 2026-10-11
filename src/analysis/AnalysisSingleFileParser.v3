@@ -7,12 +7,12 @@
 class AnalysisParseErrors extends ErrorGen {
 	var parser: ParserState;
 	def offsets = Vector<(int, int)>.new();
-	private var positions = Strings.newMap<int>();
+	private def positions = AnalysisPositionIndex<int>.new();
 
 	def startFile() {
 		parser = null;
 		stopped = false;
-		positions = Strings.newMap<int>();
+		positions.clear();
 	}
 	// Set once the parser has been stopped early. Later errors describe the
 	// cut, not the source, and are dropped.
@@ -32,8 +32,7 @@ class AnalysisParseErrors extends ErrorGen {
 		recordPosition(range.endLine, range.endColumn, end);
 	}
 	private def recordPosition(line: int, column: int, pos: int) {
-		var key = coordinate(line, column);
-		if (!positions.has(key)) positions[key] = pos;
+		positions.set(coordinate(line, column), pos, false);
 	}
 	def addError(range: FileRange, sourceLine: string, error: string, msg: string) {
 		if (stopped) return;
@@ -58,12 +57,12 @@ class AnalysisParseErrors extends ErrorGen {
 		stopped = true;
 		p.setPos(p.input.length, p.curLine, p.curCol);
 	}
-	private def coordinate(line: int, column: int) -> string {
-		return Strings.format2("%d:%d", line, column);
+	// Orders coordinates by line, then column.
+	private def coordinate(line: int, column: int) -> long {
+		return (long.!(line) << 32) | u32.view(column);
 	}
 	private def offset(line: int, column: int) -> int {
-		var key = coordinate(line, column);
-		return if(positions.has(key), positions[key], -1);
+		return positions.get(coordinate(line, column), -1);
 	}
 }
 
