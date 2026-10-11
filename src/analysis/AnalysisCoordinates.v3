@@ -105,6 +105,71 @@ class AnalysisCoordinates {
 	}
 }
 
+// Maps long keys, such as packed compiler coordinates or byte offsets, to
+// values. The parser records positions in increasing order, so a new key is
+// normally appended and lookups use binary search; an earlier key is inserted
+// in place. HashMap stops growing its table at 1024 buckets, so its lookups
+// slow down in proportion to the number of tokens in a file. Parsers clear
+// and reuse one index for each file: a whole program's worth of discarded
+// arrays would trigger an extra collection of the program in the worker heap.
+class AnalysisPositionIndex<V> {
+	private var keys = Array<long>.new(64);
+	private var values = Array<V>.new(64);
+	private var length: int;
+
+	// Records {value} at {key}, replacing an existing value only if {replace}.
+	def set(key: long, value: V, replace: bool) {
+		var n = length;
+		if (n == 0 || keys[n - 1] < key) {
+			if (n == keys.length) grow();
+			keys[n] = key;
+			values[n] = value;
+			length = n + 1;
+			return;
+		}
+		var i = if(keys[n - 1] == key, n - 1, search(key));
+		if (keys[i] == key) {
+			if (replace) values[i] = value;
+			return;
+		}
+		if (n == keys.length) grow();
+		for (j = n; j > i; j--) {
+			keys[j] = keys[j - 1];
+			values[j] = values[j - 1];
+		}
+		keys[i] = key;
+		values[i] = value;
+		length = n + 1;
+	}
+	def has(key: long) -> bool {
+		var i = search(key);
+		return i < length && keys[i] == key;
+	}
+	// Removes every key, keeping the arrays.
+	def clear() {
+		length = 0;
+	}
+	// The value at {key}, or {none} if there is none.
+	def get(key: long, none: V) -> V {
+		var i = search(key);
+		return if(i < length && keys[i] == key, values[i], none);
+	}
+	private def grow() {
+		keys = Arrays.grow(keys, keys.length * 2);
+		values = Arrays.grow(values, values.length * 2);
+	}
+	// The index of the first key not less than {key}.
+	private def search(key: long) -> int {
+		var low = 0, high = length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (keys[mid] < key) low = mid + 1;
+			else high = mid;
+		}
+		return low;
+	}
+}
+
 class AnalysisRetrospectiveToken extends Token {
 	def sourceLine: int;
 	def sourceColumn: int;
@@ -115,15 +180,20 @@ class AnalysisRetrospectiveToken extends Token {
 	}
 }
 
+// Captures one file's retrospective tokens. {positions} serves only while the
+// file is parsed, so consecutive files share it.
 class AnalysisTokenCoordinates {
-	private def positions = HashMap<int, (int, int)>.new(int.!<int>, int.==);
-	private def begins = Strings.newMap<(int, int, int)>();
-	private def ends = Strings.newMap<(int, int, int)>();
-	def record(p: ParserState) { positions[p.curPos] = (p.curLine, p.curCol); }
+	private def positions: AnalysisPositionIndex<(int, int)>;
+	private def begins = AnalysisPositionIndex<(int, int, int)>.new();
+	private def ends = AnalysisPositionIndex<(int, int, int)>.new();
+	new(positions) {
+		positions.clear();
+	}
+	def record(p: ParserState) { positions.set(p.curPos, (p.curLine, p.curCol), true); }
 	def token(t: Token, begin: int, end: int) -> Token {
-		var p = positions[begin];
-		begins[key(p.0, p.1)] = (t.beginLine, t.beginColumn, begin);
-		ends[key(p.0, p.1 + end - begin)] = (t.beginLine, t.beginColumn + end - begin, end);
+		var p = positions.get(begin, (0, 0));
+		begins.set(key(p.0, p.1), (t.beginLine, t.beginColumn, begin), true);
+		ends.set(key(p.0, p.1 + end - begin), (t.beginLine, t.beginColumn + end - begin, end), true);
 		return AnalysisRetrospectiveToken.new(t, p.0, p.1);
 	}
 	def diagnostic(d: AnalysisDiagnostic) -> AnalysisDiagnostic {
@@ -131,8 +201,8 @@ class AnalysisTokenCoordinates {
 		if (point && d.beginOffset >= 0 && d.endOffset >= 0) return d;
 		var bkey = key(d.beginLine, d.beginColumn), ekey = key(d.endLine, d.endColumn);
 		var b = (d.beginLine, d.beginColumn, d.beginOffset), e = (d.endLine, d.endColumn, d.endOffset);
-		if (begins.has(bkey)) b = begins[bkey];
-		if (ends.has(ekey)) e = ends[ekey];
+		b = begins.get(bkey, b);
+		e = ends.get(ekey, e);
 		if (point) {
 			if (begins.has(bkey)) e = b;
 			else if (ends.has(ekey)) b = e;
@@ -142,7 +212,8 @@ class AnalysisTokenCoordinates {
 		result.endOffset = if(d.endOffset >= 0, d.endOffset, e.2);
 		return result;
 	}
-	private def key(line: int, column: int) -> string { return Strings.format2("%d:%d", line, column); }
+	// Orders coordinates by line, then column.
+	private def key(line: int, column: int) -> long { return (long.!(line) << 32) | u32.view(column); }
 }
 
 // Lazily builds one replay map per referenced source path, preserving the
@@ -151,13 +222,14 @@ class AnalysisSourceCoordinates {
 	private def inputs = Strings.newMap<Array<byte>>();
 	private def maps = Strings.newMap<AnalysisCoordinates>();
 	private def tokens = Strings.newMap<AnalysisTokenCoordinates>();
+	private def positions = AnalysisPositionIndex<(int, int)>.new();
 	new(sources: Array<AnalysisSource>) {
 		for (s in sources) {
 			if (s.path != null && !inputs.has(s.path)) inputs[s.path] = if(s.input == null, Array<byte>.new(0), s.input);
 		}
 	}
 	def capture(path: string) -> AnalysisTokenCoordinates {
-		var result = AnalysisTokenCoordinates.new();
+		var result = AnalysisTokenCoordinates.new(positions);
 		if (!tokens.has(path)) tokens[path] = result;
 		return result;
 	}

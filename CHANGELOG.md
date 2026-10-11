@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Whole-program parsing is about ten times faster again, after exact diagnostic byte ranges had made it about 13 times slower. Semantic diagnostics for a program the size of the Aeneas sources now arrive about 220 ms after a save instead of about 830 ms, and the analysis worker's peak memory falls from 385 MiB to 336 MiB. Parser diagnostics and document symbols for large open files are also faster. See [Coordinates](docs/architecture.md#coordinates).
 - Over-budget analysis results now report that the program is too large rather than blaming a malformed worker. See ADR-0004 for the [replacement policy](docs/decisions/0004-analysis-worker-process.md#restart-policy) and [supported program size and recovery guidance](docs/decisions/0004-analysis-worker-process.md#supported-program-size).
 - Parser diagnostics and document symbols now contain deep parser nesting and the remaining malformed-range traps. See [Aeneas crash paths](docs/aeneas-crash-paths.md) for the recovery behavior and containment limits.
 - Document symbols no longer kill the server on expression-start `...` or `..+` (for example, while typing `xs[...]`); the outline now shares the parser driver and recovery used for parser diagnostics. See [Document symbols](docs/architecture.md#document-symbols).
