@@ -216,7 +216,9 @@ def test_parse_long_chains(t: Tester) {
 		(repeat("def f() { x[0 ... a", ".b", 6000, "]"), 6001, ".c", 1, "; }", none),
 		("def f() { a", 0, ".m<A, B>", 1, "; }", none), ("def f() { a", 0, ".while()", 2, "; }", none),
 		("def f() { a", 0, " + fun() { b; }", 1, "; }", funs),
-		("def f() { 1", 0, " + fun();", 1, "; }", funs)];
+		("def f() { 1", 0, " + fun();", 1, "; }", funs),
+		(repeat("def f() { ", "fun => ", 100, "1"), 200, " + 1", 1, "; }", funs),
+		(repeat("def f() { ", "fun x => ", 100, "1"), 200, " + 1", 1, "; }", funs)];
 	for (c in chains) {
 		for (n in [1000, 50000]) {
 			var text = repeat(c.0, c.2, n, c.4);

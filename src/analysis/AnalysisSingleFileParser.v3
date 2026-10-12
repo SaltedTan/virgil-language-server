@@ -179,7 +179,11 @@ class AnalysisChainCounter {
 					// Includes the member names .[] and .[]=, which are not brackets.
 					count++;
 					if (ch == '<') angles++;
-					if (end - start == 2 && ch == '=' && input[start + 1] == '>' && funs > 0) funs--;
+					if (end - start == 2 && ch == '=' && input[start + 1] == '>' && funs > 0) {
+						funs--;
+						// A simple fun body adds both FunExpr.range() and ReturnStmt.range().
+						count++;
+					}
 					return count;
 				}
 				if (ch != '(' || !afterKeyword) count++;
