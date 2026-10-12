@@ -99,13 +99,13 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 
 // Bounds the operator and suffix chains that the parser builds in loops, out
 // of sight of the stack limit. Parser.parseExprStmt passes them to the
-// recursive Expr.range() methods, and each level of that recursion has an
-// operator, dot, or opening bracket of its own, so a count of those tokens
-// bounds its depth. A statement, list element, or block starts a new count,
-// and parenthesized text leaves the count when it closes.
+// recursive Expr.range() methods. Operator, dot, and opening-bracket tokens
+// bound its depth, with a simple fun body's '=>' charged for both range()
+// levels. A statement, list element, or block starts a new count, and
+// parenthesized text leaves the count when it closes.
 class AnalysisChainCounter {
-	// Operator, dot, and opening-bracket tokens in the current statement or
-	// list element, including those before each enclosing open bracket.
+	// Estimated range() levels in the current statement or list element,
+	// including those before each enclosing open bracket.
 	var count: int;
 	// The current level: its opening byte, FUN_BODY, or 0 outside brackets;
 	// the count when it opened; its '<' tokens not yet closed, as commas
@@ -351,8 +351,8 @@ component AnalysisSingleFileParser {
 	def STACK_LIMIT = 1024 * 1024;
 	// Stack always left free, in case parsing starts deep in the stack.
 	def STACK_RESERVE = 64 * 1024;
-	// Cap the tokens that AnalysisChainCounter counts. Expr.range() recursion
-	// uses at most CHAIN_FRAME bytes of stack per counted token (a binary
+	// Cap the range() levels that AnalysisChainCounter estimates. Recursion
+	// uses at most CHAIN_FRAME bytes of stack per counted level (a binary
 	// operator; measured on x86-64), and real code stays far below the limit.
 	def CHAIN_LIMIT = 8192;
 	def CHAIN_FRAME = 72;
