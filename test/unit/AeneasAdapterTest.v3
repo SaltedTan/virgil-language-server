@@ -13,6 +13,7 @@ def X = [
 	T("AeneasAdapter:symbols_missing_range_bounds", test_symbols_missing_range_bounds),
 	T("AeneasAdapter:parse_range_without_bounds", test_parse_range_without_bounds),
 	T("AeneasAdapter:parse_deep_nesting", test_parse_deep_nesting),
+	T("AeneasAdapter:parse_long_chains", test_parse_long_chains),
 	T("AeneasAdapter:symbols_rep_hint_eof", test_symbols_rep_hint_eof),
 	T("AeneasAdapter:analyze_clean_two_files", test_analyze_clean_two_files),
 	T("AeneasAdapter:analyze_unresolved_name", test_analyze_unresolved_name),
@@ -194,6 +195,62 @@ def test_parse_deep_nesting(t: Tester) {
 			t.asserti(0, AeneasAdapter.documentSymbols("deep.v3", text, []).length);
 		}
 	}
+}
+
+// Row 25: an expression chain the parser builds in a loop stops the parse with
+// one diagnostic before Parser.parseExprStmt's range() recursion passes
+// CHAIN_LIMIT levels, however long it is. 50,000 repetitions overflowed the
+// stack without the limit. Lists and statements end a count.
+def test_parse_long_chains(t: Tester) {
+	var none: Array<string> = [], funs = ["-lang:fun-exprs"];
+	var limit = AnalysisSingleFileParser.CHAIN_LIMIT;
+	// Prefix and its range() levels, repeated text and the levels it adds,
+	// suffix, and options.
+	var chains = [
+		("def f() { 1", 0, " + 1", 1, "; }", none), ("def f() { a", 0, ".b", 1, "; }", none),
+		("def f() { a", 0, "[0]", 1, "; }", none), ("def f() { a", 0, "()", 1, "; }", none),
+		// range() follows a range's end, and suffixes after the range add to
+		// it. Commas between type arguments do not end a chain, nor does a
+		// keyword used as a member name, nor a fun body.
+		("def f() { x[0 ... a", 1, ".b", 1, "]; }", none),
+		(repeat("def f() { x[0 ... a", ".b", 6000, "]"), 6001, ".c", 1, "; }", none),
+		("def f() { a", 0, ".m<A, B>", 1, "; }", none), ("def f() { a", 0, ".while()", 2, "; }", none),
+		("def f() { a", 0, " + fun() { b; }", 1, "; }", funs)];
+	for (c in chains) {
+		for (n in [1000, 50000]) {
+			var text = repeat(c.0, c.2, n, c.4);
+			var r = AeneasAdapter.parseFile("chain.v3", text, c.5);
+			if (n == 1000) {
+				t.asserti(0, r.diagnostics.length);
+				continue;
+			}
+			t.asserti(1, r.diagnostics.length);
+			if (r.diagnostics.length != 1) continue;
+			var d = r.diagnostics[0];
+			t.assert_string("expression too long; parsing stopped here", d.message);
+			var repetitions = (limit - c.1) / c.3 + 1;
+			t.assert(d.beginOffset > 0 && d.beginOffset <= c.0.length + repetitions * c.2.length,
+				"expected the stop before the limit");
+			t.asserti(d.beginOffset, d.endOffset);
+			t.asserti(0, AeneasAdapter.documentSymbols("chain.v3", text, c.5).length);
+		}
+	}
+	// The method's parenthesis counts too, so a statement may hold one link
+	// fewer than the limit.
+	t.asserti(0, AeneasAdapter.parseFile("chain.v3", repeat("def f() { 1", " + 1", limit - 1, "; }"), none).diagnostics.length);
+	t.asserti(1, AeneasAdapter.parseFile("chain.v3", repeat("def f() { 1", " + 1", limit, "; }"), none).diagnostics.length);
+	// Elements, statements, and declarations each start a count.
+	var lists = [("def x = [", "E.A, ", "];"), ("def f() { g(", "E.A, ", "); }"),
+		("def f() { ", "a.b(c) + 1; ", "}"), ("component C { ", "def f(a: int) -> int { return a.b; } ", "}")];
+	for (c in lists) {
+		var text = repeat(c.0, c.1, 50000, c.2);
+		t.asserti(0, AeneasAdapter.parseFile("list.v3", text, none).diagnostics.length);
+	}
+}
+def repeat(prefix: string, s: string, n: int, suffix: string) -> string {
+	var b = StringBuilder.new().puts(prefix);
+	for (i < n) b.puts(s);
+	return b.puts(suffix).toString();
 }
 
 def test_symbols_rep_hint_eof(t: Tester) {

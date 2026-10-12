@@ -73,20 +73,149 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 	// frames to it. Available stack and compiled frame sizes affect the cutoff.
 	private def stackBase = AnalysisSingleFileParser.stackPointer();
 	private def stackLimit = AnalysisSingleFileParser.stackLimit(stackBase);
+	private def chains = AnalysisChainCounter.new();
+	// Where the token that the parser is consuming starts.
+	private var tokenStart: int;
 
 	def skip(p: ParserState) {
+		var tokenEnd = p.curPos;
 		errors.record(p);
 		if (syntax != null) syntax.finish(p);
 		Parser.skipToNextToken(p);
 		errors.record(p);
 		if (syntax != null) syntax.start(p);
 		if (coordinates != null) coordinates.record(p);
-		// Every level of parser recursion consumes a token, and so skips.
-		if (!errors.stopped && stackBase - AnalysisSingleFileParser.stackPointer() > stackLimit) {
-			errors.stop(p, "nesting too deep; parsing stopped here");
+		if (!errors.stopped) {
+			// Every level of parser recursion consumes a token, and so skips.
+			if (stackBase - AnalysisSingleFileParser.stackPointer() > stackLimit) {
+				errors.stop(p, "nesting too deep; parsing stopped here");
+			} else if (tokenEnd > tokenStart && chains.add(p.input, tokenStart, tokenEnd) > AnalysisSingleFileParser.CHAIN_LIMIT) {
+				errors.stop(p, "expression too long; parsing stopped here");
+			}
 		}
+		tokenStart = p.curPos;
 	}
 }
+
+// Bounds the operator and suffix chains that the parser builds in loops, out
+// of sight of the stack limit. Parser.parseExprStmt passes them to the
+// recursive Expr.range() methods, and each level of that recursion has an
+// operator, dot, or opening bracket of its own, so a count of those tokens
+// bounds its depth. A statement, list element, or block starts a new count,
+// and parenthesized text leaves the count when it closes.
+class AnalysisChainCounter {
+	// Operator, dot, and opening-bracket tokens in the current statement or
+	// list element, including those before each enclosing open bracket.
+	var count: int;
+	// The current level: its opening byte, FUN_BODY, or 0 outside brackets;
+	// the count when it opened; its '<' tokens not yet closed, as commas
+	// between type arguments do not end an element; and its fun keywords
+	// whose body is not open.
+	private var kind: byte;
+	private var mark: int;
+	private var angles: int;
+	private var funs: int;
+	// The same four values for each enclosing level, innermost last.
+	private var outer = Array<int>.new(64);
+	private var depth: int;
+	// Whether the last token was a dot, which makes the next word a member
+	// name, or a keyword whose parenthesis holds a condition, not a call.
+	private var dot: bool;
+	private var keyword: bool;
+
+	// Counts the token input[start ..< end] and returns the count.
+	def add(input: Array<byte>, start: int, end: int) -> int {
+		var ch = input[start], afterDot = dot, afterKeyword = keyword;
+		dot = keyword = false;
+		if (Char.isIdentMiddle(ch)) {
+			if (!afterDot && end - start <= 5) {
+				match (ch) {
+					'i' => keyword = isWord(input, start, end, "if");
+					'w' => keyword = isWord(input, start, end, "while");
+					'm' => keyword = isWord(input, start, end, "match");
+					'f' => {
+						keyword = isWord(input, start, end, "for");
+						if (isWord(input, start, end, "fun")) funs++;
+					}
+				}
+			}
+			return count;
+		}
+		match (ch) {
+			',' => if (angles == 0) count = mark;
+			';' => {
+				count = mark;
+				angles = 0;
+			}
+			// range() does not enter parentheses, but it does follow a range's
+			// end inside brackets.
+			')' => if (kind == '(') {
+				count = mark;
+				pop();
+			}
+			']' => if (kind == '[') pop();
+			'}' => {
+				var block = kind == '{';
+				if (block || kind == FUN_BODY) pop();
+				// A block ends a statement or declaration; a fun body does not
+				// end the expression around it.
+				if (block) {
+					count = mark;
+					angles = 0;
+				}
+			}
+			'{' => {
+				var body = funs > 0;
+				if (body) funs--;
+				push(if(body, FUN_BODY, '{'));
+			}
+			'\'', '\"' => ;
+			_ => {
+				if (end - start > 1) {
+					// Includes the member names .[] and .[]=, which are not brackets.
+					count++;
+					if (ch == '<') angles++;
+					return count;
+				}
+				if (ch != '(' || !afterKeyword) count++;
+				match (ch) {
+					'(', '[' => push(ch);
+					'.' => dot = true;
+					'<' => angles++;
+					'>' => if (angles > 0) angles--;
+				}
+			}
+		}
+		return count;
+	}
+	private def push(opening: byte) {
+		if (depth + 4 > outer.length) outer = Arrays.grow(outer, 2 * outer.length);
+		outer[depth] = kind;
+		outer[depth + 1] = mark;
+		outer[depth + 2] = angles;
+		outer[depth + 3] = funs;
+		depth += 4;
+		kind = opening;
+		mark = count;
+		angles = 0;
+		funs = 0;
+	}
+	private def pop() {
+		depth -= 4;
+		kind = byte.view(outer[depth]);
+		mark = outer[depth + 1];
+		angles = outer[depth + 2];
+		funs = outer[depth + 3];
+	}
+	private def isWord(input: Array<byte>, start: int, end: int, word: string) -> bool {
+		if (end - start != word.length) return false;
+		for (i < word.length) {
+			if (input[start + i] != word[i]) return false;
+		}
+		return true;
+	}
+}
+def FUN_BODY: byte = 'f';
 
 class AnalysisParserState extends ParserState {
 	// Set by a malformed number until the parser has skipped past it.
@@ -209,10 +338,17 @@ class AnalysisParserState extends ParserState {
 // and whole-program analysis, so all get the same recovery. {syntax} may be null.
 component AnalysisSingleFileParser {
 	// Cap parser recursion's native stack use. stackLimit may lower this to
-	// preserve STACK_RESERVE above the runtime's red zone.
+	// preserve CHAIN_STACK and STACK_RESERVE above the runtime's red zone.
 	def STACK_LIMIT = 1024 * 1024;
 	// Stack always left free, in case parsing starts deep in the stack.
 	def STACK_RESERVE = 64 * 1024;
+	// Cap the tokens that AnalysisChainCounter counts. Expr.range() recursion
+	// uses at most CHAIN_FRAME bytes of stack per counted token (a binary
+	// operator; measured on x86-64), and real code stays far below the limit.
+	def CHAIN_LIMIT = 8192;
+	def CHAIN_FRAME = 72;
+	// Stack left for range() after parser recursion.
+	def CHAIN_STACK = CHAIN_LIMIT * CHAIN_FRAME;
 
 	def parse(path: string, input: Array<byte>, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex,
 			typeCache: TypeCache, coordinates: AnalysisTokenCoordinates) -> VstFile {
@@ -234,9 +370,9 @@ component AnalysisSingleFileParser {
 		return CiRuntime.callerSp();
 	}
 	// The stack that parsing from {base} may use: STACK_LIMIT, unless less is
-	// left above STACK_RESERVE and the native runtime's red zone.
+	// left above CHAIN_STACK, STACK_RESERVE, and the native runtime's red zone.
 	def stackLimit(base: Pointer) -> long {
-		var free = base - RiRuntime.stackRedZoneEnd - STACK_RESERVE;
+		var free = base - RiRuntime.stackRedZoneEnd - CHAIN_STACK - STACK_RESERVE;
 		return if(free < STACK_LIMIT, free, STACK_LIMIT);
 	}
 }
