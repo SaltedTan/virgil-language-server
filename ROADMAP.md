@@ -200,10 +200,10 @@ Deliverables:
 - `initialize`, `initialized`, `didOpen`, `didChange`, `didSave`, and `didClose` handlers. *(present)*
 - Full-text synchronization first (`TextDocumentSyncKind.Full`), with document version checks. *(present; stale/out-of-order changes rejected)*
 - URI/path normalization and in-memory overlays. *(present; [document-store rules](docs/architecture.md#document-store))*
-- Dedicated position/range conversion module.
+- Dedicated position/range conversion module. *(present; [`PositionMap`](docs/architecture.md#coordinates))*
 - Single-file parser adapter for one open document. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
 - Parser errors mapped to `publishDiagnostics`, including clearing obsolete diagnostics. *(present; [publication contract](docs/architecture.md#parser-diagnostics))*
-- `textDocument/documentSymbol` using VST declarations; the `vctags` traversal is a useful model.
+- `textDocument/documentSymbol` using VST declarations; the `vctags` traversal is a useful model. *(present; [document symbols](docs/architecture.md#document-symbols))*
 - A manually launchable LazyVim config and VS Code development client. *(present; [LazyVim](editors/nvim/README.md), [VS Code](clients/vscode/README.md))*
 
 Exit criteria:
@@ -217,11 +217,11 @@ Exit criteria:
 
 Deliverables:
 
-- `.virgil-lsp.json` schema, parser, docs, and config diagnostics.
-- Source/dependency glob expansion and workspace-folder support.
-- Fresh `Program` construction with all disk sources plus unsaved overlays.
-- Parse-and-verify-only compiler adapter.
-- Stdio integration of the [analysis worker](docs/architecture.md#analysis-worker), before semantic diagnostics run on unsaved edits.
+- `.virgil-lsp.json` schema, parser, docs, and config diagnostics. *(present; [Configuration](docs/configuration.md))*
+- Source/dependency glob expansion and workspace-folder support. *(present; [workspace folders and active projects](docs/configuration.md#workspace-folders-and-active-projects))*
+- Fresh `Program` construction with all disk sources plus unsaved overlays. *(present; [analysis inputs](docs/architecture.md#semantic-diagnostics))*
+- Parse-and-verify-only compiler adapter. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
+- Stdio integration of the [analysis worker](docs/architecture.md#analysis-worker), before semantic diagnostics run on unsaved edits. *(present; [development requests](docs/development.md#development-stdio-requests))*
 - `ErrorGen` conversion to diagnostics grouped by document. *(present; [semantic diagnostics](docs/architecture.md#semantic-diagnostics))*
 - Analysis revision/version gate so stale runs cannot overwrite new results. *(present)*
 - Initial performance measurements against a small project and the Virgil compiler sources. *(present; [measurements](docs/architecture.md#semantic-diagnostics))*
@@ -464,20 +464,20 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 
 ### First issue backlog, in dependency order
 
-1. Initialize the new repository, license, community files, branch rules, and CI.
-2. Record the server-language and compiler-dependency decisions in ADR-001 and ADR-002.
-3. Pin Virgil and complete the parse/verify/binding compiler-integration spike.
-4. Implement the JSON-RPC envelope model so responses preserve incoming IDs.
-5. Harden stdio framing and enforce protocol-only stdout.
-6. Add golden transcript tests for requests, notifications, lifecycle, and malformed packets.
-7. Implement versioned full-text document synchronization. *(present)*
-8. Integrate [`PositionMap`](docs/architecture.md#coordinates) with the document store and diagnostics.
-9. Publish parser diagnostics for unsaved single files.
-10. Implement document symbols from the VST.
-11. Specify `.virgil-lsp.json` and add fixture projects.
-12. Build a fresh parse/verify-only `Program` from disk plus overlays.
-13. Publish whole-project semantic diagnostics. *(present)*
-14. Build declaration and occurrence indexes from verified bindings.
+1. Initialize the new repository, license, community files, branch rules, and CI. *(present)*
+2. Record the server-language and compiler-dependency decisions in ADR-001 and ADR-002. *(present; [ADR-0001](docs/decisions/0001-virgil-native-server.md), [ADR-0002](docs/decisions/0002-pinned-virgil-adapter-boundary.md))*
+3. Pin Virgil and complete the parse/verify/binding compiler-integration spike. *(present; [#1](https://github.com/SaltedTan/virgil-language-server/issues/1))*
+4. Implement the JSON-RPC envelope model so responses preserve incoming IDs. *(present; [#2](https://github.com/SaltedTan/virgil-language-server/issues/2))*
+5. Harden stdio framing and enforce protocol-only stdout. *(present; [#3](https://github.com/SaltedTan/virgil-language-server/issues/3))*
+6. Add golden transcript tests for requests, notifications, lifecycle, and malformed packets. *(present; [#4](https://github.com/SaltedTan/virgil-language-server/issues/4))*
+7. Implement versioned full-text document synchronization. *(present; [#6](https://github.com/SaltedTan/virgil-language-server/issues/6))*
+8. Integrate [`PositionMap`](docs/architecture.md#coordinates) with the document store and diagnostics. *(present; [#7](https://github.com/SaltedTan/virgil-language-server/issues/7))*
+9. Publish parser diagnostics for unsaved single files. *(present; [#8](https://github.com/SaltedTan/virgil-language-server/issues/8))*
+10. Implement document symbols from the VST. *(present; [#9](https://github.com/SaltedTan/virgil-language-server/issues/9))*
+11. Specify `.virgil-lsp.json` and add fixture projects. *(present; [#53](https://github.com/SaltedTan/virgil-language-server/issues/53))*
+12. Build a fresh parse/verify-only `Program` from disk plus overlays. *(present; [PR #52](https://github.com/SaltedTan/virgil-language-server/pull/52))*
+13. Publish whole-project semantic diagnostics. *(present; [#58](https://github.com/SaltedTan/virgil-language-server/issues/58))*
+14. Build declaration and occurrence indexes from verified bindings. *(partial: `VarExpr` uses only; see the [compiler adapter](docs/architecture.md#compiler-adapter))*
 15. Implement go-to-definition.
 16. Implement hover.
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
