@@ -110,7 +110,7 @@ class AnalysisChainCounter {
 	// The current level: its opening byte, FUN_BODY, or 0 outside brackets;
 	// the count when it opened; its '<' tokens not yet closed, as commas
 	// between type arguments do not end an element; and its fun keywords
-	// whose body is not open.
+	// whose body has not started with '{', ';', or '=>'.
 	private var kind: byte;
 	private var mark: int;
 	private var angles: int;
@@ -144,8 +144,12 @@ class AnalysisChainCounter {
 		match (ch) {
 			',' => if (angles == 0) count = mark;
 			';' => {
-				count = mark;
-				angles = 0;
+				// An empty fun body does not end the enclosing expression.
+				if (funs > 0) funs--;
+				else {
+					count = mark;
+					angles = 0;
+				}
 			}
 			// range() does not enter parentheses, but it does follow a range's
 			// end inside brackets.
@@ -175,6 +179,7 @@ class AnalysisChainCounter {
 					// Includes the member names .[] and .[]=, which are not brackets.
 					count++;
 					if (ch == '<') angles++;
+					if (end - start == 2 && ch == '=' && input[start + 1] == '>' && funs > 0) funs--;
 					return count;
 				}
 				if (ch != '(' || !afterKeyword) count++;

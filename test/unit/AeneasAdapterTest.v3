@@ -215,7 +215,8 @@ def test_parse_long_chains(t: Tester) {
 		("def f() { x[0 ... a", 1, ".b", 1, "]; }", none),
 		(repeat("def f() { x[0 ... a", ".b", 6000, "]"), 6001, ".c", 1, "; }", none),
 		("def f() { a", 0, ".m<A, B>", 1, "; }", none), ("def f() { a", 0, ".while()", 2, "; }", none),
-		("def f() { a", 0, " + fun() { b; }", 1, "; }", funs)];
+		("def f() { a", 0, " + fun() { b; }", 1, "; }", funs),
+		("def f() { 1", 0, " + fun();", 1, "; }", funs)];
 	for (c in chains) {
 		for (n in [1000, 50000]) {
 			var text = repeat(c.0, c.2, n, c.4);
@@ -246,6 +247,7 @@ def test_parse_long_chains(t: Tester) {
 		var text = repeat(c.0, c.1, 50000, c.2);
 		t.asserti(0, AeneasAdapter.parseFile("list.v3", text, none).diagnostics.length);
 	}
+	t.asserti(0, AeneasAdapter.parseFile("list.v3", repeat("def f() { ", "a = fun => 1; ", 50000, "}"), funs).diagnostics.length);
 }
 def repeat(prefix: string, s: string, n: int, suffix: string) -> string {
 	var b = StringBuilder.new().puts(prefix);
