@@ -60,7 +60,7 @@ class AnalysisRange(path: string, beginLine: int, beginColumn: int, endLine: int
 // The kinds of declaration a use can resolve to.
 enum AnalysisDeclKind {
 	LOCAL, PARAMETER, FIELD, METHOD, CONSTRUCTOR, CLASS, COMPONENT, ENUM,
-	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD
+	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD, TYPE_PARAM
 }
 
 // A declaration in the program. Compiler coordinates cover its name token;
@@ -116,6 +116,14 @@ class ProgramAnalysis {
 		if (file == null) return [];
 		return file.occurrences();
 	}
+	// The uses in {path} that {occurrences} skipped because they are not
+	// token spans (see AnalysisRange.isTokenSpan). Collects the file if needed.
+	def skippedUses(path: string) -> int {
+		var file = files[path];
+		if (file == null) return 0;
+		file.occurrences();
+		return file.skipped;
+	}
 	// The declaration that the identifier at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
 	// See AnalysisSnapshotFile.find for its one ordering exception.
@@ -137,9 +145,14 @@ class ProgramAnalysis {
 // repeated walk, allocation, or sort for subsequent binding queries.
 class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps) {
 	private var uses: Array<AnalysisOccurrence>;
+	def var skipped: int;
 
 	def occurrences() -> Array<AnalysisOccurrence> {
-		if (uses == null) uses = OccurrenceCollector.new(sources).collect(file);
+		if (uses == null) {
+			var collector = OccurrenceCollector.new(sources);
+			uses = collector.collect(file);
+			skipped = collector.skipped;
+		}
 		return uses;
 	}
 }

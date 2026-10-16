@@ -210,7 +210,7 @@ component VirgilLsp {
 			// that large reports never need to be held in memory.
 			var out = AnalysisReport.new(run == 0);
 			writeReport(out, snapshot, paths, bindings);
-			if (stats) logStats(run + 1, snapshot.stats, out.occurrences);
+			if (stats) logStats(run + 1, snapshot, out.occurrences);
 			if (run == 0) {
 				firstHash = out.hash;
 				if (snapshot.diagnostics.length > 0) status = 1;
@@ -248,13 +248,14 @@ component VirgilLsp {
 			out.write(buf);
 		}
 	}
-	def logStats(run: int, s: AnalysisSnapshotStats, occurrences: int) {
-		var buf = StringBuilder.new();
+	def logStats(run: int, snapshot: AnalysisSnapshot, occurrences: int) {
+		var buf = StringBuilder.new(), s = snapshot.stats;
 		buf.put1("%s: analysis ", BuildInfo.NAME);
 		buf.put3("%d: parse %d us, verify %d us, ", run, s.parseUs, s.verifyUs);
-		if (s.collectUs >= 0) buf.put2("%d bindings in %d us, ", occurrences, s.collectUs);
+		if (s.collectUs >= 0) buf.put3("%d bindings in %d us, %d skipped, ", occurrences, s.collectUs, s.skippedUses);
 		buf.put2("uids +%d (next %d), ", s.uidsUsed, s.uidNext);
-		buf.put2("global types +%d (total %d)\n", s.globalTypesAdded, s.globalTypeTotal);
+		buf.put2("global types +%d (total %d), ", s.globalTypesAdded, s.globalTypeTotal);
+		buf.put1("result allocation %d bytes\n", snapshot.resultAllocation);
 		Log.raw(buf.toString());
 	}
 }

@@ -1,0 +1,60 @@
+// Type references, type parameters, variant cases used as types, and index
+// operators. Tab-indented on purpose: columns are tab-expanded compiler columns.
+class Foo {
+	var next: Foo;
+	def same(p: Foo) -> Foo { return p; }
+}
+class Child extends Foo { }
+class Pair(first: Foo, var second: Foo) { }
+class Made {
+	new(f: Foo) { }
+}
+class Box<T> {
+	var value: T;
+	def get() -> T { return value; }
+}
+class Grid {
+	var cells: Array<int> = Array<int>.new(4);
+	def [i: int] -> int { return cells[i]; }
+	def [i: int] = v: int { cells[i] = v; }
+}
+type Opt<T> {
+	case Some(v: T);
+	case None;
+}
+type V {
+	case A;
+	case B(f: Foo);
+}
+enum E { X, Y }
+component Parts { }
+component M {
+	def parts: Parts;
+	def id<T>(p: T) -> T {
+		var d: T = T.default;
+		if (T.?(p)) return T.!(p);
+		return d;
+	}
+	def types(a: V.A, fs: Array<Foo>, g: (Foo, int) -> (Foo, Box<Foo>), s: E.set) -> Child {
+		var box: Box<Foo> = Box<Foo>.new();
+		var c = Child.!<Foo>(box.get());
+		var x = id<Foo>(c), y = id(c), z = M.id<Foo>(c);
+		for (f: Foo in fs) { }
+		var o = Opt<Foo>.Some(x);
+		var n: Opt<Foo>.None;
+		return c;
+	}
+	def cases(v: V) -> int {
+		match (v) {
+			b: V.B => return 1;
+			_ => return 0;
+		}
+	}
+	def index(g: Grid) -> int {
+		var x = g[0];
+		g[1] = x;
+		g[2] += 3;
+		g[g[0]] = g.[](1);
+		return x;
+	}
+}

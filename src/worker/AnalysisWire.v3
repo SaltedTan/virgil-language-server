@@ -117,7 +117,9 @@ component AnalysisWire {
 	// An occurrence is its begin line, begin column, begin offset, length, and
 	// declaration index; one that is not a token span (see
 	// AnalysisRange.isTokenSpan), which the collector never records, is
-	// omitted rather than misstated. Call finishResult before sending.
+	// omitted rather than misstated. The skipped-uses statistic counts these
+	// omissions and the collector's own skips, or is -1 without occurrences.
+	// Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);
@@ -127,6 +129,15 @@ component AnalysisWire {
 		var s = analysis.stats;
 		w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
 		w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
+		var skipped = -1;
+		if (files != null) {
+			skipped = 0;
+			for (f in files) {
+				skipped += analysis.skippedUses(f.0);
+				for (o in f.1) if (!o.range.isTokenSpan()) skipped++;
+			}
+		}
+		w.put_sleb32(skipped);
 		w.put_sleb32(analysis.diagnostics.length);
 		for (d in analysis.diagnostics) {
 			putString(w, d.path);
@@ -192,7 +203,8 @@ component AnalysisWire {
 		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
 		var state = AnalysisWorkerState.new(analyses, uidNext, r.readU64());
 		var flags = r.readByte();
-		var stats = AnalysisSnapshotStats.new(r.readInt(), r.readInt(), r.readInt(), r.readInt(), uidNext, r.readInt(), r.readInt());
+		var stats = AnalysisSnapshotStats.new(r.readInt(), r.readInt(), r.readInt(), r.readInt(), uidNext,
+			r.readInt(), r.readInt(), r.readInt());
 		// Path, six coordinate ints, kind, and message take at least nine
 		// bytes. The record charge includes the two new offset fields, plus
 		// the existing conservative diagnostic/JSON response allowance.
@@ -239,7 +251,8 @@ component AnalysisWire {
 		}
 		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
 		if (!r.finish()) return AnalysisResultDecode.Malformed;
-		snapshot.retainedBytes += r.allocationBytes();
+		snapshot.resultAllocation = r.allocationBytes();
+		snapshot.retainedBytes += snapshot.resultAllocation;
 		return AnalysisResultDecode.Decoded(AnalysisWorkerResult.new(id, state, snapshot));
 	}
 

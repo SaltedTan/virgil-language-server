@@ -542,9 +542,10 @@ def test_binding_exports_after_semantic_errors(t: Tester) {
 	assertSingleDefinition(t, a, path, 8, 23, AnalysisDeclKind.METHOD, "main", path, 1, 5);
 	assertSingleDefinition(t, a, path, 9, 25, AnalysisDeclKind.METHOD, "helper", path, 5, 27);
 	assertSingleDefinition(t, a, path, 10, 25, AnalysisDeclKind.FIELD, "answer", path, 3, 12);
+	assertSingleDefinition(t, a, path, 12, 15, AnalysisDeclKind.CLASS, "Rect", path, 11, 7);
 	assertSingleDefinition(t, a, path, 12, 29, AnalysisDeclKind.CLASS, "Rect", path, 11, 7);
 	assertSingleDefinition(t, a, path, 12, 34, AnalysisDeclKind.CONSTRUCTOR, "new", path, 11, 14);
-	t.asserti(6, a.occurrences(path).length);
+	t.asserti(7, a.occurrences(path).length);
 }
 
 // The verifier's `this` parameter borrows a class/constructor token but is not

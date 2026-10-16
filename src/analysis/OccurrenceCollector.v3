@@ -9,6 +9,8 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 	private var captures: List<(ParamDecl, VarBinding.Local)>;
 	private var thisParam: ParamDecl;
 	private var thisClass: VstClass;
+	// Uses skipped because they are not token spans (see record).
+	def var skipped: int;
 
 	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
 		fileName = file.fileName;
@@ -40,11 +42,25 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		// Verification clears compound.verifier; functions retain the receiver.
 		thisParam = if(decl.constructor != null, decl.constructor.func.thisParam);
 		thisClass = if(VstClass.?(decl), VstClass.!(decl));
+		// Verification shares class parameters with their synthesized fields
+		// and with the constructor, so only this walk visits their types.
+		params(decl.params);
+		if (thisClass != null) {
+			// A variant case's superclass is synthesized from the variant's own
+			// name and type parameter tokens; it is not a use.
+			if (!thisClass.isSynthetic || thisClass.variantCase == null) typeRef(thisClass.superclass);
+			var info = thisClass.descriptorInfo;
+			if (info != null) {
+				typeRef(info.descriptorTypeRef);
+				typeRef(info.describesTypeRef);
+			}
+		}
 		if (decl.superclause != null) expr(decl.superclause.args);
 		for (l = decl.members; l != null; l = l.tail) {
 			match (l.head) {
 				x: VstNew => {
 					thisParam = x.func.thisParam;
+					if (!x.isSynthetic && x.func.params != decl.params) params(x.func.params);
 					// Verification shares the class clause with its constructor.
 					// Only a constructor-local clause needs a second walk.
 					if (x.superclause != null && x.superclause != decl.superclause) expr(x.superclause.args);
@@ -55,9 +71,13 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 				x: VstMethod => {
 					if (x.isSynthetic) continue;
 					thisParam = x.func.thisParam;
+					func(x.func);
 					stmt(x.func.body);
 				}
-				x: VstField => expr(x.init);
+				x: VstField => {
+					if (!x.isSynthetic) typeRef(x.tref);
+					expr(x.init);
+				}
 				x: VstEnumCase => exprs(x.args);
 			}
 		}
@@ -73,7 +93,43 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		for (l = list.list; l != null; l = l.tail) expr(l.head);
 	}
 	private def varDecl(v: VarDecl) {
-		if (v != null) expr(v.init);
+		if (v == null) return;
+		typeRef(v.tref);
+		expr(v.init);
+	}
+	private def params(list: VstList<ParamDecl>) {
+		if (list == null) return;
+		for (l = list.list; l != null; l = l.tail) typeRef(l.head.tref);
+	}
+	private def func(f: VstFunc) {
+		params(f.params);
+		match (f.rettype) {
+			Explicit(tref) => typeRef(tref);
+			_ => ;
+		}
+	}
+	private def typeRefs(list: VstList<TypeRef>) {
+		if (list == null) return;
+		for (l = list.list; l != null; l = l.tail) typeRef(l.head);
+	}
+	// Records the names in a type reference that verification resolved.
+	// Function and tuple types nest them.
+	private def typeRef(tref: TypeRef) {
+		if (tref == null) return;
+		match (tref) {
+			x: NamedTypeRef => {
+				typeRef(x.left);
+				typeRefs(x.nested);
+				// Ref<L> binds to the layout's reference type, but it names the
+				// builtin Ref; its layout argument has no binding.
+				if (!RefType.?(x.binding)) record(x.name, typeDeclaration(x.binding));
+			}
+			x: FuncTypeRef => {
+				typeRef(x.paramType);
+				typeRef(x.returnType);
+			}
+			x: TupleTypeRef => typeRefs(x.nested);
+		}
 	}
 
 	def visitIf(s: IfStmt, env: void) {
@@ -95,10 +151,12 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		stmt(s.body);
 	}
 	def visitForeach(s: ForeachStmt, env: void) {
+		varDecl(s.varDecl);
 		expr(s.expr);
 		stmt(s.body);
 	}
 	def visitForLess(s: ForLessStmt, env: void) {
+		varDecl(s.varDecl);
 		expr(s.expr);
 		stmt(s.body);
 	}
@@ -119,6 +177,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		for (l = c.patterns.list; l != null; l = l.tail) {
 			var pat = l.head;
 			expr(pat.expr);
+			if (pat.vdecl != null) typeRef(pat.vdecl.tref);
 			if (!VarExpr.?(pat.expr)) continue;
 			var ve = VarExpr.!(pat.expr);
 			// Qualified cases already have bindings. Unqualified case names
@@ -152,6 +211,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 	}
 	def visitVar(e: VarExpr, env: void) {
 		expr(e.expr);
+		typeRefs(e.ident.params);
 		var decl = declarationOf(e.varbind);
 		// A literal enum argument folds E.Case.param to Const, losing the
 		// field in the binding. Require an EnumConst receiver: E.count is a
@@ -172,6 +232,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
 		var range = sources.range(token);
 		if (range.isTokenSpan()) result.put(AnalysisOccurrence.new(range, decl));
+		else skipped++;
 	}
 	def visitLiteral(e: Literal, env: void) { }
 	def visitString(e: StringExpr, env: void) { }
@@ -182,6 +243,15 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 	def visitIndex(e: IndexExpr, env: void) {
 		expr(e.expr);
 		exprs(e.exprs);
+		// An index operation occupies its opening bracket, where an index
+		// method is declared. A compound assignment such as c[i] += v reads
+		// and writes through the one bracket; it records the write, since the
+		// expression is the assignment's target. Builtin indexing binds no
+		// method and records nothing.
+		var decl = indexDeclaration(e.write);
+		if (decl == null) decl = indexDeclaration(e.read);
+		var src = e.exprs.src;
+		if (decl != null && src != null) record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl);
 	}
 	def visitRange(e: RangeExpr, env: void) {
 		expr(e.expr);
@@ -211,6 +281,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 	def visitFunExpr(e: FunExpr, env: void) {
 		var outer = captures;
 		for (l = e.captures; l != null; l = l.tail) captures = List.new(l.head, captures);
+		func(e.func);
 		stmt(e.func.body);
 		captures = outer;
 	}
@@ -237,10 +308,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			ObjectMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
 			ClassMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
 			ComponentMethod(member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
-			ClassNew(receiver, member, funcType) => {
-				if (member.isSynthetic) return make(AnalysisDeclKind.CLASS, member.receiver);
-				return make(AnalysisDeclKind.CONSTRUCTOR, member);
-			}
+			ClassNew(receiver, member, funcType) => return constructorDeclaration(member);
 			VariantCase(receiver, member) => return make(AnalysisDeclKind.VARIANT_CASE, member);
 			EnumConst(member) => return make(AnalysisDeclKind.ENUM_CASE, member);
 			Inst(op, facts) => return operatorDeclaration(op);
@@ -263,8 +331,26 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		match (op.opcode) {
 			VstSugar(sugar) => match (sugar) {
 				EnumGetParam(field) => return make(AnalysisDeclKind.FIELD, field);
+				// Construction of a class with a descriptor (-lang:descriptors).
+				ClassNewDesc => {
+					var t = op.typeArgs[0];
+					return if(ClassType.?(t), constructorDeclaration(ClassType.!(t).classDecl.constructor));
+				}
 				_ => return null;
 			}
+			_ => return null;
+		}
+	}
+	// The default constructor is the class's own name.
+	private def constructorDeclaration(member: VstNew) -> AnalysisDeclaration {
+		if (member == null) return null;
+		if (member.isSynthetic) return make(AnalysisDeclKind.CLASS, member.receiver);
+		return make(AnalysisDeclKind.CONSTRUCTOR, member);
+	}
+	// The method that an index operation calls, if the program declares it.
+	private def indexDeclaration(b: AppBinding) -> AnalysisDeclaration {
+		match (b) {
+			CallObjectMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
 			_ => return null;
 		}
 	}
@@ -272,9 +358,17 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		// Verification errors can leave a Type binding with no resolved type.
 		if (t == null) return null;
 		match (t) {
-			x: ClassType => return make(AnalysisDeclKind.CLASS, x.classDecl);
+			x: ClassType => {
+				// A variant case's type is a synthetic class; the source declares the case.
+				var decl = x.classDecl;
+				if (decl != null && decl.isSynthetic && decl.variantCase != null) return make(AnalysisDeclKind.VARIANT_CASE, decl.variantCase);
+				return make(AnalysisDeclKind.CLASS, decl);
+			}
 			x: EnumType => return make(AnalysisDeclKind.ENUM, x.enumDecl);
 			x: RefType => return make(AnalysisDeclKind.LAYOUT, x.layoutDecl);
+			// Builtin type parameters have no source token; inferred type
+			// variables are TypeVarTypes.
+			x: TypeParamType => return declare(AnalysisDeclKind.TYPE_PARAM, x.token);
 		}
 		if (V3Component_TypeCon.?(t.typeCon)) {
 			return make(AnalysisDeclKind.COMPONENT, V3Component_TypeCon.!(t.typeCon).componentDecl);
@@ -282,8 +376,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		return null;
 	}
 	private def make(kind: AnalysisDeclKind, decl: Decl) -> AnalysisDeclaration {
-		if (decl == null) return null;
-		var token = decl.token;
+		return if(decl != null, declare(kind, decl.token));
+	}
+	private def declare(kind: AnalysisDeclKind, token: Token) -> AnalysisDeclaration {
 		if (token == null || token.beginLine <= 0) return null; // synthesized by the compiler
 		return AnalysisDeclaration.new(kind, token.image, sources.range(token));
 	}

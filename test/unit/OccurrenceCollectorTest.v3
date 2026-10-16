@@ -120,8 +120,8 @@ component OccurrenceCollectorTest {
 		t.assert(a.diagnostics.length > 0, "expected unresolved case diagnostics");
 		t.assert(a.definitionAt(path, 4, 29) == null, "unresolved variant case has no declaration");
 		t.assert(a.definitionAt(path, 5, 29) == null, "unresolved enum case has no declaration");
-		// Only the two scrutinee parameter uses should survive verification.
-		t.asserti(2, a.occurrences(path).length);
+		// Only the two scrutinee parameters and their types should survive verification.
+		t.asserti(4, a.occurrences(path).length);
 	}
 
 	def fixture(t: Tester, name: string) -> (ProgramAnalysis, string) {

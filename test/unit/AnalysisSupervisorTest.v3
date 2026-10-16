@@ -22,6 +22,7 @@ def X = [
 	T("AnalysisSupervisor:aggregate_request_too_large", test_aggregate_request_too_large),
 	T("AnalysisSupervisor:oversized_request_keeps_snapshot", test_oversized_request_keeps_snapshot),
 	T("AnalysisSupervisor:over_budget_result_keeps_snapshot", test_over_budget_result_keeps_snapshot),
+	T("AnalysisSupervisor:skipped_uses_warn", test_skipped_uses_warn),
 	T("AnalysisSupervisor:malformed_result_replaces_worker", test_malformed_result_replaces_worker),
 	T("AnalysisSupervisor:default_worker_path", test_default_worker_path),
 	()
@@ -376,6 +377,21 @@ def test_over_budget_result_keeps_snapshot(t: Tester) {
 	if (next == null) return;
 	t.asserti(2, next.generation);
 	t.asserti(2, s.workersStarted);
+}
+
+// A worker reports the uses it dropped as not token spans. The result is
+// still used, and the supervisor warns, so that the drop is never silent.
+def test_skipped_uses_warn(t: Tester) {
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), HostOs.executablePath()), s = sl.0;
+	var first = completed(t, s.analyze([AnalysisSource.new("good", "")], [], ALL));
+	if (first == null) return s.close();
+	t.asserti(0, first.stats.skippedUses);
+	t.assert(!contains(sl.1.warnings, "token spans"), "no warning without skipped uses");
+	var next = completed(t, s.analyze([AnalysisSource.new("skipped", "")], [], ALL));
+	s.close();
+	if (next == null) return;
+	t.asserti(2, next.stats.skippedUses);
+	t.assert(contains(sl.1.warnings, "analysis omitted 2 uses that are not token spans"), "skipped uses logged");
 }
 
 def test_malformed_result_replaces_worker(t: Tester) {

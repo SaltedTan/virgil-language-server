@@ -284,11 +284,15 @@ def test_binding_compiler_coordinates(t: Tester) {
 		var compilation = Compilation.new(Compiler.new(null), prog);
 		t.assertz(true, compilation.parse());
 		t.assertz(true, compilation.verify());
-		var original = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), true, true, prog).occurrences(path);
+		var stock = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), true, true, prog);
+		var original = stock.occurrences(path);
 		// A stock parse's retrospective token has only its context-free column,
 		// which does not locate it in the source, so that analysis skips the
-		// operator use; every other use matches.
+		// operator use, and counts it; every other use matches.
 		t.asserti(uses.length - 1, original.length);
+		t.asserti(1, stock.skippedUses(path));
+		t.asserti(0, a.skippedUses(path));
+		t.asserti(0, result.snapshot.stats.skippedUses);
 		t.asserti(uses.length, decoded.length);
 		if (original.length != uses.length - 1 || uses.length != decoded.length) return;
 		var count = 0, k = 0;
@@ -447,12 +451,12 @@ def test_retrospective_binding_offsets(t: Tester) {
 	var r = bindingSnapshot(t, [AnalysisSource.new(path, get)]);
 	if (r.1 == null) return;
 	t.assertz(true, r.0.verified);
-	var c = indexOf(get, "c.[](i)");
-	var uses = assertUses(t, r.0, r.1, path, ["x", "c", "[]", "i"],
-		[indexOf(get, "x; }"), c, c + 2, c + 5], [indexOf(get, "x; }") + 1, c + 1, c + 4, c + 6]);
-	if (uses.length == 4) {
-		t.assert(uses[3].range.beginColumn < uses[2].range.beginColumn, "exported column of [] passes i");
-		var d = uses[2].declaration;
+	var c = indexOf(get, "c.[](i)"), tref = indexOf(get, "C, i");
+	var uses = assertUses(t, r.0, r.1, path, ["x", "C", "c", "[]", "i"],
+		[indexOf(get, "x; }"), tref, c, c + 2, c + 5], [indexOf(get, "x; }") + 1, tref + 1, c + 1, c + 4, c + 6]);
+	if (uses.length == 5) {
+		t.assert(uses[4].range.beginColumn < uses[3].range.beginColumn, "exported column of [] passes i");
+		var d = uses[3].declaration;
 		t.asserti(indexOf(get, "[x"), d.range.beginOffset);
 		t.asserti(indexOf(get, "[x") + 1, d.range.endOffset);
 		t.asserti(15, d.range.beginColumn);
@@ -463,20 +467,22 @@ def test_retrospective_binding_offsets(t: Tester) {
 	if (r.1 == null) return;
 	t.assertz(true, r.0.verified);
 	c = indexOf(set, "c.[]=");
-	uses = assertUses(t, r.0, r.1, path, ["c", "[]="], [c, c + 2], [c + 1, c + 5]);
-	if (uses.length == 2) {
-		t.asserti(indexOf(set, "[x"), uses[1].declaration.range.beginOffset);
-		t.asserti(indexOf(set, "[x") + 1, uses[1].declaration.range.endOffset);
+	tref = indexOf(set, "C)");
+	uses = assertUses(t, r.0, r.1, path, ["C", "c", "[]="], [tref, c, c + 2], [tref + 1, c + 1, c + 5]);
+	if (uses.length == 3) {
+		t.asserti(indexOf(set, "[x"), uses[2].declaration.range.beginOffset);
+		t.asserti(indexOf(set, "[x") + 1, uses[2].declaration.range.endOffset);
 	}
 	var empty = "class C { def [] -> int { return 1; }\n/*\t*/ def f(c: C) -> int => c.[]();\n}\n";
 	r = bindingSnapshot(t, [AnalysisSource.new(path, empty)]);
 	if (r.1 == null) return;
 	t.assertz(true, r.0.verified);
 	c = indexOf(empty, "c.[]()");
-	uses = assertUses(t, r.0, r.1, path, ["c", "[]"], [c, c + 2], [c + 1, c + 4]);
-	if (uses.length == 2) {
-		t.asserti(indexOf(empty, "[] ->"), uses[1].declaration.range.beginOffset);
-		t.asserti(indexOf(empty, "[] ->") + 1, uses[1].declaration.range.endOffset);
+	tref = indexOf(empty, "C)");
+	uses = assertUses(t, r.0, r.1, path, ["C", "c", "[]"], [tref, c, c + 2], [tref + 1, c + 1, c + 4]);
+	if (uses.length == 3) {
+		t.asserti(indexOf(empty, "[] ->"), uses[2].declaration.range.beginOffset);
+		t.asserti(indexOf(empty, "[] ->") + 1, uses[2].declaration.range.endOffset);
 	}
 }
 

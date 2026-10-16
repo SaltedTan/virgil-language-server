@@ -10,6 +10,9 @@ class AnalysisSnapshot {
 	// Counts the snapshots one supervisor has produced, from 1.
 	def generation: int;
 	var retainedBytes = 1024L;
+	// The decoded allocation charged for the result, against
+	// AnalysisWire.MAX_RESULT_ALLOCATION.
+	var resultAllocation: long;
 	// The program's files in analysis order.
 	def paths: Array<string>;
 	// Submission provenance attached by the stdio server, never sent to the
@@ -103,9 +106,11 @@ class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersi
 }
 
 // Measurements of the analysis that produced a snapshot, taken in the worker.
-// Fields that were not requested are -1.
+// Fields that were not requested are -1. {skippedUses} counts the uses that
+// the collector or the encoder dropped because they are not token spans; it
+// is zero for every program we know of (see AnalysisRange.isTokenSpan).
 class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUsed: int,
-	uidNext: int, globalTypesAdded: int, globalTypeTotal: int) { }
+	uidNext: int, globalTypesAdded: int, globalTypeTotal: int, skippedUses: int) { }
 
 // The occurrences of one file, without an object per occurrence: {ranges} holds
 // the begin line, begin column, begin offset, and byte length of occurrence i
