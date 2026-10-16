@@ -8,6 +8,8 @@ def T = UnitTests.register;
 def X = [
 	T("AnalysisDisplay:declaration_kinds", test_declaration_kinds),
 	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
+	T("AnalysisDisplay:generic_index_operations", test_generic_index_operations),
+	T("AnalysisDisplay:open_variant_superclass", test_open_variant_superclass),
 	T("AnalysisDisplay:builtin_uses", test_builtin_uses),
 	T("AnalysisDisplay:unknown_types", test_unknown_types),
 	T("AnalysisDisplay:depth_bound", test_depth_bound),
@@ -41,7 +43,10 @@ def repeat(s: string, n: int) -> string {
 // Analyzes {text} as one file, which verifies if {verified}, and decodes
 // its worker result as the server would.
 def analyze(t: Tester, text: string, verified: bool) -> (ProgramAnalysis, AnalysisSnapshot) {
-	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], [], false);
+	return analyzeWith(t, text, [], verified);
+}
+def analyzeWith(t: Tester, text: string, options: Array<string>, verified: bool) -> (ProgramAnalysis, AnalysisSnapshot) {
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], options, false);
 	t.assertz(true, a.parsed);
 	t.assertz(verified, a.verified);
 	var w = AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, [(PATH, a.occurrences(PATH))]);
@@ -253,6 +258,65 @@ def test_generic_use_sites(t: Tester) {
 	// Inside the generic declaration, a use has the declared type.
 	assertUses(t, r, text, "return value", 7, "var value: T", null);
 	assertDeclares(t, r, text, "b = id", 0, AnalysisDeclKind.LOCAL, "var b: Foo");
+}
+
+def INDEXES = lines([
+	"class Box<T> {",
+	"\tvar items: Array<T>;",
+	"\tdef [i: int] -> T { return items[i]; }",
+	"\tdef [i: int] = v: T { items[i] = v; }",
+	"}",
+	"class IntBox extends Box<int> { }",
+	"class Grid { def [i: int] -> int { return i; } }",
+	"component M {",
+	"\tdef f(b: Box<int>, n: IntBox, g: Grid, bb: Box<Box<bool>>) -> int {",
+	"\t\tb[0] = b[1];",
+	"\t\tb[2] += 3;",
+	"\t\tvar x = bb[0][1];",
+	"\t\treturn n[0] + g[0] + b.[](4);",
+	"\t}",
+	"\tdef h<T>(b: Box<T>) -> T { return b[5]; }",
+	"}"
+]);
+// An index operation, at its opening bracket, has the type of the method it
+// calls instantiated for its receiver, as a named call of the method does.
+def test_generic_index_operations(t: Tester) {
+	var text = INDEXES, r = analyze(t, text, true);
+	var get = "def [i: int] -> T", set = "def [i: int] = v: T";
+	assertUses(t, r, text, "b[1]", 1, get, "int -> int");
+	assertUses(t, r, text, "b[0] =", 1, set, "(int, int) -> void");
+	// A compound assignment records the setter.
+	assertUses(t, r, text, "b[2] +=", 1, set, "(int, int) -> void");
+	// Nested instantiations, outer and inner.
+	assertUses(t, r, text, "bb[0]", 2, get, "int -> Box<bool>");
+	assertUses(t, r, text, "[0][1]", 3, get, "int -> bool");
+	// The receiver can be a subclass of an instantiation.
+	assertUses(t, r, text, "n[0]", 1, get, "int -> int");
+	assertUses(t, r, text, "b.[](4)", 2, get, "int -> int");
+	// Without type arguments, the type is the declaration's.
+	assertUses(t, r, text, "g[0]", 1, "def [i: int] -> int", null);
+	assertUses(t, r, text, "b[5]", 1, get, null);
+}
+
+// With -lang:open-types, a variant that extends another extends its
+// default case, but its signature names the variant, as its source does.
+def OPEN = lines([
+	"type Opt<T> { case Some(v: T); case _; }",
+	"type Cached<T> extends Opt<T> { case Hit(v: T); }",
+	"type V { case A; case _; }",
+	"type W extends V { case B; }",
+	"component M { def f(c: Cached<int>, w: W) { } }"
+]);
+def test_open_variant_superclass(t: Tester) {
+	var text = OPEN, r = analyzeWith(t, text, ["-lang:open-types"], true);
+	assertDeclares(t, r, text, "type Cached", 5, AnalysisDeclKind.CLASS, "type Cached<T> extends Opt<T>");
+	assertDeclares(t, r, text, "type W", 5, AnalysisDeclKind.CLASS, "type W extends V");
+	assertUses(t, r, text, "c: Cached", 3, "type Cached<T> extends Opt<T>", "Cached<int>");
+	// An explicit case keeps its case, although verification rejects it
+	// (InheritanceError).
+	text = lines(["type V { case A; case _; }", "type Sub extends V.A { case B; }"]);
+	r = analyzeWith(t, text, ["-lang:open-types"], false);
+	assertDeclares(t, r, text, "type Sub", 5, AnalysisDeclKind.CLASS, "type Sub extends V.A");
 }
 
 def BUILTINS = lines([

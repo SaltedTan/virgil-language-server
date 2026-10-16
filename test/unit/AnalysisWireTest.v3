@@ -13,6 +13,8 @@ def X = [
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
 	T("AnalysisWire:display_round_trip", test_display_round_trip),
 	T("AnalysisWire:invalid_display_indexes", test_invalid_display_indexes),
+	T("AnalysisWire:repeated_files_and_site_runs", test_repeated_files_and_site_runs),
+	T("AnalysisWire:invalid_use_spans", test_invalid_use_spans),
 	T("AnalysisWire:result_allocation_budget", test_result_allocation_budget),
 	T("AnalysisWire:occurrence_token_spans", test_occurrence_token_spans),
 	T("AnalysisWire:result_index_string_budget", test_result_index_string_budget),
@@ -481,6 +483,82 @@ def test_invalid_display_indexes(t: Tester) {
 	for (i < 2) overlap.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
 	assertMalformed(t, site(overlap, 0, 0, 2), "overlapping sites");
 }
+// Each file is decoded once, and its site run follows the previous file's,
+// so that a result cannot make the decoder check a declaration's site more
+// than once: repeating one run in many files would otherwise take time
+// quadratic in the result's size.
+def test_repeated_files_and_site_runs(t: Tester) {
+	var r = decodedResult(result(0, siteRuns([(0, 0, 2), (1, 2, 1)])), 1, []);
+	if (r == null) return t.fail("ordered site runs were rejected");
+	t.assert(r.snapshot.declarationAtOffset("p.v3", 8) == r.snapshot.declarations[1], "the first file's second site");
+	t.assert(r.snapshot.declarationAtOffset("q.v3", 4) == r.snapshot.declarations[2], "the second file's site");
+	// An empty run is in order at the end of the previous one.
+	t.assert(decodedResult(result(0, siteRuns([(0, 0, 2), (1, 2, 0)])), 1, []) != null, "an empty run");
+	assertMalformed(t, siteRuns([(0, 0, 2), (0, 0, 2)]), "a repeated file");
+	// Path index 2 is "p.v3" again.
+	assertMalformed(t, siteRuns([(0, 0, 2), (2, 2, 0)]), "a repeated path");
+	assertMalformed(t, siteRuns([(1, 2, 1), (0, 0, 2)]), "a site run before the previous file's");
+	assertMalformed(t, siteRuns([(0, 0, 2), (1, 1, 0)]), "an empty run inside the previous file's");
+	var repeats = Array<(int, int, int)>.new(1000);
+	for (i < repeats.length) repeats[i] = (0, 0, 2);
+	assertMalformed(t, siteRuns(repeats), "one run repeated in many files");
+}
+// A path table with "p.v3", "q.v3", and "p.v3" again; a string table with
+// "x"; declarations at p.v3 bytes 4 to 5 and 8 to 9, and q.v3 bytes 4 to 5;
+// and {files}, each a path index and a site run's first index and count,
+// without uses.
+def siteRuns(files: Array<(int, int, int)>) -> DataWriter {
+	var w = DataWriter.new().put_sleb32(3).put_sleb32(4).puta("p.v3").put_sleb32(4).puta("q.v3").put_sleb32(4).puta("p.v3");
+	w.put_sleb32(1).put_sleb32(1).putb('x');
+	w.put_sleb32(3);
+	w.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(1).puta(DECLARATION_RANGE).put_sleb32(0);
+	w.put_sleb32(files.length);
+	for (f in files) w.put_sleb32(f.0).put_sleb32(f.1).put_sleb32(f.2).put_sleb32(0).puta(NO_DISPLAY);
+	return w;
+}
+
+// Occurrences and builtin uses are token spans in byte order without
+// overlaps, apart from each other, as the snapshot's binary searches by
+// offset require.
+def test_invalid_use_spans(t: Tester) {
+	var r = decodedResult(result(0, uses([(1, 1, 0, 1), (1, 3, 2, 1)], [(1, 2, 1, 1)])), 1, []);
+	if (r == null) return t.fail("adjacent uses were rejected");
+	var s = r.snapshot;
+	t.assert(s.definitionAtOffset("p.v3", 0) != null && s.definitionAtOffset("p.v3", 2) != null, "both occurrences");
+	t.assert(s.definitionAtOffset("p.v3", 1) == null, "no occurrence at the builtin use");
+	t.assert_string("int", s.useTypeAtOffset("p.v3", 1));
+	t.assert(s.builtinUseAtOffset("p.v3", 0) == null, "no builtin use at an occurrence");
+	var none: Array<(int, int, int, int)> = [];
+	var bad = [
+		([(1, 11, 10, 1), (1, 1, 0, 1)], "out of order"),
+		([(1, 1, 0, 2), (1, 2, 1, 1)], "overlapping"),
+		([(1, 1, 0, 1), (1, 1, 0, 1)], "repeated"),
+		([(1, 1, -1, 2)], "a negative offset"),
+		([(1, 1, 0, 0)], "an empty span"),
+		([(1, 1, 0, -1)], "a negative length"),
+		([(1, 1, int.max - 1, 2)], "an end offset that overflows"),
+		([(1, int.max, 0, 1)], "an end column that overflows"),
+		([(0, 1, 0, 1)], "line zero"),
+		([(1, 0, 0, 1)], "column zero")
+	];
+	for (b in bad) {
+		assertMalformed(t, uses(b.0, none), Strings.format1("occurrences: %s", b.1));
+		assertMalformed(t, uses(none, b.0), Strings.format1("builtin uses: %s", b.1));
+	}
+	assertMalformed(t, uses([(1, 1, 0, 2)], [(1, 2, 1, 1)]), "a builtin use inside an occurrence");
+	assertMalformed(t, uses([(1, 2, 1, 1)], [(1, 1, 0, 2)]), "an occurrence inside a builtin use");
+}
+// One declaration and, in its file, {occurrences} of it and {builtins} of
+// type "int", each a line, column, offset, and length.
+def uses(occurrences: Array<(int, int, int, int)>, builtins: Array<(int, int, int, int)>) -> DataWriter {
+	var w = file(declarations(1, 0, 0), occurrences.length);
+	for (o in occurrences) w.put_sleb32(o.0).put_sleb32(o.1).put_sleb32(o.2).put_sleb32(o.3).put_sleb32(0);
+	w.put_sleb32(0).put_sleb32(builtins.length);
+	for (b in builtins) w.put_sleb32(b.0).put_sleb32(b.1).put_sleb32(b.2).put_sleb32(b.3).put_sleb32(1);
+	return w;
+}
 // A path table with "p.v3", a string table with "x" and "int", and {count}
 // declarations at p.v3:1:1-1:2, bytes 4 to 5, whose name and signature have
 // string indexes {name} and {signature}: an index plus one, or zero.
@@ -541,7 +619,7 @@ def test_result_allocation_budget(t: Tester) {
 	occurrences.put_sleb32(2);
 	for (f < 2) {
 		occurrences.put_sleb32(f).put_sleb32(0).put_sleb32(0).put_sleb32(500000);
-		for (i < 500000) occurrences.puta(OCCURRENCE).put_sleb32(0);
+		for (i < 500000) occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(i).put_sleb32(1).put_sleb32(0);
 		occurrences.puta(NO_DISPLAY);
 	}
 	assertTooLarge(t, result(0, occurrences), "occurrence budget is aggregate across files");
@@ -555,7 +633,7 @@ def test_result_allocation_budget(t: Tester) {
 	var most = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed) / 20;
 	for (n in [most, most + 1]) {
 		var single = file(declaration(0, 0), n);
-		for (i < n) single.puta(OCCURRENCE).put_sleb32(0);
+		for (i < n) single.put_sleb32(1).put_sleb32(1).put_sleb32(i).put_sleb32(1).put_sleb32(0);
 		single.puta(NO_DISPLAY);
 		if (n == most) {
 			var decoded = decodedResult(result(0, single), 1, []);

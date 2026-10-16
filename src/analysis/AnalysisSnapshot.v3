@@ -72,6 +72,9 @@ class AnalysisSnapshot {
 	def addFile(path: string, file: AnalysisSnapshotFile) {
 		files[path] = file;
 	}
+	def hasFile(path: string) -> bool {
+		return files.has(path);
+	}
 	// Records the string table that the files' type indexes refer to.
 	def setStrings(table: Array<string>) {
 		strings = table;

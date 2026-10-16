@@ -292,16 +292,24 @@ component AnalysisWire {
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
 			snapshot.setStrings(strings);
+			// Files have distinct paths, and their site runs come in order,
+			// so that each declaration is checked as a site at most once.
+			var siteEnd = 0;
 			for (n = r.readCount(6, 256); n > 0 && r.ok(); n--) {
 				var path = r.readPath(table);
+				if (path != null && snapshot.hasFile(path)) {
+					r.fail("repeated file");
+					break;
+				}
 				var first = r.readInt(), sites = r.readInt();
-				if (!r.checkSites(declarations, path, first, sites)) break;
+				if (!r.checkSites(declarations, path, siteEnd, first, sites)) break;
+				siteEnd = first + sites;
 				// Each occurrence is four ints of its range and a declaration
 				// index, stored as five int array elements.
 				var count = r.readCount(5, 20);
-				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count);
-				for (i < count) {
-					for (j < 4) ranges[4 * i + j] = r.readInt();
+				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count), end = 0;
+				for (i = 0; i < count && r.ok(); i++) {
+					end = r.readSpan(ranges, 4 * i, end);
 					targets[i] = r.readTarget(declarations.length);
 				}
 				// Occurrence index and type string index pairs.
@@ -314,10 +322,14 @@ component AnalysisWire {
 				// A builtin use is an occurrence's four range ints and a type
 				// string index.
 				var builtins = Array<int>.new(5 * r.readCount(5, 20));
+				end = 0;
 				for (i = 0; i < builtins.length && r.ok(); i += 5) {
-					for (j < 4) builtins[i + j] = r.readInt();
+					end = r.readSpan(builtins, i, end);
 					builtins[i + 4] = r.readStringId(strings);
 				}
+				// A builtin use is never an occurrence, so a lookup by offset
+				// finds at most one of them.
+				r.checkDisjoint(ranges, builtins);
 				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites));
 			}
 		}
@@ -403,6 +415,9 @@ class AnalysisWireReader {
 	}
 	def ok() -> bool {
 		return r.ok;
+	}
+	def fail(message: string) {
+		r.fail(message);
 	}
 	// Returns true if the message was well formed and completely read.
 	def finish() -> bool {
@@ -508,10 +523,11 @@ class AnalysisWireReader {
 	}
 	// Checks that declarations {first} to {first + count} are declared in
 	// {path}, with nonempty byte ranges in order and not overlapping, so
-	// that a binary search finds them.
-	def checkSites(declarations: Array<AnalysisDeclaration>, path: string, first: int, count: int) -> bool {
+	// that a binary search finds them, and that they start at or after
+	// {after}, the end of the previous file's run.
+	def checkSites(declarations: Array<AnalysisDeclaration>, path: string, after: int, first: int, count: int) -> bool {
 		if (!r.ok) return false;
-		if (first < 0 || count < 0 || count > declarations.length - first) {
+		if (first < after || count < 0 || count > declarations.length - first) {
 			r.fail("invalid declaration sites");
 			return false;
 		}
@@ -525,6 +541,33 @@ class AnalysisWireReader {
 			end = range.endOffset;
 		}
 		return true;
+	}
+	// Reads a use's line, column, byte offset, and length into {a} from
+	// index {i}, and returns its end offset. A use is a token span that
+	// starts at or after {end}, the end of the previous use, so that uses
+	// are in byte order without overlaps, as a binary search requires.
+	def readSpan(a: Array<int>, i: int, end: int) -> int {
+		var line = r.read_sleb32(), column = r.read_sleb32(), offset = r.read_sleb32(), length = r.read_sleb32();
+		if (line < 1 || column < 1 || offset < end || length < 1 || length > int.max - offset || length > int.max - column) {
+			r.fail("invalid use range");
+			return end;
+		}
+		a[i] = line;
+		a[i + 1] = column;
+		a[i + 2] = offset;
+		a[i + 3] = length;
+		return offset + length;
+	}
+	// Checks that no occurrence in {ranges}, four ints each, overlaps a
+	// builtin use in {builtins}, five ints each. Both are in byte order.
+	def checkDisjoint(ranges: Array<int>, builtins: Array<int>) {
+		var i = 0, k = 0;
+		while (r.ok && i < ranges.length && k < builtins.length) {
+			var o = ranges[i + 2], b = builtins[k + 2];
+			if (o + ranges[i + 3] <= b) i += 4;
+			else if (b + builtins[k + 3] <= o) k += 5;
+			else r.fail("builtin use overlaps an occurrence");
+		}
 	}
 	def readKind() -> AnalysisDeclKind {
 		var tag = r.read1();

@@ -45,6 +45,10 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
 	private def buf = StringBuilder.new();
 	private var full: bool;
+	// While a member of an instantiated class renders, its class's type
+	// parameters and the type arguments that replace them.
+	private var substParams: List<TypeParamType>;
+	private var substArgs: List<Type>;
 
 	// The declaration of {kind} named by {token}, the same object for every
 	// use, or null if the compiler synthesized it. {decl} is its syntax, and
@@ -65,7 +69,26 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		var d = AnalysisWorkerDeclaration.!(decl);
 		if (t == d.ownType) return null;
 		var text = typeText(t);
-		if (text == null) return null;
+		return if(text != null, differing(d, text));
+	}
+	// The text of the type of a use of method {m}, declared as {decl}, on
+	// {receiver}, or null if it is the declaration's own type. An index
+	// operation has no type of its own, so this renders the method's type
+	// with the receiver's type arguments in place of its class's type
+	// parameters, as verification instantiates it.
+	def methodUseType(decl: AnalysisDeclaration, receiver: Type, m: VstMethod) -> string {
+		if (!ClassType.?(receiver) || receiver.nested == null) return null;
+		var c = ClassType.!(receiver).classDecl;
+		if (c == null || c.typeParams == null) return null;
+		substParams = c.typeParams;
+		substArgs = receiver.nested;
+		var text = functionText(m.func.params, returnType(m));
+		substParams = null;
+		substArgs = null;
+		return differing(AnalysisWorkerDeclaration.!(decl), text);
+	}
+	// {text}, or null if it is the text of {d}'s own type.
+	private def differing(d: AnalysisWorkerDeclaration, text: string) -> string {
 		if (!d.rendered) {
 			d.typeText = if(d.syntax == null, typeText(d.ownType), declarationType(d.syntax));
 			d.rendered = true;
@@ -155,10 +178,20 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		put(c.token.image);
 		putTypeParams(c.typeParams);
 		putParams(c.params, true);
-		if (c.superclass != null) {
-			put(" extends ");
-			putType(c.superclass.binding, 0);
+		var s = c.superclass;
+		if (s == null) return;
+		put(" extends ");
+		// With -lang:open-types, "type W extends V" extends V's default case,
+		// "case _", which verification binds; the source names the variant.
+		var t = resolve(s.binding, 0);
+		if (NamedTypeRef.?(s) && NamedTypeRef.!(s).left == null && ClassType.?(t) && !unknown(t)) {
+			var vc = ClassType.!(t).classDecl.variantCase;
+			if (vc != null && vc.decl.isSynthetic && vc.isDefaultCase()) {
+				putNamed(t, 0, false);
+				return;
+			}
 		}
+		putType(t, 0);
 	}
 	// An index method is spelled as it is declared: "def [i: int] -> int"
 	// and "def [i: int] = v: int".
@@ -295,6 +328,18 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 			put(AnalysisDisplayText.UNKNOWN);
 			return;
 		}
+		if (substParams != null && TypeParamType.?(t)) {
+			// Substitute once: an argument can name the parameters it replaces.
+			var arg = substitute(TypeParamType.!(t)), params = substParams, args = substArgs;
+			if (arg != null) {
+				substParams = null;
+				substArgs = null;
+				putType(arg, depth);
+				substParams = params;
+				substArgs = args;
+				return;
+			}
+		}
 		var nested = t.nested;
 		match (t.typeCon) {
 			x: Function_TypeCon => {
@@ -326,27 +371,36 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 				put(x.name);
 				if (x.layoutDecl != null) put("<").put(x.layoutDecl.fullName).put(">");
 			}
-			_ => {
-				// A variant case's class is named "V.A", but its type arguments
-				// are the variant's: V<T>.A.
-				var name = t.typeCon.name, suffix: string;
-				if (ClassType.?(t)) {
-					var c = ClassType.!(t).classDecl;
-					if (c != null && c.isSynthetic && c.variantCase != null && nested != null) {
-						suffix = c.token.image;
-						if (name.length > suffix.length) name = Arrays.range(name, 0, name.length - suffix.length - 1);
-						else suffix = null;
-					}
-				}
-				put(name);
-				if (nested != null) {
-					put("<");
-					putTypes(nested, depth + 1);
-					put(">");
-				}
-				if (suffix != null) put(".").put(suffix);
+			_ => putNamed(t, depth, true);
+		}
+	}
+	// A variant case's class is named "V.A", but its type arguments are the
+	// variant's: V<T>.A. Without {withCase}, the variant alone: V<T>.
+	private def putNamed(t: Type, depth: int, withCase: bool) {
+		var name = t.typeCon.name, suffix: string, nested = t.nested;
+		if (ClassType.?(t)) {
+			var c = ClassType.!(t).classDecl;
+			if (c != null && c.isSynthetic && c.variantCase != null) {
+				suffix = c.token.image;
+				if (name.length > suffix.length) name = Arrays.range(name, 0, name.length - suffix.length - 1);
+				else suffix = null;
 			}
 		}
+		put(name);
+		if (nested != null) {
+			put("<");
+			putTypes(nested, depth + 1);
+			put(">");
+		}
+		if (suffix != null && withCase) put(".").put(suffix);
+	}
+	private def substitute(p: TypeParamType) -> Type {
+		var a = substArgs;
+		for (l = substParams; l != null && a != null; l = l.tail) {
+			if (l.head == p) return a.head;
+			a = a.tail;
+		}
+		return null;
 	}
 	private def putTypes(list: List<Type>, depth: int) {
 		for (l = list; l != null && !full; l = l.tail) {

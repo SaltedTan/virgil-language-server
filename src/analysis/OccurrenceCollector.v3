@@ -339,16 +339,18 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 	// AnalysisRange.isTokenSpan). Parser tokens always are; a name the compiler
 	// manufactured where the source doesn't spell it would not be, and is
 	// skipped, since neither its compiler span nor its byte span would locate it.
-	private def record(token: Token, decl: AnalysisDeclaration, t: Type) {
-		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
+	// Returns the occurrence, or null if nothing was recorded.
+	private def record(token: Token, decl: AnalysisDeclaration, t: Type) -> AnalysisOccurrence {
+		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return null;
 		var range = sources.range(token);
 		if (!range.isTokenSpan()) {
 			skipped++;
-			return;
+			return null;
 		}
 		var o = AnalysisOccurrence.new(range, decl);
 		if (t != null) o.useType = display.useType(decl, t);
 		result.put(o);
+		return o;
 	}
 	// A resolved use with no source declaration, such as ".length" or
 	// "int.max", has only its type, which it keeps if that is known.
@@ -374,10 +376,18 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 		// and writes through the one bracket; it records the write, since the
 		// expression is the assignment's target. Builtin indexing binds no
 		// method and records nothing.
-		var decl = indexDeclaration(e.write);
-		if (decl == null) decl = indexDeclaration(e.read);
+		var b = e.write, decl = indexDeclaration(b);
+		if (decl == null) {
+			b = e.read;
+			decl = indexDeclaration(b);
+		}
 		var src = e.exprs.src;
-		if (decl != null && src != null) record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null);
+		if (decl == null || src == null) return;
+		var o = record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null);
+		match (b) {
+			CallObjectMethod(receiver, member, typeArgs) => if (o != null) o.useType = display.methodUseType(decl, receiver, member);
+			_ => ;
+		}
 	}
 	def visitRange(e: RangeExpr, env: void) {
 		expr(e.expr);
