@@ -27,7 +27,7 @@ Two properties of the Virgil runtime shape the answer:
 
 ### Channel and framing
 
-Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `RESULT` starts with fixed-width request ID, analysis count, and UID counter (32 bits each), then live heap bytes (64 bits), all little-endian. Its flags and declaration-kind tags are single bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions, and `AnalysisWire.PROTOCOL_VERSION` changes with the layout.
+Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `RESULT` starts with fixed-width request ID, analysis count, and UID counter (32 bits each), then live heap bytes (64 bits), all little-endian. Its flags and declaration-kind tags are single bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions. Released layouts require an `AnalysisWire.PROTOCOL_VERSION` change; version 4 remains unreleased, so the type-parameter declaration kind and skipped-uses statistic were added without another version change.
 
 | Message | Direction | Contents |
 | --- | --- | --- |

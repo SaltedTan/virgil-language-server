@@ -73,7 +73,7 @@ class AnalysisSnapshot {
 		for (i < result.length) result[i] = AnalysisOccurrence.new(file.range(path, i), declarations[file.targets[i]]);
 		return result;
 	}
-	// The declaration that the identifier at compiler coordinates
+	// The declaration that the indexed use at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
 	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
 		var file = files[path];
@@ -81,7 +81,7 @@ class AnalysisSnapshot {
 		var i = file.find(line, column);
 		return if(i >= 0, declarations[file.targets[i]]);
 	}
-	// The declaration that the identifier containing UTF-8 byte offset
+	// The declaration that the indexed use containing UTF-8 byte offset
 	// {offset} in {path} resolves to, or null if there is none.
 	def definitionAtOffset(path: string, offset: int) -> AnalysisDeclaration {
 		var file = files[path];
@@ -128,7 +128,7 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 	// another use can be out of compiler-coordinate order (see
 	// docs/architecture.md#coordinates); {findOffset} has no such exception.
 	def find(line: int, column: int) -> int {
-		// Identifier tokens do not overlap, so their exclusive ends are also
+		// Occurrence tokens do not overlap, so their exclusive ends are also
 		// in source order. Find the first token ending after the query point.
 		var low = 0, high = targets.length;
 		while (low < high) {
@@ -144,7 +144,7 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 		return low;
 	}
 	// The index of the occurrence whose byte range contains {offset}, or -1.
-	// The end offset is exclusive, so the offset just past an identifier is
+	// The end offset is exclusive, so the offset just past an occurrence is
 	// not in it.
 	def findOffset(offset: int) -> int {
 		var low = 0, high = targets.length;
