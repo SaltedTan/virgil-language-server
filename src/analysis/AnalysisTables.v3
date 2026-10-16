@@ -142,6 +142,15 @@ component AnalysisTables {
 		for (i < length) h = h * 31 + bytes[i];
 		return h;
 	}
+	// Negative, zero, or positive as {a} is before, equal to, or after {b}
+	// in byte order.
+	def compareBytes(a: string, b: string) -> int {
+		var n = Ints.min(a.length, b.length);
+		for (i < n) {
+			if (a[i] != b[i]) return if(a[i] < b[i], -1, 1);
+		}
+		return a.length - b.length;
+	}
 	def sameBytes(s: string, bytes: Array<byte>, length: int) -> bool {
 		if (s.length != length) return false;
 		for (i < length) if (s[i] != bytes[i]) return false;

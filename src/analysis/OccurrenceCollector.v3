@@ -385,7 +385,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 		if (decl == null || src == null) return;
 		var o = record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null);
 		match (b) {
-			CallObjectMethod(receiver, member, typeArgs) => if (o != null) o.useType = display.methodUseType(decl, receiver, member);
+			CallObjectMethod(receiver, member, typeArgs) => {
+				if (o != null) o.useType = display.methodUseType(decl, receiver, e.expr.exactType, member);
+			}
 			_ => ;
 		}
 	}

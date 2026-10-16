@@ -9,6 +9,8 @@ def X = [
 	T("AnalysisDisplay:declaration_kinds", test_declaration_kinds),
 	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
 	T("AnalysisDisplay:generic_index_operations", test_generic_index_operations),
+	T("AnalysisDisplay:substituted_function_types", test_substituted_function_types),
+	T("AnalysisDisplay:inherited_index_methods", test_inherited_index_methods),
 	T("AnalysisDisplay:open_variant_superclass", test_open_variant_superclass),
 	T("AnalysisDisplay:builtin_uses", test_builtin_uses),
 	T("AnalysisDisplay:unknown_types", test_unknown_types),
@@ -296,6 +298,71 @@ def test_generic_index_operations(t: Tester) {
 	// Without type arguments, the type is the declaration's.
 	assertUses(t, r, text, "g[0]", 1, "def [i: int] -> int", null);
 	assertUses(t, r, text, "b[5]", 1, get, null);
+}
+
+def FUNCTION_ARGS = lines([
+	"class Box<T> {",
+	"\tdef [x: T] -> int { return 0; }",
+	"\tdef [y: T -> bool] = v: int { }",
+	"}",
+	"component M {",
+	"\tdef f(b: Box<int -> int>, g: int -> int, h: (int -> int) -> bool) {",
+	"\t\tvar get = b[g], call = b.[](g);",
+	"\t\tb[h] = 1;",
+	"\t\tb.[]=(h, 2);",
+	"\t}",
+	"}"
+]);
+// A type argument that is a function type is parenthesized as a parameter,
+// as its own type would be, alone and nested in a function parameter. An
+// index operation and a named call of its method render alike.
+def test_substituted_function_types(t: Tester) {
+	var text = FUNCTION_ARGS, r = analyze(t, text, true);
+	var get = "def [x: T] -> int", set = "def [y: T -> bool] = v: int";
+	assertUses(t, r, text, "b[g]", 1, get, "(int -> int) -> int");
+	assertUses(t, r, text, "b.[](g)", 2, get, "(int -> int) -> int");
+	assertUses(t, r, text, "b[h]", 1, set, "((int -> int) -> bool, int) -> void");
+	assertUses(t, r, text, "b.[]=(h", 2, set, "((int -> int) -> bool, int) -> void");
+}
+
+def INHERITED = lines([
+	"class Chain<T> {",
+	"\tdef [i: int] -> this { }",
+	"\tdef [i: int] = v: T { }",
+	"}",
+	"class Child extends Chain<int> { }",
+	"class Plain {",
+	"\tdef [i: int] -> this { }",
+	"\tdef [i: int] = v: int { }",
+	"}",
+	"class Sub extends Plain { }",
+	"component M {",
+	"\tdef f(c: Child, s: Sub, p: Plain, k: Chain<bool>) {",
+	"\t\tvar c1 = c[1], c2 = c.[](2), s3 = s[3], s4 = s.[](4), p5 = p[5], k6 = k[6];",
+	"\t\tc[7] = 7;",
+	"\t\tc.[]=(8, 8);",
+	"\t\ts[9] = 9;",
+	"\t}",
+	"}"
+]);
+// A method that returns "this" returns the type of the indexed expression,
+// even when a parent class declares it, as a named call of the method does.
+// Setters cannot return "this", but take the parent's type arguments.
+def test_inherited_index_methods(t: Tester) {
+	var text = INHERITED, r = analyze(t, text, true);
+	var chain = "def [i: int] -> this", set = "def [i: int] = v: T";
+	// A generic parent.
+	assertUses(t, r, text, "c[1]", 1, chain, "int -> Child");
+	assertUses(t, r, text, "c.[](2)", 2, chain, "int -> Child");
+	assertUses(t, r, text, "c[7]", 1, set, "(int, int) -> void");
+	assertUses(t, r, text, "c.[]=(8", 2, set, "(int, int) -> void");
+	assertUses(t, r, text, "k[6]", 1, chain, "int -> Chain<bool>");
+	// A parent without type parameters.
+	assertUses(t, r, text, "s[3]", 1, chain, "int -> Sub");
+	assertUses(t, r, text, "s.[](4)", 2, chain, "int -> Sub");
+	assertUses(t, r, text, "s[9]", 1, "def [i: int] = v: int", null);
+	// On the declaring class itself, the type is the declaration's.
+	assertUses(t, r, text, "p[5]", 1, chain, null);
 }
 
 // With -lang:open-types, a variant that extends another extends its

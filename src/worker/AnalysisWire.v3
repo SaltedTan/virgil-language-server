@@ -111,18 +111,21 @@ component AnalysisWire {
 	}
 
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
-	// diagnostics, and, if {files} is not null, a path table, a string table,
-	// the distinct declarations, and each file's index. A declaration is its
-	// kind, its name's string index, its path index, its range (four compiler
+	// diagnostics, and, if {files} is not null, a string table, the distinct
+	// declarations, and each file's index. {files} must be the request's
+	// distinct paths in request order, and a path is sent as its index there;
+	// every declaration is in one of them. A declaration is its kind, its
+	// name's string index, its path index, its range (four compiler
 	// coordinates and two byte offsets), and its signature's string index plus
 	// one, or zero. Each file's declaration sites (see
 	// ProgramAnalysis.declarationSites) come first in the declarations, in
-	// files order, so a file sends them as its first index and count. Then come
-	// its occurrences in source order, each its begin line, begin column,
-	// begin offset, length, and declaration index; the occurrences whose
-	// use-site type differs from their declaration's, each as the difference
-	// from the previous one's occurrence index and the type's string index;
-	// and its builtin uses, each a range as an occurrence's and a string index.
+	// files order, so a file sends its path index, then their first index and
+	// count. Then come its occurrences in source order, each its begin line,
+	// begin column, begin offset, length, and declaration index; the
+	// occurrences whose use-site type differs from their declaration's, each
+	// as the difference from the previous one's occurrence index and the
+	// type's string index; and its builtin uses, each a range as an
+	// occurrence's and a string index.
 	// A use that is not a token span (see AnalysisRange.isTokenSpan), which
 	// the collector never records, is omitted rather than misstated. The
 	// skipped-uses statistic counts these omissions and the collector's own
@@ -164,7 +167,10 @@ component AnalysisWire {
 		return WorkerFraming.finish(w);
 	}
 	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>) {
-		var paths = Strings.newMap<int>(), pathList = Vector<string>.new();
+		// A path is its file's index in {files}, the request's distinct paths
+		// in order, plus one.
+		var paths = Strings.newMap<int>();
+		for (i < files.length) if (paths[files[i].0] == 0) paths[files[i].0] = i + 1;
 		var decls = AnalysisIndexMap<AnalysisDeclaration>.new(hashDeclaration, sameDeclaration);
 		var strings = AnalysisStringTable.new();
 		var sites = Array<Array<AnalysisDeclaration>>.new(files.length);
@@ -173,7 +179,6 @@ component AnalysisWire {
 		// Each file's sites first, so that they are a run of the declarations.
 		for (i < files.length) {
 			var f = files[i];
-			pathIndex(paths, pathList, f.0);
 			sites[i] = analysis.declarationSites(f.0);
 			builtins[i] = analysis.builtinUses(f.0);
 			firstSite[i] = decls.length();
@@ -190,12 +195,9 @@ component AnalysisWire {
 		for (b in builtins) for (u in b) strings.add(u.useType);
 		for (i < decls.length()) {
 			var d = decls[i];
-			pathIndex(paths, pathList, d.range.path);
 			strings.add(d.name);
 			if (d.signature != null) strings.add(d.signature);
 		}
-		w.put_sleb32(pathList.length);
-		for (i < pathList.length) putString(w, pathList[i]);
 		w.put_sleb32(strings.length());
 		for (i < strings.length()) putString(w, strings[i]);
 		w.put_sleb32(decls.length());
@@ -203,14 +205,16 @@ component AnalysisWire {
 			var d = decls[i];
 			w.putb(d.kind.tag);
 			w.put_sleb32(strings.add(d.name));
-			w.put_sleb32(paths[d.range.path]);
+			// Every declaration is in one of the request's files; -1 would be
+			// rejected.
+			w.put_sleb32(paths[d.range.path] - 1);
 			putRange(w, d.range);
 			w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
 		}
 		w.put_sleb32(files.length);
 		for (i < files.length) {
 			var f = files[i], count = 0, typed = 0;
-			w.put_sleb32(paths[f.0]).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
+			w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
 			for (o in f.1) {
 				if (!o.range.isTokenSpan()) continue;
 				count++;
@@ -270,10 +274,12 @@ component AnalysisWire {
 		}
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];
-		var table: Array<string> = [], strings: Array<string> = [];
+		var strings: Array<string> = [], files: AnalysisSnapshotFiles;
 		if (hasOccurrences) {
-			table = Array<string>.new(r.readCount(1, 64));
-			for (i < table.length) table[i] = r.readString(1);
+			// A path is an index into the request's distinct paths, which the
+			// server sent, so the result has no path table and no path is
+			// looked up by text.
+			files = AnalysisSnapshotFiles.new(paths);
 			// Each string is charged as an index string, and its slot.
 			strings = Array<string>.new(r.readCount(1, 8));
 			for (i < strings.length) strings[i] = r.readString(1);
@@ -282,7 +288,7 @@ component AnalysisWire {
 			// range, and the array slot; its strings are in the string table.
 			declarations = Array<AnalysisDeclaration>.new(r.readCount(10, 128));
 			for (i < declarations.length) {
-				var kind = r.readKind(), name = r.readStringIndex(strings), path = r.readPath(table);
+				var kind = r.readKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
 				var d = AnalysisDeclaration.new(kind, name, r.readRange(path));
 				d.signature = r.readOptionalString(strings);
 				declarations[i] = d;
@@ -292,15 +298,18 @@ component AnalysisWire {
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
 			snapshot.setStrings(strings);
-			// Files have distinct paths, and their site runs come in order,
-			// so that each declaration is checked as a site at most once.
+			snapshot.setFiles(files);
+			// Each file is one of the request's, at most once, and the site
+			// runs come in order, so that each declaration is checked as a
+			// site at most once.
 			var siteEnd = 0;
 			for (n = r.readCount(6, 256); n > 0 && r.ok(); n--) {
-				var path = r.readPath(table);
-				if (path != null && snapshot.hasFile(path)) {
-					r.fail("repeated file");
+				var fileIndex = r.readInt();
+				if (!files.isNew(fileIndex)) {
+					r.fail("invalid or repeated file index");
 					break;
 				}
+				var path = files.paths[fileIndex];
 				var first = r.readInt(), sites = r.readInt();
 				if (!r.checkSites(declarations, path, siteEnd, first, sites)) break;
 				siteEnd = first + sites;
@@ -330,7 +339,7 @@ component AnalysisWire {
 				// A builtin use is never an occurrence, so a lookup by offset
 				// finds at most one of them.
 				r.checkDisjoint(ranges, builtins);
-				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites));
+				files.add(fileIndex, AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites));
 			}
 		}
 		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
@@ -344,12 +353,6 @@ component AnalysisWire {
 		var kinds = Array<AnalysisDeclKind>.new(AnalysisDeclKind.count);
 		for (k in AnalysisDeclKind) kinds[k.tag] = k;
 		return kinds;
-	}
-	private def pathIndex(map: HashMap<string, int>, list: Vector<string>, path: string) {
-		if (!map.has(path)) {
-			map[path] = list.length;
-			list.put(path);
-		}
 	}
 	private def putString(w: DataWriter, s: string) {
 		if (s == null) w.put_sleb32(-1);

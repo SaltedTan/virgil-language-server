@@ -71,18 +71,33 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		var text = typeText(t);
 		return if(text != null, differing(d, text));
 	}
-	// The text of the type of a use of method {m}, declared as {decl}, on
-	// {receiver}, or null if it is the declaration's own type. An index
-	// operation has no type of its own, so this renders the method's type
-	// with the receiver's type arguments in place of its class's type
-	// parameters, as verification instantiates it.
-	def methodUseType(decl: AnalysisDeclaration, receiver: Type, m: VstMethod) -> string {
-		if (!ClassType.?(receiver) || receiver.nested == null) return null;
-		var c = ClassType.!(receiver).classDecl;
-		if (c == null || c.typeParams == null) return null;
-		substParams = c.typeParams;
-		substArgs = receiver.nested;
-		var text = functionText(m.func.params, returnType(m));
+	// The text of the type of a use of method {m}, declared as {decl}, by an
+	// index operation on {receiver}, or null if it is the declaration's own
+	// type. {owner} is the class that declares {m}, as {receiver}'s type
+	// instantiates it: for a Child that extends Chain<int>, Chain<int>. An
+	// index operation has no type of its own, so this renders the method's
+	// type with {owner}'s type arguments in place of its type parameters, and
+	// a return of "this" as {receiver}, as verification types a call of it.
+	def methodUseType(decl: AnalysisDeclaration, owner: Type, receiver: Type, m: VstMethod) -> string {
+		var ret = returnType(m), self = false;
+		match (m.func.rettype) {
+			This => {
+				receiver = resolve(receiver, 0);
+				if (!unknown(receiver)) {
+					ret = receiver;
+					self = true;
+				}
+			}
+			_ => ;
+		}
+		var c = if(ClassType.?(owner), ClassType.!(owner).classDecl);
+		var generic = c != null && c.typeParams != null && owner.nested != null;
+		if (!generic && !self) return null;
+		if (generic) {
+			substParams = c.typeParams;
+			substArgs = owner.nested;
+		}
+		var text = functionText(m.func.params, ret, self);
 		substParams = null;
 		substArgs = null;
 		return differing(AnalysisWorkerDeclaration.!(decl), text);
@@ -272,13 +287,15 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// AnalysisTypeCache), so a function type is rendered from its parts.
 	private def declarationType(decl: Decl) -> string {
 		match (decl) {
-			x: VstNew => return functionText(x.func.params, if(x.receiver != null, x.receiver.declType));
-			x: VstMethod => return functionText(x.func.params, returnType(x));
+			x: VstNew => return functionText(x.func.params, if(x.receiver != null, x.receiver.declType), false);
+			x: VstMethod => return functionText(x.func.params, returnType(x), false);
 		}
 		return typeText(ownType(decl));
 	}
 	// Renders as putType renders the function type, if any.
-	private def functionText(params: VstList<ParamDecl>, ret: Type) -> string {
+	// {ret} is a {concrete} type, the receiver's, that substitution must not
+	// change.
+	private def functionText(params: VstList<ParamDecl>, ret: Type, concrete: bool) -> string {
 		start();
 		var list = if(params != null, params.list);
 		if (list == null) {
@@ -297,7 +314,8 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 			put(")");
 		}
 		put(" -> ");
-		putType(ret, 1);
+		if (concrete) putUnsubstituted(ret, 1);
+		else putType(ret, 1);
 		return strings.intern(buf);
 	}
 	// Reads the verifier's result: VstFunc.getReturnType traps on a return
@@ -329,14 +347,9 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 			return;
 		}
 		if (substParams != null && TypeParamType.?(t)) {
-			// Substitute once: an argument can name the parameters it replaces.
-			var arg = substitute(TypeParamType.!(t)), params = substParams, args = substArgs;
+			var arg = substitute(TypeParamType.!(t));
 			if (arg != null) {
-				substParams = null;
-				substArgs = null;
-				putType(arg, depth);
-				substParams = params;
-				substArgs = args;
+				putUnsubstituted(arg, depth);
 				return;
 			}
 		}
@@ -394,6 +407,16 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		}
 		if (suffix != null && withCase) put(".").put(suffix);
 	}
+	// Renders {t} without substitution. Substitution happens once: an
+	// argument can name the parameters it replaces, as in Box<T> for T.
+	private def putUnsubstituted(t: Type, depth: int) {
+		var params = substParams, args = substArgs;
+		substParams = null;
+		substArgs = null;
+		putType(t, depth);
+		substParams = params;
+		substArgs = args;
+	}
 	private def substitute(p: TypeParamType) -> Type {
 		var a = substArgs;
 		for (l = substParams; l != null && a != null; l = l.tail) {
@@ -424,8 +447,14 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		// The error type, and each unresolved type name, has a VOID type constructor.
 		return t.typeCon.kind == Kind.VOID && t != Void.TYPE;
 	}
+	// Whether {t} renders as a function type, which needs parentheses as a
+	// parameter. A substituted type parameter renders as its argument.
 	private def isFunction(t: Type) -> bool {
 		t = resolve(t, 0);
+		if (substParams != null && TypeParamType.?(t)) {
+			var arg = substitute(TypeParamType.!(t));
+			if (arg != null) t = resolve(arg, 0);
+		}
 		return t != null && Function_TypeCon.?(t.typeCon);
 	}
 

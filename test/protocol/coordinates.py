@@ -127,7 +127,8 @@ class Worker:
                                     kind=reader.string(), message=reader.string()))
         declarations, occurrences, builtins = [], [], []
         if flags & 4:
-            paths = [reader.string() for _ in range(reader.integer())]
+            # A path is an index into the request's distinct paths.
+            paths = list(dict.fromkeys(path for path, _ in sources))
             strings = [reader.string() for _ in range(reader.integer())]
             for _ in range(reader.integer()):
                 kind, name, path = reader.take(1)[0], strings[reader.integer()], paths[reader.integer()]

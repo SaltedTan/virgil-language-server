@@ -36,7 +36,8 @@ class AnalysisSnapshot {
 	// Every declaration named in the program's files or that an occurrence
 	// resolves to, each once.
 	def declarations: Array<AnalysisDeclaration>;
-	private def files = Strings.newMap<AnalysisSnapshotFile>();
+	// Each file's index, or null without occurrences.
+	private var files: AnalysisSnapshotFiles;
 	// The result's string table, which holds the use-site types.
 	private var strings: Array<string> = [];
 
@@ -68,12 +69,12 @@ class AnalysisSnapshot {
 		return -1;
 	}
 
-	// Records the index of {path} (see AnalysisSnapshotFile).
-	def addFile(path: string, file: AnalysisSnapshotFile) {
-		files[path] = file;
+	// Records the files' indexes, which the decoder fills in.
+	def setFiles(f: AnalysisSnapshotFiles) {
+		files = f;
 	}
-	def hasFile(path: string) -> bool {
-		return files.has(path);
+	private def fileOf(path: string) -> AnalysisSnapshotFile {
+		return if(files != null, files[path]);
 	}
 	// Records the string table that the files' type indexes refer to.
 	def setStrings(table: Array<string>) {
@@ -82,7 +83,7 @@ class AnalysisSnapshot {
 	// Source-declaration uses in {path}, as ProgramAnalysis.occurrences reports
 	// them. Each call returns a new array.
 	def occurrences(path: string) -> Array<AnalysisOccurrence> {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return [];
 		var result = Array<AnalysisOccurrence>.new(file.targets.length);
 		for (i < result.length) result[i] = occurrence(path, file, i);
@@ -91,7 +92,7 @@ class AnalysisSnapshot {
 	// Uses in {path} with a type but no source declaration, as
 	// ProgramAnalysis.builtinUses reports them. Each call returns a new array.
 	def builtinUses(path: string) -> Array<AnalysisBuiltinUse> {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return [];
 		var result = Array<AnalysisBuiltinUse>.new(file.builtinCount());
 		for (i < result.length) result[i] = AnalysisBuiltinUse.new(file.builtinRange(path, i), strings[file.builtinType(i)]);
@@ -100,7 +101,7 @@ class AnalysisSnapshot {
 	// The declarations named in {path}, as ProgramAnalysis.declarationSites
 	// reports them. Each call returns a new array.
 	def declarationSites(path: string) -> Array<AnalysisDeclaration> {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return [];
 		return Arrays.range(declarations, file.firstSite, file.firstSite + file.siteCount);
 	}
@@ -112,7 +113,7 @@ class AnalysisSnapshot {
 	// local, parameter, method, or class at its declaration, whether or not
 	// anything uses it, or null. Does not allocate.
 	def declarationAtOffset(path: string, offset: int) -> AnalysisDeclaration {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var low = file.firstSite, high = low + file.siteCount;
 		while (low < high) {
@@ -129,7 +130,7 @@ class AnalysisSnapshot {
 	// as at a generic call, and for a builtin use, its type. Otherwise null.
 	// The declaration's text is its signature. Does not allocate.
 	def useTypeAtOffset(path: string, offset: int) -> string {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.findOffset(offset);
 		if (i >= 0) {
@@ -142,14 +143,14 @@ class AnalysisSnapshot {
 	// The occurrence containing {offset} in {path}, with its range and
 	// use-site type, or null.
 	def occurrenceAtOffset(path: string, offset: int) -> AnalysisOccurrence {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.findOffset(offset);
 		return if(i >= 0, occurrence(path, file, i));
 	}
 	// The builtin use containing {offset} in {path}, or null.
 	def builtinUseAtOffset(path: string, offset: int) -> AnalysisBuiltinUse {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.findBuiltin(offset);
 		return if(i >= 0, AnalysisBuiltinUse.new(file.builtinRange(path, i), strings[file.builtinType(i)]));
@@ -163,7 +164,7 @@ class AnalysisSnapshot {
 	// The declaration that the indexed use at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
 	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.find(line, column);
 		return if(i >= 0, declarations[file.targets[i]]);
@@ -171,7 +172,7 @@ class AnalysisSnapshot {
 	// The declaration that the indexed use containing UTF-8 byte offset
 	// {offset} in {path} resolves to, or null if there is none.
 	def definitionAtOffset(path: string, offset: int) -> AnalysisDeclaration {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.findOffset(offset);
 		return if(i >= 0, declarations[file.targets[i]]);
@@ -215,6 +216,62 @@ class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUse
 // are also token spans in source order. The file's declaration sites are
 // the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
 // source order.
+// A snapshot's file indexes, one for each distinct path of its request, in
+// request order. A result names a file by its index here, so decoding never
+// looks a path up by text. Lookups by text binary-search the paths in byte
+// order, sorted once from the paths the server itself sent: Virgil's HashMap
+// stops growing at 1,024 buckets, and paths with equal hashes share one, so
+// hashing a large request's paths would take time quadratic in their count.
+class AnalysisSnapshotFiles {
+	// The request's distinct paths, each once.
+	def var paths: Array<string>;
+	private var files: Array<AnalysisSnapshotFile>;
+	// The indexes of {paths} in the byte order of their paths.
+	private var sorted: Array<int>;
+
+	new(requestPaths: Array<string>) {
+		var n = requestPaths.length, count = 0, order = Array<int>.new(n);
+		for (i < n) if (requestPaths[i] != null) order[count++] = i;
+		order = AnalysisTables.sort(Arrays.range(order, 0, count),
+			fun (a: int, b: int) => AnalysisTables.compareBytes(requestPaths[a], requestPaths[b]) < 0);
+		// The sort is stable, so the first of equal paths is the request's
+		// first; it alone becomes a file.
+		var first = Array<bool>.new(n);
+		for (i < order.length) {
+			if (i == 0 || AnalysisTables.compareBytes(requestPaths[order[i - 1]], requestPaths[order[i]]) != 0) first[order[i]] = true;
+		}
+		var slots = Array<int>.new(n), list = Vector<string>.new();
+		for (i < n) {
+			if (!first[i]) continue;
+			slots[i] = list.length;
+			list.put(requestPaths[i]);
+		}
+		paths = list.extract();
+		sorted = Array<int>.new(paths.length);
+		var k = 0;
+		for (i in order) if (first[i]) sorted[k++] = slots[i];
+		files = Array<AnalysisSnapshotFile>.new(paths.length);
+	}
+	def [path: string] -> AnalysisSnapshotFile {
+		if (path == null) return null;
+		var low = 0, high = sorted.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (AnalysisTables.compareBytes(paths[sorted[mid]], path) < 0) low = mid + 1;
+			else high = mid;
+		}
+		if (low < sorted.length && AnalysisTables.compareBytes(paths[sorted[low]], path) == 0) return files[sorted[low]];
+		return null;
+	}
+	// Whether file {index} has no index yet.
+	def isNew(index: int) -> bool {
+		return u32.view(index) < u32.view(files.length) && files[index] == null;
+	}
+	def add(index: int, file: AnalysisSnapshotFile) {
+		files[index] = file;
+	}
+}
+
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
 		firstSite: int, siteCount: int) {
 	def range(path: string, i: int) -> AnalysisRange {
