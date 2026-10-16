@@ -103,13 +103,13 @@ The supported envelope is determined by source/request size, decoded result size
 
 | Program | Files | Source | Bindings | Charged result allocation | Share of budget |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Aeneas sources and dependencies | 205 | 3.0 MB | 188,349 | 11,356,308 bytes | 68% |
+| Aeneas sources and dependencies | 205 | 3.0 MB | 188,307 | 11,351,159 bytes | 68% |
 | Wizard engine, `wizeng` v3i sources | 164 | 1.3 MB | 65,748 | 4,631,312 bytes | 28% |
-| `vendor/virgil/lib/util/*.v3` | 31 | 0.2 MB | 6,933 | 587,328 bytes | 4% |
+| `vendor/virgil/lib/util/*.v3` | 31 | 0.2 MB | 6,904 | 584,522 bytes | 3% |
 
 With `VarExpr` uses alone, the Aeneas sources had 171,249 bindings, charged 10,932,492 bytes (65%), and `lib/util` had 6,361, charged 545,154 bytes. Protocol version 4 charges each record what version 3 did, since an occurrence's offset and length replace its end line and column, and its type-parameter declaration kind and skipped-uses statistic charge nothing more. The Wizard sources were not measured again; their row is their protocol 3 measurement at `c7791a1`. `OccurrenceCoverage:aeneas_sources` requires the Aeneas sources to stay within 80% of the budget.
 
-Users can check total source bytes with `wc -c` over the files supplied to analysis (using current overlay contents for unsaved files). Source bytes alone must be below the [development stdio request's admission limit](../development.md#development-stdio-requests), which also includes paths and metadata. The CLI uses the [encoded-request admission rule](#restart-policy). Neither source limit guarantees a result will fit: declarations, occurrences, and especially diagnostics have different allocation charges. `analyze --bindings` can help check binding counts for programs that fit, but is not a result-allocation meter.
+Users can check total source bytes with `wc -c` over the files supplied to analysis (using current overlay contents for unsaved files). Source bytes alone must be below the [development stdio request's admission limit](../development.md#development-stdio-requests), which also includes paths and metadata. The CLI uses the [encoded-request admission rule](#restart-policy). Neither source limit guarantees a result will fit: declarations, occurrences, and especially diagnostics have different allocation charges. For a program that fits, `analyze --stats --bindings` reports its binding counts and the result allocation charged against the budget.
 
 With similar binding and diagnostic density, about **1.5 times the Aeneas sources** would exhaust the result budget; the development request's source limit rejects about **1.4 times** that source set first. These are sizing guides, not guaranteed capacities for arbitrary programs. If the decoded result exceeds its budget, reduce the files analyzed together to a smaller valid program/project; retrying the unchanged program or increasing `WORKER_HEAP` does not increase the server's result budget.
 

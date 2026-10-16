@@ -12,12 +12,14 @@ def X = [
 	T("OccurrenceCoverage:type_parameters_with_errors", test_type_parameters_with_errors),
 	T("OccurrenceCoverage:variant_case_types", test_variant_case_types),
 	T("OccurrenceCoverage:variant_case_types_with_errors", test_variant_case_types_with_errors),
+	T("OccurrenceCoverage:open_variant_superclass", test_open_variant_superclass),
 	T("OccurrenceCoverage:index_operators", test_index_operators),
 	T("OccurrenceCoverage:index_operators_with_errors", test_index_operators_with_errors),
 	T("OccurrenceCoverage:descriptor_construction", test_descriptor_construction),
 	T("OccurrenceCoverage:descriptor_construction_with_errors", test_descriptor_construction_with_errors),
 	T("OccurrenceCoverage:function_expression_types", test_function_expression_types),
 	T("OccurrenceCoverage:builtins_record_nothing", test_builtins_record_nothing),
+	T("OccurrenceCoverage:layout_ref_records_nothing", test_layout_ref_records_nothing),
 	T("OccurrenceCoverage:existing_uses", test_existing_uses),
 	T("OccurrenceCoverage:fixture", test_fixture),
 	T("OccurrenceCoverage:lib_util", test_lib_util),
@@ -157,13 +159,10 @@ def spells(text: string, name: string) -> bool {
 	return Strings.equal(text, if(name.length > 0 && name[0] == '[', "[", name));
 }
 // Whether a use's {text} names declaration {d}. A use can name its target
-// indirectly: "this" and a default "new" use their class. The builtin "Ref"
-// in an expression Ref<L> also targets the layout L, since layout references
-// are not yet indexed where the source names them.
+// indirectly: "this" and a default "new" use their class.
 def names(text: string, d: AnalysisDeclaration) -> bool {
 	if (Strings.equal(text, d.name) || spells(text, d.name)) return true;
-	if (d.kind == AnalysisDeclKind.CLASS) return Strings.equal(text, "this") || Strings.equal(text, "new");
-	return d.kind == AnalysisDeclKind.LAYOUT && Strings.equal(text, "Ref");
+	return d.kind == AnalysisDeclKind.CLASS && (Strings.equal(text, "this") || Strings.equal(text, "new"));
 }
 // Asserts that the snapshot reports the analysis's occurrences exactly.
 def assertRoundTrip(t: Tester, a: ProgramAnalysis, s: AnalysisSnapshot, sources: Array<AnalysisSource>) {
@@ -365,6 +364,34 @@ def test_variant_case_types_with_errors(t: Tester) {
 	]);
 }
 
+def test_open_variant_superclass(t: Tester) {
+	// A variant that extends another extends its default case, to which
+	// verification rebinds the reference; the use targets the variant.
+	var text = lines([
+		"type V { case A; case _; }",
+		"type W extends V { case B; }",
+		"type G<T> { case _; }",
+		"type H<U> extends G<U> { case C(u: U); }",
+		"component M {",
+		"  def f(w: W, a: V.A, h: H<int>) -> V { return w; }",
+		"}"
+	]);
+	var v = "type V";
+	assertUses(t, analyzeText(t, text, ["-lang:open-types"], true), text, [
+		ExpectedUse.new("extends V", 8, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("extends G<U>", 8, 1, AnalysisDeclKind.CLASS, "G", "type G", 5),
+		ExpectedUse.new("extends G<U>", 10, 1, AnalysisDeclKind.TYPE_PARAM, "U", "H<U>", 2),
+		ExpectedUse.new("u: U", 3, 1, AnalysisDeclKind.TYPE_PARAM, "U", "H<U>", 2),
+		ExpectedUse.new("w: W", 3, 1, AnalysisDeclKind.CLASS, "W", "type W", 5),
+		// An explicit case keeps its case target.
+		ExpectedUse.new("a: V.A", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("a: V.A", 5, 1, AnalysisDeclKind.VARIANT_CASE, "A", "case A", 5),
+		ExpectedUse.new("h: H", 3, 1, AnalysisDeclKind.CLASS, "H", "type H", 5),
+		ExpectedUse.new("-> V", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("return w", 7, 1, AnalysisDeclKind.PARAMETER, "w", "w: W", 0)
+	]);
+}
+
 def GRID = "class Grid { def [i: int] -> int { return i; } def [i: int] = v: int { } }\n";
 def test_index_operators(t: Tester) {
 	// An index operation occupies its opening bracket. A compound assignment
@@ -522,6 +549,24 @@ def test_builtins_record_nothing(t: Tester) {
 		ExpectedUse.new("e.tag", 0, 1, AnalysisDeclKind.PARAMETER, "e", "e: E", 0),
 		ExpectedUse.new("E.count", 0, 1, AnalysisDeclKind.ENUM, "E", e, 5),
 		ExpectedUse.new("e.name", 0, 1, AnalysisDeclKind.PARAMETER, "e", "e: E", 0)
+	]);
+}
+def test_layout_ref_records_nothing(t: Tester) {
+	// Ref<L> binds to the layout's reference type, but Ref is a builtin, so
+	// neither the type nor the expression records a use there.
+	var text = lines([
+		"layout L {",
+		"  +0 x: u8;",
+		"  =1;",
+		"}",
+		"component M {",
+		"  def f(r: Range<byte>) -> u8 { var p: Ref<L> = Ref<L>.of(r); return p.x; }",
+		"}"
+	]);
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("of(r)", 3, 1, AnalysisDeclKind.PARAMETER, "r", "r: Range", 0),
+		ExpectedUse.new("p.x", 0, 1, AnalysisDeclKind.LOCAL, "p", "p: Ref", 0),
+		ExpectedUse.new("p.x", 2, 1, AnalysisDeclKind.LAYOUT_FIELD, "x", "x: u8", 0)
 	]);
 }
 def test_existing_uses(t: Tester) {

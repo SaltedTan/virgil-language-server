@@ -48,7 +48,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		if (thisClass != null) {
 			// A variant case's superclass is synthesized from the variant's own
 			// name and type parameter tokens; it is not a use.
-			if (!thisClass.isSynthetic || thisClass.variantCase == null) typeRef(thisClass.superclass);
+			if (!thisClass.isSynthetic || thisClass.variantCase == null) superclass(thisClass.superclass);
 			var info = thisClass.descriptorInfo;
 			if (info != null) {
 				typeRef(info.descriptorTypeRef);
@@ -108,6 +108,21 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			_ => ;
 		}
 	}
+	// A variant that extends another (-lang:open-types) extends its default
+	// case: verification rebinds the reference to the case's synthetic class.
+	// The source names the variant that declares the case. An explicit case,
+	// such as V.A, has a left part and keeps its target.
+	private def superclass(tref: TypeRef) {
+		if (NamedTypeRef.?(tref) && ClassType.?(tref.binding)) {
+			var x = NamedTypeRef.!(tref), c = ClassType.!(tref.binding).classDecl.variantCase;
+			if (x.left == null && c != null && c.decl.isSynthetic && c.isDefaultCase()) {
+				typeRefs(x.nested);
+				record(x.name, make(AnalysisDeclKind.CLASS, c.receiver));
+				return;
+			}
+		}
+		typeRef(tref);
+	}
 	private def typeRefs(list: VstList<TypeRef>) {
 		if (list == null) return;
 		for (l = list.list; l != null; l = l.tail) typeRef(l.head);
@@ -120,9 +135,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			x: NamedTypeRef => {
 				typeRef(x.left);
 				typeRefs(x.nested);
-				// Ref<L> binds to the layout's reference type, but it names the
-				// builtin Ref; its layout argument has no binding.
-				if (!RefType.?(x.binding)) record(x.name, typeDeclaration(x.binding));
+				record(x.name, typeDeclaration(x.binding));
 			}
 			x: FuncTypeRef => {
 				typeRef(x.paramType);
@@ -365,7 +378,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 				return make(AnalysisDeclKind.CLASS, decl);
 			}
 			x: EnumType => return make(AnalysisDeclKind.ENUM, x.enumDecl);
-			x: RefType => return make(AnalysisDeclKind.LAYOUT, x.layoutDecl);
+			// Ref<L> binds to the layout's reference type, but it names the
+			// builtin Ref, which has no source declaration. Its layout
+			// argument has no binding of its own and is not yet indexed.
+			x: RefType => return null;
 			// Builtin type parameters have no source token; inferred type
 			// variables are TypeVarTypes.
 			x: TypeParamType => return declare(AnalysisDeclKind.TYPE_PARAM, x.token);
