@@ -22,7 +22,7 @@ Release archives that contain a `virgil-lsp` binary must include a copy of the A
 
 ## VS Code development client (npm)
 
-`clients/vscode/` installs these packages from the npm registry with `npm ci`. Its `package-lock.json` is the record of exact versions: it pins the version and integrity hash of every package, including transitive ones, so dependency updates change it rather than this file. Nothing from these packages is committed or adapted, and no extension package (VSIX) is published yet. A VSIX would bundle the runtime packages, so their license texts must ship with it.
+`clients/vscode/` installs these packages from the npm registry with `npm ci`. Its `package-lock.json` is the record of exact versions: it pins the version and integrity hash of every package, including transitive ones, so dependency updates change it rather than this file. Nothing from these packages is committed or adapted, and no extension package (VSIX) is published yet. A VSIX would bundle the runtime packages, so their license texts must ship with it. The Extension Host test also downloads a VS Code build from Microsoft into `clients/vscode/.vscode-test/` when it runs; it isn't committed or redistributed.
 
 | Package | License | Use |
 | --- | --- | --- |
@@ -30,6 +30,14 @@ Release archives that contain a `virgil-lsp` binary must include a copy of the A
 | `vscode-languageserver-protocol`, `vscode-languageserver-types`, `vscode-languageserver-textdocument`, `vscode-jsonrpc` | MIT | Runtime, through `vscode-languageclient` |
 | `minimatch` | BlueOak-1.0.0 | Runtime, through `vscode-languageclient` |
 | `brace-expansion`, `balanced-match` | MIT | Runtime, through `minimatch` |
-| `semver` | ISC | Runtime, through `vscode-languageclient` |
+| `semver` | ISC | Runtime, through `vscode-languageclient`; also used by `@vscode/test-electron` |
 | [`typescript`](https://github.com/microsoft/TypeScript), with its platform package `@typescript/typescript-<platform>` | Apache-2.0 | Build tool |
 | `@types/vscode`, `@types/node`, `undici-types` | MIT | Type declarations for the build |
+| [`@vscode/test-electron`](https://github.com/microsoft/vscode-test) | MIT | Test tool: downloads VS Code for the [Extension Host test](clients/vscode/README.md#extension-host-test) |
+| `http-proxy-agent`, `https-proxy-agent`, `agent-base`, `debug`, `ms` | MIT | Test tool, through `@vscode/test-electron` |
+| `jszip` | MIT OR GPL-3.0-or-later, used under MIT | Test tool, through `@vscode/test-electron` |
+| `lie`, `immediate`, `setimmediate`, `readable-stream`, `core-util-is`, `isarray`, `process-nextick-args`, `safe-buffer`, `string_decoder`, `util-deprecate` | MIT | Test tool, through `jszip` |
+| `inherits` | ISC | Test tool, through `readable-stream` |
+| `pako` | MIT AND Zlib | Test tool, through `jszip` |
+| `ora`, `chalk`, `cli-cursor`, `restore-cursor`, `onetime`, `mimic-function`, `cli-spinners`, `is-interactive`, `is-unicode-supported`, `log-symbols`, `stdin-discarder`, `string-width`, `emoji-regex`, `get-east-asian-width`, `strip-ansi`, `ansi-regex` | MIT | Test tool, through `@vscode/test-electron` (progress output) |
+| `signal-exit` | ISC | Test tool, through `restore-cursor` |

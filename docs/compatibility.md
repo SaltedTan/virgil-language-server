@@ -26,7 +26,7 @@ The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.m
 | Linux arm64 | Not supported yet | — | — |
 | WSL 1 | Not supported | — | — |
 
-The [repository setup script](../scripts/github-setup.sh) configures both pinned-Virgil CI jobs and the VS Code client job as required checks on `main`. Merging a change to the script does not apply it; a maintainer re-runs the script to update branch protection.
+The [repository setup script](../scripts/github-setup.sh) configures both pinned-Virgil CI jobs and the `vscode-client` job as required checks on `main`. It does not include `vscode-extension-host`; making that job required is a maintainer decision. Merging a change to the script does not apply it; a maintainer re-runs the script to update branch protection.
 
 Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Rosetta 2 is needed until then. Install it with:
 
@@ -51,7 +51,7 @@ The language server runs on the machine that holds the files, which isn't always
 | --- | --- | --- |
 | Neovim (plain config) | 0.11 (`vim.lsp.config`) | Headless smoke test: 0.11.6 locally and pinned in Linux CI; macOS CI uses Homebrew Neovim (0.11+) and logs its version |
 | LazyVim | 0.11 (`vim.lsp.config`) | Configuration provided, untested |
-| VS Code, including Remote-SSH and Remote-WSL | 1.91 (required by `vscode-languageclient` 10) | [Development client](../clients/vscode/README.md), type-checked and lifecycle-tested in Linux CI. A [manual checklist](../clients/vscode/README.md#manual-checklist) covers Linux, Remote-SSH, Remote-WSL, and macOS. It was last run on Linux with VS Code 1.140 ([PR #75](https://github.com/SaltedTan/virgil-language-server/pull/75)), before the Virgil-root and project-file steps were added |
+| VS Code, including Remote-SSH and Remote-WSL | 1.91 (required by `vscode-languageclient` 10) | [Development client](../clients/vscode/README.md), type-checked and lifecycle-tested in Linux CI, which also runs the [Extension Host test](../clients/vscode/README.md#extension-host-test) with VS Code 1.142.0. A [manual checklist](../clients/vscode/README.md#manual-checklist) covers Linux, Remote-SSH, Remote-WSL, and macOS. It was last run on Linux with VS Code 1.140 ([PR #75](https://github.com/SaltedTan/virgil-language-server/pull/75)), before the Virgil-root and project-file steps were added |
 
 Server and VS Code extension versions are released independently. This table records which ranges work together.
 

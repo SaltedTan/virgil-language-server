@@ -90,7 +90,8 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "check": "tsc -p . --noEmit",
-    "test": "npm run compile && node --test test/*.cjs"
+    "test": "npm run compile && node --test test/*.cjs",
+    "test:e2e": "npm run compile && node test/e2e/run.cjs"
   },
   "dependencies": {
     "vscode-languageclient": "10.1.2"
@@ -98,6 +99,7 @@
   "devDependencies": {
     "@types/node": "20.19.43",
     "@types/vscode": "1.91.0",
+    "@vscode/test-electron": "3.1.0",
     "typescript": "7.0.2"
   }
 }
