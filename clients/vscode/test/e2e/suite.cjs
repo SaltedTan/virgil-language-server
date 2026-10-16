@@ -100,7 +100,8 @@ async function singleFile(extension) {
   await waitFor('activation by a .v3 document', () => extension.isActive);
   await expectParserDiagnostic(bad);
   const server = vscode.workspace.getConfiguration().get('virgil.server.path');
-  assert.ok(channelLog().includes(`Starting ${server} --stdio`), 'the server was not started from virgil.server.path');
+  // The channel writes its log file asynchronously.
+  await waitFor('the server to start from virgil.server.path', () => channelLog().includes(`Starting ${server} --stdio`));
   console.log('PASS: VS Code activation on a .v3 file and parser diagnostics');
 }
 
