@@ -107,7 +107,7 @@ For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Re
 4. Without saving, replace the file's contents with `component C { def value = 1; }`. The error disappears. *(Automated on Linux.)*
 5. The Outline view shows the component `C`. *(Automated on Linux.)*
 6. Undo the edit. The error comes back without saving. *(Automated on Linux.)*
-7. Open `words/Words.v3`. The Problems view shows one error for it, "expected int in var initialization, got Array<byte>" from `aeneas`, on line 7. Without the library, it would also report that `StringBuilder` cannot be found. *(Automated on Linux.)*
+7. Open `words/Words.v3`. The Problems view shows one error for it, "expected int in var initialization, got Array<byte>" from `aeneas`, on line 7. Without the library, it would also report that `StringBuilder` cannot be found. *(Automated on Linux.)* **Go to Definition** on `StringBuilder` opens the library's `lib/util/StringBuilder.v3` at `class StringBuilder`.
 8. Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. The Problems view shows an `UnknownField` error from `virgil-lsp` on that line. Undo the edit; the error disappears. *(Automated on Linux.)*
 9. Close `.virgil-lsp.json`. From a terminal, add `"bogus": 1,` after its opening brace on disk. Without editing a `.v3` file, the Problems view shows the `UnknownField` error. Remove it on disk; the error disappears, and `words/Words.v3` reports its error again.
 10. Clear `virgil.virgilRoot`, with `VIRGIL_LOC` unset. The server restarts, the output channel says there is no Virgil root, and `.virgil-lsp.json` gets a `MissingVirgilRoot` error. Restore the setting.

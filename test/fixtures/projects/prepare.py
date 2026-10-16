@@ -54,6 +54,13 @@ analyzed_text.mkdir(exist_ok=True)
     '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# LspDefinitionTest writes and changes the sources itself.
+definition = root / "definition"
+definition.mkdir(exist_ok=True)
+(definition / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"d","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
 (root / "safe").mkdir(parents=True, exist_ok=True)
 (root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")

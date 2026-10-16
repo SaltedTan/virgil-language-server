@@ -3,10 +3,17 @@
 
 // An automatic analysis the supervisor is running. The sources were dropped
 // once the worker request held a copy; {inputs} keeps their provenance.
-class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) { }
-// A context waiting to be analyzed once {due} (System.ticksMs) has passed.
+class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) {
+	// The callbacks of {LspSemanticDiagnostics.whenAnalyzed}, or null.
+	var done: Vector<void -> void>;
+}
+// A context waiting to be analyzed once {due} (System.ticksMs) has passed. An
+// urgent wait stays due, whatever later changes schedule, and starts before
+// other due contexts.
 class LspSemanticWait(context: ProjectContext) {
 	var due: int;
+	var urgent: bool;
+	var done: Vector<void -> void>;
 }
 
 // Automatic whole-program analysis of configured projects and publication of
@@ -74,6 +81,30 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		}
 		update();
 	}
+	// Calls {done} once the analysis of {ctx} that captures the newest
+	// documents completes, fails, or is dropped, and returns true; returns
+	// false if no analysis of {ctx} waits or runs. That is the waiting one, if
+	// there is one, which becomes urgent; otherwise the running one. {done} may
+	// run before this returns, if the waiting analysis cannot start. Closing
+	// drops the callbacks without calling them.
+	def whenAnalyzed(ctx: ProjectContext, done: void -> void) -> bool {
+		if (closed) return false;
+		update();
+		for (i < waiting.length) {
+			var w = waiting[i];
+			if (w.context != ctx) continue;
+			w.urgent = true;
+			w.due = System.ticksMs();
+			if (w.done == null) w.done = Vector<void -> void>.new();
+			w.done.put(done);
+			startNext();
+			return true;
+		}
+		if (running == null || running.context != ctx) return false;
+		if (running.done == null) running.done = Vector<void -> void>.new();
+		running.done.put(done);
+		return true;
+	}
 	// Stops scheduling; the caller closes the supervisor.
 	def close() {
 		closed = true;
@@ -83,17 +114,26 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	}
 	private def enqueue(contexts: Array<ProjectContext>, debounce: bool) {
 		if (closed) return;
-		var current = Vector<LspSemanticWait>.new();
-		for (i < waiting.length) { if(waiting[i].context.config.current) current.put(waiting[i]); }
+		var current = Vector<LspSemanticWait>.new(), dropped = Vector<LspSemanticWait>.new();
+		for (i < waiting.length) {
+			var w = waiting[i];
+			if (w.context.config.current) current.put(w);
+			else dropped.put(w);
+		}
 		waiting = current;
-		var due = System.ticksMs() + if(debounce, DEBOUNCE_MS);
+		var now = System.ticksMs(), due = now + if(debounce, DEBOUNCE_MS);
 		for (ctx in contexts) {
 			if (!ctx.config.current) continue;
 			var wait: LspSemanticWait;
 			for (i < waiting.length) { if(waiting[i].context == ctx) wait = waiting[i]; }
 			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
-			wait.due = due;
+			wait.due = if(wait.urgent, now, due);
 		}
+		for (i < dropped.length) finished(dropped[i].done);
+	}
+	private def finished(done: Vector<void -> void>) {
+		if (done == null) return;
+		for (i < done.length) done[i]();
 	}
 	private def update() {
 		if (closed) return;
@@ -109,15 +149,17 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	private def startNext() {
 		while (!closed && !supervisor.busy()) {
 			var now = System.ticksMs(), next: LspSemanticWait;
-			var rest = Vector<LspSemanticWait>.new();
 			for (i < waiting.length) {
 				var w = waiting[i];
-				if (next == null && w.due - now <= 0) next = w;
-				else rest.put(w);
+				if (w.due - now <= 0 && (next == null || (w.urgent && !next.urgent))) next = w;
 			}
 			if (next == null) return;
+			var rest = Vector<LspSemanticWait>.new();
+			for (i < waiting.length) { if(waiting[i] != next) rest.put(waiting[i]); }
 			waiting = rest;
 			start(next.context);
+			if (running != null) running.done = next.done;
+			else finished(next.done);
 		}
 	}
 	private def start(ctx: ProjectContext) {
@@ -157,6 +199,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			Failed(failure, reason) => failed(ctx, reason);
 			Pending => ;
 		}
+		finished(run.done);
 	}
 	private def publish(run: LspSemanticRun, snapshot: AnalysisSnapshot) {
 		var ctx = run.context, inputs = run.inputs;

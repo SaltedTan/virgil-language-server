@@ -1,0 +1,122 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A definition request waiting for an analysis of {context}, with the state of
+// its document when it arrived: the open overlay, or null and the disk stamp.
+class LspDefinitionRequest(id: JsonRpcId, uri: string, line: int, character: int, context: ProjectContext,
+	overlay: DocumentOverlay, disk: DocumentVersionIdentity) { }
+
+// textDocument/definition from the occurrences in the retained snapshot of the
+// document's active project context. Every reply goes through {send}: a
+// request against a stale snapshot waits for the context's pending analysis.
+// See docs/architecture.md#definition.
+class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
+	// Calls its callback once the pending analysis of a context completes, or
+	// returns false if none is pending (LspSemanticDiagnostics.whenAnalyzed).
+	// Without it, a stale snapshot is answered with null at once.
+	var whenAnalyzed: (ProjectContext, void -> void) -> bool;
+	// The requests waiting for an analysis, in arrival order.
+	private var deferred = Vector<LspDefinitionRequest>.new();
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onDeferredRequest("textDocument/definition", definition);
+	}
+	// Answers every waiting request with RequestCancelled and {reason}.
+	def close(reason: string) {
+		var waiting = deferred.extract();
+		for (i < waiting.length) {
+			send(JsonRpcMessage.ErrorResponse(waiting[i].id, JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)).encode());
+		}
+	}
+	private def definition(request: JsonRpcMessage.Request) {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = objectMember(params, "textDocument"), position = objectMember(params, "position");
+		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
+		var key = if(uri != null, DocumentUri.normalize(uri));
+		var line = intMember(position, "line"), character = intMember(position, "character");
+		if (key == null || line < 0 || character < 0) {
+			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "definition params require a valid textDocument.uri and position");
+			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
+		}
+		var ctx = projects.forDocument(key).active;
+		if (ctx != null && ctx.snapshot != null && !current(ctx, ctx.snapshot) && whenAnalyzed != null) {
+			var r = LspDefinitionRequest.new(request.id, key, line, character, ctx, store.overlay(key), store.diskStamp(key));
+			deferred.put(r);
+			if (whenAnalyzed(ctx, fun () => analyzed(r))) return;
+			remove(r);
+		}
+		reply(request.id, locate(ctx, key, line, character));
+	}
+	// Answers {r} from its context's new snapshot, unless its document changed.
+	private def analyzed(r: LspDefinitionRequest) {
+		if (!remove(r)) return;
+		var same = store.overlay(r.uri) == r.overlay && (r.overlay != null || store.diskStamp(r.uri) == r.disk);
+		reply(r.id, if(same, locate(r.context, r.uri, r.line, r.character), JsonValue.Null));
+	}
+	// Removes {r} from the waiting requests. False if it was not waiting.
+	private def remove(r: LspDefinitionRequest) -> bool {
+		var found = false, rest = Vector<LspDefinitionRequest>.new();
+		for (i < deferred.length) {
+			if (deferred[i] == r) found = true;
+			else rest.put(deferred[i]);
+		}
+		deferred = rest;
+		return found;
+	}
+	private def reply(id: JsonRpcId, result: JsonValue) {
+		send(JsonRpcMessage.Response(id, result).encode());
+	}
+	// The snapshot is current if its project revision is current, it analyzed
+	// the context's current source list, and every source matches its stamp:
+	// an edit to any file can change what an unchanged identifier binds to.
+	private def current(ctx: ProjectContext, s: AnalysisSnapshot) -> bool {
+		var versions = s.documentVersions;
+		if (!s.matchesProject() || versions.length != ctx.sources.length) return false;
+		for (i < versions.length) {
+			var key = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
+			if (key == null || !Strings.equal(key, versions[i].uri) || !versions[i].matchesDocument(store)) return false;
+		}
+		return true;
+	}
+	// The Location of the declaration that the identifier at {line}:{character}
+	// in {key} resolves to in {ctx}'s current snapshot, or null.
+	private def locate(ctx: ProjectContext, key: string, line: int, character: int) -> JsonValue {
+		var s = if(ctx != null, ctx.snapshot);
+		if (s == null || !current(ctx, s) || !s.parsed || !s.hasOccurrences) return JsonValue.Null;
+		var i = s.documentIndex(key), text = LspAnalysisCapture.analyzedText(store, s, i);
+		if (text == null) return JsonValue.Null;
+		var map = PositionMap.new(text, PositionEncoding.UTF16);
+		var decl = s.definitionAtOffset(s.paths[i], map.positionToOffset(line, character));
+		if (decl == null || decl.range.beginOffset < 0) return JsonValue.Null;
+		var j = -1;
+		for (k < s.paths.length) { if(j < 0 && Strings.equal(s.paths[k], decl.range.path)) j = k; }
+		if (j < 0) return JsonValue.Null;
+		if (j != i) {
+			// The target's bytes must still be the ones the worker analyzed.
+			var target = LspAnalysisCapture.analyzedText(store, s, j);
+			if (target == null) return JsonValue.Null;
+			map = PositionMap.new(target, PositionEncoding.UTF16);
+		}
+		var range = Strings.newMap<JsonValue>(), location = Strings.newMap<JsonValue>();
+		range["start"] = position(map.offsetToPosition(decl.range.beginOffset));
+		range["end"] = position(map.offsetToPosition(decl.range.endOffset));
+		location["uri"] = JsonValue.String(s.documentVersions[j].uri);
+		location["range"] = JsonValue.JObject(range);
+		return JsonValue.JObject(location);
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	// The integer member {key} of {obj}, or -1.
+	private def intMember(obj: HashMap<string, JsonValue>, key: string) -> int {
+		if (obj == null || !obj.has(key) || !JsonValue.Int.?(obj[key])) return -1;
+		return JsonValue.Int.!(obj[key]).v;
+	}
+}

@@ -39,15 +39,16 @@ The server notices changes made outside the editor, such as a checkout, only fro
 ## Headless smoke test
 
 From the repository root, run `make test-nvim` (also included in `make test`).
-The test uses the plain configuration above with the built server on `PATH`
-and `--headless --clean -n` (no swap files), with `VIRGIL_LOC` set to the pinned
+The test uses the plain configuration above with the built server on `PATH` and
+`--headless --clean -n` (no swap files), with `VIRGIL_LOC` set to the pinned
 checkout in `vendor/virgil`. It checks client attachment, parser diagnostics
 published and cleared after an unsaved edit, document symbols, semantic
 diagnostics for the fixture's project, which uses `lib/util` from the Virgil
-root, configuration diagnostics after an unsaved edit to the project file, that
-other JSON buffers stay detached, and a graceful server shutdown with exit
-status 0. The fixture is copied into a temporary directory; editor state is kept
-there, and the directory is removed afterward. The VS Code
+root, a definition in that closed library file, configuration diagnostics after
+an unsaved edit to the project file, that other JSON buffers stay detached, and
+a graceful server shutdown with exit status 0. The fixture is copied into a
+temporary directory; editor state is kept there, and the directory is removed
+afterward. The VS Code
 [Extension Host test](../../clients/vscode/README.md#extension-host-test) uses
 the same fixture, so a change to it affects both editors' checks.
 

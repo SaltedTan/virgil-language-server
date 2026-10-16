@@ -91,7 +91,7 @@ inputs = [
     notify("exit", {}),
 ]
 outputs = [
-    reply(1, dict(capabilities=dict(documentSymbolProvider=True,
+    reply(1, dict(capabilities=dict(definitionProvider=True, documentSymbolProvider=True,
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
                                    workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True))),
                   serverInfo=dict(name="virgil-lsp", version="@VERSION@"))),

@@ -1,0 +1,428 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/definition with the real worker. The project-fixtures/definition
+// directory is the build's own copy, so each session rewrites its sources
+// before the project is loaded. Every reply arrives through the server's
+// outgoing-message sink.
+def T = UnitTests.register;
+def X = [
+	T("LspDefinition:declaration_kinds", test_declaration_kinds),
+	T("LspDefinition:shadowed_and_same_named", test_shadowed_and_same_named),
+	T("LspDefinition:no_definition", test_no_definition),
+	T("LspDefinition:cross_file_closed_target", test_cross_file_closed_target),
+	T("LspDefinition:cross_file_open_target", test_cross_file_open_target),
+	T("LspDefinition:target_changed_on_disk", test_target_changed_on_disk),
+	T("LspDefinition:stale_waits_for_analysis", test_stale_waits_for_analysis),
+	T("LspDefinition:stale_waits_for_running_analysis", test_stale_waits_for_running_analysis),
+	T("LspDefinition:stale_without_analysis", test_stale_without_analysis),
+	T("LspDefinition:document_changed_while_waiting", test_document_changed_while_waiting),
+	T("LspDefinition:shutdown_and_end_answer_waiting", test_shutdown_and_end_answer_waiting),
+	T("LspDefinition:parse_failure_and_no_project", test_parse_failure_and_no_project),
+	T("LspDefinition:params", test_params),
+	()
+];
+// Every declaration kind that occurrences record, a builtin member, and an
+// unresolved name, which leaves the program unverified but still indexed.
+def KINDS = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nclass Rect(width: int) {\n\tdef area() -> int { return width; }\n}\nclass Square(side: int) {\n\tdef area() -> int { return side * side; }\n}\nenum Color { RED, GREEN }\nenum Planet(mass: int) { MERCURY(1), VENUS(2) }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\ncomponent Kinds {\n\tdef value = 1;\n\tdef shadow(value: int) -> int { return value + Kinds.value; }\n\tdef run(b: Box, c: Color, p: Planet, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar rect = Rect.new(2);\n\t\tvar total = box.grow(rect.width) + rect.area() + Square.new(3).area();\n\t\ttotal = total + b.size + p.mass + Planet.VENUS.mass;\n\t\tif (c == Color.RED) total++;\n\t\tmatch (c) {\n\t\t\tGREEN => total++;\n\t\t\t_ => ;\n\t\t}\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\tvar circle = Shape.Circle(3);\n\t\tvar n = \"abc\".length + missing;\n\t\treturn total;\n\t}\n}\n";
+// A use and its target in different files, each after a tab in a block
+// comment and non-ASCII text (U+00E9, two UTF-8 bytes and one UTF-16 unit;
+// U+1D11E, four bytes and two units) on the same line.
+def USE = "// \xF0\x9D\x84\x9E caf\xC3\xA9\ncomponent Use {\n\tdef get() -> int { /*\t\xC3\xA9\xF0\x9D\x84\x9E*/ return Decl.thing; }\n}\n";
+def DECL = "// D\xC3\xA9cl\ncomponent Decl {\n/*\t*/\tdef /*\xC3\xA9\xF0\x9D\x84\x9E\t*/ thing = 1;\n}\n";
+// In USE, Decl starts at UTF-16 character 36 and thing at 41, on line 2. In
+// DECL, Decl is at 1:10 and thing at 2:19.
+def USE_THING = 41;
+def DECL_THING = 19;
+
+class DefinitionTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/definition");
+	// The responses received, in order.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	// What handle() returned for the last request; replies use the sink.
+	var handled: Array<byte>;
+	new(t: Tester) {
+		write(t, "Kinds.v3", KINDS);
+		write(t, "Use.v3", USE);
+		write(t, "Decl.v3", DECL);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) replies.put(parsed);
+	}
+	def path(name: string) -> string { return ProjectFiles.join(base, name); }
+	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(path(name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def save(name: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		notify("textDocument/didSave", doc, null);
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(uri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// Sends a definition request for {line}:{character} in {name} and returns its id.
+	def request(name: string, line: int, character: int) -> int {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		position["line"] = JsonValue.Int(line);
+		position["character"] = JsonValue.Int(character);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		return send(JsonRpcParams.ByName(params));
+	}
+	def send(params: JsonRpcParams) -> int {
+		var id = nextId++;
+		handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), "textDocument/definition", params).encode());
+		return id;
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	// The result of the response to {id}, which must have arrived.
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		t.assert(r.has("result"), "the request succeeded");
+		return r["result"];
+	}
+	// Requests and returns the definition, which must be answered at once.
+	def definition(t: Tester, name: string, line: int, character: int) -> JsonValue {
+		var id = request(name, line, character);
+		t.assert(handled == null, "replies use the sink");
+		return result(t, id);
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri("Kinds.v3")).active;
+	}
+}
+// The LSP position of byte {skip} past the first {needle} in ASCII {text}.
+def at(text: string, needle: string, skip: int) -> (int, int) {
+	var line = 0, start = 0;
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return (line, i + skip - start);
+		if (text[i] == '\n') {
+			line++;
+			start = i + 1;
+		}
+	}
+	return (-1, -1);
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+// Checks that {location} is the range {line}:{begin}-{line}:{end} in {uri}.
+def expectLocation(t: Tester, location: JsonValue, uri: string, line: int, begin: int, end: int) {
+	t.assert(JsonValue.JObject.?(location), "a Location");
+	if (!JsonValue.JObject.?(location)) return;
+	var u = member(location, "uri");
+	t.assert_string(uri, if(JsonValue.String.?(u), JsonValue.String.!(u).v, "<none>"));
+	var range = member(location, "range"), start = member(range, "start"), stop = member(range, "end");
+	t.asserti(line, intAt(start, "line"));
+	t.asserti(begin, intAt(start, "character"));
+	t.asserti(line, intAt(stop, "line"));
+	t.asserti(end, intAt(stop, "character"));
+}
+// Checks the definition of the use {skip} bytes into {use} in KINDS: the
+// declaration named {name}, {skip2} bytes into {decl}.
+def expectKind(t: Tester, s: DefinitionTestSession, use: string, skip: int, decl: string, skip2: int, name: string) {
+	var from = at(KINDS, use, skip), to = at(KINDS, decl, skip2);
+	t.assert(from.0 >= 0 && to.0 >= 0, "fixture text found");
+	expectLocation(t, s.definition(t, "Kinds.v3", from.0, from.1), s.uri("Kinds.v3"), to.0, to.1, to.1 + name.length);
+}
+def expectNull(t: Tester, v: JsonValue, what: string) {
+	t.assert(v == JsonValue.Null, what);
+}
+def test_declaration_kinds(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectKind(t, s, "var next = size", 11, "var size", 4, "size");			// field
+	expectKind(t, s, "size + by", 7, "grow(by", 5, "by");				// parameter
+	expectKind(t, s, "return next", 7, "var next", 4, "next");			// local
+	expectKind(t, s, "box.grow", 4, "def grow", 4, "grow");				// method
+	expectKind(t, s, "Box.new(1)", 4, "new(size)", 0, "new");			// explicit constructor
+	expectKind(t, s, "Rect.new(2)", 5, "class Rect", 6, "Rect");			// default constructor
+	expectKind(t, s, "Box.new(1)", 0, "class Box", 6, "Box");			// class
+	expectKind(t, s, "Kinds.value;", 0, "component Kinds", 10, "Kinds");	// component
+	expectKind(t, s, "rect.width", 5, "Rect(width", 5, "width");			// class parameter field
+	expectKind(t, s, "Color.RED", 0, "enum Color", 5, "Color");			// enum
+	expectKind(t, s, "Color.RED", 6, "{ RED", 2, "RED");					// enum case
+	expectKind(t, s, "GREEN =>", 0, "RED, GREEN", 5, "GREEN");			// match-case enum case
+	expectKind(t, s, "p.mass", 2, "Planet(mass", 7, "mass");				// enum parameter
+	expectKind(t, s, "VENUS.mass", 6, "Planet(mass", 7, "mass");			// enum parameter of a literal case
+	expectKind(t, s, "Shape.Circle(3)", 6, "case Circle", 5, "Circle");	// variant case
+	expectKind(t, s, "Circle(r) =>", 0, "case Circle", 5, "Circle");		// match-case variant case
+	expectKind(t, s, "Dot =>", 0, "case Dot", 5, "Dot");					// match-case variant case without parameters
+	expectKind(t, s, "+= r;", 3, "Circle(r)", 7, "r");					// match-case binding
+	s.server.close();
+}
+def test_shadowed_and_same_named(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	// A parameter shadows the component's field of the same name.
+	expectKind(t, s, "return value", 7, "shadow(value", 7, "value");
+	expectKind(t, s, "Kinds.value;", 6, "def value", 4, "value");
+	// Methods of the same name in different classes.
+	expectKind(t, s, "rect.area", 5, "area() -> int { return width", 0, "area");
+	expectKind(t, s, ".new(3).area", 8, "area() -> int { return side", 0, "area");
+	// Every character of the use resolves; the end is exclusive.
+	var grow = at(KINDS, "box.grow", 4), decl = at(KINDS, "def grow", 4);
+	for (c = grow.1; c < grow.1 + 4; c++) {
+		expectLocation(t, s.definition(t, "Kinds.v3", grow.0, c), s.uri("Kinds.v3"), decl.0, decl.1, decl.1 + 4);
+	}
+	expectNull(t, s.definition(t, "Kinds.v3", grow.0, grow.1 + 4), "just past the use");
+	s.server.close();
+}
+def test_no_definition(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	var p = at(KINDS, "\"abc\".length", 6);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "a builtin member");
+	p = at(KINDS, "+ missing", 2);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "an unresolved name");
+	p = at(KINDS, "return total;", 0);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "a keyword");
+	expectNull(t, s.definition(t, "Kinds.v3", 0, 6), "a declaration's own name");
+	expectNull(t, s.definition(t, "Kinds.v3", 1000, 0), "past the end of the document");
+	s.server.close();
+}
+def test_cross_file_closed_target(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	// Both files stay closed, so both are read again from disk.
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING + 2), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING - 5), s.uri("Decl.v3"), 1, 10, 14);
+	// The query document's overlay, with the target still closed.
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	t.assert(s.store.overlay(s.uri("Decl.v3")) == null, "the target stays closed");
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def test_cross_file_open_target(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	// The unsaved target has another line before its declarations.
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, Strings.format1("\n%s", DECL));
+	s.settle();
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 3, DECL_THING, DECL_THING + 5);
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING - 5), s.uri("Decl.v3"), 2, 10, 14);
+	s.server.close();
+}
+def test_target_changed_on_disk(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	// An unreported change keeps every stamp current, but the target's bytes
+	// are no longer the ones analyzed, so its range cannot be converted.
+	s.write(t, "Decl.v3", Strings.format1("\n%s", DECL));
+	expectNull(t, s.definition(t, "Use.v3", 2, USE_THING), "the target changed on disk");
+	s.write(t, "Decl.v3", DECL);
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	// Once reported, the snapshot is stale and the reply waits for a new analysis.
+	s.write(t, "Decl.v3", Strings.format1("\n%s", DECL));
+	s.reportChanged("Decl.v3");
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 3, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def test_stale_waits_for_analysis(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, DECL);
+	s.settle();
+	var generation = s.context().snapshot.generation;
+	// Editing the target leaves the query file unchanged but its snapshot
+	// stale. The change waits for the debounce interval, which the request skips.
+	s.change("Decl.v3", 2, Strings.format1("\n\n%s", DECL));
+	t.assertz(false, s.supervisor.busy());
+	var first = s.request("Use.v3", 2, USE_THING), second = s.request("Use.v3", 2, USE_THING - 5);
+	t.assert(s.handled == null, "replies use the sink");
+	t.assert(s.reply(first) == null && s.reply(second) == null, "both replies wait");
+	t.assertz(true, s.supervisor.busy());
+	s.settle();
+	t.assert(s.context().snapshot.generation > generation, "a new analysis completed");
+	expectLocation(t, s.result(t, first), s.uri("Decl.v3"), 4, DECL_THING, DECL_THING + 5);
+	expectLocation(t, s.result(t, second), s.uri("Decl.v3"), 3, 10, 14);
+	t.asserti(2, s.replies.length);
+	t.assert(s.replies[0]["id"] == JsonValue.Int(first), "answered in arrival order");
+	s.server.close();
+}
+def test_stale_waits_for_running_analysis(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, DECL);
+	s.settle();
+	// An edit nothing schedules, then a save, which starts an analysis at once
+	// and leaves none waiting.
+	t.assert(s.store.change(s.uri("Decl.v3"), 2, Strings.format1("\n%s", DECL)) == null, "edit");
+	s.save("Decl.v3");
+	t.assertz(true, s.supervisor.busy());
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.reply(id) == null, "the reply waits for the running analysis");
+	s.settle();
+	expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 3, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def test_stale_without_analysis(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Use.v3", 1, USE);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	// An edit to a third file that schedules no analysis. Neither the query
+	// file nor the target changed, but the snapshot is stale.
+	t.assert(s.store.change(s.uri("Kinds.v3"), 2, Strings.format1("%s\n", KINDS)) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.definition(t, "Use.v3", 2, USE_THING), "a stale snapshot");
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+def test_document_changed_while_waiting(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	s.change("Use.v3", 2, Strings.format1("%s\n", USE));
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.reply(id) == null, "the reply waits");
+	// The position no longer refers to the text it was requested in.
+	s.change("Use.v3", 3, Strings.format1("\n%s", USE));
+	s.settle();
+	expectNull(t, s.result(t, id), "the document changed");
+	s.server.close();
+}
+def test_shutdown_and_end_answer_waiting(t: Tester) {
+	for (shutdown in [true, false]) {
+		var s = DefinitionTestSession.new(t);
+		s.open("Use.v3", 1, USE);
+		s.settle();
+		s.change("Use.v3", 2, Strings.format1("%s\n", USE));
+		var id = s.request("Use.v3", 2, USE_THING);
+		t.assert(s.reply(id) == null, "the reply waits");
+		if (shutdown) {
+			var reply = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.Absent).encode());
+			t.assert(reply != null, "shutdown is answered after the waiting request");
+		} else {
+			s.server.close();
+		}
+		var r = s.reply(id);
+		t.assert(r != null && r.has("error"), "the waiting request is cancelled");
+		if (r != null && r.has("error")) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+		t.asserti(1, s.replies.length);
+		s.server.onPoll();
+		t.asserti(1, s.replies.length);
+		s.server.close();
+	}
+}
+def test_parse_failure_and_no_project(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	var use = at(KINDS, "box.grow", 4);
+	// Before the first analysis completes, there is no snapshot.
+	s.open("Kinds.v3", 1, KINDS);
+	t.assertz(true, s.supervisor.busy());
+	expectNull(t, s.definition(t, "Kinds.v3", use.0, use.1), "no snapshot");
+	s.settle();
+	s.change("Kinds.v3", 2, Strings.format1("%s}\n", KINDS));
+	s.settle();
+	t.assert(!s.context().snapshot.parsed, "the program does not parse");
+	expectNull(t, s.definition(t, "Kinds.v3", use.0, use.1), "a parse failure");
+	// A document in no project.
+	t.assert(s.store.open("untitled:x.v3", "virgil", 1, KINDS) == null, "open");
+	var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String("untitled:x.v3");
+	position["line"] = JsonValue.Int(use.0);
+	position["character"] = JsonValue.Int(use.1);
+	params["textDocument"] = JsonValue.JObject(doc);
+	params["position"] = JsonValue.JObject(position);
+	expectNull(t, s.result(t, s.send(JsonRpcParams.ByName(params))), "no project");
+	s.server.close();
+}
+def test_params(t: Tester) {
+	var s = DefinitionTestSession.new(t);
+	var cases = [
+		"null",
+		"[]",
+		"{}",
+		"{\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":1},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"file:relative\"},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":\"0\",\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":-1,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0,\"character\":-1}}"
+	];
+	for (i < cases.length) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/definition\",\"params\":%s}", i + 1, cases[i]);
+		t.assert(s.server.handle(payload) == null, "replies use the sink");
+		var r = s.reply(i + 1);
+		t.assert(r != null && r.has("error"), cases[i]);
+		if (r != null && r.has("error")) t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(r["error"], "code"));
+	}
+	s.server.close();
+}

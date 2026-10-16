@@ -1,0 +1,25 @@
+# Go to definition across two unsaved files of the two-file project, answered at once and after
+# an analysis it waits for.
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/two-file","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+# Unsaved main.v3 calls squared, which only unsaved shapes.v3 declares, after a tab and a
+# non-ASCII character in a block comment. Both open in one read, so the first analysis, which
+# read shapes.v3 from disk, is discarded. main.v3's type error marks the second one's completion.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","languageId":"virgil","version":1,"text":"// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.squared(3);\n\t\tvar total = r.area();\n\t\tvar wide: bool = r.width;\n\t\treturn total + r.width;\n\t}\n}\n"}}},{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3","languageId":"virgil","version":1,"text":"// Declarations used from main.v3. Tab-indented on purpose: columns are\n// tab-expanded compiler columns.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\t/*\té*/ def squared(side: int) -> Rect {\n\t\treturn Rect.new(side, side);\n\t}\n}\n"}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/shapes.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"TypeError","message":"expected bool in var initialization, got int","range":{"end":{"character":26,"line":5},"start":{"character":19,"line":5}},"severity":1,"source":"aeneas"}],"uri":"@ROOT@/two-file/main.v3","version":1}}}
+# The snapshot is current, so the reply is immediate: squared's name in unsaved shapes.v3.
+{"send":{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":3,"character":19}}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"range":{"end":{"character":19,"line":8},"start":{"character":12,"line":8}},"uri":"@ROOT@/two-file/shapes.v3"}}}
+# An unsaved edit moves squared down a line. The request in the same read finds the snapshot
+# stale, so it starts the waiting analysis without the debounce interval and answers from it.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3","version":2},"contentChanges":[{"text":"// Declarations used from main.v3. Tab-indented on purpose: columns are\n// tab-expanded compiler columns.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\tdef unit = 1;\n\t/*\té*/ def squared(side: int) -> Rect {\n\t\treturn Rect.new(side, side);\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":3,"character":19}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/shapes.v3","version":2}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"range":{"end":{"character":19,"line":9},"start":{"character":12,"line":9}},"uri":"@ROOT@/two-file/shapes.v3"}}}
+{"send":{"jsonrpc":"2.0","id":4,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}
+{"stderr": "discarded analysis 1 of project shapes: file://.*/two-file/shapes\\.v3 changed after its sources were captured"}

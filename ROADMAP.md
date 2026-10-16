@@ -478,7 +478,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 12. Build a fresh parse/verify-only `Program` from disk plus overlays. *(present; [PR #52](https://github.com/SaltedTan/virgil-language-server/pull/52))*
 13. Publish whole-project semantic diagnostics. *(present; [#58](https://github.com/SaltedTan/virgil-language-server/issues/58))*
 14. Build declaration and occurrence indexes from verified bindings. *(present; [#104](https://github.com/SaltedTan/virgil-language-server/issues/104); see the [compiler adapter](docs/architecture.md#compiler-adapter))*
-15. Implement go-to-definition.
+15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
 16. Implement hover.
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
 18. Add VS Code client E2E test and prerelease packaging. *(partial: [Extension Host test](clients/vscode/README.md#extension-host-test) present)*
