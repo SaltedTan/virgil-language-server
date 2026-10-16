@@ -352,7 +352,7 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 
 ### Visual Studio Code
 
-The thin TypeScript development client is present. Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md).
+The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md).
 
 Remaining work:
 

@@ -100,7 +100,7 @@ npm run package   # compile and package the extension as a VSIX
 npm run watch     # recompile on change
 ```
 
-CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux, [packages](#packaging) the VSIX, and uploads it as the workflow run's `vsix` artifact. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test), first on the extension in this directory and then on a VSIX that it packages and installs. The [manual checklist](#manual-checklist) covers what the tests don't.
+CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux, [packages](#packaging) the VSIX, and uploads it as the workflow run's `vsix` artifact. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test), first on the extension in this directory and then on a VSIX that it packages and installs. Each job packages its own VSIX, so the uploaded artifact isn't byte-identical to the tested package. The [manual checklist](#manual-checklist) covers what the tests don't.
 
 ### Packaging
 

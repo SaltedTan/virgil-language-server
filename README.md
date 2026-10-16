@@ -53,7 +53,7 @@ See [docs/development.md](docs/development.md) for details.
 
 ## Editor setup
 
-Editor integrations remain in development. Setup and current integration status live in [`editors/nvim/`](editors/nvim/) and [`clients/vscode/`](clients/vscode/).
+For VS Code, [install the prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix). Neovim and LazyVim setup and integration status live in [`editors/nvim/`](editors/nvim/).
 
 ## Contributing
 
