@@ -15,7 +15,7 @@
 // runs the suite against the installed copy. Without a display, run it under
 // xvfb-run on Linux.
 
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -24,8 +24,12 @@ const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = requi
 
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
-// Each launch, including VS Code's own startup, must finish within this time.
+// Each launch, including VS Code's own startup, must finish within this time,
+// and so must each installation of a VSIX.
 const LAUNCH_TIMEOUT_MS = 120000;
+// How long a stopped process group gets after SIGTERM before SIGKILL, and
+// after SIGKILL before the test gives up waiting for it.
+const STOP_GRACE_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
 
 const extension = path.resolve(__dirname, '../..');
@@ -54,6 +58,11 @@ async function main() {
     version: VSCODE_VERSION,
     cachePath: path.join(extension, '.vscode-test'),
   });
+  // From here on, an interrupt stops the running process group, and the
+  // temporary directory is removed once the group has exited.
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
+  process.on('SIGINT', interrupt).on('SIGTERM', interrupt);
   // Keep edits and VS Code state out of the checkout's fixture and the user's
   // home. Physical paths match the URIs that the server reports.
   const work = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'virgil-vscode-e2e-'));
@@ -72,19 +81,37 @@ async function main() {
     };
     console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
-    const options = { executable, settings, project, vsix };
+    const options = { executable, settings, project, vsix, signal: controller.signal };
     let passed = await launch(options, path.join(work, 'single-file'));
     if (passed) passed = await launch(options, path.join(work, 'workspace'), project);
     if (!passed) process.exitCode = 1;
   } finally {
+    process.off('SIGINT', interrupt).off('SIGTERM', interrupt);
     fs.rmSync(work, { recursive: true, force: true });
   }
+}
+
+// The environment for VS Code and its command-line interface. A terminal
+// inside VS Code sets VSCODE_* variables that describe that editor: with
+// VSCODE_IPC_HOOK_CLI, as in a Remote-SSH terminal, bin/code hands the command
+// to the running editor, which ignores --user-data-dir and --extensions-dir.
+// None of them belong to the isolated instance. ELECTRON_RUN_AS_NODE would make
+// Electron run as plain Node.js.
+function isolatedEnv(variables) {
+  const env = { ...process.env, ...variables };
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('VSCODE_')) delete env[name];
+  }
+  delete env.ELECTRON_RUN_AS_NODE;
+  // The suite checks that the Virgil root comes from the setting.
+  delete env.VIRGIL_LOC;
+  return env;
 }
 
 // Starts VS Code with its own user data and extensions directories under dir,
 // and returns whether the suite passed. The suite opens a folder only if it is
 // given one.
-async function launch({ executable, settings, project, vsix }, dir, folder) {
+async function launch({ executable, settings, project, vsix, signal }, dir, folder) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
   // VS Code runs the suite only in extension development mode. With a VSIX,
@@ -109,64 +136,115 @@ async function launch({ executable, settings, project, vsix }, dir, folder) {
     `--extensionDevelopmentPath=${development}`,
     `--extensionTestsPath=${path.join(__dirname, 'suite.cjs')}`,
   ];
-  const env = {
-    ...process.env,
+  const env = isolatedEnv({
     VIRGIL_E2E_PROJECT: project,
     VIRGIL_E2E_LOGS: path.join(userData, 'logs'),
     // The suite checks that VS Code loaded the installed copy.
     ...(vsix === undefined ? {} : { VIRGIL_E2E_EXTENSIONS_DIR: extensions }),
-  };
-  // The suite checks that the Virgil root comes from the setting.
-  delete env.VIRGIL_LOC;
-  delete env.ELECTRON_RUN_AS_NODE;
+  });
   const name = path.basename(dir);
-  if (vsix !== undefined && !install(executable, vsix, userData, extensions, env, name)) return false;
+  if (vsix !== undefined) {
+    const installation = await runGroup(resolveCliPathFromVSCodeExecutablePath(executable), [
+      `--user-data-dir=${userData}`,
+      `--extensions-dir=${extensions}`,
+      '--install-extension',
+      vsix,
+    ], {
+      // Inside WSL, bin/code asks for confirmation unless this is set; with
+      // no input, nothing can wait for an answer.
+      env: { ...env, DONT_PROMPT_WSL_INSTALL: '1' },
+      stdin: 'ignore',
+      signal,
+    });
+    if (!succeeded(installation)) {
+      console.error(`FAIL: ${name} installation of ${vsix} ${outcome(installation)}`);
+      return false;
+    }
+  }
+  const result = await runGroup(executable, args, { env, stdin: 'inherit', signal });
+  if (!succeeded(result)) {
+    console.error(`FAIL: ${name} launch ${outcome(result)}`);
+    printChannelLogs(userData);
+  }
+  return succeeded(result);
+}
+
+// Runs command in a process group of its own, so that a timeout or an
+// interrupt can stop all of it: VS Code and the server, or the installer,
+// which bin/code starts without exec on Linux. A stopped group gets SIGTERM,
+// then SIGKILL, and the promise resolves only after the whole group has exited,
+// before the caller removes the temporary directory.
+function runGroup(command, args, { env, stdin, signal }) {
   return new Promise((resolve) => {
-    // A process group of its own lets a timeout or an interrupt stop VS Code
-    // and the server, before the temporary directory is removed.
-    const child = spawn(executable, args, { env, stdio: 'inherit', detached: true });
+    const child = spawn(command, args, { env, stdio: [stdin, 'inherit', 'inherit'], detached: true });
     let stopped;
+    let exited;
+    let poll;
+    const finish = (result) => {
+      clearTimeout(timer);
+      clearInterval(poll);
+      signal.removeEventListener('abort', interrupt);
+      resolve({ ...result, stopped });
+    };
     const stop = (reason) => {
+      // Without a pid, the process didn't start, and its error event follows.
+      if (stopped !== undefined || child.pid === undefined) return;
       stopped = reason;
-      process.kill(-child.pid, 'SIGKILL');
+      signalGroup(child.pid, 'SIGTERM');
+      let deadline = Date.now() + STOP_GRACE_MS;
+      let killed = false;
+      // Other processes in the group can outlive the one that was started.
+      poll = setInterval(() => {
+        if (!groupExists(child.pid)) {
+          if (exited !== undefined) finish(exited);
+        } else if (Date.now() > deadline && !killed) {
+          killed = true;
+          signalGroup(child.pid, 'SIGKILL');
+          deadline = Date.now() + STOP_GRACE_MS;
+        } else if (Date.now() > deadline) {
+          console.error(`Process group ${child.pid} (${command}) is still running after SIGKILL`);
+          finish(exited ?? {});
+        }
+      }, 50);
     };
     const timer = setTimeout(() => stop(`exceeded ${LAUNCH_TIMEOUT_MS / 1000} seconds`), LAUNCH_TIMEOUT_MS);
     const interrupt = () => stop('was interrupted');
-    process.on('SIGINT', interrupt).on('SIGTERM', interrupt);
-    const done = (passed) => {
-      clearTimeout(timer);
-      process.off('SIGINT', interrupt).off('SIGTERM', interrupt);
-      resolve(passed);
-    };
-    child.on('error', (error) => {
-      console.error(`FAIL: could not start ${executable}: ${error.message}`);
-      done(false);
+    signal.addEventListener('abort', interrupt);
+    child.on('spawn', () => {
+      if (signal.aborted) interrupt();
     });
-    child.on('exit', (code, signal) => {
-      const passed = stopped === undefined && code === 0;
-      if (!passed) {
-        console.error(`FAIL: ${name} launch ${stopped ?? `exited with ${code ?? signal}`}`);
-        printChannelLogs(userData);
-      }
-      done(passed);
+    child.on('error', (error) => finish({ error }));
+    child.on('exit', (code, exitSignal) => {
+      exited = { code, signal: exitSignal };
+      if (stopped === undefined) finish(exited);
     });
   });
 }
 
-// Installs the VSIX with the downloaded VS Code's command-line interface, and
-// returns whether it succeeded.
-function install(executable, vsix, userData, extensions, env, name) {
-  const cli = resolveCliPathFromVSCodeExecutablePath(executable);
-  const result = spawnSync(cli, [
-    `--user-data-dir=${userData}`,
-    `--extensions-dir=${extensions}`,
-    '--install-extension',
-    vsix,
-  ], { env, stdio: 'inherit', timeout: LAUNCH_TIMEOUT_MS });
-  if (result.status === 0) return true;
-  console.error(`FAIL: ${name} installation of ${vsix} `
-    + (result.error === undefined ? `exited with ${result.status ?? result.signal}` : `failed: ${result.error.message}`));
-  return false;
+function signalGroup(pid, name) {
+  try {
+    process.kill(-pid, name);
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error;
+  }
+}
+
+function groupExists(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== 'ESRCH';
+  }
+}
+
+function succeeded(result) {
+  return result.error === undefined && result.stopped === undefined && result.code === 0;
+}
+
+function outcome(result) {
+  if (result.error !== undefined) return `could not start: ${result.error.message}`;
+  return result.stopped ?? `exited with ${result.code ?? result.signal}`;
 }
 
 // The output channel's log also holds the server's stderr.
