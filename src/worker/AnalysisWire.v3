@@ -112,9 +112,12 @@ component AnalysisWire {
 
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
 	// diagnostics, and, if {files} is not null, a path table, the distinct
-	// declarations, and the occurrences of each file in source order as
-	// ranges and declaration indexes. A range is four compiler coordinates
-	// and two byte offsets. Call finishResult before sending.
+	// declarations, and the occurrences of each file in source order. A
+	// declaration's range is four compiler coordinates and two byte offsets.
+	// An occurrence is its begin line, begin column, begin offset, length, and
+	// declaration index; one that is not a token span (see
+	// AnalysisRange.isTokenSpan), which the collector never records, is
+	// omitted rather than misstated. Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);
@@ -169,10 +172,14 @@ component AnalysisWire {
 		}
 		w.put_sleb32(files.length);
 		for (f in files) {
-			w.put_sleb32(paths[f.0]).put_sleb32(f.1.length);
+			var count = 0;
+			for (o in f.1) if (o.range.isTokenSpan()) count++;
+			w.put_sleb32(paths[f.0]).put_sleb32(count);
 			for (o in f.1) {
-				putRange(w, o.range);
-				w.put_sleb32(decls[o.declaration]);
+				var r = o.range;
+				if (!r.isTokenSpan()) continue;
+				w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.beginOffset);
+				w.put_sleb32(r.endOffset - r.beginOffset).put_sleb32(decls[o.declaration]);
 			}
 		}
 	}
@@ -219,12 +226,12 @@ component AnalysisWire {
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
 			for (n = r.readCount(2, 256); n > 0 && r.ok(); n--) {
-				// Each occurrence is six range ints and a declaration index,
-				// stored as seven int array elements.
-				var path = r.readPath(table), count = r.readCount(7, 28);
-				var ranges = Array<int>.new(6 * count), targets = Array<int>.new(count);
+				// Each occurrence is four ints of its range and a declaration
+				// index, stored as five int array elements.
+				var path = r.readPath(table), count = r.readCount(5, 20);
+				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count);
 				for (i < count) {
-					for (j < 6) ranges[6 * i + j] = r.readInt();
+					for (j < 4) ranges[4 * i + j] = r.readInt();
 					targets[i] = r.readTarget(declarations.length);
 				}
 				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets));

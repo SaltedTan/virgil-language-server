@@ -164,9 +164,14 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		}
 		record(e.ident.name, decl);
 	}
+	// Every use is recorded here. A use must be a token span (see
+	// AnalysisRange.isTokenSpan). Parser tokens always are; a name the compiler
+	// manufactured where the source doesn't spell it would not be, and is
+	// skipped, since neither its compiler span nor its byte span would locate it.
 	private def record(token: Token, decl: AnalysisDeclaration) {
 		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
-		result.put(AnalysisOccurrence.new(sources.range(token), decl));
+		var range = sources.range(token);
+		if (range.isTokenSpan()) result.put(AnalysisOccurrence.new(range, decl));
 	}
 	def visitLiteral(e: Literal, env: void) { }
 	def visitString(e: StringExpr, env: void) { }

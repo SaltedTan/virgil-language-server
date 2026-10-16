@@ -108,15 +108,15 @@ class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUse
 	uidNext: int, globalTypesAdded: int, globalTypeTotal: int) { }
 
 // The occurrences of one file, without an object per occurrence: {ranges} holds
-// the begin line, begin column, end line, end column, begin offset, and end
-// offset of occurrence i at 6 * i (see AnalysisRange), and {targets} holds its
-// index in the snapshot's declarations. Occurrences are in source order and
-// do not overlap.
+// the begin line, begin column, begin offset, and byte length of occurrence i
+// at 4 * i, and {targets} holds its index in the snapshot's declarations. An
+// occurrence is a token span (see AnalysisRange.isTokenSpan): it ends on its
+// begin line, and its length is also its compiler column span. Occurrences
+// are in source order and do not overlap.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 	def range(path: string, i: int) -> AnalysisRange {
-		var r = 6 * i;
-		return AnalysisRange.new(path, ranges[r], ranges[r + 1], ranges[r + 2], ranges[r + 3],
-			ranges[r + 4], ranges[r + 5]);
+		var r = 4 * i, line = ranges[r], column = ranges[r + 1], offset = ranges[r + 2], length = ranges[r + 3];
+		return AnalysisRange.new(path, line, column, line, column + length, offset, offset + length);
 	}
 	// The index of the occurrence whose range contains the position, or -1.
 	// A retrospective "[]" or "[]=" use followed closely on its line by
@@ -127,13 +127,13 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 		// in source order. Find the first token ending after the query point.
 		var low = 0, high = targets.length;
 		while (low < high) {
-			var mid = low + (high - low) / 2, r = 6 * mid;
-			var endLine = ranges[r + 2], endColumn = ranges[r + 3];
+			var mid = low + (high - low) / 2, r = 4 * mid;
+			var endLine = ranges[r], endColumn = ranges[r + 1] + ranges[r + 3];
 			if (endLine < line || (endLine == line && endColumn <= column)) low = mid + 1;
 			else high = mid;
 		}
 		if (low >= targets.length) return -1;
-		var r = 6 * low;
+		var r = 4 * low;
 		var beginLine = ranges[r], beginColumn = ranges[r + 1];
 		if (line < beginLine || (line == beginLine && column < beginColumn)) return -1;
 		return low;
@@ -144,11 +144,11 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 	def findOffset(offset: int) -> int {
 		var low = 0, high = targets.length;
 		while (low < high) {
-			var mid = low + (high - low) / 2;
-			if (ranges[6 * mid + 5] <= offset) low = mid + 1;
+			var mid = low + (high - low) / 2, r = 4 * mid;
+			if (ranges[r + 2] + ranges[r + 3] <= offset) low = mid + 1;
 			else high = mid;
 		}
-		if (low >= targets.length || offset < ranges[6 * low + 4]) return -1;
+		if (low >= targets.length || offset < ranges[4 * low + 2]) return -1;
 		return low;
 	}
 }

@@ -134,9 +134,10 @@ class Worker:
             for _ in range(reader.integer()):
                 path, count = paths[reader.integer()], reader.integer()
                 for _ in range(count):
-                    span = [reader.integer() for _ in range(4)]
-                    offsets = [reader.integer() for _ in range(2)]
-                    occurrences.append(dict(path=path, range=span, offsets=offsets,
+                    # Begin line, column, and offset, and the length of both spans.
+                    line, column, offset, length = [reader.integer() for _ in range(4)]
+                    occurrences.append(dict(path=path, range=[line, column, line, column + length],
+                                            offsets=[offset, offset + length],
                                             declaration=declarations[reader.integer()]))
         reader.finish()
         return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1],

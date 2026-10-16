@@ -37,6 +37,14 @@ class AnalysisSource(path: string, input: Array<byte>) { }
 // offset are exclusive. Offsets are -1 when the file has no captured source.
 class AnalysisRange(path: string, beginLine: int, beginColumn: int, endLine: int, endColumn: int,
 		beginOffset: int, endOffset: int) {
+	// True if the range is on one line and its compiler and byte spans have
+	// the same length, as a token that the source spells has. Every occurrence
+	// must be, since snapshots store it as a begin and a length
+	// (see AnalysisSnapshotFile).
+	def isTokenSpan() -> bool {
+		return beginLine == endLine && beginOffset >= 0
+			&& endOffset - beginOffset == endColumn - beginColumn;
+	}
 	def contains(line: int, column: int) -> bool {
 		if (line < beginLine || line > endLine) return false;
 		if (line == beginLine && column < beginColumn) return false;

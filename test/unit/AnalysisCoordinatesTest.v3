@@ -12,6 +12,7 @@ def X = [
 	T("AnalysisCoordinates:binding_offsets", test_binding_offsets),
 	T("AnalysisCoordinates:cross_file_binding_offsets", test_cross_file_binding_offsets),
 	T("AnalysisCoordinates:retrospective_binding_offsets", test_retrospective_binding_offsets),
+	T("AnalysisCoordinates:manufactured_name_spans", test_manufactured_name_spans),
 	T("AnalysisCoordinates:malformed_literal_bound", test_malformed_literal_bound),
 	T("AnalysisCoordinates:no_file", test_no_file),
 	T("AnalysisCoordinates:replay_boundaries", test_replay_boundaries),
@@ -284,14 +285,19 @@ def test_binding_compiler_coordinates(t: Tester) {
 		t.assertz(true, compilation.parse());
 		t.assertz(true, compilation.verify());
 		var original = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), true, true, prog).occurrences(path);
-		t.asserti(original.length, uses.length);
-		t.asserti(original.length, decoded.length);
-		if (original.length != uses.length || original.length != decoded.length) return;
-		var count = 0;
-		for (j < original.length) {
-			t.assert_string(original[j].toString(), uses[j].toString());
-			t.assert_string(original[j].toString(), decoded[j].toString());
-			if (!Strings.equal(uses[j].declaration.name, names[i])) continue;
+		// A stock parse's retrospective token has only its context-free column,
+		// which does not locate it in the source, so that analysis skips the
+		// operator use; every other use matches.
+		t.asserti(uses.length - 1, original.length);
+		t.asserti(uses.length, decoded.length);
+		if (original.length != uses.length - 1 || uses.length != decoded.length) return;
+		var count = 0, k = 0;
+		for (j < uses.length) {
+			t.assert_string(uses[j].toString(), decoded[j].toString());
+			if (!Strings.equal(uses[j].declaration.name, names[i])) {
+				if (k < original.length) t.assert_string(original[k++].toString(), uses[j].toString());
+				continue;
+			}
 			count++;
 			for (o in [uses[j], decoded[j]]) {
 				t.asserti(2, o.range.beginLine);
@@ -364,6 +370,7 @@ def assertUses(t: Tester, a: ProgramAnalysis, s: AnalysisSnapshot, path: string,
 		}
 	}
 	for (i < uses.length) {
+		t.assert(uses[i].range.isTokenSpan(), "every use is a token span");
 		var d = uses[i].declaration.range, decoded = s.occurrences(path)[i].declaration.range;
 		t.asserti(d.beginOffset, decoded.beginOffset);
 		t.asserti(d.endOffset, decoded.endOffset);
@@ -471,4 +478,30 @@ def test_retrospective_binding_offsets(t: Tester) {
 		t.asserti(indexOf(empty, "[] ->"), uses[1].declaration.range.beginOffset);
 		t.asserti(indexOf(empty, "[] ->") + 1, uses[1].declaration.range.endOffset);
 	}
+}
+
+// A name the compiler manufactures is located by replay, and spans only what
+// the source spells there. An index method's "[]" spans its opening bracket,
+// so it is not a token span: as a declaration it keeps that range, but the
+// collector would skip it as a use. A constructor's "new" is spelled in full.
+def test_manufactured_name_spans(t: Tester) {
+	var path = "manufactured.v3", text = "class C {\n/*\t*/ def [x: int] -> int { return x; }\n\tnew() { }\n}\n";
+	var maps = AnalysisSourceMaps.new();
+	maps.add(path, text);
+	var bracket = indexOf(text, "[x"), ctor = indexOf(text, "new");
+	var index = maps.range(Token.new(path, "[]", 2, 11));
+	t.asserti(bracket, index.beginOffset);
+	t.asserti(bracket + 1, index.endOffset);
+	t.asserti(13, index.endColumn);
+	t.assertz(false, index.isTokenSpan());
+	var made = maps.range(Token.new(path, "new", 3, 9));
+	t.asserti(ctor, made.beginOffset);
+	t.asserti(ctor + 3, made.endOffset);
+	t.assertz(true, made.isTokenSpan());
+	var captured = maps.range(AnalysisCapturedToken.new(path, "new", 3, 9, ctor));
+	t.asserti(ctor, captured.beginOffset);
+	t.assertz(true, captured.isTokenSpan());
+	var unknown = maps.range(Token.new("other.v3", "x", 1, 1));
+	t.asserti(-1, unknown.beginOffset);
+	t.assertz(false, unknown.isTokenSpan());
 }

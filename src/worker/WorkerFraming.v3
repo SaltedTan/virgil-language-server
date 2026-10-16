@@ -7,7 +7,7 @@
 component WorkerFraming {
 	def HEADER_BYTES = 4;
 	// Larger frames are a protocol error. The Aeneas sources take 3.0 MB as a
-	// request and 3.2 MB as a result with occurrences. The limit also bounds
+	// request and 2.4 MB as a result with occurrences. The limit also bounds
 	// what decoding a result can allocate in the server.
 	def MAX_PAYLOAD = 16 * 1024 * 1024;
 

@@ -510,16 +510,13 @@ def test_affected_contexts(t: Tester) {
 	t.asserti(0, w.affected(ProjectFiles.join(base, "shared/Gree")).length);
 	t.asserti(0, w.affected(ProjectFiles.join(base, "missing.v3")).length);
 }
-// Five of these snapshots fit in the snapshot budget beside an incoming
-// result's reserve, and six do not.
-def SNAPSHOT_OCCURRENCES = 110000;
 def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(7);
 	for (i < 6) w.put_sleb32(-1);
 	w.put_sleb32(0).put_sleb32(1).put_sleb32(4).puta("p.v3");
 	w.put_sleb32(1).putb(0).put_sleb32(1).putb('x').put_sleb32(0).puta("\x01\x01\x01\x02\x00\x01");
-	w.put_sleb32(1).put_sleb32(0).put_sleb32(SNAPSHOT_OCCURRENCES);
-	for (i < SNAPSHOT_OCCURRENCES) w.puta("\x01\x01\x01\x02\x00\x01\x00");
+	w.put_sleb32(1).put_sleb32(0).put_sleb32(162929);
+	for (i < 162929) w.puta("\x01\x01\x00\x01\x00");
 	match (AnalysisWire.decodeResult(w.extract(), generation, ["p.v3"])) {
 		Decoded(result) => return result.snapshot;
 		_ => return null;
@@ -541,7 +538,7 @@ def test_snapshot_budget(t: Tester) {
 		}
 		latest = occurrenceSnapshot(i + 1);
 		if (latest == null) return t.fail("snapshot fixture rejected");
-		t.assert(latest.retainedBytes >= 28L * SNAPSHOT_OCCURRENCES, "decoded occurrence arrays charged");
+		t.assert(latest.retainedBytes >= 162929L * 20, "decoded occurrence arrays charged");
 		contexts[i].snapshot = latest;
 		var retained = 0L;
 		for (ctx in contexts) { if(ctx.snapshot != null) retained += ctx.snapshot.retainedBytes; }
