@@ -4,8 +4,8 @@
 // An automatic analysis the supervisor is running. The sources were dropped
 // once the worker request held a copy; {inputs} keeps their provenance.
 class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) {
-	// The listeners of {LspSemanticDiagnostics.whenAnalyzed}, or null.
-	var done: Vector<LspAnalysisListener>;
+	// The listener of {LspSemanticDiagnostics.whenAnalyzed}, or null.
+	var listener: LspAnalysisListener;
 }
 // A context waiting to be analyzed once {due} (System.ticksMs) has passed. An
 // urgent wait stays due, whatever later changes schedule, and starts before
@@ -13,7 +13,7 @@ class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAn
 class LspSemanticWait(context: ProjectContext) {
 	var due: int;
 	var urgent: bool;
-	var done: Vector<LspAnalysisListener>;
+	var listener: LspAnalysisListener;
 }
 // Waits for an analysis of a context (see LspSemanticDiagnostics.whenAnalyzed).
 class LspAnalysisListener {
@@ -86,15 +86,17 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		}
 		update();
 	}
-	// Notifies {listener} once the analysis of {ctx} that captures the newest
-	// documents completes, fails, or is dropped, and returns true; returns
-	// false if no analysis of {ctx} waits or runs. That is the waiting one, if
-	// there is one, which becomes urgent and starts before any other; otherwise
-	// the running one. A listener registered again moves to that analysis, so
-	// it is notified once. It may be notified before this returns, if the
-	// waiting analysis cannot start. Closing drops listeners without notifying them.
-	def whenAnalyzed(ctx: ProjectContext, listener: LspAnalysisListener) -> bool {
-		if (closed) return false;
+	// Returns the listener of the analysis of {ctx} that captures the newest
+	// documents, or null if no analysis of {ctx} waits or runs. That is the
+	// waiting one, if there is one, which becomes urgent and starts before any
+	// other; otherwise the running one. An analysis has at most one listener:
+	// {candidate} becomes it unless it already has one. The listener moves from
+	// a waiting analysis to the run when it starts, and is notified once, when
+	// that analysis completes, fails, or is dropped, which may happen before
+	// this returns if the waiting analysis cannot start. Closing drops
+	// listeners without notifying them.
+	def whenAnalyzed(ctx: ProjectContext, candidate: LspAnalysisListener) -> LspAnalysisListener {
+		if (closed) return null;
 		// Apply configuration changes without starting other due work first.
 		reconcile();
 		for (i < waiting.length) {
@@ -102,14 +104,14 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			if (w.context != ctx) continue;
 			w.urgent = true;
 			w.due = System.ticksMs();
-			if (running != null && running.context == ctx) running.done = without(running.done, listener);
-			w.done = with(w.done, listener);
+			if (w.listener == null) w.listener = candidate;
+			var listener = w.listener;
 			startNext();
-			return true;
+			return listener;
 		}
-		if (running == null || running.context != ctx) return false;
-		running.done = with(running.done, listener);
-		return true;
+		if (running == null || running.context != ctx) return null;
+		if (running.listener == null) running.listener = candidate;
+		return running.listener;
 	}
 	// Stops scheduling; the caller closes the supervisor.
 	def close() {
@@ -135,22 +137,10 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
 			wait.due = if(wait.urgent, now, due);
 		}
-		for (i < dropped.length) finished(dropped[i].done);
+		for (i < dropped.length) finished(dropped[i].listener);
 	}
-	private def finished(done: Vector<LspAnalysisListener>) {
-		if (done == null) return;
-		for (i < done.length) done[i].analyzed();
-	}
-	private def with(done: Vector<LspAnalysisListener>, listener: LspAnalysisListener) -> Vector<LspAnalysisListener> {
-		if (done == null) done = Vector<LspAnalysisListener>.new();
-		for (i < done.length) { if(done[i] == listener) return done; }
-		return done.put(listener);
-	}
-	private def without(done: Vector<LspAnalysisListener>, listener: LspAnalysisListener) -> Vector<LspAnalysisListener> {
-		if (done == null) return null;
-		var rest = Vector<LspAnalysisListener>.new();
-		for (i < done.length) { if(done[i] != listener) rest.put(done[i]); }
-		return rest;
+	private def finished(listener: LspAnalysisListener) {
+		if (listener != null) listener.analyzed();
 	}
 	private def update() {
 		if (closed) return;
@@ -175,8 +165,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			for (i < waiting.length) { if(waiting[i] != next) rest.put(waiting[i]); }
 			waiting = rest;
 			start(next.context);
-			if (running != null) running.done = next.done;
-			else finished(next.done);
+			if (running != null) running.listener = next.listener;
+			else finished(next.listener);
 		}
 	}
 	private def start(ctx: ProjectContext) {
@@ -216,7 +206,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			Failed(failure, reason) => failed(ctx, reason);
 			Pending => ;
 		}
-		finished(run.done);
+		finished(run.listener);
 	}
 	private def publish(run: LspSemanticRun, snapshot: AnalysisSnapshot) {
 		var ctx = run.context, inputs = run.inputs;

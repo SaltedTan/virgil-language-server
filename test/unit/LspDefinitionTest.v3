@@ -21,6 +21,8 @@ def X = [
 	T("LspDefinition:document_changed_while_waiting", test_document_changed_while_waiting),
 	T("LspDefinition:active_context_changed_while_waiting", test_active_context_changed_while_waiting),
 	T("LspDefinition:waiting_requests_bounded", test_waiting_requests_bounded),
+	T("LspDefinition:running_analysis_answers_its_requests", test_running_analysis_answers_its_requests),
+	T("LspDefinition:reentrant_reply_within_bound", test_reentrant_reply_within_bound),
 	T("LspDefinition:shutdown_and_end_answer_waiting", test_shutdown_and_end_answer_waiting),
 	T("LspDefinition:parse_failure_and_no_project", test_parse_failure_and_no_project),
 	T("LspDefinition:params", test_params),
@@ -55,6 +57,8 @@ class DefinitionTestSession {
 	var nextId = 100;
 	// What handle() returned for the last request; replies use the sink.
 	var handled: Array<byte>;
+	// Called with the id of each response, after it is recorded.
+	var onReply: int -> void;
 	new(fixture: string, t: Tester) {
 		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
 		if (Strings.equal(fixture, "definition")) {
@@ -74,7 +78,9 @@ class DefinitionTestSession {
 	}
 	def receive(bytes: Array<byte>) {
 		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
-		if (parsed.has("id")) replies.put(parsed);
+		if (!parsed.has("id")) return;
+		replies.put(parsed);
+		if (onReply != null && JsonValue.Int.?(parsed["id"])) onReply(JsonValue.Int.!(parsed["id"]).v);
 	}
 	def path(name: string) -> string { return ProjectFiles.join(base, name); }
 	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
@@ -451,6 +457,83 @@ def test_waiting_requests_bounded(t: Tester) {
 	t.asserti(ids.length, s.replies.length);
 	for (i = extra; i < ids.length - 1; i++) expectNull(t, s.result(t, ids[i]), "a superseded version");
 	expectLocation(t, s.result(t, ids[ids.length - 1]), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+// A request registered against the running analysis is answered when that
+// analysis ends, although later edits and requests wait for the next one.
+def test_running_analysis_answers_its_requests(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, DECL);
+	s.settle();
+	// An edit nothing schedules, then a save, which starts an analysis at once
+	// and leaves none waiting: the first request waits for that one.
+	t.assert(s.store.change(s.uri("Use.v3"), 2, Strings.format1("%s\n", USE)) == null, "edit");
+	s.save("Use.v3");
+	t.assertz(true, s.supervisor.busy());
+	var first = s.request("Use.v3", 2, USE_THING);
+	// Edits to another file during the analysis, each followed by a request,
+	// wait for the next analysis.
+	var later = Array<int>.new(3);
+	for (i < later.length) {
+		var text = Strings.format1("\n%s", DECL);
+		for (j < i) text = Strings.format1("\n%s", text);
+		s.change("Decl.v3", i + 2, text);
+		later[i] = s.request("Use.v3", 2, USE_THING);
+	}
+	t.asserti(0, s.replies.length);
+	// Poll until the running analysis ends.
+	var fds = Array<int>.new(4), generation = s.context().snapshot.generation;
+	while (s.context().snapshot.generation == generation) {
+		var count = s.supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.server.pollTimeout());
+		s.server.onPoll();
+	}
+	// Its result is stale, since Decl.v3 changed after it started.
+	t.asserti(1, s.replies.length);
+	expectNull(t, s.result(t, first), "the stale result of the analysis it waited for");
+	t.assertz(true, s.supervisor.busy());
+	for (id in later) t.assert(s.reply(id) == null, "later requests wait for the next analysis");
+	s.settle();
+	t.asserti(1 + later.length, s.replies.length);
+	for (id in later) expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 5, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+// Sends one more request from within the reply to {first}.
+class ReentrantRequest(s: DefinitionTestSession, ids: Vector<int>, first: int) {
+	var sent: bool;
+	def onReply(id: int) {
+		if (id != first || sent) return;
+		sent = true;
+		ids.put(s.request("Use.v3", 2, USE_THING));
+	}
+}
+// A request sent from within an eviction's reply still finds at most
+// MAX_WAITING requests waiting, so it evicts the next oldest in turn.
+def test_reentrant_reply_within_bound(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	s.change("Use.v3", 2, Strings.format1("%s\n", USE));
+	var max = LspDefinition.new(null, null, null).MAX_WAITING;
+	var ids = Vector<int>.new();
+	for (i < max) ids.put(s.request("Use.v3", 2, USE_THING));
+	t.asserti(0, s.replies.length);
+	var sender = ReentrantRequest.new(s, ids, ids[0]);
+	s.onReply = sender.onReply;
+	ids.put(s.request("Use.v3", 2, USE_THING));
+	t.assertz(true, sender.sent);
+	t.asserti(max + 2, ids.length);
+	// Each of the two requests past the bound evicted one, oldest first.
+	t.asserti(2, s.replies.length);
+	if (s.replies.length == 2) {
+		t.assert(s.replies[0]["id"] == JsonValue.Int(ids[0]), "the oldest first");
+		t.assert(s.replies[1]["id"] == JsonValue.Int(ids[1]), "then the next oldest");
+	}
+	s.onReply = null;
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	for (i < ids.length) t.assert(s.reply(ids[i]) != null, "every request is answered");
 	s.server.close();
 }
 def liveBytes() -> long {
