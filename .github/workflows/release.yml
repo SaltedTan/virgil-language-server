@@ -1,0 +1,188 @@
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release
+
+# A version tag builds, tests, packages, and smoke-tests the server archives on
+# both supported hosts, writes SHA256SUMS, and publishes them as a GitHub
+# prerelease. Running the workflow by hand is a dry run: the same jobs without
+# publishing, with the release files kept as a workflow artifact. See
+# docs/releasing.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.version.outputs.changelog }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag against VERSION and CHANGELOG.md
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            version=$(scripts/check-release.sh "$REF_NAME")
+            changelog=$version
+          else
+            version=$(tr -d '[:space:]' < VERSION)
+            changelog=Unreleased
+            echo "Dry run from branch $REF_NAME: version $version, no tag"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "changelog=$changelog" >> "$GITHUB_OUTPUT"
+
+  build:
+    # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
+    # supports arm64-darwin (ADR-0003), as in ci.yml.
+    name: Build, test, and package (${{ matrix.platform }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux x86-64
+            os: ubuntu-24.04
+            target: x86-64-linux
+          - platform: macOS Apple Silicon via Rosetta 2
+            os: macos-15
+            target: x86-64-darwin
+    env:
+      REQUIRE_NVIM: '1'
+      ARCHIVE: build/release/virgil-lsp-${{ needs.check.outputs.version }}-${{ matrix.target }}.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0 # full history and tags so --version reports a described revision
+      - name: Install Neovim 0.11.6
+        if: runner.os == 'Linux'
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Install Neovim (Homebrew)
+        if: runner.os == 'macOS'
+        run: brew install neovim
+      - name: Install Rosetta 2
+        if: runner.os == 'macOS'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - name: Show host and pinned Virgil revision
+        run: |
+          uname -sm
+          vendor/virgil/bin/dev/sense_host
+          git -C vendor/virgil log -1 --format='%H %cs %s'
+      - name: Build and test
+        run: make test
+      - name: Package
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            scripts/package-release.sh --tag "$REF_NAME" build/release
+          else
+            scripts/package-release.sh build/release
+          fi
+          cat build/release/*.manifest.json
+      - name: Smoke-test the extracted archive
+        run: scripts/smoke-test-release.sh "$ARCHIVE"
+      - name: Check that make test tested the packaged executables
+        # The build is deterministic, so the package's fresh build must match.
+        run: |
+          mkdir "$RUNNER_TEMP/archive"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/archive"
+          for f in virgil-lsp virgil-lsp-worker; do
+            cmp "build/$f" "$RUNNER_TEMP"/archive/*/"$f"
+          done
+          file "$RUNNER_TEMP"/archive/*/virgil-lsp
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.target }}
+          path: build/release/
+          if-no-files-found: error
+
+  checksums:
+    name: Write and verify SHA256SUMS
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          path: release/assets
+          merge-multiple: true
+      - name: Write and verify SHA256SUMS
+        working-directory: release/assets
+        # Every file in this directory is a release asset, so SHA256SUMS
+        # covers any asset that a later job adds here.
+        run: |
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+      - name: Write release notes
+        env:
+          CHANGELOG_SECTION: ${{ needs.check.outputs.changelog }}
+        run: |
+          scripts/release-notes.py "$CHANGELOG_SECTION" release/assets > release/notes.md
+          cat release/notes.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish prerelease
+    needs: [check, checksums]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: release
+      - name: Verify SHA256SUMS
+        working-directory: release/assets
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Refuse to replace an existing release
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::$TAG already has a release, which this workflow never replaces. See docs/releasing.md."
+            exit 1
+          fi
+      - name: Create the prerelease
+        run: |
+          gh release create "$TAG" release/assets/* --verify-tag --prerelease \
+            --title "virgil-lsp $VERSION" --notes-file release/notes.md

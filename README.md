@@ -39,7 +39,7 @@ cd virgil-language-server
 make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs available tests
 ```
 
-Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables.
+Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables. [Releases](docs/releasing.md) describes the release archives, how to verify them, and how to install them.
 
 Try the current development command:
 

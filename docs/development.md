@@ -18,7 +18,7 @@ make test-nvim  # only the headless Neovim smoke test (see Neovim testing below)
 make clean
 ```
 
-Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` prints the target it would use. It accepts these overrides:
+Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` and `-print-compiler` print the target and the Aeneas binary it would use. It accepts these overrides:
 
 | Variable | Purpose |
 | --- | --- |
@@ -26,6 +26,8 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 | `VIRGIL_V3C` | Use a specific Aeneas binary, e.g. a bootstrapped `bin/current/x86-64-linux/Aeneas` |
 | `V3C_TARGET` | Force a target such as `x86-64-darwin`. The `Makefile` also uses it to choose `src/os/<target>/`. |
 | `WORKER_HEAP` | `Makefile` only: the analysis worker's heap, e.g. `make WORKER_HEAP=1g` (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements) for the default and its measurements) |
+
+[Releases](releasing.md) covers packaging the executables as release archives, locally and in the release workflow.
 
 ## Running
 
@@ -96,6 +98,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/protocol/fingerprints.py` | Snapshot freshness against disk changes made while the worker is paused mid-analysis: same-length, shorter, longer, and deleted files, file and directory symlinks, an unrelated source edited, recovery, and overlay identity | `python3 test/protocol/fingerprints.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |
 | `test/diagnostics/` | Golden [semantic diagnostic](architecture.md#semantic-diagnostics) transcripts that interleave input with the expected messages, using the project fixtures. The [runner's header](../test/diagnostics/run.py) owns the transcript format. | `python3 test/diagnostics/run.py build/virgil-lsp [case ...]` (with `virgil-lsp-worker` beside it) |
+| `test/release/run.sh` | Tag, `VERSION`, and `CHANGELOG.md` checks in `scripts/check-release.sh`, which the [release workflow](releasing.md) runs for every tag | `test/release/run.sh` |
 | `test/e2e/nvim/` | Headless plain Neovim configuration | See [Neovim testing](../editors/nvim/README.md#headless-smoke-test) for coverage, commands, and skip policy |
 | `clients/vscode/` | Type-check and lifecycle regression tests with a simulated extension host, both run by CI job `vscode-client` on Linux, which also packages the VSIX and uploads it as an artifact, and a [manual checklist](../clients/vscode/README.md#manual-checklist) | See [client development commands](../clients/vscode/README.md#development); not run by `make test` |
 | `clients/vscode/test/e2e/` | The VS Code client in a real Extension Host against the built server, run by CI job `vscode-extension-host` on Linux | See the [Extension Host test](../clients/vscode/README.md#extension-host-test) for source and installed-VSIX modes, coverage, commands, and requirements; not run by `make test` |

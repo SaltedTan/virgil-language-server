@@ -31,7 +31,7 @@ WORKER_HEAP ?= 384m
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 
-.PHONY: all test test-nvim check-virgil buildinfo project-fixtures clean
+.PHONY: all test test-nvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -82,11 +82,16 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
 	python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp
 	python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp
+	test/release/run.sh
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
 
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
 test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
+
+# scripts/package-release.sh records the worker heap in its build manifest.
+print-worker-heap:
+	@echo '$(WORKER_HEAP)'
 
 clean:
 	python3 test/fixtures/projects/prepare.py $(BUILD) --cleanup

@@ -12,6 +12,8 @@
 #
 # With the single argument -print-target, print the selected target instead of
 # compiling. The Makefile uses it to choose the host files under src/os/.
+# With -print-compiler, print the path of the Aeneas binary that would compile;
+# scripts/package-release.sh records its checksum.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -51,6 +53,11 @@ fi
 if [ ! -x "$VIRGIL_V3C" ]; then
     echo "error: Aeneas compiler not found at $VIRGIL_V3C" >&2
     exit 1
+fi
+
+if [ "$#" -eq 1 ] && [ "$1" = "-print-compiler" ]; then
+    echo "$VIRGIL_V3C"
+    exit 0
 fi
 
 V3C=$VIRGIL_V3C exec "$VIRGIL/bin/v3c-$V3C_TARGET" "$@"
