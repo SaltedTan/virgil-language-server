@@ -33,7 +33,7 @@ Release archives that contain a `virgil-lsp` binary must include a copy of the A
 | `semver` | ISC | Runtime, through `vscode-languageclient`; also used by `@vscode/test-electron` |
 | [`typescript`](https://github.com/microsoft/TypeScript), with its platform package `@typescript/typescript-<platform>` | Apache-2.0 | Build tool |
 | `@types/vscode`, `@types/node`, `undici-types` | MIT | Type declarations for the build |
-| [`@vscode/test-electron`](https://github.com/microsoft/vscode-test) | MIT | Test tool: downloads and starts VS Code for the [Extension Host test](clients/vscode/README.md#extension-host-test) |
+| [`@vscode/test-electron`](https://github.com/microsoft/vscode-test) | MIT | Test tool: downloads VS Code for the [Extension Host test](clients/vscode/README.md#extension-host-test) |
 | `http-proxy-agent`, `https-proxy-agent`, `agent-base`, `debug`, `ms` | MIT | Test tool, through `@vscode/test-electron` |
 | `jszip` | MIT OR GPL-3.0-or-later, used under MIT | Test tool, through `@vscode/test-electron` |
 | `lie`, `immediate`, `setimmediate`, `readable-stream`, `core-util-is`, `isarray`, `process-nextick-args`, `safe-buffer`, `string_decoder`, `util-deprecate` | MIT | Test tool, through `jszip` |

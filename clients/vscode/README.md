@@ -15,7 +15,7 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
 ## Setup
 
-Requirements: a [supported VS Code version](../../docs/compatibility.md#editors), Node.js 20 or later with `npm`, and a built server.
+Requirements: a [supported VS Code version](../../docs/compatibility.md#editors), Node.js 22 or later with `npm` (required by the Extension Host test dependency), and a built server.
 
 1. Build the server from the repository root (`make`), and either put `build/` on your `PATH` or set `virgil.server.path` to the absolute path of `build/virgil-lsp`. Follow the [executable placement guidance](../../README.md#building).
 2. Install the extension's dependencies from the lockfile and compile it:
@@ -79,7 +79,7 @@ CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm t
 
 ### Extension Host test
 
-`npm run test:e2e` runs the compiled extension in a real VS Code Extension Host against the built server. It needs Node.js 22 or later and `build/virgil-lsp` and `build/virgil-lsp-worker` (`make` at the repository root); to test another build, pass its `virgil-lsp`: `npm run test:e2e -- path/to/virgil-lsp`. On first use it downloads VS Code 1.142.0 into `.vscode-test/` with [`@vscode/test-electron`](https://github.com/microsoft/vscode-test). On Linux without a display, run it under `xvfb-run -a npm run test:e2e`. It hasn't been run on macOS yet.
+`npm run test:e2e` runs the compiled extension in a real VS Code Extension Host against the built server. It needs the [setup prerequisites](#setup) and `build/virgil-lsp` and `build/virgil-lsp-worker` (`make` at the repository root); to test another build, pass its `virgil-lsp`: `npm run test:e2e -- path/to/virgil-lsp`. On first use it downloads the [tested VS Code version](../../docs/compatibility.md#editors) into `.vscode-test/` with [`@vscode/test-electron`](https://github.com/microsoft/vscode-test). On Linux without a display, run it under `xvfb-run -a npm run test:e2e`. It hasn't been run on macOS yet.
 
 The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) into a temporary directory, so that both editors check the same behaviour and edits don't touch the checkout. It starts VS Code twice, each time with temporary user data and extensions directories, only the built-in extensions besides this one, workspace trust disabled, and `VIRGIL_LOC` removed from the environment. User settings point `virgil.server.path` at the server and `virgil.virgilRoot` at the checkout's `vendor/virgil`. Through VS Code APIs and commands, it checks that:
 

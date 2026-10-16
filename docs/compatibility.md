@@ -26,7 +26,7 @@ The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.m
 | Linux arm64 | Not supported yet | — | — |
 | WSL 1 | Not supported | — | — |
 
-The [repository setup script](../scripts/github-setup.sh) configures both pinned-Virgil CI jobs and the VS Code client job as required checks on `main`. Merging a change to the script does not apply it; a maintainer re-runs the script to update branch protection.
+The [repository setup script](../scripts/github-setup.sh) configures both pinned-Virgil CI jobs and the `vscode-client` job as required checks on `main`. It does not include `vscode-extension-host`; making that job required is a maintainer decision. Merging a change to the script does not apply it; a maintainer re-runs the script to update branch protection.
 
 Apple Silicon support will move to a native `arm64-darwin` build once Virgil supports that target. Rosetta 2 is needed until then. Install it with:
 
