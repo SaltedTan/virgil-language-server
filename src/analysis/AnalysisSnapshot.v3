@@ -78,6 +78,14 @@ class AnalysisSnapshot {
 		var i = file.find(line, column);
 		return if(i >= 0, declarations[file.targets[i]]);
 	}
+	// The declaration that the identifier containing UTF-8 byte offset
+	// {offset} in {path} resolves to, or null if there is none.
+	def definitionAtOffset(path: string, offset: int) -> AnalysisDeclaration {
+		var file = files[path];
+		if (file == null) return null;
+		var i = file.findOffset(offset);
+		return if(i >= 0, declarations[file.targets[i]]);
+	}
 }
 
 // One canonical URI's submission stamp. A null identity denotes disk, not
@@ -100,28 +108,47 @@ class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUse
 	uidNext: int, globalTypesAdded: int, globalTypeTotal: int) { }
 
 // The occurrences of one file, without an object per occurrence: {ranges} holds
-// the begin line, begin column, end line, and end column of occurrence i at
-// 4 * i, and {targets} holds its index in the snapshot's declarations.
+// the begin line, begin column, end line, end column, begin offset, and end
+// offset of occurrence i at 6 * i (see AnalysisRange), and {targets} holds its
+// index in the snapshot's declarations. Occurrences are in source order and
+// do not overlap.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 	def range(path: string, i: int) -> AnalysisRange {
-		var r = 4 * i;
-		return AnalysisRange.new(path, ranges[r], ranges[r + 1], ranges[r + 2], ranges[r + 3]);
+		var r = 6 * i;
+		return AnalysisRange.new(path, ranges[r], ranges[r + 1], ranges[r + 2], ranges[r + 3],
+			ranges[r + 4], ranges[r + 5]);
 	}
 	// The index of the occurrence whose range contains the position, or -1.
+	// A retrospective "[]" or "[]=" use followed closely on its line by
+	// another use can be out of compiler-coordinate order (see
+	// docs/architecture.md#coordinates); {findOffset} has no such exception.
 	def find(line: int, column: int) -> int {
 		// Identifier tokens do not overlap, so their exclusive ends are also
 		// in source order. Find the first token ending after the query point.
 		var low = 0, high = targets.length;
 		while (low < high) {
-			var mid = low + (high - low) / 2, r = 4 * mid;
+			var mid = low + (high - low) / 2, r = 6 * mid;
 			var endLine = ranges[r + 2], endColumn = ranges[r + 3];
 			if (endLine < line || (endLine == line && endColumn <= column)) low = mid + 1;
 			else high = mid;
 		}
 		if (low >= targets.length) return -1;
-		var r = 4 * low;
+		var r = 6 * low;
 		var beginLine = ranges[r], beginColumn = ranges[r + 1];
 		if (line < beginLine || (line == beginLine && column < beginColumn)) return -1;
+		return low;
+	}
+	// The index of the occurrence whose byte range contains {offset}, or -1.
+	// The end offset is exclusive, so the offset just past an identifier is
+	// not in it.
+	def findOffset(offset: int) -> int {
+		var low = 0, high = targets.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (ranges[6 * mid + 5] <= offset) low = mid + 1;
+			else high = mid;
+		}
+		if (low >= targets.length || offset < ranges[6 * low + 4]) return -1;
 		return low;
 	}
 }

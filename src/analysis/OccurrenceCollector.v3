@@ -3,7 +3,7 @@
 
 // The occurrence-index contract is documented in
 // docs/architecture.md#compiler-adapter.
-class OccurrenceCollector extends VstVisitor<void, void> {
+class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private var fileName: string;
 	private var captures: List<(ParamDecl, VarBinding.Local)>;
@@ -29,8 +29,11 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		var a = result.extract();
 		return Arrays.sort(a, 0, a.length, before);
 	}
+	// Source order is byte order. Compiler coordinates follow it, except that
+	// a retrospective token's context-free column can pass a later token's.
 	private def before(a: AnalysisOccurrence, b: AnalysisOccurrence) -> bool {
 		var x = a.range, y = b.range;
+		if (x.beginOffset != y.beginOffset) return x.beginOffset < y.beginOffset;
 		return x.beginLine < y.beginLine || (x.beginLine == y.beginLine && x.beginColumn < y.beginColumn);
 	}
 	private def visitCompound(decl: VstCompound) {
@@ -163,7 +166,7 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 	}
 	private def record(token: Token, decl: AnalysisDeclaration) {
 		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
-		result.put(AnalysisOccurrence.new(rangeOf(token), decl));
+		result.put(AnalysisOccurrence.new(sources.range(token), decl));
 	}
 	def visitLiteral(e: Literal, env: void) { }
 	def visitString(e: StringExpr, env: void) { }
@@ -277,10 +280,6 @@ class OccurrenceCollector extends VstVisitor<void, void> {
 		if (decl == null) return null;
 		var token = decl.token;
 		if (token == null || token.beginLine <= 0) return null; // synthesized by the compiler
-		return AnalysisDeclaration.new(kind, token.image, rangeOf(token));
-	}
-	private def rangeOf(token: Token) -> AnalysisRange {
-		return AnalysisRange.new(token.fileName, token.beginLine, token.beginColumn,
-			token.beginLine, token.beginColumn + token.image.length);
+		return AnalysisDeclaration.new(kind, token.image, sources.range(token));
 	}
 }

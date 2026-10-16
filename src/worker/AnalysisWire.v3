@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 3;
+	def PROTOCOL_VERSION = 4;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -113,7 +113,8 @@ component AnalysisWire {
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
 	// diagnostics, and, if {files} is not null, a path table, the distinct
 	// declarations, and the occurrences of each file in source order as
-	// ranges and declaration indexes. Call finishResult before sending.
+	// ranges and declaration indexes. A range is four compiler coordinates
+	// and two byte offsets. Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);
@@ -205,7 +206,10 @@ component AnalysisWire {
 		if (hasOccurrences) {
 			table = Array<string>.new(r.readCount(1, 64));
 			for (i < table.length) table[i] = r.readString(1);
-			declarations = Array<AnalysisDeclaration>.new(r.readCount(7, 128));
+			// Kind, name, path index, and six range ints take at least nine
+			// bytes. The record charge covers the declaration, its range, and
+			// the array slot; the name is charged as an index string.
+			declarations = Array<AnalysisDeclaration>.new(r.readCount(9, 128));
 			for (i < declarations.length) {
 				var kind = r.readKind(), name = r.readString(1), path = r.readPath(table);
 				declarations[i] = AnalysisDeclaration.new(kind, name, r.readRange(path));
@@ -215,11 +219,12 @@ component AnalysisWire {
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
 			for (n = r.readCount(2, 256); n > 0 && r.ok(); n--) {
-				// Each occurrence is four range ints and a declaration index.
-				var path = r.readPath(table), count = r.readCount(5, 20);
-				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count);
+				// Each occurrence is six range ints and a declaration index,
+				// stored as seven int array elements.
+				var path = r.readPath(table), count = r.readCount(7, 28);
+				var ranges = Array<int>.new(6 * count), targets = Array<int>.new(count);
 				for (i < count) {
-					for (j < 4) ranges[4 * i + j] = r.readInt();
+					for (j < 6) ranges[6 * i + j] = r.readInt();
 					targets[i] = r.readTarget(declarations.length);
 				}
 				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets));
@@ -248,6 +253,7 @@ component AnalysisWire {
 	}
 	private def putRange(w: DataWriter, r: AnalysisRange) {
 		w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.endLine).put_sleb32(r.endColumn);
+		w.put_sleb32(r.beginOffset).put_sleb32(r.endOffset);
 	}
 	private def hashDeclaration(d: AnalysisDeclaration) -> int {
 		var r = d.range;
@@ -257,7 +263,8 @@ component AnalysisWire {
 		var x = a.range, y = b.range;
 		return a.kind == b.kind && Strings.equal(a.name, b.name) && Strings.equal(x.path, y.path)
 			&& x.beginLine == y.beginLine && x.beginColumn == y.beginColumn
-			&& x.endLine == y.endLine && x.endColumn == y.endColumn;
+			&& x.endLine == y.endLine && x.endColumn == y.endColumn
+			&& x.beginOffset == y.beginOffset && x.endOffset == y.endOffset;
 	}
 }
 
@@ -379,6 +386,7 @@ class AnalysisWireReader {
 		return AnalysisWire.DECL_KINDS[tag];
 	}
 	def readRange(path: string) -> AnalysisRange {
-		return AnalysisRange.new(path, r.read_sleb32(), r.read_sleb32(), r.read_sleb32(), r.read_sleb32());
+		return AnalysisRange.new(path, r.read_sleb32(), r.read_sleb32(), r.read_sleb32(), r.read_sleb32(),
+			r.read_sleb32(), r.read_sleb32());
 	}
 }

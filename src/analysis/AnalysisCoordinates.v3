@@ -170,11 +170,23 @@ class AnalysisPositionIndex<V> {
 	}
 }
 
-class AnalysisRetrospectiveToken extends Token {
+// A token that the analysis parser extracted from source, with the UTF-8 byte
+// offset of its first byte. Names that the compiler manufactures, such as an
+// index method's "[]", are plain {Token}s.
+class AnalysisCapturedToken extends Token {
+	def offset: int;
+	new(fileName: string, image: Array<byte>, beginLine: int, beginColumn: int, offset)
+		super(fileName, image, beginLine, beginColumn) { }
+}
+
+// A token that the parser extracted after moving past it (ParserState.tokenAt).
+// Its exported coordinates keep the pinned compiler's context-free columns;
+// {sourceLine} and {sourceColumn} are the live parser coordinates.
+class AnalysisRetrospectiveToken extends AnalysisCapturedToken {
 	def sourceLine: int;
 	def sourceColumn: int;
-	new(t: Token, sourceLine, sourceColumn)
-		super(t.fileName, t.image, t.beginLine, t.beginColumn) { }
+	new(t: Token, offset: int, sourceLine, sourceColumn)
+		super(t.fileName, t.image, t.beginLine, t.beginColumn, offset) { }
 	def rangeOf(len: int) -> FileRange {
 		return FileRange.new(fileName, sourceLine, sourceColumn, sourceLine, sourceColumn + len);
 	}
@@ -194,7 +206,7 @@ class AnalysisTokenCoordinates {
 		var p = positions.get(begin, (0, 0));
 		begins.set(key(p.0, p.1), (t.beginLine, t.beginColumn, begin), true);
 		ends.set(key(p.0, p.1 + end - begin), (t.beginLine, t.beginColumn + end - begin, end), true);
-		return AnalysisRetrospectiveToken.new(t, p.0, p.1);
+		return AnalysisRetrospectiveToken.new(t, begin, p.0, p.1);
 	}
 	def diagnostic(d: AnalysisDiagnostic) -> AnalysisDiagnostic {
 		var point = d.beginLine == d.endLine && d.beginColumn == d.endColumn;
@@ -216,17 +228,16 @@ class AnalysisTokenCoordinates {
 	private def key(line: int, column: int) -> long { return (long.!(line) << 32) | u32.view(column); }
 }
 
-// Lazily builds one replay map per referenced source path, preserving the
-// first source if paths repeat, as the program's binding index does.
+// Maps whole-program diagnostics to byte offsets: through each file's captured
+// retrospective tokens, then its replay map, built only for files with
+// diagnostics. The first source is kept if paths repeat, as the program's
+// binding index does.
 class AnalysisSourceCoordinates {
-	private def inputs = Strings.newMap<Array<byte>>();
-	private def maps = Strings.newMap<AnalysisCoordinates>();
+	private def maps = AnalysisSourceMaps.new();
 	private def tokens = Strings.newMap<AnalysisTokenCoordinates>();
 	private def positions = AnalysisPositionIndex<(int, int)>.new();
 	new(sources: Array<AnalysisSource>) {
-		for (s in sources) {
-			if (s.path != null && !inputs.has(s.path)) inputs[s.path] = if(s.input == null, Array<byte>.new(0), s.input);
-		}
+		for (s in sources) maps.add(s.path, s.input);
 	}
 	def capture(path: string) -> AnalysisTokenCoordinates {
 		var result = AnalysisTokenCoordinates.new(positions);
@@ -234,17 +245,65 @@ class AnalysisSourceCoordinates {
 		return result;
 	}
 	def diagnostic(d: AnalysisDiagnostic) -> AnalysisDiagnostic {
-		if (d.path == null || !inputs.has(d.path)) return d;
+		if (d.path == null) return d;
+		var map = maps.map(d.path);
+		if (map == null) return d;
 		var captured = tokens[d.path];
 		if (captured != null) d = captured.diagnostic(d);
-		var map = maps[d.path];
-		if (map == null) {
-			map = AnalysisCoordinates.new(inputs[d.path]);
-			maps[d.path] = map;
-		}
 		var point = d.beginLine == d.endLine && d.beginColumn == d.endColumn;
 		if (d.beginOffset < 0) d.beginOffset = map.offset(d.beginLine, d.beginColumn, point);
 		if (d.endOffset < 0) d.endOffset = map.offset(d.endLine, d.endColumn, point);
 		return d;
+	}
+}
+
+// The source bytes of a program's files by path, each with a replay map built
+// on first use. The first source is kept if paths repeat. The worker-side
+// {ProgramAnalysis} keeps one for lazy binding collection; the server never
+// holds source bytes this way.
+class AnalysisSourceMaps {
+	private def inputs = Strings.newMap<Array<byte>>();
+	private def maps = Strings.newMap<AnalysisCoordinates>();
+
+	// A missing capture is empty source, as in AeneasAdapter.analyzeProgram.
+	def add(path: string, input: Array<byte>) {
+		if (path != null && !inputs.has(path)) inputs[path] = if(input == null, Array<byte>.new(0), input);
+	}
+	// The replay map of {path}, or null if it has no source.
+	def map(path: string) -> AnalysisCoordinates {
+		if (path == null) return null;
+		var map = maps[path];
+		if (map == null) {
+			var input = inputs[path];
+			if (input == null) return null;
+			map = AnalysisCoordinates.new(input);
+			maps[path] = map;
+		}
+		return map;
+	}
+	// The range of {token}, with byte offsets in its own file. A token the
+	// parser extracted carries its offset, and its image is its source text.
+	// A name the compiler manufactures is located by replaying its live
+	// coordinates, and its span covers only the bytes that the source spells
+	// of it there. An index method declaration, such as "def [i: int]", is
+	// named "[]" or "[]=" at its opening bracket, and selects just that
+	// bracket. Offsets are -1 if the file has no source. Compiler coordinates
+	// are the token's own, ending after its image.
+	def range(token: Token) -> AnalysisRange {
+		var line = token.beginLine, column = token.beginColumn, image = token.image;
+		var begin = -1, end = -1;
+		if (AnalysisCapturedToken.?(token)) {
+			begin = AnalysisCapturedToken.!(token).offset;
+			end = begin + image.length;
+		} else {
+			var map = map(token.fileName);
+			if (map != null) {
+				var input = inputs[token.fileName];
+				var length = if(image.length > 0 && image[0] == '[', 1, image.length);
+				begin = end = map.offset(line, column, false);
+				while (end - begin < length && end < input.length && input[end] == image[end - begin]) end++;
+			}
+		}
+		return AnalysisRange.new(token.fileName, line, column, line, column + image.length, begin, end);
 	}
 }
