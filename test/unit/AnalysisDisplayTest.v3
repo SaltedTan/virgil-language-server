@@ -1,0 +1,436 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Display text: declaration signatures, use-site types, builtin uses, and
+// declaration sites. Every test checks the analysis and the snapshot decoded
+// from its worker result.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisDisplay:declaration_kinds", test_declaration_kinds),
+	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
+	T("AnalysisDisplay:builtin_uses", test_builtin_uses),
+	T("AnalysisDisplay:unknown_types", test_unknown_types),
+	T("AnalysisDisplay:depth_bound", test_depth_bound),
+	T("AnalysisDisplay:length_bound", test_length_bound),
+	T("AnalysisDisplay:shared_tuples", test_shared_tuples),
+	T("AnalysisDisplay:declaration_sites", test_declaration_sites),
+	T("AnalysisDisplay:without_occurrences", test_without_occurrences),
+	()
+];
+
+def PATH = "display.v3";
+def ELISION = AnalysisDisplayText.ELISION;
+
+// Joins {list}, ending each line with a newline.
+def lines(list: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (line in list) buf.puts(line).ln();
+	return buf.toString();
+}
+def indexOf(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def repeat(s: string, n: int) -> string {
+	var buf = StringBuilder.new();
+	for (i < n) buf.puts(s);
+	return buf.toString();
+}
+// Analyzes {text} as one file, which verifies if {verified}, and decodes
+// its worker result as the server would.
+def analyze(t: Tester, text: string, verified: bool) -> (ProgramAnalysis, AnalysisSnapshot) {
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], [], false);
+	t.assertz(true, a.parsed);
+	t.assertz(verified, a.verified);
+	var w = AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, [(PATH, a.occurrences(PATH))]);
+	var payload = Ranges.dup(AnalysisWire.finishResult(w, 0L)[WorkerFraming.HEADER_BYTES ...]);
+	match (AnalysisWire.decodeResult(payload, 1, [PATH])) {
+		Decoded(result) => return (a, result.snapshot);
+		_ => {
+			t.fail("result did not decode");
+			return (a, null);
+		}
+	}
+}
+// The byte offset {skip} bytes into the first occurrence of {at}.
+def offset(t: Tester, text: string, at: string, skip: int) -> int {
+	var i = indexOf(text, at);
+	if (i < 0) t.fail1("no \"%s\" in the test program", at);
+	return i + skip;
+}
+// Asserts that the name {skip} bytes into {at} declares a {kind} with
+// {signature}, at each of its bytes, in the analysis and the snapshot.
+def assertDeclares(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot), text: string, at: string, skip: int,
+		kind: AnalysisDeclKind, signature: string) {
+	var s = r.1, begin = offset(t, text, at, skip);
+	if (s == null || begin < skip) return;
+	var d = s.declarationAtOffset(PATH, begin);
+	if (d == null) return t.fail1("no declaration site at \"%s\"", at);
+	t.assert_string(signature, d.signature);
+	if (d.kind != kind) t.fail2("\"%s\" declares %s", at, d.kind.name);
+	t.asserti(begin, d.range.beginOffset);
+	for (b = d.range.beginOffset; b < d.range.endOffset; b++) t.assert(s.declarationAtOffset(PATH, b) == d, "every byte of a name");
+	var found = false;
+	for (site in r.0.declarationSites(PATH)) {
+		if (site.range.beginOffset != begin) continue;
+		found = true;
+		t.assert_string(signature, site.signature);
+	}
+	t.assert(found, "the analysis has the same site");
+}
+// Asserts that the use {skip} bytes into {at} resolves to a declaration with
+// {signature}, and has use-site type {want}, or none if null.
+def assertUses(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot), text: string, at: string, skip: int,
+		signature: string, want: string) {
+	var s = r.1, begin = offset(t, text, at, skip);
+	if (s == null || begin < skip) return;
+	var d = s.definitionAtOffset(PATH, begin);
+	if (d == null) return t.fail1("no use at \"%s\"", at);
+	t.assert_string(signature, d.signature);
+	var o = s.occurrenceAtOffset(PATH, begin);
+	if (o == null) return t.fail1("no occurrence at \"%s\"", at);
+	t.assert(o.declaration == d, "the occurrence's declaration");
+	assertType(t, at, want, s.useTypeAtOffset(PATH, begin));
+	assertType(t, at, want, o.useType);
+	for (u in r.0.occurrences(PATH)) {
+		if (u.range.beginOffset != begin) continue;
+		t.assert_string(signature, u.declaration.signature);
+		assertType(t, at, want, u.useType);
+		return;
+	}
+	t.fail1("the analysis has no use at \"%s\"", at);
+}
+// Asserts that the use {skip} bytes into {at} has no source declaration but
+// has type {want}.
+def assertBuiltin(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot), text: string, at: string, skip: int, want: string) {
+	var s = r.1, begin = offset(t, text, at, skip);
+	if (s == null || begin < skip) return;
+	t.assert(s.definitionAtOffset(PATH, begin) == null, "a builtin has no definition");
+	t.assert(s.occurrenceAtOffset(PATH, begin) == null, "a builtin is not an occurrence");
+	assertType(t, at, want, s.useTypeAtOffset(PATH, begin));
+	var u = s.builtinUseAtOffset(PATH, begin);
+	if (u == null) return t.fail1("no builtin use at \"%s\"", at);
+	t.asserti(begin, u.range.beginOffset);
+	t.assert(u.range.isTokenSpan(), "a builtin use is a token span");
+	for (b in r.0.builtinUses(PATH)) {
+		if (b.range.beginOffset != begin) continue;
+		t.assert_string(want, b.useType);
+		return;
+	}
+	t.fail1("the analysis has no builtin use at \"%s\"", at);
+}
+def assertType(t: Tester, at: string, want: string, got: string) {
+	if (want == null) {
+		if (got != null) t.fail2("use at \"%s\" has type %s", at, got);
+	} else {
+		if (got == null) t.fail2("use at \"%s\" has no type; expected %s", at, want);
+		else t.assert_string(want, got);
+	}
+}
+// Every signature and use-site type in {r} is within the rendering bound.
+def assertBounded(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot)) {
+	var limit = AnalysisDisplayText.MAX_BYTES + ELISION.length;
+	for (d in r.0.declarationSites(PATH)) t.assert(d.signature.length <= limit, "bounded signature");
+	for (o in r.0.occurrences(PATH)) {
+		t.assert(o.declaration.signature.length <= limit, "bounded signature");
+		t.assert(o.useType == null || o.useType.length <= limit, "bounded use-site type");
+	}
+	for (b in r.0.builtinUses(PATH)) t.assert(b.useType.length <= limit, "bounded builtin type");
+}
+
+def KINDS = lines([
+	"class Base { }",
+	"class Foo(first: int, var second: Foo) extends Base {",
+	"\tvar field: int;",
+	"\tdef var count: int;",
+	"\tdef member(p: Foo) -> Foo { var local = p; def fixed = 1; return local; }",
+	"\tdef chain() -> this { }",
+	"\tdef [i: int] -> int { return i; }",
+	"\tdef [j: int] = v: int { }",
+	"}",
+	"class Made { var g: int; new(g, f: int) { } }",
+	"class Box<T> { }",
+	"type V { case A; case B(x: int); }",
+	"type D(n: int) { }",
+	"enum E(code: int) { X(1), Y(2) }",
+	"component C {",
+	"\tdef id<T>(y: T) -> T { return y; }",
+	"\tdef use(r: Ref<L>) -> u32 {",
+	"\t\tvar m = Made.new(1, 2), foo = Foo.new(1, null), d = D(3);",
+	"\t\treturn u32.view(E.X.code) + r.a;",
+	"\t}",
+	"}",
+	"layout L {",
+	"\t+0 a: u32;",
+	"\t+4 b: byte[4];",
+	"\t=8;",
+	"}"
+]);
+
+def test_declaration_kinds(t: Tester) {
+	var text = KINDS, r = analyze(t, text, true);
+	assertDeclares(t, r, text, "class Foo", 6, AnalysisDeclKind.CLASS, "class Foo(first: int, var second: Foo) extends Base");
+	assertDeclares(t, r, text, "first:", 0, AnalysisDeclKind.FIELD, "def first: int");
+	assertDeclares(t, r, text, "second:", 0, AnalysisDeclKind.FIELD, "var second: Foo");
+	assertDeclares(t, r, text, "field:", 0, AnalysisDeclKind.FIELD, "var field: int");
+	assertDeclares(t, r, text, "count:", 0, AnalysisDeclKind.FIELD, "def var count: int");
+	assertDeclares(t, r, text, "member(", 0, AnalysisDeclKind.METHOD, "def member(p: Foo) -> Foo");
+	assertDeclares(t, r, text, "p: Foo)", 0, AnalysisDeclKind.PARAMETER, "p: Foo");
+	assertDeclares(t, r, text, "local =", 0, AnalysisDeclKind.LOCAL, "var local: Foo");
+	assertDeclares(t, r, text, "fixed =", 0, AnalysisDeclKind.LOCAL, "def fixed: int");
+	// ReturnType.This is "-> this" on a method.
+	assertDeclares(t, r, text, "chain(", 0, AnalysisDeclKind.METHOD, "def chain() -> this");
+	// An index method is selected at its opening bracket and spelled as declared.
+	assertDeclares(t, r, text, "[i: int] ->", 0, AnalysisDeclKind.METHOD, "def [i: int] -> int");
+	assertDeclares(t, r, text, "[j: int] =", 0, AnalysisDeclKind.METHOD, "def [j: int] = v: int");
+	assertDeclares(t, r, text, "v: int {", 0, AnalysisDeclKind.PARAMETER, "v: int");
+	// A constructor is "new", not a method returning void.
+	// A constructor parameter that names a field is spelled as typed.
+	assertDeclares(t, r, text, "new(g", 0, AnalysisDeclKind.CONSTRUCTOR, "new(g: int, f: int)");
+	assertDeclares(t, r, text, "g, f", 0, AnalysisDeclKind.PARAMETER, "g: int");
+	assertDeclares(t, r, text, "f: int)", 0, AnalysisDeclKind.PARAMETER, "f: int");
+	assertDeclares(t, r, text, "class Box", 6, AnalysisDeclKind.CLASS, "class Box<T>");
+	assertDeclares(t, r, text, "Box<T>", 4, AnalysisDeclKind.TYPE_PARAM, "T");
+	assertDeclares(t, r, text, "type V", 5, AnalysisDeclKind.CLASS, "type V");
+	assertDeclares(t, r, text, "case A", 5, AnalysisDeclKind.VARIANT_CASE, "case A");
+	assertDeclares(t, r, text, "case B", 5, AnalysisDeclKind.VARIANT_CASE, "case B(x: int)");
+	assertDeclares(t, r, text, "x: int)", 0, AnalysisDeclKind.FIELD, "def x: int");
+	// A data type is its own single case.
+	assertDeclares(t, r, text, "type D", 5, AnalysisDeclKind.CLASS, "type D(n: int)");
+	assertDeclares(t, r, text, "n: int", 0, AnalysisDeclKind.FIELD, "def n: int");
+	assertDeclares(t, r, text, "enum E", 5, AnalysisDeclKind.ENUM, "enum E(code: int)");
+	assertDeclares(t, r, text, "code:", 0, AnalysisDeclKind.FIELD, "def code: int");
+	assertDeclares(t, r, text, "X(1)", 0, AnalysisDeclKind.ENUM_CASE, "E.X");
+	assertDeclares(t, r, text, "component C", 10, AnalysisDeclKind.COMPONENT, "component C");
+	assertDeclares(t, r, text, "id<T>", 0, AnalysisDeclKind.METHOD, "def id<T>(y: T) -> T");
+	assertDeclares(t, r, text, "id<T>", 3, AnalysisDeclKind.TYPE_PARAM, "T");
+	assertDeclares(t, r, text, "layout L", 7, AnalysisDeclKind.LAYOUT, "layout L");
+	// A layout field's type is its memory type, as the source writes it.
+	assertDeclares(t, r, text, "a: u32", 0, AnalysisDeclKind.LAYOUT_FIELD, "+0 a: u32");
+	assertDeclares(t, r, text, "b: byte", 0, AnalysisDeclKind.LAYOUT_FIELD, "+4 b: byte[4]");
+	// Uses show their declaration's signature, and a type only if it differs.
+	assertUses(t, r, text, "Made.new", 5, "new(g: int, f: int)", null);
+	assertUses(t, r, text, "D(3)", 0, "type D(n: int)", "int -> D");
+	assertUses(t, r, text, "Foo.new", 4, "class Foo(first: int, var second: Foo) extends Base", "(int, Foo) -> Foo");
+	assertUses(t, r, text, "E.X.code", 2, "E.X", null);
+	assertUses(t, r, text, "E.X.code", 4, "def code: int", null);
+	assertUses(t, r, text, "r.a", 2, "+0 a: u32", null);
+	assertUses(t, r, text, "return local", 7, "var local: Foo", null);
+	assertUses(t, r, text, "extends Base", 8, "class Base", null);
+}
+
+def GENERICS = lines([
+	"class Foo { }",
+	"class Box<T> {",
+	"\tvar value: T;",
+	"\tdef get() -> T { return value; }",
+	"}",
+	"component M {",
+	"\tdef id<T>(p: T) -> T { return p; }",
+	"\tdef f(box: Box<Foo>, foo: Foo) -> Foo {",
+	"\t\tvar a = id<Foo>(foo), b = id(foo), c = box.get(), d = box.value;",
+	"\t\tvar e: Box<Foo> = Box<Foo>.new();",
+	"\t\treturn a;",
+	"\t}",
+	"}"
+]);
+
+def test_generic_use_sites(t: Tester) {
+	var text = GENERICS, r = analyze(t, text, true);
+	var id = "def id<T>(p: T) -> T";
+	assertUses(t, r, text, "id<Foo>", 0, id, "Foo -> Foo");
+	assertUses(t, r, text, "id(foo)", 0, id, "Foo -> Foo");
+	assertUses(t, r, text, "id(foo)", 3, "foo: Foo", null);
+	assertUses(t, r, text, "box.get", 4, "def get() -> T", "void -> Foo");
+	assertUses(t, r, text, "box.value", 4, "var value: T", "Foo");
+	assertUses(t, r, text, "box.value", 0, "box: Box<Foo>", null);
+	assertUses(t, r, text, "e: Box<Foo>", 3, "class Box<T>", "Box<Foo>");
+	assertUses(t, r, text, "e: Box<Foo>", 7, "class Foo", null);
+	// A default constructor names its class; its type is the constructor's.
+	assertUses(t, r, text, "Box<Foo>.new", 9, "class Box<T>", "void -> Box<Foo>");
+	// Inside the generic declaration, a use has the declared type.
+	assertUses(t, r, text, "return value", 7, "var value: T", null);
+	assertDeclares(t, r, text, "b = id", 0, AnalysisDeclKind.LOCAL, "var b: Foo");
+}
+
+def BUILTINS = lines([
+	"component M {",
+	"\tdef f(a: Array<int>) -> int {",
+	"\t\tvar n = a.length, m = int.max;",
+	"\t\tvar b = Array<byte>.new(n);",
+	"\t\treturn n + m;",
+	"\t}",
+	"}"
+]);
+
+def test_builtin_uses(t: Tester) {
+	var text = BUILTINS, r = analyze(t, text, true);
+	assertBuiltin(t, r, text, "a.length", 2, "int");
+	assertBuiltin(t, r, text, "int.max", 0, "int");
+	assertBuiltin(t, r, text, "int.max", 4, "int");
+	assertBuiltin(t, r, text, "Array<byte>.new", 0, "Array<byte>");
+	assertBuiltin(t, r, text, "Array<byte>.new", 12, "int -> Array<byte>");
+	// A type reference to a builtin type records nothing.
+	var s = r.1;
+	if (s == null) return;
+	t.assert(s.useTypeAtOffset(PATH, offset(t, text, "a: Array", 3)) == null, "builtin type reference");
+	// Builtin uses do not change the occurrences: the five are separate.
+	t.asserti(5, s.builtinUses(PATH).length);
+	t.asserti(r.0.occurrences(PATH).length, s.occurrences(PATH).length);
+	for (o in s.occurrences(PATH)) t.assert(o.declaration != null, "every occurrence has a declaration");
+}
+
+def UNKNOWN = lines([
+	"class Box<T>(value: T) { }",
+	"component M {",
+	"\tdef make<T>() -> T { var d: T; return d; }",
+	"\tdef id<T>(x: T) -> T { return x; }",
+	"\tdef f(m: Missing, b: Box<Missing>) -> Missing {",
+	"\t\tvar x = missing, y: Missing;",
+	"\t\tvar z = make(), w = id(null), u = Box.new(null);",
+	"\t\treturn y;",
+	"\t}",
+	"\tdef g() => missing();",
+	"}"
+]);
+
+// A null type, an error type, an unresolved type name, and an inference
+// variable without a solution all render as the placeholder.
+def test_unknown_types(t: Tester) {
+	var text = UNKNOWN, r = analyze(t, text, false), q = AnalysisDisplayText.UNKNOWN;
+	t.assert_string("?", q);
+	assertDeclares(t, r, text, "f(m", 0, AnalysisDeclKind.METHOD, "def f(m: ?, b: Box<?>) -> ?");
+	assertDeclares(t, r, text, "m: Missing", 0, AnalysisDeclKind.PARAMETER, "m: ?");
+	assertDeclares(t, r, text, "x = missing", 0, AnalysisDeclKind.LOCAL, "var x: ?");
+	assertDeclares(t, r, text, "y: Missing", 0, AnalysisDeclKind.LOCAL, "var y: ?");
+	// make's type parameter cannot be inferred.
+	assertDeclares(t, r, text, "z = make", 0, AnalysisDeclKind.LOCAL, "var z: ?");
+	assertUses(t, r, text, "z = make", 4, "def make<T>() -> T", "void -> ?");
+	// The null type.
+	assertUses(t, r, text, "id(null)", 0, "def id<T>(x: T) -> T", "? -> ?");
+	assertUses(t, r, text, "Box.new(null)", 4, "class Box<T>(value: T)", "? -> Box<?>");
+	assertDeclares(t, r, text, "g()", 0, AnalysisDeclKind.METHOD, "def g() -> ?");
+	// A use whose type is wholly unknown has no use-site type.
+	assertUses(t, r, text, "return y", 7, "var y: ?", null);
+}
+
+// A type nested deeper than MAX_DEPTH renders as the elision marker there.
+def test_depth_bound(t: Tester) {
+	var depth = AnalysisDisplayText.MAX_DEPTH;
+	var deep = Strings.format2("%sint%s", repeat("Array<", depth + 4), repeat(">", depth + 4));
+	var text = Strings.format1("component M {\n\tdef f(deep: %s) { }\n}\n", deep);
+	var r = analyze(t, text, true);
+	var want = Strings.format3("deep: %s%s%s", repeat("Array<", depth), ELISION, repeat(">", depth));
+	assertDeclares(t, r, text, "deep:", 0, AnalysisDeclKind.PARAMETER, want);
+	assertBounded(t, r);
+}
+
+// Text stops before it would pass MAX_BYTES, and ends with the elision marker.
+def test_length_bound(t: Tester) {
+	var params = StringBuilder.new();
+	for (i < 40) params.puts(if(i > 0, ", ", "")).put1("parameter%d: int", i);
+	var text = Strings.format1("component M {\n\tdef f(%s) { }\n}\n", params.toString());
+	var r = analyze(t, text, true), s = r.1;
+	if (s == null) return;
+	var d = s.declarationAtOffset(PATH, offset(t, text, "f(", 0));
+	if (d == null) return t.fail("no declaration site for f");
+	var full = Strings.format1("def f(%s)", Arrays.range(text, indexOf(text, "(") + 1, indexOf(text, ")")));
+	t.assert(full.length > AnalysisDisplayText.MAX_BYTES, "the full signature is longer than the bound");
+	t.assert(d.signature.length <= AnalysisDisplayText.MAX_BYTES + ELISION.length, "bounded signature");
+	t.assert(Strings.endsWith(d.signature, ELISION), "elided at the end");
+	var kept = d.signature.length - ELISION.length;
+	t.assert(kept > AnalysisDisplayText.MAX_BYTES - 32, "keeps what fits");
+	t.assert_string(Arrays.range(full, 0, kept), Arrays.range(d.signature, 0, kept));
+	assertBounded(t, r);
+}
+
+// Tuples that share their halves have exponentially large trees, as in
+// test/analysis/RetainProbe.v3. Rendering stops at the bound, so it is
+// linear in its output; an unbounded renderer would not finish.
+def test_shared_tuples(t: Tester) {
+	var buf = StringBuilder.new().puts("def tuples() {\n\tvar t0 = 1;\n");
+	for (i = 1; i <= 30; i++) buf.put3("\tvar t%d = (t%d, t%d);\n", i, i - 1, i - 1);
+	buf.puts("\tvar items = [t30];\n}\n");
+	var text = buf.toString(), r = analyze(t, text, true);
+	assertBounded(t, r);
+	var s = r.1;
+	if (s == null) return;
+	var d = s.declarationAtOffset(PATH, offset(t, text, "t30 =", 0));
+	if (d == null) return t.fail("no declaration site for t30");
+	t.assert(Strings.startsWith(d.signature, "var t30: ((((((((((((\xE2\x80\xA6, \xE2\x80\xA6), (\xE2\x80\xA6, \xE2\x80\xA6))"), "depth elision");
+	t.assert(Strings.endsWith(d.signature, ELISION), "length elision");
+	d = s.declarationAtOffset(PATH, offset(t, text, "t2 =", 0));
+	if (d != null) t.assert_string("var t2: ((int, int), (int, int))", d.signature);
+}
+
+def SITES = lines([
+	"class Pair(first: int, var second: int) {",
+	"\tdef [i: int] -> int { return i; }",
+	"}",
+	"type V { case A; case B; }",
+	"component M {",
+	"\tdef unused(p: int, q: int, v: V) -> int {",
+	"\t\tvar never = 1;",
+	"\t\tvar used = p;",
+	"\t\tmatch (v) { A => return used; _ => return 0; }",
+	"\t}",
+	"}"
+]);
+
+// Every declaration has a site, whether or not anything uses it, and only
+// declarations do.
+def test_declaration_sites(t: Tester) {
+	var text = SITES, r = analyze(t, text, true), s = r.1;
+	if (s == null) return;
+	assertDeclares(t, r, text, "unused(", 0, AnalysisDeclKind.METHOD, "def unused(p: int, q: int, v: V) -> int");
+	assertDeclares(t, r, text, "q: int", 0, AnalysisDeclKind.PARAMETER, "q: int");
+	assertDeclares(t, r, text, "never", 0, AnalysisDeclKind.LOCAL, "var never: int");
+	// A class parameter declares its field.
+	assertDeclares(t, r, text, "first", 0, AnalysisDeclKind.FIELD, "def first: int");
+	// An index method's site is its opening bracket.
+	var bracket = offset(t, text, "[i: int]", 0);
+	var d = s.declarationAtOffset(PATH, bracket);
+	t.assert(d != null && d.range.endOffset == bracket + 1, "an index method's bracket");
+	t.assert(s.declarationAtOffset(PATH, bracket + 1) != d, "only the bracket");
+	// "_" declares nothing a use can name.
+	t.assert(s.declarationAtOffset(PATH, offset(t, text, "_ =>", 0)) == null, "no site for _");
+	// A use is not a declaration site, and a declaration site is not a use.
+	var use = offset(t, text, "used = p", 7);
+	t.assert(s.declarationAtOffset(PATH, use) == null, "a use is not a site");
+	t.assert(s.definitionAtOffset(PATH, use) != null, "the use resolves");
+	t.assert(s.definitionAtOffset(PATH, offset(t, text, "never", 0)) == null, "a site is not a use");
+	// Byte ranges are exclusive at the end, and outside a name there is nothing.
+	var never = offset(t, text, "never", 0);
+	t.assert(s.declarationAtOffset(PATH, never - 1) == null, "the byte before a name");
+	t.assert(s.declarationAtOffset(PATH, never + 5) == null, "the byte after a name");
+	t.assert(s.declarationAtOffset(PATH, -1) == null, "a negative offset");
+	t.assert(s.declarationAtOffset(PATH, text.length) == null, "the end of the file");
+	t.assert(s.declarationAtOffset("other.v3", never) == null, "another file");
+	// The analysis and the snapshot have the same sites, in order without overlap.
+	var want = r.0.declarationSites(PATH), got = s.declarationSites(PATH), end = 0;
+	t.asserti(want.length, got.length);
+	for (i < got.length) {
+		if (i < want.length) t.assert_string(want[i].render(StringBuilder.new()).toString(), got[i].render(StringBuilder.new()).toString());
+		t.assert(got[i].range.beginOffset >= end, "sites in order without overlap");
+		end = got[i].range.endOffset;
+	}
+}
+
+// Without occurrences, a snapshot has no display data and answers null.
+def test_without_occurrences(t: Tester) {
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, SITES)], [], false);
+	var w = AnalysisWire.encodeResult(1, 1, 1, a, -1, -1, null);
+	var payload = Ranges.dup(AnalysisWire.finishResult(w, 0L)[WorkerFraming.HEADER_BYTES ...]);
+	match (AnalysisWire.decodeResult(payload, 1, [PATH])) {
+		Decoded(result) => {
+			var s = result.snapshot, never = indexOf(SITES, "never");
+			t.assert(s.declarationAtOffset(PATH, never) == null, "no sites");
+			t.assert(s.useTypeAtOffset(PATH, indexOf(SITES, "used = p") + 7) == null, "no use-site types");
+			t.asserti(0, s.declarationSites(PATH).length);
+			t.asserti(0, s.builtinUses(PATH).length);
+		}
+		_ => t.fail("result did not decode");
+	}
+}

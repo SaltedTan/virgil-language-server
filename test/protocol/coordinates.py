@@ -4,7 +4,7 @@
 """Drive exact diagnostic ranges through the real worker and CLI.
 
 Usage: python3 test/protocol/coordinates.py build/virgil-lsp [--evidence-dir DIR]
-The worker's v4 wire response is the executable interface for byte offsets;
+The worker's v5 wire response is the executable interface for byte offsets;
 the development CLI and stdio API intentionally retain compiler coordinates.
 """
 
@@ -81,7 +81,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 4, self.hello
+        assert self.hello["protocol"] == 5, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -125,25 +125,42 @@ class Worker:
                                                 "beginOffset", "endOffset"),
                                                [reader.integer() for _ in range(6)])),
                                     kind=reader.string(), message=reader.string()))
-        declarations, occurrences = [], []
+        declarations, occurrences, builtins = [], [], []
         if flags & 4:
             paths = [reader.string() for _ in range(reader.integer())]
+            strings = [reader.string() for _ in range(reader.integer())]
             for _ in range(reader.integer()):
-                kind, name, path = reader.take(1)[0], reader.string(), paths[reader.integer()]
+                kind, name, path = reader.take(1)[0], strings[reader.integer()], paths[reader.integer()]
                 declarations.append(dict(kind=kind, name=name, path=path,
                                          range=[reader.integer() for _ in range(4)],
                                          offsets=[reader.integer() for _ in range(2)]))
+                # A signature's string index plus one, or zero for none.
+                signature = reader.integer()
+                declarations[-1]["signature"] = strings[signature - 1] if signature else None
             for _ in range(reader.integer()):
-                path, count = paths[reader.integer()], reader.integer()
-                for _ in range(count):
+                path, first, sites = paths[reader.integer()], reader.integer(), reader.integer()
+                assert all(d["path"] == path for d in declarations[first:first + sites])
+                uses = []
+                for _ in range(reader.integer()):
                     # Begin line, column, and offset, and the length of both spans.
                     line, column, offset, length = [reader.integer() for _ in range(4)]
-                    occurrences.append(dict(path=path, range=[line, column, line, column + length],
-                                            offsets=[offset, offset + length],
-                                            declaration=declarations[reader.integer()]))
+                    uses.append(dict(path=path, range=[line, column, line, column + length],
+                                     offsets=[offset, offset + length],
+                                     declaration=declarations[reader.integer()], useType=None))
+                # Use-site types: occurrence index deltas and string indexes.
+                index = 0
+                for _ in range(reader.integer()):
+                    index += reader.integer()
+                    uses[index]["useType"] = strings[reader.integer()]
+                occurrences += uses
+                for _ in range(reader.integer()):
+                    line, column, offset, length = [reader.integer() for _ in range(4)]
+                    builtins.append(dict(path=path, range=[line, column, line, column + length],
+                                         offsets=[offset, offset + length],
+                                         useType=strings[reader.integer()]))
         reader.finish()
         return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1], skippedUses=stats[6],
-                    diagnostics=diagnostics, occurrences=occurrences)
+                    diagnostics=diagnostics, occurrences=occurrences, builtins=builtins)
 
     def close(self):
         self.proc.stdin.close()
@@ -263,6 +280,15 @@ def main():
                 assert len(found) == 1 and found[0]['offsets'] == [bracket, bracket + 1], found
                 declaration = text.encode().index(b'[x')
                 assert found[0]['declaration']['offsets'] == [declaration, declaration + 1], found
+                signature = 'def [x: int] -> int' if op == '[]' else 'def [x: int] = y: int'
+                assert found[0]['declaration']['signature'] == signature, found
+            # A builtin use has a type and exact offsets but no declaration.
+            text = 'component C {\n/*\t\u00e9*/ def f() -> Array<int> { return Array<int>.new(2); }\n}\n'
+            result = check("builtin uses", text, [], flags=1, path='builtin.v3')
+            new = text.encode().index(b'.new(') + 1
+            found = [b for b in result['builtins'] if b['useType'] == 'int -> Array<int>']
+            assert len(found) == 1 and found[0]['offsets'] == [new, new + 3], result['builtins']
+            assert result['skippedUses'] == 0, result
 
             path = work / 'semantic.v3'
             text = 'component C {\n/*\t😀é*/ def x: int = "s";\n}\n'
@@ -328,7 +354,7 @@ def main():
         if args.evidence_dir:
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
             (args.evidence_dir / 'coordinates-live.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + '\n')
-    print('Real worker offsets, language options, CLI coordinates, binding exports, stdio overlays, allocation guard, and malformed-string bounds passed.')
+    print('Real worker offsets, language options, CLI coordinates, binding and display exports, stdio overlays, allocation guard, and malformed-string bounds passed.')
 
 
 if __name__ == '__main__':

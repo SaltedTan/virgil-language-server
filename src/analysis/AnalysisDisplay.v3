@@ -1,0 +1,412 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The bounds and markers of display text; see docs/architecture.md#display-text.
+component AnalysisDisplayText {
+	// Rendering stops before the text would pass this many bytes, and
+	// appends ELISION instead.
+	def MAX_BYTES = 256;
+	// A type nested this many levels inside a declaration's or use's type
+	// renders as ELISION.
+	def MAX_DEPTH = 12;
+	// U+2026 HORIZONTAL ELLIPSIS, three UTF-8 bytes.
+	def ELISION = "\xE2\x80\xA6";
+	// A null type, an error type (including an unresolved type name), or an
+	// inference variable without a solution.
+	def UNKNOWN = "?";
+}
+
+// A declaration as the worker makes it, once per source declaration (see
+// AnalysisDisplay.declaration). The types of its uses are compared with its
+// own type {ownType}, if that is one Type, and otherwise with the text of its
+// type, which is rendered from {syntax} when a use first needs it.
+class AnalysisWorkerDeclaration extends AnalysisDeclaration {
+	def syntax: Decl;
+	def ownType: Type;
+	var typeText: string;
+	var rendered: bool;
+	new(kind: AnalysisDeclKind, name: string, range: AnalysisRange, signature: string, syntax, ownType)
+			super(kind, name, range) {
+		this.signature = signature;
+	}
+}
+
+// Renders and interns the display text of one program: a signature for each
+// declaration and the types of uses, in Virgil syntax. The collectors of all
+// of a program's files share it, so each declaration is made, and each type
+// rendered, once. Rendering is bounded while it runs (see AnalysisDisplayText),
+// so it is linear in its output even for types whose trees share subtrees.
+class AnalysisDisplay(sources: AnalysisSourceMaps) {
+	private def strings = AnalysisStringTable.new();
+	// Types are hash-consed, so the text of each is rendered once.
+	private def types = AnalysisIndexMap<Type>.new(hashType, identical<Type>);
+	private def typeTexts = Vector<string>.new();
+	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(hashKey, sameKey);
+	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
+	private def buf = StringBuilder.new();
+	private var full: bool;
+
+	// The declaration of {kind} named by {token}, the same object for every
+	// use, or null if the compiler synthesized it. {decl} is its syntax, and
+	// {t} the type of a declaration that has none, a type parameter.
+	def declaration(kind: AnalysisDeclKind, token: Token, decl: Decl, t: Type) -> AnalysisDeclaration {
+		if (token == null || token.beginLine <= 0) return null;
+		var key = (token, kind), index = declarations.add(key);
+		if (index < declarationList.length) return declarationList[index];
+		var d = AnalysisWorkerDeclaration.new(kind, token.image, sources.range(token),
+			signature(kind, token, decl), decl, if(decl == null, t, ownType(decl)));
+		declarationList.put(d);
+		return d;
+	}
+	// The text of the type of a use of {decl}, or null if it is the
+	// declaration's own type or is unknown. Most uses have exactly their
+	// declaration's type, which needs no text.
+	def useType(decl: AnalysisDeclaration, t: Type) -> string {
+		var d = AnalysisWorkerDeclaration.!(decl);
+		if (t == d.ownType) return null;
+		var text = typeText(t);
+		if (text == null) return null;
+		if (!d.rendered) {
+			d.typeText = if(d.syntax == null, typeText(d.ownType), declarationType(d.syntax));
+			d.rendered = true;
+		}
+		return if(text != d.typeText, text);
+	}
+	// The interned text of {t}, or null if it is unknown.
+	def typeText(t: Type) -> string {
+		t = resolve(t, 0);
+		if (unknown(t)) return null;
+		var index = types.add(t);
+		if (index < typeTexts.length) return typeTexts[index];
+		start();
+		putType(t, 0);
+		var text = strings.intern(buf);
+		typeTexts.put(text);
+		return text;
+	}
+
+	private def signature(kind: AnalysisDeclKind, token: Token, decl: Decl) -> string {
+		start();
+		match (decl) {
+			x: VstNew => {
+				put("new");
+				putParams(x.func.params, false);
+			}
+			x: VstMethod => putMethod(x);
+			x: VstField => {
+				put(if(x.writability == Writability.READ_ONLY, "def ",
+					if(x.writability == Writability.PRIVATE_WRITEABLE, "def var ", "var ")));
+				putTyped(x.token.image, x.vtype);
+			}
+			x: ParamDecl => putTyped(x.token.image, x.vtype);
+			x: VarDecl => {
+				put(if(x.isReadOnly, "def ", "var "));
+				putTyped(x.token.image, x.vtype);
+			}
+			x: VstClass => putClass(x);
+			x: VstComponent => {
+				put("component ");
+				put(x.token.image);
+			}
+			x: VstEnum => {
+				put("enum ");
+				put(x.token.image);
+				putParams(x.params, false);
+			}
+			x: VstLayout => {
+				put("layout ");
+				put(x.token.image);
+			}
+			x: VstEnumCase => {
+				if (x.receiver != null) put(x.receiver.token.image).put(".");
+				put(x.token.image);
+			}
+			// A data type, "type T(x: int)", is its own single case.
+			x: VstCaseMember => {
+				if (x.decl != null && !x.decl.isSynthetic) {
+					putClass(x.decl);
+				} else {
+					put("case ");
+					put(x.token.image);
+					if (x.decl != null) putParams(x.decl.params, false);
+				}
+			}
+			// A layout field's type is its memory type, as the source writes it.
+			x: VstLayoutField => {
+				put("+");
+				if (x.offset != null) put(x.offset.token.image);
+				put(" ");
+				put(x.token.image);
+				put(": ");
+				var mt = x.mtref;
+				if (mt != null && mt.tname != null) {
+					put(mt.tname.name.image);
+					if (mt.repeat != null) put("[").put(mt.repeat.token.image).put("]");
+				} else {
+					put(AnalysisDisplayText.UNKNOWN);
+				}
+			}
+			_ => put(token.image);
+		}
+		return strings.intern(buf);
+	}
+	private def putClass(c: VstClass) {
+		put(if(c.kind == Kind.VARIANT, "type ", "class "));
+		put(c.token.image);
+		putTypeParams(c.typeParams);
+		putParams(c.params, true);
+		if (c.superclass != null) {
+			put(" extends ");
+			putType(c.superclass.binding, 0);
+		}
+	}
+	// An index method is spelled as it is declared: "def [i: int] -> int"
+	// and "def [i: int] = v: int".
+	private def putMethod(m: VstMethod) {
+		var f = m.func, name = m.token.image;
+		put("def ");
+		if (m.isIndexed()) {
+			var setter = Strings.equal(name, "[]="), params = if(f.params != null, f.params.list);
+			put("[");
+			for (l = params; l != null && !full; l = l.tail) {
+				if (setter && l.tail == null) {
+					put("] = ");
+					putTyped(l.head.token.image, l.head.vtype);
+					return;
+				}
+				if (l != params) put(", ");
+				putTyped(l.head.token.image, l.head.vtype);
+			}
+			put("]");
+		} else {
+			put(name);
+			putTypeParams(m.typeParams);
+			putParams(f.params, false);
+		}
+		match (f.rettype) {
+			Void => ;
+			// Constructors return this too, but they render as "new(...)".
+			This => put(" -> this");
+			_ => {
+				put(" -> ");
+				putType(returnType(m), 0);
+			}
+		}
+	}
+	// Class parameters declared with var are writable {fields}.
+	private def putParams(params: VstList<ParamDecl>, fields: bool) {
+		if (params == null) return;
+		put("(");
+		for (l = params.list; l != null && !full; l = l.tail) {
+			if (l != params.list) put(", ");
+			var p = l.head;
+			if (fields && p.member != null && p.member.writability != Writability.READ_ONLY) put("var ");
+			putTyped(p.token.image, p.vtype);
+		}
+		put(")");
+	}
+	private def putTypeParams(list: List<TypeParamType>) {
+		if (list == null) return;
+		put("<");
+		for (l = list; l != null && !full; l = l.tail) {
+			if (l != list) put(", ");
+			put(l.head.token.image);
+		}
+		put(">");
+	}
+	private def putTyped(name: string, t: Type) {
+		put(name);
+		put(": ");
+		putType(t, 0);
+	}
+
+	// A declaration's own type, if it is one Type, or null.
+	private def ownType(decl: Decl) -> Type {
+		match (decl) {
+			x: VstNew => return null;
+			x: VstMethod => return x.func.ftype;
+			x: VstField => return x.vtype;
+			x: VarDecl => return x.vtype;
+			x: VstCompound => return compoundType(x);
+			x: VstEnumCase => return if(x.receiver != null, compoundType(x.receiver));
+			x: VstCaseMember => return if(x.decl != null, x.decl.declType, if(x.receiver != null, x.receiver.declType));
+			x: VstLayoutField => return if(x.mtref != null, x.mtref.getType());
+		}
+		return null;
+	}
+	// The text of a declaration's own type. Types are never created here:
+	// collection runs after the adapter released the global type cache (see
+	// AnalysisTypeCache), so a function type is rendered from its parts.
+	private def declarationType(decl: Decl) -> string {
+		match (decl) {
+			x: VstNew => return functionText(x.func.params, if(x.receiver != null, x.receiver.declType));
+			x: VstMethod => return functionText(x.func.params, returnType(x));
+		}
+		return typeText(ownType(decl));
+	}
+	// Renders as putType renders the function type, if any.
+	private def functionText(params: VstList<ParamDecl>, ret: Type) -> string {
+		start();
+		var list = if(params != null, params.list);
+		if (list == null) {
+			put("void");
+		} else if (list.tail == null) {
+			var paren = isFunction(list.head.vtype);
+			if (paren) put("(");
+			putType(list.head.vtype, 1);
+			if (paren) put(")");
+		} else {
+			put("(");
+			for (l = list; l != null && !full; l = l.tail) {
+				if (l != list) put(", ");
+				putType(l.head.vtype, 2);
+			}
+			put(")");
+		}
+		put(" -> ");
+		putType(ret, 1);
+		return strings.intern(buf);
+	}
+	// Reads the verifier's result: VstFunc.getReturnType traps on a return
+	// type that failed to resolve.
+	private def returnType(m: VstMethod) -> Type {
+		match (m.func.rettype) {
+			Void => return Void.TYPE;
+			This => return if(m.receiver != null, m.receiver.declType);
+			Implicit(expr) => return if(expr.implicitType == null, expr.exactType, expr.implicitType);
+			Explicit(tref) => return tref.binding;
+		}
+	}
+	// Does not create the type, unlike VstCompound.getDeclaredType.
+	private def compoundType(c: VstCompound) -> Type {
+		if (c.declType != null) return c.declType;
+		return if(c.typeCon != null, c.typeCon.singleton);
+	}
+
+	// Writes the text of {t}, at nesting {depth}.
+	private def putType(t: Type, depth: int) {
+		if (full) return;
+		if (depth >= AnalysisDisplayText.MAX_DEPTH) {
+			put(AnalysisDisplayText.ELISION);
+			return;
+		}
+		t = resolve(t, depth);
+		if (unknown(t)) {
+			put(AnalysisDisplayText.UNKNOWN);
+			return;
+		}
+		var nested = t.nested;
+		match (t.typeCon) {
+			x: Function_TypeCon => {
+				if (nested == null || nested.tail == null) {
+					put(AnalysisDisplayText.UNKNOWN);
+					return;
+				}
+				var ref = x.kind == Kind.FUNCREF, paren = isFunction(nested.head);
+				if (ref) put("&(");
+				if (paren) put("(");
+				putType(nested.head, depth + 1);
+				if (paren) put(")");
+				put(" -> ");
+				putType(nested.tail.head, depth + 1);
+				if (ref) put(")");
+			}
+			x: Tuple_TypeCon => {
+				if (nested == null) {
+					put("void");
+				} else if (nested.tail == null) {
+					putType(nested.head, depth + 1);
+				} else {
+					put("(");
+					putTypes(nested, depth + 1);
+					put(")");
+				}
+			}
+			x: V3Ref_TypeCon => {
+				put(x.name);
+				if (x.layoutDecl != null) put("<").put(x.layoutDecl.fullName).put(">");
+			}
+			_ => {
+				// A variant case's class is named "V.A", but its type arguments
+				// are the variant's: V<T>.A.
+				var name = t.typeCon.name, suffix: string;
+				if (ClassType.?(t)) {
+					var c = ClassType.!(t).classDecl;
+					if (c != null && c.isSynthetic && c.variantCase != null && nested != null) {
+						suffix = c.token.image;
+						if (name.length > suffix.length) name = Arrays.range(name, 0, name.length - suffix.length - 1);
+						else suffix = null;
+					}
+				}
+				put(name);
+				if (nested != null) {
+					put("<");
+					putTypes(nested, depth + 1);
+					put(">");
+				}
+				if (suffix != null) put(".").put(suffix);
+			}
+		}
+	}
+	private def putTypes(list: List<Type>, depth: int) {
+		for (l = list; l != null && !full; l = l.tail) {
+			if (l != list) put(", ");
+			putType(l.head, depth);
+		}
+	}
+	// Follows solved inference variables. Returns null for one without a
+	// solution, or for a chain longer than the depth bound.
+	private def resolve(t: Type, depth: int) -> Type {
+		for (i = depth; i < AnalysisDisplayText.MAX_DEPTH; i++) {
+			if (!TypeVarType.?(t)) return t;
+			var v = TypeVarType.!(t).vtype;
+			if (v == t) return null;
+			t = v;
+		}
+		return null;
+	}
+	private def unknown(t: Type) -> bool {
+		if (t == null || TypeVarType.?(t) || NullType.?(t) || AnyFuncType.?(t)) return true;
+		// The error type, and each unresolved type name, has a VOID type constructor.
+		return t.typeCon.kind == Kind.VOID && t != Void.TYPE;
+	}
+	private def isFunction(t: Type) -> bool {
+		t = resolve(t, 0);
+		return t != null && Function_TypeCon.?(t.typeCon);
+	}
+
+	private def start() {
+		buf.reset();
+		full = false;
+	}
+	// Appends {s} unless the text would pass MAX_BYTES; then appends the
+	// elision marker instead, and nothing more.
+	private def put(s: string) -> this {
+		if (full) return;
+		if (buf.length + s.length > AnalysisDisplayText.MAX_BYTES) {
+			full = true;
+			buf.puts(AnalysisDisplayText.ELISION);
+			return;
+		}
+		buf.puts(s);
+	}
+}
+
+def hashType(t: Type) -> int {
+	return t.hash;
+}
+// Identity, for maps of objects that are already unique, such as types.
+def identical<T>(a: T, b: T) -> bool {
+	return a == b;
+}
+// A declaration is its name token and kind: a class parameter's token names
+// both a parameter and a field. Hashing a whole path for every use is slow,
+// so its length and a byte of its file name tell most files apart.
+def hashKey(key: (Token, AnalysisDeclKind)) -> int {
+	var t = key.0, file = t.fileName, h = t.beginLine * 1009 + t.beginColumn * 31 + key.1.tag;
+	if (file != null && file.length > 0) h += file.length * 65599 + file[file.length / 2 + file.length / 4] * 8191;
+	return h;
+}
+def sameKey(a: (Token, AnalysisDeclKind), b: (Token, AnalysisDeclKind)) -> bool {
+	return a.0 == b.0 && a.1 == b.1;
+}

@@ -2,21 +2,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The occurrence-index contract is documented in
-// docs/architecture.md#compiler-adapter.
-class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, void> {
+// docs/architecture.md#compiler-adapter, and display data in
+// docs/architecture.md#display-text.
+class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
+	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
+	// Declaration sites in the order the walk finds them, which breaks ties.
+	private def siteList = Vector<AnalysisDeclaration>.new();
 	private var fileName: string;
 	private var captures: List<(ParamDecl, VarBinding.Local)>;
 	private var thisParam: ParamDecl;
 	private var thisClass: VstClass;
 	// Uses skipped because they are not token spans (see record).
 	def var skipped: int;
+	// After collect: the uses that resolved to no source declaration but
+	// have a type, and the declarations named in the file, each in source order.
+	def var builtins: Array<AnalysisBuiltinUse>;
+	def var sites: Array<AnalysisDeclaration>;
 
 	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
 		fileName = file.fileName;
 		for (i < file.components.length) visitCompound(file.components[i]);
 		for (i < file.classes.length) visitCompound(file.classes[i]);
 		for (i < file.enums.length) visitCompound(file.enums[i]);
+		for (i < file.layouts.length) visitLayout(file.layouts[i]);
 		for (i < file.exports.length) {
 			var e = file.exports[i].expr;
 			var inline = false;
@@ -28,20 +37,88 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			}
 			if (!inline) expr(e);
 		}
-		var a = result.extract();
-		return Arrays.sort(a, 0, a.length, before);
+		builtins = AnalysisTables.sort(builtinUses.extract(), builtinBefore);
+		sites = sortSites(siteList.extract());
+		return AnalysisTables.sort(result.extract(), before);
 	}
 	// Source order is byte order. Compiler coordinates follow it, except that
 	// a retrospective token's context-free column can pass a later token's.
 	private def before(a: AnalysisOccurrence, b: AnalysisOccurrence) -> bool {
-		var x = a.range, y = b.range;
+		return rangeBefore(a.range, b.range);
+	}
+	private def builtinBefore(a: AnalysisBuiltinUse, b: AnalysisBuiltinUse) -> bool {
+		return rangeBefore(a.range, b.range);
+	}
+	private def rangeBefore(x: AnalysisRange, y: AnalysisRange) -> bool {
 		if (x.beginOffset != y.beginOffset) return x.beginOffset < y.beginOffset;
 		return x.beginLine < y.beginLine || (x.beginLine == y.beginLine && x.beginColumn < y.beginColumn);
+	}
+	// Sorts declaration sites by byte offset and keeps the first found of
+	// any that overlap. A token names two declarations only where
+	// verification shares it, as a variant with parameters shares its name
+	// with its single case; the walk finds the declaration a reader means first.
+	private def sortSites(list: Array<AnalysisDeclaration>) -> Array<AnalysisDeclaration> {
+		list = AnalysisTables.sort(list, siteBefore);
+		var count = 0, end = 0;
+		for (i < list.length) {
+			var r = list[i].range;
+			if (count > 0 && r.beginOffset < end) continue;
+			list[count++] = list[i];
+			end = r.endOffset;
+		}
+		return if(count == list.length, list, Arrays.range(list, 0, count));
+	}
+	private def siteBefore(a: AnalysisDeclaration, b: AnalysisDeclaration) -> bool {
+		return a.range.beginOffset < b.range.beginOffset;
+	}
+	// Records {decl} as declared in this file, if the source spells its name
+	// there: an index method's name "[]" or "[]=" selects its opening bracket
+	// (see AnalysisSourceMaps.range). A declaration whose name the compiler
+	// manufactured elsewhere has no site.
+	private def site(decl: AnalysisDeclaration) {
+		if (decl == null) return;
+		var r = decl.range;
+		if (!Strings.equal(r.path, fileName) || r.beginOffset < 0 || r.endOffset <= r.beginOffset) return;
+		var bracket = decl.name.length > 0 && decl.name[0] == '[' && r.endOffset - r.beginOffset == 1;
+		if (!bracket && !r.isTokenSpan()) return;
+		siteList.put(decl);
+	}
+	private def siteVar(v: VarDecl) {
+		// "_" declares nothing a use can name.
+		if (v != null && !v.isUnderscore()) site(make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v));
+	}
+	private def siteTypeParams(list: List<TypeParamType>) {
+		for (l = list; l != null; l = l.tail) site(declare(AnalysisDeclKind.TYPE_PARAM, l.head.token, l.head));
+	}
+	// A compound's own parameters are its fields.
+	private def siteFields(list: VstList<ParamDecl>) {
+		if (list == null) return;
+		for (l = list.list; l != null; l = l.tail) {
+			var p = l.head;
+			site(if(p.member != null, make(AnalysisDeclKind.FIELD, p.member), make(AnalysisDeclKind.PARAMETER, p)));
+		}
+	}
+	private def visitLayout(decl: VstLayout) {
+		site(make(AnalysisDeclKind.LAYOUT, decl));
+		for (l = decl.members; l != null; l = l.tail) {
+			if (VstLayoutField.?(l.head)) site(make(AnalysisDeclKind.LAYOUT_FIELD, l.head));
+		}
 	}
 	private def visitCompound(decl: VstCompound) {
 		// Verification clears compound.verifier; functions retain the receiver.
 		thisParam = if(decl.constructor != null, decl.constructor.func.thisParam);
 		thisClass = if(VstClass.?(decl), VstClass.!(decl));
+		// A variant case's class shares its token with the case member, and
+		// its type parameters with the variant.
+		if (!decl.isSynthetic && !decl.isFileScope) {
+			match (decl) {
+				x: VstComponent => site(make(AnalysisDeclKind.COMPONENT, x));
+				x: VstEnum => site(make(AnalysisDeclKind.ENUM, x));
+				x: VstClass => site(make(AnalysisDeclKind.CLASS, x));
+			}
+			siteTypeParams(decl.typeParams);
+		}
+		siteFields(decl.params);
 		// Verification shares class parameters with their synthesized fields
 		// and with the constructor, so only this walk visits their types.
 		params(decl.params);
@@ -60,7 +137,11 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			match (l.head) {
 				x: VstNew => {
 					thisParam = x.func.thisParam;
-					if (!x.isSynthetic && x.func.params != decl.params) params(x.func.params);
+					if (!x.isSynthetic) site(make(AnalysisDeclKind.CONSTRUCTOR, x));
+					if (!x.isSynthetic && x.func.params != decl.params) {
+						if (x.func.params != null) for (p = x.func.params.list; p != null; p = p.tail) siteVar(p.head);
+						params(x.func.params);
+					}
 					// Verification shares the class clause with its constructor.
 					// Only a constructor-local clause needs a second walk.
 					if (x.superclause != null && x.superclause != decl.superclause) expr(x.superclause.args);
@@ -71,14 +152,23 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 				x: VstMethod => {
 					if (x.isSynthetic) continue;
 					thisParam = x.func.thisParam;
+					site(make(AnalysisDeclKind.METHOD, x));
+					siteTypeParams(x.typeParams);
 					func(x.func);
 					stmt(x.func.body);
 				}
 				x: VstField => {
-					if (!x.isSynthetic) typeRef(x.tref);
+					if (!x.isSynthetic) {
+						site(make(AnalysisDeclKind.FIELD, x));
+						typeRef(x.tref);
+					}
 					expr(x.init);
 				}
-				x: VstEnumCase => exprs(x.args);
+				x: VstEnumCase => {
+					site(make(AnalysisDeclKind.ENUM_CASE, x));
+					exprs(x.args);
+				}
+				x: VstCaseMember => site(make(AnalysisDeclKind.VARIANT_CASE, x));
 			}
 		}
 	}
@@ -94,6 +184,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 	}
 	private def varDecl(v: VarDecl) {
 		if (v == null) return;
+		siteVar(v);
 		typeRef(v.tref);
 		expr(v.init);
 	}
@@ -102,6 +193,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		for (l = list.list; l != null; l = l.tail) typeRef(l.head.tref);
 	}
 	private def func(f: VstFunc) {
+		if (f.params != null) for (l = f.params.list; l != null; l = l.tail) siteVar(l.head);
 		params(f.params);
 		match (f.rettype) {
 			Explicit(tref) => typeRef(tref);
@@ -117,7 +209,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			var x = NamedTypeRef.!(tref), c = ClassType.!(tref.binding).classDecl.variantCase;
 			if (x.left == null && c != null && c.decl.isSynthetic && c.isDefaultCase()) {
 				typeRefs(x.nested);
-				record(x.name, make(AnalysisDeclKind.CLASS, c.receiver));
+				record(x.name, make(AnalysisDeclKind.CLASS, c.receiver), null);
 				return;
 			}
 		}
@@ -135,7 +227,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			x: NamedTypeRef => {
 				typeRef(x.left);
 				typeRefs(x.nested);
-				record(x.name, typeDeclaration(x.binding));
+				record(x.name, typeDeclaration(x.binding), x.binding);
 			}
 			x: FuncTypeRef => {
 				typeRef(x.paramType);
@@ -190,19 +282,23 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		for (l = c.patterns.list; l != null; l = l.tail) {
 			var pat = l.head;
 			expr(pat.expr);
-			if (pat.vdecl != null) typeRef(pat.vdecl.tref);
+			if (pat.params != null) for (p = pat.params.list; p != null; p = p.tail) siteVar(p.head);
+			if (pat.vdecl != null) {
+				siteVar(pat.vdecl);
+				typeRef(pat.vdecl.tref);
+			}
 			if (!VarExpr.?(pat.expr)) continue;
 			var ve = VarExpr.!(pat.expr);
 			// Qualified cases already have bindings. Unqualified case names
 			// bypass ordinary name resolution in the verifier.
 			if (ve.expr != null || ve.varbind.ok()) continue;
 			if (pat.variantCase != null) {
-				record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase));
+				record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase), null);
 			} else if (pat.val != null && EnumType.?(matchType)) {
 				// Enum patterns retain only their resolved case value; look up
 				// the declaration in the verified scrutinee's enum.
 				var member = EnumType.!(matchType).lookupCase(ve.ident.name.image);
-				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member));
+				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member), null);
 			}
 		}
 		stmt(c.stmt);
@@ -235,16 +331,33 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			var member = et.enumDecl.memberMap[e.ident.name.image];
 			if (VstField.?(member)) decl = make(AnalysisDeclKind.FIELD, member);
 		}
-		record(e.ident.name, decl);
+		if (decl != null) record(e.ident.name, decl, e.exactType);
+		else builtin(e.ident.name, e.varbind, e.exactType);
 	}
-	// Every use is recorded here. A use must be a token span (see
+	// Every use is recorded here, with the text of its type {t} if that
+	// differs from its declaration's. A use must be a token span (see
 	// AnalysisRange.isTokenSpan). Parser tokens always are; a name the compiler
 	// manufactured where the source doesn't spell it would not be, and is
 	// skipped, since neither its compiler span nor its byte span would locate it.
-	private def record(token: Token, decl: AnalysisDeclaration) {
+	private def record(token: Token, decl: AnalysisDeclaration, t: Type) {
 		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
 		var range = sources.range(token);
-		if (range.isTokenSpan()) result.put(AnalysisOccurrence.new(range, decl));
+		if (!range.isTokenSpan()) {
+			skipped++;
+			return;
+		}
+		var o = AnalysisOccurrence.new(range, decl);
+		if (t != null) o.useType = display.useType(decl, t);
+		result.put(o);
+	}
+	// A resolved use with no source declaration, such as ".length" or
+	// "int.max", has only its type, which it keeps if that is known.
+	private def builtin(token: Token, b: VarBinding, t: Type) {
+		if (!b.ok() || b == VarBinding.Void || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return;
+		var text = display.typeText(t);
+		if (text == null) return;
+		var range = sources.range(token);
+		if (range.isTokenSpan()) builtinUses.put(AnalysisBuiltinUse.new(range, text));
 		else skipped++;
 	}
 	def visitLiteral(e: Literal, env: void) { }
@@ -264,7 +377,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		var decl = indexDeclaration(e.write);
 		if (decl == null) decl = indexDeclaration(e.read);
 		var src = e.exprs.src;
-		if (decl != null && src != null) record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl);
+		if (decl != null && src != null) record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null);
 	}
 	def visitRange(e: RangeExpr, env: void) {
 		expr(e.expr);
@@ -384,7 +497,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 			x: RefType => return null;
 			// Builtin type parameters have no source token; inferred type
 			// variables are TypeVarTypes.
-			x: TypeParamType => return declare(AnalysisDeclKind.TYPE_PARAM, x.token);
+			x: TypeParamType => return declare(AnalysisDeclKind.TYPE_PARAM, x.token, x);
 		}
 		if (V3Component_TypeCon.?(t.typeCon)) {
 			return make(AnalysisDeclKind.COMPONENT, V3Component_TypeCon.!(t.typeCon).componentDecl);
@@ -392,10 +505,11 @@ class OccurrenceCollector(sources: AnalysisSourceMaps) extends VstVisitor<void, 
 		return null;
 	}
 	private def make(kind: AnalysisDeclKind, decl: Decl) -> AnalysisDeclaration {
-		return if(decl != null, declare(kind, decl.token));
+		return if(decl != null, display.declaration(kind, decl.token, decl, null));
 	}
-	private def declare(kind: AnalysisDeclKind, token: Token) -> AnalysisDeclaration {
-		if (token == null || token.beginLine <= 0) return null; // synthesized by the compiler
-		return AnalysisDeclaration.new(kind, token.image, sources.range(token));
+	// A declaration that is not a Decl: a type parameter of type {t}. Null if
+	// the compiler synthesized it.
+	private def declare(kind: AnalysisDeclKind, token: Token, t: Type) -> AnalysisDeclaration {
+		return display.declaration(kind, token, null, t);
 	}
 }

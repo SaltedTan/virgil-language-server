@@ -130,7 +130,8 @@ def assertUses(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot), text: string, 
 
 // Asserts that every file's occurrences in {s} are token spans in strictly
 // increasing byte order without overlaps, and that each use names its
-// declaration (see names) and each declaration spells its name.
+// declaration (see names) and each declaration spells its name. Display data
+// must be sound too (see displayError).
 def assertSound(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>) {
 	t.asserti(0, s.stats.skippedUses);
 	var inputs = Strings.newMap<Array<byte>>(), count = 0;
@@ -150,8 +151,49 @@ def assertSound(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>) 
 				return t.fail1("declaration of %s does not spell its name", o.toString());
 			}
 		}
+		var error = displayError(s, source);
+		if (error != null) return t.fail(error);
 	}
 	t.assert(count > 0, "the program has uses");
+}
+// A failure message unless a file's declaration sites and builtin uses are
+// in byte order without overlaps, every declaration that a use in the file
+// names there has a site and a signature, and every builtin use is a token
+// span with a type and no definition.
+def displayError(s: AnalysisSnapshot, source: AnalysisSource) -> string {
+	var path = source.path, end = 0;
+	for (d in s.declarationSites(path)) {
+		if (d.range.beginOffset < end) return Strings.format1("declaration site %s overlaps the previous site", describe(d));
+		end = d.range.endOffset;
+		if (s.declarationAtOffset(path, d.range.beginOffset) != d) return Strings.format1("declaration site %s is not found", describe(d));
+	}
+	for (o in s.occurrences(path)) {
+		var d = o.declaration;
+		if (d.signature == null) return Strings.format1("the declaration of %s has no signature", o.toString());
+		if (Strings.equal(d.range.path, path) && !sameSite(s.declarationAtOffset(path, d.range.beginOffset), d)) {
+			return Strings.format1("the declaration of %s has no declaration site", o.toString());
+		}
+	}
+	end = 0;
+	for (u in s.builtinUses(path)) {
+		var r = u.range, b = r.beginOffset;
+		if (!r.isTokenSpan() || b < end) return Strings.format1("builtin use %s is not a token span in order", u.toString());
+		end = r.endOffset;
+		if (u.useType == null || !Strings.equal(u.useType, s.useTypeAtOffset(path, b))) {
+			return Strings.format1("builtin use %s has no type", u.toString());
+		}
+		if (s.definitionAtOffset(path, b) != null) return Strings.format1("builtin use %s has a definition", u.toString());
+	}
+	return null;
+}
+// Whether {site} is {d} or shares its span, as a data type, "type T(x: int)",
+// shares its name with its single case.
+def sameSite(site: AnalysisDeclaration, d: AnalysisDeclaration) -> bool {
+	if (site == d) return true;
+	return site != null && site.range.beginOffset == d.range.beginOffset && site.range.endOffset == d.range.endOffset;
+}
+def describe(d: AnalysisDeclaration) -> string {
+	return Strings.format3("%s %s at byte %d", d.kind.name, d.name, d.range.beginOffset);
 }
 // Whether {text} spells a declaration's {name}. An index method declaration
 // and an index operator span only the opening bracket of "[]" or "[]=".
@@ -666,6 +708,10 @@ def test_aeneas_sources(t: Tester) {
 			// ADR-0004 records this program's share of the result budget.
 			t.assert(snapshot.resultAllocation <= long.view(AnalysisWire.MAX_RESULT_ALLOCATION) * 4 / 5,
 				"the Aeneas sources use at most 80% of the result budget");
+			// Admitting a result reserves a full result budget, half of the
+			// snapshot budget, beside the snapshot it replaces.
+			t.assert(snapshot.retainedBytes <= long.view(AnalysisWire.MAX_RESULT_ALLOCATION) * 4 / 5,
+				"the Aeneas snapshot uses at most 80% of its half of the snapshot budget");
 		}
 		_ => t.fail("the Aeneas sources did not analyze");
 	}

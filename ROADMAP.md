@@ -109,7 +109,7 @@ Treat each completed analysis as an immutable snapshot containing:
 - declaration index: stable symbol key to declaration and source range;
 - occurrence index: source range to semantic binding;
 - reverse-reference index: declaration key to all occurrences;
-- type/signature display cache.
+- type/signature display cache *(present: [display text](docs/architecture.md#display-text))*.
 
 The [analysis snapshot contract](docs/architecture.md#analysis-snapshots-partly-present) owns freshness and planned publication/navigation behavior.
 
@@ -479,7 +479,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 13. Publish whole-project semantic diagnostics. *(present; [#58](https://github.com/SaltedTan/virgil-language-server/issues/58))*
 14. Build declaration and occurrence indexes from verified bindings. *(present; [#104](https://github.com/SaltedTan/virgil-language-server/issues/104); see the [compiler adapter](docs/architecture.md#compiler-adapter))*
 15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
-16. Implement hover.
+16. Implement hover. *(partial: [display data](docs/architecture.md#display-text) present, [#105](https://github.com/SaltedTan/virgil-language-server/issues/105); handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106))*
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
 18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); attaching the VSIX to GitHub prereleases is part of the release workflow)*
 
