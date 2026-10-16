@@ -36,7 +36,7 @@ The executables are unsigned and not notarized. Nothing is published to the VS C
 
 ## How the workflow works
 
-The workflow runs for every pushed tag that starts with `v`, and by hand as a [dry run](#dry-runs). Its jobs run in this order, and each needs the previous one to succeed:
+The workflow runs for every pushed tag that starts with `v`, and as a [dry run](#dry-runs) by hand or on a pull request that changes it or its scripts. Its jobs run in this order, and each needs the previous one to succeed:
 
 1. **Check version.** For a tag, [`scripts/check-release.sh`](../scripts/check-release.sh) requires the tag to be `v` followed by `VERSION`, `VERSION` to be a semantic version, and `CHANGELOG.md` to have a `## [<version>]` section.
 2. **Build, test, and package**, on `ubuntu-24.04` (Linux x86-64) and on `macos-15` (Apple Silicon, under Rosetta 2), from the tagged commit with submodules. Each runs `make test` as CI does, then [`scripts/package-release.sh`](../scripts/package-release.sh), which refuses a modified checkout or a Virgil checkout other than the pinned one, builds in a new directory, and writes the archive and its manifest. [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) then extracts the archive in a new temporary directory and runs it there with an empty environment: it checks the files against the manifest, runs `--version`, and runs `analyze` on a two-file program and on a program with a type error, directly and through a symlink. Because the build is deterministic, the job also checks that the packaged executables are byte for byte the ones `make test` tested.
@@ -87,6 +87,8 @@ gh run watch    # choose the new Release run
 A dry run builds, tests, packages, and smoke-tests both archives, and writes and verifies `SHA256SUMS`, but never publishes. The release notes use the `## [Unreleased]` section, and the manifests' `tag` is `null`. Download the result, the same files that a release would attach plus `notes.md`, with `gh run download <run-id> --name release`. Each build job also keeps its archive and manifest as `archive-<target>`.
 
 A dry run from a tag (`--ref v0.1.0-alpha.1`) also checks the tag, but still doesn't publish.
+
+A pull request that changes `release.yml`, `check-release.sh`, `package-release.sh`, `release-notes.py`, or `smoke-test-release.sh` also dry-runs the workflow, because GitHub only runs a workflow by hand once it is on the default branch. Other changes that could break packaging, such as to the `Makefile` or `scripts/v3c.sh`, don't trigger it; dry-run `main` after merging them.
 
 To package locally, run the same scripts as the workflow:
 

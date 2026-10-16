@@ -5,13 +5,22 @@ name: Release
 
 # A version tag builds, tests, packages, and smoke-tests the server archives on
 # both supported hosts, writes SHA256SUMS, and publishes them as a GitHub
-# prerelease. Running the workflow by hand is a dry run: the same jobs without
-# publishing, with the release files kept as a workflow artifact. See
-# docs/releasing.md.
+# prerelease. Running the workflow by hand, or on a pull request that changes
+# the release files, is a dry run: the same jobs without publishing, with the
+# release files kept as a workflow artifact. See docs/releasing.md.
 
 on:
   push:
     tags: ['v*']
+  # Only a workflow on the default branch can be run by hand, so pull requests
+  # that change the release path dry-run it before it is merged.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/check-release.sh
+      - scripts/package-release.sh
+      - scripts/release-notes.py
+      - scripts/smoke-test-release.sh
   workflow_dispatch:
 
 permissions:
