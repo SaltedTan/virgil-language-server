@@ -8,7 +8,8 @@ class LspDefinitionRequest(id: JsonRpcId, uri: string, line: int, character: int
 
 // textDocument/definition from the occurrences in the retained snapshot of the
 // document's active project context. Every reply goes through {send}: a
-// request against a stale snapshot waits for the context's pending analysis.
+// request against a missing or stale snapshot waits for the context's pending
+// analysis.
 // See docs/architecture.md#definition.
 class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	// Calls its callback once the pending analysis of a context completes, or
@@ -39,7 +40,7 @@ class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
 		}
 		var ctx = projects.forDocument(key).active;
-		if (ctx != null && ctx.snapshot != null && !current(ctx, ctx.snapshot) && whenAnalyzed != null) {
+		if (ctx != null && (ctx.snapshot == null || !current(ctx, ctx.snapshot)) && whenAnalyzed != null) {
 			var r = LspDefinitionRequest.new(request.id, key, line, character, ctx, store.overlay(key), store.diskStamp(key));
 			deferred.put(r);
 			if (whenAnalyzed(ctx, fun () => analyzed(r))) return;
@@ -85,8 +86,13 @@ class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		if (s == null || !current(ctx, s) || !s.parsed || !s.hasOccurrences) return JsonValue.Null;
 		var i = s.documentIndex(key), text = LspAnalysisCapture.analyzedText(store, s, i);
 		if (text == null) return JsonValue.Null;
-		var map = PositionMap.new(text, PositionEncoding.UTF16);
-		var decl = s.definitionAtOffset(s.paths[i], map.positionToOffset(line, character));
+		var map = PositionMap.new(text, PositionEncoding.UTF16), offset = map.positionToOffset(line, character);
+		var decl = s.definitionAtOffset(s.paths[i], offset);
+		// A cursor just past an identifier selects it. An occurrence that
+		// contains offset - 1 but not {offset} ends exactly at {offset}, so only
+		// the identifier the cursor touches qualifies, and an occurrence that
+		// contains {offset} always wins.
+		if (decl == null && offset > 0) decl = s.definitionAtOffset(s.paths[i], offset - 1);
 		if (decl == null || decl.range.beginOffset < 0) return JsonValue.Null;
 		var j = -1;
 		for (k < s.paths.length) { if(j < 0 && Strings.equal(s.paths[k], decl.range.path)) j = k; }
