@@ -12,6 +12,7 @@ def X = [
 	T("AnalysisWire:truncated_messages", test_truncated_messages),
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
 	T("AnalysisWire:result_allocation_budget", test_result_allocation_budget),
+	T("AnalysisWire:occurrence_token_spans", test_occurrence_token_spans),
 	T("AnalysisWire:result_index_string_budget", test_result_index_string_budget),
 	T("AnalysisWire:wrong_kind", test_wrong_kind),
 	()
@@ -145,7 +146,8 @@ def test_result_matches_analysis(t: Tester) {
 	t.asserti(-1, s.stats.globalTypesAdded);
 	t.asserti(42, s.stats.globalTypeTotal);
 	var count = 0;
-	for (path in [SHAPES, MAIN]) {
+	for (k < sources.length) {
+		var path = sources[k].path, input = sources[k].input;
 		var want = analysis.occurrences(path), got = s.occurrences(path);
 		t.asserti(want.length, got.length);
 		if (want.length != got.length) return;
@@ -157,13 +159,43 @@ def test_result_matches_analysis(t: Tester) {
 			for (c = r.beginColumn - 1; c <= r.endColumn; c++) {
 				t.assert_string(render(analysis.definitionAt(path, r.beginLine, c)), render(s.definitionAt(path, r.beginLine, c)));
 			}
+			assertOffsets(t, r, got[i].range);
+			var d = want[i].declaration.range;
+			assertOffsets(t, d, got[i].declaration.range);
+			// A declaration's bytes, in its own file, spell its name.
+			for (source in sources) {
+				if (!Strings.equal(source.path, d.path) || d.beginOffset < 0 || d.endOffset > source.input.length) continue;
+				t.assert_string(want[i].declaration.name, Arrays.range(source.input, d.beginOffset, d.endOffset));
+			}
+			// This fixture has no comments, so the context-free conversion of
+			// a use's offsets is exact. Every byte resolves to its declaration;
+			// the bytes just before and after it do not.
+			var map = PositionMap.new(input, PositionEncoding.UTF16);
+			var begin = map.offsetToCompiler(r.beginOffset), end = map.offsetToCompiler(r.endOffset);
+			t.asserti(r.beginLine, begin.0);
+			t.asserti(r.beginColumn, begin.1);
+			t.asserti(r.endLine, end.0);
+			t.asserti(r.endColumn, end.1);
+			for (b = r.beginOffset; b < r.endOffset; b++) {
+				t.assert_string(render(want[i].declaration), render(s.definitionAtOffset(path, b)));
+			}
+			t.assert(s.definitionAtOffset(path, r.beginOffset - 1) == null, "byte before a use");
+			t.assert(s.definitionAtOffset(path, r.endOffset) == null, "exclusive end offset");
+			if (i > 0) t.assert(want[i - 1].range.endOffset <= r.beginOffset, "uses are in byte order");
 		}
 	}
 	t.asserti(13, count);
 	// Each distinct declaration is sent once.
 	t.asserti(9, s.declarations.length);
 	t.assert(s.definitionAt("other.v3", 1, 1) == null, "unknown path");
+	t.assert(s.definitionAtOffset("other.v3", 0) == null, "unknown path offset");
 	t.asserti(0, s.occurrences("other.v3").length);
+}
+
+def assertOffsets(t: Tester, want: AnalysisRange, got: AnalysisRange) {
+	t.asserti(want.beginOffset, got.beginOffset);
+	t.asserti(want.endOffset, got.endOffset);
+	t.assert(want.beginOffset >= 0 && want.endOffset > want.beginOffset, "nonempty byte range");
 }
 
 def test_result_with_errors(t: Tester) {
@@ -198,6 +230,7 @@ def test_result_without_occurrences(t: Tester) {
 	t.asserti(0, s.declarations.length);
 	t.asserti(0, s.occurrences(MAIN).length);
 	t.assert(s.definitionAt(MAIN, 4, 25) == null, "no occurrences were sent");
+	t.assert(s.definitionAtOffset(MAIN, 85) == null, "no occurrences were sent");
 }
 
 // A message cut short anywhere is rejected, without trapping.
@@ -246,15 +279,42 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(0, 5)), 1, [])), "path index");
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(200, 0)), 1, [])), "declaration kind");
 	var occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
-	occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2).put_sleb32(1);
+	occurrences.puta(OCCURRENCE).put_sleb32(1);
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, occurrences), 1, [])), "declaration index");
 	// The same occurrence, pointing at declaration 0, is accepted.
 	occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
-	occurrences.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2).put_sleb32(0);
+	occurrences.puta(OCCURRENCE).put_sleb32(0);
 	var r = decodedResult(result(0, occurrences), 1, []);
 	if (r == null) return t.fail("valid result was rejected");
-	t.assert_string("LOCAL x @ p.v3:1:1-1:2", render(r.snapshot.definitionAt("p.v3", 1, 1)));
+	var d = r.snapshot.definitionAt("p.v3", 1, 1);
+	t.assert_string("LOCAL x @ p.v3:1:1-1:2", render(d));
+	if (d != null) {
+		t.asserti(4, d.range.beginOffset);
+		t.asserti(5, d.range.endOffset);
+	}
+	t.assert(r.snapshot.definitionAtOffset("p.v3", 7) == null, "byte before the use");
+	t.assert(d == r.snapshot.definitionAtOffset("p.v3", 8), "byte offset of the use");
+	t.assert(r.snapshot.definitionAtOffset("p.v3", 9) == null, "exclusive end offset");
+	var o = r.snapshot.occurrences("p.v3");
+	t.asserti(1, o.length);
+	if (o.length == 1) {
+		t.asserti(8, o[0].range.beginOffset);
+		t.asserti(9, o[0].range.endOffset);
+	}
+	// Counts are checked against the minimum encoded sizes of the records
+	// that follow: nine bytes per declaration and five per occurrence. One
+	// byte short is malformed, before any allocation is charged.
+	var n = 200000, declarations = DataWriter.new().put_sleb32(1).put_sleb32(4).puta("p.v3").put_sleb32(n);
+	declarations.putr(Array<byte>.new(9 * n - 1));
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declarations), 1, [])), "declaration count");
+	n = 900000;
+	occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(n);
+	occurrences.putr(Array<byte>.new(5 * n - 1));
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, occurrences), 1, [])), "occurrence count");
 }
+// The line, column, byte offset, and length of a use of "x" at p.v3:1:1-1:2,
+// bytes 8 to 9.
+def OCCURRENCE = "\x01\x01\x08\x01";
 // A result with {diagnostics} as its diagnostic count and, if {occurrences}
 // is not null, those bytes as its occurrence section.
 def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
@@ -265,12 +325,14 @@ def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
 	if (occurrences != null) w.putr(occurrences.alias());
 	return w.extract();
 }
-// A path table with "p.v3" and one declaration "x" with {kind} and {path}.
+// A path table with "p.v3" and one declaration "x" with {kind} and {path},
+// at p.v3:1:1-1:2, bytes 4 to 5.
 def declaration(kind: int, path: int) -> DataWriter {
 	var w = DataWriter.new().put_sleb32(1).put_sleb32(4).puta("p.v3");
 	w.put_sleb32(1).putb(kind).put_sleb32(1).putb('x').put_sleb32(path);
-	return w.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(2);
+	return w.puta(DECLARATION_RANGE);
 }
+def DECLARATION_RANGE = "\x01\x01\x01\x02\x04\x05";
 
 // Index strings are retained in the snapshot, without diagnostic JSON copies.
 // Charging them for JSON escaping rejects this otherwise small valid result.
@@ -279,8 +341,8 @@ def test_result_index_string_budget(t: Tester) {
 	for (i < text.length) text[i] = 'x';
 	var index = DataWriter.new().put_sleb32(1).put_sleb32(text.length).puta(text);
 	index.put_sleb32(1).putb(0).put_sleb32(text.length).puta(text).put_sleb32(0);
-	index.puta("\x01\x01\x01\x02").put_sleb32(1).put_sleb32(0).put_sleb32(1);
-	index.puta("\x01\x01\x01\x02\x00");
+	index.puta(DECLARATION_RANGE).put_sleb32(1).put_sleb32(0).put_sleb32(1);
+	index.puta(OCCURRENCE).put_sleb32(0);
 	var decoded = decodedResult(result(0, index), 1, [text]);
 	if (decoded == null) return t.fail("index strings within the allocation budget were rejected");
 	var definition = decoded.snapshot.definitionAt(text, 1, 1);
@@ -292,8 +354,7 @@ def test_result_index_string_budget(t: Tester) {
 def test_result_allocation_budget(t: Tester) {
 	var declarations = DataWriter.new().put_sleb32(1).put_sleb32(4).puta("p.v3").put_sleb32(200000);
 	for (i < 200000) {
-		declarations.putb(0).put_sleb32(0).put_sleb32(0);
-		for (j < 4) declarations.put_sleb32(1);
+		declarations.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE);
 	}
 	declarations.put_sleb32(0);
 	assertTooLarge(t, result(0, declarations), "compact declarations exceed allocation budget");
@@ -302,12 +363,25 @@ def test_result_allocation_budget(t: Tester) {
 	assertTooLarge(t, result(0, files), "compact file table exceeds allocation budget");
 	var occurrences = DataWriter.new().put_sleb32(2).put_sleb32(4).puta("p.v3").put_sleb32(4).puta("q.v3");
 	occurrences.put_sleb32(1).putb(0).put_sleb32(1).putb('x').put_sleb32(0);
-	occurrences.puta("\x01\x01\x01\x02").put_sleb32(2);
+	occurrences.puta(DECLARATION_RANGE).put_sleb32(2);
 	for (f < 2) {
 		occurrences.put_sleb32(f).put_sleb32(500000);
-		for (i < 500000) occurrences.puta("\x01\x01\x01\x02\x00");
+		for (i < 500000) occurrences.puta(OCCURRENCE).put_sleb32(0);
 	}
 	assertTooLarge(t, result(0, occurrences), "occurrence budget is aggregate across files");
+	// Each occurrence is charged 20 bytes for its four range ints and its
+	// declaration index. Besides the occurrences, this result is charged for
+	// its diagnostic, path, declaration, file, and occurrence counts (64 each,
+	// plus 64 per path, 128 per declaration, and 256 per file), and for the
+	// path and name strings (64 each, plus their lengths).
+	var fixed = 5 * 64 + 64 + 128 + 256 + (64 + 4) + (64 + 1);
+	var most = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed) / 20;
+	for (n in [most, most + 1]) {
+		var single = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(n);
+		for (i < n) single.puta(OCCURRENCE).put_sleb32(0);
+		if (n == most) t.assert(decodedResult(result(0, single), 1, []) != null, "occurrences within allocation budget accepted");
+		else assertTooLarge(t, result(0, single), "one occurrence beyond allocation budget rejected");
+	}
 	var text = Array<byte>.new(1024 * 1024);
 	for (i < text.length) text[i] = 1;
 	var diagnostic = DataWriter.new().put_sleb32(-1);
@@ -339,6 +413,47 @@ def assertTooLarge(t: Tester, payload: Array<byte>, message: string) {
 	var outcome = AnalysisWire.decodeResult(payload, 1, []);
 	t.assert(AnalysisResultDecode.TooLarge.?(outcome), message);
 	if (AnalysisResultDecode.TooLarge.?(outcome)) t.asserti(1, AnalysisResultDecode.TooLarge.!(outcome).id);
+}
+
+// An occurrence is sent as its begin, offset, and length, so the encoder
+// omits one that is not a token span rather than misstating it.
+def test_occurrence_token_spans(t: Tester) {
+	var decl = AnalysisDeclaration.new(AnalysisDeclKind.LOCAL, "x", AnalysisRange.new("p.v3", 1, 5, 1, 6, 4, 5));
+	var ranges = [
+		AnalysisRange.new("p.v3", 2, 9, 2, 12, 20, 23),	// a token span
+		AnalysisRange.new("p.v3", 3, 1, 4, 2, 30, 40),	// two lines
+		AnalysisRange.new("p.v3", 5, 1, 5, 3, 50, 51),	// two columns, one byte
+		AnalysisRange.new("p.v3", 6, 1, 6, 2, -1, -1),	// no source
+		AnalysisRange.new("p.v3", 7, 17, 7, 19, 60, 62)	// a token span
+	];
+	var spans = [true, false, false, false, true];
+	var uses = Array<AnalysisOccurrence>.new(ranges.length);
+	for (i < ranges.length) {
+		t.assertz(spans[i], ranges[i].isTokenSpan());
+		uses[i] = AnalysisOccurrence.new(ranges[i], decl);
+	}
+	var analysis = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	var w = AnalysisWire.encodeResult(1, 1, 1, analysis, 0, -1, [("p.v3", uses)]);
+	var r = decodedResult(payloadOf(AnalysisWire.finishResult(w, 0L)), 1, ["p.v3"]);
+	if (r == null) return t.fail("result with omitted occurrences did not decode");
+	var got = r.snapshot.occurrences("p.v3");
+	t.asserti(2, got.length);
+	if (got.length != 2) return;
+	// The kept occurrences are reconstructed exactly.
+	for (k < 2) {
+		var want = ranges[4 * k], g = got[k].range;
+		t.assert_string("p.v3", g.path);
+		t.asserti(want.beginLine, g.beginLine);
+		t.asserti(want.beginColumn, g.beginColumn);
+		t.asserti(want.endLine, g.endLine);
+		t.asserti(want.endColumn, g.endColumn);
+		t.asserti(want.beginOffset, g.beginOffset);
+		t.asserti(want.endOffset, g.endOffset);
+	}
+	t.assert(r.snapshot.definitionAtOffset("p.v3", 30) == null, "omitted two-line occurrence");
+	t.assert(r.snapshot.definitionAtOffset("p.v3", 61) != null, "kept occurrence after omitted ones");
+	t.assert(r.snapshot.definitionAt("p.v3", 7, 18) != null, "compiler lookup of a reconstructed end");
+	t.assert(r.snapshot.definitionAt("p.v3", 7, 19) == null, "reconstructed compiler end is exclusive");
 }
 
 def test_wrong_kind(t: Tester) {

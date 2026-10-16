@@ -9,6 +9,10 @@ def X = [
 	T("AnalysisCoordinates:parser_coordinate_ambiguities", test_parser_coordinate_ambiguities),
 	T("AnalysisCoordinates:retrospective_tokens", test_retrospective_tokens),
 	T("AnalysisCoordinates:binding_compiler_coordinates", test_binding_compiler_coordinates),
+	T("AnalysisCoordinates:binding_offsets", test_binding_offsets),
+	T("AnalysisCoordinates:cross_file_binding_offsets", test_cross_file_binding_offsets),
+	T("AnalysisCoordinates:retrospective_binding_offsets", test_retrospective_binding_offsets),
+	T("AnalysisCoordinates:manufactured_name_spans", test_manufactured_name_spans),
 	T("AnalysisCoordinates:malformed_literal_bound", test_malformed_literal_bound),
 	T("AnalysisCoordinates:no_file", test_no_file),
 	T("AnalysisCoordinates:replay_boundaries", test_replay_boundaries),
@@ -281,14 +285,19 @@ def test_binding_compiler_coordinates(t: Tester) {
 		t.assertz(true, compilation.parse());
 		t.assertz(true, compilation.verify());
 		var original = ProgramAnalysis.new([], AnalysisStats.new(0, 0, 0, -1), true, true, prog).occurrences(path);
-		t.asserti(original.length, uses.length);
-		t.asserti(original.length, decoded.length);
-		if (original.length != uses.length || original.length != decoded.length) return;
-		var count = 0;
-		for (j < original.length) {
-			t.assert_string(original[j].toString(), uses[j].toString());
-			t.assert_string(original[j].toString(), decoded[j].toString());
-			if (!Strings.equal(uses[j].declaration.name, names[i])) continue;
+		// A stock parse's retrospective token has only its context-free column,
+		// which does not locate it in the source, so that analysis skips the
+		// operator use; every other use matches.
+		t.asserti(uses.length - 1, original.length);
+		t.asserti(uses.length, decoded.length);
+		if (original.length != uses.length - 1 || uses.length != decoded.length) return;
+		var count = 0, k = 0;
+		for (j < uses.length) {
+			t.assert_string(uses[j].toString(), decoded[j].toString());
+			if (!Strings.equal(uses[j].declaration.name, names[i])) {
+				if (k < original.length) t.assert_string(original[k++].toString(), uses[j].toString());
+				continue;
+			}
 			count++;
 			for (o in [uses[j], decoded[j]]) {
 				t.asserti(2, o.range.beginLine);
@@ -318,4 +327,181 @@ def test_binding_compiler_coordinates(t: Tester) {
 		}
 		AnalysisTypeCache.release();
 	}
+}
+
+// The byte offset of the first {needle} in {text}, or -1.
+def indexOf(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+// Analyzes {sources}, then encodes every file's occurrences and decodes them
+// as the server would.
+def bindingSnapshot(t: Tester, sources: Array<AnalysisSource>) -> (ProgramAnalysis, AnalysisSnapshot) {
+	var a = AeneasAdapter.analyzeProgram(sources, [], false);
+	var paths = Array<string>.new(sources.length);
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length);
+	for (i < sources.length) {
+		paths[i] = sources[i].path;
+		files[i] = (paths[i], a.occurrences(paths[i]));
+	}
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, files), 0L);
+	var result = decodedResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, paths);
+	if (result == null) {
+		t.fail("binding result did not decode");
+		return (a, null);
+	}
+	return (a, result.snapshot);
+}
+// Asserts that {path}'s occurrences, in the analysis and in the snapshot, are
+// the uses of {names} in order, and that the use of names[i] spans the bytes
+// from begins[i] to ends[i]. Returns the analysis's occurrences.
+def assertUses(t: Tester, a: ProgramAnalysis, s: AnalysisSnapshot, path: string,
+		names: Array<string>, begins: Array<int>, ends: Array<int>) -> Array<AnalysisOccurrence> {
+	var uses = a.occurrences(path);
+	for (list in [uses, s.occurrences(path)]) {
+		t.asserti(names.length, list.length);
+		if (list.length != names.length) return [];
+		for (i < list.length) {
+			t.assert_string(names[i], list[i].declaration.name);
+			t.asserti(begins[i], list[i].range.beginOffset);
+			t.asserti(ends[i], list[i].range.endOffset);
+		}
+	}
+	for (i < uses.length) {
+		t.assert(uses[i].range.isTokenSpan(), "every use is a token span");
+		var d = uses[i].declaration.range, decoded = s.occurrences(path)[i].declaration.range;
+		t.asserti(d.beginOffset, decoded.beginOffset);
+		t.asserti(d.endOffset, decoded.endOffset);
+		// Every byte of a use resolves; the bytes just outside it do not.
+		for (b = begins[i]; b < ends[i]; b++) {
+			var found = s.definitionAtOffset(path, b);
+			if (found == null) {
+				t.fail(Strings.format2("missing definition in %s at byte offset %d", path, b));
+				return uses;
+			}
+			t.assert_string(names[i], found.name);
+			t.asserti(d.beginOffset, found.range.beginOffset);
+		}
+		t.assert(s.definitionAtOffset(path, begins[i] - 1) == null, "byte before a use");
+		t.assert(s.definitionAtOffset(path, ends[i]) == null, "exclusive end offset");
+	}
+	return uses;
+}
+
+// Occurrence and declaration offsets come from the source bytes, not from
+// compiler columns, which count a tab in a block comment as one column.
+def test_binding_offsets(t: Tester) {
+	var prefixes = ["/*\t*/ ", "/*\t\xF0\x9F\x98\x80\xC3\xA9*/ ", "\t", "/* start\n\t*/ "];
+	var lines = [2, 2, 2, 3];
+	// LSP counts an emoji as two UTF-16 units and é as one.
+	var characters = [14, 17, 9, 12];
+	for (i < prefixes.length) {
+		var head = "component C {\n\tdef x = 1;\n", path = "binding-offsets.v3";
+		var text = StringBuilder.new().puts(head).puts(prefixes[i]).puts("def y = x;\n}\n").toString();
+		var use = head.length + prefixes[i].length + 8;
+		var r = bindingSnapshot(t, [AnalysisSource.new(path, text)]), a = r.0, s = r.1;
+		if (s == null) return;
+		t.assertz(true, a.verified);
+		var uses = assertUses(t, a, s, path, ["x"], [use], [use + 1]);
+		if (uses.length != 1) continue;
+		var decl = uses[0].declaration;
+		t.assert(decl.kind == AnalysisDeclKind.FIELD, "component field");
+		t.asserti(19, decl.range.beginOffset);
+		t.asserti(20, decl.range.endOffset);
+		var map = PositionMap.new(text, PositionEncoding.UTF16);
+		var start = map.offsetToPosition(uses[0].range.beginOffset);
+		t.asserti(lines[i], start.line);
+		t.asserti(characters[i], start.character);
+	}
+}
+
+// A declaration in another file takes its offsets from that file's bytes.
+def test_cross_file_binding_offsets(t: Tester) {
+	var a = "// \xC3\xA9\xF0\x9F\x98\x80\ncomponent A {\n/*\t\xF0\x9F\x98\x80*/ def x = 1;\n}\n";
+	var b = "component B {\n\tdef y = A.x;\n}\n";
+	var r = bindingSnapshot(t, [AnalysisSource.new("b.v3", b), AnalysisSource.new("a.v3", a)]);
+	if (r.1 == null) return;
+	t.assertz(true, r.0.verified);
+	var use = indexOf(b, "A.x");
+	var uses = assertUses(t, r.0, r.1, "b.v3", ["A", "x"], [use, use + 2], [use + 1, use + 3]);
+	if (uses.length != 2) return;
+	var decls = [indexOf(a, "A {"), indexOf(a, "x = 1")];
+	for (i < uses.length) {
+		var d = uses[i].declaration.range;
+		t.assert_string("a.v3", d.path);
+		t.asserti(decls[i], d.beginOffset);
+		t.asserti(decls[i] + 1, d.endOffset);
+	}
+	t.asserti(0, r.1.occurrences("a.v3").length);
+}
+
+// Retrospective "[]" and "[]=" uses take their captured offsets, not their
+// exported context-free columns, and stay in byte order. An index method
+// declaration selects its opening bracket, with or without parameters.
+def test_retrospective_binding_offsets(t: Tester) {
+	var path = "retrospective-offsets.v3";
+	// Three block-comment tabs move the exported column of "[]" past "i".
+	var get = "class C { def [x: int] -> int { return x; }\n/*\t\t\t*/ def f(c: C, i: int) -> int => c.[](i);\n}\n";
+	var r = bindingSnapshot(t, [AnalysisSource.new(path, get)]);
+	if (r.1 == null) return;
+	t.assertz(true, r.0.verified);
+	var c = indexOf(get, "c.[](i)");
+	var uses = assertUses(t, r.0, r.1, path, ["x", "c", "[]", "i"],
+		[indexOf(get, "x; }"), c, c + 2, c + 5], [indexOf(get, "x; }") + 1, c + 1, c + 4, c + 6]);
+	if (uses.length == 4) {
+		t.assert(uses[3].range.beginColumn < uses[2].range.beginColumn, "exported column of [] passes i");
+		var d = uses[2].declaration;
+		t.asserti(indexOf(get, "[x"), d.range.beginOffset);
+		t.asserti(indexOf(get, "[x") + 1, d.range.endOffset);
+		t.asserti(15, d.range.beginColumn);
+		t.asserti(17, d.range.endColumn);
+	}
+	var set = "class C { def [x: int] = y: int {}\n/*\t*/ def f(c: C) => c.[]=(1, 2);\n}\n";
+	r = bindingSnapshot(t, [AnalysisSource.new(path, set)]);
+	if (r.1 == null) return;
+	t.assertz(true, r.0.verified);
+	c = indexOf(set, "c.[]=");
+	uses = assertUses(t, r.0, r.1, path, ["c", "[]="], [c, c + 2], [c + 1, c + 5]);
+	if (uses.length == 2) {
+		t.asserti(indexOf(set, "[x"), uses[1].declaration.range.beginOffset);
+		t.asserti(indexOf(set, "[x") + 1, uses[1].declaration.range.endOffset);
+	}
+	var empty = "class C { def [] -> int { return 1; }\n/*\t*/ def f(c: C) -> int => c.[]();\n}\n";
+	r = bindingSnapshot(t, [AnalysisSource.new(path, empty)]);
+	if (r.1 == null) return;
+	t.assertz(true, r.0.verified);
+	c = indexOf(empty, "c.[]()");
+	uses = assertUses(t, r.0, r.1, path, ["c", "[]"], [c, c + 2], [c + 1, c + 4]);
+	if (uses.length == 2) {
+		t.asserti(indexOf(empty, "[] ->"), uses[1].declaration.range.beginOffset);
+		t.asserti(indexOf(empty, "[] ->") + 1, uses[1].declaration.range.endOffset);
+	}
+}
+
+// A name the compiler manufactures is located by replay, and spans only what
+// the source spells there. An index method's "[]" spans its opening bracket,
+// so it is not a token span: as a declaration it keeps that range, but the
+// collector would skip it as a use. A constructor's "new" is spelled in full.
+def test_manufactured_name_spans(t: Tester) {
+	var path = "manufactured.v3", text = "class C {\n/*\t*/ def [x: int] -> int { return x; }\n\tnew() { }\n}\n";
+	var maps = AnalysisSourceMaps.new();
+	maps.add(path, text);
+	var bracket = indexOf(text, "[x"), ctor = indexOf(text, "new");
+	var index = maps.range(Token.new(path, "[]", 2, 11));
+	t.asserti(bracket, index.beginOffset);
+	t.asserti(bracket + 1, index.endOffset);
+	t.asserti(13, index.endColumn);
+	t.assertz(false, index.isTokenSpan());
+	var made = maps.range(Token.new(path, "new", 3, 9));
+	t.asserti(ctor, made.beginOffset);
+	t.asserti(ctor + 3, made.endOffset);
+	t.assertz(true, made.isTokenSpan());
+	var captured = maps.range(AnalysisCapturedToken.new(path, "new", 3, 9, ctor));
+	t.asserti(ctor, captured.beginOffset);
+	t.assertz(true, captured.isTokenSpan());
+	var unknown = maps.range(Token.new("other.v3", "x", 1, 1));
+	t.asserti(-1, unknown.beginOffset);
+	t.assertz(false, unknown.isTokenSpan());
 }

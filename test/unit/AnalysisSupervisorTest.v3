@@ -86,6 +86,20 @@ def assertQueries(t: Tester, s: AnalysisSnapshot) {
 	if (d == null) return t.fail("no definition of Shapes");
 	t.assert_string("COMPONENT Shapes @ test/fixtures/analysis/two-file/shapes.v3:8:11-8:17", d.render(StringBuilder.new()).toString());
 	t.asserti(7, s.occurrences(MAIN).length);
+	// The worker sends byte offsets in each file's own bytes.
+	var use = indexOf(System.fileLoad(MAIN), "Shapes.square"), decl = indexOf(System.fileLoad(SHAPES), "Shapes {");
+	t.assert(d == s.definitionAtOffset(MAIN, use), "byte lookup finds the same declaration");
+	t.assert(d == s.definitionAtOffset(MAIN, use + 5), "last byte of the use");
+	t.assert(s.definitionAtOffset(MAIN, use + 6) == null, "exclusive end offset");
+	t.asserti(decl, d.range.beginOffset);
+	t.asserti(decl + 6, d.range.endOffset);
+}
+// The byte offset of the first {needle} in {text}, or -1.
+def indexOf(text: Array<byte>, needle: string) -> int {
+	for (i = 0; text != null && i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
 }
 def contains(log: Vector<string>, text: string) -> bool {
 	for (i < log.length) {

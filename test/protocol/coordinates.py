@@ -4,7 +4,7 @@
 """Drive exact diagnostic ranges through the real worker and CLI.
 
 Usage: python3 test/protocol/coordinates.py build/virgil-lsp [--evidence-dir DIR]
-The worker's v3 wire response is the executable interface for byte offsets;
+The worker's v4 wire response is the executable interface for byte offsets;
 the development CLI and stdio API intentionally retain compiler coordinates.
 """
 
@@ -81,7 +81,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 3, self.hello
+        assert self.hello["protocol"] == 4, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -129,12 +129,15 @@ class Worker:
             for _ in range(reader.integer()):
                 kind, name, path = reader.take(1)[0], reader.string(), paths[reader.integer()]
                 declarations.append(dict(kind=kind, name=name, path=path,
-                                         range=[reader.integer() for _ in range(4)]))
+                                         range=[reader.integer() for _ in range(4)],
+                                         offsets=[reader.integer() for _ in range(2)]))
             for _ in range(reader.integer()):
                 path, count = paths[reader.integer()], reader.integer()
                 for _ in range(count):
-                    span = [reader.integer() for _ in range(4)]
-                    occurrences.append(dict(path=path, range=span,
+                    # Begin line, column, and offset, and the length of both spans.
+                    line, column, offset, length = [reader.integer() for _ in range(4)]
+                    occurrences.append(dict(path=path, range=[line, column, line, column + length],
+                                            offsets=[offset, offset + length],
                                             declaration=declarations[reader.integer()]))
         reader.finish()
         return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1],
@@ -233,6 +236,12 @@ def main():
                 assert len(use) == 1, use
                 assert use[0]['range'] == [2, column, 2, column + len(op)], use
                 assert use[0]['declaration']['range'] == [1, 15, 1, 15 + len(op)], use
+                # Byte offsets come from the captured token, not its exported
+                # column; the declaration selects its opening bracket.
+                begin = text.encode().index(b'c.' + op.encode() + b'(') + 2
+                assert use[0]['offsets'] == [begin, begin + len(op)], use
+                bracket = text.encode().index(b'[x')
+                assert use[0]['declaration']['offsets'] == [bracket, bracket + 1], use
                 command = [str(exe), 'analyze', '--bindings', '--repeat=2', str(path)]
                 cli = subprocess.run(command, capture_output=True, text=True, timeout=5)
                 expected = f'{path}:2:{column}-2:{column + len(op)} -> METHOD {op} @ {path}:1:15-1:{15 + len(op)}'

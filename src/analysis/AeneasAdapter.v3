@@ -32,9 +32,19 @@ class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, decl
 // analysis never reads its inputs from disk.
 class AnalysisSource(path: string, input: Array<byte>) { }
 
-// A source range in compiler coordinates (see {AnalysisDiagnostic}). The end
-// column is exclusive.
-class AnalysisRange(path: string, beginLine: int, beginColumn: int, endLine: int, endColumn: int) {
+// A source range in compiler coordinates (see {AnalysisDiagnostic}), with its
+// exact UTF-8 byte offsets in the file at {path}. The end column and end
+// offset are exclusive. Offsets are -1 when the file has no captured source.
+class AnalysisRange(path: string, beginLine: int, beginColumn: int, endLine: int, endColumn: int,
+		beginOffset: int, endOffset: int) {
+	// True if the range is on one line and its compiler and byte spans have
+	// the same length, as a token that the source spells has. Every occurrence
+	// must be, since snapshots store it as a begin and a length
+	// (see AnalysisSnapshotFile).
+	def isTokenSpan() -> bool {
+		return beginLine == endLine && beginOffset >= 0
+			&& endOffset - beginOffset == endColumn - beginColumn;
+	}
 	def contains(line: int, column: int) -> bool {
 		if (line < beginLine || line > endLine) return false;
 		if (line == beginLine && column < beginColumn) return false;
@@ -53,8 +63,9 @@ enum AnalysisDeclKind {
 	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD
 }
 
-// A declaration in the program. {range} covers the declaration's name token;
-// the syntax tree does not record where a whole declaration ends.
+// A declaration in the program. Compiler coordinates cover its name token;
+// byte offsets select its source spelling (see AnalysisSourceMaps.range).
+// The syntax tree does not record where a whole declaration ends.
 class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisRange) {
 	def render(buf: StringBuilder) -> StringBuilder {
 		buf.puts(kind.name).putc(' ').puts(name).puts(" @ ");
@@ -84,12 +95,16 @@ class ProgramAnalysis {
 	def parsed: bool;	// parsing reported no errors, so verification ran
 	def verified: bool;	// parsing and verification both reported no errors
 	private def files = Strings.newMap<AnalysisFileIndex>();
+	// Every file's source, for the byte offsets of uses and of their
+	// declarations, which can be in other files.
+	private def sources = AnalysisSourceMaps.new();
 
 	new(diagnostics, stats, parsed, verified, prog: Program) {
 		if (parsed) {
+			for (i < prog.files.length) sources.add(prog.files[i], prog.inputs[i]);
 			for (f in prog.vst.files) {
 				// Preserve the first file's bindings if an input path is repeated.
-				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f);
+				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources);
 			}
 		}
 	}
@@ -103,6 +118,7 @@ class ProgramAnalysis {
 	}
 	// The declaration that the identifier at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
+	// See AnalysisSnapshotFile.find for its one ordering exception.
 	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
 		var uses = occurrences(path), low = 0, high = uses.length;
 		// Identifier tokens do not overlap, so their exclusive ends are also
@@ -119,11 +135,11 @@ class ProgramAnalysis {
 
 // Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
 // repeated walk, allocation, or sort for subsequent binding queries.
-class AnalysisFileIndex(file: VstFile) {
+class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps) {
 	private var uses: Array<AnalysisOccurrence>;
 
 	def occurrences() -> Array<AnalysisOccurrence> {
-		if (uses == null) uses = OccurrenceCollector.new().collect(file);
+		if (uses == null) uses = OccurrenceCollector.new(sources).collect(file);
 		return uses;
 	}
 }

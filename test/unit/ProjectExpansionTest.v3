@@ -514,9 +514,9 @@ def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(7);
 	for (i < 6) w.put_sleb32(-1);
 	w.put_sleb32(0).put_sleb32(1).put_sleb32(4).puta("p.v3");
-	w.put_sleb32(1).putb(0).put_sleb32(1).putb('x').put_sleb32(0).puta("\x01\x01\x01\x02");
+	w.put_sleb32(1).putb(0).put_sleb32(1).putb('x').put_sleb32(0).puta("\x01\x01\x01\x02\x00\x01");
 	w.put_sleb32(1).put_sleb32(0).put_sleb32(162929);
-	for (i < 162929) w.puta("\x01\x01\x01\x02\x00");
+	for (i < 162929) w.puta("\x01\x01\x00\x01\x00");
 	match (AnalysisWire.decodeResult(w.extract(), generation, ["p.v3"])) {
 		Decoded(result) => return result.snapshot;
 		_ => return null;
