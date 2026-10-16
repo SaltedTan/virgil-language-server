@@ -14,7 +14,10 @@ one session of "virgil-lsp --stdio". Every line is a JSON object with one key:
   {"stderr": "regex"}     Standard error must match this, after the session.
   {"status": n}           The expected exit status (default 0).
   {"write": [path, text]} Writes a file in the transcript's temporary
-                          directory, creating its parent directories.
+                          directory, creating its parent directories. The
+                          complete file is renamed into place, since the
+                          server reads project files whenever it looks up
+                          a document's projects.
   {"remove": path}        Removes a file from the temporary directory.
 
 Lines starting with # are comments. In strings, @ROOT@ stands for the file
@@ -136,7 +139,11 @@ def run(exe, path, version):
             elif kind == "write":
                 file = tmpdir / value[0]
                 file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_text(value[1], encoding="utf-8")
+                # Outside the transcript's directory, so the server never sees it.
+                fd, partial = tempfile.mkstemp(dir=tmpdir.parent)
+                with os.fdopen(fd, "w", encoding="utf-8") as out:
+                    out.write(value[1])
+                os.replace(partial, file)
                 session.transcript.append(("write", value[0]))
             elif kind == "remove":
                 (tmpdir / value).unlink()
