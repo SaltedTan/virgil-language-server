@@ -1,0 +1,672 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Occurrences of type references, type parameters, variant cases used as
+// types, index operators, and descriptor-backed construction. Every test
+// checks the analysis and the snapshot decoded from its worker result.
+def T = UnitTests.register;
+def X = [
+	T("OccurrenceCoverage:type_references", test_type_references),
+	T("OccurrenceCoverage:type_references_with_errors", test_type_references_with_errors),
+	T("OccurrenceCoverage:type_parameters", test_type_parameters),
+	T("OccurrenceCoverage:type_parameters_with_errors", test_type_parameters_with_errors),
+	T("OccurrenceCoverage:variant_case_types", test_variant_case_types),
+	T("OccurrenceCoverage:variant_case_types_with_errors", test_variant_case_types_with_errors),
+	T("OccurrenceCoverage:open_variant_superclass", test_open_variant_superclass),
+	T("OccurrenceCoverage:index_operators", test_index_operators),
+	T("OccurrenceCoverage:index_operators_with_errors", test_index_operators_with_errors),
+	T("OccurrenceCoverage:descriptor_construction", test_descriptor_construction),
+	T("OccurrenceCoverage:descriptor_construction_with_errors", test_descriptor_construction_with_errors),
+	T("OccurrenceCoverage:function_expression_types", test_function_expression_types),
+	T("OccurrenceCoverage:builtins_record_nothing", test_builtins_record_nothing),
+	T("OccurrenceCoverage:layout_ref_records_nothing", test_layout_ref_records_nothing),
+	T("OccurrenceCoverage:existing_uses", test_existing_uses),
+	T("OccurrenceCoverage:fixture", test_fixture),
+	T("OccurrenceCoverage:lib_util", test_lib_util),
+	T("OccurrenceCoverage:aeneas_sources", test_aeneas_sources),
+	()
+];
+
+def PATH = "coverage.v3";
+def FIXTURE = "test/fixtures/analysis/occurrence-coverage/main.v3";
+def VIRGIL = "vendor/virgil";
+
+// A use that should span {length} bytes from {skip} bytes into the first
+// occurrence of {at}, and resolve to a declaration of {kind} named {name}
+// whose range begins {declSkip} bytes into the first occurrence of {declAt}.
+class ExpectedUse(at: string, skip: int, length: int, kind: AnalysisDeclKind, name: string, declAt: string, declSkip: int) { }
+
+// Joins {list}, ending each line with a newline.
+def lines(list: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (line in list) buf.puts(line).ln();
+	return buf.toString();
+}
+def indexOf(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def decodedResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisWorkerResult {
+	match (AnalysisWire.decodeResult(payload, generation, paths)) {
+		Decoded(result) => return result;
+		_ => return null;
+	}
+}
+// Analyzes {sources} with language options {options}, then encodes every
+// file's occurrences and decodes them as the server would.
+def analyze(t: Tester, sources: Array<AnalysisSource>, options: Array<string>) -> (ProgramAnalysis, AnalysisSnapshot) {
+	var a = AeneasAdapter.analyzeProgram(sources, options, false);
+	var paths = Array<string>.new(sources.length);
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length);
+	for (i < sources.length) {
+		paths[i] = sources[i].path;
+		files[i] = (paths[i], a.occurrences(paths[i]));
+	}
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, files), 0L);
+	var result = decodedResult(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]), 1, paths);
+	if (result == null) {
+		t.fail("binding result did not decode");
+		return (a, null);
+	}
+	return (a, result.snapshot);
+}
+// Analyzes {text} as one file, which verifies if {verified}.
+def analyzeText(t: Tester, text: string, options: Array<string>, verified: bool) -> (ProgramAnalysis, AnalysisSnapshot) {
+	var r = analyze(t, [AnalysisSource.new(PATH, text)], options);
+	t.assertz(true, r.0.parsed);
+	t.assertz(verified, r.0.verified);
+	if (verified) t.asserti(0, r.0.diagnostics.length);
+	else t.assert(r.0.diagnostics.length > 0, "expected semantic errors");
+	return r;
+}
+def render(list: Array<AnalysisOccurrence>) -> string {
+	var buf = StringBuilder.new();
+	for (o in list) buf.puts("\n  ").puts(o.toString());
+	return buf.toString();
+}
+// Asserts that the occurrences of {text}, in the analysis and in the
+// snapshot, are exactly {want} in order, and that each use resolves at
+// every byte it spans and nowhere else.
+def assertUses(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot), text: string, want: Array<ExpectedUse>) {
+	var a = r.0, s = r.1;
+	if (s == null) return;
+	var uses = a.occurrences(PATH);
+	for (list in [uses, s.occurrences(PATH)]) {
+		if (list.length != want.length) return t.fail2("expected %d uses, got:%s", want.length, render(list));
+		for (i < want.length) {
+			var w = want[i], o = list[i], at = indexOf(text, w.at);
+			if (at < 0) return t.fail1("no \"%s\" in the test program", w.at);
+			var begin = at + w.skip;
+			if (o.range.beginOffset != begin || o.range.endOffset != begin + w.length
+					|| o.declaration.kind != w.kind || !Strings.equal(o.declaration.name, w.name)
+					|| o.declaration.range.beginOffset != indexOf(text, w.declAt) + w.declSkip) {
+				return t.fail3("use %d of \"%s\" is wrong; got:%s", i, w.at, render(list));
+			}
+			t.assert_string(PATH, o.declaration.range.path);
+		}
+	}
+	for (i < uses.length) {
+		var range = uses[i].range, decl = uses[i].declaration;
+		t.assert(range.isTokenSpan(), "every use is a token span");
+		for (b = range.beginOffset; b < range.endOffset; b++) {
+			var found = s.definitionAtOffset(PATH, b);
+			if (found == null) return t.fail1("no definition at byte offset %d", b);
+			t.assert_string(decl.name, found.name);
+			t.asserti(decl.range.beginOffset, found.range.beginOffset);
+		}
+		// Adjacent uses, such as "c[", share a boundary.
+		if (i == 0 || uses[i - 1].range.endOffset < range.beginOffset) {
+			t.assert(s.definitionAtOffset(PATH, range.beginOffset - 1) == null, "byte before a use");
+		}
+		if (i + 1 == uses.length || uses[i + 1].range.beginOffset > range.endOffset) {
+			t.assert(s.definitionAtOffset(PATH, range.endOffset) == null, "exclusive end offset");
+		}
+	}
+	t.asserti(0, a.skippedUses(PATH));
+	t.asserti(0, s.stats.skippedUses);
+}
+
+// Asserts that every file's occurrences in {s} are token spans in strictly
+// increasing byte order without overlaps, and that each use names its
+// declaration (see names) and each declaration spells its name.
+def assertSound(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>) {
+	t.asserti(0, s.stats.skippedUses);
+	var inputs = Strings.newMap<Array<byte>>(), count = 0;
+	for (source in sources) inputs[source.path] = source.input;
+	for (source in sources) {
+		var end = 0;
+		for (o in s.occurrences(source.path)) {
+			var r = o.range, d = o.declaration;
+			count++;
+			if (!r.isTokenSpan()) return t.fail1("use at %s is not a token span", o.toString());
+			if (r.beginOffset < end) return t.fail1("use at %s overlaps or precedes the previous use", o.toString());
+			end = r.endOffset;
+			var text = Arrays.range(source.input, r.beginOffset, r.endOffset);
+			if (!names(text, d)) return t.fail1("use at %s does not name its declaration", o.toString());
+			var input = inputs[d.range.path];
+			if (input != null && !spells(Arrays.range(input, d.range.beginOffset, d.range.endOffset), d.name)) {
+				return t.fail1("declaration of %s does not spell its name", o.toString());
+			}
+		}
+	}
+	t.assert(count > 0, "the program has uses");
+}
+// Whether {text} spells a declaration's {name}. An index method declaration
+// and an index operator span only the opening bracket of "[]" or "[]=".
+def spells(text: string, name: string) -> bool {
+	return Strings.equal(text, if(name.length > 0 && name[0] == '[', "[", name));
+}
+// Whether a use's {text} names declaration {d}. A use can name its target
+// indirectly: "this" and a default "new" use their class.
+def names(text: string, d: AnalysisDeclaration) -> bool {
+	if (Strings.equal(text, d.name) || spells(text, d.name)) return true;
+	return d.kind == AnalysisDeclKind.CLASS && (Strings.equal(text, "this") || Strings.equal(text, "new"));
+}
+// Asserts that the snapshot reports the analysis's occurrences exactly.
+def assertRoundTrip(t: Tester, a: ProgramAnalysis, s: AnalysisSnapshot, sources: Array<AnalysisSource>) {
+	for (source in sources) {
+		var want = a.occurrences(source.path), got = s.occurrences(source.path);
+		t.asserti(want.length, got.length);
+		if (want.length != got.length) return;
+		for (i < want.length) {
+			t.assert_string(want[i].toString(), got[i].toString());
+			t.asserti(want[i].range.beginOffset, got[i].range.beginOffset);
+			t.asserti(want[i].range.endOffset, got[i].range.endOffset);
+			t.asserti(want[i].declaration.range.beginOffset, got[i].declaration.range.beginOffset);
+			t.asserti(want[i].declaration.range.endOffset, got[i].declaration.range.endOffset);
+		}
+		t.asserti(0, a.skippedUses(source.path));
+	}
+}
+def load(t: Tester, paths: Array<string>) -> Array<AnalysisSource> {
+	var sources = Array<AnalysisSource>.new(paths.length);
+	for (i < paths.length) {
+		var input = System.fileLoad(paths[i]);
+		if (input == null) {
+			t.fail1("cannot read %s; run the unit tests from the repository root", paths[i]);
+			return null;
+		}
+		sources[i] = AnalysisSource.new(paths[i], input);
+	}
+	return sources;
+}
+// The .v3 files in {dir}, in name order.
+def sourceFiles(dir: string, paths: Vector<string>) {
+	var listing = ProjectFiles.list(dir, 4096);
+	if (listing.names == null) return;
+	for (name in listing.names) {
+		if (Strings.endsWith(name, ".v3")) paths.put(ProjectFiles.join(dir, name));
+	}
+}
+
+def CLASSES = "class Foo { }\nclass Child extends Foo { }\nclass Box<T> { }\n";
+def test_type_references(t: Tester) {
+	// Class parameters share their types with their synthesized fields and
+	// constructor, and a variant case's with its fields; each type is one use.
+	var text = Strings.format2("%s%s", CLASSES,
+		lines([
+		"class Pair(a: Foo, var b: Foo) { var c: Foo; new() { } def m(p: Foo) -> Foo { var l: Foo = p; return l; } }",
+		"type U { case K(f: Foo); }\nenum E { X }\ncomponent P { }",
+		"component M {",
+		"  def comp: P;",
+		"  def id<T>(x: T) -> T { return x; }",
+		"  def f(g: (Foo, int) -> (Child, Box<Foo>), s: E.set, fs: Array<Foo>) -> Child {",
+		"    var b = Box<Foo>.new();",
+		"    var c = Child.!<Foo>(id<Foo>(null));",
+		"    for (e: Foo in fs) { }",
+		"    return M.id<Child>(c);",
+		"  }",
+		"}"
+	]));
+	var foo = "class Foo", box = "class Box", child = "class Child";
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("extends Foo", 8, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("a: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("b: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("c: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("p: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new(") -> Foo", 5, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("l: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("= p;", 2, 1, AnalysisDeclKind.PARAMETER, "p", "p: Foo", 0),
+		ExpectedUse.new("return l", 7, 1, AnalysisDeclKind.LOCAL, "l", "l: Foo", 0),
+		ExpectedUse.new("f: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("comp: P", 6, 1, AnalysisDeclKind.COMPONENT, "P", "component P", 10),
+		ExpectedUse.new("x: T", 3, 1, AnalysisDeclKind.TYPE_PARAM, "T", "id<T>", 3),
+		ExpectedUse.new("-> T", 3, 1, AnalysisDeclKind.TYPE_PARAM, "T", "id<T>", 3),
+		ExpectedUse.new("return x", 7, 1, AnalysisDeclKind.PARAMETER, "x", "x: T", 0),
+		// Function and tuple types nest named types; builtins have no target.
+		ExpectedUse.new("(Foo, int)", 1, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("(Child, Box", 1, 5, AnalysisDeclKind.CLASS, "Child", child, 6),
+		ExpectedUse.new("Box<Foo>)", 0, 3, AnalysisDeclKind.CLASS, "Box", box, 6),
+		ExpectedUse.new("Box<Foo>)", 4, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		// E.set names the enum, then a builtin.
+		ExpectedUse.new("E.set", 0, 1, AnalysisDeclKind.ENUM, "E", "enum E", 5),
+		ExpectedUse.new("Array<Foo>", 6, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("-> Child {", 3, 5, AnalysisDeclKind.CLASS, "Child", child, 6),
+		// The expression-side Box is the receiver's use; its argument is new.
+		ExpectedUse.new("Box<Foo>.new", 0, 3, AnalysisDeclKind.CLASS, "Box", box, 6),
+		ExpectedUse.new("Box<Foo>.new", 4, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Box<Foo>.new", 9, 3, AnalysisDeclKind.CLASS, "Box", box, 6),
+		ExpectedUse.new("Child.!<Foo>", 0, 5, AnalysisDeclKind.CLASS, "Child", child, 6),
+		ExpectedUse.new("Child.!<Foo>", 8, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("id<Foo>", 0, 2, AnalysisDeclKind.METHOD, "id", "id<T>", 0),
+		ExpectedUse.new("id<Foo>", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("e: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("in fs", 3, 2, AnalysisDeclKind.PARAMETER, "fs", "fs: Array", 0),
+		ExpectedUse.new("M.id<Child>", 0, 1, AnalysisDeclKind.COMPONENT, "M", "component M", 10),
+		ExpectedUse.new("M.id<Child>", 2, 2, AnalysisDeclKind.METHOD, "id", "id<T>", 0),
+		ExpectedUse.new("M.id<Child>", 5, 5, AnalysisDeclKind.CLASS, "Child", child, 6),
+		ExpectedUse.new("(c);", 1, 1, AnalysisDeclKind.LOCAL, "c", "c = Child", 0)
+	]);
+}
+def test_type_references_with_errors(t: Tester) {
+	// Unresolved names record nothing; the names around them still resolve.
+	var text = Strings.format2("%s%s", CLASSES,
+		lines([
+		"class Bad extends Missing { }",
+		"component M {",
+		"  def f(a: Missing, b: Box<Missing>, c: Foo.Inner) -> Foo { return missing; }",
+		"}"
+	]));
+	var foo = "class Foo", box = "class Box";
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("extends Foo", 8, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Box<Missing>", 0, 3, AnalysisDeclKind.CLASS, "Box", box, 6),
+		ExpectedUse.new("Foo.Inner", 0, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("-> Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6)
+	]);
+}
+
+def test_type_parameters(t: Tester) {
+	// Class, method, and variant type parameters; a variant case's synthesized
+	// superclass names the variant's parameters but is not a use of them.
+	var text = lines([
+		"class Box<T> { var v: T; def get() -> T { return v; } }",
+		"type Opt<U> { case Some(x: U); case None; }",
+		"component M {",
+		"  def id<V>(p: V) -> V {",
+		"    var d: V = V.default;",
+		"    if (V.?(p)) return V.!(p);",
+		"    return d;",
+		"  }",
+		"  def g() -> int { return id(3); }",
+		"}"
+	]);
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("v: T", 3, 1, AnalysisDeclKind.TYPE_PARAM, "T", "Box<T>", 4),
+		ExpectedUse.new("-> T", 3, 1, AnalysisDeclKind.TYPE_PARAM, "T", "Box<T>", 4),
+		ExpectedUse.new("return v", 7, 1, AnalysisDeclKind.FIELD, "v", "v: T", 0),
+		ExpectedUse.new("x: U", 3, 1, AnalysisDeclKind.TYPE_PARAM, "U", "Opt<U>", 4),
+		ExpectedUse.new("p: V", 3, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("-> V", 3, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("d: V", 3, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("V.default", 0, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("V.?(p)", 0, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("V.?(p)", 4, 1, AnalysisDeclKind.PARAMETER, "p", "p: V", 0),
+		ExpectedUse.new("V.!(p)", 0, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("V.!(p)", 4, 1, AnalysisDeclKind.PARAMETER, "p", "p: V", 0),
+		ExpectedUse.new("return d", 7, 1, AnalysisDeclKind.LOCAL, "d", "d: V", 0),
+		// An inferred type argument is a type variable, not a use.
+		ExpectedUse.new("id(3)", 0, 2, AnalysisDeclKind.METHOD, "id", "id<V>", 0)
+	]);
+}
+def test_type_parameters_with_errors(t: Tester) {
+	var text = lines([
+		"component M {",
+		"  def id<V>(p: V) -> W { return V.!(missing); }",
+		"}"
+	]);
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("p: V", 3, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3),
+		ExpectedUse.new("V.!(", 0, 1, AnalysisDeclKind.TYPE_PARAM, "V", "id<V>", 3)
+	]);
+}
+
+def test_variant_case_types(t: Tester) {
+	// A case used as a type targets its case declaration, as a case value does.
+	var text = lines([
+		"type V { case A; case B(x: int); }",
+		"component M {",
+		"  def f(a: V.A, v: V) -> V.B {",
+		"    match (v) { b: V.B => return b; _ => return V.B(1); }",
+		"  }",
+		"}"
+	]);
+	var v = "type V", caseA = "case A", caseB = "case B";
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("a: V.A", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("a: V.A", 5, 1, AnalysisDeclKind.VARIANT_CASE, "A", caseA, 5),
+		ExpectedUse.new("v: V)", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("-> V.B", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("-> V.B", 5, 1, AnalysisDeclKind.VARIANT_CASE, "B", caseB, 5),
+		ExpectedUse.new("(v) {", 1, 1, AnalysisDeclKind.PARAMETER, "v", "v: V)", 0),
+		ExpectedUse.new("b: V.B", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("b: V.B", 5, 1, AnalysisDeclKind.VARIANT_CASE, "B", caseB, 5),
+		ExpectedUse.new("return b", 7, 1, AnalysisDeclKind.LOCAL, "b", "b: V.B", 0),
+		ExpectedUse.new("V.B(1)", 0, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("V.B(1)", 2, 1, AnalysisDeclKind.VARIANT_CASE, "B", caseB, 5)
+	]);
+}
+def test_variant_case_types_with_errors(t: Tester) {
+	var text = lines([
+		"type V { case A; }",
+		"component M {",
+		"  def f(a: V.A, c: V.C) -> int { return missing; }",
+		"}"
+	]);
+	var v = "type V";
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("a: V.A", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("a: V.A", 5, 1, AnalysisDeclKind.VARIANT_CASE, "A", "case A", 5),
+		ExpectedUse.new("c: V.C", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5)
+	]);
+}
+
+def test_open_variant_superclass(t: Tester) {
+	// A variant that extends another extends its default case, to which
+	// verification rebinds the reference; the use targets the variant.
+	var text = lines([
+		"type V { case A; case _; }",
+		"type W extends V { case B; }",
+		"type G<T> { case _; }",
+		"type H<U> extends G<U> { case C(u: U); }",
+		"component M {",
+		"  def f(w: W, a: V.A, h: H<int>) -> V { return w; }",
+		"}"
+	]);
+	var v = "type V";
+	assertUses(t, analyzeText(t, text, ["-lang:open-types"], true), text, [
+		ExpectedUse.new("extends V", 8, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("extends G<U>", 8, 1, AnalysisDeclKind.CLASS, "G", "type G", 5),
+		ExpectedUse.new("extends G<U>", 10, 1, AnalysisDeclKind.TYPE_PARAM, "U", "H<U>", 2),
+		ExpectedUse.new("u: U", 3, 1, AnalysisDeclKind.TYPE_PARAM, "U", "H<U>", 2),
+		ExpectedUse.new("w: W", 3, 1, AnalysisDeclKind.CLASS, "W", "type W", 5),
+		// An explicit case keeps its case target.
+		ExpectedUse.new("a: V.A", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("a: V.A", 5, 1, AnalysisDeclKind.VARIANT_CASE, "A", "case A", 5),
+		ExpectedUse.new("h: H", 3, 1, AnalysisDeclKind.CLASS, "H", "type H", 5),
+		ExpectedUse.new("-> V", 3, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("return w", 7, 1, AnalysisDeclKind.PARAMETER, "w", "w: W", 0)
+	]);
+}
+
+def GRID = "class Grid { def [i: int] -> int { return i; } def [i: int] = v: int { } }\n";
+def test_index_operators(t: Tester) {
+	// An index operation occupies its opening bracket. A compound assignment
+	// records the write; builtin array indexing records nothing.
+	var text = Strings.format2("%s%s", GRID,
+		lines([
+		"component M {",
+		"  def f(g: Grid, a: Array<int>) {",
+		"    var x = g[0];",
+		"    g[1] = x;",
+		"    g[2] += a[0];",
+		"    g[g[3]] = g.[](4);",
+		"  }",
+		"}"
+	]));
+	var grid = "class Grid", get = "[i: int] ->", set = "[i: int] =";
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("return i", 7, 1, AnalysisDeclKind.PARAMETER, "i", "i: int] ->", 0),
+		ExpectedUse.new("g: Grid", 3, 4, AnalysisDeclKind.CLASS, "Grid", grid, 6),
+		ExpectedUse.new("g[0]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Grid", 0),
+		ExpectedUse.new("g[0]", 1, 1, AnalysisDeclKind.METHOD, "[]", get, 0),
+		ExpectedUse.new("g[1]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Grid", 0),
+		ExpectedUse.new("g[1]", 1, 1, AnalysisDeclKind.METHOD, "[]=", set, 0),
+		ExpectedUse.new("= x;", 2, 1, AnalysisDeclKind.LOCAL, "x", "x = g", 0),
+		ExpectedUse.new("g[2]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Grid", 0),
+		ExpectedUse.new("g[2]", 1, 1, AnalysisDeclKind.METHOD, "[]=", set, 0),
+		ExpectedUse.new("a[0]", 0, 1, AnalysisDeclKind.PARAMETER, "a", "a: Array", 0),
+		ExpectedUse.new("g[g[3]]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Grid", 0),
+		ExpectedUse.new("g[g[3]]", 1, 1, AnalysisDeclKind.METHOD, "[]=", set, 0),
+		ExpectedUse.new("g[g[3]]", 2, 1, AnalysisDeclKind.PARAMETER, "g", "g: Grid", 0),
+		ExpectedUse.new("g[g[3]]", 3, 1, AnalysisDeclKind.METHOD, "[]", get, 0),
+		// The explicit form names the method in full.
+		ExpectedUse.new("g.[](4)", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Grid", 0),
+		ExpectedUse.new("g.[](4)", 2, 2, AnalysisDeclKind.METHOD, "[]", get, 0)
+	]);
+}
+def test_index_operators_with_errors(t: Tester) {
+	// Without a "[]=" method, an assignment binds nothing, and a compound
+	// assignment still reads through "[]". A class without index methods binds
+	// neither.
+	var text = lines([
+		"class Get { def [i: int] -> int { return i; } }\nclass None { }",
+		"component M {",
+		"  def f(g: Get, n: None) {",
+		"    var x = g[0];",
+		"    g[1] = 2;",
+		"    g[2] += 3;",
+		"    n[3];",
+		"  }",
+		"}"
+	]);
+	var get = "[i: int] ->";
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("return i", 7, 1, AnalysisDeclKind.PARAMETER, "i", "i: int] ->", 0),
+		ExpectedUse.new("g: Get", 3, 3, AnalysisDeclKind.CLASS, "Get", "class Get", 6),
+		ExpectedUse.new("n: None", 3, 4, AnalysisDeclKind.CLASS, "None", "class None", 6),
+		ExpectedUse.new("g[0]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Get", 0),
+		ExpectedUse.new("g[0]", 1, 1, AnalysisDeclKind.METHOD, "[]", get, 0),
+		ExpectedUse.new("g[1]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Get", 0),
+		ExpectedUse.new("g[2]", 0, 1, AnalysisDeclKind.PARAMETER, "g", "g: Get", 0),
+		ExpectedUse.new("g[2]", 1, 1, AnalysisDeclKind.METHOD, "[]", get, 0),
+		ExpectedUse.new("n[3]", 0, 1, AnalysisDeclKind.PARAMETER, "n", "n: None", 0)
+	]);
+}
+
+def DESCRIPTORS = ["-lang:descriptors"];
+def test_descriptor_construction(t: Tester) {
+	// A class with a descriptor is constructed through compiler sugar. The
+	// default constructor is the class's name; an explicit one is its "new".
+	var text = lines([
+		"class D describes C { }",
+		"class C descriptor D { }",
+		"class E describes K { }",
+		"class K descriptor E { new(x: int) { } }",
+		"component M {",
+		"  def d = D.new();",
+		"  def e = E.new();",
+		"  def f() -> C { var k = K.new(e, 1); return C.new(d); }",
+		"}"
+	]);
+	var c = "class C", d = "class D", e = "class E", k = "class K";
+	assertUses(t, analyzeText(t, text, DESCRIPTORS, true), text, [
+		ExpectedUse.new("describes C", 10, 1, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C descriptor D", 13, 1, AnalysisDeclKind.CLASS, "D", d, 6),
+		ExpectedUse.new("describes K", 10, 1, AnalysisDeclKind.CLASS, "K", k, 6),
+		ExpectedUse.new("K descriptor E", 13, 1, AnalysisDeclKind.CLASS, "E", e, 6),
+		ExpectedUse.new("D.new()", 0, 1, AnalysisDeclKind.CLASS, "D", d, 6),
+		ExpectedUse.new("D.new()", 2, 3, AnalysisDeclKind.CLASS, "D", d, 6),
+		ExpectedUse.new("E.new()", 0, 1, AnalysisDeclKind.CLASS, "E", e, 6),
+		ExpectedUse.new("E.new()", 2, 3, AnalysisDeclKind.CLASS, "E", e, 6),
+		ExpectedUse.new("-> C", 3, 1, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("K.new(e", 0, 1, AnalysisDeclKind.CLASS, "K", k, 6),
+		ExpectedUse.new("K.new(e", 2, 3, AnalysisDeclKind.CONSTRUCTOR, "new", "new(x", 0),
+		ExpectedUse.new("K.new(e", 6, 1, AnalysisDeclKind.FIELD, "e", "e = E", 0),
+		ExpectedUse.new("C.new(d)", 0, 1, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C.new(d)", 2, 3, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C.new(d)", 6, 1, AnalysisDeclKind.FIELD, "d", "d = D", 0)
+	]);
+}
+def test_descriptor_construction_with_errors(t: Tester) {
+	var text = lines([
+		"class D describes C { }",
+		"class C descriptor D { }",
+		"component M {",
+		"  def f(d: D) -> C { return C.new(d, missing); }",
+		"}"
+	]);
+	var c = "class C", d = "class D";
+	assertUses(t, analyzeText(t, text, DESCRIPTORS, false), text, [
+		ExpectedUse.new("describes C", 10, 1, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C descriptor D", 13, 1, AnalysisDeclKind.CLASS, "D", d, 6),
+		ExpectedUse.new("d: D", 3, 1, AnalysisDeclKind.CLASS, "D", d, 6),
+		ExpectedUse.new("-> C", 3, 1, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C.new(d", 0, 1, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C.new(d", 2, 3, AnalysisDeclKind.CLASS, "C", c, 6),
+		ExpectedUse.new("C.new(d", 6, 1, AnalysisDeclKind.PARAMETER, "d", "d: D", 0)
+	]);
+}
+
+def test_function_expression_types(t: Tester) {
+	var text = Strings.format2("%s%s", CLASSES,
+		lines([
+		"component M {",
+		"  def f = fun (x: Foo) -> Child => Child.!(x);",
+		"}"
+	]));
+	var foo = "class Foo", child = "class Child";
+	assertUses(t, analyzeText(t, text, ["-lang:fun-exprs"], true), text, [
+		ExpectedUse.new("extends Foo", 8, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("x: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("-> Child", 3, 5, AnalysisDeclKind.CLASS, "Child", child, 6),
+		ExpectedUse.new("Child.!(x)", 0, 5, AnalysisDeclKind.CLASS, "Child", child, 6),
+		ExpectedUse.new("Child.!(x)", 8, 1, AnalysisDeclKind.PARAMETER, "x", "x: Foo", 0)
+	]);
+}
+
+def test_builtins_record_nothing(t: Tester) {
+	// Builtin members and types, operators, casts and queries on builtin
+	// types, and an enum's generated members have no source declaration.
+	var text = lines([
+		"enum E { X }",
+		"component M {",
+		"  def f(a: Array<int>, x: int, e: E) -> int {",
+		"    if (byte.?(x) && byte.!(x) == 0) return a.length + int.max;",
+		"    return e.tag + E.count + e.name.length;",
+		"  }",
+		"}"
+	]);
+	var e = "enum E";
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("e: E", 3, 1, AnalysisDeclKind.ENUM, "E", e, 5),
+		ExpectedUse.new("?(x)", 2, 1, AnalysisDeclKind.PARAMETER, "x", "x: int", 0),
+		ExpectedUse.new("!(x)", 2, 1, AnalysisDeclKind.PARAMETER, "x", "x: int", 0),
+		ExpectedUse.new("a.length", 0, 1, AnalysisDeclKind.PARAMETER, "a", "a: Array", 0),
+		ExpectedUse.new("e.tag", 0, 1, AnalysisDeclKind.PARAMETER, "e", "e: E", 0),
+		ExpectedUse.new("E.count", 0, 1, AnalysisDeclKind.ENUM, "E", e, 5),
+		ExpectedUse.new("e.name", 0, 1, AnalysisDeclKind.PARAMETER, "e", "e: E", 0)
+	]);
+}
+def test_layout_ref_records_nothing(t: Tester) {
+	// Ref<L> binds to the layout's reference type, but Ref is a builtin, so
+	// neither the type nor the expression records a use there.
+	var text = lines([
+		"layout L {",
+		"  +0 x: u8;",
+		"  =1;",
+		"}",
+		"component M {",
+		"  def f(r: Range<byte>) -> u8 { var p: Ref<L> = Ref<L>.of(r); return p.x; }",
+		"}"
+	]);
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("of(r)", 3, 1, AnalysisDeclKind.PARAMETER, "r", "r: Range", 0),
+		ExpectedUse.new("p.x", 0, 1, AnalysisDeclKind.LOCAL, "p", "p: Ref", 0),
+		ExpectedUse.new("p.x", 2, 1, AnalysisDeclKind.LAYOUT_FIELD, "x", "x: u8", 0)
+	]);
+}
+def test_existing_uses(t: Tester) {
+	// Calls, member access, an unbound method, construction, casts and
+	// queries on a class, and enum and variant cases outside a match.
+	var text = lines([
+		"class Foo { var v: int; def m() -> int { return v; } }",
+		"enum E { X }",
+		"type V { case A; }",
+		"component M {",
+		"  def f(o: Foo) -> int {",
+		"    var g = Foo.new(), u = Foo.m;",
+		"    if (Foo.?(o) && E.X == E.X && V.A == V.A) return Foo.!(o).v + u(g);",
+		"    return M.f(o);",
+		"  }",
+		"}"
+	]);
+	var foo = "class Foo", m = "m() ->", e = "enum E", v = "type V";
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("return v", 7, 1, AnalysisDeclKind.FIELD, "v", "v: int", 0),
+		ExpectedUse.new("o: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Foo.new", 0, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Foo.new", 4, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Foo.m;", 0, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Foo.m;", 4, 1, AnalysisDeclKind.METHOD, "m", m, 0),
+		ExpectedUse.new("Foo.?(o)", 0, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Foo.?(o)", 6, 1, AnalysisDeclKind.PARAMETER, "o", "o: Foo", 0),
+		ExpectedUse.new("E.X == E.X", 0, 1, AnalysisDeclKind.ENUM, "E", e, 5),
+		ExpectedUse.new("E.X == E.X", 2, 1, AnalysisDeclKind.ENUM_CASE, "X", "X }", 0),
+		ExpectedUse.new("E.X == E.X", 7, 1, AnalysisDeclKind.ENUM, "E", e, 5),
+		ExpectedUse.new("E.X == E.X", 9, 1, AnalysisDeclKind.ENUM_CASE, "X", "X }", 0),
+		ExpectedUse.new("V.A == V.A", 0, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("V.A == V.A", 2, 1, AnalysisDeclKind.VARIANT_CASE, "A", "case A", 5),
+		ExpectedUse.new("V.A == V.A", 7, 1, AnalysisDeclKind.CLASS, "V", v, 5),
+		ExpectedUse.new("V.A == V.A", 9, 1, AnalysisDeclKind.VARIANT_CASE, "A", "case A", 5),
+		ExpectedUse.new("Foo.!(o)", 0, 3, AnalysisDeclKind.CLASS, "Foo", foo, 6),
+		ExpectedUse.new("Foo.!(o)", 6, 1, AnalysisDeclKind.PARAMETER, "o", "o: Foo", 0),
+		ExpectedUse.new(").v +", 2, 1, AnalysisDeclKind.FIELD, "v", "v: int", 0),
+		ExpectedUse.new("u(g)", 0, 1, AnalysisDeclKind.LOCAL, "u", "u = Foo", 0),
+		ExpectedUse.new("u(g)", 2, 1, AnalysisDeclKind.LOCAL, "g", "g = Foo", 0),
+		ExpectedUse.new("M.f(o)", 0, 1, AnalysisDeclKind.COMPONENT, "M", "component M", 10),
+		ExpectedUse.new("M.f(o)", 2, 1, AnalysisDeclKind.METHOD, "f", "f(o", 0),
+		ExpectedUse.new("M.f(o)", 4, 1, AnalysisDeclKind.PARAMETER, "o", "o: Foo", 0)
+	]);
+}
+
+def test_fixture(t: Tester) {
+	var sources = load(t, [FIXTURE]);
+	if (sources == null) return;
+	var r = analyze(t, sources, []);
+	t.assertz(true, r.0.verified);
+	if (r.1 == null) return;
+	assertRoundTrip(t, r.0, r.1, sources);
+	assertSound(t, r.1, sources);
+}
+// A whole real program, analyzed and decoded in this process.
+def test_lib_util(t: Tester) {
+	var paths = Vector<string>.new();
+	sourceFiles(Strings.format1("%s/lib/util", VIRGIL), paths);
+	t.assert(paths.length > 20, "lib/util has its sources");
+	var sources = load(t, paths.extract());
+	if (sources == null) return;
+	var r = analyze(t, sources, []);
+	if (r.1 == null) return;
+	assertRoundTrip(t, r.0, r.1, sources);
+	assertSound(t, r.1, sources);
+}
+// The largest program we have, analyzed by a worker as the server does.
+def test_aeneas_sources(t: Tester) {
+	var paths = Vector<string>.new(), src = Strings.format1("%s/aeneas/src", VIRGIL);
+	var dirs = ProjectFiles.list(src, 256);
+	if (dirs.names == null) return t.fail1("cannot list %s", src);
+	// Listing a file fails, so only the directories contribute sources.
+	for (name in dirs.names) sourceFiles(ProjectFiles.join(src, name), paths);
+	var deps = System.fileLoad(Strings.format1("%s/aeneas/DEPS", VIRGIL));
+	if (deps == null) return t.fail("cannot read aeneas/DEPS");
+	var start = 0;
+	for (i = 0; i <= deps.length; i++) {
+		if (i < deps.length && deps[i] != '\n') continue;
+		var line = Arrays.range(deps, start, i);
+		start = i + 1;
+		// Each line is a directory's sources, as "lib/util/*.v3".
+		if (line.length > 5 && Strings.endsWith(line, "/*.v3") && !Strings.startsWith(line, "lib/test/")) {
+			sourceFiles(Strings.format2("%s/%s", VIRGIL, Arrays.range(line, 0, line.length - 5)), paths);
+		}
+	}
+	t.assert(paths.length > 200, "the Aeneas sources and their dependencies");
+	var sources = load(t, paths.extract());
+	if (sources == null) return;
+	var s = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var outcome = s.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS);
+	s.close();
+	match (outcome) {
+		Completed(snapshot) => {
+			t.assertz(true, snapshot.verified);
+			assertSound(t, snapshot, sources);
+			// ADR-0004 records this program's share of the result budget.
+			t.assert(snapshot.resultAllocation <= long.view(AnalysisWire.MAX_RESULT_ALLOCATION) * 4 / 5,
+				"the Aeneas sources use at most 80% of the result budget");
+		}
+		_ => t.fail("the Aeneas sources did not analyze");
+	}
+}

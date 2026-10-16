@@ -25,6 +25,8 @@ component SyntheticAnalysisWorker {
 			var w = WorkerFraming.start().putb(AnalysisWire.RESULT).put_b32(id).put_b32(1).put_b32(1).put_b64(0);
 			w.putb(3); // parsed and verified, no occurrence index
 			for (i < 6) w.put_sleb32(0);
+			// Skipped uses, which the supervisor reports.
+			w.put_sleb32(if(Strings.equal(mode, "skipped"), 2, 0));
 			w.put_sleb32(if(large, 1, 0));
 			if (large) {
 				// A complete diagnostic, encoded well within the frame limit but

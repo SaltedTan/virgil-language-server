@@ -145,6 +145,7 @@ def test_result_matches_analysis(t: Tester) {
 	t.asserti(4567, s.stats.uidNext);
 	t.asserti(-1, s.stats.globalTypesAdded);
 	t.asserti(42, s.stats.globalTypeTotal);
+	t.asserti(0, s.stats.skippedUses);
 	var count = 0;
 	for (k < sources.length) {
 		var path = sources[k].path, input = sources[k].input;
@@ -184,7 +185,7 @@ def test_result_matches_analysis(t: Tester) {
 			if (i > 0) t.assert(want[i - 1].range.endOffset <= r.beginOffset, "uses are in byte order");
 		}
 	}
-	t.asserti(13, count);
+	t.asserti(14, count);
 	// Each distinct declaration is sent once.
 	t.asserti(9, s.declarations.length);
 	t.assert(s.definitionAt("other.v3", 1, 1) == null, "unknown path");
@@ -227,6 +228,7 @@ def test_result_without_occurrences(t: Tester) {
 	var s = r.snapshot;
 	t.assertz(false, s.hasOccurrences);
 	t.asserti(-1, s.stats.collectUs);
+	t.asserti(-1, s.stats.skippedUses);
 	t.asserti(0, s.declarations.length);
 	t.asserti(0, s.occurrences(MAIN).length);
 	t.assert(s.definitionAt(MAIN, 4, 25) == null, "no occurrences were sent");
@@ -278,6 +280,18 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(1000000000, null), 1, [])), "diagnostic count");
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(0, 5)), 1, [])), "path index");
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(200, 0)), 1, [])), "declaration kind");
+	// The last kind decodes; the tag after it is malformed.
+	var last = AnalysisDeclKind.TYPE_PARAM;
+	t.asserti(AnalysisDeclKind.count - 1, last.tag);
+	var kinds = declaration(last.tag, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
+	kinds.puta(OCCURRENCE).put_sleb32(0);
+	var decoded = decodedResult(result(0, kinds), 1, []);
+	if (decoded == null) return t.fail("the last declaration kind was rejected");
+	var found = decoded.snapshot.definitionAt("p.v3", 1, 1);
+	t.assert(found != null && found.kind == last, "the last declaration kind decodes");
+	kinds = declaration(AnalysisDeclKind.count, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
+	kinds.puta(OCCURRENCE).put_sleb32(0);
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, kinds), 1, [])), "the tag after the last kind");
 	var occurrences = declaration(0, 0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
 	occurrences.puta(OCCURRENCE).put_sleb32(1);
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, occurrences), 1, [])), "declaration index");
@@ -320,7 +334,7 @@ def OCCURRENCE = "\x01\x01\x08\x01";
 def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0);
 	w.putb(if(occurrences != null, 4 | 1, 1));
-	for (i < 6) w.put_sleb32(-1);
+	for (i < 7) w.put_sleb32(-1);
 	w.put_sleb32(diagnostics);
 	if (occurrences != null) w.putr(occurrences.alias());
 	return w.extract();
@@ -436,6 +450,8 @@ def test_occurrence_token_spans(t: Tester) {
 	var w = AnalysisWire.encodeResult(1, 1, 1, analysis, 0, -1, [("p.v3", uses)]);
 	var r = decodedResult(payloadOf(AnalysisWire.finishResult(w, 0L)), 1, ["p.v3"]);
 	if (r == null) return t.fail("result with omitted occurrences did not decode");
+	// The omissions are counted, so they are not silent.
+	t.asserti(3, r.snapshot.stats.skippedUses);
 	var got = r.snapshot.occurrences("p.v3");
 	t.asserti(2, got.length);
 	if (got.length != 2) return;

@@ -115,7 +115,9 @@ class Worker:
         request, analyses, uid, live = struct.unpack("<IIIQ", reader.take(20))
         assert request == self.next_id
         flags = reader.take(1)[0]
-        stats = [reader.integer() for _ in range(6)]
+        # Parse, verify, and collection times, UIDs used, global types added and
+        # total, and uses skipped because they are not token spans.
+        stats = [reader.integer() for _ in range(7)]
         diagnostics = []
         for _ in range(reader.integer()):
             diagnostics.append(dict(path=reader.string(),
@@ -140,7 +142,7 @@ class Worker:
                                             offsets=[offset, offset + length],
                                             declaration=declarations[reader.integer()]))
         reader.finish()
-        return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1],
+        return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1], skippedUses=stats[6],
                     diagnostics=diagnostics, occurrences=occurrences)
 
     def close(self):
@@ -242,11 +244,25 @@ def main():
                 assert use[0]['offsets'] == [begin, begin + len(op)], use
                 bracket = text.encode().index(b'[x')
                 assert use[0]['declaration']['offsets'] == [bracket, bracket + 1], use
+                assert result['skippedUses'] == 0, result
                 command = [str(exe), 'analyze', '--bindings', '--repeat=2', str(path)]
                 cli = subprocess.run(command, capture_output=True, text=True, timeout=5)
                 expected = f'{path}:2:{column}-2:{column + len(op)} -> METHOD {op} @ {path}:1:15-1:{15 + len(op)}'
                 assert cli.returncode == 0 and expected in cli.stdout.splitlines(), cli
                 evidence.append(dict(command=command, stdout=cli.stdout, stderr=cli.stderr))
+            # An index operation occupies its opening bracket, which replay
+            # locates after a block-comment tab, as for the method it calls.
+            for op, text, use in [
+                ('[]', 'class C { def [x: int] -> int { return x; }\n/*\t*/ def f(c: C) -> int => c[1];\n}\n', b'c[1]'),
+                ('[]=', 'class C { def [x: int] = y: int {}\n/*\t*/ def f(c: C) { c[1] = 2; }\n}\n', b'c[1]'),
+            ]:
+                result = check("index operator " + op, text, [], flags=1, path='index.v3')
+                assert result['skippedUses'] == 0, result
+                found = [o for o in result['occurrences'] if o['declaration']['name'] == op]
+                bracket = text.encode().index(use) + 1
+                assert len(found) == 1 and found[0]['offsets'] == [bracket, bracket + 1], found
+                declaration = text.encode().index(b'[x')
+                assert found[0]['declaration']['offsets'] == [declaration, declaration + 1], found
 
             path = work / 'semantic.v3'
             text = 'component C {\n/*\t😀é*/ def x: int = "s";\n}\n'

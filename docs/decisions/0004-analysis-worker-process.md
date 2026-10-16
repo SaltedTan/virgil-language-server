@@ -27,13 +27,13 @@ Two properties of the Virgil runtime shape the answer:
 
 ### Channel and framing
 
-Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `RESULT` starts with fixed-width request ID, analysis count, and UID counter (32 bits each), then live heap bytes (64 bits), all little-endian. Its flags and declaration-kind tags are single bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions, and `AnalysisWire.PROTOCOL_VERSION` changes with the layout.
+Requests and results each use one pipe. A frame is a 4-byte little-endian payload length followed by the payload, at most 16 MiB (`WorkerFraming.MAX_PAYLOAD`). The first payload byte gives the message kind. Unless noted, integers are signed LEB128, and strings are a length (-1 for null) followed by the bytes. `RESULT` starts with fixed-width request ID, analysis count, and UID counter (32 bits each), then live heap bytes (64 bits), all little-endian. Its flags and declaration-kind tags are single bytes. `src/worker/AnalysisWire.v3` holds the encoder and decoder for both directions. Released layouts require an `AnalysisWire.PROTOCOL_VERSION` change; version 4 remains unreleased, so the type-parameter declaration kind and skipped-uses statistic were added without another version change.
 
 | Message | Direction | Contents |
 | --- | --- | --- |
 | `HELLO` | worker → server | Protocol version, server version, source revision, heap bytes |
 | `ANALYZE` | server → worker | Request ID, flags (collect occurrences, collect statistics), the server's time limit, the program's [language options](../configuration.md#compiler-flags) in the order given, then each file's path and bytes, in program order |
-| `RESULT` | worker → server | Request ID, and the worker's analysis count, UID counter, and live heap; parse/verify flags and statistics; diagnostics; a path table; each distinct declaration once; each file's occurrences as ranges and declaration indexes. Diagnostic and declaration ranges hold compiler coordinates and UTF-8 byte offsets. An occurrence is a single-line token whose compiler column span equals its byte length, so it is sent as its begin line, column, and offset and that length |
+| `RESULT` | worker → server | Request ID, and the worker's analysis count, UID counter, and live heap; parse/verify flags and statistics, including the uses dropped because they are not token spans; diagnostics; a path table; each distinct declaration once; each file's occurrences as ranges and declaration indexes. Diagnostic and declaration ranges hold compiler coordinates and UTF-8 byte offsets. An occurrence is a single-line token whose compiler column span equals its byte length, so it is sent as its begin line, column, and offset and that length |
 
 The server's pipe ends are nonblocking. The stdio event loop polls standard input and the worker pipes together, using the startup or analysis deadline as its poll timeout. Startup, including the handshake, and request transmission are asynchronous too. It therefore never waits on a worker that has stopped reading or writing. The decoder bounds every count by the bytes that remain in the message, and every index by its table. A malformed message is rejected without trapping, and the worker that sent it is killed.
 
@@ -99,21 +99,21 @@ Run in process before the worker existed, the same analysis ran out of heap at 1
 
 ### Supported program size
 
-The supported envelope is determined by source/request size, decoded result size, worker heap, and analysis time, not a fixed file or line count. The Aeneas sources and dependencies (205 files, 3.0 MB of source) and Wizard's `wizeng` v3i sources (164 files, 1.3 MB) fit the result budget with occurrences. Measurements from an instrumented decoder with protocol version 4, which added byte offsets to declaration and occurrence ranges, against the unchanged 16,777,216-byte allocation budget:
+The supported envelope is determined by source/request size, decoded result size, worker heap, and analysis time, not a fixed file or line count. The Aeneas sources and dependencies (205 files, 3.0 MB of source) and Wizard's `wizeng` v3i sources (164 files, 1.3 MB) fit the result budget with occurrences. Measurements with protocol version 4, which added byte offsets to declaration and occurrence ranges, and with the occurrences of type references, type parameters, and index operators ([#104](https://github.com/SaltedTan/virgil-language-server/issues/104)), against the unchanged 16,777,216-byte allocation budget. `analyze --stats --bindings` prints a result's charged allocation:
 
 | Program | Files | Source | Bindings | Charged result allocation | Share of budget |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Aeneas sources and dependencies | 205 | 3.0 MB | 171,249 | 10,932,492 bytes | 65% |
+| Aeneas sources and dependencies | 205 | 3.0 MB | 188,307 | 11,351,159 bytes | 68% |
 | Wizard engine, `wizeng` v3i sources | 164 | 1.3 MB | 65,748 | 4,631,312 bytes | 28% |
-| `vendor/virgil/lib/util/*.v3` | 31 | 0.2 MB | 6,361 | 545,154 bytes | 3% |
+| `vendor/virgil/lib/util/*.v3` | 31 | 0.2 MB | 6,904 | 584,522 bytes | 3% |
 
-Protocol version 4 charges each record what version 3 did, since an occurrence's offset and length replace its end line and column, so these results are charged the same under both. The Wizard sources were not measured again; their row is their protocol 3 measurement at `c7791a1`.
+With `VarExpr` uses alone, the Aeneas sources had 171,249 bindings, charged 10,932,492 bytes (65%), and `lib/util` had 6,361, charged 545,154 bytes. Protocol version 4 charges each record what version 3 did, since an occurrence's offset and length replace its end line and column, and its type-parameter declaration kind and skipped-uses statistic charge nothing more. The Wizard sources were not measured again; their row is their protocol 3 measurement at `c7791a1`. `OccurrenceCoverage:aeneas_sources` requires the Aeneas sources to stay within 80% of the budget.
 
-Users can check total source bytes with `wc -c` over the files supplied to analysis (using current overlay contents for unsaved files). Source bytes alone must be below the [development stdio request's admission limit](../development.md#development-stdio-requests), which also includes paths and metadata. The CLI uses the [encoded-request admission rule](#restart-policy). Neither source limit guarantees a result will fit: declarations, occurrences, and especially diagnostics have different allocation charges. `analyze --bindings` can help check binding counts for programs that fit, but is not a result-allocation meter.
+Users can check total source bytes with `wc -c` over the files supplied to analysis (using current overlay contents for unsaved files). Source bytes alone must be below the [development stdio request's admission limit](../development.md#development-stdio-requests), which also includes paths and metadata. The CLI uses the [encoded-request admission rule](#restart-policy). Neither source limit guarantees a result will fit: declarations, occurrences, and especially diagnostics have different allocation charges. For a program that fits, `analyze --stats --bindings` reports its binding counts and the result allocation charged against the budget.
 
 With similar binding and diagnostic density, about **1.5 times the Aeneas sources** would exhaust the result budget; the development request's source limit rejects about **1.4 times** that source set first. These are sizing guides, not guaranteed capacities for arbitrary programs. If the decoded result exceeds its budget, reduce the files analyzed together to a smaller valid program/project; retrying the unchanged program or increasing `WORKER_HEAP` does not increase the server's result budget.
 
-The remaining headroom is accepted for now. Adding occurrence kinds ([#104](https://github.com/SaltedTan/virgil-language-server/issues/104)) or hover display data ([#105](https://github.com/SaltedTan/virgil-language-server/issues/105)) must re-measure decoded result allocation and [binding collection time](../architecture.md#coordinates).
+The remaining headroom is accepted for now. Adding occurrence kinds or hover display data ([#105](https://github.com/SaltedTan/virgil-language-server/issues/105)) must re-measure decoded result allocation and [binding collection time](../architecture.md#compiler-adapter).
 
 ### Other limits
 

@@ -193,6 +193,10 @@ bindings=$(sed -En 's/^virgil-lsp: analysis 1: parse [0-9]+ us, verify [0-9]+ us
     [ "$(grep -Ec "^virgil-lsp: analysis [0-9]+: parse [0-9]+ us, verify [0-9]+ us, $bindings bindings" "$TMP/err")" -eq 20 ] && \
     [ "$(grep -c ' -> ' "$TMP/out")" -eq "$bindings" ]
 finish "analyze repeats report every binding from each worker" $(( $? == 0 ))
+# Every use the collector finds is a token span, so none is dropped.
+[ "$(grep -Ec "^virgil-lsp: analysis [0-9]+: .* bindings in [0-9]+ us, 0 skipped, " "$TMP/err")" -eq 20 ] && \
+    ! grep -q 'not token spans' "$TMP/err"
+finish "analyze skips no use of the Aeneas sources" $(( $? == 0 ))
 
 # A complete report spans the header and both files. Pin its bytes so buffer
 # reuse cannot leak capacity bytes, duplicate a prior chunk, or miss a chunk.
@@ -210,13 +214,20 @@ for options in "--bindings" "--bindings --repeat=3" "--bindings --stats --repeat
     if [[ "$options" == *--stats* ]]; then
         [ "$(wc -l < "$TMP/err")" -eq 3 ] || ok=0
         for run in 1 2 3; do
-            grep -Eq "^virgil-lsp: analysis $run: parse [0-9]+ us, verify [0-9]+ us, 13 bindings in [0-9]+ us, uids \\+[0-9]+ \\(next [0-9]+\\), global types \\+[0-9]+ \\(total [0-9]+\\)$" "$TMP/err" || ok=0
+            grep -Eq "^virgil-lsp: analysis $run: parse [0-9]+ us, verify [0-9]+ us, 14 bindings in [0-9]+ us, 0 skipped, uids \\+[0-9]+ \\(next [0-9]+\\), global types \\+[0-9]+ \\(total [0-9]+\\), result allocation [0-9]+ bytes$" "$TMP/err" || ok=0
         done
     else
         [ ! -s "$TMP/err" ] || ok=0
     fi
     finish "analyze complete report $options" "$ok"
 done
+# Type references, type parameters, variant cases used as types, and index
+# operators, pinned in the same way.
+awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \
+    "$ROOT/test/cli/analysis-coverage-bindings.txt" > "$TMP/analysis-want"
+"$EXE" analyze --bindings "$A/occurrence-coverage/main.v3" > "$TMP/out" 2> "$TMP/err"
+[ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
+finish "analyze reports type, type parameter, and index operator uses" $(( $? == 0 ))
 
 # frame <payload>: prints the payload with a Content-Length header, in bytes.
 frame() {

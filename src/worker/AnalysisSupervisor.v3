@@ -133,6 +133,10 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 				if (result.id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				generation++;
 				snapshot = result.snapshot;
+				// Every use the collector finds should be a token span; see
+				// AnalysisRange.isTokenSpan.
+				var skipped = snapshot.stats.skippedUses;
+				if (skipped > 0) log(warn, Strings.format1("analysis omitted %d uses that are not token spans", skipped));
 				clearPending();
 				retireIfOverLimit(result.state);
 				return AnalysisOutcome.Completed(snapshot);
