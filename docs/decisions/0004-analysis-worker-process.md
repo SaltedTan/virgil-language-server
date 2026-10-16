@@ -113,6 +113,8 @@ Users can check total source bytes with `wc -c` over the files supplied to analy
 
 With similar binding and diagnostic density, about **1.35 times the Aeneas sources** would exhaust the result budget, a little before the development request's source limit rejects about **1.4 times** that source set. These are sizing guides, not guaranteed capacities for arbitrary programs. If the decoded result exceeds its budget, reduce the files analyzed together to a smaller valid program/project; retrying the unchanged program or increasing `WORKER_HEAP` does not increase the server's result budget.
 
+The remaining headroom is accepted for now. Adding occurrence kinds ([#104](https://github.com/SaltedTan/virgil-language-server/issues/104)) or hover display data ([#105](https://github.com/SaltedTan/virgil-language-server/issues/105)) must re-measure decoded result allocation and [binding collection time](../architecture.md#coordinates).
+
 ### Other limits
 
 - The time limit uses `System.ticksMs()`, which reads the wall clock (`gettimeofday`). A clock change during an analysis can shorten or lengthen the limit.
