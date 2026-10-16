@@ -63,8 +63,9 @@ enum AnalysisDeclKind {
 	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD
 }
 
-// A declaration in the program. {range} covers the declaration's name token;
-// the syntax tree does not record where a whole declaration ends.
+// A declaration in the program. Compiler coordinates cover its name token;
+// byte offsets select its source spelling (see AnalysisSourceMaps.range).
+// The syntax tree does not record where a whole declaration ends.
 class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisRange) {
 	def render(buf: StringBuilder) -> StringBuilder {
 		buf.puts(kind.name).putc(' ').puts(name).puts(" @ ");
