@@ -486,10 +486,6 @@ def test_configuration_edits_drop_obsolete_waiters(t: Tester) {
 	semantic.close();
 	supervisor.close();
 }
-class AnalyzedListener extends LspAnalysisListener {
-	var count: int;
-	def analyzed() { count++; }
-}
 // Two contexts are due while the worker is idle. Waiting for the second makes
 // it start before the first, which was scheduled earlier.
 def test_urgent_context_starts_first(t: Tester) {
@@ -513,7 +509,7 @@ def test_urgent_context_starts_first(t: Tester) {
 	// Let both become due without polling, which would start the first.
 	var fds = Array<int>.new(4);
 	while (semantic.pollTimeout() > 0) HostOs.poll(fds, 0, semantic.pollTimeout());
-	var listener = AnalyzedListener.new();
+	var listener = LspDefinitionWaiters.new(LspDefinition.new(store, projects, send));
 	t.assert(semantic.whenAnalyzed(second, listener) == listener, "the listener is registered");
 	t.assertz(true, supervisor.busy());
 	t.asserti(1, semantic.waitingCount());
@@ -522,7 +518,7 @@ def test_urgent_context_starts_first(t: Tester) {
 		HostOs.poll(fds, count, semantic.pollTimeout());
 		semantic.onPoll();
 	}
-	t.asserti(1, listener.count);
+	t.assertz(true, listener.fired);
 	t.assert(first.snapshot != null && second.snapshot != null, "both contexts were analyzed");
 	if (first.snapshot != null && second.snapshot != null) {
 		t.assert(second.snapshot.generation < first.snapshot.generation, "the urgent context started first");

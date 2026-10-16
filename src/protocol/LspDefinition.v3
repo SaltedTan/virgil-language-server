@@ -9,11 +9,12 @@ class LspDefinitionRequest(id: JsonRpcId, uri: string, line: int, character: int
 	var answered: bool;
 }
 // The requests waiting for one pending analysis, in arrival order. It is that
-// analysis's listener, so a context has at most two: for its waiting and its
-// running analysis.
-class LspDefinitionWaiters(owner: LspDefinition) extends LspAnalysisListener {
+// analysis's listener (LspSemanticDiagnostics.whenAnalyzed), so a context has
+// at most two: for its waiting and its running analysis.
+class LspDefinitionWaiters(owner: LspDefinition) {
 	def requests = Vector<LspDefinitionRequest>.new();
 	var fired: bool;	// the analysis has ended
+	// Called once the analysis completes, fails, or is dropped.
 	def analyzed() {
 		fired = true;
 		owner.answer(this);
@@ -33,7 +34,7 @@ class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 	// candidate if it has none, or null if none is pending
 	// (LspSemanticDiagnostics.whenAnalyzed). Without it, a missing or stale
 	// snapshot is answered with null at once.
-	var whenAnalyzed: (ProjectContext, LspAnalysisListener) -> LspAnalysisListener;
+	var whenAnalyzed: (ProjectContext, LspDefinitionWaiters) -> LspDefinitionWaiters;
 	// Every waiting request in arrival order, after some answered ones, which
 	// {compact} removes.
 	private var arrivals = Vector<LspDefinitionRequest>.new();
@@ -45,18 +46,26 @@ class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("textDocument/definition", definition);
 	}
-	// Answers every waiting request with RequestCancelled and {reason}.
+	// The number of requests waiting.
+	def waiting() -> int {
+		return waitingCount;
+	}
+	// Answers every waiting request with RequestCancelled and {reason}. All
+	// are marked answered first, so a listener notified from within a reply
+	// finds none left to answer.
 	def close(reason: string) {
 		var error = JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason);
-		var all = arrivals.extract(), start = oldest;
-		oldest = waitingCount = 0;
-		batches.clear();
-		for (i = start; i < all.length; i++) {
-			var r = all[i];
+		var cancelled = Vector<LspDefinitionRequest>.new();
+		for (i = oldest; i < arrivals.length; i++) {
+			var r = arrivals[i];
 			if (r.answered) continue;
 			r.answered = true;
-			send(JsonRpcMessage.ErrorResponse(r.id, error).encode());
+			cancelled.put(r);
 		}
+		arrivals.clear();
+		oldest = waitingCount = 0;
+		batches.clear();
+		for (i < cancelled.length) send(JsonRpcMessage.ErrorResponse(cancelled[i].id, error).encode());
 	}
 	private def definition(request: JsonRpcMessage.Request) {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
@@ -74,9 +83,8 @@ class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		}
 		// Join the waiters of the analysis this request waits for.
 		var candidate = LspDefinitionWaiters.new(this);
-		var listener = whenAnalyzed(ctx, candidate);
-		if (listener == null) return reply(request.id, locate(ctx, key, line, character));
-		var waiters = LspDefinitionWaiters.!(listener);
+		var waiters = whenAnalyzed(ctx, candidate);
+		if (waiters == null) return reply(request.id, locate(ctx, key, line, character));
 		if (waiters == candidate && !waiters.fired) batches.put(waiters);
 		// Take the oldest waiting request's slot before answering it, so that
 		// a request sent from within that reply cannot exceed the bound.

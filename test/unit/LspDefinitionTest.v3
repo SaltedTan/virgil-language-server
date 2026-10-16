@@ -23,6 +23,7 @@ def X = [
 	T("LspDefinition:waiting_requests_bounded", test_waiting_requests_bounded),
 	T("LspDefinition:running_analysis_answers_its_requests", test_running_analysis_answers_its_requests),
 	T("LspDefinition:reentrant_reply_within_bound", test_reentrant_reply_within_bound),
+	T("LspDefinition:close_cancels_each_once", test_close_cancels_each_once),
 	T("LspDefinition:shutdown_and_end_answer_waiting", test_shutdown_and_end_answer_waiting),
 	T("LspDefinition:parse_failure_and_no_project", test_parse_failure_and_no_project),
 	T("LspDefinition:params", test_params),
@@ -534,6 +535,52 @@ def test_reentrant_reply_within_bound(t: Tester) {
 	s.settle();
 	t.asserti(ids.length, s.replies.length);
 	for (i < ids.length) t.assert(s.reply(ids[i]) != null, "every request is answered");
+	s.server.close();
+}
+// A scheduler stand-in that keeps the first listener for every request, and
+// a sink that notifies it from within the first cancellation reply.
+class RetainedListener {
+	var waiters: LspDefinitionWaiters;
+	var cancelling: bool;
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	def whenAnalyzed(ctx: ProjectContext, candidate: LspDefinitionWaiters) -> LspDefinitionWaiters {
+		if (waiters == null) waiters = candidate;
+		return waiters;
+	}
+	def send(bytes: Array<byte>) {
+		replies.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+		if (cancelling && replies.length == 1) waiters.analyzed();
+	}
+}
+// Closing answers each waiting request exactly once with RequestCancelled,
+// even if their listener is notified from within the first reply.
+def test_close_cancels_each_once(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), projects = WorkspaceProjects.new(store);
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(s.base));
+	projects.initialize(initialize);
+	var stub = RetainedListener.new(), definition = LspDefinition.new(store, projects, stub.send);
+	definition.whenAnalyzed = stub.whenAnalyzed;
+	var dispatcher = JsonRpcDispatcher.new();
+	definition.register(dispatcher);
+	var count = 10;
+	for (i < count) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":2,\"character\":41}}}", i + 1, s.uri("Use.v3"));
+		t.assert(dispatcher.handle(payload) == null, "replies use the sink");
+	}
+	t.asserti(0, stub.replies.length);
+	t.asserti(count, definition.waiting());
+	stub.cancelling = true;
+	definition.close("closed");
+	t.asserti(count, stub.replies.length);
+	for (i < stub.replies.length) {
+		var r = stub.replies[i];
+		t.assert(r["id"] == JsonValue.Int(i + 1), "each request once, in arrival order");
+		t.assert(r.has("error"), "cancelled");
+		if (r.has("error")) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+	}
+	t.asserti(0, definition.waiting());
 	s.server.close();
 }
 def liveBytes() -> long {
