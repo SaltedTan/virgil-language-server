@@ -1,10 +1,11 @@
 {
   "name": "virgil-lsp-vscode",
-  "displayName": "Virgil Language Server (development)",
-  "description": "Development client for the Virgil language server.",
-  "version": "0.0.0-dev",
+  "displayName": "Virgil Language Server",
+  "description": "Virgil language support from the virgil-lsp language server, which is installed separately.",
+  "version": "0.1.0",
   "private": true,
   "publisher": "virgil-language-server",
+  "preview": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -87,11 +88,13 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "check": "tsc -p . --noEmit",
     "test": "npm run compile && node --test test/*.cjs",
-    "test:e2e": "npm run compile && node test/e2e/run.cjs"
+    "test:e2e": "npm run compile && node test/e2e/run.cjs",
+    "package": "vsce package --pre-release --baseContentUrl https://github.com/SaltedTan/virgil-language-server/blob/main/clients/vscode --baseImagesUrl https://github.com/SaltedTan/virgil-language-server/raw/main/clients/vscode"
   },
   "dependencies": {
     "vscode-languageclient": "10.1.2"
@@ -100,6 +103,7 @@
     "@types/node": "20.19.43",
     "@types/vscode": "1.91.0",
     "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
     "typescript": "7.0.2"
   }
 }

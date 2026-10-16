@@ -1,6 +1,6 @@
 # VS Code extension
 
-> **Development client.** It is not packaged or published yet; run it from this directory as described below. See the [project status](../../README.md) for current server features and [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions.
+> **Prerelease.** The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. It doesn't include the server, which you install separately. See the [project status](../../README.md) for current server features and [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions.
 
 A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
@@ -13,9 +13,33 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 - sends `shutdown` and then `exit` when it is deactivated, for example when the window closes;
 - runs on the workspace side (`extensionKind: ["workspace"]`), so that with Remote-SSH and Remote-WSL the server starts on the remote machine, next to the files ([ADR-0003](../../docs/decisions/0003-supported-platforms.md)).
 
+## Installing from a VSIX
+
+Requirements: a VS Code version and a server version that work with the extension's version, both listed in [compatibility](../../docs/compatibility.md#editors). Until the server has releases, build it with `make` at the repository root, and follow the [executable placement guidance](../../README.md#building): `virgil-lsp-worker` must stay beside `virgil-lsp`.
+
+1. Get `virgil-lsp-vscode-<version>.vsix`: from the `vsix` artifact of a [CI](../../.github/workflows/ci.yml) run (GitHub downloads artifacts as a zip file that contains the VSIX), or by [packaging](#packaging) it yourself. GitHub prereleases will include it once the release workflow attaches it.
+2. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:
+
+   ```sh
+   code --install-extension virgil-lsp-vscode-0.1.0.vsix
+   ```
+
+3. Unless `virgil-lsp` is on `PATH`, set `virgil.server.path` to its absolute path, and for projects with `virgilDependencies`, set `virgil.virgilRoot` ([Settings](#settings)).
+
+With Remote-SSH or Remote-WSL, the extension runs on the remote machine, next to the server and the files, so install it there. In a window connected to the remote, either run **Extensions: Install from VSIX...**, or copy the VSIX to the remote machine and run `code --install-extension` in that window's integrated terminal. The Extensions view then lists the extension under the remote, such as "SSH: host" or "WSL: Ubuntu", not under "Local". Set `virgil.server.path` and `virgil.virgilRoot` in the remote settings.
+
+VS Code doesn't update an extension installed from a VSIX. To upgrade, install the newer VSIX the same way. To remove the extension, uninstall it from the Extensions view, or run `code --uninstall-extension virgil-language-server.virgil-lsp-vscode`.
+
+### Versions
+
+The extension's versions are a sequence of their own, independent of the server's; [compatibility](../../docs/compatibility.md#editors) records which server versions each one works with. They are plain `major.minor.patch` numbers, starting at `0.1.0`, without a suffix such as `-alpha.1`, because the Visual Studio Marketplace rejects those. Every VSIX is a prerelease for now, marked in two ways:
+
+- `package.json` sets `"preview": true`. VS Code shows a "Preview" label for the extension, including when it's installed from a VSIX.
+- `npm run package` passes `--pre-release` to vsce, which marks the package as a pre-release in its manifest. VS Code doesn't use this mark for a VSIX installed by hand; it takes effect only if the package is published to a marketplace, where it puts the version on the pre-release channel. VS Code's own `--pre-release` option for `--install-extension` likewise only applies to extensions installed from a marketplace.
+
 ## Setup
 
-Requirements: a [supported VS Code version](../../docs/compatibility.md#editors), Node.js 22 or later with `npm` (required by the Extension Host test dependency), and a built server.
+To run the extension from source instead of installing a VSIX, you need a [supported VS Code version](../../docs/compatibility.md#editors), Node.js 22 or later with `npm` (required by the Extension Host test and packaging dependencies), and a built server.
 
 1. Build the server from the repository root (`make`), and either put `build/` on your `PATH` or set `virgil.server.path` to the absolute path of `build/virgil-lsp`. Follow the [executable placement guidance](../../README.md#building).
 2. Install the extension's dependencies from the lockfile and compile it:
@@ -72,10 +96,17 @@ If a check fails, or the server doesn't start, the extension writes the reason t
 npm run check     # type-check only
 npm test          # compile and run lifecycle regression tests
 npm run test:e2e  # compile and run the Extension Host test against build/virgil-lsp
+npm run package   # compile and package the extension as a VSIX
 npm run watch     # recompile on change
 ```
 
-CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test). VSIX packaging is planned (ROADMAP backlog item 18). The [manual checklist](#manual-checklist) covers what the tests don't.
+CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux, [packages](#packaging) the VSIX, and uploads it as the workflow run's `vsix` artifact. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test), first on the extension in this directory and then on a VSIX that it packages and installs. The [manual checklist](#manual-checklist) covers what the tests don't.
+
+### Packaging
+
+`npm run package` compiles the extension and runs the pinned [`@vscode/vsce`](https://github.com/microsoft/vscode-vsce), which writes `virgil-lsp-vscode-<version>.vsix` in this directory. The VSIX contains `out/extension.js`, `package.json`, the grammar, the language configuration, this README, the repository's `LICENSE` (through the symbolic link `LICENSE` here), and the runtime dependencies from `node_modules`, each with its own license file ([third-party notices](../../THIRD_PARTY_NOTICES.md#vs-code-client-npm)). vsce leaves out the development dependencies, and `.vscodeignore` leaves out the TypeScript sources, tests, source maps, type declarations, and the Extension Host test's VS Code download. To see what a VSIX contains, run `unzip -l virgil-lsp-vscode-0.1.0.vsix`; `npx vsce ls` lists what the next package would contain.
+
+In the packaged README, vsce turns relative links into links to `main` on GitHub. It also warns that the extension isn't bundled: the runtime dependencies stay separate files, so that their license files ship unchanged. `"private": true` in `package.json` only stops `npm publish`; vsce ignores it.
 
 ### Extension Host test
 
@@ -91,17 +122,19 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 - an unsaved edit to `.virgil-lsp.json` produces an `UnknownField` diagnostic, and undoing it clears the diagnostic;
 - **Virgil: Restart Language Server** makes the server exit with status 0 (`Server process exited successfully`), and a new server starts and answers document symbol requests.
 
+To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
+
 Each wait is bounded, and each start of VS Code must finish within 120 seconds. On failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward.
 
 ## Manual checklist
 
-Run it on each platform before a release, and after changes to the extension or to server startup and shutdown. Use a copy of the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) (`cp -R test/e2e/nvim/fixture /tmp/virgil-check`), so that edits don't touch the checkout. Its `bad.v3` contains a syntax error on line 3. Its project file defines a project `words`, which uses Virgil's `lib/util`. Set `virgil.virgilRoot` to the absolute path of the checkout's `vendor/virgil` before you start.
+Run it on each platform before a release, with the extension [installed from the release's VSIX](#installing-from-a-vsix), and after changes to the extension or to server startup and shutdown. Use a copy of the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) (`cp -R test/e2e/nvim/fixture /tmp/virgil-check`), so that edits don't touch the checkout. Its `bad.v3` contains a syntax error on line 3. Its project file defines a project `words`, which uses Virgil's `lib/util`. Set `virgil.virgilRoot` to the absolute path of the checkout's `vendor/virgil` before you start.
 
 On Linux, the [Extension Host test](#extension-host-test) automates the steps marked *(automated on Linux)*. Run them by hand on the other platforms.
 
 For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Remote-WSL** (from Windows into WSL 2), and **macOS** (Apple Silicon, with Rosetta 2):
 
-1. Open the fixture folder with the extension loaded (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language. *(Automated on Linux.)*
+1. Open the fixture folder with the extension installed or loaded from source (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language. *(Automated on Linux.)*
 2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine. *(Automated on Linux.)*
 3. The Problems view shows one error, "invalid start of expression" from `aeneas`, at line 3, column 27. *(Automated on Linux.)*
 4. Without saving, replace the file's contents with `component C { def value = 1; }`. The error disappears. *(Automated on Linux.)*
