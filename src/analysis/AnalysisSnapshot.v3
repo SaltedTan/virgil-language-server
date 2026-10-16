@@ -44,20 +44,25 @@ class AnalysisSnapshot {
 	// Called once on completion, before exposing the snapshot to handlers.
 	def recordDocumentVersions(versions: Array<AnalysisDocumentVersion>) {
 		documentVersions = versions;
-		for (v in versions) retainedBytes += 128L + v.uri.length;
+		for (v in versions) retainedBytes += 144L + v.uri.length;
 	}
 
 	// False for an unrecorded URI. Disk inputs are current while no overlay is
 	// open and the client has reported no disk change to the file since.
 	def matchesDocument(store: DocumentStore, uri: string) -> bool {
 		if (!matchesProject()) return false;
+		var i = documentIndex(uri);
+		return i >= 0 && documentVersions[i].matchesDocument(store);
+	}
+	// The index of {uri}'s stamp in {documentVersions}, which is also its index
+	// in {paths}, or -1 for an unrecorded URI.
+	def documentIndex(uri: string) -> int {
 		var key = DocumentUri.normalize(uri);
-		if (key == null) return false;
-		for (v in documentVersions) {
-			if (!Strings.equal(v.uri, key)) continue;
-			return v.matchesDocument(store);
+		if (key == null) return -1;
+		for (i < documentVersions.length) {
+			if (Strings.equal(documentVersions[i].uri, key)) return i;
 		}
-		return false;
+		return -1;
 	}
 
 	// Records the occurrences of {path}, in source order (see AnalysisSnapshotFile).
@@ -95,9 +100,13 @@ class AnalysisSnapshot {
 // overlay version zero (all integer overlay versions, including negative, work).
 // The token carries no source bytes and prevents close/reopen version reuse.
 // A disk input also records the store's disk stamp, which a reported disk
-// change replaces.
+// change replaces, and the length and 64-bit FNV-1a hash of the bytes the
+// worker analyzed, which LspAnalysisCapture.analyzedText checks a re-read
+// against. An overlay input has length -1 and relies on its identity.
 class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersionIdentity) {
 	var disk: DocumentVersionIdentity;
+	var length = -1;
+	var hash: u64;
 	def matchesDocument(store: DocumentStore) -> bool {
 		var doc = store.overlay(uri);
 		if (identity == null) return doc == null && (disk == null || disk == store.diskStamp(uri));

@@ -47,6 +47,13 @@ for name, config in [("ownership-hidden-empty", '{"version":1,"projects":[]}'), 
     (base / "main.v3").write_text("component Main { def main() -> int { return 0; } }\n", encoding="utf-8")
     (base / ".hidden" / "A.v3").write_text("def hidden = missing;\n", encoding="utf-8")
     (base / ".hidden" / ".virgil-lsp.json").write_text(config, encoding="utf-8")
+# LspAnalyzedTextTest writes, changes, and deletes the sources itself.
+analyzed_text = root / "analyzed-text"
+analyzed_text.mkdir(exist_ok=True)
+(analyzed_text / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
 (root / "safe").mkdir(parents=True, exist_ok=True)
 (root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")
 (root / "safe" / "A.v3").write_text("def a = 1;\n", encoding="utf-8")
