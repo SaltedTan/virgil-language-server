@@ -370,7 +370,10 @@ def assertUses(t: Tester, a: ProgramAnalysis, s: AnalysisSnapshot, path: string,
 		// Every byte of a use resolves; the bytes just outside it do not.
 		for (b = begins[i]; b < ends[i]; b++) {
 			var found = s.definitionAtOffset(path, b);
-			if (found == null) return uses;
+			if (found == null) {
+				t.fail(Strings.format2("missing definition in %s at byte offset %d", path, b));
+				return uses;
+			}
 			t.assert_string(names[i], found.name);
 			t.asserti(d.beginOffset, found.range.beginOffset);
 		}
