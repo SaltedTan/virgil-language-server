@@ -356,7 +356,7 @@ The thin TypeScript development client is present. Its implemented behavior, set
 
 Remaining work:
 
-- add end-to-end extension-host tests for activation, diagnostics, definition, and hover.
+- add definition and hover checks to the [Extension Host test](clients/vscode/README.md#extension-host-test), which covers activation, diagnostics, document symbols, project-file diagnostics, and restart.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.
 
@@ -481,7 +481,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 15. Implement go-to-definition.
 16. Implement hover.
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
-18. Add VS Code client E2E test and prerelease packaging.
+18. Add VS Code client E2E test and prerelease packaging. *(partial: [Extension Host test](clients/vscode/README.md#extension-host-test) present)*
 
 Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
 

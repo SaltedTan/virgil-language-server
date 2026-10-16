@@ -47,7 +47,9 @@ diagnostics for the fixture's project, which uses `lib/util` from the Virgil
 root, configuration diagnostics after an unsaved edit to the project file, that
 other JSON buffers stay detached, and a graceful server shutdown with exit
 status 0. The fixture is copied into a temporary directory; editor state is kept
-there, and the directory is removed afterward.
+there, and the directory is removed afterward. The VS Code
+[Extension Host test](../../clients/vscode/README.md#extension-host-test) uses
+the same fixture, so a change to it affects both editors' checks.
 
 The test skips with a message if Neovim is missing or older than 0.11. Set
 `REQUIRE_NVIM=1` to fail instead of skipping, as both CI jobs do. See the

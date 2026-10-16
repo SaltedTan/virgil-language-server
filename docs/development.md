@@ -97,6 +97,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/diagnostics/` | Golden [semantic diagnostic](architecture.md#semantic-diagnostics) transcripts that interleave input with the expected messages, using the project fixtures. The [runner's header](../test/diagnostics/run.py) owns the comparison-only format. | `python3 test/diagnostics/run.py build/virgil-lsp [case ...]` (with `virgil-lsp-worker` beside it) |
 | `test/e2e/nvim/` | Headless plain Neovim configuration | See [Neovim testing](../editors/nvim/README.md#headless-smoke-test) for coverage, commands, and skip policy |
 | `clients/vscode/` | Type-check and lifecycle regression tests with a simulated extension host, both run by CI job `vscode-client` on Linux, and a [manual checklist](../clients/vscode/README.md#manual-checklist) | See [client development commands](../clients/vscode/README.md#development); not run by `make test` |
+| `clients/vscode/test/e2e/` | The VS Code client in a real Extension Host against the built server, on a copy of the Neovim smoke test's fixture, run by CI job `vscode-extension-host` on Linux | `npm run test:e2e` in `clients/vscode` after `make` (under `xvfb-run -a` without a display); see the [Extension Host test](../clients/vscode/README.md#extension-host-test) for coverage and requirements. Not run by `make test` |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). `test/fixtures/projects/` holds whole repositories with project files. | — |
 
 The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
@@ -106,7 +107,7 @@ frame() { printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) ))
 frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' > input
 ```
 
-Planned additions: `test/features/` and VS Code Extension Host tests in `test/e2e/`.
+Planned addition: `test/features/`.
 
 To add a unit test, create `test/unit/<Thing>Test.v3` and register test functions:
 

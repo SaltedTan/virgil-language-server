@@ -71,28 +71,47 @@ If a check fails, or the server doesn't start, the extension writes the reason t
 ```sh
 npm run check     # type-check only
 npm test          # compile and run lifecycle regression tests
+npm run test:e2e  # compile and run the Extension Host test against build/virgil-lsp
 npm run watch     # recompile on change
 ```
 
-CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux. Extension Host end-to-end tests and VSIX packaging are planned (ROADMAP backlog item 18). Until then, use the manual checklist below.
+CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test). VSIX packaging is planned (ROADMAP backlog item 18). The [manual checklist](#manual-checklist) covers what the tests don't.
+
+### Extension Host test
+
+`npm run test:e2e` runs the compiled extension in a real VS Code Extension Host against the built server. It needs Node.js 22 or later and `build/virgil-lsp` and `build/virgil-lsp-worker` (`make` at the repository root); to test another build, pass its `virgil-lsp`: `npm run test:e2e -- path/to/virgil-lsp`. On first use it downloads VS Code 1.142.0 into `.vscode-test/` with [`@vscode/test-electron`](https://github.com/microsoft/vscode-test). On Linux without a display, run it under `xvfb-run -a npm run test:e2e`. It hasn't been run on macOS yet.
+
+The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) into a temporary directory, so that both editors check the same behaviour and edits don't touch the checkout. It starts VS Code twice, each time with temporary user data and extensions directories, only the built-in extensions besides this one, workspace trust disabled, and `VIRGIL_LOC` removed from the environment. User settings point `virgil.server.path` at the server and `virgil.virgilRoot` at the checkout's `vendor/virgil`. Through VS Code APIs and commands, it checks that:
+
+- with no folder open, opening `bad.v3` activates the extension, which starts the server from `virgil.server.path`;
+- with the fixture as the workspace folder, its `.virgil-lsp.json` activates the extension before any document opens, and the output channel names the Virgil root from `virgil.virgilRoot`;
+- `bad.v3` has the parser diagnostic "invalid start of expression" (`ParseError`, from `aeneas`) with the empty range at line 3, column 27, and no document symbols;
+- an unsaved edit clears the diagnostic, and `vscode.executeDocumentSymbolProvider` then returns the component `C`; undoing the edit brings the diagnostic back;
+- `words/Words.v3` has the single semantic diagnostic that needs `lib/util` from the Virgil root;
+- an unsaved edit to `.virgil-lsp.json` produces an `UnknownField` diagnostic, and undoing it clears the diagnostic;
+- **Virgil: Restart Language Server** makes the server exit with status 0 (`Server process exited successfully`), and a new server starts and answers document symbol requests.
+
+Each wait is bounded, and each start of VS Code must finish within 120 seconds. On failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward.
 
 ## Manual checklist
 
 Run it on each platform before a release, and after changes to the extension or to server startup and shutdown. Use a copy of the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) (`cp -R test/e2e/nvim/fixture /tmp/virgil-check`), so that edits don't touch the checkout. Its `bad.v3` contains a syntax error on line 3. Its project file defines a project `words`, which uses Virgil's `lib/util`. Set `virgil.virgilRoot` to the absolute path of the checkout's `vendor/virgil` before you start.
 
+On Linux, the [Extension Host test](#extension-host-test) automates the steps marked *(automated on Linux)*. Run them by hand on the other platforms.
+
 For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Remote-WSL** (from Windows into WSL 2), and **macOS** (Apple Silicon, with Rosetta 2):
 
-1. Open the fixture folder with the extension loaded (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language.
-2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine.
-3. The Problems view shows one error, "invalid start of expression" from `aeneas`, at line 3, column 27.
-4. Without saving, replace the file's contents with `component C { def value = 1; }`. The error disappears.
-5. The Outline view shows the component `C`.
-6. Undo the edit. The error comes back without saving.
-7. Open `words/Words.v3`. The Problems view shows one error for it, "expected int in var initialization, got Array<byte>" from `aeneas`, on line 7. Without the library, it would also report that `StringBuilder` cannot be found.
-8. Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. The Problems view shows an `UnknownField` error from `virgil-lsp` on that line. Undo the edit; the error disappears.
+1. Open the fixture folder with the extension loaded (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language. *(Automated on Linux.)*
+2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine. *(Automated on Linux.)*
+3. The Problems view shows one error, "invalid start of expression" from `aeneas`, at line 3, column 27. *(Automated on Linux.)*
+4. Without saving, replace the file's contents with `component C { def value = 1; }`. The error disappears. *(Automated on Linux.)*
+5. The Outline view shows the component `C`. *(Automated on Linux.)*
+6. Undo the edit. The error comes back without saving. *(Automated on Linux.)*
+7. Open `words/Words.v3`. The Problems view shows one error for it, "expected int in var initialization, got Array<byte>" from `aeneas`, on line 7. Without the library, it would also report that `StringBuilder` cannot be found. *(Automated on Linux.)*
+8. Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. The Problems view shows an `UnknownField` error from `virgil-lsp` on that line. Undo the edit; the error disappears. *(Automated on Linux.)*
 9. Close `.virgil-lsp.json`. From a terminal, add `"bogus": 1,` after its opening brace on disk. Without editing a `.v3` file, the Problems view shows the `UnknownField` error. Remove it on disk; the error disappears, and `words/Words.v3` reports its error again.
 10. Clear `virgil.virgilRoot`, with `VIRGIL_LOC` unset. The server restarts, the output channel says there is no Virgil root, and `.virgil-lsp.json` gets a `MissingVirgilRoot` error. Restore the setting.
-11. Run **Virgil: Restart Language Server**. The output channel shows `Server process exited successfully`, which means the server exited with status 0 after `shutdown` and `exit`, and then the start messages again. Closing the window stops the server the same way.
+11. Run **Virgil: Restart Language Server**. The output channel shows `Server process exited successfully`, which means the server exited with status 0 after `shutdown` and `exit`, and then the start messages again. *(Automated on Linux.)* Closing the window stops the server the same way.
 12. Set `virgil.server.path` to a nonexistent absolute path. The output channel reports that the file is missing or not executable, and an error notification appears. Restore the setting.
 13. With a copy of `virgil-lsp` in a directory without `virgil-lsp-worker`, point `virgil.server.path` at the copy. The output channel reports the missing worker. Restore the setting.
 14. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit.
