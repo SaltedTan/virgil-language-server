@@ -1,33 +1,55 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// A definition request waiting for an analysis of {context}, with the state of
-// its document when it arrived: the open overlay, or null and the disk stamp.
-class LspDefinitionRequest(id: JsonRpcId, uri: string, line: int, character: int, context: ProjectContext,
-	overlay: DocumentOverlay, disk: DocumentVersionIdentity) { }
+// A definition request waiting for an analysis, with the state of its document
+// when it arrived: the identity of the open overlay, or null and the disk
+// stamp. Neither retains the document's text.
+class LspDefinitionRequest(id: JsonRpcId, uri: string, line: int, character: int,
+	identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
+	var answered: bool;
+}
+// The requests waiting for the pending analysis of {context}, in arrival order.
+class LspDefinitionWaiters(owner: LspDefinition, context: ProjectContext) extends LspAnalysisListener {
+	def requests = Vector<LspDefinitionRequest>.new();
+	def analyzed() { owner.answer(this); }
+}
 
 // textDocument/definition from the occurrences in the retained snapshot of the
 // document's active project context. Every reply goes through {send}: a
 // request against a missing or stale snapshot waits for the context's pending
-// analysis.
-// See docs/architecture.md#definition.
+// analysis. See docs/architecture.md#definition.
 class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
-	// Calls its callback once the pending analysis of a context completes, or
+	// Bounds the requests that wait at once. A client rarely has more than a
+	// few outstanding; past this many, the oldest, the one most likely
+	// superseded, is answered with null.
+	def MAX_WAITING = 256;
+	// Notifies its listener once the pending analysis of a context ends, or
 	// returns false if none is pending (LspSemanticDiagnostics.whenAnalyzed).
-	// Without it, a stale snapshot is answered with null at once.
-	var whenAnalyzed: (ProjectContext, void -> void) -> bool;
-	// The requests waiting for an analysis, in arrival order.
-	private var deferred = Vector<LspDefinitionRequest>.new();
+	// Without it, a missing or stale snapshot is answered with null at once.
+	var whenAnalyzed: (ProjectContext, LspAnalysisListener) -> bool;
+	// Every waiting request in arrival order, after some answered ones, which
+	// {compact} removes.
+	private var arrivals = Vector<LspDefinitionRequest>.new();
+	private var oldest: int;	// the requests before this index are answered
+	private var waitingCount: int;
+	// The waiters of each context with waiting requests.
+	private var contexts = Vector<LspDefinitionWaiters>.new();
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("textDocument/definition", definition);
 	}
 	// Answers every waiting request with RequestCancelled and {reason}.
 	def close(reason: string) {
-		var waiting = deferred.extract();
-		for (i < waiting.length) {
-			send(JsonRpcMessage.ErrorResponse(waiting[i].id, JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)).encode());
+		var error = JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason);
+		for (i = oldest; i < arrivals.length; i++) {
+			var r = arrivals[i];
+			if (r.answered) continue;
+			r.answered = true;
+			send(JsonRpcMessage.ErrorResponse(r.id, error).encode());
 		}
+		arrivals.clear();
+		oldest = waitingCount = 0;
+		contexts.clear();
 	}
 	private def definition(request: JsonRpcMessage.Request) {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
@@ -40,29 +62,69 @@ class LspDefinition(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
 		}
 		var ctx = projects.forDocument(key).active;
-		if (ctx != null && (ctx.snapshot == null || !current(ctx, ctx.snapshot)) && whenAnalyzed != null) {
-			var r = LspDefinitionRequest.new(request.id, key, line, character, ctx, store.overlay(key), store.diskStamp(key));
-			deferred.put(r);
-			if (whenAnalyzed(ctx, fun () => analyzed(r))) return;
-			remove(r);
+		if (ctx == null || whenAnalyzed == null || (ctx.snapshot != null && current(ctx, ctx.snapshot))) {
+			return reply(request.id, locate(ctx, key, line, character));
 		}
-		reply(request.id, locate(ctx, key, line, character));
+		if (waitingCount >= MAX_WAITING) evictOldest();
+		var overlay = store.overlay(key);
+		var r = LspDefinitionRequest.new(request.id, key, line, character,
+			if(overlay != null, overlay.identity), if(overlay == null, store.diskStamp(key)));
+		var waiters: LspDefinitionWaiters;
+		for (i < contexts.length) { if(contexts[i].context == ctx) waiters = contexts[i]; }
+		if (waiters == null) contexts.put(waiters = LspDefinitionWaiters.new(this, ctx));
+		waiters.requests.put(r);
+		arrivals.put(r);
+		waitingCount++;
+		// Registering again moves the waiters to the context's newest pending
+		// analysis. With none pending, they are answered now.
+		if (!whenAnalyzed(ctx, waiters)) answer(waiters);
 	}
-	// Answers {r} from its context's new snapshot, unless its document changed.
-	private def analyzed(r: LspDefinitionRequest) {
-		if (!remove(r)) return;
-		var same = store.overlay(r.uri) == r.overlay && (r.overlay != null || store.diskStamp(r.uri) == r.disk);
-		reply(r.id, if(same, locate(r.context, r.uri, r.line, r.character), JsonValue.Null));
-	}
-	// Removes {r} from the waiting requests. False if it was not waiting.
-	private def remove(r: LspDefinitionRequest) -> bool {
-		var found = false, rest = Vector<LspDefinitionRequest>.new();
-		for (i < deferred.length) {
-			if (deferred[i] == r) found = true;
-			else rest.put(deferred[i]);
+	// Answers the requests of {waiters} once their analysis has ended. Each is
+	// answered from the snapshot of its document's active context now, which
+	// a configuration change may have made another context, without waiting
+	// again.
+	def answer(waiters: LspDefinitionWaiters) {
+		var rest = Vector<LspDefinitionWaiters>.new();
+		for (i < contexts.length) { if(contexts[i] != waiters) rest.put(contexts[i]); }
+		contexts = rest;
+		var active = Strings.newMap<ProjectContext>(), requests = waiters.requests;
+		for (i < requests.length) {
+			var r = requests[i];
+			if (r.answered) continue;
+			if (!active.has(r.uri)) active[r.uri] = projects.forDocument(r.uri).active;
+			// The position refers to the text the request was made against.
+			var doc = store.overlay(r.uri);
+			var same = if(doc != null, doc.identity == r.identity, r.identity == null && store.diskStamp(r.uri) == r.disk);
+			finish(r, if(same, locate(active[r.uri], r.uri, r.line, r.character), JsonValue.Null));
 		}
-		deferred = rest;
-		return found;
+		compact();
+	}
+	// Answers the oldest waiting request with null.
+	private def evictOldest() {
+		while (oldest < arrivals.length && arrivals[oldest].answered) oldest++;
+		if (oldest < arrivals.length) finish(arrivals[oldest], JsonValue.Null);
+		compact();
+	}
+	private def finish(r: LspDefinitionRequest, result: JsonValue) {
+		r.answered = true;
+		waitingCount--;
+		reply(r.id, result);
+	}
+	// Drops answered requests once they are more than half of those recorded,
+	// so that each request is copied a bounded number of times.
+	private def compact() {
+		while (oldest < arrivals.length && arrivals[oldest].answered) oldest++;
+		if (arrivals.length - waitingCount <= arrivals.length / 2) return;
+		var rest = Vector<LspDefinitionRequest>.new();
+		for (i = oldest; i < arrivals.length; i++) { if(!arrivals[i].answered) rest.put(arrivals[i]); }
+		arrivals = rest;
+		oldest = 0;
+		for (i < contexts.length) {
+			var requests = contexts[i].requests, kept = Vector<LspDefinitionRequest>.new();
+			for (j < requests.length) { if(!requests[j].answered) kept.put(requests[j]); }
+			requests.clear();
+			requests.puta(kept.extract());
+		}
 	}
 	private def reply(id: JsonRpcId, result: JsonValue) {
 		send(JsonRpcMessage.Response(id, result).encode());

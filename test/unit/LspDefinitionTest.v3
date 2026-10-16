@@ -19,6 +19,8 @@ def X = [
 	T("LspDefinition:stale_without_analysis", test_stale_without_analysis),
 	T("LspDefinition:missing_snapshot_waits", test_missing_snapshot_waits),
 	T("LspDefinition:document_changed_while_waiting", test_document_changed_while_waiting),
+	T("LspDefinition:active_context_changed_while_waiting", test_active_context_changed_while_waiting),
+	T("LspDefinition:waiting_requests_bounded", test_waiting_requests_bounded),
 	T("LspDefinition:shutdown_and_end_answer_waiting", test_shutdown_and_end_answer_waiting),
 	T("LspDefinition:parse_failure_and_no_project", test_parse_failure_and_no_project),
 	T("LspDefinition:params", test_params),
@@ -37,20 +39,33 @@ def DECL = "// D\xC3\xA9cl\ncomponent Decl {\n/*\t*/\tdef /*\xC3\xA9\xF0\x9D\x84
 def USE_THING = 41;
 def DECL_THING = 19;
 
+// Uses of Thing, which the outer project declares in Old.v3, and a nearer
+// project, opened later, in sub/New.v3.
+def OWNED_USE = "component Use { def get() -> int { return Thing.value; } }\n";
+def OLD = "component Thing {\n\tdef value = 1;\n}\n";
+def NEW = "\ncomponent Thing {\n\tdef value = 2;\n}\n";
+
 class DefinitionTestSession {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
 	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
 	def store = server.documents;
-	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/definition");
+	var base: string;
 	// The responses received, in order.
 	def replies = Vector<HashMap<string, JsonValue>>.new();
 	var nextId = 100;
 	// What handle() returned for the last request; replies use the sink.
 	var handled: Array<byte>;
-	new(t: Tester) {
-		write(t, "Kinds.v3", KINDS);
-		write(t, "Use.v3", USE);
-		write(t, "Decl.v3", DECL);
+	new(fixture: string, t: Tester) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+		if (Strings.equal(fixture, "definition")) {
+			write(t, "Kinds.v3", KINDS);
+			write(t, "Use.v3", USE);
+			write(t, "Decl.v3", DECL);
+		} else {
+			write(t, "Old.v3", OLD);
+			write(t, "sub/Use.v3", OWNED_USE);
+			write(t, "sub/New.v3", NEW);
+		}
 		HostOs.ignoreSigpipe();
 		server.sendNotification = receive;
 		var params = Strings.newMap<JsonValue>();
@@ -194,7 +209,7 @@ def expectNull(t: Tester, v: JsonValue, what: string) {
 	t.assert(v == JsonValue.Null, what);
 }
 def test_declaration_kinds(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
 	expectKind(t, s, "var next = size", 11, "var size", 4, "size");			// field
@@ -218,7 +233,7 @@ def test_declaration_kinds(t: Tester) {
 	s.server.close();
 }
 def test_shadowed_and_same_named(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
 	// A parameter shadows the component's field of the same name.
@@ -236,7 +251,7 @@ def test_shadowed_and_same_named(t: Tester) {
 }
 // A position just past an identifier resolves it, unless another use starts there.
 def test_cursor_after_identifier(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
 	// In "a+b": a, the + just past a, b, and the ; just past b.
@@ -258,7 +273,7 @@ def test_cursor_after_identifier(t: Tester) {
 	s.server.close();
 }
 def test_no_definition(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
 	var p = at(KINDS, "\"abc\".length", 6);
@@ -272,7 +287,7 @@ def test_no_definition(t: Tester) {
 	s.server.close();
 }
 def test_cross_file_closed_target(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	// Both files stay closed, so both are read again from disk.
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
@@ -286,7 +301,7 @@ def test_cross_file_closed_target(t: Tester) {
 	s.server.close();
 }
 def test_cross_file_open_target(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	// The unsaved target has another line before its declarations.
 	s.open("Use.v3", 1, USE);
 	s.open("Decl.v3", 1, Strings.format1("\n%s", DECL));
@@ -296,7 +311,7 @@ def test_cross_file_open_target(t: Tester) {
 	s.server.close();
 }
 def test_target_changed_on_disk(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, USE);
 	s.settle();
 	// An unreported change keeps every stamp current, but the target's bytes
@@ -315,7 +330,7 @@ def test_target_changed_on_disk(t: Tester) {
 	s.server.close();
 }
 def test_stale_waits_for_analysis(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, USE);
 	s.open("Decl.v3", 1, DECL);
 	s.settle();
@@ -337,7 +352,7 @@ def test_stale_waits_for_analysis(t: Tester) {
 	s.server.close();
 }
 def test_stale_waits_for_running_analysis(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, USE);
 	s.open("Decl.v3", 1, DECL);
 	s.settle();
@@ -353,7 +368,7 @@ def test_stale_waits_for_running_analysis(t: Tester) {
 	s.server.close();
 }
 def test_stale_without_analysis(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, USE);
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
@@ -367,7 +382,7 @@ def test_stale_without_analysis(t: Tester) {
 	s.server.close();
 }
 def test_missing_snapshot_waits(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	// Opening the project's first file starts its first analysis at once.
 	s.open("Use.v3", 1, USE);
 	t.assertz(true, s.supervisor.busy());
@@ -380,7 +395,7 @@ def test_missing_snapshot_waits(t: Tester) {
 	// A first analysis that fails leaves no snapshot and nothing pending, so
 	// the reply is null at once. The pinned verifier traps on this literal
 	// (docs/aeneas-crash-paths.md).
-	s = DefinitionTestSession.new(t);
+	s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, Strings.format1("%s\ndef x: i32 = 0i;\n", USE));
 	s.settle();
 	t.assert(s.context().snapshot == null, "the analysis failed");
@@ -388,8 +403,62 @@ def test_missing_snapshot_waits(t: Tester) {
 	t.assertz(false, s.server.analyzing());
 	s.server.close();
 }
+// A nearer project takes the document over while its request waits for the
+// outer project's first analysis. The reply comes from the document's active
+// context then, which has no snapshot yet, and does not wait again.
+def test_active_context_changed_while_waiting(t: Tester) {
+	var s = DefinitionTestSession.new("definition-ownership", t);
+	s.open("sub/Use.v3", 1, OWNED_USE);
+	t.assertz(true, s.supervisor.busy());
+	var waiting = s.request("sub/Use.v3", 0, 49);
+	t.assert(s.reply(waiting) == null, "the reply waits for the outer project's analysis");
+	var outer = s.server.projects.forDocument(s.uri("sub/Use.v3")).active;
+	s.open("sub/.virgil-lsp.json", 1, "{\"version\":1,\"projects\":[{\"name\":\"sub\",\"sources\":[\"Use.v3\",\"New.v3\"]}]}");
+	var inner = s.server.projects.forDocument(s.uri("sub/Use.v3")).active;
+	t.assert(inner != null && inner != outer && outer.config.current, "the nearer project is active; the outer one stays current");
+	s.settle();
+	t.assert(outer.snapshot != null && outer.snapshot.matchesProject(), "the outer analysis completed and is current");
+	expectNull(t, s.result(t, waiting), "not the outer project's declaration");
+	expectLocation(t, s.definition(t, "sub/Use.v3", 0, 49), s.uri("sub/New.v3"), 2, 5, 10);
+	s.server.close();
+}
+// Waiting requests keep no document text, and at most MAX_WAITING wait: each
+// one past that answers the oldest still waiting with null.
+def test_waiting_requests_bounded(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	var max = LspDefinition.new(null, null, null).MAX_WAITING, extra = 10;
+	var padding = Array<byte>.new(128 * 1024);
+	for (i < padding.length) padding[i] = 'x';
+	var before = liveBytes(), ids = Array<int>.new(max + extra);
+	for (i < ids.length) {
+		// Each version is a new 128 KiB overlay; no analysis completes.
+		s.change("Use.v3", i + 2, Strings.format2("%s// %s\n", USE, padding));
+		ids[i] = s.request("Use.v3", 2, USE_THING);
+		var evicted = i + 1 - max;
+		t.asserti(if(evicted > 0, evicted, 0), s.replies.length);
+	}
+	// The current overlay and the analysis inputs, but not every version.
+	var kept = liveBytes() - before;
+	t.assert(kept < 4 * 1024 * 1024, Strings.format1("waiting requests keep %d bytes", int.view(kept)));
+	if (s.replies.length < extra) return s.server.close();
+	for (i < extra) {
+		t.assert(s.replies[i]["id"] == JsonValue.Int(ids[i]), "the oldest waiting request is answered first");
+		expectNull(t, s.result(t, ids[i]), "an evicted request");
+	}
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	for (i = extra; i < ids.length - 1; i++) expectNull(t, s.result(t, ids[i]), "a superseded version");
+	expectLocation(t, s.result(t, ids[ids.length - 1]), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def liveBytes() -> long {
+	RiGc.forceGC();
+	return Semispace.fromSpaceUsed();
+}
 def test_document_changed_while_waiting(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, USE);
 	s.settle();
 	s.change("Use.v3", 2, Strings.format1("%s\n", USE));
@@ -403,7 +472,7 @@ def test_document_changed_while_waiting(t: Tester) {
 }
 def test_shutdown_and_end_answer_waiting(t: Tester) {
 	for (shutdown in [true, false]) {
-		var s = DefinitionTestSession.new(t);
+		var s = DefinitionTestSession.new("definition", t);
 		s.open("Use.v3", 1, USE);
 		s.settle();
 		s.change("Use.v3", 2, Strings.format1("%s\n", USE));
@@ -425,7 +494,7 @@ def test_shutdown_and_end_answer_waiting(t: Tester) {
 	}
 }
 def test_parse_failure_and_no_project(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	var use = at(KINDS, "box.grow", 4);
 	s.open("Kinds.v3", 1, KINDS);
 	s.settle();
@@ -445,7 +514,7 @@ def test_parse_failure_and_no_project(t: Tester) {
 	s.server.close();
 }
 def test_params(t: Tester) {
-	var s = DefinitionTestSession.new(t);
+	var s = DefinitionTestSession.new("definition", t);
 	var cases = [
 		"null",
 		"[]",
