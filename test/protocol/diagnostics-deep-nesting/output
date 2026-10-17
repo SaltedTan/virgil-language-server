@@ -1,6 +1,6 @@
-Content-Length: 322
+Content-Length: 343
 
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 307
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 307
 
 {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"nesting too deep; parsing stopped here","range":{"end":{"character":1854,"line":0},"start":{"character":1854,"line":0}},"severity":1,"source":"aeneas"}],"uri":"untitled:row-13","version":1}}Content-Length: 36
 
