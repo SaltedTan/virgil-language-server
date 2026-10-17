@@ -221,13 +221,13 @@ for options in "--bindings" "--bindings --repeat=3" "--bindings --stats --repeat
     fi
     finish "analyze complete report $options" "$ok"
 done
-# Type references, type parameters, variant cases used as types, and index
-# operators, pinned in the same way.
+# Type references, type parameters, variant cases used as types, index
+# operators, layout references, and packing parameters, pinned in the same way.
 awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \
     "$ROOT/test/cli/analysis-coverage-bindings.txt" > "$TMP/analysis-want"
 "$EXE" analyze --bindings "$A/occurrence-coverage/main.v3" > "$TMP/out" 2> "$TMP/err"
 [ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
-finish "analyze reports type, type parameter, and index operator uses" $(( $? == 0 ))
+finish "analyze reports type, type parameter, index operator, layout, and packing uses" $(( $? == 0 ))
 # Declaration signatures, use-site types where they differ from the
 # declaration's, and builtin uses, in byte order, pinned in the same way.
 awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \

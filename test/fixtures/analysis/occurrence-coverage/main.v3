@@ -58,3 +58,22 @@ component M {
 		return x;
 	}
 }
+// Layout references and packing parameters.
+layout Inner {
+	+0 tag: u8;
+	=1;
+}
+layout Outer {
+	+0 inner: Inner;
+	+1 pair: Inner[2];
+	+3 mode: E;
+	=4;
+}
+packing Halves(lo: 4, hi: 4): 8 = #concat(hi, lo);
+packing Swapped(x: 4, y: 4): 8 = Halves(y, x);
+component Mem {
+	def outer(r: Range<byte>) -> Ref<Inner> {
+		var o: Ref<Outer> = Ref<Outer>.of(r);
+		return o.pair[1];
+	}
+}

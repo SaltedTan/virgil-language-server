@@ -83,3 +83,17 @@ test/fixtures/analysis/occurrence-coverage/main.v3:57:20-57:21 -> METHOD [] @ te
 test/fixtures/analysis/occurrence-coverage/main.v3:57:27-57:28 -> PARAMETER g @ test/fixtures/analysis/occurrence-coverage/main.v3:53:19-53:20
 test/fixtures/analysis/occurrence-coverage/main.v3:57:29-57:31 -> METHOD [] @ test/fixtures/analysis/occurrence-coverage/main.v3:18:13-18:15
 test/fixtures/analysis/occurrence-coverage/main.v3:58:24-58:25 -> LOCAL x @ test/fixtures/analysis/occurrence-coverage/main.v3:54:21-54:22
+test/fixtures/analysis/occurrence-coverage/main.v3:67:19-67:24 -> LAYOUT Inner @ test/fixtures/analysis/occurrence-coverage/main.v3:62:8-62:13
+test/fixtures/analysis/occurrence-coverage/main.v3:68:18-68:23 -> LAYOUT Inner @ test/fixtures/analysis/occurrence-coverage/main.v3:62:8-62:13
+test/fixtures/analysis/occurrence-coverage/main.v3:69:18-69:19 -> ENUM E @ test/fixtures/analysis/occurrence-coverage/main.v3:29:6-29:7
+test/fixtures/analysis/occurrence-coverage/main.v3:72:43-72:45 -> PARAMETER hi @ test/fixtures/analysis/occurrence-coverage/main.v3:72:23-72:25
+test/fixtures/analysis/occurrence-coverage/main.v3:72:47-72:49 -> PARAMETER lo @ test/fixtures/analysis/occurrence-coverage/main.v3:72:16-72:18
+test/fixtures/analysis/occurrence-coverage/main.v3:73:34-73:40 -> PACKING Halves @ test/fixtures/analysis/occurrence-coverage/main.v3:72:9-72:15
+test/fixtures/analysis/occurrence-coverage/main.v3:73:41-73:42 -> PARAMETER y @ test/fixtures/analysis/occurrence-coverage/main.v3:73:23-73:24
+test/fixtures/analysis/occurrence-coverage/main.v3:73:44-73:45 -> PARAMETER x @ test/fixtures/analysis/occurrence-coverage/main.v3:73:17-73:18
+test/fixtures/analysis/occurrence-coverage/main.v3:75:42-75:47 -> LAYOUT Inner @ test/fixtures/analysis/occurrence-coverage/main.v3:62:8-62:13
+test/fixtures/analysis/occurrence-coverage/main.v3:76:28-76:33 -> LAYOUT Outer @ test/fixtures/analysis/occurrence-coverage/main.v3:66:8-66:13
+test/fixtures/analysis/occurrence-coverage/main.v3:76:41-76:46 -> LAYOUT Outer @ test/fixtures/analysis/occurrence-coverage/main.v3:66:8-66:13
+test/fixtures/analysis/occurrence-coverage/main.v3:76:51-76:52 -> PARAMETER r @ test/fixtures/analysis/occurrence-coverage/main.v3:75:19-75:20
+test/fixtures/analysis/occurrence-coverage/main.v3:77:24-77:25 -> LOCAL o @ test/fixtures/analysis/occurrence-coverage/main.v3:76:21-76:22
+test/fixtures/analysis/occurrence-coverage/main.v3:77:26-77:30 -> LAYOUT_FIELD pair @ test/fixtures/analysis/occurrence-coverage/main.v3:68:12-68:16

@@ -81,7 +81,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 5, self.hello
+        assert self.hello["protocol"] == 6, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout

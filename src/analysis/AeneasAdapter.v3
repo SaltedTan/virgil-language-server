@@ -58,9 +58,10 @@ class AnalysisRange(path: string, beginLine: int, beginColumn: int, endLine: int
 }
 
 // The kinds of declaration a use can resolve to.
+// A kind's tag is its wire value; new kinds go last.
 enum AnalysisDeclKind {
 	LOCAL, PARAMETER, FIELD, METHOD, CONSTRUCTOR, CLASS, COMPONENT, ENUM,
-	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD, TYPE_PARAM
+	ENUM_CASE, VARIANT_CASE, LAYOUT, LAYOUT_FIELD, TYPE_PARAM, PACKING
 }
 
 // A declaration in the program. Compiler coordinates cover its name token;
@@ -116,13 +117,16 @@ class ProgramAnalysis {
 	private def sources = AnalysisSourceMaps.new();
 	// Signatures and types, rendered once for all files.
 	private def display = AnalysisDisplay.new(sources);
+	// The program's packings, for their uses; null if it was not verified.
+	private var packings: AnalysisPackings;
 
 	new(diagnostics, stats, parsed, verified, prog: Program) {
 		if (parsed) {
+			packings = AnalysisPackings.new(prog);
 			for (i < prog.files.length) sources.add(prog.files[i], prog.inputs[i]);
 			for (f in prog.vst.files) {
 				// Preserve the first file's bindings if an input path is repeated.
-				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display);
+				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings);
 			}
 		}
 	}
@@ -178,7 +182,7 @@ class ProgramAnalysis {
 
 // Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
 // repeated walk, allocation, or sort for subsequent binding queries.
-class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay) {
+class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: AnalysisPackings) {
 	private var uses: Array<AnalysisOccurrence>;
 	def var skipped: int;
 	def var builtins: Array<AnalysisBuiltinUse>;
@@ -186,7 +190,7 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 
 	def occurrences() -> Array<AnalysisOccurrence> {
 		if (uses == null) {
-			var collector = OccurrenceCollector.new(sources, display);
+			var collector = OccurrenceCollector.new(sources, display, packings);
 			uses = collector.collect(file);
 			skipped = collector.skipped;
 			builtins = collector.builtins;

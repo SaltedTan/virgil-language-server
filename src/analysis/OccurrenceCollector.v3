@@ -4,7 +4,9 @@
 // The occurrence-index contract is documented in
 // docs/architecture.md#compiler-adapter, and display data in
 // docs/architecture.md#display-text.
-class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay) extends VstVisitor<void, void> {
+// {packings} is the program's packings, or null if it was not verified.
+class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
+		packings: AnalysisPackings) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
 	// Declaration sites in the order the walk finds them, which breaks ties.
@@ -26,6 +28,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 		for (i < file.classes.length) visitCompound(file.classes[i]);
 		for (i < file.enums.length) visitCompound(file.enums[i]);
 		for (i < file.layouts.length) visitLayout(file.layouts[i]);
+		for (i < file.packings.length) visitPacking(file.packings[i]);
 		for (i < file.exports.length) {
 			var e = file.exports[i].expr;
 			var inline = false;
@@ -104,8 +107,58 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 	private def visitLayout(decl: VstLayout) {
 		site(make(AnalysisDeclKind.LAYOUT, decl));
 		for (l = decl.members; l != null; l = l.tail) {
-			if (VstLayoutField.?(l.head)) site(make(AnalysisDeclKind.LAYOUT_FIELD, l.head));
+			if (!VstLayoutField.?(l.head)) continue;
+			var f = VstLayoutField.!(l.head);
+			site(make(AnalysisDeclKind.LAYOUT_FIELD, f));
+			memoryType(f.mtref);
 		}
+	}
+	// A layout field's memory type is a name with no type reference of its
+	// own. Verification keeps the reference type of a nested layout, which
+	// it looked up by that name, or else the type it resolved the name to.
+	private def memoryType(mt: MemoryTypeRef) {
+		if (mt == null || mt.tname == null) return;
+		if (mt.mtlayout != null) record(mt.tname.name, make(AnalysisDeclKind.LAYOUT, mt.mtlayout.layoutDecl), null);
+		else record(mt.tname.name, typeDeclaration(mt.mttype), mt.mttype);
+	}
+	// A packing and its parameters are its own declarations; see packingExpr.
+	private def visitPacking(decl: VstPacking) {
+		site(make(AnalysisDeclKind.PACKING, decl));
+		if (decl.pparams != null) for (l = decl.pparams.list; l != null; l = l.tail) site(make(AnalysisDeclKind.PARAMETER, l.head));
+		if (packings != null && packings.verified(decl)) packingExpr(decl, decl.expr);
+	}
+	// Verification looks up a field of a packing expression among the
+	// packing's parameters alone, where a later parameter hides an earlier
+	// one of the same name, and a packing application's name among the
+	// program's packings, where a later packing replaces an earlier one; it
+	// keeps neither binding. Both lookups ignore type arguments, as in
+	// P<int>(b), which name nothing. It checks an application's arguments
+	// only if they are as many as the packing's parameters. A bit pattern is
+	// one literal token whose letters select parameters by their initials;
+	// it names none of them.
+	private def packingExpr(decl: VstPacking, e: VstPackingExpr) {
+		match (e) {
+			Concat(list) => packingExprs(decl, list);
+			App(p, args) => {
+				var target = packings.named(p.ident.name.image);
+				if (target == null) return;
+				record(p.ident.name, make(AnalysisDeclKind.PACKING, target), null);
+				var arity = if(target.pparams != null, target.pparams.length());
+				if (args != null && args.length() == arity) packingExprs(decl, args);
+			}
+			Field(f) => {
+				var name = f.ident.name, param: PackingParamDecl;
+				for (l = if(decl.pparams != null, decl.pparams.list); l != null; l = l.tail) {
+					if (Strings.equal(l.head.token.image, name.image)) param = l.head;
+				}
+				record(name, make(AnalysisDeclKind.PARAMETER, param), null);
+			}
+			_ => ;
+		}
+	}
+	private def packingExprs(decl: VstPacking, list: VstList<VstPackingExpr>) {
+		if (list == null) return;
+		for (l = list.list; l != null; l = l.tail) packingExpr(decl, l.head);
 	}
 	private def visitCompound(decl: VstCompound) {
 		// Verification clears compound.verifier; functions retain the receiver.
@@ -230,7 +283,8 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 		match (tref) {
 			x: NamedTypeRef => {
 				typeRef(x.left);
-				typeRefs(x.nested);
+				if (RefType.?(x.binding)) layoutArgument(RefType.!(x.binding), x.nested);
+				else typeRefs(x.nested);
 				record(x.name, typeDeclaration(x.binding), x.binding);
 			}
 			x: FuncTypeRef => {
@@ -239,6 +293,20 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 			}
 			x: TupleTypeRef => typeRefs(x.nested);
 		}
+	}
+	// Ref<L> binds to the reference type of layout L, which verification
+	// looked up by L's name; L itself has no binding. Records L if {args} is
+	// exactly that name. Ref is a builtin and records nothing.
+	private def layoutArgument(t: RefType, args: VstList<TypeRef>) {
+		var arg = if(args != null && args.length() == 1, args.list.head), decl = t.layoutDecl;
+		if (NamedTypeRef.?(arg) && decl != null) {
+			var x = NamedTypeRef.!(arg);
+			if (x.left == null && x.nested == null && Strings.equal(x.name.image, decl.token.image)) {
+				record(x.name, make(AnalysisDeclKind.LAYOUT, decl), null);
+				return;
+			}
+		}
+		typeRefs(args);
 	}
 
 	def visitIf(s: IfStmt, env: void) {
@@ -324,7 +392,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 	}
 	def visitVar(e: VarExpr, env: void) {
 		expr(e.expr);
-		typeRefs(e.ident.params);
+		match (e.varbind) {
+			Type(t) => if (RefType.?(t)) layoutArgument(RefType.!(t), e.ident.params); else typeRefs(e.ident.params);
+			_ => typeRefs(e.ident.params);
+		}
 		var decl = declarationOf(e.varbind);
 		// A literal enum argument folds E.Case.param to Const, losing the
 		// field in the binding. Require an EnumConst receiver: E.count is a
@@ -507,9 +578,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 				return make(AnalysisDeclKind.CLASS, decl);
 			}
 			x: EnumType => return make(AnalysisDeclKind.ENUM, x.enumDecl);
-			// Ref<L> binds to the layout's reference type, but it names the
-			// builtin Ref, which has no source declaration. Its layout
-			// argument has no binding of its own and is not yet indexed.
+			// Ref<L> names the builtin Ref; see layoutArgument.
 			x: RefType => return null;
 			// Builtin type parameters have no source token; inferred type
 			// variables are TypeVarTypes.
@@ -527,5 +596,48 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 	// the compiler synthesized it.
 	private def declare(kind: AnalysisDeclKind, token: Token, t: Type) -> AnalysisDeclaration {
 		return display.declaration(kind, token, null, t);
+	}
+}
+
+// A program's packings, as verification left them, for collecting their
+// uses. It keeps no binding in a packing expression; see
+// OccurrenceCollector.packingExpr. Retains no Program.
+class AnalysisPackings {
+	// Verification resolves a packing application by name here, where a
+	// later packing of the same name replaces an earlier one.
+	private var byName: HashMap<string, VstPacking>;
+	// The packings that verification reached although their bit width is 0.
+	private var unsized: List<VstPacking>;
+
+	new(prog: Program) {
+		byName = prog.packings;
+		for (i < prog.vst.packings.length) {
+			var p = prog.vst.packings[i];
+			if (p.bitWidth == 0 && p.size != null && reportedSize(prog.ERROR.errors, p.size.token)) unsized = List.new(p, unsized);
+		}
+	}
+	def named(name: string) -> VstPacking {
+		return if(byName != null, byName[name]);
+	}
+	// Whether verification reached {p}; it stops before later declarations at
+	// the error limit. Only Verifier.verifyPacking sets the bit width, which
+	// is the declared size as a byte. A size from 1 to 64 makes it nonzero;
+	// any other size, including one that truncates to 0, is reported at the
+	// size literal, where nothing else reports an error. Exact for each
+	// indexed file: errors name a file by path, so copies of a repeated path
+	// share coordinates, and a skipped copy can match another's error. Only
+	// the first copy of a path is indexed (see ProgramAnalysis).
+	def verified(p: VstPacking) -> bool {
+		if (p.bitWidth != 0) return true;
+		for (l = unsized; l != null; l = l.tail) if (l.head == p) return true;
+		return false;
+	}
+	private def reportedSize(errors: List<Error>, t: Token) -> bool {
+		for (l = errors; l != null; l = l.tail) {
+			var r = l.head.range;
+			if (r != null && r.beginLine == t.beginLine && r.beginColumn == t.beginColumn
+					&& Strings.equal(r.fileName, t.fileName) && Strings.equal(l.head.error, "PackingDeclError")) return true;
+		}
+		return false;
 	}
 }

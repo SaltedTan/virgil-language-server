@@ -142,6 +142,8 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 				putTyped(x.token.image, x.vtype);
 			}
 			x: ParamDecl => putTyped(x.token.image, x.vtype);
+			// A packing parameter has a size in bits, not a type.
+			x: PackingParamDecl => putPackingParam(x);
 			x: VarDecl => {
 				put(if(x.isReadOnly, "def ", "var "));
 				putTyped(x.token.image, x.vtype);
@@ -159,6 +161,18 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 			x: VstLayout => {
 				put("layout ");
 				put(x.token.image);
+			}
+			// A packing's parameters and width are sizes in bits.
+			x: VstPacking => {
+				put("packing ");
+				put(x.token.image);
+				put("(");
+				for (l = if(x.pparams != null, x.pparams.list); l != null && !full; l = l.tail) {
+					if (l != x.pparams.list) put(", ");
+					putPackingParam(l.head);
+				}
+				put("): ");
+				put(if(x.size != null, x.size.token.image, AnalysisDisplayText.UNKNOWN));
 			}
 			x: VstEnumCase => {
 				if (x.receiver != null) put(x.receiver.token.image).put(".");
@@ -260,6 +274,11 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 			putTyped(p.token.image, p.vtype);
 		}
 		put(")");
+	}
+	private def putPackingParam(p: PackingParamDecl) {
+		put(p.token.image);
+		put(": ");
+		put(if(p.size != null, p.size.token.image, AnalysisDisplayText.UNKNOWN));
 	}
 	private def putTypeParams(list: List<TypeParamType>) {
 		if (list == null) return;
