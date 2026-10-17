@@ -44,9 +44,9 @@ The test uses the plain configuration above with the built server on `PATH` and
 checkout in `vendor/virgil`. It checks client attachment, parser diagnostics
 published and cleared after an unsaved edit, document symbols, semantic
 diagnostics for the fixture's project, which uses `lib/util` from the Virgil
-root, a definition in that closed library file, configuration diagnostics after
-an unsaved edit to the project file, that other JSON buffers stay detached, and
-a graceful server shutdown with exit status 0. The fixture is copied into a
+root, a definition in that closed library file, a hover over the same use,
+configuration diagnostics after an unsaved edit to the project file, that other
+JSON buffers stay detached, and a graceful server shutdown with exit status 0. The fixture is copied into a
 temporary directory; editor state is kept there, and the directory is removed
 afterward. The VS Code
 [Extension Host test](../../clients/vscode/README.md#extension-host-test) uses

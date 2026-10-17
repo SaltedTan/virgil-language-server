@@ -6,7 +6,7 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: pre-alpha.** The diagnostics milestones (M2–M3) are done, and semantic navigation (M4) is under way: go-to-definition works, and hover comes next; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, and type errors across the files of a [configured project](docs/configuration.md), where it also goes to the definition of locals, parameters, fields, methods, constructors, enum and variant cases, type names, type parameters, and index operators. The [architecture guide](docs/architecture.md) describes how each part works.
+> **Status: pre-alpha.** The diagnostics milestones (M2–M3) are done, and semantic navigation (M4) is under way: go-to-definition and hover work; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, and type errors across the files of a [configured project](docs/configuration.md), where it also goes to the definition of locals, parameters, fields, methods, constructors, enum and variant cases, type names, type parameters, and index operators, and shows their signatures and types on hover. The [architecture guide](docs/architecture.md) describes how each part works.
 
 ## Why
 
