@@ -4,15 +4,18 @@
 #
 # Smoke-check a VSIX from `npm run package` in clients/vscode before the release
 # workflow tests and attaches it. The VSIX must be a zip file named
-# <name>-<version>.vsix, and its extension/package.json must have the name,
-# publisher, and version of the extension directory's package.json. It must
-# hold the extension's main file and, for each production package in
-# package-lock.json (a "packages" key that isn't marked "dev") that npm always
-# installs, that package's package.json. It must hold no file that
-# .vscodeignore or vsce's defaults exclude, matched as vsce matches them, and
-# no package whose path, from its innermost node_modules directory up, the
-# lockfile doesn't list as a production package, such as @vscode/vsce-sign, a
-# development dependency. See docs/releasing.md.
+# <name>-<version>.vsix whose entries are canonical relative paths in
+# extension/, apart from the two files that vsce writes beside it, and its
+# extension/package.json must have the name, publisher, and version of the
+# extension directory's package.json. It must hold the extension's main file
+# and, for each production package in package-lock.json (a "packages" key
+# that isn't marked "dev") that npm always installs, that package's
+# package.json. It must hold no file that
+# .vscodeignore or vsce's defaults exclude, matched as vsce matches them
+# against each file's name before vsce renames it, and no package whose path,
+# from its innermost node_modules directory up, the lockfile doesn't list as a
+# production package, such as @vscode/vsce-sign, a development dependency. See
+# docs/releasing.md.
 # Usage: check-vsix.py <vsix> [<extension-directory>]
 # The extension directory defaults to clients/vscode.
 import functools
@@ -38,19 +41,46 @@ VSCE_DEFAULT_IGNORE = (
     "**/.vscode-test-web/**",
 )
 VSCE_NOT_IGNORED = ("!package.json", "!README.md")
-# Pattern syntax that minimatch supports and this script doesn't: braces,
-# extglobs, and POSIX character classes.
-UNSUPPORTED = re.compile(r"[{}]|[?*+@!]\(|\[:")
+# vsce 4.0.0 renames these top-level files in the VSIX (ReadmeProcessor,
+# ChangelogProcessor, and LicenseProcessor in the same file), with the options
+# that `npm run package` uses: a README.md or CHANGELOG.md in any case becomes
+# readme.md or changelog.md, and a license file without an extension gains
+# ".txt". Exclusions apply to the source names. Keep them in step too.
+VSCE_RENAMES = (
+    ("readme.md", re.compile(r"readme\.md", re.I)),
+    ("changelog.md", re.compile(r"changelog\.md", re.I)),
+)
+VSCE_LICENSE = re.compile(r"licen[cs]e", re.I)
+# The files that vsce writes at the top of the VSIX, outside extension/.
+VSIX_ROOT_FILES = ("[Content_Types].xml", "extension.vsixmanifest")
+# Pattern syntax that minimatch supports and this script doesn't, because
+# .vscodeignore doesn't need it: braces, extglobs, character classes, and a
+# backslash at the end of a segment.
+UNSUPPORTED = re.compile(r"[][{}]|[?*+@!]\(|\\(/|$)")
 
 
 def fail(message):
     sys.exit("check-vsix.py: error: " + message)
 
 
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, ValueError) as e:
+        fail("cannot read %s: %s" % (path, e))
+
+
+def load_json(path):
+    try:
+        return json.loads(read(path))
+    except ValueError as e:
+        fail("%s is not valid JSON: %s" % (path, e))
+
+
 def ignore_rules(path):
     """Returns the ignore and negated patterns that vsce builds from .vscodeignore."""
-    with open(path, encoding="utf-8") as f:
-        lines = [line.strip() for line in re.split(r"[\n\r]", f.read())]
+    lines = [line.strip() for line in re.split(r"[\n\r]", read(path))]
     lines = [line for line in lines if line and not line.startswith("#")]
     # vsce also matches everything under a pattern whose last segment has no
     # "*", in case it names a directory.
@@ -59,7 +89,7 @@ def ignore_rules(path):
     rules = list(VSCE_DEFAULT_IGNORE) + lines + list(VSCE_NOT_IGNORED)
     for rule in rules:
         if UNSUPPORTED.search(rule):
-            fail("%s: check-vsix.py doesn't support the pattern %r" % (path, rule))
+            fail("%s: check-vsix.py doesn't support the pattern '%s'" % (path, rule))
     ignore = [r for r in rules if not r.startswith("!")]
     negated = [r[1:] for r in rules if r.startswith("!")]
     return ignore, negated
@@ -72,27 +102,14 @@ def segment_regex(segment):
     i = 0
     while i < len(segment):
         c = segment[i]
-        if c == "\\" and i + 1 < len(segment):
+        if c == "\\":
+            # ignore_rules refuses a backslash at the end of a segment.
             out.append(re.escape(segment[i + 1]))
-            i += 2
-            continue
-        if c == "*":
+            i += 1
+        elif c == "*":
             out.append("[^/]*")
         elif c == "?":
             out.append("[^/]")
-        elif c == "[":
-            start = i + 1
-            negate = start < len(segment) and segment[start] in "!^"
-            if negate:
-                start += 1
-            # A "]" right after the opening bracket is part of the class.
-            end = segment.find("]", start + 1)
-            if end < 0:
-                out.append(re.escape(c))
-            else:
-                body = segment[start:end].replace("\\", "\\\\").replace("[", "\\[")
-                out.append("[" + ("^" if negate else "") + body.replace("^", "\\^") + "]")
-                i = end
         else:
             out.append(re.escape(c))
         i += 1
@@ -112,7 +129,7 @@ def match_parts(pattern, parts):
 
 def minimatch(path, pattern):
     """minimatch(path, pattern, {dot: true}) for the syntax that ignore_rules accepts:
-    "*", "?", and classes within a segment, "**" as a whole segment for any
+    "*", "?", and "\\" escapes within a segment, "**" as a whole segment for any
     number of segments (at least one at the end), dot files matched like any
     other, a leading "!" for negation, and a leading "#" for a comment."""
     if pattern.startswith("#"):
@@ -127,16 +144,45 @@ def minimatch(path, pattern):
 def package_of(path):
     """Returns the path of the innermost package that holds a file, such as
     node_modules/a/lib/node_modules/@b/c, or None outside node_modules, or
-    "" for a file in node_modules that isn't in a package."""
+    "" for a file in node_modules that isn't in a package. Only directories
+    count: a file named node_modules is an ordinary file."""
     parts = path.split("/")
-    if "node_modules" not in parts:
+    directories = parts[:-1]
+    if "node_modules" not in directories:
         return None
-    i = len(parts) - 1 - parts[::-1].index("node_modules")
-    end = i + (3 if i + 1 < len(parts) and parts[i + 1].startswith("@") else 2)
+    i = len(directories) - 1 - directories[::-1].index("node_modules")
+    end = i + (3 if parts[i + 1].startswith("@") else 2)
     # The package's name must be followed by a file in it.
     if end >= len(parts):
         return ""
     return "/".join(parts[:end])
+
+
+def entry_problem(entry):
+    """Why a ZIP entry isn't one that vsce writes, or None."""
+    path = entry[:-1] if entry.endswith("/") else entry
+    if path.startswith("/") or "\\" in path or any(s in ("", ".", "..") for s in path.split("/")):
+        return "the entry %r isn't a canonical relative path" % entry
+    if path != "extension" and not path.startswith("extension/") and (
+            entry.endswith("/") or path not in VSIX_ROOT_FILES):
+        return "the entry %r is outside extension/" % entry
+    return None
+
+
+def source_name(path, top):
+    """The name in the extension directory of a file at path in extension/,
+    undoing vsce's renames. top lists the extension directory's own entries."""
+    candidates = None
+    for renamed, original in VSCE_RENAMES:
+        if path == renamed:
+            candidates = [n for n in top if original.fullmatch(n)]
+    if "/" not in path and path.endswith(".txt") and VSCE_LICENSE.fullmatch(path[:-4]):
+        candidates = [n for n in top if n in (path, path[:-4])]
+    if not candidates:
+        return path
+    if len(candidates) > 1:
+        fail("vsce packages each of %s as %s" % (", ".join(sorted(candidates)), path))
+    return candidates[0]
 
 
 def required(entry):
@@ -149,12 +195,22 @@ def main():
         sys.exit("usage: check-vsix.py <vsix> [<extension-directory>]")
     vsix = sys.argv[1]
     source = sys.argv[2] if len(sys.argv) == 3 else os.path.join(ROOT, "clients", "vscode")
-    with open(os.path.join(source, "package.json"), encoding="utf-8") as f:
-        expected = json.load(f)
-    with open(os.path.join(source, "package-lock.json"), encoding="utf-8") as f:
-        lock = json.load(f)["packages"]
+    package_json = os.path.join(source, "package.json")
+    expected = load_json(package_json)
+    if not isinstance(expected, dict) or not all(
+            isinstance(expected.get(k), str) for k in IDENTITY + ("main",)):
+        fail("%s lacks a name, publisher, version, or main" % package_json)
+    if str(expected.get("license", "")).startswith("SEE LICENSE IN"):
+        fail("check-vsix.py doesn't support a license given as 'SEE LICENSE IN <file>'")
+    lockfile = os.path.join(source, "package-lock.json")
+    lock = load_json(lockfile)
+    if not isinstance(lock, dict) or not isinstance(lock.get("packages"), dict) or not all(
+            isinstance(v, dict) for v in lock["packages"].values()):
+        fail("%s has no \"packages\" object of package objects" % lockfile)
     ignore, negated = ignore_rules(os.path.join(source, ".vscodeignore"))
-    production = {k: v for k, v in lock.items() if k.startswith("node_modules/") and not v.get("dev")}
+    production = {k: v for k, v in lock["packages"].items()
+                  if k.startswith("node_modules/") and not v.get("dev")}
+    top = os.listdir(source)
 
     name = os.path.basename(vsix)
     if not zipfile.is_zipfile(vsix):
@@ -179,7 +235,13 @@ def main():
     if name != want:
         problems.append("the file is %s, not %s" % (name, want))
 
-    files = [e[len("extension/"):] for e in entries if e.startswith("extension/")]
+    files = []
+    for entry in entries:
+        problem = entry_problem(entry)
+        if problem is not None:
+            problems.append(problem)
+        elif entry.startswith("extension/") and not entry.endswith("/"):
+            files.append(entry[len("extension/"):])
     main_file = posixpath.normpath(expected["main"])
     if main_file not in files:
         problems.append("the main file %s is missing" % main_file)
@@ -188,9 +250,11 @@ def main():
             problems.append("the production package %s is missing" % key)
     unlisted = set()
     for f in files:
-        rule = next((r for r in ignore if minimatch(f, r)), None)
-        if rule is not None and not any(minimatch(f, r) for r in negated):
-            problems.append("it holds %s, which the ignore pattern %r excludes" % (f, rule))
+        original = source_name(f, top)
+        rule = next((r for r in ignore if minimatch(original, r)), None)
+        if rule is not None and not any(minimatch(original, r) for r in negated):
+            shown = f if original == f else "%s (%s in %s)" % (f, original, source)
+            problems.append("it holds %s, which the ignore pattern '%s' excludes" % (shown, rule))
         package = package_of(f)
         if package == "":
             problems.append("it holds %s, which isn't in a package" % f)

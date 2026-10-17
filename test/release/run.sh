@@ -58,6 +58,10 @@ report() {
     elif [ "$err_pat" != "-" ] && ! grep -Eq -- "$err_pat" "$TMP/err"; then
         ok=0; echo "  stderr: no match for /$err_pat/"
     fi
+    # The Python scripts report every error themselves.
+    if grep -q '^Traceback' "$TMP/err"; then
+        ok=0; echo "  stderr: a Python traceback"
+    fi
     if [ "$ok" -eq 1 ]; then
         pass=$((pass + 1))
     else
@@ -107,7 +111,8 @@ expect "changelog mention outside a heading" 1 "" "no '## \[0.1.0-alpha.1\]' sec
 
 # vsix <path> <package.json|-> [<file>...]: writes a zip file like a VSIX, with
 # <package.json> as extension/package.json, or none for "-", and an empty
-# extension/<file> for each file.
+# extension/<file> for each file, or an entry named exactly <entry> for each
+# raw:<entry>, such as a directory entry ending in "/".
 vsix() {
     python3 - "$@" <<'PY'
 import sys, zipfile
@@ -117,7 +122,7 @@ with zipfile.ZipFile(path, "w") as z:
     if package != "-":
         z.writestr("extension/package.json", package)
     for f in files:
-        z.writestr("extension/" + f, "")
+        z.writestr(f[4:] if f.startswith("raw:") else "extension/" + f, "")
 PY
 }
 
@@ -209,6 +214,23 @@ check_vsix "an unlisted package outside node_modules at the top" 1 "holds lib/no
     "$package" lib/node_modules/left-pad/package.json
 check_vsix "a file in node_modules outside a package" 1 "holds node_modules/\.package-lock\.json, which isn't in a package" \
     "$package" node_modules/.package-lock.json
+check_vsix "a regular file named node_modules" 0 "" "$package" node_modules/vscode-languageclient/lib/node_modules
+check_vsix "directory entries" 0 "" "$package" raw:extension/ raw:extension/node_modules/ raw:extension/out/
+check_vsix "the files that vsce writes outside extension/" 0 "" "$package" "raw:[Content_Types].xml"
+check_vsix "an entry with a . segment" 1 "the entry 'extension/\./src/secret\.ts' isn't a canonical relative path$" \
+    "$package" raw:extension/./src/secret.ts
+check_vsix "an entry with a .. segment" 1 "the entry 'extension/out/\.\./src/secret\.ts' isn't a canonical" \
+    "$package" raw:extension/out/../src/secret.ts
+check_vsix "an entry with an empty segment" 1 "the entry 'extension//src/secret\.ts' isn't a canonical" \
+    "$package" raw:extension//src/secret.ts
+check_vsix "an entry with a backslash" 1 "the entry 'extension/src.*secret\.ts' isn't a canonical" \
+    "$package" 'raw:extension/src\secret.ts'
+check_vsix "an absolute entry" 1 "the entry '/extension/src/secret\.ts' isn't a canonical" \
+    "$package" raw:/extension/src/secret.ts
+check_vsix "an entry outside extension/" 1 "the entry 'src/secret\.ts' is outside extension/$" \
+    "$package" raw:src/secret.ts
+check_vsix "a directory entry outside extension/" 1 "the entry 'extension\.vsixmanifest/' is outside extension/$" \
+    "$package" raw:extension.vsixmanifest/
 vsix "$VSIX" "$package" "${direct[@]}"
 expect_run "check-vsix.py: no transitive dependency" 1 - \
     "the production package node_modules/minimatch/node_modules/brace-expansion is missing$" \
@@ -239,10 +261,48 @@ done > "$TMP/rules.out"
 printf 'src/keep.txt 0\nsrc/extension.ts 1\ndocs/notes.md 1\n' > "$TMP/rules.want"
 expect_run "check-vsix.py: a negation keeps a file, and a directory pattern excludes what it holds" 0 - "" \
     diff "$TMP/rules.want" "$TMP/rules.out"
-printf '*.{js,ts}\n' >> "$TMP/rules/.vscodeignore"
+
+# Pattern syntax that .vscodeignore doesn't need is refused, not emulated.
 vsix "$VSIX" "$package" "${files[@]}"
-expect_run "check-vsix.py: a pattern with braces, which it doesn't support" 1 - \
-    "doesn't support the pattern '\*\.\{js,ts\}'" "$CHECK_VSIX" "$VSIX" "$TMP/rules"
+# shellcheck disable=SC1003 # 'tmp\' is a pattern that ends in a backslash
+for pattern in '*.{js,ts}' 'tmp/[a\-c].js' '[z-a]' 'src/+(a|b).ts' 'tmp\' 'tmp\/x'; do
+    rm -rf "$TMP/unsupported"
+    cp -R "$EXT" "$TMP/unsupported"
+    printf '%s\n' "$pattern" >> "$TMP/unsupported/.vscodeignore"
+    expect_run "check-vsix.py: the unsupported pattern $pattern" 1 - \
+        "doesn't support the pattern '$(ere "$pattern")'$" "$CHECK_VSIX" "$VSIX" "$TMP/unsupported"
+done
+
+# vsce renames a top-level README.md, CHANGELOG.md, and extensionless license
+# file in the VSIX; the ignore patterns apply to the names in the directory.
+# vsce keeps README.md whatever the patterns, but not CHANGELOG.md.
+cp -R "$EXT" "$TMP/renames"
+: > "$TMP/renames/README.md"
+: > "$TMP/renames/CHANGELOG.md"
+: > "$TMP/renames/LICENSE"
+printf '*.md\nLICENSE.txt\n' >> "$TMP/renames/.vscodeignore"
+vsix "$VSIX" "$package" "${files[@]}" readme.md
+expect_run "check-vsix.py: a renamed README and license, which the patterns don't exclude" 0 - "" \
+    "$CHECK_VSIX" "$VSIX" "$TMP/renames"
+vsix "$VSIX" "$package" "${files[@]}" readme.md changelog.md
+expect_run "check-vsix.py: a renamed changelog, which a pattern excludes" 1 - \
+    "it holds changelog\.md \(CHANGELOG\.md in .*/renames\), which the ignore pattern '\*\.md' excludes$" \
+    "$CHECK_VSIX" "$VSIX" "$TMP/renames"
+vsix "$VSIX" "$package" "${files[@]}" readme.md notes.md
+expect_run "check-vsix.py: a file that vsce doesn't rename" 1 - \
+    "it holds notes\.md, which the ignore pattern '\*\.md' excludes$" "$CHECK_VSIX" "$VSIX" "$TMP/renames"
+
+# A lockfile that isn't an object with a "packages" object of package objects.
+for lock in '{"packages": {"": {}, "node_modules/a": null}}' '{"packages":' '{}' '{"packages": []}' '[]'; do
+    rm -rf "$TMP/lock"
+    cp -R "$EXT" "$TMP/lock"
+    printf '%s\n' "$lock" > "$TMP/lock/package-lock.json"
+    expect_run "check-vsix.py: the lockfile $lock" 1 - \
+        'package-lock\.json (is not valid JSON|has no "packages" object of package objects)' \
+        "$CHECK_VSIX" "$VSIX" "$TMP/lock"
+done
+rm "$TMP/lock/package-lock.json"
+expect_run "check-vsix.py: no lockfile" 1 - "cannot read .*/package-lock\.json" "$CHECK_VSIX" "$VSIX" "$TMP/lock"
 
 # Release assets as the build and vsix jobs produce them: a manifest and an
 # empty archive for each target, and the VSIX.
