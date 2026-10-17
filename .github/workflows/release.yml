@@ -4,10 +4,11 @@
 name: Release
 
 # A version tag builds, tests, packages, and smoke-tests the server archives on
-# both supported hosts, writes SHA256SUMS, and publishes them as a GitHub
-# prerelease. Running the workflow by hand, or on a pull request that changes
-# the release files, is a dry run: the same jobs without publishing, with the
-# release files kept as a workflow artifact. See docs/releasing.md.
+# both supported hosts, packages the VS Code extension and tests that VSIX
+# against the Linux archive's server, writes SHA256SUMS, and publishes them as
+# a GitHub prerelease. Running the workflow by hand, or on a pull request that
+# changes the release files, is a dry run: the same jobs without publishing,
+# with the release files kept as a workflow artifact. See docs/releasing.md.
 
 on:
   push:
@@ -17,7 +18,11 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - clients/vscode/.vscodeignore
+      - clients/vscode/package-lock.json
+      - clients/vscode/package.json
       - scripts/check-release.sh
+      - scripts/check-vsix.py
       - scripts/package-release.sh
       - scripts/release-notes.py
       - scripts/smoke-test-release.sh
@@ -131,9 +136,79 @@ jobs:
           path: build/release/
           if-no-files-found: error
 
+  vsix:
+    # Packages the VSIX once, as CI's vscode-client job does, and runs the
+    # Extension Host test against that file with the server from the Linux
+    # archive, extracted as a user would. The checksums job attaches the same
+    # file, which it checks against the SHA-256 recorded here.
+    name: Package and test the VS Code extension
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      file: ${{ steps.package.outputs.file }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+    env:
+      ARCHIVE: virgil-lsp-${{ needs.check.outputs.version }}-x86-64-linux
+    steps:
+      # The test's fixture project uses the pinned Virgil checkout's libraries.
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-x86-64-linux
+          path: ${{ runner.temp }}/archive
+      - name: Extract the server
+        run: |
+          mkdir "$RUNNER_TEMP/server"
+          tar -xzf "$RUNNER_TEMP/archive/$ARCHIVE.tar.gz" -C "$RUNNER_TEMP/server"
+          "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp" --version
+      - name: Install dependencies from the lockfile
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Package the VSIX
+        id: package
+        working-directory: clients/vscode
+        run: |
+          npm run package
+          file=virgil-lsp-vscode-$(node -p 'require("./package.json").version').vsix
+          sha256=$(sha256sum "$file" | cut -d ' ' -f 1)
+          echo "$sha256  $file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+      - name: Check the VSIX's contents
+        env:
+          VSIX: clients/vscode/${{ steps.package.outputs.file }}
+        run: |
+          unzip -l "$VSIX"
+          scripts/check-vsix.py "$VSIX"
+      - name: Extension Host test against the installed VSIX
+        # The runner image includes xvfb-run, as in ci.yml.
+        working-directory: clients/vscode
+        env:
+          VSIX: ${{ steps.package.outputs.file }}
+        run: xvfb-run -a npm run test:e2e -- --vsix "$VSIX" "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp"
+      - name: Check that the VSIX is unchanged
+        working-directory: clients/vscode
+        env:
+          VSIX: ${{ steps.package.outputs.file }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: echo "$SHA256  $VSIX" | sha256sum --check --strict
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix
+          path: clients/vscode/${{ steps.package.outputs.file }}
+          if-no-files-found: error
+
   checksums:
     name: Write and verify SHA256SUMS
-    needs: [check, build]
+    needs: [check, build, vsix]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -143,6 +218,16 @@ jobs:
           pattern: archive-*
           path: release/assets
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix
+          path: release/assets
+      - name: Check that the VSIX is the tested one
+        working-directory: release/assets
+        env:
+          VSIX: ${{ needs.vsix.outputs.file }}
+          SHA256: ${{ needs.vsix.outputs.sha256 }}
+        run: echo "$SHA256  $VSIX" | sha256sum --check --strict
       - name: Write and verify SHA256SUMS
         working-directory: release/assets
         # Every file in this directory is a release asset, so SHA256SUMS
@@ -166,7 +251,7 @@ jobs:
 
   publish:
     name: Publish prerelease
-    needs: [check, checksums]
+    needs: [check, build, vsix, checksums]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

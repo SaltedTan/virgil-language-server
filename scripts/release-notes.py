@@ -3,15 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Print the notes for a GitHub release: the CHANGELOG.md section, then the
-# archives and the exact revisions recorded in their build manifests. Every
+# archives and the exact revisions recorded in their build manifests, and the
+# VS Code extension with the version recorded in the VSIX itself. Every
 # manifest in the asset directory must record the same version, tag, and
-# revisions, and its archive must be present. See docs/releasing.md.
+# revisions, and its archive must be present. The directory must hold exactly
+# one VSIX, named <name>-<version>.vsix after its extension/package.json. See
+# docs/releasing.md.
 # Usage: release-notes.py <changelog-section> <asset-directory>
 # <changelog-section> is a version, or "Unreleased" for a dry run.
 import glob
 import json
 import os
 import sys
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLATFORMS = {
@@ -43,6 +47,29 @@ def changelog_section(heading):
     return "\n".join(lines).strip()
 
 
+def extension(assets):
+    vsixes = sorted(glob.glob(os.path.join(assets, "*.vsix")))
+    if len(vsixes) != 1:
+        fail("expected one VS Code extension (*.vsix) in %s, found %d" % (assets, len(vsixes)))
+    path = vsixes[0]
+    name = os.path.basename(path)
+    if not zipfile.is_zipfile(path):
+        fail(name + " is not a zip file")
+    with zipfile.ZipFile(path) as z:
+        try:
+            manifest = json.loads(z.read("extension/package.json").decode("utf-8"))
+        except KeyError:
+            fail(name + " has no extension/package.json")
+        except ValueError as e:
+            fail("%s: extension/package.json is not valid JSON: %s" % (name, e))
+    if not isinstance(manifest, dict) or not all(
+            isinstance(manifest.get(k), str) and manifest[k] for k in ("name", "publisher", "version")):
+        fail(name + ": extension/package.json lacks a name, publisher, or version")
+    if name != "%s-%s.vsix" % (manifest["name"], manifest["version"]):
+        fail("%s holds version %s of %s" % (name, manifest["version"], manifest["name"]))
+    return name, manifest
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit("usage: release-notes.py <changelog-section> <asset-directory>")
@@ -63,6 +90,7 @@ def main():
             fail("missing archive " + archive)
     if first["dirty"]:
         fail("the archives were built from a modified checkout")
+    vsix, ext = extension(assets)
 
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     repository = os.environ.get("GITHUB_REPOSITORY", "SaltedTan/virgil-language-server")
@@ -84,6 +112,15 @@ def main():
         "The executables are unsigned and not notarized. Check the downloads against "
         "`SHA256SUMS`, then follow the [installation instructions](%s/blob/%s/docs/releasing.md#installing)."
         % (url, ref),
+        "",
+        "### VS Code extension",
+        "",
+        "`%s` is version %s of the VS Code extension (`%s.%s`)%s. Its versions are "
+        "independent of the server's, and it doesn't include a server: install a server archive "
+        "on the machine that holds your files, then [install the extension](%s/blob/%s/docs/releasing.md#vs-code-extension) "
+        "there from the VSIX."
+        % (vsix, ext["version"], ext["publisher"], ext["name"],
+           ", a preview" if ext.get("preview") is True else "", url, ref),
         "",
         "## Revisions",
         "",
