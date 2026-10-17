@@ -370,6 +370,8 @@ def test_inherited_index_methods(t: Tester) {
 def OPEN = lines([
 	"type Opt<T> { case Some(v: T); case _; }",
 	"type Cached<T> extends Opt<T> { case Hit(v: T); }",
+	"type Renamed<U> extends Opt<U> { case Value(v: U); }",
+	"type Fixed extends Opt<Array<int>> { case Empty; }",
 	"type V { case A; case _; }",
 	"type W extends V { case B; }",
 	"component M { def f(c: Cached<int>, w: W) { } }"
@@ -377,13 +379,22 @@ def OPEN = lines([
 def test_open_variant_superclass(t: Tester) {
 	var text = OPEN, r = analyzeWith(t, text, ["-lang:open-types"], true);
 	assertDeclares(t, r, text, "type Cached", 5, AnalysisDeclKind.CLASS, "type Cached<T> extends Opt<T>");
+	assertDeclares(t, r, text, "type Renamed", 5, AnalysisDeclKind.CLASS, "type Renamed<U> extends Opt<U>");
+	assertDeclares(t, r, text, "type Fixed", 5, AnalysisDeclKind.CLASS, "type Fixed extends Opt<Array<int>>");
 	assertDeclares(t, r, text, "type W", 5, AnalysisDeclKind.CLASS, "type W extends V");
+	assertUses(t, r, text, "extends Opt<T>", 8, "type Opt<T>", null);
+	assertUses(t, r, text, "extends Opt<U>", 8, "type Opt<T>", "Opt<U>");
+	assertUses(t, r, text, "extends Opt<U>", 12, "U", null);
+	assertUses(t, r, text, "extends Opt<Array<int>>", 8, "type Opt<T>", "Opt<Array<int>>");
+	assertUses(t, r, text, "extends V", 8, "type V", null);
 	assertUses(t, r, text, "c: Cached", 3, "type Cached<T> extends Opt<T>", "Cached<int>");
 	// An explicit case keeps its case, although verification rejects it
 	// (InheritanceError).
 	text = lines(["type V { case A; case _; }", "type Sub extends V.A { case B; }"]);
 	r = analyzeWith(t, text, ["-lang:open-types"], false);
 	assertDeclares(t, r, text, "type Sub", 5, AnalysisDeclKind.CLASS, "type Sub extends V.A");
+	assertUses(t, r, text, "extends V.A", 8, "type V", null);
+	assertUses(t, r, text, "extends V.A", 10, "case A", null);
 }
 
 def BUILTINS = lines([

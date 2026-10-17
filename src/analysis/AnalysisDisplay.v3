@@ -71,6 +71,11 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		var text = typeText(t);
 		return if(text != null, differing(d, text));
 	}
+	def superclassUseType(decl: AnalysisDeclaration, tref: TypeRef) -> string {
+		start();
+		putSuperclass(tref);
+		return differing(AnalysisWorkerDeclaration.!(decl), strings.intern(buf));
+	}
 	// The text of the type of a use of method {m}, declared as {decl}, by an
 	// index operation on {receiver}, or null if it is the declaration's own
 	// type. {owner} is the class that declares {m}, as {receiver}'s type
@@ -196,6 +201,9 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		var s = c.superclass;
 		if (s == null) return;
 		put(" extends ");
+		putSuperclass(s);
+	}
+	private def putSuperclass(s: TypeRef) {
 		// With -lang:open-types, "type W extends V" extends V's default case,
 		// "case _", which verification binds; the source names the variant.
 		var t = resolve(s.binding, 0);

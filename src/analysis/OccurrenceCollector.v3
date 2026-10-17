@@ -209,7 +209,8 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 			var x = NamedTypeRef.!(tref), c = ClassType.!(tref.binding).classDecl.variantCase;
 			if (x.left == null && c != null && c.decl.isSynthetic && c.isDefaultCase()) {
 				typeRefs(x.nested);
-				record(x.name, make(AnalysisDeclKind.CLASS, c.receiver), null);
+				var o = record(x.name, make(AnalysisDeclKind.CLASS, c.receiver), null);
+				if (o != null) o.useType = display.superclassUseType(o.declaration, tref);
 				return;
 			}
 		}
