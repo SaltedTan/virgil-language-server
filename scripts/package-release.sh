@@ -147,7 +147,7 @@ To install:
 The archive doesn't include Virgil's library sources. Projects that use
 \`virgilDependencies\` need the editor to send a Virgil root. The release
 documentation covers checksums, editors, remote machines, and the Virgil root:
-https://github.com/SaltedTan/virgil-language-server/blob/v$version/docs/releasing.md#installing
+https://github.com/SaltedTan/virgil-language-server/blob/${tag:-$revision}/docs/releasing.md#installing
 README
 
 case $compiler in /*) ;; *) compiler=$ROOT/$compiler ;; esac
