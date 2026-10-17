@@ -124,7 +124,7 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 
 To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
 
-Each wait is bounded, and each start of VS Code, and each installation of a VSIX, must finish within 120 seconds. Each runs in a process group of its own: on a timeout or an interrupt, the test stops the whole group, with SIGTERM and then SIGKILL, and waits for it to exit before it removes its temporary directory. On failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward.
+Each start of VS Code and each installation of a VSIX has a 120-second timeout and runs in a process group of its own. On a timeout, SIGINT, or SIGTERM, the test sends SIGTERM to the whole group, then SIGKILL if it remains after five seconds. It waits without a deadline for the group to exit before removing its temporary directory. On a launch failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward.
 
 ## Manual checklist
 
