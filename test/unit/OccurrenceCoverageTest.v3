@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Occurrences of type references, type parameters, variant cases used as
-// types, index operators, and descriptor-backed construction. Every test
-// checks the analysis and the snapshot decoded from its worker result.
+// types, index operators, descriptor-backed construction, layout references,
+// and packing parameters. Every test checks the analysis and the snapshot
+// decoded from its worker result.
 def T = UnitTests.register;
 def X = [
 	T("OccurrenceCoverage:type_references", test_type_references),
@@ -19,11 +20,16 @@ def X = [
 	T("OccurrenceCoverage:descriptor_construction_with_errors", test_descriptor_construction_with_errors),
 	T("OccurrenceCoverage:function_expression_types", test_function_expression_types),
 	T("OccurrenceCoverage:builtins_record_nothing", test_builtins_record_nothing),
-	T("OccurrenceCoverage:layout_ref_records_nothing", test_layout_ref_records_nothing),
+	T("OccurrenceCoverage:layout_references", test_layout_references),
+	T("OccurrenceCoverage:layout_references_with_errors", test_layout_references_with_errors),
+	T("OccurrenceCoverage:packing_parameters", test_packing_parameters),
+	T("OccurrenceCoverage:packing_parameters_with_errors", test_packing_parameters_with_errors),
+	T("OccurrenceCoverage:packing_after_error_limit", test_packing_after_error_limit),
 	T("OccurrenceCoverage:existing_uses", test_existing_uses),
 	T("OccurrenceCoverage:fixture", test_fixture),
 	T("OccurrenceCoverage:lib_util", test_lib_util),
 	T("OccurrenceCoverage:aeneas_sources", test_aeneas_sources),
+	T("OccurrenceCoverage:layout_and_packing_fixtures", test_layout_and_packing_fixtures),
 	()
 ];
 
@@ -134,27 +140,36 @@ def assertUses(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot), text: string, 
 // must be sound too (see displayError).
 def assertSound(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>) {
 	t.asserti(0, s.stats.skippedUses);
-	var inputs = Strings.newMap<Array<byte>>(), count = 0;
+	var error = soundnessError(s, sources);
+	if (error != null) return t.fail(error);
+	var count = 0;
+	for (source in sources) count += s.occurrences(source.path).length;
+	t.assert(count > 0, "the program has uses");
+}
+// A failure message unless {s} is sound as assertSound defines it, whether
+// or not the program has uses.
+def soundnessError(s: AnalysisSnapshot, sources: Array<AnalysisSource>) -> string {
+	if (s.stats.skippedUses != 0) return Strings.format1("%d uses were skipped", s.stats.skippedUses);
+	var inputs = Strings.newMap<Array<byte>>();
 	for (source in sources) inputs[source.path] = source.input;
 	for (source in sources) {
 		var end = 0;
 		for (o in s.occurrences(source.path)) {
 			var r = o.range, d = o.declaration;
-			count++;
-			if (!r.isTokenSpan()) return t.fail1("use at %s is not a token span", o.toString());
-			if (r.beginOffset < end) return t.fail1("use at %s overlaps or precedes the previous use", o.toString());
+			if (!r.isTokenSpan()) return Strings.format1("use at %s is not a token span", o.toString());
+			if (r.beginOffset < end) return Strings.format1("use at %s overlaps or precedes the previous use", o.toString());
 			end = r.endOffset;
 			var text = Arrays.range(source.input, r.beginOffset, r.endOffset);
-			if (!names(text, d)) return t.fail1("use at %s does not name its declaration", o.toString());
+			if (!names(text, d)) return Strings.format1("use at %s does not name its declaration", o.toString());
 			var input = inputs[d.range.path];
 			if (input != null && !spells(Arrays.range(input, d.range.beginOffset, d.range.endOffset), d.name)) {
-				return t.fail1("declaration of %s does not spell its name", o.toString());
+				return Strings.format1("declaration of %s does not spell its name", o.toString());
 			}
 		}
 		var error = displayError(s, source);
-		if (error != null) return t.fail(error);
+		if (error != null) return error;
 	}
-	t.assert(count > 0, "the program has uses");
+	return null;
 }
 // A failure message unless a file's declaration sites and builtin uses are
 // in byte order without overlaps, every declaration that a use in the file
@@ -593,23 +608,104 @@ def test_builtins_record_nothing(t: Tester) {
 		ExpectedUse.new("e.name", 0, 1, AnalysisDeclKind.PARAMETER, "e", "e: E", 0)
 	]);
 }
-def test_layout_ref_records_nothing(t: Tester) {
-	// Ref<L> binds to the layout's reference type, but Ref is a builtin, so
-	// neither the type nor the expression records a use there.
+def test_layout_references(t: Tester) {
+	// Ref<L> names layout L, whose name has no binding of its own, in types
+	// and in expressions, writable or not. A layout field's memory type names
+	// a layout, repeated or not, or another type. Ref is a builtin.
 	var text = lines([
-		"layout L {",
-		"  +0 x: u8;",
+		"enum Mode { ON, OFF }",
+		"layout Inner {",
+		"  +0 tag: u8;",
 		"  =1;",
 		"}",
+		"layout Outer {",
+		"  +0 inner: Inner;",
+		"  +1 pair: Inner[2];",
+		"  +3 mode: Mode;",
+		"  =4;",
+		"}",
 		"component M {",
-		"  def f(r: Range<byte>) -> u8 { var p: Ref<L> = Ref<L>.of(r); return p.x; }",
+		"  def f(r: Range<byte>, rs: Array<Ref<Inner>>) -> Ref<Inner> {",
+		"    var o: Ref<Outer> = Ref<Outer>.of(r);",
+		"    var i: ref<Inner> = o.inner;",
+		"    return o.pair[1];",
+		"  }",
 		"}"
 	]);
+	var inner = "layout Inner", outer = "layout Outer";
 	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("inner: Inner", 7, 5, AnalysisDeclKind.LAYOUT, "Inner", inner, 7),
+		ExpectedUse.new("pair: Inner", 6, 5, AnalysisDeclKind.LAYOUT, "Inner", inner, 7),
+		ExpectedUse.new("mode: Mode", 6, 4, AnalysisDeclKind.ENUM, "Mode", "enum Mode", 5),
+		ExpectedUse.new("Ref<Inner>>", 4, 5, AnalysisDeclKind.LAYOUT, "Inner", inner, 7),
+		ExpectedUse.new("Ref<Inner> {", 4, 5, AnalysisDeclKind.LAYOUT, "Inner", inner, 7),
+		ExpectedUse.new("o: Ref<Outer>", 7, 5, AnalysisDeclKind.LAYOUT, "Outer", outer, 7),
+		ExpectedUse.new("Ref<Outer>.of", 4, 5, AnalysisDeclKind.LAYOUT, "Outer", outer, 7),
 		ExpectedUse.new("of(r)", 3, 1, AnalysisDeclKind.PARAMETER, "r", "r: Range", 0),
-		ExpectedUse.new("p.x", 0, 1, AnalysisDeclKind.LOCAL, "p", "p: Ref", 0),
-		ExpectedUse.new("p.x", 2, 1, AnalysisDeclKind.LAYOUT_FIELD, "x", "x: u8", 0)
+		ExpectedUse.new("ref<Inner> =", 4, 5, AnalysisDeclKind.LAYOUT, "Inner", inner, 7),
+		ExpectedUse.new("o.inner", 0, 1, AnalysisDeclKind.LOCAL, "o", "o: Ref", 0),
+		ExpectedUse.new("o.inner", 2, 5, AnalysisDeclKind.LAYOUT_FIELD, "inner", "inner: Inner", 0),
+		ExpectedUse.new("o.pair", 0, 1, AnalysisDeclKind.LOCAL, "o", "o: Ref", 0),
+		ExpectedUse.new("o.pair", 2, 4, AnalysisDeclKind.LAYOUT_FIELD, "pair", "pair: Inner", 0)
 	]);
+}
+def test_layout_references_with_errors(t: Tester) {
+	// A class is not a memory type, but it resolves. Unresolved memory
+	// types, unknown layouts, and Ref of a type that is not a layout record
+	// nothing.
+	var text = lines([
+		"class Foo { }",
+		"layout L {",
+		"  +0 a: u8;",
+		"  +1 c: Foo;",
+		"  +2 m: Missing;",
+		"  =3;",
+		"}",
+		"component M {",
+		"  def f(p: Ref<L>, q: Ref<Nope>, s: Ref<int>, u: Ref<Foo>) { }",
+		"}"
+	]);
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("c: Foo", 3, 3, AnalysisDeclKind.CLASS, "Foo", "class Foo", 6),
+		ExpectedUse.new("p: Ref<L>", 7, 1, AnalysisDeclKind.LAYOUT, "L", "layout L", 7)
+	]);
+}
+def test_packing_parameters(t: Tester) {
+	// A field of a packing expression names a parameter of its packing, also
+	// as an argument of a packing application. Neither the applied packing's
+	// name nor a bit pattern's letters are uses.
+	var text = lines([
+		"packing Low(a: 4, b: 4): 8 = #concat(b, a);",
+		"packing Wide(x: 4, y: 8): 16 = #concat(Low(x, 0b0000), y);",
+		"packing Bits(c: 2): 4 = 0b_cc00;"
+	]);
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("#concat(b, a)", 8, 1, AnalysisDeclKind.PARAMETER, "b", "b: 4", 0),
+		ExpectedUse.new("#concat(b, a)", 11, 1, AnalysisDeclKind.PARAMETER, "a", "a: 4", 0),
+		ExpectedUse.new("Low(x,", 4, 1, AnalysisDeclKind.PARAMETER, "x", "x: 4", 0),
+		ExpectedUse.new("), y)", 3, 1, AnalysisDeclKind.PARAMETER, "y", "y: 8", 0)
+	]);
+}
+def test_packing_parameters_with_errors(t: Tester) {
+	// A redefined parameter hides the earlier one, as verification looks it
+	// up. An unknown field records nothing, and so does a #packing hint, whose
+	// expression verification does not check.
+	var text = lines([
+		"packing Dup(a: 4, a: 4): 8 = #concat(a, b);",
+		"type T {",
+		"  case A(f: u8) #packing Dup(f);",
+		"}"
+	]);
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("#concat(a", 8, 1, AnalysisDeclKind.PARAMETER, "a", "a: 4)", 0)
+	]);
+}
+def test_packing_after_error_limit(t: Tester) {
+	// Verification stops at the error limit, here before the packing.
+	var buf = StringBuilder.new().puts("component M {\n");
+	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 1) buf.put1("  var f%d: Missing;\n", i);
+	var text = buf.puts("}\npacking P(a: 4): 4 = a;\n").toString();
+	assertUses(t, analyzeText(t, text, [], false), text, []);
 }
 def test_existing_uses(t: Tester) {
 	// Calls, member access, an unbound method, construction, casts and
@@ -675,6 +771,62 @@ def test_lib_util(t: Tester) {
 	if (r.1 == null) return;
 	assertRoundTrip(t, r.0, r.1, sources);
 	assertSound(t, r.1, sources);
+}
+// Upstream Aeneas traps on these fixtures with or without occurrence
+// collection; see docs/aeneas-crash-paths.md.
+def CRASHING_FIXTURES = [
+	// A negative layout size, Verifier.v3:357.
+	"test/layout/parser/empty13.v3",
+	"test/layout/parser/multiple9.v3",
+	// An unknown packing in a packing expression, Verifier.v3:1163.
+	"test/variants/parser/packing_app01.v3",
+	"test/variants/parser/packing_concat03.v3",
+	"test/variants/parser/packing_concat04.v3"
+];
+// The pinned checkout's layout fixtures and packing fixtures, each analyzed
+// alone by a worker as the server does.
+def test_layout_and_packing_fixtures(t: Tester) {
+	var paths = Vector<string>.new(), all = Vector<string>.new();
+	for (dir in ["test/layout", "test/layout/parser", "test/layout/seman"]) {
+		sourceFiles(Strings.format2("%s/%s", VIRGIL, dir), paths);
+	}
+	for (dir in ["test/core/parser", "test/feature", "test/variants", "test/variants/parser", "test/variants/seman"]) {
+		sourceFiles(Strings.format2("%s/%s", VIRGIL, dir), all);
+	}
+	for (i < all.length) {
+		if (indexOf(all[i], "packing") >= 0) paths.put(all[i]);
+	}
+	t.assert(paths.length > 800, "the layout and packing fixtures");
+	var s = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var crashed = 0, layouts = 0, parameters = 0;
+	for (path in paths.extract()) {
+		var sources = load(t, [path]);
+		if (sources == null) break;
+		var known = false;
+		for (f in CRASHING_FIXTURES) if (Strings.equal(path, Strings.format2("%s/%s", VIRGIL, f))) known = true;
+		match (s.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS)) {
+			Completed(snapshot) => {
+				if (known) t.fail1("%s analyzed; update CRASHING_FIXTURES", path);
+				var error = soundnessError(snapshot, sources);
+				if (error != null) {
+					t.fail2("%s: %s", path, error);
+					break;
+				}
+				for (o in snapshot.occurrences(path)) {
+					if (o.declaration.kind == AnalysisDeclKind.LAYOUT) layouts++;
+					if (o.declaration.kind == AnalysisDeclKind.PARAMETER && Strings.equal(o.declaration.range.path, path)
+							&& indexOf(path, "packing") >= 0) parameters++;
+				}
+			}
+			_ => {
+				if (!known) t.fail1("%s did not analyze", path);
+				crashed++;
+			}
+		}
+	}
+	s.close();
+	t.asserti(CRASHING_FIXTURES.length, crashed);
+	t.assert(layouts > 0 && parameters > 0, "the fixtures use layouts and packing parameters");
 }
 // The largest program we have, analyzed by a worker as the server does.
 def test_aeneas_sources(t: Tester) {

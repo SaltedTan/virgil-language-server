@@ -142,6 +142,12 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 				putTyped(x.token.image, x.vtype);
 			}
 			x: ParamDecl => putTyped(x.token.image, x.vtype);
+			// A packing parameter has a size in bits, not a type.
+			x: PackingParamDecl => {
+				put(x.token.image);
+				put(": ");
+				put(if(x.size != null, x.size.token.image, AnalysisDisplayText.UNKNOWN));
+			}
 			x: VarDecl => {
 				put(if(x.isReadOnly, "def ", "var "));
 				putTyped(x.token.image, x.vtype);

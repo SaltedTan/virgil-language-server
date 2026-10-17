@@ -149,3 +149,28 @@ test/fixtures/analysis/occurrence-coverage/main.v3:57:20-57:21 uses METHOD: def 
 test/fixtures/analysis/occurrence-coverage/main.v3:57:27-57:28 uses PARAMETER: g: Grid
 test/fixtures/analysis/occurrence-coverage/main.v3:57:29-57:31 uses METHOD: def [i: int] -> int
 test/fixtures/analysis/occurrence-coverage/main.v3:58:24-58:25 uses LOCAL: var x: int
+test/fixtures/analysis/occurrence-coverage/main.v3:62:8-62:13 declares LAYOUT: layout Inner
+test/fixtures/analysis/occurrence-coverage/main.v3:63:12-63:15 declares LAYOUT_FIELD: +0 tag: u8
+test/fixtures/analysis/occurrence-coverage/main.v3:66:8-66:13 declares LAYOUT: layout Outer
+test/fixtures/analysis/occurrence-coverage/main.v3:67:12-67:17 declares LAYOUT_FIELD: +0 inner: Inner
+test/fixtures/analysis/occurrence-coverage/main.v3:67:19-67:24 uses LAYOUT: layout Inner
+test/fixtures/analysis/occurrence-coverage/main.v3:68:12-68:16 declares LAYOUT_FIELD: +1 pair: Inner[2]
+test/fixtures/analysis/occurrence-coverage/main.v3:68:18-68:23 uses LAYOUT: layout Inner
+test/fixtures/analysis/occurrence-coverage/main.v3:69:12-69:16 declares LAYOUT_FIELD: +3 mode: E
+test/fixtures/analysis/occurrence-coverage/main.v3:69:18-69:19 uses ENUM: enum E
+test/fixtures/analysis/occurrence-coverage/main.v3:72:16-72:18 declares PARAMETER: lo: 4
+test/fixtures/analysis/occurrence-coverage/main.v3:72:23-72:25 declares PARAMETER: hi: 4
+test/fixtures/analysis/occurrence-coverage/main.v3:72:43-72:45 uses PARAMETER: hi: 4
+test/fixtures/analysis/occurrence-coverage/main.v3:72:47-72:49 uses PARAMETER: lo: 4
+test/fixtures/analysis/occurrence-coverage/main.v3:73:11-73:14 declares COMPONENT: component Mem
+test/fixtures/analysis/occurrence-coverage/main.v3:74:13-74:18 declares METHOD: def outer(r: Range<byte>) -> Ref<Inner>
+test/fixtures/analysis/occurrence-coverage/main.v3:74:19-74:20 declares PARAMETER: r: Range<byte>
+test/fixtures/analysis/occurrence-coverage/main.v3:74:42-74:47 uses LAYOUT: layout Inner
+test/fixtures/analysis/occurrence-coverage/main.v3:75:21-75:22 declares LOCAL: var o: Ref<Outer>
+test/fixtures/analysis/occurrence-coverage/main.v3:75:28-75:33 uses LAYOUT: layout Outer
+test/fixtures/analysis/occurrence-coverage/main.v3:75:37-75:40 builtin: Ref<Outer>
+test/fixtures/analysis/occurrence-coverage/main.v3:75:41-75:46 uses LAYOUT: layout Outer
+test/fixtures/analysis/occurrence-coverage/main.v3:75:48-75:50 builtin: Range<byte> -> Ref<Outer>
+test/fixtures/analysis/occurrence-coverage/main.v3:75:51-75:52 uses PARAMETER: r: Range<byte>
+test/fixtures/analysis/occurrence-coverage/main.v3:76:24-76:25 uses LOCAL: var o: Ref<Outer>
+test/fixtures/analysis/occurrence-coverage/main.v3:76:26-76:30 uses LAYOUT_FIELD: +1 pair: Inner[2]
