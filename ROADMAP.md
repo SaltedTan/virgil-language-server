@@ -356,7 +356,7 @@ The thin TypeScript development client is present. Its implemented behavior, set
 
 Remaining work:
 
-- add definition and hover checks to the [Extension Host test](clients/vscode/README.md#extension-host-test), which covers activation, diagnostics, document symbols, project-file diagnostics, and restart.
+- add a hover check to the [Extension Host test](clients/vscode/README.md#extension-host-test), which covers activation, diagnostics, document symbols, a cross-file definition, project-file diagnostics, and restart.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.
 

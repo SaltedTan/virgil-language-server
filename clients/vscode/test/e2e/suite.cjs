@@ -55,9 +55,17 @@ function code(diagnostic) {
   return typeof diagnostic.code === 'object' ? diagnostic.code.value : diagnostic.code;
 }
 
-function range(diagnostic) {
-  const { start, end } = diagnostic.range;
+function range(item) {
+  const { start, end } = item.range;
   return [start.line, start.character, end.line, end.character];
+}
+
+// The target of each Location that a definition request at line:character returns.
+async function definitions(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeDefinitionProvider', editor.document.uri, new vscode.Position(line, character),
+  );
+  return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
 }
 
 async function symbols(editor) {
@@ -137,6 +145,16 @@ async function workspace(extension) {
     ['TypeError', 'aeneas', 'expected int in var initialization, got Array<byte>', 6],
   ]);
 
+  // Go to definition from that analysis: StringBuilder resolves to its class in
+  // the closed lib/util file, which the server reads again to convert the range.
+  const use = 6;
+  const library = path.join(root, 'lib', 'util', 'StringBuilder.v3');
+  const declaration = fs.readFileSync(library, 'utf8').split('\n').findIndex((line) => line.startsWith('class StringBuilder'));
+  assert.ok(declaration >= 0, `no StringBuilder class in ${library}`);
+  assert.deepEqual(await definitions(words, use, words.document.lineAt(use).text.indexOf('StringBuilder')), [
+    [library, declaration, 6, declaration, 19],
+  ]);
+
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -159,7 +177,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, project file edits, and restart with a clean server exit');
 }
 
 async function run() {
