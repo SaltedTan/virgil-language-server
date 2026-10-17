@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The sources of one stdio submission, captured together with their
-// provenance. Disk inputs also record their length and a 64-bit FNV-1a hash,
-// so that text read again to convert ranges can be checked against what the
-// worker analyzed. Overlay inputs record -1 and rely on their version stamp.
-// Submitters drop {sources} once the worker request holds a copy.
-class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, lengths: Array<int>, hashes: Array<u64>, snapshotBytes: long) {
+// provenance, which the completed snapshot keeps. Disk inputs' stamps also
+// record their length and a 64-bit FNV-1a hash, so that text read again to
+// convert ranges can be checked against what the worker analyzed (see
+// {LspAnalysisCapture.analyzedText}). Submitters drop {sources} once the
+// worker request holds a copy.
+class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, snapshotBytes: long) {
 	var sources: Array<AnalysisSource>;
 }
 
@@ -23,14 +24,14 @@ component LspAnalysisCapture {
 	def capture(store: DocumentStore, keys: Array<string>, project: bool) -> (LspAnalysisInputs, string) {
 		var sources = Array<AnalysisSource>.new(keys.length);
 		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
-		var lengths = Array<int>.new(keys.length), hashes = Array<u64>.new(keys.length);
-		// Conservative metadata allowance, then the exact supervisor admission.
+		// Conservative metadata allowance, then the snapshot's exact path and
+		// document-version charges (AnalysisSnapshot.retainedBytes).
 		var bytes = 32L, snapshotBytes = 1024L;
 		for (i < keys.length) {
 			var path = DocumentUri.filePath(keys[i]);
 			if (path == null) path = keys[i];
 			bytes += long.view(path.length) + 16;
-			snapshotBytes += 256L + path.length + keys[i].length;
+			snapshotBytes += 272L + path.length + keys[i].length;
 			if (bytes > MAX_SOURCE_BYTES) return (null, "analysis sources exceed the analysis size budget");
 			var budget = int.view(MAX_SOURCE_BYTES - bytes);
 			// Capture is synchronous: this is the overlay readBounded uses.
@@ -39,12 +40,14 @@ component LspAnalysisCapture {
 			if (text == null) return (null, Strings.format1("cannot read document within the analysis size budget: %s", keys[i]));
 			bytes += text.length;
 			sources[i] = AnalysisSource.new(path, text);
-			versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
-			if (doc == null) versions[i].disk = store.diskStamp(keys[i]);
-			lengths[i] = if(doc != null, -1, text.length);
-			if (doc == null) hashes[i] = hash(text);
+			var v = versions[i] = AnalysisDocumentVersion.new(keys[i], if(doc != null, doc.version, 0), if(doc != null, doc.identity));
+			if (doc == null) {
+				v.disk = store.diskStamp(keys[i]);
+				v.length = text.length;
+				v.hash = hash(text);
+			}
 		}
-		var inputs = LspAnalysisInputs.new(versions, lengths, hashes, snapshotBytes);
+		var inputs = LspAnalysisInputs.new(versions, snapshotBytes);
 		inputs.sources = sources;
 		return (inputs, null);
 	}
@@ -54,8 +57,22 @@ component LspAnalysisCapture {
 		for (b in text) h = (h ^ b) * 0x100000001b3ul;
 		return h;
 	}
-	// True if {text} is the disk input captured at index {i}.
-	def sameDisk(inputs: LspAnalysisInputs, i: int, text: Array<byte>) -> bool {
-		return text != null && inputs.lengths[i] == text.length && inputs.hashes[i] == hash(text);
+	// The text that produced source {i} of {snapshot} (see
+	// AnalysisSnapshot.documentIndex), or null if it is not available: the
+	// overlay if the same accepted record is still open, or the disk file if
+	// it still has the captured length and hash. The file is read again within
+	// that length, without following symlinks. Null for an index out of range,
+	// so for an unrecorded URI too. Only that source is checked; the caller
+	// decides whether the rest of the snapshot is current.
+	def analyzedText(store: DocumentStore, snapshot: AnalysisSnapshot, i: int) -> Array<byte> {
+		if (i < 0 || i >= snapshot.documentVersions.length) return null;
+		var v = snapshot.documentVersions[i];
+		if (v.identity != null) {
+			var doc = store.overlay(v.uri);
+			return if(doc != null && doc.identity == v.identity, doc.text);
+		}
+		var path = DocumentUri.filePath(v.uri);
+		var text = if(path != null && v.length >= 0, ProjectFiles.load(path, v.length));
+		return if(text != null && text.length == v.length && hash(text) == v.hash, text);
 	}
 }

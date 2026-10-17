@@ -177,7 +177,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			var i = index[d.path];
 			if (owners[i] != ctx) continue;
 			if (maps[i] == null) {
-				var text = sourceText(run, i);
+				var text = LspAnalysisCapture.analyzedText(store, snapshot, i);
 				if (text == null) return discard(ctx, snapshot, Strings.format1("%s changed on disk after its sources were captured", run.keys[i]));
 				maps[i] = PositionMap.new(text, PositionEncoding.UTF16);
 				found[i] = Vector<LspDiagnostic>.new();
@@ -199,18 +199,6 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			lists.semantic(run.keys[i], ctx, if(found[i] != null, found[i].extract(), []));
 		}
 		lists.clearOwned(ctx, keep);
-	}
-	// The analyzed text of source {i}: its unchanged overlay, or the disk file
-	// if it still has the captured length and hash. Null if it changed.
-	private def sourceText(run: LspSemanticRun, i: int) -> Array<byte> {
-		var v = run.inputs.versions[i];
-		if (v.identity != null) {
-			var doc = store.overlay(v.uri);
-			return if(doc != null && doc.identity == v.identity, doc.text);
-		}
-		var path = DocumentUri.filePath(v.uri);
-		var text = if(path != null, ProjectFiles.load(path, LspAnalysisCapture.MAX_SOURCE_BYTES));
-		return if(LspAnalysisCapture.sameDisk(run.inputs, i, text), text);
 	}
 	private def discard(ctx: ProjectContext, snapshot: AnalysisSnapshot, why: string) {
 		log(info, Strings.format3("discarded analysis %d of project %s: %s", snapshot.generation, ctx.definition.name, why));

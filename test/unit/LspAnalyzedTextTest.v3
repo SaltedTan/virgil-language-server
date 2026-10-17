@@ -1,0 +1,241 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Reading a retained snapshot's sources again with the real worker. The
+// project-fixtures/analyzed-text directory is the build's own copy, so each
+// session rewrites its sources before the project is loaded.
+def T = UnitTests.register;
+def X = [
+	T("LspAnalyzedText:provenance_charge", test_provenance_charge),
+	T("LspAnalyzedText:overlays", test_overlays),
+	T("LspAnalyzedText:disk_files", test_disk_files),
+	T("LspAnalyzedText:publication_rereads_disk", test_publication_rereads_disk),
+	T("LspAnalyzedText:hash_and_empty_retained_source", test_hash_and_empty_retained_source),
+	()
+];
+def A = "component A { def a() -> int { return B.b(); } }\n";
+def B = "component B { def b() -> int { return missing; } }\n";
+def C = "def c = 1;\n";
+
+class AnalyzedTextSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/analyzed-text");
+	def infos = Vector<string>.new();
+	def published = Vector<int>.new();
+	var reply: Array<byte>;
+	new(t: Tester) {
+		write(t, "A.v3", A);
+		write(t, "B.v3", B);
+		write(t, "C.v3", C);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		server.infoAnalysis = info;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) reply = bytes;
+		else if (Strings.equal("textDocument/publishDiagnostics", JsonValue.String.!(parsed["method"]).v)) {
+			var params = JsonValue.JObject.!(parsed["params"]).v;
+			if (Strings.equal(uri("B.v3"), JsonValue.String.!(params["uri"]).v)) published.put(JsonValue.JArray.!(params["diagnostics"]).v.length);
+		}
+	}
+	def info(msg: string) { infos.put(msg); }
+	def path(name: string) -> string { return ProjectFiles.join(base, name); }
+	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(path(name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def remove(t: Tester, name: string) {
+		var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(path(name), "\x00")], [0, 1, 2]);
+		t.assert(pid > 0, "fixture removal started");
+		if (pid <= 0) return;
+		var status = Array<int>.new(1);
+		t.asserti(pid, HostOs.wait(pid, status));
+		t.asserti(0, status[0]);
+	}
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		params["textDocument"] = JsonValue.JObject(doc);
+		server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(uri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// Runs the development request for the project and returns its context's
+	// retained snapshot.
+	def analyze(t: Tester) -> AnalysisSnapshot {
+		settle();
+		var params = Strings.newMap<JsonValue>();
+		params["uri"] = JsonValue.String(uri("A.v3"));
+		reply = null;
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+		t.assert(supervisor.busy(), "project request submitted");
+		settle();
+		t.assert(reply != null, "analysis replied");
+		var snapshot = context().snapshot;
+		t.assert(snapshot != null && snapshot == supervisor.snapshot, "the context retains the result");
+		return snapshot;
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri("A.v3")).active;
+	}
+	def text(snapshot: AnalysisSnapshot, name: string) -> Array<byte> {
+		return LspAnalysisCapture.analyzedText(store, snapshot, snapshot.documentIndex(uri(name)));
+	}
+	def discarded(name: string) -> int {
+		var n = 0;
+		for (i < infos.length) {
+			var m = infos[i];
+			if (Strings.startsWith(m, "discarded analysis ") && Strings.endsWith(m, Strings.format1("%s changed on disk after its sources were captured", name))) n++;
+		}
+		return n;
+	}
+}
+// Admission reserves exactly the provenance a completed snapshot is charged.
+def test_provenance_charge(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	t.assert(s.store.open(s.uri("A.v3"), "virgil", 1, A) == null, "open");
+	var keys = [DocumentUri.normalize(s.uri("A.v3")), DocumentUri.normalize(s.uri("B.v3"))];
+	var captured = LspAnalysisCapture.capture(s.store, keys, true);
+	t.assert(captured.1 == null, "captured");
+	if (captured.0 == null) return s.server.close();
+	var paths = [s.path("A.v3"), s.path("B.v3")];
+	var snapshot = AnalysisSnapshot.new(1, paths, true, true, [], null, false, []);
+	snapshot.recordDocumentVersions(captured.0.versions);
+	t.assertl(captured.0.snapshotBytes, snapshot.retainedBytes);
+	t.assertl(1024L + 2 * 272 + paths[0].length + paths[1].length + keys[0].length + keys[1].length, snapshot.retainedBytes);
+	var disk = snapshot.documentVersions[1];
+	t.asserti(B.length, disk.length);
+	t.assert(disk.hash == LspAnalysisCapture.hash(B), "the disk input's hash is kept");
+	t.asserti(-1, snapshot.documentVersions[0].length);
+	s.server.close();
+}
+def test_overlays(t: Tester) {
+	var s = AnalyzedTextSession.new(t), store = s.store;
+	t.assert(store.open(s.uri("A.v3"), "virgil", 3, A) == null, "open");
+	var snapshot = s.analyze(t);
+	if (snapshot == null) return s.server.close();
+	// The unchanged overlay, and a closed file of the development analysis.
+	t.assert(s.text(snapshot, "A.v3") == store.overlay(s.uri("A.v3")).text, "unchanged overlay");
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	t.assert(snapshot.documentIndex("untitled:absent") < 0, "unrecorded URI");
+	t.assert(LspAnalysisCapture.analyzedText(store, snapshot, -1) == null, "no text for an unrecorded URI");
+	t.assert(LspAnalysisCapture.analyzedText(store, snapshot, snapshot.documentVersions.length) == null, "upper index bound");
+	t.asserti(snapshot.documentIndex(s.uri("B.v3")), snapshot.documentIndex(Strings.format1("FILE://localhost%s", s.path("B.v3"))));
+	t.asserti(-1, snapshot.documentIndex("file://remote/a.v3"));
+	t.assert(store.change(s.uri("A.v3"), 4, "component A { }\n") == null, "edit");
+	t.assert(s.text(snapshot, "A.v3") == null, "edited overlay");
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	// Close and reopen with the same version and text.
+	snapshot = s.analyze(t);
+	if (snapshot == null) return s.server.close();
+	t.assert_string("component A { }\n", s.text(snapshot, "A.v3"));
+	t.assert(store.close(s.uri("A.v3")) == null, "close");
+	t.assert(s.text(snapshot, "A.v3") == null, "closed overlay");
+	t.assert(store.open(s.uri("A.v3"), "virgil", 4, "component A { }\n") == null, "reopen");
+	t.assert(s.text(snapshot, "A.v3") == null, "reopened overlay");
+	s.server.close();
+}
+def test_disk_files(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, A);
+	s.settle();
+	var snapshot = s.context().snapshot;
+	t.assert(snapshot != null, "the automatic analysis completed");
+	if (snapshot == null) return s.server.close();
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	t.assert_string(C, s.text(snapshot, "C.v3"));
+	// Reading a disk input checks its bytes, even while a newer overlay makes
+	// its stamp stale. The caller decides whether that stamp matters.
+	t.assert(s.store.open(s.uri("B.v3"), "virgil", 0, "def unsaved = 1;\n") == null, "open disk source");
+	t.assertz(false, snapshot.matchesDocument(s.store, s.uri("B.v3")));
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	t.assert(s.store.close(s.uri("B.v3")) == null, "close disk source");
+	// A reported event makes the stamp stale; the check is of the bytes.
+	s.reportChanged("B.v3");
+	t.assertz(false, snapshot.matchesDocument(s.store, s.uri("B.v3")));
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	s.write(t, "B.v3", "component B { def b() -> int { return 0; } }\n");
+	s.reportChanged("B.v3");
+	t.assert(s.text(snapshot, "B.v3") == null, "changed and reported");
+	// An unreported change leaves the stamp current but fails the check,
+	// including one that keeps the length.
+	s.write(t, "C.v3", "def d = 1;\n");
+	t.assertz(true, snapshot.matchesDocument(s.store, s.uri("C.v3")));
+	t.assert(s.text(snapshot, "C.v3") == null, "changed without a report");
+	s.write(t, "C.v3", C);
+	t.assert_string(C, s.text(snapshot, "C.v3"));
+	s.remove(t, "C.v3");
+	t.assert(s.text(snapshot, "C.v3") == null, "deleted");
+	s.server.close();
+}
+def test_hash_and_empty_retained_source(t: Tester) {
+	t.assert(LspAnalysisCapture.hash("") == 0xcbf29ce484222325ul, "FNV-1a empty vector");
+	t.assert(LspAnalysisCapture.hash("a") == 0xaf63dc4c8601ec8cul, "FNV-1a a vector");
+	t.assert(LspAnalysisCapture.hash("hello") == 0xa430d84680aabd0bul, "FNV-1a hello vector");
+	var s = AnalyzedTextSession.new(t);
+	s.write(t, "C.v3", "");
+	var snapshot = s.analyze(t);
+	if (snapshot == null) return s.server.close();
+	var i = snapshot.documentIndex(s.uri("C.v3"));
+	t.assert(i >= 0, "empty source indexed");
+	if (i < 0) return s.server.close();
+	t.asserti(0, snapshot.documentVersions[i].length);
+	t.assert_string("", s.text(snapshot, "C.v3"));
+	// Complete another run, discarding the first run's transient inputs, and
+	// keep reading the original snapshot rather than the latest result.
+	var next = s.analyze(t);
+	t.assert(next != null && next != snapshot, "another result completed");
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	t.assert_string("", s.text(snapshot, "C.v3"));
+	s.write(t, "C.v3", " ");
+	t.assert(s.text(snapshot, "C.v3") == null, "growth from an empty source rejected");
+	s.server.close();
+}
+// Publication converts a closed file's diagnostics only over its analyzed text.
+def test_publication_rereads_disk(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, A);
+	t.assertz(true, s.supervisor.busy());
+	// B.v3, which has an error, changes on disk unreported while it is
+	// analyzed, keeping its length.
+	s.write(t, "B.v3", "component B { def b() -> int { return unknown; } }\n");
+	s.settle();
+	t.asserti(1, s.discarded(s.uri("B.v3")));
+	t.asserti(0, s.published.length);
+	var snapshot = s.context().snapshot;
+	t.assert(snapshot != null && snapshot.diagnostics.length > 0, "the discarded result is retained");
+	// The analysis the report schedules publishes B.v3's error.
+	s.reportChanged("B.v3");
+	s.settle();
+	t.asserti(1, s.discarded(s.uri("B.v3")));
+	t.asserti(1, s.published.length);
+	if (s.published.length == 1) t.asserti(1, s.published[0]);
+	s.server.close();
+}
