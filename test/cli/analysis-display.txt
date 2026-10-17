@@ -1,0 +1,151 @@
+ok: 1 files parsed and verified
+test/fixtures/analysis/occurrence-coverage/main.v3:3:7-3:10 declares CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:4:13-4:17 declares FIELD: var next: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:4:19-4:22 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:5:13-5:17 declares METHOD: def same(p: Foo) -> Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:5:18-5:19 declares PARAMETER: p: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:5:21-5:24 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:5:29-5:32 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:5:42-5:43 uses PARAMETER: p: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:7:7-7:12 declares CLASS: class Child extends Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:7:21-7:24 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:8:7-8:11 declares CLASS: class Pair(first: Foo, var second: Foo)
+test/fixtures/analysis/occurrence-coverage/main.v3:8:12-8:17 declares FIELD: def first: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:8:19-8:22 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:8:28-8:34 declares FIELD: var second: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:8:36-8:39 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:9:7-9:11 declares CLASS: class Made
+test/fixtures/analysis/occurrence-coverage/main.v3:10:9-10:12 declares CONSTRUCTOR: new(f: Foo)
+test/fixtures/analysis/occurrence-coverage/main.v3:10:13-10:14 declares PARAMETER: f: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:10:16-10:19 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:12:7-12:10 declares CLASS: class Box<T>
+test/fixtures/analysis/occurrence-coverage/main.v3:12:11-12:12 declares TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:13:13-13:18 declares FIELD: var value: T
+test/fixtures/analysis/occurrence-coverage/main.v3:13:20-13:21 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:14:13-14:16 declares METHOD: def get() -> T
+test/fixtures/analysis/occurrence-coverage/main.v3:14:22-14:23 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:14:33-14:38 uses FIELD: var value: T
+test/fixtures/analysis/occurrence-coverage/main.v3:16:7-16:11 declares CLASS: class Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:17:13-17:18 declares FIELD: var cells: Array<int>
+test/fixtures/analysis/occurrence-coverage/main.v3:17:33-17:38 builtin: Array<int>
+test/fixtures/analysis/occurrence-coverage/main.v3:17:44-17:47 builtin: int -> Array<int>
+test/fixtures/analysis/occurrence-coverage/main.v3:18:13-18:15 declares METHOD: def [i: int] -> int
+test/fixtures/analysis/occurrence-coverage/main.v3:18:14-18:15 declares PARAMETER: i: int
+test/fixtures/analysis/occurrence-coverage/main.v3:18:38-18:43 uses FIELD: var cells: Array<int>
+test/fixtures/analysis/occurrence-coverage/main.v3:18:44-18:45 uses PARAMETER: i: int
+test/fixtures/analysis/occurrence-coverage/main.v3:19:13-19:16 declares METHOD: def [i: int] = v: int
+test/fixtures/analysis/occurrence-coverage/main.v3:19:14-19:15 declares PARAMETER: i: int
+test/fixtures/analysis/occurrence-coverage/main.v3:19:24-19:25 declares PARAMETER: v: int
+test/fixtures/analysis/occurrence-coverage/main.v3:19:33-19:38 uses FIELD: var cells: Array<int>
+test/fixtures/analysis/occurrence-coverage/main.v3:19:39-19:40 uses PARAMETER: i: int
+test/fixtures/analysis/occurrence-coverage/main.v3:19:44-19:45 uses PARAMETER: v: int
+test/fixtures/analysis/occurrence-coverage/main.v3:21:6-21:9 declares CLASS: type Opt<T>
+test/fixtures/analysis/occurrence-coverage/main.v3:21:10-21:11 declares TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:22:14-22:18 declares VARIANT_CASE: case Some(v: T)
+test/fixtures/analysis/occurrence-coverage/main.v3:22:19-22:20 declares FIELD: def v: T
+test/fixtures/analysis/occurrence-coverage/main.v3:22:22-22:23 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:23:14-23:18 declares VARIANT_CASE: case None
+test/fixtures/analysis/occurrence-coverage/main.v3:25:6-25:7 declares CLASS: type V
+test/fixtures/analysis/occurrence-coverage/main.v3:26:14-26:15 declares VARIANT_CASE: case A
+test/fixtures/analysis/occurrence-coverage/main.v3:27:14-27:15 declares VARIANT_CASE: case B(f: Foo)
+test/fixtures/analysis/occurrence-coverage/main.v3:27:16-27:17 declares FIELD: def f: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:27:19-27:22 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:29:6-29:7 declares ENUM: enum E
+test/fixtures/analysis/occurrence-coverage/main.v3:29:10-29:11 declares ENUM_CASE: E.X
+test/fixtures/analysis/occurrence-coverage/main.v3:29:13-29:14 declares ENUM_CASE: E.Y
+test/fixtures/analysis/occurrence-coverage/main.v3:30:11-30:16 declares COMPONENT: component Parts
+test/fixtures/analysis/occurrence-coverage/main.v3:31:11-31:12 declares COMPONENT: component M
+test/fixtures/analysis/occurrence-coverage/main.v3:32:13-32:18 declares FIELD: def parts: Parts
+test/fixtures/analysis/occurrence-coverage/main.v3:32:20-32:25 uses COMPONENT: component Parts
+test/fixtures/analysis/occurrence-coverage/main.v3:33:13-33:15 declares METHOD: def id<T>(p: T) -> T
+test/fixtures/analysis/occurrence-coverage/main.v3:33:16-33:17 declares TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:33:19-33:20 declares PARAMETER: p: T
+test/fixtures/analysis/occurrence-coverage/main.v3:33:22-33:23 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:33:28-33:29 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:34:21-34:22 declares LOCAL: var d: T
+test/fixtures/analysis/occurrence-coverage/main.v3:34:24-34:25 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:34:28-34:29 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:34:30-34:37 builtin: T
+test/fixtures/analysis/occurrence-coverage/main.v3:35:21-35:22 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:35:23-35:24 builtin: T -> bool
+test/fixtures/analysis/occurrence-coverage/main.v3:35:25-35:26 uses PARAMETER: p: T
+test/fixtures/analysis/occurrence-coverage/main.v3:35:36-35:37 uses TYPE_PARAM: T
+test/fixtures/analysis/occurrence-coverage/main.v3:35:38-35:39 builtin: T -> T
+test/fixtures/analysis/occurrence-coverage/main.v3:35:40-35:41 uses PARAMETER: p: T
+test/fixtures/analysis/occurrence-coverage/main.v3:36:24-36:25 uses LOCAL: var d: T
+test/fixtures/analysis/occurrence-coverage/main.v3:38:13-38:18 declares METHOD: def types(a: V.A, fs: Array<Foo>, g: (Foo, int) -> (Foo, Box<Foo>), s: E.set) -> Child
+test/fixtures/analysis/occurrence-coverage/main.v3:38:19-38:20 declares PARAMETER: a: V.A
+test/fixtures/analysis/occurrence-coverage/main.v3:38:22-38:23 uses CLASS: type V
+test/fixtures/analysis/occurrence-coverage/main.v3:38:24-38:25 uses VARIANT_CASE: case A
+test/fixtures/analysis/occurrence-coverage/main.v3:38:27-38:29 declares PARAMETER: fs: Array<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:38:37-38:40 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:38:43-38:44 declares PARAMETER: g: (Foo, int) -> (Foo, Box<Foo>)
+test/fixtures/analysis/occurrence-coverage/main.v3:38:47-38:50 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:38:61-38:64 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:38:66-38:69 uses CLASS: class Box<T>; type: Box<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:38:70-38:73 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:38:77-38:78 declares PARAMETER: s: E.set
+test/fixtures/analysis/occurrence-coverage/main.v3:38:80-38:81 uses ENUM: enum E
+test/fixtures/analysis/occurrence-coverage/main.v3:38:90-38:95 uses CLASS: class Child extends Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:39:21-39:24 declares LOCAL: var box: Box<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:39:26-39:29 uses CLASS: class Box<T>; type: Box<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:39:30-39:33 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:39:37-39:40 uses CLASS: class Box<T>; type: Box<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:39:41-39:44 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:39:46-39:49 uses CLASS: class Box<T>; type: void -> Box<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:40:21-40:22 declares LOCAL: var c: Child
+test/fixtures/analysis/occurrence-coverage/main.v3:40:25-40:30 uses CLASS: class Child extends Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:40:31-40:32 builtin: Foo -> Child
+test/fixtures/analysis/occurrence-coverage/main.v3:40:33-40:36 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:40:38-40:41 uses LOCAL: var box: Box<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:40:42-40:45 uses METHOD: def get() -> T; type: void -> Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:21-41:22 declares LOCAL: var x: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:25-41:27 uses METHOD: def id<T>(p: T) -> T; type: Foo -> Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:28-41:31 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:33-41:34 uses LOCAL: var c: Child
+test/fixtures/analysis/occurrence-coverage/main.v3:41:37-41:38 declares LOCAL: var y: Child
+test/fixtures/analysis/occurrence-coverage/main.v3:41:41-41:43 uses METHOD: def id<T>(p: T) -> T; type: Child -> Child
+test/fixtures/analysis/occurrence-coverage/main.v3:41:44-41:45 uses LOCAL: var c: Child
+test/fixtures/analysis/occurrence-coverage/main.v3:41:48-41:49 declares LOCAL: var z: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:52-41:53 uses COMPONENT: component M
+test/fixtures/analysis/occurrence-coverage/main.v3:41:54-41:56 uses METHOD: def id<T>(p: T) -> T; type: Foo -> Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:57-41:60 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:41:62-41:63 uses LOCAL: var c: Child
+test/fixtures/analysis/occurrence-coverage/main.v3:42:22-42:23 declares LOCAL: def f: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:42:25-42:28 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:42:32-42:34 uses PARAMETER: fs: Array<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:43:21-43:22 declares LOCAL: var o: Opt<Foo>.Some
+test/fixtures/analysis/occurrence-coverage/main.v3:43:25-43:28 uses CLASS: type Opt<T>; type: Opt<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:43:29-43:32 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:43:34-43:38 uses VARIANT_CASE: case Some(v: T); type: Foo -> Opt<Foo>.Some
+test/fixtures/analysis/occurrence-coverage/main.v3:43:39-43:40 uses LOCAL: var x: Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:44:21-44:22 declares LOCAL: var n: Opt<Foo>.None
+test/fixtures/analysis/occurrence-coverage/main.v3:44:24-44:27 uses CLASS: type Opt<T>; type: Opt<Foo>
+test/fixtures/analysis/occurrence-coverage/main.v3:44:28-44:31 uses CLASS: class Foo
+test/fixtures/analysis/occurrence-coverage/main.v3:44:33-44:37 uses VARIANT_CASE: case None; type: Opt<Foo>.None
+test/fixtures/analysis/occurrence-coverage/main.v3:45:24-45:25 uses LOCAL: var c: Child
+test/fixtures/analysis/occurrence-coverage/main.v3:47:13-47:18 declares METHOD: def cases(v: V) -> int
+test/fixtures/analysis/occurrence-coverage/main.v3:47:19-47:20 declares PARAMETER: v: V
+test/fixtures/analysis/occurrence-coverage/main.v3:47:22-47:23 uses CLASS: type V
+test/fixtures/analysis/occurrence-coverage/main.v3:48:24-48:25 uses PARAMETER: v: V
+test/fixtures/analysis/occurrence-coverage/main.v3:49:25-49:26 declares LOCAL: def b: V.B
+test/fixtures/analysis/occurrence-coverage/main.v3:49:28-49:29 uses CLASS: type V
+test/fixtures/analysis/occurrence-coverage/main.v3:49:30-49:31 uses VARIANT_CASE: case B(f: Foo)
+test/fixtures/analysis/occurrence-coverage/main.v3:53:13-53:18 declares METHOD: def index(g: Grid) -> int
+test/fixtures/analysis/occurrence-coverage/main.v3:53:19-53:20 declares PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:53:22-53:26 uses CLASS: class Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:54:21-54:22 declares LOCAL: var x: int
+test/fixtures/analysis/occurrence-coverage/main.v3:54:25-54:26 uses PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:54:26-54:27 uses METHOD: def [i: int] -> int
+test/fixtures/analysis/occurrence-coverage/main.v3:55:17-55:18 uses PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:55:18-55:19 uses METHOD: def [i: int] = v: int
+test/fixtures/analysis/occurrence-coverage/main.v3:55:24-55:25 uses LOCAL: var x: int
+test/fixtures/analysis/occurrence-coverage/main.v3:56:17-56:18 uses PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:56:18-56:19 uses METHOD: def [i: int] = v: int
+test/fixtures/analysis/occurrence-coverage/main.v3:57:17-57:18 uses PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:57:18-57:19 uses METHOD: def [i: int] = v: int
+test/fixtures/analysis/occurrence-coverage/main.v3:57:19-57:20 uses PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:57:20-57:21 uses METHOD: def [i: int] -> int
+test/fixtures/analysis/occurrence-coverage/main.v3:57:27-57:28 uses PARAMETER: g: Grid
+test/fixtures/analysis/occurrence-coverage/main.v3:57:29-57:31 uses METHOD: def [i: int] -> int
+test/fixtures/analysis/occurrence-coverage/main.v3:58:24-58:25 uses LOCAL: var x: int

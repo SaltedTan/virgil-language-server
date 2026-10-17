@@ -62,6 +62,20 @@ component AnalysisRetainProbe {
 			if(expected == 0, a.verified,
 				if(expected == 1, a.parsed && !a.verified, !a.parsed)));
 		if (!ok) System.puts("unexpected analysis outcome\n");
+		// Collect occurrences and display text, whose caches must die with
+		// the analysis too.
+		var signatures = 0;
+		if (a.parsed) {
+			for (source in sources) {
+				for (o in a.occurrences(source.path)) if (o.declaration.signature != null) signatures++;
+				for (d in a.declarationSites(source.path)) if (d.signature != null) signatures++;
+				a.builtinUses(source.path);
+			}
+		}
+		if (ok && expected == 0 && signatures == 0) {
+			System.puts("no signatures\n");
+			return false;
+		}
 		return ok;
 	}
 

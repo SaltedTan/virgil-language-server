@@ -228,6 +228,13 @@ awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }
 "$EXE" analyze --bindings "$A/occurrence-coverage/main.v3" > "$TMP/out" 2> "$TMP/err"
 [ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
 finish "analyze reports type, type parameter, and index operator uses" $(( $? == 0 ))
+# Declaration signatures, use-site types where they differ from the
+# declaration's, and builtin uses, in byte order, pinned in the same way.
+awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \
+    "$ROOT/test/cli/analysis-display.txt" > "$TMP/analysis-want"
+"$EXE" analyze --display "$A/occurrence-coverage/main.v3" > "$TMP/out" 2> "$TMP/err"
+[ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
+finish "analyze reports signatures, use-site types, and builtin uses" $(( $? == 0 ))
 
 # frame <payload>: prints the payload with a Content-Length header, in bytes.
 frame() {

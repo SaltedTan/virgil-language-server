@@ -1,0 +1,159 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Maps each distinct key to a dense index, in insertion order. It uses open
+// addressing and grows without limit, because Virgil's HashMap stops growing
+// at 1,024 buckets, and the display data of a large program interns tens of
+// thousands of strings, types, and declarations.
+class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
+	private def keys = Vector<K>.new();
+	// Each slot holds a key's index plus one, or zero if it is empty. The
+	// table is a power of two and at most half full.
+	private var slots = Array<int>.new(64);
+
+	def length() -> int {
+		return keys.length;
+	}
+	def [index: int] -> K {
+		return keys[index];
+	}
+	// The index of {key}, or -1.
+	def find(key: K) -> int {
+		var mask = slots.length - 1;
+		for (i = AnalysisTables.mix(hash(key)) & mask; slots[i] != 0; i = (i + 1) & mask) {
+			var k = keys[slots[i] - 1];
+			if (k == key || equal(k, key)) return slots[i] - 1;
+		}
+		return -1;
+	}
+	// The index of {key}, adding it if it is new.
+	def add(key: K) -> int {
+		var mask = slots.length - 1, i = AnalysisTables.mix(hash(key)) & mask;
+		while (slots[i] != 0) {
+			var k = keys[slots[i] - 1];
+			if (k == key || equal(k, key)) return slots[i] - 1;
+			i = (i + 1) & mask;
+		}
+		var index = keys.length;
+		keys.put(key);
+		slots[i] = index + 1;
+		if (2 * keys.length > slots.length) grow();
+		return index;
+	}
+	private def grow() {
+		slots = Array<int>.new(2 * slots.length);
+		var mask = slots.length - 1;
+		for (index < keys.length) {
+			var i = AnalysisTables.mix(hash(keys[index])) & mask;
+			while (slots[i] != 0) i = (i + 1) & mask;
+			slots[i] = index + 1;
+		}
+	}
+}
+
+// Interns strings by content, so that equal text is one object with one
+// index. {intern} looks up the text in a builder without allocating unless
+// the text is new.
+class AnalysisStringTable {
+	private def strings = Vector<string>.new();
+	private var slots = Array<int>.new(64);
+
+	def length() -> int {
+		return strings.length;
+	}
+	def [index: int] -> string {
+		return strings[index];
+	}
+	// The interned string with the bytes of {buf}, which is reset.
+	def intern(buf: StringBuilder) -> string {
+		var bytes = buf.buf, length = buf.length;
+		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(bytes, length)) & mask;
+		while (slots[i] != 0) {
+			var s = strings[slots[i] - 1];
+			if (AnalysisTables.sameBytes(s, bytes, length)) {
+				buf.reset();
+				return s;
+			}
+			i = (i + 1) & mask;
+		}
+		var s = if(length == 0, "", Arrays.range(bytes, 0, length));
+		buf.reset();
+		insert(i, s);
+		return s;
+	}
+	// The index of {s}, adding it if it is new.
+	def add(s: string) -> int {
+		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(s, s.length)) & mask;
+		while (slots[i] != 0) {
+			var t = strings[slots[i] - 1];
+			if (t == s || AnalysisTables.sameBytes(t, s, s.length)) return slots[i] - 1;
+			i = (i + 1) & mask;
+		}
+		return insert(i, s);
+	}
+	private def insert(slot: int, s: string) -> int {
+		var index = strings.length;
+		strings.put(s);
+		slots[slot] = index + 1;
+		if (2 * strings.length > slots.length) {
+			slots = Array<int>.new(2 * slots.length);
+			var mask = slots.length - 1;
+			for (j < strings.length) {
+				var t = strings[j], i = AnalysisTables.mix(AnalysisTables.hashBytes(t, t.length)) & mask;
+				while (slots[i] != 0) i = (i + 1) & mask;
+				slots[i] = j + 1;
+			}
+		}
+		return index;
+	}
+}
+
+component AnalysisTables {
+	// Sorts {a} stably by {before}, and returns the sorted array, which may
+	// be {a} or one scratch array. Arrays.sort allocates at every level of
+	// its merge sort, which is enough garbage, over a large program's
+	// occurrences, to make the worker collect its heap during collection.
+	def sort<T>(a: Array<T>, before: (T, T) -> bool) -> Array<T> {
+		var n = a.length;
+		if (n < 2) return a;
+		var src = a, dst = Array<T>.new(n);
+		for (width = 1; width < n; width = 2 * width) {
+			for (low = 0; low < n; low += 2 * width) {
+				var middle = Ints.min(low + width, n), high = Ints.min(low + 2 * width, n);
+				var i = low, j = middle;
+				for (k = low; k < high; k++) {
+					if (j >= high || (i < middle && !before(src[j], src[i]))) dst[k] = src[i++];
+					else dst[k] = src[j++];
+				}
+			}
+			var t = src;
+			src = dst;
+			dst = t;
+		}
+		return src;
+	}
+	// Spreads a hash's bits into the low bits that select a slot.
+	def mix(h: int) -> int {
+		var x = u32.view(h) * 0x9E3779B1u;
+		return int.view(x ^ (x >> 15));
+	}
+	def hashBytes(bytes: Array<byte>, length: int) -> int {
+		var h = length;
+		for (i < length) h = h * 31 + bytes[i];
+		return h;
+	}
+	// Negative, zero, or positive as {a} is before, equal to, or after {b}
+	// in byte order.
+	def compareBytes(a: string, b: string) -> int {
+		var n = Ints.min(a.length, b.length);
+		for (i < n) {
+			if (a[i] != b[i]) return if(a[i] < b[i], -1, 1);
+		}
+		return a.length - b.length;
+	}
+	def sameBytes(s: string, bytes: Array<byte>, length: int) -> bool {
+		if (s.length != length) return false;
+		for (i < length) if (s[i] != bytes[i]) return false;
+		return true;
+	}
+}

@@ -33,9 +33,13 @@ class AnalysisSnapshot {
 	def stats: AnalysisSnapshotStats;
 	// True if the analysis collected occurrences; otherwise none are recorded.
 	def hasOccurrences: bool;
-	// Every declaration an occurrence resolves to, each once.
+	// Every declaration named in the program's files or that an occurrence
+	// resolves to, each once.
 	def declarations: Array<AnalysisDeclaration>;
-	private def files = Strings.newMap<AnalysisSnapshotFile>();
+	// Each file's index, or null without occurrences.
+	private var files: AnalysisSnapshotFiles;
+	// The result's string table, which holds the use-site types.
+	private var strings: Array<string> = [];
 
 	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) {
 		for (path in paths) retainedBytes += 128L + if(path != null, path.length, 0);
@@ -65,23 +69,102 @@ class AnalysisSnapshot {
 		return -1;
 	}
 
-	// Records the occurrences of {path}, in source order (see AnalysisSnapshotFile).
-	def addFile(path: string, file: AnalysisSnapshotFile) {
-		files[path] = file;
+	// Records the files' indexes, which the decoder fills in.
+	def setFiles(f: AnalysisSnapshotFiles) {
+		files = f;
+	}
+	private def fileOf(path: string) -> AnalysisSnapshotFile {
+		return if(files != null, files[path]);
+	}
+	// Records the string table that the files' type indexes refer to.
+	def setStrings(table: Array<string>) {
+		strings = table;
 	}
 	// Source-declaration uses in {path}, as ProgramAnalysis.occurrences reports
 	// them. Each call returns a new array.
 	def occurrences(path: string) -> Array<AnalysisOccurrence> {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return [];
 		var result = Array<AnalysisOccurrence>.new(file.targets.length);
-		for (i < result.length) result[i] = AnalysisOccurrence.new(file.range(path, i), declarations[file.targets[i]]);
+		for (i < result.length) result[i] = occurrence(path, file, i);
 		return result;
+	}
+	// Uses in {path} with a type but no source declaration, as
+	// ProgramAnalysis.builtinUses reports them. Each call returns a new array.
+	def builtinUses(path: string) -> Array<AnalysisBuiltinUse> {
+		var file = fileOf(path);
+		if (file == null) return [];
+		var result = Array<AnalysisBuiltinUse>.new(file.builtinCount());
+		for (i < result.length) result[i] = AnalysisBuiltinUse.new(file.builtinRange(path, i), strings[file.builtinType(i)]);
+		return result;
+	}
+	// The declarations named in {path}, as ProgramAnalysis.declarationSites
+	// reports them. Each call returns a new array.
+	def declarationSites(path: string) -> Array<AnalysisDeclaration> {
+		var file = fileOf(path);
+		if (file == null) return [];
+		return Arrays.range(declarations, file.firstSite, file.firstSite + file.siteCount);
+	}
+
+	// Display data for hover; see docs/architecture.md#display-text. All
+	// offsets are UTF-8 byte offsets, and every range's end is exclusive.
+
+	// The declaration whose name contains {offset} in {path}, such as a
+	// local, parameter, method, or class at its declaration, whether or not
+	// anything uses it, or null. Does not allocate.
+	def declarationAtOffset(path: string, offset: int) -> AnalysisDeclaration {
+		var file = fileOf(path);
+		if (file == null) return null;
+		var low = file.firstSite, high = low + file.siteCount;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (declarations[mid].range.endOffset <= offset) low = mid + 1;
+			else high = mid;
+		}
+		if (low >= file.firstSite + file.siteCount) return null;
+		var d = declarations[low];
+		return if(d.range.beginOffset <= offset, d);
+	}
+	// The use-site type of the use containing {offset} in {path}: for an
+	// occurrence, the text of its type if that differs from its declaration's,
+	// as at a generic call, and for a builtin use, its type. Otherwise null.
+	// The declaration's text is its signature. Does not allocate.
+	def useTypeAtOffset(path: string, offset: int) -> string {
+		var file = fileOf(path);
+		if (file == null) return null;
+		var i = file.findOffset(offset);
+		if (i >= 0) {
+			var t = file.useType(i);
+			return if(t >= 0, strings[t]);
+		}
+		i = file.findBuiltin(offset);
+		return if(i >= 0, strings[file.builtinType(i)]);
+	}
+	// The occurrence containing {offset} in {path}, with its range and
+	// use-site type, or null.
+	def occurrenceAtOffset(path: string, offset: int) -> AnalysisOccurrence {
+		var file = fileOf(path);
+		if (file == null) return null;
+		var i = file.findOffset(offset);
+		return if(i >= 0, occurrence(path, file, i));
+	}
+	// The builtin use containing {offset} in {path}, or null.
+	def builtinUseAtOffset(path: string, offset: int) -> AnalysisBuiltinUse {
+		var file = fileOf(path);
+		if (file == null) return null;
+		var i = file.findBuiltin(offset);
+		return if(i >= 0, AnalysisBuiltinUse.new(file.builtinRange(path, i), strings[file.builtinType(i)]));
+	}
+	private def occurrence(path: string, file: AnalysisSnapshotFile, i: int) -> AnalysisOccurrence {
+		var o = AnalysisOccurrence.new(file.range(path, i), declarations[file.targets[i]]);
+		var t = file.useType(i);
+		if (t >= 0) o.useType = strings[t];
+		return o;
 	}
 	// The declaration that the indexed use at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
 	def definitionAt(path: string, line: int, column: int) -> AnalysisDeclaration {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.find(line, column);
 		return if(i >= 0, declarations[file.targets[i]]);
@@ -89,7 +172,7 @@ class AnalysisSnapshot {
 	// The declaration that the indexed use containing UTF-8 byte offset
 	// {offset} in {path} resolves to, or null if there is none.
 	def definitionAtOffset(path: string, offset: int) -> AnalysisDeclaration {
-		var file = files[path];
+		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.findOffset(offset);
 		return if(i >= 0, declarations[file.targets[i]]);
@@ -121,15 +204,104 @@ class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersi
 class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUsed: int,
 	uidNext: int, globalTypesAdded: int, globalTypeTotal: int, skippedUses: int) { }
 
-// The occurrences of one file, without an object per occurrence: {ranges} holds
-// the begin line, begin column, begin offset, and byte length of occurrence i
-// at 4 * i, and {targets} holds its index in the snapshot's declarations. An
+// A snapshot's file indexes, one for each distinct path of its request, in
+// request order. A result names a file by its index here, so decoding never
+// looks a path up by text. Lookups by text binary-search the paths in byte
+// order, sorted once from the paths the server itself sent: Virgil's HashMap
+// stops growing at 1,024 buckets, and paths with equal hashes share one, so
+// hashing a large request's paths would take time quadratic in their count.
+class AnalysisSnapshotFiles {
+	// The request's distinct paths, each once.
+	def var paths: Array<string>;
+	private var files: Array<AnalysisSnapshotFile>;
+	// The indexes of {paths} in the byte order of their paths.
+	private var sorted: Array<int>;
+
+	new(requestPaths: Array<string>) {
+		var n = requestPaths.length, count = 0, order = Array<int>.new(n);
+		for (i < n) if (requestPaths[i] != null) order[count++] = i;
+		order = AnalysisTables.sort(Arrays.range(order, 0, count),
+			fun (a: int, b: int) => AnalysisTables.compareBytes(requestPaths[a], requestPaths[b]) < 0);
+		// The sort is stable, so the first of equal paths is the request's
+		// first; it alone becomes a file.
+		var first = Array<bool>.new(n);
+		for (i < order.length) {
+			if (i == 0 || AnalysisTables.compareBytes(requestPaths[order[i - 1]], requestPaths[order[i]]) != 0) first[order[i]] = true;
+		}
+		var slots = Array<int>.new(n), list = Vector<string>.new();
+		for (i < n) {
+			if (!first[i]) continue;
+			slots[i] = list.length;
+			list.put(requestPaths[i]);
+		}
+		paths = list.extract();
+		sorted = Array<int>.new(paths.length);
+		var k = 0;
+		for (i in order) if (first[i]) sorted[k++] = slots[i];
+		files = Array<AnalysisSnapshotFile>.new(paths.length);
+	}
+	def [path: string] -> AnalysisSnapshotFile {
+		if (path == null) return null;
+		var low = 0, high = sorted.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (AnalysisTables.compareBytes(paths[sorted[mid]], path) < 0) low = mid + 1;
+			else high = mid;
+		}
+		if (low < sorted.length && AnalysisTables.compareBytes(paths[sorted[low]], path) == 0) return files[sorted[low]];
+		return null;
+	}
+	// Whether file {index} has no index yet.
+	def isNew(index: int) -> bool {
+		return u32.view(index) < u32.view(files.length) && files[index] == null;
+	}
+	def add(index: int, file: AnalysisSnapshotFile) {
+		files[index] = file;
+	}
+}
+
+// The index of one file, without an object per use: {ranges} holds the begin
+// line, begin column, begin offset, and byte length of occurrence i at 4 * i,
+// and {targets} holds its index in the snapshot's declarations. An
 // occurrence is a token span (see AnalysisRange.isTokenSpan): it ends on its
 // begin line, and its length is also its compiler column span. Occurrences
-// are in source order and do not overlap.
-class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
+// are in source order and do not overlap. {typed} holds pairs of an
+// occurrence index, in increasing order, and the string index of that
+// occurrence's use-site type. {builtins} holds five ints per builtin use: a
+// range as an occurrence's, and the string index of its type; builtin uses
+// are also token spans in source order. The file's declaration sites are
+// the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
+// source order.
+class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
+		firstSite: int, siteCount: int) {
 	def range(path: string, i: int) -> AnalysisRange {
-		var r = 4 * i, line = ranges[r], column = ranges[r + 1], offset = ranges[r + 2], length = ranges[r + 3];
+		return span(path, ranges, 4 * i);
+	}
+	def builtinCount() -> int {
+		return builtins.length / 5;
+	}
+	def builtinRange(path: string, i: int) -> AnalysisRange {
+		return span(path, builtins, 5 * i);
+	}
+	def builtinType(i: int) -> int {
+		return builtins[5 * i + 4];
+	}
+	// The string index of occurrence {i}'s use-site type, or -1.
+	def useType(i: int) -> int {
+		var low = 0, high = typed.length / 2;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (typed[2 * mid] < i) low = mid + 1;
+			else high = mid;
+		}
+		return if(low < typed.length / 2 && typed[2 * low] == i, typed[2 * low + 1], -1);
+	}
+	// The index of the builtin use whose byte range contains {offset}, or -1.
+	def findBuiltin(offset: int) -> int {
+		return search(builtins, 5, offset);
+	}
+	private def span(path: string, a: Array<int>, r: int) -> AnalysisRange {
+		var line = a[r], column = a[r + 1], offset = a[r + 2], length = a[r + 3];
 		return AnalysisRange.new(path, line, column, line, column + length, offset, offset + length);
 	}
 	// The index of the occurrence whose range contains the position, or -1.
@@ -156,13 +328,18 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>) {
 	// The end offset is exclusive, so the offset just past an occurrence is
 	// not in it.
 	def findOffset(offset: int) -> int {
-		var low = 0, high = targets.length;
+		return search(ranges, 4, offset);
+	}
+	// Searches spans of {stride} ints, each starting with a range as an
+	// occurrence's.
+	private def search(a: Array<int>, stride: int, offset: int) -> int {
+		var count = a.length / stride, low = 0, high = count;
 		while (low < high) {
-			var mid = low + (high - low) / 2, r = 4 * mid;
-			if (ranges[r + 2] + ranges[r + 3] <= offset) low = mid + 1;
+			var mid = low + (high - low) / 2, r = stride * mid;
+			if (a[r + 2] + a[r + 3] <= offset) low = mid + 1;
 			else high = mid;
 		}
-		if (low >= targets.length || offset < ranges[4 * low + 2]) return -1;
+		if (low >= count || offset < a[stride * low + 2]) return -1;
 		return low;
 	}
 }

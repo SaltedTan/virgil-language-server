@@ -35,6 +35,7 @@ component VirgilLsp {
 		buf.puts("  analyze [options] <file.v3>...\n");
 		buf.puts("                     Parse and verify the files as one program and print diagnostics.\n");
 		buf.puts("    --bindings       Also print each bound use and the declaration it resolves to.\n");
+		buf.puts("    --display        Also print each declaration's signature and each use's type.\n");
 		buf.puts("    --stats          Print timing and compiler global-state counters to stderr.\n");
 		buf.puts("    --repeat=<n>     Run the analysis n times and fail if any run differs.\n");
 		buf.puts("    --worker-timeout-ms=<n>\n");
@@ -153,11 +154,12 @@ component VirgilLsp {
 		return if(failed, 1, 0);
 	}
 	def analyze(args: Array<string>) -> int {
-		var bindings = false, stats = false, repeat = 1;
+		var bindings = false, display = false, stats = false, repeat = 1;
 		var limits = AnalysisWorkerLimits.new();
 		var paths = Vector<string>.new();
 		for (arg in args) {
 			if (Strings.equal(arg, "--bindings")) bindings = true;
+			else if (Strings.equal(arg, "--display")) display = true;
 			else if (Strings.equal(arg, "--stats")) stats = true;
 			else if (Strings.startsWith(arg, "--repeat=")) {
 				if ((repeat = positiveOption(arg, "--repeat=")) < 0) return 2;
@@ -189,7 +191,7 @@ component VirgilLsp {
 		var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), limits);
 		supervisor.warn = Log.warn;
 		supervisor.info = Log.info;
-		var flags = if(bindings, AnalysisWire.WANT_OCCURRENCES) | if(stats, AnalysisWire.WANT_STATS);
+		var flags = if(bindings || display, AnalysisWire.WANT_OCCURRENCES) | if(stats, AnalysisWire.WANT_STATS);
 		var firstHash: u64, status = 0;
 		for (run < repeat) {
 			var snapshot: AnalysisSnapshot;
@@ -209,7 +211,7 @@ component VirgilLsp {
 			// Only the first run prints; later runs are compared by hash so
 			// that large reports never need to be held in memory.
 			var out = AnalysisReport.new(run == 0);
-			writeReport(out, snapshot, paths, bindings);
+			writeReport(out, snapshot, paths, bindings, display);
 			if (stats) logStats(run + 1, snapshot, out.occurrences);
 			if (run == 0) {
 				firstHash = out.hash;
@@ -235,17 +237,41 @@ component VirgilLsp {
 		return p.1;
 	}
 	// Writes everything an analysis reports, so that runs can be compared.
-	def writeReport(out: AnalysisReport, snapshot: AnalysisSnapshot, paths: Vector<string>, bindings: bool) {
+	def writeReport(out: AnalysisReport, snapshot: AnalysisSnapshot, paths: Vector<string>, bindings: bool, display: bool) {
 		var buf = StringBuilder.new();
 		for (d in snapshot.diagnostics) buf.puts(d.toString()).ln();
 		if (snapshot.verified) buf.put1("ok: %d files parsed and verified\n", paths.length);
 		out.write(buf);
-		if (!bindings || !snapshot.parsed) return;
+		if (!(bindings || display) || !snapshot.parsed) return;
 		for (i < paths.length) {
 			var occurrences = snapshot.occurrences(paths[i]);
-			for (o in occurrences) buf.puts(o.toString()).ln();
+			if (bindings) for (o in occurrences) buf.puts(o.toString()).ln();
+			if (display) writeDisplay(buf, snapshot, paths[i], occurrences);
 			out.occurrences += occurrences.length;
 			out.write(buf);
+		}
+	}
+	// Writes the display text of {path}'s declaration sites, occurrences,
+	// and builtin uses, merged in source order.
+	def writeDisplay(buf: StringBuilder, snapshot: AnalysisSnapshot, path: string, occurrences: Array<AnalysisOccurrence>) {
+		var sites = snapshot.declarationSites(path), builtins = snapshot.builtinUses(path);
+		var i = 0, j = 0, k = 0, end = int.max;
+		while (i < sites.length || j < occurrences.length || k < builtins.length) {
+			var s = if(i < sites.length, sites[i].range.beginOffset, end);
+			var o = if(j < occurrences.length, occurrences[j].range.beginOffset, end);
+			var b = if(k < builtins.length, builtins[k].range.beginOffset, end);
+			if (s <= o && s <= b) {
+				var d = sites[i++];
+				d.range.render(buf).puts(" declares ").puts(d.kind.name).puts(": ").puts(Strings.nonnull(d.signature)).ln();
+			} else if (o <= b) {
+				var u = occurrences[j++], d = u.declaration;
+				u.range.render(buf).puts(" uses ").puts(d.kind.name).puts(": ").puts(Strings.nonnull(d.signature));
+				if (u.useType != null) buf.puts("; type: ").puts(u.useType);
+				buf.ln();
+			} else {
+				var u = builtins[k++];
+				u.range.render(buf).puts(" builtin: ").puts(u.useType).ln();
+			}
 		}
 	}
 	def logStats(run: int, snapshot: AnalysisSnapshot, occurrences: int) {

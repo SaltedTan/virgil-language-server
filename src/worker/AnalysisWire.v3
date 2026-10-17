@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 4;
+	def PROTOCOL_VERSION = 5;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -111,15 +111,25 @@ component AnalysisWire {
 	}
 
 	// Encodes a RESULT: the fixed-width part, then flags, statistics,
-	// diagnostics, and, if {files} is not null, a path table, the distinct
-	// declarations, and the occurrences of each file in source order. A
-	// declaration's range is four compiler coordinates and two byte offsets.
-	// An occurrence is its begin line, begin column, begin offset, length, and
-	// declaration index; one that is not a token span (see
-	// AnalysisRange.isTokenSpan), which the collector never records, is
-	// omitted rather than misstated. The skipped-uses statistic counts these
-	// omissions and the collector's own skips, or is -1 without occurrences.
-	// Call finishResult before sending.
+	// diagnostics, and, if {files} is not null, a string table, the distinct
+	// declarations, and each file's index. {files} must be the request's
+	// distinct paths in request order, and a path is sent as its index there;
+	// every declaration is in one of them. A declaration is its kind, its
+	// name's string index, its path index, its range (four compiler
+	// coordinates and two byte offsets), and its signature's string index plus
+	// one, or zero. Each file's declaration sites (see
+	// ProgramAnalysis.declarationSites) come first in the declarations, in
+	// files order, so a file sends its path index, then their first index and
+	// count. Then come its occurrences in source order, each its begin line,
+	// begin column, begin offset, length, and declaration index; the
+	// occurrences whose use-site type differs from their declaration's, each
+	// as the difference from the previous one's occurrence index and the
+	// type's string index; and its builtin uses, each a range as an
+	// occurrence's and a string index.
+	// A use that is not a token span (see AnalysisRange.isTokenSpan), which
+	// the collector never records, is omitted rather than misstated. The
+	// skipped-uses statistic counts these omissions and the collector's own
+	// skips, or is -1 without occurrences. Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);
@@ -135,6 +145,7 @@ component AnalysisWire {
 			for (f in files) {
 				skipped += analysis.skippedUses(f.0);
 				for (o in f.1) if (!o.range.isTokenSpan()) skipped++;
+				for (u in analysis.builtinUses(f.0)) if (!u.range.isTokenSpan()) skipped++;
 			}
 		}
 		w.put_sleb32(skipped);
@@ -146,7 +157,7 @@ component AnalysisWire {
 			putString(w, d.kind);
 			putString(w, d.message);
 		}
-		if (files != null) encodeOccurrences(w, files);
+		if (files != null) encodeOccurrences(w, analysis, files);
 		return w;
 	}
 	// Fills in the live heap bytes of a result from {encodeResult} and returns its frame.
@@ -155,42 +166,84 @@ component AnalysisWire {
 		w.at(LIVE_BYTES_OFFSET).put_b64(liveBytes).at(end);
 		return WorkerFraming.finish(w);
 	}
-	private def encodeOccurrences(w: DataWriter, files: Array<(string, Array<AnalysisOccurrence>)>) {
-		var paths = Strings.newMap<int>(), pathList = Vector<string>.new();
-		var decls = HashMap<AnalysisDeclaration, int>.new(hashDeclaration, sameDeclaration);
-		var declList = Vector<AnalysisDeclaration>.new();
-		// The collector makes a declaration object per use; send each one once.
+	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>) {
+		// A path is its file's index in {files}, the request's distinct paths
+		// in order, plus one.
+		var paths = Strings.newMap<int>();
+		for (i < files.length) if (paths[files[i].0] == 0) paths[files[i].0] = i + 1;
+		var decls = AnalysisIndexMap<AnalysisDeclaration>.new(hashDeclaration, sameDeclaration);
+		var strings = AnalysisStringTable.new();
+		var sites = Array<Array<AnalysisDeclaration>>.new(files.length);
+		var builtins = Array<Array<AnalysisBuiltinUse>>.new(files.length);
+		var firstSite = Array<int>.new(files.length);
+		// Each file's sites first, so that they are a run of the declarations.
+		for (i < files.length) {
+			var f = files[i];
+			sites[i] = analysis.declarationSites(f.0);
+			builtins[i] = analysis.builtinUses(f.0);
+			firstSite[i] = decls.length();
+			for (d in sites[i]) decls.add(d);
+		}
+		// The collector makes each declaration once, but a caller can make one
+		// per use; send each once.
 		for (f in files) {
-			pathIndex(paths, pathList, f.0);
 			for (o in f.1) {
-				var d = o.declaration;
-				if (!decls.has(d)) {
-					decls[d] = declList.length;
-					declList.put(d);
-					pathIndex(paths, pathList, d.range.path);
-				}
+				if (o.useType != null) strings.add(o.useType);
+				if (decls.find(o.declaration) < 0) decls.add(o.declaration);
 			}
 		}
-		w.put_sleb32(pathList.length);
-		for (i < pathList.length) putString(w, pathList[i]);
-		w.put_sleb32(declList.length);
-		for (i < declList.length) {
-			var d = declList[i];
+		for (b in builtins) for (u in b) strings.add(u.useType);
+		for (i < decls.length()) {
+			var d = decls[i];
+			strings.add(d.name);
+			if (d.signature != null) strings.add(d.signature);
+		}
+		w.put_sleb32(strings.length());
+		for (i < strings.length()) putString(w, strings[i]);
+		w.put_sleb32(decls.length());
+		for (i < decls.length()) {
+			var d = decls[i];
 			w.putb(d.kind.tag);
-			putString(w, d.name);
-			w.put_sleb32(paths[d.range.path]);
+			w.put_sleb32(strings.add(d.name));
+			// Every declaration is in one of the request's files; -1 would be
+			// rejected.
+			w.put_sleb32(paths[d.range.path] - 1);
 			putRange(w, d.range);
+			w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
 		}
 		w.put_sleb32(files.length);
-		for (f in files) {
-			var count = 0;
-			for (o in f.1) if (o.range.isTokenSpan()) count++;
-			w.put_sleb32(paths[f.0]).put_sleb32(count);
+		for (i < files.length) {
+			var f = files[i], count = 0, typed = 0;
+			w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
+			for (o in f.1) {
+				if (!o.range.isTokenSpan()) continue;
+				count++;
+				if (o.useType != null) typed++;
+			}
+			w.put_sleb32(count);
 			for (o in f.1) {
 				var r = o.range;
 				if (!r.isTokenSpan()) continue;
-				w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.beginOffset);
-				w.put_sleb32(r.endOffset - r.beginOffset).put_sleb32(decls[o.declaration]);
+				putSpan(w, r);
+				w.put_sleb32(decls.find(o.declaration));
+			}
+			w.put_sleb32(typed);
+			var index = 0, previous = 0;
+			for (o in f.1) {
+				if (!o.range.isTokenSpan()) continue;
+				if (o.useType != null) {
+					w.put_sleb32(index - previous).put_sleb32(strings.add(o.useType));
+					previous = index;
+				}
+				index++;
+			}
+			count = 0;
+			for (u in builtins[i]) if (u.range.isTokenSpan()) count++;
+			w.put_sleb32(count);
+			for (u in builtins[i]) {
+				if (!u.range.isTokenSpan()) continue;
+				putSpan(w, u.range);
+				w.put_sleb32(strings.add(u.useType));
 			}
 		}
 	}
@@ -221,32 +274,72 @@ component AnalysisWire {
 		}
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];
-		var table: Array<string> = [];
+		var strings: Array<string> = [], files: AnalysisSnapshotFiles;
 		if (hasOccurrences) {
-			table = Array<string>.new(r.readCount(1, 64));
-			for (i < table.length) table[i] = r.readString(1);
-			// Kind, name, path index, and six range ints take at least nine
-			// bytes. The record charge covers the declaration, its range, and
-			// the array slot; the name is charged as an index string.
-			declarations = Array<AnalysisDeclaration>.new(r.readCount(9, 128));
+			// A path is an index into the request's distinct paths, which the
+			// server sent, so the result has no path table and no path is
+			// looked up by text.
+			files = AnalysisSnapshotFiles.new(paths);
+			// Each string is charged as an index string, and its slot.
+			strings = Array<string>.new(r.readCount(1, 8));
+			for (i < strings.length) strings[i] = r.readString(1);
+			// Kind, name, path index, six range ints, and signature take at
+			// least ten bytes. The record charge covers the declaration, its
+			// range, and the array slot; its strings are in the string table.
+			declarations = Array<AnalysisDeclaration>.new(r.readCount(10, 128));
 			for (i < declarations.length) {
-				var kind = r.readKind(), name = r.readString(1), path = r.readPath(table);
-				declarations[i] = AnalysisDeclaration.new(kind, name, r.readRange(path));
+				var kind = r.readKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
+				var d = AnalysisDeclaration.new(kind, name, r.readRange(path));
+				d.signature = r.readOptionalString(strings);
+				declarations[i] = d;
 			}
 		}
 		var snapshot = AnalysisSnapshot.new(generation, paths, (flags & PARSED) != 0,
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
-			for (n = r.readCount(2, 256); n > 0 && r.ok(); n--) {
+			snapshot.setStrings(strings);
+			snapshot.setFiles(files);
+			// Each file is one of the request's, at most once, and the site
+			// runs come in order, so that each declaration is checked as a
+			// site at most once.
+			var siteEnd = 0;
+			for (n = r.readCount(6, 256); n > 0 && r.ok(); n--) {
+				var fileIndex = r.readInt();
+				if (!files.isNew(fileIndex)) {
+					r.fail("invalid or repeated file index");
+					break;
+				}
+				var path = files.paths[fileIndex];
+				var first = r.readInt(), sites = r.readInt();
+				if (!r.checkSites(declarations, path, siteEnd, first, sites)) break;
+				siteEnd = first + sites;
 				// Each occurrence is four ints of its range and a declaration
 				// index, stored as five int array elements.
-				var path = r.readPath(table), count = r.readCount(5, 20);
-				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count);
-				for (i < count) {
-					for (j < 4) ranges[4 * i + j] = r.readInt();
+				var count = r.readCount(5, 20);
+				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count), end = 0;
+				for (i = 0; i < count && r.ok(); i++) {
+					end = r.readSpan(ranges, 4 * i, end);
 					targets[i] = r.readTarget(declarations.length);
 				}
-				if (path != null) snapshot.addFile(path, AnalysisSnapshotFile.new(ranges, targets));
+				// Occurrence index and type string index pairs.
+				var typed = Array<int>.new(2 * r.readCount(2, 8)), index = 0;
+				for (i = 0; i < typed.length && r.ok(); i += 2) {
+					index += r.readInt();
+					typed[i] = r.checkIndex(index, count, i > 0 && index <= typed[i - 2]);
+					typed[i + 1] = r.readStringId(strings);
+				}
+				// A builtin use is an occurrence's four range ints and a type
+				// string index.
+				var builtins = Array<int>.new(5 * r.readCount(5, 20));
+				end = 0;
+				for (i = 0; i < builtins.length && r.ok(); i += 5) {
+					end = r.readSpan(builtins, i, end);
+					builtins[i + 4] = r.readStringId(strings);
+				}
+				// A builtin use is never an occurrence, so a lookup by offset
+				// finds at most one of them.
+				r.checkDisjoint(ranges, builtins);
+				files.add(fileIndex, AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites));
 			}
 		}
 		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
@@ -261,15 +354,14 @@ component AnalysisWire {
 		for (k in AnalysisDeclKind) kinds[k.tag] = k;
 		return kinds;
 	}
-	private def pathIndex(map: HashMap<string, int>, list: Vector<string>, path: string) {
-		if (!map.has(path)) {
-			map[path] = list.length;
-			list.put(path);
-		}
-	}
 	private def putString(w: DataWriter, s: string) {
 		if (s == null) w.put_sleb32(-1);
 		else w.put_sleb32(s.length).puta(s);
+	}
+	// A token span is its begin line, column, and offset, and its length.
+	private def putSpan(w: DataWriter, r: AnalysisRange) {
+		w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.beginOffset);
+		w.put_sleb32(r.endOffset - r.beginOffset);
 	}
 	private def putRange(w: DataWriter, r: AnalysisRange) {
 		w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.endLine).put_sleb32(r.endColumn);
@@ -326,6 +418,9 @@ class AnalysisWireReader {
 	}
 	def ok() -> bool {
 		return r.ok;
+	}
+	def fail(message: string) {
+		r.fail(message);
 	}
 	// Returns true if the message was well formed and completely read.
 	def finish() -> bool {
@@ -396,6 +491,86 @@ class AnalysisWireReader {
 			return 0;
 		}
 		return i;
+	}
+	// A string table entry, which is never null.
+	def readStringIndex(strings: Array<string>) -> string {
+		var i = readStringId(strings);
+		return if(r.ok, strings[i]);
+	}
+	// The index of a string table entry, which is never null.
+	def readStringId(strings: Array<string>) -> int {
+		var i = r.read_sleb32();
+		if (u32.view(i) >= u32.view(strings.length) || strings[i] == null) {
+			r.fail("invalid string index");
+			return 0;
+		}
+		return i;
+	}
+	// A string table index plus one, or zero for null.
+	def readOptionalString(strings: Array<string>) -> string {
+		var i = r.read_sleb32();
+		if (i == 0) return null;
+		if (u32.view(i - 1) >= u32.view(strings.length) || strings[i - 1] == null) {
+			r.fail("invalid string index");
+			return null;
+		}
+		return strings[i - 1];
+	}
+	// Returns {index} if it is below {count} and not {disordered}.
+	def checkIndex(index: int, count: int, disordered: bool) -> int {
+		if (u32.view(index) >= u32.view(count) || disordered) {
+			r.fail("invalid occurrence index");
+			return 0;
+		}
+		return index;
+	}
+	// Checks that declarations {first} to {first + count} are declared in
+	// {path}, with nonempty byte ranges in order and not overlapping, so
+	// that a binary search finds them, and that they start at or after
+	// {after}, the end of the previous file's run.
+	def checkSites(declarations: Array<AnalysisDeclaration>, path: string, after: int, first: int, count: int) -> bool {
+		if (!r.ok) return false;
+		if (first < after || count < 0 || count > declarations.length - first) {
+			r.fail("invalid declaration sites");
+			return false;
+		}
+		var end = 0;
+		for (i = first; i < first + count; i++) {
+			var range = declarations[i].range;
+			if (range.path != path || range.beginOffset < end || range.endOffset <= range.beginOffset) {
+				r.fail("invalid declaration sites");
+				return false;
+			}
+			end = range.endOffset;
+		}
+		return true;
+	}
+	// Reads a use's line, column, byte offset, and length into {a} from
+	// index {i}, and returns its end offset. A use is a token span that
+	// starts at or after {end}, the end of the previous use, so that uses
+	// are in byte order without overlaps, as a binary search requires.
+	def readSpan(a: Array<int>, i: int, end: int) -> int {
+		var line = r.read_sleb32(), column = r.read_sleb32(), offset = r.read_sleb32(), length = r.read_sleb32();
+		if (line < 1 || column < 1 || offset < end || length < 1 || length > int.max - offset || length > int.max - column) {
+			r.fail("invalid use range");
+			return end;
+		}
+		a[i] = line;
+		a[i + 1] = column;
+		a[i + 2] = offset;
+		a[i + 3] = length;
+		return offset + length;
+	}
+	// Checks that no occurrence in {ranges}, four ints each, overlaps a
+	// builtin use in {builtins}, five ints each. Both are in byte order.
+	def checkDisjoint(ranges: Array<int>, builtins: Array<int>) {
+		var i = 0, k = 0;
+		while (r.ok && i < ranges.length && k < builtins.length) {
+			var o = ranges[i + 2], b = builtins[k + 2];
+			if (o + ranges[i + 3] <= b) i += 4;
+			else if (b + builtins[k + 3] <= o) k += 5;
+			else r.fail("builtin use overlaps an occurrence");
+		}
 	}
 	def readKind() -> AnalysisDeclKind {
 		var tag = r.read1();
