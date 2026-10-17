@@ -243,7 +243,7 @@ Deliverables:
 - Symbol identities for local variables, fields, methods, compounds, enum cases, layouts, and packings.
 - Occurrence index extending the [compiler adapter's current coverage](docs/architecture.md#compiler-adapter) to applications and named type references.
 - `textDocument/definition`.
-- `textDocument/hover` using the [snapshot display data](docs/architecture.md#display-text) *(data export present; handler planned)*.
+- `textDocument/hover` using the [snapshot display data](docs/architecture.md#display-text).
 - Workspace/document-symbol polishing.
 - End-to-end editor tests and a documented manual test matrix.
 - First tagged prerelease with checksums and install instructions.
@@ -352,11 +352,7 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 
 ### Visual Studio Code
 
-The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md).
-
-Remaining work:
-
-- add a hover check to the [Extension Host test](clients/vscode/README.md#extension-host-test), which covers activation, diagnostics, document symbols, a cross-file definition, project-file diagnostics, and restart.
+The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). Its [Extension Host test](clients/vscode/README.md#extension-host-test) covers activation, diagnostics, document symbols, a cross-file definition, hover, project-file diagnostics, and restart.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.
 
@@ -479,7 +475,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 13. Publish whole-project semantic diagnostics. *(present; [#58](https://github.com/SaltedTan/virgil-language-server/issues/58))*
 14. Build declaration and occurrence indexes from verified bindings. *(present; [#104](https://github.com/SaltedTan/virgil-language-server/issues/104); see the [compiler adapter](docs/architecture.md#compiler-adapter))*
 15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
-16. Implement hover. *(partial: [display data](docs/architecture.md#display-text) present, [#105](https://github.com/SaltedTan/virgil-language-server/issues/105); handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106))*
+16. Implement hover. *(present for indexed uses, declaration names, and builtin uses; [display data](docs/architecture.md#display-text) [#105](https://github.com/SaltedTan/virgil-language-server/issues/105), handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106); see [Hover](docs/architecture.md#hover))*
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
 18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
 

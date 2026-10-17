@@ -52,7 +52,9 @@ class LspServer {
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
-	private var definitions: LspDefinition;
+	// Definition and hover requests, answered from snapshots.
+	private var snapshotRequests: LspSnapshotRequests;
+	private def hover = LspHover.new();
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	// Watched-file and workspace-folder notifications, and the watcher registration.
 	def workspaceEvents = LspWorkspaceEvents.new(documents, projects);
@@ -74,8 +76,9 @@ class LspServer {
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
-		definitions = LspDefinition.new(documents, projects, publishNotification);
-		definitions.register(dispatcher);
+		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
+		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
+		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
 		workspaceEvents.warn = projectWarning;
@@ -99,7 +102,7 @@ class LspServer {
 		semanticDiagnostics.development = developmentAnalysis;
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;
-		definitions.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
+		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
 	}
 	// Called after every poll, including a timeout. Completes analyses and
 	// expires server requests the client hasn't answered in time.
@@ -272,6 +275,7 @@ class LspServer {
 		projects.initialize(params);
 		var watched = member(member(member(params, "capabilities"), "workspace"), "didChangeWatchedFiles");
 		workspaceEvents.dynamicWatchers = watched != null && watched["dynamicRegistration"] == JsonValue.Bool(true);
+		hover.markdown = acceptsMarkdown(member(member(member(params, "capabilities"), "textDocument"), "hover"));
 		state = LspServerState.RUNNING;
 		var serverInfo = Strings.newMap<JsonValue>();
 		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);
@@ -288,6 +292,7 @@ class LspServer {
 		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
+		capabilities["hoverProvider"] = JsonValue.Bool(true);
 		var folders = Strings.newMap<JsonValue>();
 		folders["supported"] = JsonValue.Bool(true);
 		folders["changeNotifications"] = JsonValue.Bool(true);
@@ -302,6 +307,15 @@ class LspServer {
 	private def member(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
 		if (obj == null || !JsonValue.JObject.?(obj[key])) return null;
 		return JsonValue.JObject.!(obj[key]).v;
+	}
+	// False only if the hover client capabilities {hover} list content
+	// formats, but not markdown.
+	private def acceptsMarkdown(hover: HashMap<string, JsonValue>) -> bool {
+		if (hover == null || !JsonValue.JArray.?(hover["contentFormat"])) return true;
+		for (format in JsonValue.JArray.!(hover["contentFormat"]).v) {
+			if (JsonValue.String.?(format) && Strings.equal(JsonValue.String.!(format).v, "markdown")) return true;
+		}
+		return false;
 	}
 	// The client's first notification after initialize.
 	private def initialized(n: JsonRpcMessage.Notification) {
@@ -329,7 +343,7 @@ class LspServer {
 	private def failPending(msg: string) {
 		if (semanticDiagnostics != null) semanticDiagnostics.close();
 		if (developmentAnalysis != null) developmentAnalysis.close(msg);
-		definitions.close(msg);
+		snapshotRequests.close(msg);
 		dispatcher.pending.failAll(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, msg));
 	}
 }

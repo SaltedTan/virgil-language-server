@@ -1,0 +1,33 @@
+# Hover over the two-file project's unsaved files: before any analysis has completed, at a
+# use, a generic use, a declaration's name, and a builtin, and after an analysis it waits for.
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/two-file","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+# Unsaved main.v3 calls squared and the generic id, which only unsaved shapes.v3 declares, after a
+# tab and a non-ASCII character in a block comment. Both open in one read, so the first analysis,
+# which read shapes.v3 from disk, is discarded. The request in the same read has no snapshot yet,
+# so it waits for the second analysis. It shows squared's signature over the use.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","languageId":"virgil","version":1,"text":"// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.squared(3);\n\t\tvar same = Shapes.id(r);\n\t\treturn same.area() + \"ab\".length;\n\t}\n}\n"}}},{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3","languageId":"virgil","version":1,"text":"// Declarations used from main.v3, after a tab and a non-ASCII character.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\t/*\té*/ def squared(side: int) -> Rect {\n\t\treturn Rect.new(side, side);\n\t}\n\tdef id<T>(x: T) -> T {\n\t\treturn x;\n\t}\n}\n"}}},{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":3,"character":19}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/shapes.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef squared(side: int) -> Rect\n```"},"range":{"end":{"character":24,"line":3},"start":{"character":17,"line":3}}}}}
+# The snapshot is current, so the replies are immediate. A generic call shows the declaration's
+# signature and then the use-site type, each in its own code block.
+{"send":{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":20}}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef id<T>(x: T) -> T\n```\n```virgil\nRect -> Rect\n```"},"range":{"end":{"character":22,"line":4},"start":{"character":20,"line":4}}}}}
+# squared's own name, after the tab and the non-ASCII character, shows its signature.
+{"send":{"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3"},"position":{"line":7,"character":14}}}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef squared(side: int) -> Rect\n```"},"range":{"end":{"character":19,"line":7},"start":{"character":12,"line":7}}}}}
+# Just past .length, a builtin, which shows its type.
+{"send":{"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":5,"character":34}}}}
+{"recv":{"jsonrpc":"2.0","id":5,"result":{"contents":{"kind":"markdown","value":"```virgil\nint\n```"},"range":{"end":{"character":34,"line":5},"start":{"character":28,"line":5}}}}}
+# An unsaved edit moves squared down a line. The request in the same read finds the snapshot
+# stale, so it starts the waiting analysis without the debounce interval and answers from it.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3","version":2},"contentChanges":[{"text":"// Declarations used from main.v3, after a tab and a non-ASCII character.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\tdef unit = 1;\n\t/*\té*/ def squared(side: int) -> Rect {\n\t\treturn Rect.new(side, side);\n\t}\n\tdef id<T>(x: T) -> T {\n\t\treturn x;\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":6,"method":"textDocument/hover","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3"},"position":{"line":8,"character":14}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/shapes.v3","version":2}}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":{"contents":{"kind":"markdown","value":"```virgil\ndef squared(side: int) -> Rect\n```"},"range":{"end":{"character":19,"line":8},"start":{"character":12,"line":8}}}}}
+{"send":{"jsonrpc":"2.0","id":7,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":7,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}
+{"stderr": "discarded analysis 1 of project shapes: file://.*/two-file/shapes\\.v3 changed after its sources were captured"}
