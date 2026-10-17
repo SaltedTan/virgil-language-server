@@ -4,7 +4,9 @@
 // The occurrence-index contract is documented in
 // docs/architecture.md#compiler-adapter, and display data in
 // docs/architecture.md#display-text.
-class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay) extends VstVisitor<void, void> {
+// {packings} is the program's packings by name (Program.packings), or null.
+class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
+		packings: HashMap<string, VstPacking>) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
 	// Declaration sites in the order the walk finds them, which breaks ties.
@@ -119,8 +121,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 		if (mt.mtlayout != null) record(mt.tname.name, make(AnalysisDeclKind.LAYOUT, mt.mtlayout.layoutDecl), null);
 		else record(mt.tname.name, typeDeclaration(mt.mttype), mt.mttype);
 	}
-	// A packing's parameters are its own declarations; see packingExpr.
+	// A packing and its parameters are its own declarations; see packingExpr.
 	private def visitPacking(decl: VstPacking) {
+		site(make(AnalysisDeclKind.PACKING, decl));
 		if (decl.pparams != null) for (l = decl.pparams.list; l != null; l = l.tail) site(make(AnalysisDeclKind.PARAMETER, l.head));
 		// Verification sets the bit width, which is nonzero unless the declared
 		// size is 0, an error. Otherwise it stopped before this packing.
@@ -128,15 +131,23 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 	}
 	// Verification looks up a field of a packing expression among the
 	// packing's parameters alone, where a later parameter hides an earlier
-	// one of the same name, and keeps no binding. A packing application's
-	// name is a packing, which no declaration kind describes, and is not
-	// recorded. A bit pattern is one literal token whose letters select
-	// parameters by their initials; it names none of them.
+	// one of the same name, and a packing application's name among the
+	// program's packings, where a later packing replaces an earlier one; it
+	// keeps neither binding. It checks an application's arguments only if
+	// they are as many as the packing's parameters. A bit pattern is one
+	// literal token whose letters select parameters by their initials; it
+	// names none of them.
 	private def packingExpr(decl: VstPacking, e: VstPackingExpr) {
 		match (e) {
 			Solve(list) => packingExprs(decl, list);
 			Concat(list) => packingExprs(decl, list);
-			App(p, args) => packingExprs(decl, args);
+			App(p, args) => {
+				var target = if(packings != null && p.expr == null && p.ident.params == null, packings[p.ident.name.image]);
+				if (target == null) return;
+				record(p.ident.name, make(AnalysisDeclKind.PACKING, target), null);
+				var arity = if(target.pparams != null, target.pparams.length());
+				if (args != null && args.length() == arity) packingExprs(decl, args);
+			}
 			Field(f) => {
 				if (f.expr != null || f.ident.params != null) return;
 				var name = f.ident.name, param: PackingParamDecl;

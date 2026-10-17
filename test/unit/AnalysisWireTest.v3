@@ -288,7 +288,7 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(0, 5)), 1, REQUEST)), "path index");
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, declaration(200, 0)), 1, REQUEST)), "declaration kind");
 	// The last kind decodes; the tag after it is malformed.
-	var last = AnalysisDeclKind.TYPE_PARAM;
+	var last = AnalysisDeclKind.PACKING;
 	t.asserti(AnalysisDeclKind.count - 1, last.tag);
 	var kinds = file(declaration(last.tag, 0), 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY);
 	var decoded = decodedResult(result(0, kinds), 1, REQUEST);

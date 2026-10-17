@@ -3,8 +3,8 @@
 
 // Occurrences of type references, type parameters, variant cases used as
 // types, index operators, descriptor-backed construction, layout references,
-// and packing parameters. Every test checks the analysis and the snapshot
-// decoded from its worker result.
+// and packings and their parameters. Every test checks the analysis and the
+// snapshot decoded from its worker result.
 def T = UnitTests.register;
 def X = [
 	T("OccurrenceCoverage:type_references", test_type_references),
@@ -24,6 +24,8 @@ def X = [
 	T("OccurrenceCoverage:layout_references_with_errors", test_layout_references_with_errors),
 	T("OccurrenceCoverage:packing_parameters", test_packing_parameters),
 	T("OccurrenceCoverage:packing_parameters_with_errors", test_packing_parameters_with_errors),
+	T("OccurrenceCoverage:packing_applications", test_packing_applications),
+	T("OccurrenceCoverage:packing_applications_with_errors", test_packing_applications_with_errors),
 	T("OccurrenceCoverage:packing_after_error_limit", test_packing_after_error_limit),
 	T("OccurrenceCoverage:existing_uses", test_existing_uses),
 	T("OccurrenceCoverage:fixture", test_fixture),
@@ -672,8 +674,8 @@ def test_layout_references_with_errors(t: Tester) {
 }
 def test_packing_parameters(t: Tester) {
 	// A field of a packing expression names a parameter of its packing, also
-	// as an argument of a packing application. Neither the applied packing's
-	// name nor a bit pattern's letters are uses.
+	// as an argument of a packing application, which names a packing. A bit
+	// pattern's letters are not uses.
 	var text = lines([
 		"packing Low(a: 4, b: 4): 8 = #concat(b, a);",
 		"packing Wide(x: 4, y: 8): 16 = #concat(Low(x, 0b0000), y);",
@@ -682,6 +684,7 @@ def test_packing_parameters(t: Tester) {
 	assertUses(t, analyzeText(t, text, [], true), text, [
 		ExpectedUse.new("#concat(b, a)", 8, 1, AnalysisDeclKind.PARAMETER, "b", "b: 4", 0),
 		ExpectedUse.new("#concat(b, a)", 11, 1, AnalysisDeclKind.PARAMETER, "a", "a: 4", 0),
+		ExpectedUse.new("Low(x,", 0, 3, AnalysisDeclKind.PACKING, "Low", "packing Low", 8),
 		ExpectedUse.new("Low(x,", 4, 1, AnalysisDeclKind.PARAMETER, "x", "x: 4", 0),
 		ExpectedUse.new("), y)", 3, 1, AnalysisDeclKind.PARAMETER, "y", "y: 8", 0)
 	]);
@@ -700,11 +703,45 @@ def test_packing_parameters_with_errors(t: Tester) {
 		ExpectedUse.new("#concat(a", 8, 1, AnalysisDeclKind.PARAMETER, "a", "a: 4)", 0)
 	]);
 }
+def test_packing_applications(t: Tester) {
+	// An application names a packing declared before or after it, also as
+	// another application's argument.
+	var text = lines([
+		"packing R(y: 3): 6 = #concat(Q(P(y)), P(0b000));",
+		"packing Q(x: 3): 3 = P(x);",
+		"packing P(w: 3): 3 = w;"
+	]);
+	var p = "packing P", q = "packing Q";
+	assertUses(t, analyzeText(t, text, [], true), text, [
+		ExpectedUse.new("Q(P(y))", 0, 1, AnalysisDeclKind.PACKING, "Q", q, 8),
+		ExpectedUse.new("Q(P(y))", 2, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("Q(P(y))", 4, 1, AnalysisDeclKind.PARAMETER, "y", "y: 3", 0),
+		ExpectedUse.new("P(0b000)", 0, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("P(x);", 0, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("P(x);", 2, 1, AnalysisDeclKind.PARAMETER, "x", "x: 3", 0),
+		ExpectedUse.new("= w;", 2, 1, AnalysisDeclKind.PARAMETER, "w", "w: 3", 0)
+	]);
+}
+def test_packing_applications_with_errors(t: Tester) {
+	// A redefined packing replaces the earlier one, as verification looks it
+	// up. Verification does not check the arguments of an application with
+	// the wrong number of them, so they record nothing.
+	var text = lines([
+		"packing P(x: 3): 3 = x;",
+		"packing P(z: 3): 3 = z;",
+		"packing Q(a: 3): 3 = P(a, a);"
+	]);
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("= x;", 2, 1, AnalysisDeclKind.PARAMETER, "x", "x: 3", 0),
+		ExpectedUse.new("= z;", 2, 1, AnalysisDeclKind.PARAMETER, "z", "z: 3", 0),
+		ExpectedUse.new("P(a, a)", 0, 1, AnalysisDeclKind.PACKING, "P", "packing P(z", 8)
+	]);
+}
 def test_packing_after_error_limit(t: Tester) {
-	// Verification stops at the error limit, here before the packing.
+	// Verification stops at the error limit, here before the packings.
 	var buf = StringBuilder.new().puts("component M {\n");
 	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 1) buf.put1("  var f%d: Missing;\n", i);
-	var text = buf.puts("}\npacking P(a: 4): 4 = a;\n").toString();
+	var text = buf.puts("}\npacking P(a: 4): 4 = a;\npacking Q(b: 4): 4 = P(b);\n").toString();
 	assertUses(t, analyzeText(t, text, [], false), text, []);
 }
 def test_existing_uses(t: Tester) {
@@ -798,7 +835,7 @@ def test_layout_and_packing_fixtures(t: Tester) {
 	}
 	t.assert(paths.length > 800, "the layout and packing fixtures");
 	var s = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
-	var crashed = 0, layouts = 0, parameters = 0;
+	var crashed = 0, layouts = 0, parameters = 0, packings = 0;
 	for (path in paths.extract()) {
 		var sources = load(t, [path]);
 		if (sources == null) break;
@@ -814,6 +851,7 @@ def test_layout_and_packing_fixtures(t: Tester) {
 				}
 				for (o in snapshot.occurrences(path)) {
 					if (o.declaration.kind == AnalysisDeclKind.LAYOUT) layouts++;
+					if (o.declaration.kind == AnalysisDeclKind.PACKING) packings++;
 					if (o.declaration.kind == AnalysisDeclKind.PARAMETER && Strings.equal(o.declaration.range.path, path)
 							&& indexOf(path, "packing") >= 0) parameters++;
 				}
@@ -826,7 +864,7 @@ def test_layout_and_packing_fixtures(t: Tester) {
 	}
 	s.close();
 	t.asserti(CRASHING_FIXTURES.length, crashed);
-	t.assert(layouts > 0 && parameters > 0, "the fixtures use layouts and packing parameters");
+	t.assert(layouts > 0 && parameters > 0 && packings > 0, "the fixtures use layouts, packing parameters, and packings");
 }
 // The largest program we have, analyzed by a worker as the server does.
 def test_aeneas_sources(t: Tester) {

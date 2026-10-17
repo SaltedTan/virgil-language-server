@@ -70,6 +70,7 @@ layout Outer {
 	=4;
 }
 packing Halves(lo: 4, hi: 4): 8 = #concat(hi, lo);
+packing Swapped(x: 4, y: 4): 8 = Halves(y, x);
 component Mem {
 	def outer(r: Range<byte>) -> Ref<Inner> {
 		var o: Ref<Outer> = Ref<Outer>.of(r);

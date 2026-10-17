@@ -210,7 +210,8 @@ def KINDS = lines([
 	"\t+4 b: byte[4];",
 	"\t=8;",
 	"}",
-	"packing P(c: 4, d: 4): 8 = #concat(d, c);"
+	"packing P(c: 4, d: 4): 8 = #concat(d, c);",
+	"packing W(e: 4): 8 = P(e, 0b0000);"
 ]);
 
 def test_declaration_kinds(t: Tester) {
@@ -254,7 +255,9 @@ def test_declaration_kinds(t: Tester) {
 	// A layout field's type is its memory type, as the source writes it.
 	assertDeclares(t, r, text, "a: u32", 0, AnalysisDeclKind.LAYOUT_FIELD, "+0 a: u32");
 	assertDeclares(t, r, text, "b: byte", 0, AnalysisDeclKind.LAYOUT_FIELD, "+4 b: byte[4]");
-	// A packing parameter's size is in bits.
+	// A packing's parameters and width are sizes in bits.
+	assertDeclares(t, r, text, "packing P", 8, AnalysisDeclKind.PACKING, "packing P(c: 4, d: 4): 8");
+	assertDeclares(t, r, text, "packing W", 8, AnalysisDeclKind.PACKING, "packing W(e: 4): 8");
 	assertDeclares(t, r, text, "c: 4", 0, AnalysisDeclKind.PARAMETER, "c: 4");
 	assertDeclares(t, r, text, "d: 4", 0, AnalysisDeclKind.PARAMETER, "d: 4");
 	// Uses show their declaration's signature, and a type only if it differs.
@@ -267,6 +270,7 @@ def test_declaration_kinds(t: Tester) {
 	// The layout that Ref<L> names has no type of its own at the use.
 	assertUses(t, r, text, "Ref<L>", 4, "layout L", null);
 	assertUses(t, r, text, "#concat(d", 8, "d: 4", null);
+	assertUses(t, r, text, "P(e,", 0, "packing P(c: 4, d: 4): 8", null);
 	assertUses(t, r, text, "return local", 7, "var local: Foo", null);
 	assertUses(t, r, text, "extends Base", 8, "class Base", null);
 }
