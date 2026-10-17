@@ -481,7 +481,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
 16. Implement hover. *(partial: [display data](docs/architecture.md#display-text) present, [#105](https://github.com/SaltedTan/virgil-language-server/issues/105); handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106))*
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
-18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); attaching the VSIX to GitHub prereleases is part of the release workflow)*
+18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
 
 Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
 
