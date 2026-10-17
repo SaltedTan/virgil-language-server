@@ -8,6 +8,7 @@
 def T = UnitTests.register;
 def X = [
 	T("LspDefinition:declaration_kinds", test_declaration_kinds),
+	T("LspDefinition:types_and_index_operators", test_types_and_index_operators),
 	T("LspDefinition:shadowed_and_same_named", test_shadowed_and_same_named),
 	T("LspDefinition:no_definition", test_no_definition),
 	T("LspDefinition:cursor_after_identifier", test_cursor_after_identifier),
@@ -31,7 +32,7 @@ def X = [
 ];
 // Every declaration kind that occurrences record, a builtin member, and an
 // unresolved name, which leaves the program unverified but still indexed.
-def KINDS = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nclass Rect(width: int) {\n\tdef area() -> int { return width; }\n}\nclass Square(side: int) {\n\tdef area() -> int { return side * side; }\n}\nenum Color { RED, GREEN }\nenum Planet(mass: int) { MERCURY(1), VENUS(2) }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\ncomponent Kinds {\n\tdef value = 1;\n\tdef shadow(value: int) -> int { return value + Kinds.value; }\n\tdef adjacent(a: int, b: int) -> int { return a+b; }\n\tdef run(b: Box, c: Color, p: Planet, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar rect = Rect.new(2);\n\t\tvar total = box.grow(rect.width) + rect.area() + Square.new(3).area();\n\t\ttotal = total + b.size + p.mass + Planet.VENUS.mass;\n\t\tif (c == Color.RED) total++;\n\t\tmatch (c) {\n\t\t\tGREEN => total++;\n\t\t\t_ => ;\n\t\t}\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\tvar circle = Shape.Circle(3);\n\t\tvar n = \"abc\".length + missing;\n\t\treturn total;\n\t}\n}\n";
+def KINDS = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nclass Rect(width: int) {\n\tdef area() -> int { return width; }\n}\nclass Square(side: int) {\n\tdef area() -> int { return side * side; }\n}\nenum Color { RED, GREEN }\nenum Planet(mass: int) { MERCURY(1), VENUS(2) }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\ncomponent Kinds {\n\tdef value = 1;\n\tdef shadow(value: int) -> int { return value + Kinds.value; }\n\tdef adjacent(a: int, b: int) -> int { return a+b; }\n\tdef run(b: Box, c: Color, p: Planet, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar rect = Rect.new(2);\n\t\tvar total = box.grow(rect.width) + rect.area() + Square.new(3).area();\n\t\ttotal = total + b.size + p.mass + Planet.VENUS.mass;\n\t\tif (c == Color.RED) total++;\n\t\tmatch (c) {\n\t\t\tGREEN => total++;\n\t\t\t_ => ;\n\t\t}\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\tvar circle = Shape.Circle(3);\n\t\tvar n = \"abc\".length + missing;\n\t\treturn total;\n\t}\n}\nclass Cell<T>(item: T) {\n\tdef [i: int] -> T { return item; }\n\tdef map<U>(f: T -> U) -> U { var u: U = f(item); return u; }\n}\ncomponent Cells {\n\tdef first(c: Cell<Box>) -> Box { return c[0]; }\n}\n";
 // A use and its target in different files, each after a tab in a block
 // comment and non-ASCII text (U+00E9, two UTF-8 bytes and one UTF-16 unit;
 // U+1D11E, four bytes and two units) on the same line.
@@ -237,6 +238,19 @@ def test_declaration_kinds(t: Tester) {
 	expectKind(t, s, "Circle(r) =>", 0, "case Circle", 5, "Circle");		// match-case variant case
 	expectKind(t, s, "Dot =>", 0, "case Dot", 5, "Dot");					// match-case variant case without parameters
 	expectKind(t, s, "+= r;", 3, "Circle(r)", 7, "r");					// match-case binding
+	s.server.close();
+}
+// Type references, type parameters, and index operators.
+def test_types_and_index_operators(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectKind(t, s, "run(b: Box", 7, "class Box", 6, "Box");			// type reference
+	expectKind(t, s, "Cell<Box>", 0, "class Cell", 6, "Cell");			// generic type
+	expectKind(t, s, "Cell<Box>", 5, "class Box", 6, "Box");				// type argument
+	expectKind(t, s, "-> T {", 3, "Cell<T>", 5, "T");					// class type parameter
+	expectKind(t, s, "var u: U", 7, "map<U>", 4, "U");					// method type parameter
+	expectKind(t, s, "c[0]", 1, "[i: int] -> T", 0, "[");				// index operator
 	s.server.close();
 }
 def test_shadowed_and_same_named(t: Tester) {
