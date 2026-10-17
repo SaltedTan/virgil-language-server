@@ -1,0 +1,24 @@
+# A nearer project takes a document over while its definition request waits. The outer
+# project's sources stay current, but the reply comes from the document's active project then,
+# which has no snapshot yet, so it is null rather than the outer project's Thing.value.
+{"write":[".virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"outer\",\"sources\":[\"Old.v3\",\"sub/Use.v3\"]}]}"]}
+{"write":["Old.v3","component Thing {\n\tdef value = 1;\n}\n"]}
+{"write":["sub/Use.v3","component Use { def get() -> int { return Thing.value; } }\n"]}
+{"write":["sub/New.v3","\ncomponent Thing {\n\tdef value = 2;\n\tdef wide: bool = value;\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+# Opening sub/Use.v3 starts the outer project's first analysis, which the request waits for.
+# The unsaved sub/.virgil-lsp.json in the same read makes the sub project active for it.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/sub/Use.v3","languageId":"virgil","version":1,"text":"component Use { def get() -> int { return Thing.value; } }\n"}}},{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"@TMP@/sub/Use.v3"},"position":{"line":0,"character":49}}},{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/sub/.virgil-lsp.json","languageId":"json","version":1,"text":"{\"version\":1,\"projects\":[{\"name\":\"sub\",\"sources\":[\"Use.v3\",\"New.v3\"]}]}"}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/sub/Use.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/sub/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":null}}
+# The sub project's analysis publishes New.v3's type error; definitions now come from it.
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"TypeError","message":"expected bool in field initialization, got int","range":{"end":{"character":23,"line":3},"start":{"character":18,"line":3}},"severity":1,"source":"aeneas"}],"uri":"@TMP@/sub/New.v3"}}}
+{"send":{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"@TMP@/sub/Use.v3"},"position":{"line":0,"character":49}}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"range":{"end":{"character":10,"line":2},"start":{"character":5,"line":2}},"uri":"@TMP@/sub/New.v3"}}}
+{"send":{"jsonrpc":"2.0","id":4,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}

@@ -110,6 +110,27 @@ local function check()
     and semantic[1].message == "expected int in var initialization, got Array<byte>",
     "unexpected semantic diagnostics: " .. vim.inspect(semantic))
 
+  -- Go to definition from that analysis: StringBuilder resolves to its class in
+  -- the closed lib/util file, which the server reads again to convert the range.
+  local words_buf = vim.api.nvim_get_current_buf()
+  local use_line = 6
+  -- The line is ASCII, so a byte index is a UTF-16 character offset.
+  local start = vim.api.nvim_buf_get_lines(words_buf, use_line, use_line + 1, true)[1]:find("StringBuilder", 1, true)
+  local response, err = client:request_sync("textDocument/definition", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
+  }, 10000, words_buf)
+  assert(response and not response.err, "definition failed: " .. vim.inspect(err or response.err))
+  local location = response.result
+  local library = vim.fs.joinpath(vim.env.VIRGIL_LOC, "lib", "util", "StringBuilder.v3")
+  local class_line
+  for i, text in ipairs(vim.fn.readfile(library)) do
+    if not class_line and text:find("^class StringBuilder") then class_line = i - 1 end
+  end
+  assert(location and location.uri and vim.uri_to_fname(location.uri) == library
+    and location.range.start.line == class_line and location.range.start.character == 6
+    and location.range["end"].line == class_line and location.range["end"].character == 19,
+    "unexpected definition: " .. vim.inspect(location))
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -136,7 +157,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

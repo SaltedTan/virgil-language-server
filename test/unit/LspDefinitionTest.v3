@@ -1,0 +1,684 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/definition with the real worker. The project-fixtures/definition
+// directory is the build's own copy, so each session rewrites its sources
+// before the project is loaded. Every reply arrives through the server's
+// outgoing-message sink.
+def T = UnitTests.register;
+def X = [
+	T("LspDefinition:declaration_kinds", test_declaration_kinds),
+	T("LspDefinition:types_and_index_operators", test_types_and_index_operators),
+	T("LspDefinition:shadowed_and_same_named", test_shadowed_and_same_named),
+	T("LspDefinition:no_definition", test_no_definition),
+	T("LspDefinition:cursor_after_identifier", test_cursor_after_identifier),
+	T("LspDefinition:cross_file_closed_target", test_cross_file_closed_target),
+	T("LspDefinition:cross_file_open_target", test_cross_file_open_target),
+	T("LspDefinition:target_changed_on_disk", test_target_changed_on_disk),
+	T("LspDefinition:stale_waits_for_analysis", test_stale_waits_for_analysis),
+	T("LspDefinition:stale_waits_for_running_analysis", test_stale_waits_for_running_analysis),
+	T("LspDefinition:stale_without_analysis", test_stale_without_analysis),
+	T("LspDefinition:missing_snapshot_waits", test_missing_snapshot_waits),
+	T("LspDefinition:document_changed_while_waiting", test_document_changed_while_waiting),
+	T("LspDefinition:active_context_changed_while_waiting", test_active_context_changed_while_waiting),
+	T("LspDefinition:waiting_requests_bounded", test_waiting_requests_bounded),
+	T("LspDefinition:running_analysis_answers_its_requests", test_running_analysis_answers_its_requests),
+	T("LspDefinition:reentrant_reply_within_bound", test_reentrant_reply_within_bound),
+	T("LspDefinition:close_cancels_each_once", test_close_cancels_each_once),
+	T("LspDefinition:shutdown_and_end_answer_waiting", test_shutdown_and_end_answer_waiting),
+	T("LspDefinition:parse_failure_and_no_project", test_parse_failure_and_no_project),
+	T("LspDefinition:params", test_params),
+	()
+];
+// Every declaration kind that occurrences record, a builtin member, and an
+// unresolved name, which leaves the program unverified but still indexed.
+def KINDS = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nclass Rect(width: int) {\n\tdef area() -> int { return width; }\n}\nclass Square(side: int) {\n\tdef area() -> int { return side * side; }\n}\nenum Color { RED, GREEN }\nenum Planet(mass: int) { MERCURY(1), VENUS(2) }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\ncomponent Kinds {\n\tdef value = 1;\n\tdef shadow(value: int) -> int { return value + Kinds.value; }\n\tdef adjacent(a: int, b: int) -> int { return a+b; }\n\tdef run(b: Box, c: Color, p: Planet, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar rect = Rect.new(2);\n\t\tvar total = box.grow(rect.width) + rect.area() + Square.new(3).area();\n\t\ttotal = total + b.size + p.mass + Planet.VENUS.mass;\n\t\tif (c == Color.RED) total++;\n\t\tmatch (c) {\n\t\t\tGREEN => total++;\n\t\t\t_ => ;\n\t\t}\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\tvar circle = Shape.Circle(3);\n\t\tvar n = \"abc\".length + missing;\n\t\treturn total;\n\t}\n}\nclass Cell<T>(item: T) {\n\tdef [i: int] -> T { return item; }\n\tdef map<U>(f: T -> U) -> U { var u: U = f(item); return u; }\n}\ncomponent Cells {\n\tdef first(c: Cell<Box>) -> Box { return c[0]; }\n}\n";
+// A use and its target in different files, each after a tab in a block
+// comment and non-ASCII text (U+00E9, two UTF-8 bytes and one UTF-16 unit;
+// U+1D11E, four bytes and two units) on the same line.
+def USE = "// \xF0\x9D\x84\x9E caf\xC3\xA9\ncomponent Use {\n\tdef get() -> int { /*\t\xC3\xA9\xF0\x9D\x84\x9E*/ return Decl.thing; }\n}\n";
+def DECL = "// D\xC3\xA9cl\ncomponent Decl {\n/*\t*/\tdef /*\xC3\xA9\xF0\x9D\x84\x9E\t*/ thing = 1;\n}\n";
+// In USE, Decl starts at UTF-16 character 36 and thing at 41, on line 2. In
+// DECL, Decl is at 1:10 and thing at 2:19.
+def USE_THING = 41;
+def DECL_THING = 19;
+
+// Uses of Thing, which the outer project declares in Old.v3, and a nearer
+// project, opened later, in sub/New.v3.
+def OWNED_USE = "component Use { def get() -> int { return Thing.value; } }\n";
+def OLD = "component Thing {\n\tdef value = 1;\n}\n";
+def NEW = "\ncomponent Thing {\n\tdef value = 2;\n}\n";
+
+class DefinitionTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	var base: string;
+	// The responses received, in order.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	// What handle() returned for the last request; replies use the sink.
+	var handled: Array<byte>;
+	// Called with the id of each response, after it is recorded.
+	var onReply: int -> void;
+	new(fixture: string, t: Tester) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+		if (Strings.equal(fixture, "definition")) {
+			write(t, "Kinds.v3", KINDS);
+			write(t, "Use.v3", USE);
+			write(t, "Decl.v3", DECL);
+		} else {
+			write(t, "Old.v3", OLD);
+			write(t, "sub/Use.v3", OWNED_USE);
+			write(t, "sub/New.v3", NEW);
+		}
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (!parsed.has("id")) return;
+		replies.put(parsed);
+		if (onReply != null && JsonValue.Int.?(parsed["id"])) onReply(JsonValue.Int.!(parsed["id"]).v);
+	}
+	def path(name: string) -> string { return ProjectFiles.join(base, name); }
+	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(path(name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def save(name: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		notify("textDocument/didSave", doc, null);
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(uri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// Sends a definition request for {line}:{character} in {name} and returns its id.
+	def request(name: string, line: int, character: int) -> int {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		position["line"] = JsonValue.Int(line);
+		position["character"] = JsonValue.Int(character);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		return send(JsonRpcParams.ByName(params));
+	}
+	def send(params: JsonRpcParams) -> int {
+		var id = nextId++;
+		handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), "textDocument/definition", params).encode());
+		return id;
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	// The result of the response to {id}, which must have arrived.
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		t.assert(r.has("result"), "the request succeeded");
+		return r["result"];
+	}
+	// Requests and returns the definition, which must be answered at once.
+	def definition(t: Tester, name: string, line: int, character: int) -> JsonValue {
+		var id = request(name, line, character);
+		t.assert(handled == null, "replies use the sink");
+		return result(t, id);
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri("Kinds.v3")).active;
+	}
+}
+// The LSP position of byte {skip} past the first {needle} in ASCII {text}.
+def at(text: string, needle: string, skip: int) -> (int, int) {
+	var line = 0, start = 0;
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return (line, i + skip - start);
+		if (text[i] == '\n') {
+			line++;
+			start = i + 1;
+		}
+	}
+	return (-1, -1);
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+// Checks that {location} is the range {line}:{begin}-{line}:{end} in {uri}.
+def expectLocation(t: Tester, location: JsonValue, uri: string, line: int, begin: int, end: int) {
+	t.assert(JsonValue.JObject.?(location), "a Location");
+	if (!JsonValue.JObject.?(location)) return;
+	var u = member(location, "uri");
+	t.assert_string(uri, if(JsonValue.String.?(u), JsonValue.String.!(u).v, "<none>"));
+	var range = member(location, "range"), start = member(range, "start"), stop = member(range, "end");
+	t.asserti(line, intAt(start, "line"));
+	t.asserti(begin, intAt(start, "character"));
+	t.asserti(line, intAt(stop, "line"));
+	t.asserti(end, intAt(stop, "character"));
+}
+// Checks the definition of the use {skip} bytes into {use} in KINDS: the
+// declaration named {name}, {skip2} bytes into {decl}.
+def expectKind(t: Tester, s: DefinitionTestSession, use: string, skip: int, decl: string, skip2: int, name: string) {
+	var from = at(KINDS, use, skip), to = at(KINDS, decl, skip2);
+	t.assert(from.0 >= 0 && to.0 >= 0, "fixture text found");
+	expectLocation(t, s.definition(t, "Kinds.v3", from.0, from.1), s.uri("Kinds.v3"), to.0, to.1, to.1 + name.length);
+}
+def expectNull(t: Tester, v: JsonValue, what: string) {
+	t.assert(v == JsonValue.Null, what);
+}
+def test_declaration_kinds(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectKind(t, s, "var next = size", 11, "var size", 4, "size");			// field
+	expectKind(t, s, "size + by", 7, "grow(by", 5, "by");				// parameter
+	expectKind(t, s, "return next", 7, "var next", 4, "next");			// local
+	expectKind(t, s, "box.grow", 4, "def grow", 4, "grow");				// method
+	expectKind(t, s, "Box.new(1)", 4, "new(size)", 0, "new");			// explicit constructor
+	expectKind(t, s, "Rect.new(2)", 5, "class Rect", 6, "Rect");			// default constructor
+	expectKind(t, s, "Box.new(1)", 0, "class Box", 6, "Box");			// class
+	expectKind(t, s, "Kinds.value;", 0, "component Kinds", 10, "Kinds");	// component
+	expectKind(t, s, "rect.width", 5, "Rect(width", 5, "width");			// class parameter field
+	expectKind(t, s, "Color.RED", 0, "enum Color", 5, "Color");			// enum
+	expectKind(t, s, "Color.RED", 6, "{ RED", 2, "RED");					// enum case
+	expectKind(t, s, "GREEN =>", 0, "RED, GREEN", 5, "GREEN");			// match-case enum case
+	expectKind(t, s, "p.mass", 2, "Planet(mass", 7, "mass");				// enum parameter
+	expectKind(t, s, "VENUS.mass", 6, "Planet(mass", 7, "mass");			// enum parameter of a literal case
+	expectKind(t, s, "Shape.Circle(3)", 6, "case Circle", 5, "Circle");	// variant case
+	expectKind(t, s, "Circle(r) =>", 0, "case Circle", 5, "Circle");		// match-case variant case
+	expectKind(t, s, "Dot =>", 0, "case Dot", 5, "Dot");					// match-case variant case without parameters
+	expectKind(t, s, "+= r;", 3, "Circle(r)", 7, "r");					// match-case binding
+	s.server.close();
+}
+// Type references, type parameters, and index operators.
+def test_types_and_index_operators(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectKind(t, s, "run(b: Box", 7, "class Box", 6, "Box");			// type reference
+	expectKind(t, s, "Cell<Box>", 0, "class Cell", 6, "Cell");			// generic type
+	expectKind(t, s, "Cell<Box>", 5, "class Box", 6, "Box");				// type argument
+	expectKind(t, s, "-> T {", 3, "Cell<T>", 5, "T");					// class type parameter
+	expectKind(t, s, "var u: U", 7, "map<U>", 4, "U");					// method type parameter
+	expectKind(t, s, "c[0]", 1, "[i: int] -> T", 0, "[");				// index operator
+	s.server.close();
+}
+def test_shadowed_and_same_named(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	// A parameter shadows the component's field of the same name.
+	expectKind(t, s, "return value", 7, "shadow(value", 7, "value");
+	expectKind(t, s, "Kinds.value;", 6, "def value", 4, "value");
+	// Methods of the same name in different classes.
+	expectKind(t, s, "rect.area", 5, "area() -> int { return width", 0, "area");
+	expectKind(t, s, ".new(3).area", 8, "area() -> int { return side", 0, "area");
+	// Every position from the use's start to just past its end resolves.
+	var grow = at(KINDS, "box.grow", 4), decl = at(KINDS, "def grow", 4);
+	for (c = grow.1; c <= grow.1 + 4; c++) {
+		expectLocation(t, s.definition(t, "Kinds.v3", grow.0, c), s.uri("Kinds.v3"), decl.0, decl.1, decl.1 + 4);
+	}
+	s.server.close();
+}
+// A position just past an identifier resolves it, unless another use starts there.
+def test_cursor_after_identifier(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	// In "a+b": a, the + just past a, b, and the ; just past b.
+	expectKind(t, s, "return a+b", 7, "adjacent(a", 9, "a");
+	expectKind(t, s, "return a+b", 8, "adjacent(a", 9, "a");
+	expectKind(t, s, "return a+b", 9, "b: int) -> int { return a+b", 0, "b");
+	expectKind(t, s, "return a+b", 10, "b: int) -> int { return a+b", 0, "b");
+	// In "rect.width": the . just past rect, and width at its start.
+	expectKind(t, s, "rect.width", 4, "var rect", 4, "rect");
+	expectKind(t, s, "rect.width", 5, "Rect(width", 5, "width");
+	// The ( just past a method name, and the . just past a class name.
+	expectKind(t, s, "box.grow(", 8, "def grow", 4, "grow");
+	expectKind(t, s, "Box.new(1)", 3, "class Box", 6, "Box");
+	// Two positions past an identifier, or just past a keyword, find nothing.
+	var p = at(KINDS, "return a+b", 6);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "just past a keyword");
+	p = at(KINDS, "Kinds.value; }", 12);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "two past an identifier");
+	s.server.close();
+}
+def test_no_definition(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	var p = at(KINDS, "\"abc\".length", 6);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "a builtin member");
+	p = at(KINDS, "+ missing", 2);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "an unresolved name");
+	p = at(KINDS, "return total;", 0);
+	expectNull(t, s.definition(t, "Kinds.v3", p.0, p.1), "a keyword");
+	expectNull(t, s.definition(t, "Kinds.v3", 0, 6), "a declaration's own name");
+	expectNull(t, s.definition(t, "Kinds.v3", 1000, 0), "past the end of the document");
+	s.server.close();
+}
+def test_cross_file_closed_target(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	// Both files stay closed, so both are read again from disk.
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING + 2), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING - 5), s.uri("Decl.v3"), 1, 10, 14);
+	// The query document's overlay, with the target still closed.
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	t.assert(s.store.overlay(s.uri("Decl.v3")) == null, "the target stays closed");
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def test_cross_file_open_target(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	// The unsaved target has another line before its declarations.
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, Strings.format1("\n%s", DECL));
+	s.settle();
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 3, DECL_THING, DECL_THING + 5);
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING - 5), s.uri("Decl.v3"), 2, 10, 14);
+	s.server.close();
+}
+def test_target_changed_on_disk(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	// An unreported change keeps every stamp current, but the target's bytes
+	// are no longer the ones analyzed, so its range cannot be converted.
+	s.write(t, "Decl.v3", Strings.format1("\n%s", DECL));
+	expectNull(t, s.definition(t, "Use.v3", 2, USE_THING), "the target changed on disk");
+	s.write(t, "Decl.v3", DECL);
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	// Once reported, the snapshot is stale and the reply waits for a new analysis.
+	s.write(t, "Decl.v3", Strings.format1("\n%s", DECL));
+	s.reportChanged("Decl.v3");
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 3, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def test_stale_waits_for_analysis(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, DECL);
+	s.settle();
+	var generation = s.context().snapshot.generation;
+	// Editing the target leaves the query file unchanged but its snapshot
+	// stale. The change waits for the debounce interval, which the request skips.
+	s.change("Decl.v3", 2, Strings.format1("\n\n%s", DECL));
+	t.assertz(false, s.supervisor.busy());
+	var first = s.request("Use.v3", 2, USE_THING), second = s.request("Use.v3", 2, USE_THING - 5);
+	t.assert(s.handled == null, "replies use the sink");
+	t.assert(s.reply(first) == null && s.reply(second) == null, "both replies wait");
+	t.assertz(true, s.supervisor.busy());
+	s.settle();
+	t.assert(s.context().snapshot.generation > generation, "a new analysis completed");
+	expectLocation(t, s.result(t, first), s.uri("Decl.v3"), 4, DECL_THING, DECL_THING + 5);
+	expectLocation(t, s.result(t, second), s.uri("Decl.v3"), 3, 10, 14);
+	t.asserti(2, s.replies.length);
+	t.assert(s.replies[0]["id"] == JsonValue.Int(first), "answered in arrival order");
+	s.server.close();
+}
+def test_stale_waits_for_running_analysis(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, DECL);
+	s.settle();
+	// An edit nothing schedules, then a save, which starts an analysis at once
+	// and leaves none waiting.
+	t.assert(s.store.change(s.uri("Decl.v3"), 2, Strings.format1("\n%s", DECL)) == null, "edit");
+	s.save("Decl.v3");
+	t.assertz(true, s.supervisor.busy());
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.reply(id) == null, "the reply waits for the running analysis");
+	s.settle();
+	expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 3, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+def test_stale_without_analysis(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	expectLocation(t, s.definition(t, "Use.v3", 2, USE_THING), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	// An edit to a third file that schedules no analysis. Neither the query
+	// file nor the target changed, but the snapshot is stale.
+	t.assert(s.store.change(s.uri("Kinds.v3"), 2, Strings.format1("%s\n", KINDS)) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.definition(t, "Use.v3", 2, USE_THING), "a stale snapshot");
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+def test_missing_snapshot_waits(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	// Opening the project's first file starts its first analysis at once.
+	s.open("Use.v3", 1, USE);
+	t.assertz(true, s.supervisor.busy());
+	t.assert(s.context().snapshot == null, "no snapshot yet");
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.handled == null && s.reply(id) == null, "the reply waits for the first analysis");
+	s.settle();
+	expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	s.server.close();
+	// A first analysis that fails leaves no snapshot and nothing pending, so
+	// the reply is null at once. The pinned verifier traps on this literal
+	// (docs/aeneas-crash-paths.md).
+	s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, Strings.format1("%s\ndef x: i32 = 0i;\n", USE));
+	s.settle();
+	t.assert(s.context().snapshot == null, "the analysis failed");
+	expectNull(t, s.definition(t, "Use.v3", 2, USE_THING), "no snapshot and no analysis");
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+// A nearer project takes the document over while its request waits for the
+// outer project's first analysis. The reply comes from the document's active
+// context then, which has no snapshot yet, and does not wait again.
+def test_active_context_changed_while_waiting(t: Tester) {
+	var s = DefinitionTestSession.new("definition-ownership", t);
+	s.open("sub/Use.v3", 1, OWNED_USE);
+	t.assertz(true, s.supervisor.busy());
+	var waiting = s.request("sub/Use.v3", 0, 49);
+	t.assert(s.reply(waiting) == null, "the reply waits for the outer project's analysis");
+	var outer = s.server.projects.forDocument(s.uri("sub/Use.v3")).active;
+	s.open("sub/.virgil-lsp.json", 1, "{\"version\":1,\"projects\":[{\"name\":\"sub\",\"sources\":[\"Use.v3\",\"New.v3\"]}]}");
+	var inner = s.server.projects.forDocument(s.uri("sub/Use.v3")).active;
+	t.assert(inner != null && inner != outer && outer.config.current, "the nearer project is active; the outer one stays current");
+	s.settle();
+	t.assert(outer.snapshot != null && outer.snapshot.matchesProject(), "the outer analysis completed and is current");
+	expectNull(t, s.result(t, waiting), "not the outer project's declaration");
+	expectLocation(t, s.definition(t, "sub/Use.v3", 0, 49), s.uri("sub/New.v3"), 2, 5, 10);
+	s.server.close();
+}
+// Waiting requests keep no document text, and at most MAX_WAITING wait: each
+// one past that answers the oldest still waiting with null.
+def test_waiting_requests_bounded(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	var max = LspDefinition.new(null, null, null).MAX_WAITING, extra = 10;
+	var padding = Array<byte>.new(128 * 1024);
+	for (i < padding.length) padding[i] = 'x';
+	var before = liveBytes(), ids = Array<int>.new(max + extra);
+	for (i < ids.length) {
+		// Each version is a new 128 KiB overlay; no analysis completes.
+		s.change("Use.v3", i + 2, Strings.format2("%s// %s\n", USE, padding));
+		ids[i] = s.request("Use.v3", 2, USE_THING);
+		var evicted = i + 1 - max;
+		t.asserti(if(evicted > 0, evicted, 0), s.replies.length);
+	}
+	// The current overlay and the analysis inputs, but not every version.
+	var kept = liveBytes() - before;
+	t.assert(kept < 4 * 1024 * 1024, Strings.format1("waiting requests keep %d bytes", int.view(kept)));
+	if (s.replies.length < extra) return s.server.close();
+	for (i < extra) {
+		t.assert(s.replies[i]["id"] == JsonValue.Int(ids[i]), "the oldest waiting request is answered first");
+		expectNull(t, s.result(t, ids[i]), "an evicted request");
+	}
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	for (i = extra; i < ids.length - 1; i++) expectNull(t, s.result(t, ids[i]), "a superseded version");
+	expectLocation(t, s.result(t, ids[ids.length - 1]), s.uri("Decl.v3"), 2, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+// A request registered against the running analysis is answered when that
+// analysis ends, although later edits and requests wait for the next one.
+def test_running_analysis_answers_its_requests(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.open("Decl.v3", 1, DECL);
+	s.settle();
+	// An edit nothing schedules, then a save, which starts an analysis at once
+	// and leaves none waiting: the first request waits for that one.
+	t.assert(s.store.change(s.uri("Use.v3"), 2, Strings.format1("%s\n", USE)) == null, "edit");
+	s.save("Use.v3");
+	t.assertz(true, s.supervisor.busy());
+	var first = s.request("Use.v3", 2, USE_THING);
+	// Edits to another file during the analysis, each followed by a request,
+	// wait for the next analysis.
+	var later = Array<int>.new(3);
+	for (i < later.length) {
+		var text = Strings.format1("\n%s", DECL);
+		for (j < i) text = Strings.format1("\n%s", text);
+		s.change("Decl.v3", i + 2, text);
+		later[i] = s.request("Use.v3", 2, USE_THING);
+	}
+	t.asserti(0, s.replies.length);
+	// Poll until the running analysis ends.
+	var fds = Array<int>.new(4), generation = s.context().snapshot.generation;
+	while (s.context().snapshot.generation == generation) {
+		var count = s.supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.server.pollTimeout());
+		s.server.onPoll();
+	}
+	// Its result is stale, since Decl.v3 changed after it started.
+	t.asserti(1, s.replies.length);
+	expectNull(t, s.result(t, first), "the stale result of the analysis it waited for");
+	t.assertz(true, s.supervisor.busy());
+	for (id in later) t.assert(s.reply(id) == null, "later requests wait for the next analysis");
+	s.settle();
+	t.asserti(1 + later.length, s.replies.length);
+	for (id in later) expectLocation(t, s.result(t, id), s.uri("Decl.v3"), 5, DECL_THING, DECL_THING + 5);
+	s.server.close();
+}
+// Sends one more request from within the reply to {first}.
+class ReentrantRequest(s: DefinitionTestSession, ids: Vector<int>, first: int) {
+	var sent: bool;
+	def onReply(id: int) {
+		if (id != first || sent) return;
+		sent = true;
+		ids.put(s.request("Use.v3", 2, USE_THING));
+	}
+}
+// A request sent from within an eviction's reply still finds at most
+// MAX_WAITING requests waiting, so it evicts the next oldest in turn.
+def test_reentrant_reply_within_bound(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	s.change("Use.v3", 2, Strings.format1("%s\n", USE));
+	var max = LspDefinition.new(null, null, null).MAX_WAITING;
+	var ids = Vector<int>.new();
+	for (i < max) ids.put(s.request("Use.v3", 2, USE_THING));
+	t.asserti(0, s.replies.length);
+	var sender = ReentrantRequest.new(s, ids, ids[0]);
+	s.onReply = sender.onReply;
+	ids.put(s.request("Use.v3", 2, USE_THING));
+	t.assertz(true, sender.sent);
+	t.asserti(max + 2, ids.length);
+	// Each of the two requests past the bound evicted one, oldest first.
+	t.asserti(2, s.replies.length);
+	if (s.replies.length == 2) {
+		t.assert(s.replies[0]["id"] == JsonValue.Int(ids[0]), "the oldest first");
+		t.assert(s.replies[1]["id"] == JsonValue.Int(ids[1]), "then the next oldest");
+	}
+	s.onReply = null;
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	for (i < ids.length) t.assert(s.reply(ids[i]) != null, "every request is answered");
+	s.server.close();
+}
+// A scheduler stand-in that keeps the first listener for every request, and
+// a sink that notifies it from within the first cancellation reply.
+class RetainedListener {
+	var waiters: LspDefinitionWaiters;
+	var cancelling: bool;
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	def whenAnalyzed(ctx: ProjectContext, candidate: LspDefinitionWaiters) -> LspDefinitionWaiters {
+		if (waiters == null) waiters = candidate;
+		return waiters;
+	}
+	def send(bytes: Array<byte>) {
+		replies.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+		if (cancelling && replies.length == 1) waiters.analyzed();
+	}
+}
+// Closing answers each waiting request exactly once with RequestCancelled,
+// even if their listener is notified from within the first reply.
+def test_close_cancels_each_once(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), projects = WorkspaceProjects.new(store);
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(s.base));
+	projects.initialize(initialize);
+	var stub = RetainedListener.new(), definition = LspDefinition.new(store, projects, stub.send);
+	definition.whenAnalyzed = stub.whenAnalyzed;
+	var dispatcher = JsonRpcDispatcher.new();
+	definition.register(dispatcher);
+	var count = 10;
+	for (i < count) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":2,\"character\":41}}}", i + 1, s.uri("Use.v3"));
+		t.assert(dispatcher.handle(payload) == null, "replies use the sink");
+	}
+	t.asserti(0, stub.replies.length);
+	t.asserti(count, definition.waiting());
+	stub.cancelling = true;
+	definition.close("closed");
+	t.asserti(count, stub.replies.length);
+	for (i < stub.replies.length) {
+		var r = stub.replies[i];
+		t.assert(r["id"] == JsonValue.Int(i + 1), "each request once, in arrival order");
+		t.assert(r.has("error"), "cancelled");
+		if (r.has("error")) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+	}
+	t.asserti(0, definition.waiting());
+	s.server.close();
+}
+def liveBytes() -> long {
+	RiGc.forceGC();
+	return Semispace.fromSpaceUsed();
+}
+def test_document_changed_while_waiting(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	s.open("Use.v3", 1, USE);
+	s.settle();
+	s.change("Use.v3", 2, Strings.format1("%s\n", USE));
+	var id = s.request("Use.v3", 2, USE_THING);
+	t.assert(s.reply(id) == null, "the reply waits");
+	// The position no longer refers to the text it was requested in.
+	s.change("Use.v3", 3, Strings.format1("\n%s", USE));
+	s.settle();
+	expectNull(t, s.result(t, id), "the document changed");
+	s.server.close();
+}
+def test_shutdown_and_end_answer_waiting(t: Tester) {
+	for (shutdown in [true, false]) {
+		var s = DefinitionTestSession.new("definition", t);
+		s.open("Use.v3", 1, USE);
+		s.settle();
+		s.change("Use.v3", 2, Strings.format1("%s\n", USE));
+		var id = s.request("Use.v3", 2, USE_THING);
+		t.assert(s.reply(id) == null, "the reply waits");
+		if (shutdown) {
+			var reply = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.Absent).encode());
+			t.assert(reply != null, "shutdown is answered after the waiting request");
+		} else {
+			s.server.close();
+		}
+		var r = s.reply(id);
+		t.assert(r != null && r.has("error"), "the waiting request is cancelled");
+		if (r != null && r.has("error")) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+		t.asserti(1, s.replies.length);
+		s.server.onPoll();
+		t.asserti(1, s.replies.length);
+		s.server.close();
+	}
+}
+def test_parse_failure_and_no_project(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	var use = at(KINDS, "box.grow", 4);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	s.change("Kinds.v3", 2, Strings.format1("%s}\n", KINDS));
+	s.settle();
+	t.assert(!s.context().snapshot.parsed, "the program does not parse");
+	expectNull(t, s.definition(t, "Kinds.v3", use.0, use.1), "a parse failure");
+	// A document in no project.
+	t.assert(s.store.open("untitled:x.v3", "virgil", 1, KINDS) == null, "open");
+	var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String("untitled:x.v3");
+	position["line"] = JsonValue.Int(use.0);
+	position["character"] = JsonValue.Int(use.1);
+	params["textDocument"] = JsonValue.JObject(doc);
+	params["position"] = JsonValue.JObject(position);
+	expectNull(t, s.result(t, s.send(JsonRpcParams.ByName(params))), "no project");
+	s.server.close();
+}
+def test_params(t: Tester) {
+	var s = DefinitionTestSession.new("definition", t);
+	var cases = [
+		"null",
+		"[]",
+		"{}",
+		"{\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":1},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"file:relative\"},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":\"0\",\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":-1,\"character\":0}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0,\"character\":-1}}"
+	];
+	for (i < cases.length) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/definition\",\"params\":%s}", i + 1, cases[i]);
+		t.assert(s.server.handle(payload) == null, "replies use the sink");
+		var r = s.reply(i + 1);
+		t.assert(r != null && r.has("error"), cases[i]);
+		if (r != null && r.has("error")) t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(r["error"], "code"));
+	}
+	s.server.close();
+}

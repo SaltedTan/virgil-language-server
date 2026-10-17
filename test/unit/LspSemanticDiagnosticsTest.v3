@@ -18,6 +18,7 @@ def X = [
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
+	T("LspSemanticDiagnostics:urgent_context_starts_first", test_urgent_context_starts_first),
 	()
 ];
 class SemanticTestSession {
@@ -482,6 +483,46 @@ def test_configuration_edits_drop_obsolete_waiters(t: Tester) {
 	}
 	t.asserti(0, semantic.waitingCount());
 	for (ctx in projects.loadedContexts()) t.assert(ctx.snapshot != null, "every latest project is analyzed");
+	semantic.close();
+	supervisor.close();
+}
+// Two contexts are due while the worker is idle. Waiting for the second makes
+// it start before the first, which was scheduled earlier.
+def test_urgent_context_starts_first(t: Tester) {
+	HostOs.ignoreSigpipe();
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), projects = WorkspaceProjects.new(store);
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var send = fun (bytes: Array<byte>) -> void { };
+	var semantic = LspSemanticDiagnostics.new(store, projects, supervisor, LspDiagnosticLists.new(store, send), send);
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/ownership-project-transfer");
+	var initialize = Strings.newMap<JsonValue>();
+	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+	projects.initialize(initialize);
+	projects.forDocument(ProjectFiles.uri(ProjectFiles.join(base, "main.v3")));
+	var contexts = projects.loadedContexts();
+	t.asserti(2, contexts.length);
+	if (contexts.length != 2) return semantic.close();
+	var first = contexts[0], second = contexts[1];
+	semantic.schedule([first, second], true);
+	t.assertz(false, supervisor.busy());
+	t.asserti(2, semantic.waitingCount());
+	// Let both become due without polling, which would start the first.
+	var fds = Array<int>.new(4);
+	while (semantic.pollTimeout() > 0) HostOs.poll(fds, 0, semantic.pollTimeout());
+	var listener = LspDefinitionWaiters.new(LspDefinition.new(store, projects, send));
+	t.assert(semantic.whenAnalyzed(second, listener) == listener, "the listener is registered");
+	t.assertz(true, supervisor.busy());
+	t.asserti(1, semantic.waitingCount());
+	while (semantic.busy()) {
+		var count = supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, semantic.pollTimeout());
+		semantic.onPoll();
+	}
+	t.assertz(true, listener.fired);
+	t.assert(first.snapshot != null && second.snapshot != null, "both contexts were analyzed");
+	if (first.snapshot != null && second.snapshot != null) {
+		t.assert(second.snapshot.generation < first.snapshot.generation, "the urgent context started first");
+	}
 	semantic.close();
 	supervisor.close();
 }
