@@ -12,10 +12,24 @@ class LspSnapshotMethod(owner: LspSnapshotRequests, label: string,
 	}
 }
 // A request's document in a current snapshot, for an answer function: file
-// {index} of {snapshot}, whose analyzed text {map} converts.
-class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, index: int, map: PositionMap) {
+// {index} of {snapshot}, whose analyzed text is {text}, which {map} converts.
+class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, index: int,
+		text: Array<byte>, map: PositionMap) {
 	def path() -> string {
 		return snapshot.paths[index];
+	}
+	// The index of the first of the snapshot's files at {path}, such as the
+	// file that declares a use's target, and its analyzed text; or -1 and null
+	// if there is no such file or its bytes are no longer the ones the worker
+	// analyzed. Stamps alone don't show a closed file changed on disk without
+	// a file event. The request's own file was checked already.
+	def target(path: string) -> (int, Array<byte>) {
+		var j = -1;
+		for (k < snapshot.paths.length) { if(j < 0 && Strings.equal(snapshot.paths[k], path)) j = k; }
+		if (j < 0) return (-1, null);
+		if (j == index) return (j, text);
+		var t = LspAnalysisCapture.analyzedText(store, snapshot, j);
+		return (if(t != null, j, -1), t);
 	}
 	// The LSP Range of the bytes from {begin} to {end} in the text {m} converts.
 	def range(m: PositionMap, begin: int, end: int) -> JsonValue {
@@ -211,7 +225,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		var i = s.documentIndex(key), text = LspAnalysisCapture.analyzedText(store, s, i);
 		if (text == null) return JsonValue.Null;
 		var map = PositionMap.new(text, PositionEncoding.UTF16), offset = map.positionToOffset(line, character);
-		var at = LspSnapshotPosition.new(store, s, i, map), found = method.answer(at, offset);
+		var at = LspSnapshotPosition.new(store, s, i, text, map), found = method.answer(at, offset);
 		// A cursor just past an identifier selects it. Something found at
 		// offset - 1 but not at {offset} ends exactly at {offset}, so only the
 		// identifier the cursor touches qualifies, and whatever contains

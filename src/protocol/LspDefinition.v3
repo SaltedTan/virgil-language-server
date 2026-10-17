@@ -11,16 +11,10 @@ component LspDefinition {
 		var s = at.snapshot, decl = s.definitionAtOffset(at.path(), offset);
 		if (decl == null) return (false, JsonValue.Null);
 		if (decl.range.beginOffset < 0) return (true, JsonValue.Null);
-		var j = -1;
-		for (k < s.paths.length) { if(j < 0 && Strings.equal(s.paths[k], decl.range.path)) j = k; }
+		// The target's bytes must still be the ones the worker analyzed.
+		var target = at.target(decl.range.path), j = target.0;
 		if (j < 0) return (true, JsonValue.Null);
-		var map = at.map;
-		if (j != at.index) {
-			// The target's bytes must still be the ones the worker analyzed.
-			var target = LspAnalysisCapture.analyzedText(at.store, s, j);
-			if (target == null) return (true, JsonValue.Null);
-			map = PositionMap.new(target, PositionEncoding.UTF16);
-		}
+		var map = if(j == at.index, at.map, PositionMap.new(target.1, PositionEncoding.UTF16));
 		var location = Strings.newMap<JsonValue>();
 		location["uri"] = JsonValue.String(s.documentVersions[j].uri);
 		location["range"] = at.range(map, decl.range.beginOffset, decl.range.endOffset);

@@ -16,6 +16,8 @@ def X = [
 	T("LspHover:nothing_to_show", test_nothing_to_show),
 	T("LspHover:cursor_after_identifier", test_cursor_after_identifier),
 	T("LspHover:tabs_and_non_ascii", test_tabs_and_non_ascii),
+	T("LspHover:target_changed_on_disk", test_target_changed_on_disk),
+	T("LspHover:open_target_changed", test_open_target_changed),
 	T("LspHover:stale_waits_for_analysis", test_stale_waits_for_analysis),
 	T("LspHover:stale_without_analysis", test_stale_without_analysis),
 	T("LspHover:shared_waiting_bound", test_shared_waiting_bound),
@@ -32,6 +34,12 @@ def X = [
 def SOURCE = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nenum Color { RED, GREEN }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\nclass Cell<T>(item: T) {\n\tdef get() -> T { return item; }\n}\ncomponent Hover {\n\tdef unit = 1;\n\tdef id<T>(p: T) -> T { return p; }\n\tdef wide() -> int { /*\t\xC3\xA9\xF0\x9D\x84\x9E*/ return Hover.unit; }\n\tdef run(b: Box, c: Color, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar total = box.grow(b.size) + Cell<Box>.new(box).get().size;\n\t\tif (c == Color.RED) total++;\n\t\tvar same = id(box);\n\t\tvar n = \"abc\".length + missing;\n\t\tvar f = id<int -> int>;\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\treturn total;\n\t}\n}\n";
 def WIDE_LINE = 19;
 def WIDE_HOVER = 37;
+// Decl.v3, which every session writes, declares the targets of uses that
+// USES_DECL, appended to SOURCE, makes from Hover.v3. In "g[0]", the bracket
+// starts just past g, so the bracket's hover is not g's.
+def DECL = "component Decl {\n\tdef thing = 1;\n}\nclass Grid {\n\tdef [i: int] -> int { return i; }\n}\n";
+def DECL_BOOL = "component Decl {\n\tdef thing = false;\n}\nclass Grid {\n\tdef [i: int] -> int { return i; }\n}\n";
+def USES_DECL = "component UsesDecl {\n\tdef get(g: Grid) -> int {\n\t\tvar t = Decl.thing;\n\t\treturn g[0];\n\t}\n}\n";
 
 class HoverTestSession {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
@@ -46,12 +54,8 @@ class HoverTestSession {
 	// {contentFormat}, if not null, is the client's hover.contentFormat.
 	new(t: Tester, contentFormat: Array<string>) {
 		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "hover"));
-		var fd = System.fileOpen(path(), false);
-		t.assert(fd >= 0, "fixture source written");
-		if (fd >= 0) {
-			System.fileWriteK(fd, SOURCE, 0, SOURCE.length);
-			System.fileClose(fd);
-		}
+		write(t, "Hover.v3", SOURCE);
+		write(t, "Decl.v3", DECL);
 		HostOs.ignoreSigpipe();
 		server.sendNotification = receive;
 		var params = Strings.newMap<JsonValue>();
@@ -73,17 +77,38 @@ class HoverTestSession {
 	}
 	def path() -> string { return ProjectFiles.join(base, "Hover.v3"); }
 	def uri() -> string { return ProjectFiles.uri(path()); }
+	def fileUri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(ProjectFiles.join(base, name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(fileUri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
 	def open(version: int, text: string) {
+		openFile("Hover.v3", version, text);
+	}
+	def openFile(name: string, version: int, text: string) {
 		var doc = Strings.newMap<JsonValue>();
-		doc["uri"] = JsonValue.String(uri());
+		doc["uri"] = JsonValue.String(fileUri(name));
 		doc["languageId"] = JsonValue.String("virgil");
 		doc["version"] = JsonValue.Int(version);
 		doc["text"] = JsonValue.String(text);
 		notify("textDocument/didOpen", doc, null);
 	}
 	def change(version: int, text: string) {
+		changeFile("Hover.v3", version, text);
+	}
+	def changeFile(name: string, version: int, text: string) {
 		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
-		doc["uri"] = JsonValue.String(uri());
+		doc["uri"] = JsonValue.String(fileUri(name));
 		doc["version"] = JsonValue.Int(version);
 		change["text"] = JsonValue.String(text);
 		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
@@ -292,6 +317,59 @@ def test_tabs_and_non_ascii(t: Tester) {
 		expectHover(t, s.hover(t, WIDE_LINE, c), "markdown", markdown(["def unit: int"]), WIDE_LINE, WIDE_HOVER + 6, WIDE_HOVER + 10);
 	}
 	expectHover(t, s.hover(t, WIDE_LINE, WIDE_HOVER), "markdown", markdown(["component Hover"]), WIDE_LINE, WIDE_HOVER, WIDE_HOVER + 5);
+	s.server.close();
+}
+// A use whose target is in a closed file changed on disk without a file event
+// shows nothing, as its definition is null: every stamp is still current,
+// but the target's bytes are no longer the ones analyzed. The byte before the
+// use is not tried instead. A declaration's name in the request's own file
+// still shows its signature.
+def test_target_changed_on_disk(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, USES_DECL);
+	s.open(1, text);
+	s.settle();
+	var thing = at(text, "Decl.thing", 5), bracket = at(text, "g[0]", 1);
+	expectHover(t, s.hover(t, thing.0, thing.1), "markdown", markdown(["def thing: int"]), thing.0, thing.1, thing.1 + 5);
+	expectHover(t, s.hover(t, bracket.0, bracket.1), "markdown", markdown(["def [i: int] -> int"]), bracket.0, bracket.1, bracket.1 + 1);
+	s.write(t, "Decl.v3", DECL_BOOL);
+	expectNull(t, s.hover(t, thing.0, thing.1), "the target changed on disk");
+	expectNull(t, s.hover(t, thing.0, thing.1 + 5), "just past a use whose target changed");
+	expectNull(t, s.hover(t, bracket.0, bracket.1), "not the use just before");
+	expectNull(t, s.result(t, s.request("textDocument/definition", thing.0, thing.1)), "no definition either");
+	expectAt(t, s, "class Box", 6, ["class Box"], 6, 3);
+	s.write(t, "Decl.v3", DECL);
+	expectHover(t, s.hover(t, thing.0, thing.1), "markdown", markdown(["def thing: int"]), thing.0, thing.1, thing.1 + 5);
+	// Once reported, the snapshot is stale and the reply waits for a new analysis.
+	s.write(t, "Decl.v3", DECL_BOOL);
+	s.reportChanged("Decl.v3");
+	var id = s.request("textDocument/hover", thing.0, thing.1);
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	expectHover(t, s.result(t, id), "markdown", markdown(["def thing: bool"]), thing.0, thing.1, thing.1 + 5);
+	s.server.close();
+}
+// A use whose target is in an open, unsaved buffer that changed after the
+// analysis: the snapshot is stale, so the reply is null at once if no analysis
+// is pending, and otherwise waits for one.
+def test_open_target_changed(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, USES_DECL);
+	s.open(1, text);
+	s.openFile("Decl.v3", 1, DECL);
+	s.settle();
+	var thing = at(text, "Decl.thing", 5);
+	expectHover(t, s.hover(t, thing.0, thing.1), "markdown", markdown(["def thing: int"]), thing.0, thing.1, thing.1 + 5);
+	// An edit that schedules no analysis.
+	t.assert(s.store.change(s.fileUri("Decl.v3"), 2, DECL_BOOL) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.hover(t, thing.0, thing.1), "the target's overlay changed");
+	// An edit the client sends schedules one, which the request waits for.
+	s.changeFile("Decl.v3", 3, DECL_BOOL);
+	var id = s.request("textDocument/hover", thing.0, thing.1);
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	expectHover(t, s.result(t, id), "markdown", markdown(["def thing: bool"]), thing.0, thing.1, thing.1 + 5);
 	s.server.close();
 }
 def test_stale_waits_for_analysis(t: Tester) {
