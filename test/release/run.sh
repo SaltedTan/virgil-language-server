@@ -51,6 +51,10 @@ expect "VERSION may end without a newline" 0 "0.1.0-alpha.1" "" \
     "0.1.0-alpha.1" "$released" v0.1.0-alpha.1
 expect "build metadata is part of the version" 0 "1.2.3-rc.1+linux.5" "" \
     "1.2.3-rc.1+linux.5" "## [1.2.3-rc.1+linux.5]" v1.2.3-rc.1+linux.5
+for version in 0.1.0 0.0.0-dev 0.1.0-0.10.0 0.1.0-01a.01-.a01 0.1.0+01.002; do
+    expect "valid semantic version $version" 0 "$version" "" \
+        "$version" "## [$version]" "v$version"
+done
 expect "tag without v" 1 "" "expected 'v0.1.0-alpha.1'" \
     "0.1.0-alpha.1" "$released" 0.1.0-alpha.1
 expect "tag for another version" 1 "" "tag 'v0.1.0-alpha.2' does not match VERSION '0.1.0-alpha.1'" \
@@ -61,6 +65,10 @@ expect "version that isn't semantic" 1 "" "VERSION '0.1' is not a semantic versi
     "0.1" "## [0.1]" v0.1
 expect "leading zero in the version" 1 "" "not a semantic version" \
     "0.01.0" "## [0.01.0]" v0.01.0
+for version in 0.1.0-01 0.1.0-alpha.01.beta 0.1.0-alpha.01 0.1.0-alpha.00; do
+    expect "leading zero in numeric prerelease $version" 1 "" "not a semantic version" \
+        "$version" "## [$version]" "v$version"
+done
 expect "empty prerelease identifier" 1 "" "not a semantic version" \
     "0.1.0-alpha..1" "## [0.1.0-alpha..1]" v0.1.0-alpha..1
 expect "changelog without the version's section" 1 "" "CHANGELOG.md has no '## \[0.1.0-alpha.1\]' section" \
