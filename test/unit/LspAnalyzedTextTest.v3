@@ -126,7 +126,7 @@ def test_provenance_charge(t: Tester) {
 	t.assert(captured.1 == null, "captured");
 	if (captured.0 == null) return s.server.close();
 	var paths = [s.path("A.v3"), s.path("B.v3")];
-	var snapshot = AnalysisSnapshot.new(1, paths, true, true, [], AnalysisSnapshotStats.new(-1, -1, -1, -1, -1, -1, -1), false, []);
+	var snapshot = AnalysisSnapshot.new(1, paths, true, true, [], null, false, []);
 	snapshot.recordDocumentVersions(captured.0.versions);
 	t.assertl(captured.0.snapshotBytes, snapshot.retainedBytes);
 	t.assertl(1024L + 2 * 272 + paths[0].length + paths[1].length + keys[0].length + keys[1].length, snapshot.retainedBytes);
