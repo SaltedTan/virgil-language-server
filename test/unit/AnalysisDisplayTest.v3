@@ -16,6 +16,7 @@ def X = [
 	T("AnalysisDisplay:unknown_types", test_unknown_types),
 	T("AnalysisDisplay:depth_bound", test_depth_bound),
 	T("AnalysisDisplay:length_bound", test_length_bound),
+	T("AnalysisDisplay:length_bound_long_names", test_length_bound_long_names),
 	T("AnalysisDisplay:shared_tuples", test_shared_tuples),
 	T("AnalysisDisplay:declaration_sites", test_declaration_sites),
 	T("AnalysisDisplay:without_occurrences", test_without_occurrences),
@@ -138,13 +139,17 @@ def assertType(t: Tester, at: string, want: string, got: string) {
 }
 // Every signature and use-site type in {r} is within the rendering bound.
 def assertBounded(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot)) {
-	var limit = AnalysisDisplayText.MAX_BYTES + ELISION.length;
+	var limit = AnalysisDisplayText.MAX_BYTES;
 	for (d in r.0.declarationSites(PATH)) t.assert(d.signature.length <= limit, "bounded signature");
 	for (o in r.0.occurrences(PATH)) {
 		t.assert(o.declaration.signature.length <= limit, "bounded signature");
 		t.assert(o.useType == null || o.useType.length <= limit, "bounded use-site type");
 	}
 	for (b in r.0.builtinUses(PATH)) t.assert(b.useType.length <= limit, "bounded builtin type");
+	if (r.1 == null) return;
+	for (d in r.1.declarations) t.assert(d.signature.length <= limit, "bounded decoded signature");
+	for (o in r.1.occurrences(PATH)) t.assert(o.useType == null || o.useType.length <= limit, "bounded decoded use-site type");
+	for (b in r.1.builtinUses(PATH)) t.assert(b.useType.length <= limit, "bounded decoded builtin type");
 }
 
 def KINDS = lines([
@@ -480,12 +485,31 @@ def test_length_bound(t: Tester) {
 	if (d == null) return t.fail("no declaration site for f");
 	var full = Strings.format1("def f(%s)", Arrays.range(text, indexOf(text, "(") + 1, indexOf(text, ")")));
 	t.assert(full.length > AnalysisDisplayText.MAX_BYTES, "the full signature is longer than the bound");
-	t.assert(d.signature.length <= AnalysisDisplayText.MAX_BYTES + ELISION.length, "bounded signature");
+	t.assert(d.signature.length <= AnalysisDisplayText.MAX_BYTES, "bounded signature");
 	t.assert(Strings.endsWith(d.signature, ELISION), "elided at the end");
 	var kept = d.signature.length - ELISION.length;
 	t.assert(kept > AnalysisDisplayText.MAX_BYTES - 32, "keeps what fits");
 	t.assert_string(Arrays.range(full, 0, kept), Arrays.range(d.signature, 0, kept));
 	assertBounded(t, r);
+}
+
+def test_length_bound_long_names(t: Tester) {
+	for (length in [247, 248, 249, 250]) {
+		var name = repeat("m", length);
+		var text = lines([
+			"component M {",
+			Strings.format1("def %s() -> int { return 0; }", name),
+			"def ok() -> int { return 0; }",
+			"}"
+		]);
+		var r = analyze(t, text, true);
+		assertBounded(t, r);
+		if (r.1 == null) return;
+		var d = r.1.declarationAtOffset(PATH, offset(t, text, name, 0));
+		if (d == null) return t.fail("no declaration site for long method name");
+		t.assert(Strings.endsWith(d.signature, ELISION), "elided at the end");
+		assertDeclares(t, r, text, "ok()", 0, AnalysisDeclKind.METHOD, "def ok() -> int");
+	}
 }
 
 // Tuples that share their halves have exponentially large trees, as in

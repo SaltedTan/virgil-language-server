@@ -474,7 +474,7 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// elision marker instead, and nothing more.
 	private def put(s: string) -> this {
 		if (full) return;
-		if (buf.length + s.length > AnalysisDisplayText.MAX_BYTES) {
+		if (buf.length + s.length > AnalysisDisplayText.MAX_BYTES - AnalysisDisplayText.ELISION.length) {
 			full = true;
 			buf.puts(AnalysisDisplayText.ELISION);
 			return;
