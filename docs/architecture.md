@@ -216,9 +216,9 @@ Project submissions also record a `ProjectRevision` token (configuration URI and
 
 A result computed from document version *n* is never published after version *n + 1* has been accepted; see [Semantic diagnostics](#semantic-diagnostics). *(present)*
 
-[Definition](#definition) reads its document's active context's snapshot only while the whole snapshot is current, and waits for a pending analysis otherwise. *(present)*
+[Definition](#definition) owns the freshness, waiting, and lookup rules for go-to-definition. *(present)*
 
-*(planned)* Snapshots will also hold a type/signature display cache. Keeping navigation working from the last good semantic snapshot after an edit breaks parsing needs a policy for mapping positions across the edit; until then, definitions are `null` while the program does not parse.
+*(planned)* Snapshots will also hold a type/signature display cache. See [Definition limitations](#definition) for navigation after a parse failure.
 
 ## Semantic diagnostics
 
