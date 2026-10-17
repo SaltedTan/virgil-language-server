@@ -138,7 +138,6 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// it names none of them.
 	private def packingExpr(decl: VstPacking, e: VstPackingExpr) {
 		match (e) {
-			Solve(list) => packingExprs(decl, list);
 			Concat(list) => packingExprs(decl, list);
 			App(p, args) => {
 				var target = packings.named(p.ident.name.image);

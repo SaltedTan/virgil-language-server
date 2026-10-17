@@ -887,7 +887,7 @@ def test_layout_and_packing_fixtures(t: Tester) {
 	for (dir in ["test/layout", "test/layout/parser", "test/layout/seman"]) {
 		sourceFiles(Strings.format2("%s/%s", VIRGIL, dir), paths);
 	}
-	for (dir in ["test/core/parser", "test/feature", "test/variants", "test/variants/parser", "test/variants/seman"]) {
+	for (dir in ["test/core/parser", "test/feature", "test/funexpr", "test/variants", "test/variants/parser", "test/variants/seman"]) {
 		sourceFiles(Strings.format2("%s/%s", VIRGIL, dir), all);
 	}
 	for (i < all.length) {
@@ -916,10 +916,13 @@ def test_layout_and_packing_fixtures(t: Tester) {
 							&& indexOf(path, "packing") >= 0) parameters++;
 				}
 			}
-			_ => {
-				if (!known) t.fail1("%s did not analyze", path);
-				crashed++;
+			Failed(failure, reason) => {
+				if (failure == AnalysisFailure.CRASHED) {
+					if (!known) t.fail1("%s crashed; update CRASHING_FIXTURES", path);
+					crashed++;
+				} else t.fail3("%s failed with %s: %s", path, failure.name, reason);
 			}
+			_ => t.fail1("%s did not finish analyzing", path);
 		}
 	}
 	s.close();
