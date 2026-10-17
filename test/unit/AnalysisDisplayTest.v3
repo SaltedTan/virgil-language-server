@@ -7,6 +7,7 @@
 def T = UnitTests.register;
 def X = [
 	T("AnalysisDisplay:declaration_kinds", test_declaration_kinds),
+	T("AnalysisDisplay:numbered_file_declarations", test_numbered_file_declarations),
 	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
 	T("AnalysisDisplay:generic_index_operations", test_generic_index_operations),
 	T("AnalysisDisplay:substituted_function_types", test_substituted_function_types),
@@ -43,6 +44,35 @@ def repeat(s: string, n: int) -> string {
 	for (i < n) buf.puts(s);
 	return buf.toString();
 }
+
+class DeclarationKeyComparisons {
+	var count: int;
+	def equal(a: (Token, AnalysisDeclKind), b: (Token, AnalysisDeclKind)) -> bool {
+		count++;
+		return AnalysisDeclarationKeys.equal(a, b);
+	}
+}
+
+def test_numbered_file_declarations(t: Tester) {
+	var count = 10000, comparisons = DeclarationKeyComparisons.new();
+	var map = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, comparisons.equal);
+	var tokens = Array<Token>.new(count);
+	for (i < count) {
+		tokens[i] = Token.new(Strings.format1("a%d.v3", 10000 + i), Strings.format1("C%d", 10000 + i), 1, 7);
+		t.asserti(i, map.add((tokens[i], AnalysisDeclKind.CLASS)));
+	}
+	for (i < count) {
+		t.asserti(i, map.find((tokens[i], AnalysisDeclKind.CLASS)));
+		t.asserti(i, map.add((tokens[i], AnalysisDeclKind.CLASS)));
+	}
+	t.asserti(count, map.length());
+	t.asserti(count, map.add((tokens[0], AnalysisDeclKind.FIELD)));
+	t.asserti(count + 1, map.add((tokens[0], AnalysisDeclKind.PARAMETER)));
+	t.asserti(count, map.find((tokens[0], AnalysisDeclKind.FIELD)));
+	t.asserti(count + 1, map.find((tokens[0], AnalysisDeclKind.PARAMETER)));
+	t.assert(comparisons.count < count * 100, "numbered files require linear key comparisons");
+}
+
 // Analyzes {text} as one file, which verifies if {verified}, and decodes
 // its worker result as the server would.
 def analyze(t: Tester, text: string, verified: bool) -> (ProgramAnalysis, AnalysisSnapshot) {

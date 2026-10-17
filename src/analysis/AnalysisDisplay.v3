@@ -41,7 +41,7 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// Types are hash-consed, so the text of each is rendered once.
 	private def types = AnalysisIndexMap<Type>.new(hashType, identical<Type>);
 	private def typeTexts = Vector<string>.new();
-	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(hashKey, sameKey);
+	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
 	private def buf = StringBuilder.new();
 	private var full: bool;
@@ -491,13 +491,14 @@ def identical<T>(a: T, b: T) -> bool {
 	return a == b;
 }
 // A declaration is its name token and kind: a class parameter's token names
-// both a parameter and a field. Hashing a whole path for every use is slow,
-// so its length and a byte of its file name tell most files apart.
-def hashKey(key: (Token, AnalysisDeclKind)) -> int {
-	var t = key.0, file = t.fileName, h = t.beginLine * 1009 + t.beginColumn * 31 + key.1.tag;
-	if (file != null && file.length > 0) h += file.length * 65599 + file[file.length / 2 + file.length / 4] * 8191;
-	return h;
-}
-def sameKey(a: (Token, AnalysisDeclKind), b: (Token, AnalysisDeclKind)) -> bool {
-	return a.0 == b.0 && a.1 == b.1;
+// both a parameter and a field.
+component AnalysisDeclarationKeys {
+	def hash(key: (Token, AnalysisDeclKind)) -> int {
+		var t = key.0, file = t.fileName, h = t.beginLine * 1009 + t.beginColumn * 31 + key.1.tag;
+		if (file != null) h += AnalysisTables.hashBytes(file, file.length);
+		return h;
+	}
+	def equal(a: (Token, AnalysisDeclKind), b: (Token, AnalysisDeclKind)) -> bool {
+		return a.0 == b.0 && a.1 == b.1;
+	}
 }
