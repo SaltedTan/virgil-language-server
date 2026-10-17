@@ -4,9 +4,9 @@
 // The occurrence-index contract is documented in
 // docs/architecture.md#compiler-adapter, and display data in
 // docs/architecture.md#display-text.
-// {packings} is the program's packings by name (Program.packings), or null.
+// {packings} is the program's packings, or null if it was not verified.
 class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
-		packings: HashMap<string, VstPacking>) extends VstVisitor<void, void> {
+		packings: AnalysisPackings) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
 	// Declaration sites in the order the walk finds them, which breaks ties.
@@ -125,31 +125,29 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def visitPacking(decl: VstPacking) {
 		site(make(AnalysisDeclKind.PACKING, decl));
 		if (decl.pparams != null) for (l = decl.pparams.list; l != null; l = l.tail) site(make(AnalysisDeclKind.PARAMETER, l.head));
-		// Verification sets the bit width, which is nonzero unless the declared
-		// size is 0, an error. Otherwise it stopped before this packing.
-		if (decl.bitWidth != 0) packingExpr(decl, decl.expr);
+		if (packings != null && packings.verified(decl)) packingExpr(decl, decl.expr);
 	}
 	// Verification looks up a field of a packing expression among the
 	// packing's parameters alone, where a later parameter hides an earlier
 	// one of the same name, and a packing application's name among the
 	// program's packings, where a later packing replaces an earlier one; it
-	// keeps neither binding. It checks an application's arguments only if
-	// they are as many as the packing's parameters. A bit pattern is one
-	// literal token whose letters select parameters by their initials; it
-	// names none of them.
+	// keeps neither binding. Both lookups ignore type arguments, as in
+	// P<int>(b), which name nothing. It checks an application's arguments
+	// only if they are as many as the packing's parameters. A bit pattern is
+	// one literal token whose letters select parameters by their initials;
+	// it names none of them.
 	private def packingExpr(decl: VstPacking, e: VstPackingExpr) {
 		match (e) {
 			Solve(list) => packingExprs(decl, list);
 			Concat(list) => packingExprs(decl, list);
 			App(p, args) => {
-				var target = if(packings != null && p.expr == null && p.ident.params == null, packings[p.ident.name.image]);
+				var target = packings.named(p.ident.name.image);
 				if (target == null) return;
 				record(p.ident.name, make(AnalysisDeclKind.PACKING, target), null);
 				var arity = if(target.pparams != null, target.pparams.length());
 				if (args != null && args.length() == arity) packingExprs(decl, args);
 			}
 			Field(f) => {
-				if (f.expr != null || f.ident.params != null) return;
 				var name = f.ident.name, param: PackingParamDecl;
 				for (l = if(decl.pparams != null, decl.pparams.list); l != null; l = l.tail) {
 					if (Strings.equal(l.head.token.image, name.image)) param = l.head;
@@ -599,5 +597,45 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// the compiler synthesized it.
 	private def declare(kind: AnalysisDeclKind, token: Token, t: Type) -> AnalysisDeclaration {
 		return display.declaration(kind, token, null, t);
+	}
+}
+
+// A program's packings, as verification left them, for collecting their
+// uses. It keeps no binding in a packing expression; see
+// OccurrenceCollector.packingExpr. Retains no Program.
+class AnalysisPackings {
+	// Verification resolves a packing application by name here, where a
+	// later packing of the same name replaces an earlier one.
+	private var byName: HashMap<string, VstPacking>;
+	// The packings that verification reached although their bit width is 0.
+	private var unsized: List<VstPacking>;
+
+	new(prog: Program) {
+		byName = prog.packings;
+		for (i < prog.vst.packings.length) {
+			var p = prog.vst.packings[i];
+			if (p.bitWidth == 0 && p.size != null && reportedSize(prog.ERROR.errors, p.size.token)) unsized = List.new(p, unsized);
+		}
+	}
+	def named(name: string) -> VstPacking {
+		return if(byName != null, byName[name]);
+	}
+	// Whether verification reached {p}; it stops before later declarations at
+	// the error limit. Only Verifier.verifyPacking sets the bit width, which
+	// is the declared size as a byte. A size from 1 to 64 makes it nonzero;
+	// any other size, including one that truncates to 0, is reported at the
+	// size literal, where nothing else reports an error.
+	def verified(p: VstPacking) -> bool {
+		if (p.bitWidth != 0) return true;
+		for (l = unsized; l != null; l = l.tail) if (l.head == p) return true;
+		return false;
+	}
+	private def reportedSize(errors: List<Error>, t: Token) -> bool {
+		for (l = errors; l != null; l = l.tail) {
+			var r = l.head.range;
+			if (r != null && r.beginLine == t.beginLine && r.beginColumn == t.beginColumn
+					&& Strings.equal(r.fileName, t.fileName) && Strings.equal(l.head.error, "PackingDeclError")) return true;
+		}
+		return false;
 	}
 }

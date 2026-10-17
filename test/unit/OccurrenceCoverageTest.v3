@@ -26,7 +26,10 @@ def X = [
 	T("OccurrenceCoverage:packing_parameters_with_errors", test_packing_parameters_with_errors),
 	T("OccurrenceCoverage:packing_applications", test_packing_applications),
 	T("OccurrenceCoverage:packing_applications_with_errors", test_packing_applications_with_errors),
+	T("OccurrenceCoverage:generic_packing_forms", test_generic_packing_forms),
+	T("OccurrenceCoverage:packing_invalid_widths", test_packing_invalid_widths),
 	T("OccurrenceCoverage:packing_after_error_limit", test_packing_after_error_limit),
+	T("OccurrenceCoverage:packing_at_error_limit", test_packing_at_error_limit),
 	T("OccurrenceCoverage:existing_uses", test_existing_uses),
 	T("OccurrenceCoverage:fixture", test_fixture),
 	T("OccurrenceCoverage:lib_util", test_lib_util),
@@ -737,12 +740,68 @@ def test_packing_applications_with_errors(t: Tester) {
 		ExpectedUse.new("P(a, a)", 0, 1, AnalysisDeclKind.PACKING, "P", "packing P(z", 8)
 	]);
 }
-def test_packing_after_error_limit(t: Tester) {
-	// Verification stops at the error limit, here before the packings.
+def test_generic_packing_forms(t: Tester) {
+	// Verification looks names up without their type arguments, which it
+	// does not resolve; each use is the name alone.
+	var text = lines([
+		"packing P(a: 4): 4 = a<int>;",
+		"packing Q(b: 4): 4 = P<int>(b);",
+		"packing R(c: 4, d: 4): 8 = #concat(Q<byte>(P<int>(c)), d);"
+	]);
+	var p = "packing P", q = "packing Q", r = analyzeText(t, text, [], true);
+	assertUses(t, r, text, [
+		ExpectedUse.new("= a<int>", 2, 1, AnalysisDeclKind.PARAMETER, "a", "a: 4", 0),
+		ExpectedUse.new("P<int>(b)", 0, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("P<int>(b)", 7, 1, AnalysisDeclKind.PARAMETER, "b", "b: 4", 0),
+		ExpectedUse.new("Q<byte>(P<int>(c))", 0, 1, AnalysisDeclKind.PACKING, "Q", q, 8),
+		ExpectedUse.new("Q<byte>(P<int>(c))", 8, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("Q<byte>(P<int>(c))", 15, 1, AnalysisDeclKind.PARAMETER, "c", "c: 4", 0),
+		ExpectedUse.new(", d)", 2, 1, AnalysisDeclKind.PARAMETER, "d", "d: 4", 0)
+	]);
+	if (r.1 != null) assertSound(t, r.1, [AnalysisSource.new(PATH, text)]);
+}
+def test_packing_invalid_widths(t: Tester) {
+	// Verification reports a width outside 1 to 64, including one that is 0
+	// as a byte, and still verifies the packing.
+	var text = lines([
+		"packing P(a: 4): 4 = a;",
+		"packing Q(b: 4): 0 = P(b);",
+		"packing R(c: 4): 256 = P(c);"
+	]);
+	var p = "packing P";
+	assertUses(t, analyzeText(t, text, [], false), text, [
+		ExpectedUse.new("= a;", 2, 1, AnalysisDeclKind.PARAMETER, "a", "a: 4", 0),
+		ExpectedUse.new("P(b)", 0, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("P(b)", 2, 1, AnalysisDeclKind.PARAMETER, "b", "b: 4", 0),
+		ExpectedUse.new("P(c)", 0, 1, AnalysisDeclKind.PACKING, "P", p, 8),
+		ExpectedUse.new("P(c)", 2, 1, AnalysisDeclKind.PARAMETER, "c", "c: 4", 0)
+	]);
+}
+// A program with {errors} unresolved field types before {packings}.
+def afterErrors(errors: int, packings: Array<string>) -> string {
 	var buf = StringBuilder.new().puts("component M {\n");
-	for (i < AeneasAdapter.PROGRAM_MAX_ERRORS + 1) buf.put1("  var f%d: Missing;\n", i);
-	var text = buf.puts("}\npacking P(a: 4): 4 = a;\npacking Q(b: 4): 4 = P(b);\n").toString();
+	for (i < errors) buf.put1("  var f%d: Missing;\n", i);
+	buf.puts("}\n");
+	for (p in packings) buf.puts(p).ln();
+	return buf.toString();
+}
+def test_packing_after_error_limit(t: Tester) {
+	// Verification stops at the error limit, here before the packings,
+	// including one whose width is 0.
+	var text = afterErrors(AeneasAdapter.PROGRAM_MAX_ERRORS + 1,
+		["packing P(a: 4): 4 = a;", "packing Q(b: 4): 4 = P(b);", "packing Z(z: 4): 0 = z;"]);
 	assertUses(t, analyzeText(t, text, [], false), text, []);
+}
+def test_packing_at_error_limit(t: Tester) {
+	// The width error of Z reaches the limit, so verification finishes Z but
+	// stops before W.
+	var text = afterErrors(AeneasAdapter.PROGRAM_MAX_ERRORS - 1,
+		["packing Z(z: 4): 0 = z;", "packing W(w: 4): 4 = w;"]);
+	var r = analyzeText(t, text, [], false);
+	t.asserti(AeneasAdapter.PROGRAM_MAX_ERRORS + 1, r.0.diagnostics.length);
+	assertUses(t, r, text, [
+		ExpectedUse.new("= z;", 2, 1, AnalysisDeclKind.PARAMETER, "z", "z: 4", 0)
+	]);
 }
 def test_existing_uses(t: Tester) {
 	// Calls, member access, an unbound method, construction, casts and

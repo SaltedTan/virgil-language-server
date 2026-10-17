@@ -117,13 +117,12 @@ class ProgramAnalysis {
 	private def sources = AnalysisSourceMaps.new();
 	// Signatures and types, rendered once for all files.
 	private def display = AnalysisDisplay.new(sources);
-	// The program's packings by name, as verification resolves packing
-	// applications; null if it has none.
-	private var packings: HashMap<string, VstPacking>;
+	// The program's packings, for their uses; null if it was not verified.
+	private var packings: AnalysisPackings;
 
 	new(diagnostics, stats, parsed, verified, prog: Program) {
 		if (parsed) {
-			packings = prog.packings;
+			packings = AnalysisPackings.new(prog);
 			for (i < prog.files.length) sources.add(prog.files[i], prog.inputs[i]);
 			for (f in prog.vst.files) {
 				// Preserve the first file's bindings if an input path is repeated.
@@ -183,7 +182,7 @@ class ProgramAnalysis {
 
 // Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
 // repeated walk, allocation, or sort for subsequent binding queries.
-class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: HashMap<string, VstPacking>) {
+class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: AnalysisPackings) {
 	private var uses: Array<AnalysisOccurrence>;
 	def var skipped: int;
 	def var builtins: Array<AnalysisBuiltinUse>;
