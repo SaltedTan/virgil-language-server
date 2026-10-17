@@ -25,7 +25,7 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 | `VIRGIL` | Use a different Virgil checkout, e.g. `make VIRGIL=~/src/virgil` |
 | `VIRGIL_V3C` | Use a specific Aeneas binary, e.g. a bootstrapped `bin/current/x86-64-linux/Aeneas` |
 | `V3C_TARGET` | Force a target such as `x86-64-darwin`. The `Makefile` also uses it to choose `src/os/<target>/`. |
-| `WORKER_HEAP` | `Makefile` only: the analysis worker's heap, e.g. `make WORKER_HEAP=1g` (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements) for the default and its measurements) |
+| `WORKER_HEAP` | The analysis worker's heap for `make` and release packaging, e.g. `make WORKER_HEAP=1g` (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements) for the default and its measurements) |
 
 [Releases](releasing.md) covers packaging the executables as release archives, locally and in the release workflow.
 
