@@ -27,8 +27,7 @@ const VSCODE_VERSION = '1.142.0';
 // Each launch, including VS Code's own startup, must finish within this time,
 // and so must each installation of a VSIX.
 const LAUNCH_TIMEOUT_MS = 120000;
-// How long a stopped process group gets after SIGTERM before SIGKILL, and
-// after SIGKILL before the test gives up waiting for it.
+// How long a stopped process group gets after SIGTERM before SIGKILL.
 const STOP_GRACE_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
 
@@ -179,7 +178,7 @@ function runGroup(command, args, { env, stdin, signal }) {
     const child = spawn(command, args, { env, stdio: [stdin, 'inherit', 'inherit'], detached: true });
     let stopped;
     let exited;
-    let poll;
+    let deadline;
     const finish = (result) => {
       clearTimeout(timer);
       clearInterval(poll);
@@ -191,22 +190,16 @@ function runGroup(command, args, { env, stdin, signal }) {
       if (stopped !== undefined || child.pid === undefined) return;
       stopped = reason;
       signalGroup(child.pid, 'SIGTERM');
-      let deadline = Date.now() + STOP_GRACE_MS;
-      let killed = false;
-      // Other processes in the group can outlive the one that was started.
-      poll = setInterval(() => {
-        if (!groupExists(child.pid)) {
-          if (exited !== undefined) finish(exited);
-        } else if (Date.now() > deadline && !killed) {
-          killed = true;
-          signalGroup(child.pid, 'SIGKILL');
-          deadline = Date.now() + STOP_GRACE_MS;
-        } else if (Date.now() > deadline) {
-          console.error(`Process group ${child.pid} (${command}) is still running after SIGKILL`);
-          finish(exited ?? {});
-        }
-      }, 50);
+      deadline = Date.now() + STOP_GRACE_MS;
     };
+    const poll = setInterval(() => {
+      if (exited !== undefined && !groupExists(child.pid)) {
+        finish(exited);
+      } else if (deadline !== undefined && Date.now() > deadline) {
+        deadline = undefined;
+        signalGroup(child.pid, 'SIGKILL');
+      }
+    }, 50);
     const timer = setTimeout(() => stop(`exceeded ${LAUNCH_TIMEOUT_MS / 1000} seconds`), LAUNCH_TIMEOUT_MS);
     const interrupt = () => stop('was interrupted');
     signal.addEventListener('abort', interrupt);
@@ -216,7 +209,7 @@ function runGroup(command, args, { env, stdin, signal }) {
     child.on('error', (error) => finish({ error }));
     child.on('exit', (code, exitSignal) => {
       exited = { code, signal: exitSignal };
-      if (stopped === undefined) finish(exited);
+      if (!groupExists(child.pid)) finish(exited);
     });
   });
 }
