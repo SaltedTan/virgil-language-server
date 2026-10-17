@@ -15,7 +15,7 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
 ## Installing from a VSIX
 
-Requirements: a VS Code version and a server version that work with the extension's version, both listed in [compatibility](../../docs/compatibility.md#editors). Until the server has releases, build it with `make` at the repository root, and follow the [executable placement guidance](../../README.md#building): `virgil-lsp-worker` must stay beside `virgil-lsp`.
+Requirements: a VS Code version and a server version that work with the extension's version, both listed in [compatibility](../../docs/compatibility.md#editors). Follow the [release installation instructions](../../docs/releasing.md#installing), or [build the server from source](../../README.md#building).
 
 1. Get `virgil-lsp-vscode-<version>.vsix`: from the `vsix` artifact of a [CI](../../.github/workflows/ci.yml) run (GitHub downloads artifacts as a zip file that contains the VSIX), or by [packaging](#packaging) it yourself. GitHub prereleases will include it once the release workflow attaches it.
 2. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:

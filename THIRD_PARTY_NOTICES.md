@@ -14,7 +14,7 @@ This file lists third-party material that is used by, linked into, or adapted in
 | How it is used | Compiled into the `virgil-lsp` executable: `aeneas/src`, plus the libraries listed in `aeneas/DEPS` (`lib/util`, `lib/asm/*`, `lib/file/elf`) and `lib/file/json/JsonParser.v3`. `lib/test` is used only by the unit-test executable. The prebuilt `bin/stable` compiler is used as a build tool. |
 | Modifications | The submodule is unmodified. The single-file parser driver is adapted as recorded below. |
 
-Release archives that contain a `virgil-lsp` binary must include a copy of the Apache License 2.0 and this notice file.
+Release archives that contain a `virgil-lsp` binary must include a copy of the Apache License 2.0 and this notice file. [`scripts/package-release.sh`](scripts/package-release.sh) adds both.
 
 ## Adapted material
 

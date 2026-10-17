@@ -42,7 +42,7 @@ Other platforms are not promised:
 
 - One Linux x86-64 binary serves local Linux, SSH remotes, and WSL 2.
 - The Apple Silicon build depends on Rosetta 2 until Virgil supports `arm64-darwin`. If that support hasn't arrived before Rosetta 2 is phased out, the fallback is Virgil's `jar` target, which runs natively anywhere Java is installed. This needs to be validated before it can be relied on.
-- Release artifacts (M7) are `virgil-lsp` for Linux x86-64 and for macOS. A single universal macOS binary may make sense once native arm64 exists.
+- The [release runbook](../releasing.md#what-a-release-contains) owns the archive contents for these platforms. A single universal macOS binary may make sense once native arm64 exists.
 - Path and URI handling must be tested with WSL-style paths (`/mnt/c/...`) and with remote workspaces. These cases belong in the document-store tests.
 - Scripts must keep working with macOS's bash 3.2 and BSD command-line tools, since macOS CI runs them.
 

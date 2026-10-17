@@ -21,7 +21,7 @@ The recommended v0.1 is deliberately smaller than a “complete IDE”: correct 
 | Decisions           | Discuss user-facing changes in issues; record durable architectural choices as short ADRs under `docs/decisions/`.                                                        |
 | Contributions       | Welcome bug reports, documentation, tests, and code through pull requests governed by `CONTRIBUTING.md` and a code of conduct.                                            |
 | Quality controls    | Require automated tests and lint/build checks before merging. Add review requirements once there is another active maintainer.                                            |
-| Releases            | Use semantic versioning, GitHub prereleases before v1.0, generated checksums, and a compatibility table for Virgil revisions and host platforms.                          |
+| Releases            | Follow the [release runbook](docs/releasing.md) and maintain the [compatibility table](docs/compatibility.md). |
 | Community growth    | Grant triage or maintainer access gradually to reliable contributors when the workload justifies it; there is no need to design a foundation-style governance system now. |
 
 The project is independent without being isolated. You can cooperate with Virgil maintainers and other tooling authors, report compiler integration problems upstream, and accept compatible contributions while keeping this repository's implementation and release cycle separate.
@@ -58,7 +58,7 @@ A user can install the server following the [build and executable placement guid
 
 - v0.2: workspace symbols, find references, prepare-rename/rename, signature help.
 - v0.3: context-aware completion, better behavior on incomplete syntax, faster reanalysis.
-- v0.5: release automation, platform-specific VS Code packages, an upstream `nvim-lspconfig` configuration, compatibility testing.
+- v0.5: platform-specific VS Code packages, an upstream `nvim-lspconfig` configuration, compatibility testing. Release automation is [present](docs/releasing.md).
 - v1.0: stable configuration format, defined performance budgets, robust error recovery, completion/references/rename suitable for everyday use, and a documented compatibility policy for Virgil versions.
 
 ### Non-goals for the first release
@@ -294,7 +294,7 @@ Do not promise “incremental compilation” until measurements identify the bot
 
 Deliverables:
 
-- GitHub releases containing supported host binaries and SHA-256 checksums.
+- GitHub release automation. *(present; [release runbook](docs/releasing.md))*
 - A clear support matrix: Linux x86-64 (also used by WSL 2 and SSH remotes) and Apple Silicon macOS, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
 - VS Code extension setting for an external server path during development. *(present; [client settings](clients/vscode/README.md#settings))*
 - Later, platform-specific VSIX packages or verified binary download/install logic.
@@ -442,7 +442,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 - Use short-lived branches and pull requests for your own work as well as external contributions. This keeps CI and decisions visible.
 - Put your handle in `CODEOWNERS` initially and add maintainers by subsystem later. Require code-owner review only after at least two people can satisfy it.
 - Use GitHub Discussions for design questions and user support; use Issues for actionable defects and work items; keep the GitHub Project focused on the next one or two milestones.
-- Store publishing credentials in protected GitHub environments, enable two-factor authentication, and use least-privilege release tokens.
+- Enable two-factor authentication. See the [release runbook](docs/releasing.md#how-the-workflow-works) for current publishing permissions; use protected GitHub environments if persistent publishing credentials are introduced.
 - Publish changelogs, checksums, exact Virgil dependency revisions, and supported-platform notes with every GitHub release.
 
 ### Milestones
@@ -481,7 +481,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
 16. Implement hover. *(partial: [display data](docs/architecture.md#display-text) present, [#105](https://github.com/SaltedTan/virgil-language-server/issues/105); handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106))*
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
-18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); attaching the VSIX to GitHub prereleases is part of the release workflow)*
+18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
 
 Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
 
