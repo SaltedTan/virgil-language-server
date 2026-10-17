@@ -121,42 +121,59 @@ with zipfile.ZipFile(path, "w") as z:
 PY
 }
 
-# An extension directory's package.json and lockfile, and the files of a good
-# VSIX packaged from it. Its version differs from clients/vscode's.
+# An extension directory with a package.json, a lockfile, and clients/vscode's
+# .vscodeignore, and the files of a good VSIX packaged from it. Its version
+# differs from clients/vscode's. The lockfile's optional package for macOS is
+# absent from the VSIX, as on Linux.
 EXT=$TMP/extension
 mkdir "$EXT"
+cp "$ROOT/clients/vscode/.vscodeignore" "$EXT/.vscodeignore"
 package='{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server", "version": "7.8.9",
   "preview": true, "main": "./out/extension.js", "dependencies": {"vscode-languageclient": "1.0.0"}}'
 echo "$package" > "$EXT/package.json"
 cat > "$EXT/package-lock.json" <<'JSON'
-{"packages": {
+{"lockfileVersion": 3, "packages": {
   "": {},
   "node_modules/vscode-languageclient": {},
   "node_modules/vscode-jsonrpc": {},
   "node_modules/minimatch": {},
   "node_modules/minimatch/node_modules/brace-expansion": {},
+  "node_modules/fsevents": {"optional": true, "os": ["darwin"]},
   "node_modules/@vscode/vsce": {"dev": true},
   "node_modules/@vscode/vsce-sign": {"dev": true, "optional": true}
 }}
 JSON
-files=(LICENSE.txt out/extension.js syntaxes/virgil.tmLanguage.json
+# Without the transitive dependency brace-expansion.
+direct=(LICENSE.txt out/extension.js syntaxes/virgil.tmLanguage.json
     node_modules/vscode-languageclient/package.json node_modules/vscode-languageclient/lib/main.js
-    node_modules/vscode-jsonrpc/package.json node_modules/minimatch/package.json
+    node_modules/vscode-jsonrpc/package.json node_modules/minimatch/package.json)
+files=("${direct[@]}" node_modules/minimatch/node_modules/brace-expansion/package.json
     node_modules/minimatch/node_modules/brace-expansion/index.js)
 VSIX=$TMP/virgil-lsp-vscode-7.8.9.vsix
 
 # check_vsix <name> <expected-exit> <stderr-pattern> <package.json|-> [<extra-file>...]
+# Checks a VSIX of the good files and the extra ones against $EXT.
 check_vsix() {
     local name=$1 code=$2 err_pat=$3 package=$4
     shift 4
     vsix "$VSIX" "$package" "${files[@]}" "$@"
     expect_run "check-vsix.py: $name" "$code" - "$err_pat" "$CHECK_VSIX" "$VSIX" "$EXT"
 }
+# excluded <name> <file> <pattern>: a VSIX with the file fails, citing the
+# ignore pattern that excludes it.
+excluded() {
+    check_vsix "$1" 1 "it holds $(ere "$2"), which the ignore pattern '$(ere "$3")' excludes$" "$package" "$2"
+}
+# ere <text>: escapes text for grep -E.
+ere() {
+    printf '%s' "$1" | sed 's#[][\.*^$+?(){}|]#\\&#g'
+}
 
 vsix "$VSIX" "$package" "${files[@]}"
-expect_run "check-vsix.py: matching VSIX" 0 \
-    '^virgil-lsp-vscode-7\.8\.9\.vsix: virgil-language-server\.virgil-lsp-vscode 7\.8\.9, 10 files$' "" \
+expect_run "check-vsix.py: matching VSIX, without an optional package" 0 \
+    '^virgil-lsp-vscode-7\.8\.9\.vsix: virgil-language-server\.virgil-lsp-vscode 7\.8\.9, 11 files$' "" \
     "$CHECK_VSIX" "$VSIX" "$EXT"
+check_vsix "an optional package" 0 "" "$package" node_modules/fsevents/package.json
 check_vsix "another version" 1 "version is '7\.8\.10', but .*/package\.json has '7\.8\.9'" \
     "${package/7.8.9/7.8.10}"
 check_vsix "another name" 1 "name is 'virgil-lsp', but" "${package/virgil-lsp-vscode/virgil-lsp}"
@@ -164,25 +181,44 @@ check_vsix "another publisher" 1 "publisher is 'someone', but" "${package/virgil
 check_vsix "no extension/package.json" 1 "has no extension/package\.json" -
 check_vsix "malformed extension/package.json" 1 "extension/package\.json is not valid JSON" '{"name":'
 check_vsix "JSON array as extension/package.json" 1 "extension/package\.json is not a JSON object" '[]'
-check_vsix "sources" 1 "development file src/extension\.ts" "$package" src/extension.ts
-check_vsix "tests" 1 "development file test/lifecycle\.cjs" "$package" test/lifecycle.cjs
-check_vsix "the test's VS Code download" 1 "development file \.vscode-test/code" "$package" .vscode-test/code
-check_vsix "TypeScript configuration" 1 "development file tsconfig\.json" "$package" tsconfig.json
-check_vsix "source map" 1 "development file out/extension\.js\.map" "$package" out/extension.js.map
-check_vsix "type declarations in a dependency" 1 \
-    "development file node_modules/vscode-jsonrpc/lib/main\.d\.ts" "$package" node_modules/vscode-jsonrpc/lib/main.d.ts
+excluded "sources" src/extension.ts 'src/**'
+excluded "tests" test/lifecycle.cjs 'test/**'
+excluded "the test's VS Code download" .vscode-test/code '**/.vscode-test/**'
+excluded "TypeScript configuration" tsconfig.json tsconfig.json
+check_vsix "a file that an ignore pattern's name only begins" 0 "" "$package" tsconfig.json.backup
+excluded "source map" out/extension.js.map '**/*.map'
+excluded "source map at the top, where ** matches no directories" extension.js.map '**/*.map'
+excluded "source map deep in a nested package, where ** matches several directories" \
+    node_modules/minimatch/node_modules/brace-expansion/dist/esm/index.js.map '**/*.map'
+excluded "type declarations in a dependency" node_modules/vscode-jsonrpc/lib/main.d.ts '**/*.d.ts'
+excluded "ESLint configuration in a dependency" node_modules/vscode-languageclient/eslint.config.js \
+    'node_modules/**/eslint.config.js'
+excluded "TypeScript build information in a dependency" node_modules/vscode-jsonrpc/tsconfig.tsbuildinfo \
+    'node_modules/**/tsconfig.tsbuildinfo'
+excluded "a file that vsce leaves out by default" package-lock.json package-lock.json
 check_vsix "a dependency's own test directory" 0 "" "$package" node_modules/vscode-jsonrpc/test/x.js
 check_vsix "a development dependency" 1 \
-    "holds node_modules/@vscode/vsce-sign, which isn't a runtime dependency in package-lock\.json" \
+    "holds node_modules/@vscode/vsce-sign, which package-lock\.json doesn't list as a production package$" \
     "$package" node_modules/@vscode/vsce-sign/package.json
-check_vsix "a package that the lockfile doesn't list" 1 "holds node_modules/left-pad, which isn't" \
+check_vsix "a package that the lockfile doesn't list" 1 "holds node_modules/left-pad, which package-lock" \
     "$package" node_modules/left-pad/index.js
+check_vsix "an unlisted package nested under a dependency's directory" 1 \
+    "holds node_modules/vscode-languageclient/lib/node_modules/left-pad, which package-lock" \
+    "$package" node_modules/vscode-languageclient/lib/node_modules/left-pad/package.json
+check_vsix "an unlisted package outside node_modules at the top" 1 "holds lib/node_modules/left-pad, which" \
+    "$package" lib/node_modules/left-pad/package.json
+check_vsix "a file in node_modules outside a package" 1 "holds node_modules/\.package-lock\.json, which isn't in a package" \
+    "$package" node_modules/.package-lock.json
+vsix "$VSIX" "$package" "${direct[@]}"
+expect_run "check-vsix.py: no transitive dependency" 1 - \
+    "the production package node_modules/minimatch/node_modules/brace-expansion is missing$" \
+    "$CHECK_VSIX" "$VSIX" "$EXT"
+vsix "$VSIX" "$package" LICENSE.txt out/extension.js
+expect_run "check-vsix.py: no direct dependency" 1 - \
+    "the production package node_modules/vscode-languageclient is missing$" "$CHECK_VSIX" "$VSIX" "$EXT"
 vsix "$VSIX" "$package" LICENSE.txt node_modules/vscode-languageclient/package.json
 expect_run "check-vsix.py: no main file" 1 - "the main file out/extension\.js is missing" \
     "$CHECK_VSIX" "$VSIX" "$EXT"
-vsix "$VSIX" "$package" out/extension.js
-expect_run "check-vsix.py: no runtime dependency" 1 - \
-    "the runtime dependency vscode-languageclient is missing" "$CHECK_VSIX" "$VSIX" "$EXT"
 vsix "$TMP/virgil-lsp-vscode.vsix" "$package" "${files[@]}"
 expect_run "check-vsix.py: named without its version" 1 - \
     "the file is virgil-lsp-vscode\.vsix, not virgil-lsp-vscode-7\.8\.9\.vsix" \
@@ -190,6 +226,23 @@ expect_run "check-vsix.py: named without its version" 1 - \
 echo "not a zip file" > "$VSIX"
 expect_run "check-vsix.py: not a zip file" 1 - "virgil-lsp-vscode-7\.8\.9\.vsix is not a zip file" \
     "$CHECK_VSIX" "$VSIX" "$EXT"
+
+# Rules that clients/vscode's .vscodeignore doesn't use: a negation, which vsce
+# applies after every ignore pattern, and a directory named without "/**".
+cp -R "$EXT" "$TMP/rules"
+printf '!src/keep.txt\n# a comment\n\ndocs\n' >> "$TMP/rules/.vscodeignore"
+for f in src/keep.txt src/extension.ts docs/notes.md; do
+    vsix "$VSIX" "$package" "${files[@]}" "$f"
+    "$CHECK_VSIX" "$VSIX" "$TMP/rules" > "$TMP/out" 2> "$TMP/err"
+    echo "$f $?"
+done > "$TMP/rules.out"
+printf 'src/keep.txt 0\nsrc/extension.ts 1\ndocs/notes.md 1\n' > "$TMP/rules.want"
+expect_run "check-vsix.py: a negation keeps a file, and a directory pattern excludes what it holds" 0 - "" \
+    diff "$TMP/rules.want" "$TMP/rules.out"
+printf '*.{js,ts}\n' >> "$TMP/rules/.vscodeignore"
+vsix "$VSIX" "$package" "${files[@]}"
+expect_run "check-vsix.py: a pattern with braces, which it doesn't support" 1 - \
+    "doesn't support the pattern '\*\.\{js,ts\}'" "$CHECK_VSIX" "$VSIX" "$TMP/rules"
 
 # Release assets as the build and vsix jobs produce them: a manifest and an
 # empty archive for each target, and the VSIX.
