@@ -11,11 +11,17 @@ class LspHover {
 	// The Hover of what contains {offset}, if anything does: an occurrence,
 	// with its declaration's signature and its use-site type; otherwise a
 	// declaration's name, with its signature; otherwise a builtin use, with
-	// its type. Null if there is no text to show.
+	// its type. Null if there is no text to show, or if an occurrence's target
+	// is in a file whose bytes are no longer the ones analyzed, as for a
+	// definition; a declaration's name and a builtin use are in the request's
+	// own file, which is checked already.
 	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonValue) {
 		var s = at.snapshot, path = at.path();
 		var o = s.occurrenceAtOffset(path, offset);
-		if (o != null) return (true, hover(at, o.range, o.declaration.signature, o.useType));
+		if (o != null) {
+			if (at.target(o.declaration.range.path).0 < 0) return (true, JsonValue.Null);
+			return (true, hover(at, o.range, o.declaration.signature, o.useType));
+		}
 		var d = s.declarationAtOffset(path, offset);
 		if (d != null) return (true, hover(at, d.range, d.signature, null));
 		var b = s.builtinUseAtOffset(path, offset);
