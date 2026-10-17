@@ -146,7 +146,7 @@ jobs:
       - name: Write and verify SHA256SUMS
         working-directory: release/assets
         # Every file in this directory is a release asset, so SHA256SUMS
-        # covers any asset that a later job adds here.
+        # covers any additional assets placed here before this step.
         run: |
           sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
           mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
