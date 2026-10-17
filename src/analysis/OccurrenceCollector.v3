@@ -84,6 +84,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay)
 		siteList.put(decl);
 	}
 	private def siteVar(v: VarDecl) {
+		// Verification appends synthetic capture parameters to lambda params.
+		// Their tokens are uses in the body, not source declarations.
+		for (l = captures; l != null; l = l.tail) if (l.head.0 == v) return;
 		// "_" declares nothing a use can name.
 		if (v != null && !v.isUnderscore()) site(make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v));
 	}

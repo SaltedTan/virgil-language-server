@@ -20,6 +20,7 @@ def X = [
 	T("AnalysisDisplay:length_bound_long_names", test_length_bound_long_names),
 	T("AnalysisDisplay:shared_tuples", test_shared_tuples),
 	T("AnalysisDisplay:declaration_sites", test_declaration_sites),
+	T("AnalysisDisplay:lambda_capture_sites", test_lambda_capture_sites),
 	T("AnalysisDisplay:without_occurrences", test_without_occurrences),
 	()
 ];
@@ -611,6 +612,41 @@ def test_declaration_sites(t: Tester) {
 		if (i < want.length) t.assert_string(want[i].render(StringBuilder.new()).toString(), got[i].render(StringBuilder.new()).toString());
 		t.assert(got[i].range.beginOffset >= end, "sites in order without overlap");
 		end = got[i].range.endOffset;
+	}
+}
+
+// Captures are uses of outer declarations, not new parameter declarations
+// where the captured variable first appears in a lambda body.
+def test_lambda_capture_sites(t: Tester) {
+	var text = lines([
+		"component Captures {",
+		" def bind(f: int -> int, a: int) => fun => f(a);",
+		" def local() -> (void -> int) { var x = 1; return fun => x; }",
+		" def identity() => fun(p: int) => p;",
+		" def mixed(x: int) => fun(p: int) => fun(q: int) => x + p + q;",
+		"}"
+	]);
+	var r = analyze(t, text, true), s = r.1;
+	if (s == null) return;
+	assertDeclares(t, r, text, "fun(p: int)", 4, AnalysisDeclKind.PARAMETER, "p: int");
+	assertDeclares(t, r, text, "fun(p: int) => fun", 4, AnalysisDeclKind.PARAMETER, "p: int");
+	assertDeclares(t, r, text, "fun(q: int)", 4, AnalysisDeclKind.PARAMETER, "q: int");
+	assertUses(t, r, text, "fun => f(a)", 7, "f: int -> int", null);
+	assertUses(t, r, text, "fun => f(a)", 9, "a: int", null);
+	assertUses(t, r, text, "fun => x", 7, "var x: int", null);
+	assertUses(t, r, text, "fun(q: int) => x + p + q", 15, "x: int", null);
+	assertUses(t, r, text, "fun(q: int) => x + p + q", 19, "p: int", null);
+	assertUses(t, r, text, "fun(q: int) => x + p + q", 23, "q: int", null);
+	var captureOffsets = [offset(t, text, "fun => f(a)", 7),
+		offset(t, text, "fun => f(a)", 9), offset(t, text, "fun => x", 7),
+		offset(t, text, "fun(q: int) => x + p + q", 15),
+		offset(t, text, "fun(q: int) => x + p + q", 19)];
+	for (at in captureOffsets) {
+		t.assert(s.declarationAtOffset(PATH, at) == null, "a captured use is not a declaration site");
+		for (d in r.0.declarationSites(PATH)) {
+			t.assert(at < d.range.beginOffset || at >= d.range.endOffset,
+				"the analysis excludes synthetic capture parameters from sites");
+		}
 	}
 }
 
