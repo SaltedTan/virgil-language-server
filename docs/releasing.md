@@ -4,7 +4,7 @@ A version tag publishes a GitHub prerelease of the server through the [release w
 
 ## What a release contains
 
-Until v1.0 every release is a GitHub **prerelease**, tagged `vX.Y.Z-alpha.N` by default. Its assets are:
+Every release is a GitHub **prerelease**. Before v1.0, use tags such as `vX.Y.Z-alpha.N`. Release assets are:
 
 | Asset | Contents |
 | --- | --- |
@@ -24,12 +24,12 @@ Each archive holds one directory, `virgil-lsp-<version>-<target>/`, with:
 | --- | --- |
 | `manifestVersion` | `1`, the format of this file |
 | `name`, `version`, `target` | `virgil-lsp`, the contents of `VERSION`, and the Virgil target, such as `x86-64-linux` |
-| `tag` | The release tag, or `null` for a [dry run](#dry-runs) or a local build |
+| `tag` | The tag passed with `--tag`, or `null` when omitted, as in a branch [dry run](#dry-runs) |
 | `sourceRevision` | The full commit SHA of the server source |
 | `dirty` | `true` only for local builds with `--allow-dirty`; releases are always `false` |
 | `virgilRevision` | The full commit SHA of the Virgil checkout compiled into the server |
 | `workerHeap` | The analysis worker's heap size, `WORKER_HEAP` in the `Makefile` |
-| `compiler` | `path`, the Aeneas binary that compiled the executables, relative to the Virgil checkout, and its `sha256` |
+| `compiler` | `path`, the Aeneas binary that compiled the executables, relative to the Virgil checkout when inside it and otherwise absolute, and its `sha256` |
 | `sha256` | The SHA-256 of `virgil-lsp` and `virgil-lsp-worker` |
 
 The executables are unsigned and not notarized. Nothing is published to the VS Code Marketplace or a package manager. The VS Code extension is versioned separately and isn't part of the release yet; when it is, its package becomes another asset and is listed in `SHA256SUMS`.
@@ -39,11 +39,11 @@ The executables are unsigned and not notarized. Nothing is published to the VS C
 The workflow runs for every pushed tag that starts with `v`, and as a [dry run](#dry-runs) by hand or on a pull request that changes it or its scripts. Its jobs run in this order, and each needs the previous one to succeed:
 
 1. **Check version.** For a tag, [`scripts/check-release.sh`](../scripts/check-release.sh) requires the tag to be `v` followed by `VERSION`, `VERSION` to be a semantic version, and `CHANGELOG.md` to have a `## [<version>]` section.
-2. **Build, test, and package**, on `ubuntu-24.04` (Linux x86-64) and on `macos-15` (Apple Silicon, under Rosetta 2), from the tagged commit with submodules. Each runs `make test` as CI does, then [`scripts/package-release.sh`](../scripts/package-release.sh), which refuses a modified checkout or a Virgil checkout other than the pinned one, builds in a new directory, and writes the archive and its manifest. [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) then extracts the archive in a new temporary directory and runs it there with an empty environment: it checks the files against the manifest, runs `--version`, and runs `analyze` on a two-file program and on a program with a type error, directly and through a symlink. Because the build is deterministic, the job also checks that the packaged executables are byte for byte the ones `make test` tested.
+2. **Build, test, and package**, on `ubuntu-24.04` (Linux x86-64) and on `macos-15` (Apple Silicon, under Rosetta 2), from the selected commit with submodules. Each runs `make test` as CI does, then [`scripts/package-release.sh`](../scripts/package-release.sh), which refuses a modified checkout or a Virgil checkout other than the pinned one, builds in a new directory, and writes the archive and its manifest. [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) then extracts the archive in a new temporary directory and runs it there with an empty environment: it checks the files against the manifest, runs `--version`, runs `analyze` on a two-file program both directly and through a symlink, and checks semantic-error reporting directly. Because the build is deterministic, the job also checks that the packaged executables are byte for byte the ones `make test` tested.
 3. **Write and verify SHA256SUMS** over every file the build jobs produced, and write the release notes with [`scripts/release-notes.py`](../scripts/release-notes.py): the version's `CHANGELOG.md` section, the archives, and the server and Virgil revisions. The notes script fails if the manifests disagree about the version, tag, or revisions.
 4. **Publish prerelease**, only for a pushed tag. It verifies `SHA256SUMS` again, refuses to continue if the tag already has a release, and creates the prerelease with all assets and the notes.
 
-Only the publish job can write to the repository (`contents: write`); the others can only read. A failure in any job means nothing is published.
+Only the publish job can write to the repository (`contents: write`); the others can only read. It uses the job's `GITHUB_TOKEN`, with no protected environment configured. Publishing starts only after the build and checksum jobs succeed.
 
 ## Making a release
 
@@ -67,7 +67,7 @@ Only the publish job can write to the repository (`contents: write`); the others
 
 ## When a job fails
 
-Nothing is published unless every job succeeds, so a failed run leaves at most a pushed tag behind.
+Build and checksum failures leave at most a pushed tag behind. A publication failure may also leave a draft release, as described below.
 
 - **Check version** failed: the tag doesn't match `VERSION`, or `CHANGELOG.md` lacks the section. Delete the tag (`git push origin --delete <tag>` and `git tag -d <tag>`), fix `main` through a pull request, and tag again.
 - **Build, test, and package** or **Write and verify SHA256SUMS** failed because of the code, the scripts, or the workflow: delete the tag the same way, fix `main`, and tag the fixed commit. A release always comes from a tagged commit that passed every job.
@@ -84,9 +84,9 @@ gh workflow run release.yml --ref main
 gh run watch    # choose the new Release run
 ```
 
-A dry run builds, tests, packages, and smoke-tests both archives, and writes and verifies `SHA256SUMS`, but never publishes. The release notes use the `## [Unreleased]` section, and the manifests' `tag` is `null`. Download the result, the same files that a release would attach plus `notes.md`, with `gh run download <run-id> --name release`. Each build job also keeps its archive and manifest as `archive-<target>`.
+A dry run builds, tests, packages, and smoke-tests both archives, and writes and verifies `SHA256SUMS`, but never publishes. On a branch or pull request, the release notes use the `## [Unreleased]` section, and the manifests' `tag` is `null`. Download the result, the same files that a release would attach plus `notes.md`, with `gh run download <run-id> --name release`. Each build job also keeps its archive and manifest as `archive-<target>`.
 
-A dry run from a tag (`--ref v0.1.0-alpha.1`) also checks the tag, but still doesn't publish.
+A dry run from a tag (`--ref v0.1.0-alpha.1`) checks and records the tag and uses that version's changelog section, but still doesn't publish.
 
 A pull request that changes `release.yml`, `check-release.sh`, `package-release.sh`, `release-notes.py`, or `smoke-test-release.sh` also dry-runs the workflow, because GitHub only runs a workflow by hand once it is on the default branch. Other changes that could break packaging, such as to the `Makefile` or `scripts/v3c.sh`, don't trigger it; dry-run `main` after merging them.
 
@@ -97,7 +97,7 @@ scripts/package-release.sh build/release
 scripts/smoke-test-release.sh build/release/virgil-lsp-<version>-<target>.tar.gz
 ```
 
-The packaging script uses the host target and the same environment variables as `make` ([Build and test](development.md#build-and-test)). It refuses uncommitted changes, including untracked files under `src/`, and a Virgil checkout other than the pinned one; `--allow-dirty` packages anyway and records `"dirty": true`. If Virgil's `bin/v3c` launcher has replaced itself with a symlink, the script restores it, since the build doesn't use it. On Linux, the macOS archive can be built for inspection, but not run, with `VIRGIL_V3C=$PWD/vendor/virgil/bin/stable/x86-64-linux/Aeneas V3C_TARGET=x86-64-darwin scripts/package-release.sh build/release`.
+The packaging script uses the host target and the same environment variables as `make` ([Build and test](development.md#build-and-test)). It refuses uncommitted changes, including untracked files under `src/`, and a Virgil checkout other than the pinned one; `--allow-dirty` permits those inputs and records `"dirty": true` when any are detected. If Virgil's `bin/v3c` launcher has replaced itself with a symlink, the script restores it, since the build doesn't use it. On Linux, the macOS archive can be built for inspection, but not run, with `VIRGIL_V3C=$PWD/vendor/virgil/bin/stable/x86-64-linux/Aeneas V3C_TARGET=x86-64-darwin scripts/package-release.sh build/release`.
 
 ## Verifying a download
 
@@ -137,7 +137,7 @@ ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.1-x86-64-linux/virgil-lsp ~/.local/bi
 virgil-lsp --version
 ```
 
-Make sure `~/.local/bin` is on the `PATH` that the editor sees. A copy of `virgil-lsp` or a wrapper script elsewhere doesn't work without a `virgil-lsp-worker` beside it.
+Make sure `~/.local/bin` is on the `PATH` that the editor sees. If you copy `virgil-lsp` elsewhere, copy `virgil-lsp-worker` beside it too; a wrapper that starts the original server can leave the worker in the original directory.
 
 To upgrade, extract the new archive next to the old one and point the symlink at it. To roll back, point the symlink at the old directory again. To uninstall, remove the symlink and the directory.
 

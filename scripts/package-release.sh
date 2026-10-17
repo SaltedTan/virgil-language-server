@@ -14,8 +14,8 @@
 #
 # --tag checks the tag with scripts/check-release.sh and records it in the
 # manifest; without it, the manifest's tag is null. The checkout must be clean
-# and Virgil must be at the pinned revision. --allow-dirty packages anyway and
-# records "dirty": true, for trying the script; releases never use it.
+# and Virgil must be at the pinned revision. See docs/releasing.md for the
+# --allow-dirty option for local builds; releases never use it.
 #
 # VIRGIL, VIRGIL_V3C, V3C_TARGET, and WORKER_HEAP select the build as they do
 # for make (docs/development.md). The build runs in a new temporary directory,

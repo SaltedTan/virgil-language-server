@@ -7,8 +7,8 @@
 # there with an empty environment: its files and their checksums must match
 # the manifest, --version must report the manifest's version and Virgil
 # revision, and the analyze command, which needs the worker, must verify one
-# program and report the errors in another, both directly and through a
-# symlink as docs/releasing.md installs it.
+# program and report the errors in another. The working program is also checked
+# through a symlink as docs/releasing.md installs it.
 # Usage: smoke-test-release.sh <archive>
 set -uo pipefail
 
