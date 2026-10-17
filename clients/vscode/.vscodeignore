@@ -1,0 +1,12 @@
+# Files that vsce leaves out of the VSIX. vsce adds the runtime dependencies
+# from node_modules itself, without the development dependencies, and keeps
+# each package's own license and notice files.
+.vscode/**
+.vscode-test/**
+src/**
+test/**
+tsconfig.json
+**/*.map
+**/*.d.ts
+node_modules/**/eslint.config.js
+node_modules/**/tsconfig.tsbuildinfo

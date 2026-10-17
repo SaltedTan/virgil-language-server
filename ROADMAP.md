@@ -352,7 +352,7 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 
 ### Visual Studio Code
 
-The thin TypeScript development client is present. Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md).
+The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md).
 
 Remaining work:
 
@@ -481,7 +481,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
 16. Implement hover.
 17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
-18. Add VS Code client E2E test and prerelease packaging. *(partial: [Extension Host test](clients/vscode/README.md#extension-host-test) present)*
+18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); attaching the VSIX to GitHub prereleases is part of the release workflow)*
 
 Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
 

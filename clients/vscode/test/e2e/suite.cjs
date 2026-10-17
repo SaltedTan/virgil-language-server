@@ -183,6 +183,12 @@ async function workspace(extension) {
 async function run() {
   const extension = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(extension, `${EXTENSION_ID} is not loaded`);
+  // run.cjs sets this when it installed the extension from a VSIX.
+  const installed = process.env.VIRGIL_E2E_EXTENSIONS_DIR;
+  if (installed !== undefined) {
+    assert.equal(path.dirname(extension.extensionPath), installed,
+      `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
+  }
   if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
   else await workspace(extension);
 }

@@ -88,6 +88,15 @@ jobs:
         run: npm run check
       - name: Lifecycle tests
         run: npm test
+      - name: Package the VSIX
+        run: npm run package
+      - name: List the VSIX
+        run: unzip -l virgil-lsp-vscode-*.vsix
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix
+          path: clients/vscode/virgil-lsp-vscode-*.vsix
+          if-no-files-found: error
 
   vscode-extension-host:
     # The runner image includes xvfb-run. The test downloads its pinned VS Code
@@ -112,3 +121,9 @@ jobs:
       - name: Extension Host test
         working-directory: clients/vscode
         run: xvfb-run -a npm run test:e2e
+      - name: Package the VSIX
+        working-directory: clients/vscode
+        run: npm run package
+      - name: Extension Host test against the installed VSIX
+        working-directory: clients/vscode
+        run: xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-*.vsix
