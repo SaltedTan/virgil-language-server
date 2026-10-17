@@ -624,7 +624,10 @@ class AnalysisPackings {
 	// the error limit. Only Verifier.verifyPacking sets the bit width, which
 	// is the declared size as a byte. A size from 1 to 64 makes it nonzero;
 	// any other size, including one that truncates to 0, is reported at the
-	// size literal, where nothing else reports an error.
+	// size literal, where nothing else reports an error. Exact for each
+	// indexed file: errors name a file by path, so copies of a repeated path
+	// share coordinates, and a skipped copy can match another's error. Only
+	// the first copy of a path is indexed (see ProgramAnalysis).
 	def verified(p: VstPacking) -> bool {
 		if (p.bitWidth != 0) return true;
 		for (l = unsized; l != null; l = l.tail) if (l.head == p) return true;

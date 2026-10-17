@@ -30,6 +30,7 @@ def X = [
 	T("OccurrenceCoverage:packing_invalid_widths", test_packing_invalid_widths),
 	T("OccurrenceCoverage:packing_after_error_limit", test_packing_after_error_limit),
 	T("OccurrenceCoverage:packing_at_error_limit", test_packing_at_error_limit),
+	T("OccurrenceCoverage:packing_at_error_limit_repeated_path", test_packing_at_error_limit_repeated_path),
 	T("OccurrenceCoverage:existing_uses", test_existing_uses),
 	T("OccurrenceCoverage:fixture", test_fixture),
 	T("OccurrenceCoverage:lib_util", test_lib_util),
@@ -924,6 +925,44 @@ def test_layout_and_packing_fixtures(t: Tester) {
 	s.close();
 	t.asserti(CRASHING_FIXTURES.length, crashed);
 	t.assert(layouts > 0 && parameters > 0 && packings > 0, "the fixtures use layouts, packing parameters, and packings");
+}
+// Two copies of one path share coordinates. A's width error reaches the
+// limit, so verification skips B, although B has a matching error position.
+// Only the first copy is indexed, so a worker publishes A's uses alone.
+def test_packing_at_error_limit_repeated_path(t: Tester) {
+	var first = "packing A(a: 4): 0 = a;\n", second = "packing B(b: 4): 0 = b;\n", path = "same.v3";
+	var sources = [
+		AnalysisSource.new("errors.v3", afterErrors(AeneasAdapter.PROGRAM_MAX_ERRORS - 1, [])),
+		AnalysisSource.new(path, first),
+		AnalysisSource.new(path, second)
+	];
+	var s = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var outcome = s.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS);
+	s.close();
+	match (outcome) {
+		Completed(snapshot) => {
+			t.assertz(false, snapshot.verified);
+			// A's two errors follow the 14; B's would make two more.
+			t.asserti(AeneasAdapter.PROGRAM_MAX_ERRORS + 1, snapshot.diagnostics.length);
+			t.asserti(0, snapshot.stats.skippedUses);
+			var uses = snapshot.occurrences(path);
+			t.asserti(1, uses.length);
+			if (uses.length == 1) {
+				var o = uses[0], d = o.declaration;
+				t.asserti(indexOf(first, "= a;") + 2, o.range.beginOffset);
+				t.asserti(o.range.beginOffset + 1, o.range.endOffset);
+				t.assert(d.kind == AnalysisDeclKind.PARAMETER && Strings.equal(d.name, "a"), "the use names A's parameter");
+				t.asserti(indexOf(first, "a: 4"), d.range.beginOffset);
+			}
+			var sites = snapshot.declarationSites(path);
+			t.asserti(2, sites.length);
+			if (sites.length == 2) {
+				t.assert_string("packing A(a: 4): 0", sites[0].signature);
+				t.assert_string("a: 4", sites[1].signature);
+			}
+		}
+		_ => t.fail("the program did not analyze");
+	}
 }
 // The largest program we have, analyzed by a worker as the server does.
 def test_aeneas_sources(t: Tester) {
