@@ -10,6 +10,7 @@ def X = [
 	T("LspAnalyzedText:overlays", test_overlays),
 	T("LspAnalyzedText:disk_files", test_disk_files),
 	T("LspAnalyzedText:publication_rereads_disk", test_publication_rereads_disk),
+	T("LspAnalyzedText:hash_and_empty_retained_source", test_hash_and_empty_retained_source),
 	()
 ];
 def A = "component A { def a() -> int { return B.b(); } }\n";
@@ -128,6 +129,7 @@ def test_provenance_charge(t: Tester) {
 	var snapshot = AnalysisSnapshot.new(1, paths, true, true, [], AnalysisSnapshotStats.new(-1, -1, -1, -1, -1, -1, -1), false, []);
 	snapshot.recordDocumentVersions(captured.0.versions);
 	t.assertl(captured.0.snapshotBytes, snapshot.retainedBytes);
+	t.assertl(1024L + 2 * 272 + paths[0].length + paths[1].length + keys[0].length + keys[1].length, snapshot.retainedBytes);
 	var disk = snapshot.documentVersions[1];
 	t.asserti(B.length, disk.length);
 	t.assert(disk.hash == LspAnalysisCapture.hash(B), "the disk input's hash is kept");
@@ -144,6 +146,9 @@ def test_overlays(t: Tester) {
 	t.assert_string(B, s.text(snapshot, "B.v3"));
 	t.assert(snapshot.documentIndex("untitled:absent") < 0, "unrecorded URI");
 	t.assert(LspAnalysisCapture.analyzedText(store, snapshot, -1) == null, "no text for an unrecorded URI");
+	t.assert(LspAnalysisCapture.analyzedText(store, snapshot, snapshot.documentVersions.length) == null, "upper index bound");
+	t.asserti(snapshot.documentIndex(s.uri("B.v3")), snapshot.documentIndex(Strings.format1("FILE://localhost%s", s.path("B.v3"))));
+	t.asserti(-1, snapshot.documentIndex("file://remote/a.v3"));
 	t.assert(store.change(s.uri("A.v3"), 4, "component A { }\n") == null, "edit");
 	t.assert(s.text(snapshot, "A.v3") == null, "edited overlay");
 	t.assert_string(B, s.text(snapshot, "B.v3"));
@@ -166,6 +171,12 @@ def test_disk_files(t: Tester) {
 	if (snapshot == null) return s.server.close();
 	t.assert_string(B, s.text(snapshot, "B.v3"));
 	t.assert_string(C, s.text(snapshot, "C.v3"));
+	// Reading a disk input checks its bytes, even while a newer overlay makes
+	// its stamp stale. The caller decides whether that stamp matters.
+	t.assert(s.store.open(s.uri("B.v3"), "virgil", 0, "def unsaved = 1;\n") == null, "open disk source");
+	t.assertz(false, snapshot.matchesDocument(s.store, s.uri("B.v3")));
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	t.assert(s.store.close(s.uri("B.v3")) == null, "close disk source");
 	// A reported event makes the stamp stale; the check is of the bytes.
 	s.reportChanged("B.v3");
 	t.assertz(false, snapshot.matchesDocument(s.store, s.uri("B.v3")));
@@ -182,6 +193,29 @@ def test_disk_files(t: Tester) {
 	t.assert_string(C, s.text(snapshot, "C.v3"));
 	s.remove(t, "C.v3");
 	t.assert(s.text(snapshot, "C.v3") == null, "deleted");
+	s.server.close();
+}
+def test_hash_and_empty_retained_source(t: Tester) {
+	t.assert(LspAnalysisCapture.hash("") == 0xcbf29ce484222325ul, "FNV-1a empty vector");
+	t.assert(LspAnalysisCapture.hash("a") == 0xaf63dc4c8601ec8cul, "FNV-1a a vector");
+	t.assert(LspAnalysisCapture.hash("hello") == 0xa430d84680aabd0bul, "FNV-1a hello vector");
+	var s = AnalyzedTextSession.new(t);
+	s.write(t, "C.v3", "");
+	var snapshot = s.analyze(t);
+	if (snapshot == null) return s.server.close();
+	var i = snapshot.documentIndex(s.uri("C.v3"));
+	t.assert(i >= 0, "empty source indexed");
+	if (i < 0) return s.server.close();
+	t.asserti(0, snapshot.documentVersions[i].length);
+	t.assert_string("", s.text(snapshot, "C.v3"));
+	// Complete another run, discarding the first run's transient inputs, and
+	// keep reading the original snapshot rather than the latest result.
+	var next = s.analyze(t);
+	t.assert(next != null && next != snapshot, "another result completed");
+	t.assert_string(B, s.text(snapshot, "B.v3"));
+	t.assert_string("", s.text(snapshot, "C.v3"));
+	s.write(t, "C.v3", " ");
+	t.assert(s.text(snapshot, "C.v3") == null, "growth from an empty source rejected");
 	s.server.close();
 }
 // Publication converts a closed file's diagnostics only over its analyzed text.
