@@ -60,13 +60,13 @@ An index operation, such as `c[i]`, occupies its opening bracket, a one-byte tok
 
 Not yet indexed: layout references through `MemoryTypeRef` and `Ref<L>`, so `Ref<L>` has no occurrence, and packing parameters and applications. The `OccurrenceCoverage` unit tests cover each kind above, with and without semantic errors, through the worker encoding.
 
-The collector counts the uses it skips because they are not token spans (`ProgramAnalysis.skippedUses`; see [Coordinates](#coordinates)). The worker adds any occurrences the encoder omits and sends the total as a `RESULT` statistic, and the supervisor logs a warning when it is not zero. [Running](development.md#running) owns the CLI reporting options. Tests require it to be zero for the Aeneas sources, `lib/util`, and the occurrence fixtures, and check that their occurrences are in byte order without overlaps and spell their targets. Collecting the Aeneas sources takes about 3 ms more: 36 ms and 39 ms before, against 40 ms and 41 ms after, in two sets of medians of 10 fresh-process `analyze --stats --bindings` runs of each build, interleaved. A 1 GB worker heap gives the same difference, so it is not collection pressure. Their occurrence counts and decoded result allocation are in [ADR-0004](decisions/0004-analysis-worker-process.md#supported-program-size).
+The collector counts the uses it skips because they are not token spans (`ProgramAnalysis.skippedUses`; see [Coordinates](#coordinates)). The worker adds any occurrences the encoder omits and sends the total as a `RESULT` statistic, and the supervisor logs a warning when it is not zero. [Running](development.md#running) owns the CLI reporting options. Tests require it to be zero for the Aeneas sources, `lib/util`, and the occurrence fixtures, and check that their occurrences are in byte order without overlaps and spell their targets. [Display text](#display-text) records the collection timings; occurrence counts and decoded result allocation are in [ADR-0004](decisions/0004-analysis-worker-process.md#supported-program-size).
 
 Occurrence targets use source declarations rather than compiler-generated parameters or constructors: lambda captures follow their outer bindings (including nested captures), `this` resolves to the enclosing class, and default `.new` resolves to the class name. Explicit constructors still target their `new` declaration. Inline `export def` declarations have no separate use token and are omitted, including aliased declarations and declarations with semantic errors; separately named exports remain indexed.
 
 The adapter never runs initializers, reachability analysis, or code generation.
 
-`build/virgil-lsp analyze [--bindings] [--display] [--stats] [--repeat=n] <file.v3>...` exercises this path from the command line, through the analysis worker.
+The development [`analyze` command](development.md#running) exercises this path through the analysis worker.
 
 ### Display text
 

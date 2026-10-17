@@ -204,18 +204,6 @@ class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersi
 class AnalysisSnapshotStats(parseUs: int, verifyUs: int, collectUs: int, uidsUsed: int,
 	uidNext: int, globalTypesAdded: int, globalTypeTotal: int, skippedUses: int) { }
 
-// The index of one file, without an object per use: {ranges} holds the begin
-// line, begin column, begin offset, and byte length of occurrence i at 4 * i,
-// and {targets} holds its index in the snapshot's declarations. An
-// occurrence is a token span (see AnalysisRange.isTokenSpan): it ends on its
-// begin line, and its length is also its compiler column span. Occurrences
-// are in source order and do not overlap. {typed} holds pairs of an
-// occurrence index, in increasing order, and the string index of that
-// occurrence's use-site type. {builtins} holds five ints per builtin use: a
-// range as an occurrence's, and the string index of its type; builtin uses
-// are also token spans in source order. The file's declaration sites are
-// the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
-// source order.
 // A snapshot's file indexes, one for each distinct path of its request, in
 // request order. A result names a file by its index here, so decoding never
 // looks a path up by text. Lookups by text binary-search the paths in byte
@@ -272,6 +260,18 @@ class AnalysisSnapshotFiles {
 	}
 }
 
+// The index of one file, without an object per use: {ranges} holds the begin
+// line, begin column, begin offset, and byte length of occurrence i at 4 * i,
+// and {targets} holds its index in the snapshot's declarations. An
+// occurrence is a token span (see AnalysisRange.isTokenSpan): it ends on its
+// begin line, and its length is also its compiler column span. Occurrences
+// are in source order and do not overlap. {typed} holds pairs of an
+// occurrence index, in increasing order, and the string index of that
+// occurrence's use-site type. {builtins} holds five ints per builtin use: a
+// range as an occurrence's, and the string index of its type; builtin uses
+// are also token spans in source order. The file's declaration sites are
+// the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
+// source order.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
 		firstSite: int, siteCount: int) {
 	def range(path: string, i: int) -> AnalysisRange {

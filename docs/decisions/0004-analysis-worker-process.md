@@ -87,7 +87,7 @@ Automatic [semantic diagnostics](../architecture.md#semantic-diagnostics) submit
 
 ### Measurements
 
-Linux x86-64, Intel Core i7-14700KF, `virgil-lsp analyze --stats --bindings --repeat=10` on the Aeneas sources and their dependencies (198 files, 80,285 lines, 2.9 MB). The server's heap was the default 200 MB in every row; only the worker's heap varied. Each analysis collected 162,929 bindings, and the result frame was 2.0 MB. The parse and verify columns are for analysis 10.
+Initial worker-heap measurements, before the later occurrence and display-data extensions: Linux x86-64, Intel Core i7-14700KF, `virgil-lsp analyze --stats --bindings --repeat=10` on the Aeneas sources and their dependencies (198 files, 80,285 lines, 2.9 MB). The server's heap was the default 200 MB in every row; only the worker's heap varied. Each analysis collected 162,929 bindings, and the result frame was 2.0 MB. The parse and verify columns are for analysis 10. [Supported program size](#supported-program-size) records current result sizes, and [Display text](../architecture.md#display-text) records current collection timings.
 
 | Worker heap | Parse | Verify | Collect bindings (runs 1 / 2 / 10) | Wall time (10 runs) | Peak RSS |
 | --- | ---: | ---: | --- | ---: | ---: |
