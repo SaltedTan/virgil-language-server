@@ -150,4 +150,4 @@ For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Re
 14. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit.
 15. Close any buffers that contain a known parser crash input, then terminate the server process to trigger automatic recovery. During recovery, separately try **Virgil: Restart Language Server**, changing `virgil.server.path`, and closing the window. Each action waits for recovery to finish; restart and configuration changes stop the recovered server before starting its replacement, and closing the window sends `shutdown` then `exit` to the recovered server. Confirm that only one server remains after a restart and none remains after closing the window.
 
-Record the VS Code version, the platform, and the server version in the pull request.
+Record the VS Code version, the platform, and the server version in the pull request, and for a release in the [manual test results](../../docs/manual-testing.md#results).

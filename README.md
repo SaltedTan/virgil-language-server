@@ -23,7 +23,7 @@ One server, used by both LazyVim/Neovim and VS Code, providing:
 - hover with declaration signatures and inferred types
 - a [`.virgil-lsp.json` project file](docs/configuration.md) describing which sources form a program
 
-Completion, references, rename, and incremental analysis come after v0.1. Formatting and debugging are out of scope.
+Completion, references, rename, and incremental analysis come after v0.1. Formatting and debugging are out of scope. [Known limitations](docs/known-limitations.md) lists what else the alpha doesn't do yet.
 
 ## Architecture
 
