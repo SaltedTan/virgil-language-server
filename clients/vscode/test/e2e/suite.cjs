@@ -79,6 +79,12 @@ async function hovers(editor, line, character) {
   ]);
 }
 
+// The name, kind, file, and range of each symbol that a workspace symbol query returns.
+async function workspaceSymbols(query) {
+  const result = await vscode.commands.executeCommand('vscode.executeWorkspaceSymbolProvider', query);
+  return (result ?? []).map((symbol) => [symbol.name, symbol.kind, symbol.location.uri.fsPath, ...range(symbol.location)]);
+}
+
 async function documentSymbols(editor) {
   const result = await vscode.commands.executeCommand(
     'vscode.executeDocumentSymbolProvider', editor.document.uri,
@@ -187,6 +193,11 @@ async function workspace(extension) {
   assert.deepEqual(await hovers(words, use, column), [
     [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
   ]);
+  // Workspace symbols come from the same analysis: join, which nothing uses,
+  // is a method in the project's own words/Words.v3.
+  assert.deepEqual((await workspaceSymbols('join')).slice(0, 1), [
+    ['join', vscode.SymbolKind.Method, words.document.uri.fsPath, 5, 5, 5, 9],
+  ]);
 
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
@@ -210,7 +221,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

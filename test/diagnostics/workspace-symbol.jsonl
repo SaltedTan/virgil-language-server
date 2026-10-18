@@ -1,0 +1,55 @@
+# workspace/symbol over two projects, app and tool, that share shared/Shared.v3: before any analysis,
+# after both, with an unsaved edit to the shared file, and after a configuration change drops tool.
+# Replies never wait for an analysis, so a definition request, which does, follows each change that
+# schedules one; once it is answered, that analysis has completed.
+{"write":[".virgil-lsp.json","{\"version\": 1, \"projects\": [{\"name\": \"app\", \"sources\": [\"app/*.v3\", \"shared/*.v3\"]}, {\"name\": \"tool\", \"sources\": [\"tool/*.v3\", \"shared/*.v3\"]}]}\n"]}
+{"write":["app/App.v3","component App {\n\tdef main() -> int { return Shared.count; }\n}\n"]}
+{"write":["tool/Tool.v3","component Tool {\n\tdef main() -> int { return Shared.count; }\n}\n"]}
+{"write":["shared/Shared.v3","component Shared {\n\tdef count = 1;\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+# Before a document opens, no project is loaded, so nothing matches.
+{"send":{"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"main"}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":[]}}
+# Opening app/App.v3 loads the project file, which schedules both projects, app first. Each
+# definition request waits for its file's project: app's, then tool's, which the second makes urgent.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/app/App.v3","languageId":"virgil","version":1,"text":"component App {\n\tdef main() -> int { return Shared.count; }\n}\n"}}},{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"@TMP@/app/App.v3"},"position":{"line":1,"character":35}}},{"jsonrpc":"2.0","id":4,"method":"textDocument/definition","params":{"textDocument":{"uri":"@TMP@/tool/Tool.v3"},"position":{"line":1,"character":35}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/app/App.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"range":{"end":{"character":10,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/shared/Shared.v3"}}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":{"range":{"end":{"character":10,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/shared/Shared.v3"}}}
+# Both programs declare main; ties rank by path. The shared file yields one count, though both
+# programs analyzed it. The empty query returns every symbol, by name.
+{"send":{"jsonrpc":"2.0","id":5,"method":"workspace/symbol","params":{"query":"main"}}}
+{"recv":{"jsonrpc":"2.0","id":5,"result":[{"kind":6,"location":{"range":{"end":{"character":9,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/app/App.v3"},"name":"main"},{"kind":6,"location":{"range":{"end":{"character":9,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/tool/Tool.v3"},"name":"main"}]}}
+{"send":{"jsonrpc":"2.0","id":6,"method":"workspace/symbol","params":{"query":"count"}}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":[{"kind":8,"location":{"range":{"end":{"character":10,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/shared/Shared.v3"},"name":"count"}]}}
+{"send":{"jsonrpc":"2.0","id":7,"method":"workspace/symbol","params":{"query":""}}}
+{"recv":{"jsonrpc":"2.0","id":7,"result":[{"kind":3,"location":{"range":{"end":{"character":13,"line":0},"start":{"character":10,"line":0}},"uri":"@TMP@/app/App.v3"},"name":"App"},{"kind":8,"location":{"range":{"end":{"character":10,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/shared/Shared.v3"},"name":"count"},{"kind":6,"location":{"range":{"end":{"character":9,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/app/App.v3"},"name":"main"},{"kind":6,"location":{"range":{"end":{"character":9,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/tool/Tool.v3"},"name":"main"},{"kind":3,"location":{"range":{"end":{"character":16,"line":0},"start":{"character":10,"line":0}},"uri":"@TMP@/shared/Shared.v3"},"name":"Shared"},{"kind":3,"location":{"range":{"end":{"character":14,"line":0},"start":{"character":10,"line":0}},"uri":"@TMP@/tool/Tool.v3"},"name":"Tool"}]}}
+# An unsaved edit to the shared file adds total above count. Until an analysis of the edit completes,
+# both analyses of the file are stale, so its symbols are left out rather than shown where they were.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/shared/Shared.v3","languageId":"virgil","version":1,"text":"component Shared {\n\tdef total = 2;\n\tdef count = 1;\n}\n"}}},{"jsonrpc":"2.0","id":8,"method":"workspace/symbol","params":{"query":"count"}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/shared/Shared.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","id":8,"result":[]}}
+# Once app's analysis of the edit completes, count is where the edit put it, and total, which nothing
+# uses, is found.
+{"send":{"jsonrpc":"2.0","id":9,"method":"textDocument/definition","params":{"textDocument":{"uri":"@TMP@/app/App.v3"},"position":{"line":1,"character":35}}}}
+{"recv":{"jsonrpc":"2.0","id":9,"result":{"range":{"end":{"character":10,"line":2},"start":{"character":5,"line":2}},"uri":"@TMP@/shared/Shared.v3"}}}
+{"send":{"jsonrpc":"2.0","id":10,"method":"workspace/symbol","params":{"query":"count"}}}
+{"recv":{"jsonrpc":"2.0","id":10,"result":[{"kind":8,"location":{"range":{"end":{"character":10,"line":2},"start":{"character":5,"line":2}},"uri":"@TMP@/shared/Shared.v3"},"name":"count"}]}}
+{"send":{"jsonrpc":"2.0","id":11,"method":"workspace/symbol","params":{"query":"total"}}}
+{"recv":{"jsonrpc":"2.0","id":11,"result":[{"kind":8,"location":{"range":{"end":{"character":10,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/shared/Shared.v3"},"name":"total"}]}}
+# The project file, changed on disk, drops tool. The new app project has no snapshot until its
+# analysis completes, and tool's symbols are gone.
+{"write":[".virgil-lsp.json","{\"version\": 1, \"projects\": [{\"name\": \"app\", \"sources\": [\"app/*.v3\", \"shared/*.v3\"]}]}\n"]}
+{"send":[{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"@TMP@/.virgil-lsp.json","type":2}]}},{"jsonrpc":"2.0","id":12,"method":"workspace/symbol","params":{"query":"main"}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","id":12,"result":[]}}
+{"send":{"jsonrpc":"2.0","id":13,"method":"textDocument/definition","params":{"textDocument":{"uri":"@TMP@/app/App.v3"},"position":{"line":1,"character":35}}}}
+{"recv":{"jsonrpc":"2.0","id":13,"result":{"range":{"end":{"character":10,"line":2},"start":{"character":5,"line":2}},"uri":"@TMP@/shared/Shared.v3"}}}
+{"send":{"jsonrpc":"2.0","id":14,"method":"workspace/symbol","params":{"query":"main"}}}
+{"recv":{"jsonrpc":"2.0","id":14,"result":[{"kind":6,"location":{"range":{"end":{"character":9,"line":1},"start":{"character":5,"line":1}},"uri":"@TMP@/app/App.v3"},"name":"main"}]}}
+{"send":{"jsonrpc":"2.0","id":15,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":15,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}

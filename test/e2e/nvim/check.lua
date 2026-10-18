@@ -151,6 +151,17 @@ local function check()
     and hover.range["end"].line == use_line and hover.range["end"].character == start - 1 + #"StringBuilder",
     "unexpected hover: " .. vim.inspect(hover))
 
+  -- Workspace symbols come from the same analysis: join, which nothing uses,
+  -- is a method in the project's own words/Words.v3.
+  response, err = client:request_sync("workspace/symbol", { query = "join" }, 10000, words_buf)
+  assert(response and not response.err, "workspace/symbol failed: " .. vim.inspect(err or response.err))
+  local symbol = response.result and response.result[1]
+  assert(symbol and symbol.name == "join" and symbol.kind == vim.lsp.protocol.SymbolKind.Method
+    and vim.uri_to_fname(symbol.location.uri) == vim.api.nvim_buf_get_name(words_buf)
+    and symbol.location.range.start.line == 5 and symbol.location.range.start.character == 5
+    and symbol.location.range["end"].line == 5 and symbol.location.range["end"].character == 9,
+    "unexpected workspace symbol: " .. vim.inspect(symbol))
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -177,7 +188,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

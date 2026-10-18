@@ -105,6 +105,13 @@ class AnalysisSnapshot {
 		if (file == null) return [];
 		return Arrays.range(declarations, file.firstSite, file.firstSite + file.siteCount);
 	}
+	// The run of {declarations} that {declarationSites} returns for {path}:
+	// its first index and its end, exclusive. Does not allocate.
+	def declarationSiteRun(path: string) -> (int, int) {
+		var file = fileOf(path);
+		if (file == null) return (0, 0);
+		return (file.firstSite, file.firstSite + file.siteCount);
+	}
 
 	// Display data for hover; see docs/architecture.md#display-text. All
 	// offsets are UTF-8 byte offsets, and every range's end is exclusive.

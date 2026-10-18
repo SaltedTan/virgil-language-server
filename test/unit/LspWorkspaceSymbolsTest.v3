@@ -1,0 +1,439 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// workspace/symbol with the real worker. The project-fixtures/workspace-symbols
+// directory is the build's own copy, so each session writes its project file
+// and sources before the projects are loaded. Project one has one/ among its
+// own sources and shared/ and lib/ as dependencies; project two has two/ and
+// shared/ among its own. So shared/ is two's own source, and lib/ is only a
+// dependency.
+def T = UnitTests.register;
+def X = [
+	T("LspWorkspaceSymbols:matching_and_ranking", test_matching_and_ranking),
+	T("LspWorkspaceSymbols:kinds", test_kinds),
+	T("LspWorkspaceSymbols:empty_query", test_empty_query),
+	T("LspWorkspaceSymbols:cap", test_cap),
+	T("LspWorkspaceSymbols:shared_file_and_dependencies", test_shared_file_and_dependencies),
+	T("LspWorkspaceSymbols:unsaved_edit", test_unsaved_edit),
+	T("LspWorkspaceSymbols:opened_file", test_opened_file),
+	T("LspWorkspaceSymbols:changed_on_disk", test_changed_on_disk),
+	T("LspWorkspaceSymbols:another_analysis_of_a_shared_file", test_another_analysis),
+	T("LspWorkspaceSymbols:before_analysis", test_before_analysis),
+	T("LspWorkspaceSymbols:configuration_change", test_configuration_change),
+	T("LspWorkspaceSymbols:params", test_params),
+	()
+];
+def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"one/*.v3\"],\"dependencies\":[\"shared/*.v3\",\"lib/*.v3\"]},{\"name\":\"two\",\"sources\":[\"two/*.v3\",\"shared/*.v3\"]}]}";
+def CONFIG_ONE = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"one/*.v3\"],\"dependencies\":[\"shared/*.v3\",\"lib/*.v3\"]}]}";
+// Each kind of declaration, none of them used, and names that match "par"
+// exactly (Par, par), as a prefix (parse, Parser, partial), as a substring
+// (compare, SPARE), and as a subsequence (Pair, PackRow); pa and rap don't.
+// A parameter, a local, and a type parameter have names that match too.
+def ONE = "// Every kind of declaration; none is used.\ncomponent Par {\n\tdef par = 0;\n\tdef pa = 1;\n\tdef parse(parameter: int) -> int {\n\t\tvar parked = parameter;\n\t\treturn parked;\n\t}\n\tdef compare<Para>(a: Para) -> Para { return a; }\n\tdef rap() { }\n}\nclass Parser(partial: int) { }\nclass Builder {\n\tnew() { }\n}\nenum Tire { SPARE, FLAT }\ntype Shape {\n\tcase Square(side: int);\n\tcase Dot;\n}\nlayout Pair {\n\t+0 first: u8;\n\t=1;\n}\npacking PackRow(a: 4, b: 4): 8 = #concat(b, a);\ndef fileField = 1;\ndef fileMethod() { }\n";
+// A tab and non-ASCII text (U+00E9, two UTF-8 bytes and one UTF-16 unit;
+// U+1D11E, four bytes and two units) come before par, at UTF-16 character 15.
+def TWO = "// Uses Shared.thing.\ncomponent Two {\n\t/* \xC3\xA9\xF0\x9D\x84\x9E */ def par = 1;\n\tdef things = Shared.thing;\n}\n";
+def SHARED = "component Shared {\n\tdef thing = 1;\n}\n";
+def SHARED_MOVED = "// thing is a line further down.\ncomponent Shared {\n\tdef thing = 1;\n}\n";
+def LIB = "component Lib {\n\tdef thing = 2;\n\tdef par = 3;\n}\n";
+def LIB_MOVED = "component Lib {\n\tdef par = 3;\n\tdef thing = 2;\n}\n";
+// Every match of "par" in rank order: exact, own sources before the
+// dependency lib/, then by name, ignoring case and then not, and by path;
+// then prefix, substring, and subsequence matches.
+def PAR = [
+	"Par 3 one/One.v3 1:10-1:13",
+	"par 8 one/One.v3 2:5-2:8",
+	"par 8 two/Two.v3 2:15-2:18",
+	"par 8 lib/Lib.v3 2:5-2:8",
+	"parse 6 one/One.v3 4:5-4:10",
+	"Parser 5 one/One.v3 11:6-11:12",
+	"partial 8 one/One.v3 11:13-11:20",
+	"compare 6 one/One.v3 8:5-8:12",
+	"SPARE 22 one/One.v3 15:12-15:17",
+	"PackRow 23 one/One.v3 24:8-24:15",
+	"Pair 23 one/One.v3 20:7-20:11"
+];
+
+class WorkspaceSymbolTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	var base: string;
+	var nextId = 100;
+	// The text of one/One.v3.
+	var one: string;
+
+	new(t: Tester, one) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "workspace-symbols"));
+		write(t, ".virgil-lsp.json", CONFIG);
+		write(t, "one/One.v3", one);
+		write(t, "two/Two.v3", TWO);
+		write(t, "shared/Shared.v3", SHARED);
+		write(t, "lib/Lib.v3", LIB);
+		HostOs.ignoreSigpipe();
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def path(name: string) -> string { return ProjectFiles.join(base, name); }
+	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(path(name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(uri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Opens the sources of both projects, which analyzes both, and settles.
+	def openAll() {
+		open("one/One.v3", 1, one);
+		open("two/Two.v3", 1, TWO);
+		settle();
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		while (server.analyzing()) poll();
+	}
+	def poll() {
+		var fds = Array<int>.new(4);
+		var count = supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, server.pollTimeout());
+		server.onPoll();
+	}
+	// The reply to a workspace/symbol request with {params}, which handle()
+	// must return at once.
+	def request(t: Tester, params: string) -> HashMap<string, JsonValue> {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"workspace/symbol\",\"params\":%s}", nextId++, params);
+		var reply = server.handle(payload);
+		t.assert(reply != null, "the request was answered at once");
+		if (reply == null) return null;
+		return JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v;
+	}
+	// Each symbol that {query} returns, as "name kind path line:character-line:character",
+	// with the path relative to the fixture.
+	def symbols(t: Tester, query: string) -> Array<string> {
+		var params = Strings.newMap<JsonValue>();
+		params["query"] = JsonValue.String(query);
+		var r = request(t, JsonRpcJson.render(StringBuilder.new(), JsonValue.JObject(params)).toString());
+		if (r == null) return [];
+		t.assert(r.has("result") && JsonValue.JArray.?(r["result"]), "a SymbolInformation[]");
+		if (!r.has("result") || !JsonValue.JArray.?(r["result"])) return [];
+		var list = JsonValue.JArray.!(r["result"]).v, result = Array<string>.new(list.length);
+		var prefix = Strings.format1("%s/", ProjectFiles.uri(base));
+		for (i < list.length) {
+			var v = list[i], location = member(v, "location"), range = member(location, "range");
+			var start = member(range, "start"), end = member(range, "end"), uri = stringAt(location, "uri");
+			if (Strings.startsWith(uri, prefix)) uri = Arrays.range(uri, prefix.length, uri.length);
+			var buf = StringBuilder.new();
+			buf.put3("%s %d %s ", stringAt(v, "name"), intAt(v, "kind"), uri);
+			buf.put2("%d:%d-", intAt(start, "line"), intAt(start, "character"));
+			buf.put2("%d:%d", intAt(end, "line"), intAt(end, "character"));
+			result[i] = buf.toString();
+		}
+		return result;
+	}
+	def context(name: string) -> ProjectContext {
+		return server.projects.forDocument(uri(name)).active;
+	}
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = member(v, key);
+	return if(JsonValue.String.?(m) && JsonValue.String.!(m).v != null, JsonValue.String.!(m).v, "<none>");
+}
+// Checks the symbols, one per line, so that a failure shows both lists.
+def expectSymbols(t: Tester, expected: Array<string>, got: Array<string>) {
+	t.assert_string(join(expected), join(got));
+}
+def join(lines: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (line in lines) buf.puts(line).putc('\n');
+	return buf.toString();
+}
+// The names among {lines}.
+def names(lines: Array<string>) -> Array<string> {
+	var result = Array<string>.new(lines.length);
+	for (i < lines.length) {
+		var line = lines[i], end = 0;
+		while (end < line.length && line[end] != ' ') end++;
+		result[i] = Arrays.range(line, 0, end);
+	}
+	return result;
+}
+def session(t: Tester) -> WorkspaceSymbolTestSession {
+	var s = WorkspaceSymbolTestSession.new(t, ONE);
+	s.openAll();
+	return s;
+}
+
+// Matches in each way, in rank order, ignoring the query's case, and only
+// declarations that can be workspace symbols.
+def test_matching_and_ranking(t: Tester) {
+	var s = session(t);
+	expectSymbols(t, PAR, s.symbols(t, "par"));
+	expectSymbols(t, PAR, s.symbols(t, "PAR"));
+	expectSymbols(t, PAR, s.symbols(t, "pAr"));
+	// A parameter, a local, a type parameter, and a constructor match nothing,
+	// though partial contains the letters of Para in order.
+	expectSymbols(t, [], s.symbols(t, "parameter"));
+	expectSymbols(t, [], s.symbols(t, "parked"));
+	expectSymbols(t, ["partial"], names(s.symbols(t, "Para")));
+	expectSymbols(t, [], s.symbols(t, "new"));
+	// No name matches a query longer than itself, or text out of order.
+	expectSymbols(t, [], s.symbols(t, "rapt"));
+	expectSymbols(t, [], s.symbols(t, "zz"));
+	expectSymbols(t, [], s.symbols(t, "\xC3\xA9"));
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+// Each kind of declaration has its symbol kind and its name's range.
+def test_kinds(t: Tester) {
+	var s = session(t);
+	var cases = [
+		("Par", "Par 3 one/One.v3 1:10-1:13"),				// component
+		("pa", "pa 8 one/One.v3 3:5-3:7"),					// field
+		("rap", "rap 6 one/One.v3 9:5-9:8"),					// method
+		("Builder", "Builder 5 one/One.v3 12:6-12:13"),		// class
+		("partial", "partial 8 one/One.v3 11:13-11:20"),		// class parameter field
+		("Tire", "Tire 10 one/One.v3 15:5-15:9"),				// enum
+		("FLAT", "FLAT 22 one/One.v3 15:19-15:23"),			// enum case
+		("Shape", "Shape 5 one/One.v3 16:5-16:10"),			// variant
+		("Square", "Square 22 one/One.v3 17:6-17:12"),		// variant case
+		("side", "side 8 one/One.v3 17:13-17:17"),			// variant case field
+		("Dot", "Dot 22 one/One.v3 18:6-18:9"),				// variant case without parameters
+		("Pair", "Pair 23 one/One.v3 20:7-20:11"),			// layout
+		("first", "first 8 one/One.v3 21:4-21:9"),			// layout field
+		("PackRow", "PackRow 23 one/One.v3 24:8-24:15"),		// packing
+		("fileField", "fileField 8 one/One.v3 25:4-25:13"),	// file-scope field
+		("fileMethod", "fileMethod 6 one/One.v3 26:4-26:14")	// file-scope method
+	];
+	for (c in cases) {
+		var got = s.symbols(t, c.0);
+		t.assert(got.length > 0, c.0);
+		if (got.length > 0) t.assert_string(c.1, got[0]);
+	}
+	s.server.close();
+}
+// The empty query matches every symbol, own sources first, then by name.
+def test_empty_query(t: Tester) {
+	var s = session(t);
+	expectSymbols(t, [
+		"Builder", "compare", "Dot", "fileField", "fileMethod", "first", "FLAT", "pa", "PackRow", "Pair",
+		"Par", "par", "par", "parse", "Parser", "partial", "rap", "Shape", "Shared", "side", "SPARE", "Square",
+		"thing", "things", "Tire", "Two",
+		"Lib", "par", "thing"
+	], names(s.symbols(t, "")));
+	s.server.close();
+}
+// A reply holds at most MAX_RESULTS symbols, the first in rank order.
+def test_cap(t: Tester) {
+	var max = LspWorkspaceSymbols.new(null, null).MAX_RESULTS, count = max + 5;
+	var buf = StringBuilder.new().puts("component Many {\n");
+	for (i < count) buf.puts("\tdef f").putd(10000 + i).puts(" = 0;\n");
+	buf.puts("}\n");
+	var s = WorkspaceSymbolTestSession.new(t, buf.toString());
+	s.openAll();
+	// f10000 to f10999 start with "f1", and f11000 to f11004 too, but rank
+	// after them; Many is no match.
+	var got = s.symbols(t, "f1");
+	t.asserti(max, got.length);
+	if (got.length == max) {
+		t.assert_string("f10000 8 one/One.v3 1:5-1:11", got[0]);
+		t.assert_string("f10999 8 one/One.v3 1000:5-1000:11", got[max - 1]);
+	}
+	// The same cap applies to the empty query, from the first name on.
+	got = s.symbols(t, "");
+	t.asserti(max, got.length);
+	if (got.length == max) t.assert_string("f10000 8 one/One.v3 1:5-1:11", got[0]);
+	// A narrower query finds a field past the cap.
+	expectSymbols(t, ["f11004 8 one/One.v3 1005:5-1005:11"], s.symbols(t, "f11004"));
+	s.server.close();
+}
+// A file that two programs share yields one symbol per declaration. A
+// dependency's symbols rank after the projects' own sources' within each
+// kind of match: lib/ is only a dependency of one, and shared/ is two's own.
+def test_shared_file_and_dependencies(t: Tester) {
+	var s = session(t);
+	t.assert(s.context("one/One.v3").snapshot != null && s.context("two/Two.v3").snapshot != null, "both projects analyzed");
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 1:5-1:10",
+		"thing 8 lib/Lib.v3 1:5-1:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	expectSymbols(t, ["Shared 3 shared/Shared.v3 0:10-0:16"], s.symbols(t, "Shared"));
+	s.server.close();
+}
+// An unsaved edit that no analysis has seen yet hides its file's symbols,
+// and only its file's, until an analysis of the edit completes.
+def test_unsaved_edit(t: Tester) {
+	var s = session(t);
+	// An edit that schedules no analysis.
+	var edited = Strings.format1("// One line further down.\n%s", ONE);
+	t.assert(s.store.change(s.uri("one/One.v3"), 2, edited) == null, "edit");
+	expectSymbols(t, ["par 8 two/Two.v3 2:15-2:18", "par 8 lib/Lib.v3 2:5-2:8"], s.symbols(t, "par"));
+	t.assertz(false, s.server.analyzing());
+	// The client's edit schedules one, and its symbols follow the edit.
+	s.change("one/One.v3", 3, edited);
+	expectSymbols(t, ["par 8 two/Two.v3 2:15-2:18", "par 8 lib/Lib.v3 2:5-2:8"], s.symbols(t, "par"));
+	s.settle();
+	expectSymbols(t, [
+		"Par 3 one/One.v3 2:10-2:13",
+		"par 8 one/One.v3 3:5-3:8",
+		"par 8 two/Two.v3 2:15-2:18",
+		"par 8 lib/Lib.v3 2:5-2:8",
+		"parse 6 one/One.v3 5:5-5:10",
+		"Parser 5 one/One.v3 12:6-12:12",
+		"partial 8 one/One.v3 12:13-12:20",
+		"compare 6 one/One.v3 9:5-9:12",
+		"SPARE 22 one/One.v3 16:12-16:17",
+		"PackRow 23 one/One.v3 25:8-25:15",
+		"Pair 23 one/One.v3 21:7-21:11"
+	], s.symbols(t, "par"));
+	s.server.close();
+}
+// Opening a file analyzed from disk hides its symbols, though the disk file
+// is unchanged: the editor shows the overlay, whose text can differ. They
+// return once an analysis of the overlay completes.
+def test_opened_file(t: Tester) {
+	var s = session(t);
+	s.open("lib/Lib.v3", 1, LIB_MOVED);
+	expectSymbols(t, ["thing 8 shared/Shared.v3 1:5-1:10", "things 8 two/Two.v3 3:5-3:11"], s.symbols(t, "thing"));
+	s.settle();
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 1:5-1:10",
+		"thing 8 lib/Lib.v3 2:5-2:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	s.server.close();
+}
+// A closed file changed on disk without a file event keeps its stamp, but its
+// bytes are no longer the ones analyzed, so its symbols are left out; with
+// the analyzed bytes back, they return. A reported change hides them until
+// an analysis of the new text completes.
+def test_changed_on_disk(t: Tester) {
+	var s = session(t);
+	s.write(t, "lib/Lib.v3", LIB_MOVED);
+	expectSymbols(t, ["thing 8 shared/Shared.v3 1:5-1:10", "things 8 two/Two.v3 3:5-3:11"], s.symbols(t, "thing"));
+	s.write(t, "lib/Lib.v3", LIB);
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 1:5-1:10",
+		"thing 8 lib/Lib.v3 1:5-1:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	s.write(t, "lib/Lib.v3", LIB_MOVED);
+	s.reportChanged("lib/Lib.v3");
+	expectSymbols(t, ["thing 8 shared/Shared.v3 1:5-1:10", "things 8 two/Two.v3 3:5-3:11"], s.symbols(t, "thing"));
+	s.settle();
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 1:5-1:10",
+		"thing 8 lib/Lib.v3 2:5-2:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	s.server.close();
+}
+// When one program's analysis of a shared file is stale and another's is
+// current, the file's symbols come from the current one. Here an edit to
+// shared/Shared.v3 that schedules nothing makes both stale, and an edit to
+// two/Two.v3 analyzes only two, which owns every file of its program.
+def test_another_analysis(t: Tester) {
+	var s = WorkspaceSymbolTestSession.new(t, ONE);
+	s.open("one/One.v3", 1, ONE);
+	s.open("two/Two.v3", 1, TWO);
+	s.open("shared/Shared.v3", 1, SHARED);
+	s.settle();
+	var one = s.context("one/One.v3"), generation = one.snapshot.generation;
+	t.assert(s.store.change(s.uri("shared/Shared.v3"), 2, SHARED_MOVED) == null, "edit");
+	expectSymbols(t, [], s.symbols(t, "Shared"));
+	s.change("two/Two.v3", 2, TWO);
+	s.settle();
+	t.asserti(generation, one.snapshot.generation);
+	expectSymbols(t, ["Shared 3 shared/Shared.v3 1:10-1:16"], s.symbols(t, "Shared"));
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 2:5-2:10",
+		"thing 8 lib/Lib.v3 1:5-1:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	s.server.close();
+}
+// A project contributes only once an analysis of it has completed, and a
+// request neither starts nor waits for one.
+def test_before_analysis(t: Tester) {
+	var s = WorkspaceSymbolTestSession.new(t, ONE);
+	// No project is loaded before a document opens.
+	expectSymbols(t, [], s.symbols(t, ""));
+	t.assertz(false, s.server.analyzing());
+	// Opening a source of two loads the project file, which schedules both
+	// projects, two first; neither has completed yet.
+	s.open("two/Two.v3", 1, TWO);
+	expectSymbols(t, [], s.symbols(t, ""));
+	var one = s.context("one/One.v3"), two = s.context("two/Two.v3");
+	while (two.snapshot == null && s.server.analyzing()) s.poll();
+	t.assert(two.snapshot != null && one.snapshot == null, "only two analyzed");
+	expectSymbols(t, ["par", "Shared", "thing", "things", "Two"], names(s.symbols(t, "")));
+	s.settle();
+	t.asserti(29, s.symbols(t, "").length);
+	s.server.close();
+}
+// A configuration change replaces the projects, whose snapshots are gone
+// until their analyses complete; then the symbols follow the new projects.
+def test_configuration_change(t: Tester) {
+	var s = session(t);
+	s.write(t, ".virgil-lsp.json", CONFIG_ONE);
+	s.reportChanged(".virgil-lsp.json");
+	expectSymbols(t, [], s.symbols(t, "thing"));
+	s.settle();
+	// Two is gone, and shared/ is now only one's dependency.
+	expectSymbols(t, [
+		"thing 8 lib/Lib.v3 1:5-1:10",
+		"thing 8 shared/Shared.v3 1:5-1:10"
+	], s.symbols(t, "thing"));
+	s.write(t, ".virgil-lsp.json", CONFIG);
+	s.server.close();
+}
+def test_params(t: Tester) {
+	var s = WorkspaceSymbolTestSession.new(t, ONE);
+	var cases = ["null", "{}", "{\"query\":3}", "{\"query\":null}", "[\"x\"]"];
+	for (params in cases) {
+		var r = s.request(t, params);
+		t.assert(r != null && r.has("error"), params);
+		if (r != null && r.has("error")) {
+			t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(r["error"], "code"));
+			t.assert_string("workspace/symbol params require a query string", stringAt(r["error"], "message"));
+		}
+	}
+	s.server.close();
+}

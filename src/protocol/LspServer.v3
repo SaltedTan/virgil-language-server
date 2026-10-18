@@ -56,6 +56,7 @@ class LspServer {
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
+	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	// Watched-file and workspace-folder notifications, and the watcher registration.
 	def workspaceEvents = LspWorkspaceEvents.new(documents, projects);
 	// Completes a server request whose deadline has passed.
@@ -76,6 +77,7 @@ class LspServer {
 		documentSync.capacityWarning = capacityExceeded;
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
+		workspaceSymbols.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
 		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
@@ -293,6 +295,7 @@ class LspServer {
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["hoverProvider"] = JsonValue.Bool(true);
+		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
 		var folders = Strings.newMap<JsonValue>();
 		folders["supported"] = JsonValue.Bool(true);
 		folders["changeNotifications"] = JsonValue.Bool(true);
