@@ -24,7 +24,9 @@ component LspSymbolKind {
 }
 
 // Outlines parse the overlay with the language options of the document's
-// active project, as its syntax diagnostics do.
+// active project, as its syntax diagnostics do. A symbol's detail is its
+// declaration's signature, from the active project's snapshot, but only if
+// that snapshot analyzed this very overlay; the outline never waits for one.
 class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
@@ -39,26 +41,43 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
 		if (overlay == null) return JsonRpcReply.Result(JsonValue.JArray([]));
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
-		var options = projects.forDocument(overlay.uri).compilerArgs();
-		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text, options);
-		return JsonRpcReply.Result(encodeSymbols(symbols, map));
+		var owner = projects.forDocument(overlay.uri);
+		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text, owner.compilerArgs());
+		var s = if(owner.active != null, owner.active.snapshot);
+		// Details need the same overlay version and record, whose text has
+		// the snapshot's byte ranges.
+		if (s != null && !s.matchesDocument(store, overlay.uri)) s = null;
+		var path = if(s != null, s.paths[s.documentIndex(overlay.uri)]);
+		return JsonRpcReply.Result(encodeSymbols(symbols, map, s, path));
 	}
 	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
 		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
 		return JsonValue.JObject.!(obj[key]).v;
 	}
-	private def encodeSymbols(symbols: Array<AnalysisDocumentSymbol>, map: PositionMap) -> JsonValue {
+	// {s} is null, or a snapshot that analyzed this text as {path}.
+	private def encodeSymbols(symbols: Array<AnalysisDocumentSymbol>, map: PositionMap, s: AnalysisSnapshot, path: string) -> JsonValue {
 		var result = Vector<JsonValue>.new();
-		for (s in symbols) {
+		for (sym in symbols) {
 			var obj = Strings.newMap<JsonValue>();
-			obj["name"] = JsonValue.String(s.name);
-			obj["kind"] = JsonValue.Int(LspSymbolKind.of(s.kind));
-			obj["range"] = range(map, s.begin, s.end);
-			obj["selectionRange"] = range(map, s.nameBegin, s.nameEnd);
-			if (s.children.length > 0) obj["children"] = encodeSymbols(s.children, map);
+			obj["name"] = JsonValue.String(sym.name);
+			obj["kind"] = JsonValue.Int(LspSymbolKind.of(sym.kind));
+			obj["range"] = range(map, sym.begin, sym.end);
+			obj["selectionRange"] = range(map, sym.nameBegin, sym.nameEnd);
+			var signature = if(s != null, signatureOf(s, path, sym));
+			if (signature != null) obj["detail"] = JsonValue.String(signature);
+			if (sym.children.length > 0) obj["children"] = encodeSymbols(sym.children, map, s, path);
 			result.put(JsonValue.JObject(obj));
 		}
 		return JsonValue.JArray(result.extract());
+	}
+	// The signature of the declaration named by exactly {sym}'s name token,
+	// or null. Names repeat across scopes; the token does not. A data type
+	// shares its name token with its single case, and the site there is the
+	// type's.
+	private def signatureOf(s: AnalysisSnapshot, path: string, sym: AnalysisDocumentSymbol) -> string {
+		var d = s.declarationAtOffset(path, sym.nameBegin);
+		if (d == null || d.range.beginOffset != sym.nameBegin || d.range.endOffset != sym.nameEnd) return null;
+		return d.signature;
 	}
 	private def range(map: PositionMap, begin: int, end: int) -> JsonValue {
 		var obj = Strings.newMap<JsonValue>();

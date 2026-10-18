@@ -13,6 +13,9 @@ def X = [
 	T("LspDocumentSymbols:large_single_line", test_symbol_large_single_line),
 	T("LspDocumentSymbols:variant_cases", test_symbol_variant_cases),
 	T("LspDocumentSymbols:default_case", test_symbol_default_case),
+	T("LspDocumentSymbols:details_current_snapshot", test_symbol_details),
+	T("LspDocumentSymbols:details_stale_snapshot", test_symbol_details_stale),
+	T("LspDocumentSymbols:details_outside_project", test_symbol_details_outside_project),
 	()
 ];
 
@@ -284,4 +287,174 @@ def test_symbol_default_case(t: Tester) {
 	checkBytes(t, a[1], text, "W", AnalysisDeclKind.CLASS, "type W extends V {\n\tcase B(x: int);\n}", 5, 1);
 	checkBytes(t, a[1].children[0], text, "B", AnalysisDeclKind.VARIANT_CASE, "case B(x: int);", 5, 1);
 	checkBytes(t, a[1].children[0].children[0], text, "x", AnalysisDeclKind.FIELD, "x: int", 0, 0);
+}
+
+// Every kind of outline symbol, after non-ASCII text, and a tab and non-ASCII
+// text in a block comment on the line of a declaration (U+00E9, two UTF-8
+// bytes and one UTF-16 unit; U+1D11E, four bytes and two units).
+def DETAILS = "// \xC3\xA9\xF0\x9D\x84\x9E\ntype Opt<T> {\n\tcase None;\n\tcase Some(v: T) { def get() -> T { return v; } }\n}\ntype Row(m: int, index: int) { }\nclass Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef [i: int] -> int { return size; }\n}\nenum E(code: int) { A(1) }\nlayout L {\n\t+0 word: int;\n\t=4;\n}\npacking P(x: 1): 2 = 0b0x;\ncomponent C {\n/*\t\xC3\xA9\xF0\x9D\x84\x9E*/\tdef f(a: int) -> int { return a; }\n}\ndef top() {}\n";
+// Each symbol's name and detail, one per line, indented by depth.
+def DETAILS_OUTLINE = "Opt = type Opt<T>\n  None = case None\n  Some = case Some(v: T)\n    v = def v: T\n    get = def get() -> T\nRow = type Row(m: int, index: int)\n  m = def m: int\n  index = def index: int\nBox = class Box\n  size = var size: int\n  new = new(size: int)\n  [] = def [i: int] -> int\nE = enum E(code: int)\n  code = def code: int\n  A = E.A\nL = layout L\n  word = +0 word: int\nP = packing P(x: 1): 2\nC = component C\n  f = def f(a: int) -> int\ntop = def top()\n";
+
+// The real worker analyzes the document-symbols fixture project, the build's
+// own copy, whose Symbols.v3 each session writes before the project loads.
+class SymbolTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	var base: string;
+	var nextId = 100;
+	new(t: Tester) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/document-symbols");
+		var fd = System.fileOpen(ProjectFiles.join(base, "Symbols.v3"), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd >= 0) {
+			System.fileWriteK(fd, DETAILS, 0, DETAILS.length);
+			System.fileClose(fd);
+		}
+		HostOs.ignoreSigpipe();
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def uri() -> string { return ProjectFiles.uri(ProjectFiles.join(base, "Symbols.v3")); }
+	def snapshot() -> AnalysisSnapshot { return server.projects.forDocument(uri()).active.snapshot; }
+	def open(uri: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri);
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri());
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def close() {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri());
+		notify("textDocument/didClose", doc, null);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// The outline of {uri}, which the request's own reply carries: it never
+	// waits for an analysis.
+	def outline(t: Tester, uri: string) -> Array<JsonValue> {
+		var doc = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri);
+		params["textDocument"] = JsonValue.JObject(doc);
+		var reply = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(nextId++), "textDocument/documentSymbol", JsonRpcParams.ByName(params)).encode());
+		t.assert(reply != null, "the outline is answered at once");
+		if (reply == null) return [];
+		var obj = JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v;
+		t.assert(obj.has("result"), "symbol request must succeed");
+		return if(obj.has("result"), JsonValue.JArray.!(obj["result"]).v, []);
+	}
+}
+// Each symbol's name and detail, as in DETAILS_OUTLINE, or with {ranges},
+// its kind and ranges instead.
+def describe(buf: StringBuilder, symbols: Array<JsonValue>, depth: int, ranges: bool) -> StringBuilder {
+	for (v in symbols) {
+		var obj = JsonValue.JObject.!(v).v;
+		for (i < depth) buf.puts("  ");
+		buf.puts(JsonValue.String.!(obj["name"]).v);
+		if (ranges) {
+			buf.put1(" %d", JsonValue.Int.!(obj["kind"]).v);
+			for (key in ["range", "selectionRange"]) {
+				var r = JsonValue.JObject.!(obj[key]).v;
+				for (end in ["start", "end"]) {
+					var p = JsonValue.JObject.!(r[end]).v;
+					buf.put2(" %d:%d", JsonValue.Int.!(p["line"]).v, JsonValue.Int.!(p["character"]).v);
+				}
+			}
+		} else if (obj.has("detail")) {
+			buf.puts(" = ").puts(JsonValue.String.!(obj["detail"]).v);
+		}
+		buf.ln();
+		if (obj.has("children")) describe(buf, JsonValue.JArray.!(obj["children"]).v, depth + 1, ranges);
+	}
+	return buf;
+}
+def details(a: Array<JsonValue>) -> string {
+	return describe(StringBuilder.new(), a, 0, false).toString();
+}
+def ranges(a: Array<JsonValue>) -> string {
+	return describe(StringBuilder.new(), a, 0, true).toString();
+}
+// The outline of DETAILS without any detail.
+def checkNoDetails(t: Tester, a: Array<JsonValue>) {
+	t.assert_string("Opt\n  None\n  Some\n    v\n    get\nRow\n  m\n  index\nBox\n  size\n  new\n  []\nE\n  code\n  A\nL\n  word\nP\nC\n  f\ntop\n", details(a));
+}
+
+def test_symbol_details(t: Tester) {
+	var s = SymbolTestSession.new(t);
+	s.open(s.uri(), 1, DETAILS);
+	// The outline does not wait for the first analysis.
+	t.assert(s.server.analyzing() && s.snapshot() == null, "the first analysis is pending");
+	var before = s.outline(t, s.uri());
+	checkNoDetails(t, before);
+	s.settle();
+	var after = s.outline(t, s.uri());
+	t.assert_string(DETAILS_OUTLINE, details(after));
+	// Details change nothing else, and syntax ranges select the names after
+	// non-ASCII text and a tab in a block comment.
+	t.assert_string(ranges(before), ranges(after));
+	var c = JsonValue.JArray.!(JsonValue.JObject.!(after[6]).v["children"]).v;
+	checkSymbol(t, c[0], "f", 6, 18, 9, 18, 43, 18, 13);
+	s.server.close();
+}
+
+def test_symbol_details_stale(t: Tester) {
+	var s = SymbolTestSession.new(t);
+	s.open(s.uri(), 1, DETAILS);
+	s.settle();
+	var current = s.outline(t, s.uri());
+	t.assert_string(DETAILS_OUTLINE, details(current));
+	// An edit makes the retained snapshot stale at once, even with the same text.
+	s.change(2, DETAILS);
+	t.assert(s.snapshot() != null, "the snapshot of version 1 is retained");
+	var stale = s.outline(t, s.uri());
+	checkNoDetails(t, stale);
+	t.assert_string(ranges(current), ranges(stale));
+	s.settle();
+	t.assert_string(DETAILS_OUTLINE, details(s.outline(t, s.uri())));
+	// Reopening with the same version is another record.
+	s.close();
+	t.asserti(0, s.outline(t, s.uri()).length);
+	s.open(s.uri(), 2, DETAILS);
+	checkNoDetails(t, s.outline(t, s.uri()));
+	s.settle();
+	t.assert_string(DETAILS_OUTLINE, details(s.outline(t, s.uri())));
+	s.server.close();
+}
+
+def test_symbol_details_outside_project(t: Tester) {
+	var s = SymbolTestSession.new(t);
+	s.open(s.uri(), 1, DETAILS);
+	s.settle();
+	t.assert_string(DETAILS_OUTLINE, details(s.outline(t, s.uri())));
+	// The same text in a document of no project has the same outline, without details.
+	var outside = "untitled:outside.v3";
+	s.open(outside, 1, DETAILS);
+	s.settle();
+	var a = s.outline(t, outside);
+	checkNoDetails(t, a);
+	t.assert_string(ranges(s.outline(t, s.uri())), ranges(a));
+	s.server.close();
 }
