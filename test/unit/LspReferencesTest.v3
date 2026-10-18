@@ -1,0 +1,603 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/references with the real worker. The project-fixtures/references
+// directory is the build's own copy, so each session rewrites its sources
+// before the project is loaded. Its project analyzes Refs.v3 before Decl.v3,
+// so the reply's order by path is not the analysis order. Every reply arrives
+// through the server's outgoing-message sink. References share their snapshot
+// selection, freshness, waiting, and position rules with definition, which
+// LspDefinitionTest covers in full; these tests cover each reference set, and
+// that references take part in the shared rules with their own parameter.
+def T = UnitTests.register;
+def X = [
+	T("LspReferences:locals_and_captures", test_locals_and_captures),
+	T("LspReferences:members_and_generics", test_members_and_generics),
+	T("LspReferences:components_and_classes", test_components_and_classes),
+	T("LspReferences:cases", test_cases),
+	T("LspReferences:index_operators", test_index_operators),
+	T("LspReferences:layouts_and_packings", test_layouts_and_packings),
+	T("LspReferences:include_declaration", test_include_declaration),
+	T("LspReferences:nothing_selected", test_nothing_selected),
+	T("LspReferences:cross_file", test_cross_file),
+	T("LspReferences:file_changed_on_disk", test_file_changed_on_disk),
+	T("LspReferences:semantic_errors", test_semantic_errors),
+	T("LspReferences:stale_waits_for_analysis", test_stale_waits_for_analysis),
+	T("LspReferences:stale_without_analysis", test_stale_without_analysis),
+	T("LspReferences:shared_waiting_bound", test_shared_waiting_bound),
+	T("LspReferences:reply_bound", test_reply_bound),
+	T("LspReferences:too_many_references", test_too_many_references),
+	T("LspReferences:params", test_params),
+	()
+];
+// Shadowed and captured locals, same-named members of unrelated classes,
+// generic classes and methods, a class with a default constructor that "this"
+// and ".new" resolve to, an explicit constructor, enum and variant cases in
+// expressions and patterns, a data type, index operators read, written, and
+// both, a builtin, layouts, and packings. Every line is ASCII.
+def SOURCE = "component Refs {\n\tdef value = 1;\n\tdef shadow(value: int) -> int {\n\t\tvar x = value;\n\t\tif (x > 0) { var x = 2; return x + Refs.value; }\n\t\treturn x;\n\t}\n\tdef capture(base: int) -> int {\n\t\tvar step = base;\n\t\tvar f = fun (a: int) => a + step;\n\t\tvar g = fun (b: int) => fun (c: int) => b + c + step;\n\t\treturn f(step) + g(1)(2);\n\t}\n\tdef kinds(r: Rect, q: Square, b: Box, c: Color, s: Shape, g: Grid, w: Row) -> int {\n\t\tvar total = r.area() + q.area() + Cell<int>.new(1).get() + Cell<Box>.new(b).get().size;\n\t\ttotal += id(1) + id<Box>(b).size + \"abc\".length;\n\t\tvar n = Node.new().self();\n\t\tvar made = Box.new(2);\n\t\tif (c == Color.RED) total++;\n\t\tmatch (c) {\n\t\t\tRED => total++;\n\t\t\tGREEN => total--;\n\t\t}\n\t\tvar circle = Shape.Circle(3);\n\t\tmatch (s) {\n\t\t\tCircle(radius) => total += radius;\n\t\t\tDot => total--;\n\t\t}\n\t\ttotal += g[0] + g.[](4);\n\t\tg[1] = total;\n\t\tg[2] += 3;\n\t\tvar row = Row(1, 2);\n\t\treturn total + row.m + w.index + Decl.thing;\n\t}\n\tdef id<T>(p: T) -> T { return p; }\n}\nclass Rect {\n\tdef area() -> int { return 1; }\n}\nclass Square {\n\tdef area() -> int { return 2; }\n}\nclass Cell<T>(item: T) {\n\tdef get() -> T { return item; }\n}\nclass Box {\n\tvar size: int;\n\tnew(size) { }\n}\nclass Node {\n\tdef self() -> Node { return this; }\n}\nenum Color { RED, GREEN }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\ntype Row(m: int, index: int) { }\nclass Grid {\n\tdef [i: int] -> int { return i; }\n\tdef [i: int] = v: int { }\n}\nlayout Tag {\n\t+0 kind: u8;\n\t=1;\n}\nlayout Pair {\n\t+0 head: Tag;\n\t+1 tags: Tag[2];\n\t=3;\n}\ncomponent Mem {\n\tdef head(r: Range<byte>) -> Ref<Tag> {\n\t\tvar p: Ref<Pair> = Ref<Pair>.of(r);\n\t\tvar t: ref<Tag> = p.tags[1];\n\t\treturn p.head;\n\t}\n}\npacking Low(a: 4, b: 4): 8 = #concat(b, a);\npacking Wide(x: 4, y: 8): 16 = #concat(Low(x, 0b0000), y);\n";
+// Decl.v3 declares the thing that Refs.v3 uses, and uses it twice, after
+// non-ASCII text (U+00E9, two UTF-8 bytes and one UTF-16 unit; U+1D11E, four
+// bytes and two units) in a block comment on line 3. Its other lines are ASCII.
+def DECL = "// Declares Decl.thing.\ncomponent Decl {\n\tdef thing = 1;\n\tdef twice() -> int { /*\xC3\xA9\xF0\x9D\x84\x9E*/ return thing + thing; }\n}\n";
+// In DECL, the uses of thing on line 3 start at UTF-16 characters 37 and 45.
+def TWICE_LINE = 3;
+def TWICE_FIRST = 37;
+def TWICE_SECOND = 45;
+// A change of the same length, which only the bytes reveal.
+def DECL_CHANGED = "// Declares Decl.thing!\ncomponent Decl {\n\tdef thing = 1;\n\tdef twice() -> int { /*\xC3\xA9\xF0\x9D\x84\x9E*/ return thing + thing; }\n}\n";
+
+class ReferencesTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	var base: string;
+	// The responses received, in order.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	// What handle() returned for the last request; replies use the sink.
+	var handled: Array<byte>;
+	new(t: Tester, source: string) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "references"));
+		write(t, "Refs.v3", source);
+		write(t, "Decl.v3", DECL);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parser = JsonRpcJsonParser.new(bytes);
+		// Server output can contain more values than the client input limit.
+		parser.maxValues = int.max;
+		var parsed = JsonValue.JObject.!(parser.parseDocument()).v;
+		if (parsed.has("id")) replies.put(parsed);
+	}
+	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(ProjectFiles.join(base, name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// Sends a {method} request for {line}:{character} in {name}, with
+	// context.includeDeclaration {include} for references, and returns its id.
+	def request(method: string, name: string, line: int, character: int, include: bool) -> int {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		position["line"] = JsonValue.Int(line);
+		position["character"] = JsonValue.Int(character);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		if (Strings.equal(method, "textDocument/references")) {
+			var context = Strings.newMap<JsonValue>();
+			context["includeDeclaration"] = JsonValue.Bool(include);
+			params["context"] = JsonValue.JObject(context);
+		}
+		var id = nextId++;
+		handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), method, JsonRpcParams.ByName(params)).encode());
+		return id;
+	}
+	def references(name: string, line: int, character: int, include: bool) -> int {
+		return request("textDocument/references", name, line, character, include);
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	// The result of the response to {id}, which must have arrived.
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		t.assert(r.has("result"), "the request succeeded");
+		return r["result"];
+	}
+	// Requests and returns the references, which must be answered at once.
+	def answer(t: Tester, name: string, line: int, character: int, include: bool) -> JsonValue {
+		var id = references(name, line, character, include);
+		t.assert(handled == null, "replies use the sink");
+		return result(t, id);
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri("Refs.v3")).active;
+	}
+}
+// A location in {file}, on {line} from UTF-16 character {begin} to {end}.
+class Spot(file: string, var line: int, begin: int, end: int) { }
+// The LSP position of byte {skip} past the first {needle} in ASCII lines of {text}.
+def at(text: string, needle: string, skip: int) -> (int, int) {
+	var line = 0, start = 0;
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return (line, i + skip - start);
+		if (text[i] == '\n') {
+			line++;
+			start = i + 1;
+		}
+	}
+	return (-1, -1);
+}
+// The {length} bytes from {skip} bytes into the first {needle} in SOURCE.
+def S(needle: string, skip: int, length: int) -> Spot {
+	var p = at(SOURCE, needle, skip);
+	return Spot.new(if(p.0 >= 0, "Refs.v3"), p.0, p.1, p.1 + length);
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = member(v, key);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+// Checks that {result} is exactly the Locations {spots}, in order. Each is
+// rendered as "file line:character-line:character", so that a failure shows
+// both lists.
+def expectSpots(t: Tester, s: ReferencesTestSession, result: JsonValue, spots: Array<Spot>, what: string) {
+	t.assert(JsonValue.JArray.?(result), Strings.format1("an array of Locations for %s", what));
+	if (!JsonValue.JArray.?(result)) return;
+	var want = StringBuilder.new().puts(what), got = StringBuilder.new().puts(what);
+	for (spot in spots) {
+		t.assert(spot.file != null, "fixture text found");
+		want.put2("; %s %d:", spot.file, spot.line).put3("%d-%d:%d", spot.begin, spot.line, spot.end);
+	}
+	for (location in JsonValue.JArray.!(result).v) {
+		var uri = stringAt(location, "uri"), file = uri;
+		for (name in ["Refs.v3", "Decl.v3"]) if (Strings.equal(uri, s.uri(name))) file = name;
+		var range = member(location, "range"), start = member(range, "start"), stop = member(range, "end");
+		got.put2("; %s %d:", file, intAt(start, "line")).put3("%d-%d:%d", intAt(start, "character"), intAt(stop, "line"), intAt(stop, "character"));
+	}
+	t.assert_string(want.toString(), got.toString());
+}
+// Checks the references with and without the declaration from {skip} bytes
+// into {needle} in SOURCE: {spots}, which include the declaration's name
+// {declaration}.
+def expectRefs(t: Tester, s: ReferencesTestSession, needle: string, skip: int, spots: Array<Spot>, declaration: Spot) {
+	var p = at(SOURCE, needle, skip);
+	t.assert(p.0 >= 0, "fixture text found");
+	expectSpots(t, s, s.answer(t, "Refs.v3", p.0, p.1, true), spots, needle);
+	var without = Vector<Spot>.new();
+	for (spot in spots) {
+		if (spot.line != declaration.line || spot.begin != declaration.begin || !Strings.equal(spot.file, declaration.file)) without.put(spot);
+	}
+	t.asserti(spots.length - 1, without.length);
+	expectSpots(t, s, s.answer(t, "Refs.v3", p.0, p.1, false), without.extract(), needle);
+}
+def expectNull(t: Tester, v: JsonValue, what: string) {
+	t.assert(v == JsonValue.Null, what);
+}
+def session(t: Tester) -> ReferencesTestSession {
+	var s = ReferencesTestSession.new(t, SOURCE);
+	s.open("Refs.v3", 1, SOURCE);
+	s.settle();
+	return s;
+}
+def test_locals_and_captures(t: Tester) {
+	var s = session(t);
+	// An outer local, and one of the same name that shadows it in a block.
+	var outer = S("var x = value", 4, 1), inner = S("var x = 2", 4, 1);
+	expectRefs(t, s, "if (x > 0)", 4, [outer, S("if (x > 0)", 4, 1), S("return x;", 7, 1)], outer);
+	expectRefs(t, s, "return x + Refs", 7, [inner, S("return x + Refs", 7, 1)], inner);
+	// A parameter that shadows a field, and the field.
+	var parameter = S("shadow(value", 7, 5), field = S("def value", 4, 5);
+	expectRefs(t, s, "var x = value", 8, [parameter, S("var x = value", 8, 5)], parameter);
+	expectRefs(t, s, "Refs.value", 5, [field, S("Refs.value", 5, 5)], field);
+	// A local captured by a lambda and by a nested lambda, and a lambda's
+	// parameter that the nested lambda captures.
+	var step = S("var step", 4, 4);
+	expectRefs(t, s, "a + step", 4, [step, S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], step);
+	var b = S("fun (b: int)", 5, 1);
+	expectRefs(t, s, "b + c", 0, [b, S("b + c", 0, 1)], b);
+	// A match pattern's binding.
+	var radius = S("Circle(radius)", 7, 6);
+	expectRefs(t, s, "+= radius", 3, [radius, S("+= radius", 3, 6)], radius);
+	s.server.close();
+}
+// Same-named methods of unrelated classes, a generic class's method used at
+// two instantiations, a generic method, and same-named type parameters.
+def test_members_and_generics(t: Tester) {
+	var s = session(t);
+	var rect = S("def area() -> int { return 1", 4, 4), square = S("def area() -> int { return 2", 4, 4);
+	expectRefs(t, s, "r.area()", 2, [S("r.area()", 2, 4), rect], rect);
+	expectRefs(t, s, "q.area()", 2, [S("q.area()", 2, 4), square], square);
+	var get = S("def get()", 4, 3);
+	expectRefs(t, s, "new(1).get", 7, [S("new(1).get", 7, 3), S("new(b).get", 7, 3), get], get);
+	var cell = S("class Cell", 6, 4);
+	expectRefs(t, s, "Cell<Box>", 0, [S("Cell<int>", 0, 4), S("Cell<Box>", 0, 4), cell], cell);
+	var id = S("def id<T>", 4, 2);
+	expectRefs(t, s, "id<Box>", 0, [S("id(1)", 0, 2), S("id<Box>", 0, 2), id], id);
+	var methodT = S("def id<T>", 7, 1), classT = S("class Cell<T>", 11, 1);
+	expectRefs(t, s, "(p: T) -> T", 4, [methodT, S("(p: T) -> T", 4, 1), S("(p: T) -> T", 10, 1)], methodT);
+	expectRefs(t, s, "def get() -> T", 13, [classT, S("(item: T)", 7, 1), S("def get() -> T", 13, 1)], classT);
+	var item = S("(item: T)", 1, 4);
+	expectRefs(t, s, "return item", 7, [item, S("return item", 7, 4)], item);
+	s.server.close();
+}
+// "this" and a default ".new" resolve to their class but are not its
+// references; either selects the class. An explicit constructor's uses are
+// its own.
+def test_components_and_classes(t: Tester) {
+	var s = session(t);
+	var refs = S("component Refs", 10, 4);
+	expectRefs(t, s, "Refs.value", 0, [refs, S("Refs.value", 0, 4)], refs);
+	var node = S("class Node", 6, 4), nodes = [S("Node.new()", 0, 4), node, S("self() -> Node", 10, 4)];
+	expectRefs(t, s, "class Node", 6, nodes, node);
+	expectRefs(t, s, "return this", 7, nodes, node);
+	expectRefs(t, s, "Node.new()", 5, nodes, node);
+	var box = S("class Box", 6, 3);
+	expectRefs(t, s, "b: Box", 3, [S("b: Box", 3, 3), S("Cell<Box>", 5, 3), S("id<Box>", 3, 3), S("Box.new(2)", 0, 3), box], box);
+	var constructor = S("new(size)", 0, 3);
+	expectRefs(t, s, "Box.new(2)", 4, [S("Box.new(2)", 4, 3), constructor], constructor);
+	var size = S("var size", 4, 4);
+	expectRefs(t, s, "get().size", 6, [S("get().size", 6, 4), S("(b).size", 4, 4), size], size);
+	s.server.close();
+}
+// Enum and variant cases in expressions and patterns, their types, and a
+// data type, which shares its name with its single case: the uses of both are
+// its references.
+def test_cases(t: Tester) {
+	var s = session(t);
+	var red = S("{ RED", 2, 3), green = S("RED, GREEN", 5, 5), color = S("enum Color", 5, 5);
+	expectRefs(t, s, "Color.RED", 6, [S("Color.RED", 6, 3), S("RED =>", 0, 3), red], red);
+	expectRefs(t, s, "GREEN =>", 0, [S("GREEN =>", 0, 5), green], green);
+	expectRefs(t, s, "c: Color", 3, [S("c: Color", 3, 5), S("Color.RED", 0, 5), color], color);
+	var circle = S("case Circle", 5, 6), dot = S("case Dot", 5, 3), shape = S("type Shape", 5, 5);
+	expectRefs(t, s, "Shape.Circle(3)", 6, [S("Shape.Circle(3)", 6, 6), S("Circle(radius)", 0, 6), circle], circle);
+	expectRefs(t, s, "Dot =>", 0, [S("Dot =>", 0, 3), dot], dot);
+	expectRefs(t, s, "s: Shape", 3, [S("s: Shape", 3, 5), S("Shape.Circle(3)", 0, 5), shape], shape);
+	var row = S("type Row", 5, 3), rows = [S("w: Row", 3, 3), S("Row(1, 2)", 0, 3), row];
+	expectRefs(t, s, "type Row", 5, rows, row);
+	expectRefs(t, s, "w: Row", 3, rows, row);
+	expectRefs(t, s, "Row(1, 2)", 0, rows, row);
+	var m = S("Row(m", 4, 1);
+	expectRefs(t, s, "row.m", 4, [S("row.m", 4, 1), m], m);
+	s.server.close();
+}
+// An index operation is a use of its bracket. c[i] += v uses only []=, and a
+// named call spells the method's whole name.
+def test_index_operators(t: Tester) {
+	var s = session(t);
+	var read = S("def [i: int] -> int", 4, 1), write = S("def [i: int] = v", 4, 1);
+	var reads = [S("g[0]", 1, 1), S("g.[](4)", 2, 2), read], writes = [S("g[1]", 1, 1), S("g[2] += 3", 1, 1), write];
+	expectRefs(t, s, "g[0]", 1, reads, read);
+	expectRefs(t, s, "g.[](4)", 2, reads, read);
+	expectRefs(t, s, "def [i: int] -> int", 4, reads, read);
+	expectRefs(t, s, "g[1]", 1, writes, write);
+	expectRefs(t, s, "g[2] += 3", 1, writes, write);
+	expectRefs(t, s, "def [i: int] = v", 4, writes, write);
+	s.server.close();
+}
+// Layouts in layout fields' memory types and in Ref and ref, a layout field
+// and a method of the same name, packings in applications, and packing
+// parameters in #concat and as arguments.
+def test_layouts_and_packings(t: Tester) {
+	var s = session(t);
+	var tag = S("layout Tag", 7, 3), pair = S("layout Pair", 7, 4);
+	expectRefs(t, s, "head: Tag", 6, [tag, S("head: Tag", 6, 3), S("Tag[2]", 0, 3), S("-> Ref<Tag>", 7, 3), S("ref<Tag>", 4, 3)], tag);
+	expectRefs(t, s, "Ref<Pair>.of", 4, [pair, S("Ref<Pair> =", 4, 4), S("Ref<Pair>.of", 4, 4)], pair);
+	var head = S("+0 head", 3, 4), method = S("def head", 4, 4);
+	expectRefs(t, s, "p.head", 2, [head, S("p.head", 2, 4)], head);
+	expectSpots(t, s, s.answer(t, "Refs.v3", method.line, method.begin, true), [method], "a method named as a layout field");
+	var low = S("packing Low", 8, 3), x = S("Wide(x", 5, 1), a = S("Low(a", 4, 1);
+	expectRefs(t, s, "Low(x,", 0, [low, S("Low(x,", 0, 3)], low);
+	expectRefs(t, s, "Low(x,", 4, [x, S("Low(x,", 4, 1)], x);
+	expectRefs(t, s, "b, a)", 3, [a, S("b, a)", 3, 1)], a);
+	s.server.close();
+}
+// The declaration's name is in the reply only if requested, wherever the
+// request selects it, and a declaration that nothing uses has only its name.
+def test_include_declaration(t: Tester) {
+	var s = session(t);
+	var made = S("var made", 4, 4);
+	expectSpots(t, s, s.answer(t, "Refs.v3", made.line, made.begin, true), [made], "an unused local");
+	expectSpots(t, s, s.answer(t, "Refs.v3", made.line, made.begin, false), Array<Spot>.new(0), "an unused local without its name");
+	// Just past an identifier, before ; and before a space.
+	var outer = S("var x = value", 4, 1), uses = [S("if (x > 0)", 4, 1), S("return x;", 7, 1)];
+	var p = at(SOURCE, "return x;", 8);
+	expectSpots(t, s, s.answer(t, "Refs.v3", p.0, p.1, false), uses, "just past a use");
+	expectSpots(t, s, s.answer(t, "Refs.v3", outer.line, outer.end, false), uses, "just past a declaration's name");
+	s.server.close();
+}
+def test_nothing_selected(t: Tester) {
+	var s = session(t);
+	var p = at(SOURCE, "\"abc\".length", 6);
+	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1, true), "a builtin member");
+	p = at(SOURCE, "return total + row", 0);
+	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1, true), "a keyword");
+	p = at(SOURCE, "id(1)", 3);
+	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1, true), "a literal");
+	p = at(SOURCE, "-> Ref<Tag>", 3);
+	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1, true), "a builtin type");
+	p = at(SOURCE, "def head(r: Range<byte>", 18);
+	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1, true), "a builtin type argument");
+	expectNull(t, s.answer(t, "Refs.v3", 1000, 0, true), "past the end of the document");
+	s.server.close();
+}
+// The references of a declaration in closed Decl.v3, which the server reads
+// again, in byte order of path although Refs.v3 is analyzed first, and with
+// UTF-16 positions after non-ASCII text.
+def test_cross_file(t: Tester) {
+	var s = session(t);
+	var declaration = Spot.new("Decl.v3", 2, 5, 10), use = S("Decl.thing", 5, 5);
+	var twice = [Spot.new("Decl.v3", TWICE_LINE, TWICE_FIRST, TWICE_FIRST + 5), Spot.new("Decl.v3", TWICE_LINE, TWICE_SECOND, TWICE_SECOND + 5)];
+	var all = [declaration, twice[0], twice[1], use];
+	expectSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin, true), all, "a closed file's declaration");
+	expectSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin, false), [twice[0], twice[1], use], "without its name");
+	// From the closed file's own declaration and use, which is read again too.
+	expectSpots(t, s, s.answer(t, "Decl.v3", 2, 7, true), all, "from the declaration");
+	expectSpots(t, s, s.answer(t, "Decl.v3", TWICE_LINE, TWICE_SECOND + 1, true), all, "from a use after non-ASCII text");
+	// The component Decl, used from Refs.v3.
+	var decl = Spot.new("Decl.v3", 1, 10, 14);
+	expectSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin - 2, true), [decl, S("Decl.thing", 0, 4)], "the component");
+	s.server.close();
+}
+// A closed file changed on disk without a file event keeps every stamp
+// current, but its bytes are no longer the ones analyzed: its locations are
+// left out, and only those. A request in that file gets null.
+def test_file_changed_on_disk(t: Tester) {
+	var s = session(t);
+	var use = S("Decl.thing", 5, 5);
+	s.write(t, "Decl.v3", DECL_CHANGED);
+	expectSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin, true), [use], "a changed file's locations left out");
+	expectNull(t, s.answer(t, "Decl.v3", 2, 7, true), "a request in the changed file");
+	s.write(t, "Decl.v3", DECL);
+	var declaration = Spot.new("Decl.v3", 2, 5, 10);
+	var twice = [Spot.new("Decl.v3", TWICE_LINE, TWICE_FIRST, TWICE_FIRST + 5), Spot.new("Decl.v3", TWICE_LINE, TWICE_SECOND, TWICE_SECOND + 5)];
+	expectSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin, true), [declaration, twice[0], twice[1], use], "the file restored");
+	// An open file's analyzed text is its overlay, whatever is on disk.
+	var step = S("var step", 4, 4);
+	s.write(t, "Refs.v3", "");
+	expectSpots(t, s, s.answer(t, "Refs.v3", step.line, step.begin, false), [S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "an open file");
+	s.server.close();
+}
+// A program with semantic errors is answered from the uses that resolved.
+def test_semantic_errors(t: Tester) {
+	var text = Strings.format1("%s\ncomponent Broken {\n\tdef f(step: int) -> int { return step + missing; }\n}\n", SOURCE);
+	var s = ReferencesTestSession.new(t, text);
+	s.open("Refs.v3", 1, text);
+	s.settle();
+	t.assert(s.context().snapshot.parsed && !s.context().snapshot.verified, "the program parsed and has errors");
+	var p = at(text, "step + missing", 0), q = at(text, "f(step: int)", 2);
+	var mine = [Spot.new("Refs.v3", q.0, q.1, q.1 + 4), Spot.new("Refs.v3", p.0, p.1, p.1 + 4)];
+	expectSpots(t, s, s.answer(t, "Refs.v3", p.0, p.1, true), mine, "a parameter beside an unresolved name");
+	var step = S("var step", 4, 4);
+	expectSpots(t, s, s.answer(t, "Refs.v3", step.line, step.begin, true), [step, S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "another declaration of the same name");
+	p = at(text, "missing", 0);
+	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1, true), "the unresolved name");
+	s.server.close();
+}
+// Requests against a stale snapshot wait for the analysis, each with its own
+// includeDeclaration, and are answered in arrival order.
+def test_stale_waits_for_analysis(t: Tester) {
+	var s = session(t);
+	var generation = s.context().snapshot.generation;
+	// An unsaved edit adds a line before every declaration. The change waits
+	// for the debounce interval, which the requests skip.
+	s.change("Refs.v3", 2, Strings.format1("\n%s", SOURCE));
+	t.assertz(false, s.supervisor.busy());
+	var p = at(SOURCE, "a + step", 4);
+	var without = s.references("Refs.v3", p.0 + 1, p.1, false), with = s.references("Refs.v3", p.0 + 1, p.1, true);
+	var definition = s.request("textDocument/definition", "Refs.v3", p.0 + 1, p.1, false);
+	t.assert(s.handled == null, "replies use the sink");
+	t.assert(s.reply(without) == null && s.reply(with) == null && s.reply(definition) == null, "the replies wait");
+	t.assertz(true, s.supervisor.busy());
+	s.settle();
+	t.assert(s.context().snapshot.generation > generation, "a new analysis completed");
+	var spots = [S("var step", 4, 4), S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)];
+	for (spot in spots) spot.line++;
+	expectSpots(t, s, s.result(t, without), Arrays.range(spots, 1, spots.length), "without the declaration");
+	expectSpots(t, s, s.result(t, with), spots, "with the declaration");
+	t.assert(JsonValue.JObject.?(s.result(t, definition)), "the definition is answered too");
+	t.asserti(3, s.replies.length);
+	if (s.replies.length == 3) {
+		t.assert(s.replies[0]["id"] == JsonValue.Int(without) && s.replies[1]["id"] == JsonValue.Int(with), "answered in arrival order");
+	}
+	s.server.close();
+}
+def test_stale_without_analysis(t: Tester) {
+	var s = session(t);
+	var step = S("var step", 4, 4);
+	expectSpots(t, s, s.answer(t, "Refs.v3", step.line, step.begin, false), [S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "a current snapshot");
+	// An edit that schedules no analysis leaves the snapshot stale.
+	t.assert(s.store.change(s.uri("Refs.v3"), 2, Strings.format1("%s\n", SOURCE)) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.answer(t, "Refs.v3", step.line, step.begin, false), "a stale snapshot");
+	t.assertz(false, s.server.analyzing());
+	// A program that does not parse has no occurrences.
+	s.change("Refs.v3", 3, Strings.format1("%s}\n", SOURCE));
+	s.settle();
+	t.assert(!s.context().snapshot.parsed, "the program does not parse");
+	expectNull(t, s.answer(t, "Refs.v3", step.line, step.begin, false), "a parse failure");
+	s.server.close();
+}
+// References wait with definition and hover requests, within one bound: one
+// more than MAX_WAITING answers the oldest waiting request with null, whatever
+// its method, and the rest keep their own includeDeclaration.
+def test_shared_waiting_bound(t: Tester) {
+	var s = session(t);
+	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
+	var max = LspSnapshotRequests.new(null, null, null).MAX_WAITING;
+	var p = at(SOURCE, "a + step", 4), ids = Array<int>.new(max + 3);
+	var methods = ["textDocument/references", "textDocument/hover", "textDocument/references", "textDocument/definition"];
+	for (i < ids.length) ids[i] = s.request(methods[i % 4], "Refs.v3", p.0, p.1, i % 4 == 0);
+	t.asserti(3, s.replies.length);
+	if (s.replies.length == 3) {
+		for (i < 3) {
+			t.assert(s.replies[i]["id"] == JsonValue.Int(ids[i]), "the oldest first");
+			expectNull(t, s.result(t, ids[i]), "an evicted request");
+		}
+	}
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	var spots = [S("var step", 4, 4), S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)];
+	for (i = 3; i < ids.length; i++) {
+		var r = s.result(t, ids[i]);
+		match (i % 4) {
+			0 => expectSpots(t, s, r, spots, "with the declaration");
+			2 => expectSpots(t, s, r, Arrays.range(spots, 1, spots.length), "without the declaration");
+			_ => t.assert(JsonValue.JObject.?(r), "a Hover or a Location");
+		}
+	}
+	s.server.close();
+}
+// Checks that the response to {id} is RequestFailed, with {message}.
+def expectFailed(t: Tester, reply: HashMap<string, JsonValue>, message: string) {
+	t.assert(reply != null && reply.has("error") && !reply.has("result"), "the request failed");
+	if (reply == null || !reply.has("error")) return;
+	t.asserti(LspErrorCode.REQUEST_FAILED, intAt(reply["error"], "code"));
+	t.assert_string(message, stringAt(reply["error"], "message"));
+}
+// Answers with at most three Locations, with the declaration's name if the
+// request's context.includeDeclaration is true.
+def threeLocations(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+	var include = JsonValue.JObject.!(params["context"]).v["includeDeclaration"] == JsonValue.Bool(true);
+	return LspReferences.answer(_, _, include, 3);
+}
+// A reply lists every reference up to the bound, here three, from a second
+// handler over the server's snapshots; with more, the request fails. Uses that
+// are left out, such as "this", do not count.
+def test_reply_bound(t: Tester) {
+	var s = session(t);
+	var replies = Vector<HashMap<string, JsonValue>>.new();
+	var requests = LspSnapshotRequests.new(s.store, s.server.projects, fun (bytes: Array<byte>) {
+		replies.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	});
+	var dispatcher = JsonRpcDispatcher.new();
+	requests.registerPrepared(dispatcher, "textDocument/references", "references", LspReferences.REQUIRES, threeLocations);
+	var use = S("Decl.thing", 5, 5), node = S("class Node", 6, 4);
+	var cases = [(use, false), (use, true), (node, true), (S("return this", 7, 4), true)];
+	for (c in cases) {
+		var payload = Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":%d,\"character\":%d},",
+			s.uri("Refs.v3"), c.0.line, c.0.begin);
+		payload = Strings.format2("%s\"context\":{\"includeDeclaration\":%z}}}", payload, c.1);
+		t.assert(dispatcher.handle(payload) == null, "replies use the sink");
+	}
+	t.asserti(cases.length, replies.length);
+	if (replies.length != cases.length) return s.server.close();
+	var twice = [Spot.new("Decl.v3", TWICE_LINE, TWICE_FIRST, TWICE_FIRST + 5), Spot.new("Decl.v3", TWICE_LINE, TWICE_SECOND, TWICE_SECOND + 5)];
+	expectSpots(t, s, replies[0]["result"], [twice[0], twice[1], use], "three references");
+	expectFailed(t, replies[1], "the declaration thing has more than 3 references");
+	var nodes = [S("Node.new()", 0, 4), node, S("self() -> Node", 10, 4)];
+	expectSpots(t, s, replies[2]["result"], nodes, "three references and two aliases");
+	expectSpots(t, s, replies[3]["result"], nodes, "from an alias");
+	s.server.close();
+}
+// The bound, MAX_LOCATIONS, through the server: a declaration with exactly
+// that many references is answered in full; with its name, one more, the
+// request fails, also once it has waited for an analysis.
+def test_too_many_references(t: Tester) {
+	var b = StringBuilder.new().puts("component Many {\n\tdef x = 1;\n\tdef f() -> int {\n\t\tvar y = 0;\n");
+	for (i < LspReferences.MAX_LOCATIONS) b.puts("\t\ty = x;\n");
+	var text = b.puts("\t\treturn y;\n\t}\n}\n").toString();
+	var s = ReferencesTestSession.new(t, text);
+	s.open("Refs.v3", 1, text);
+	s.settle();
+	var r = s.answer(t, "Refs.v3", 1, 5, false);
+	t.assert(JsonValue.JArray.?(r), "an array of Locations");
+	if (JsonValue.JArray.?(r)) {
+		var locations = JsonValue.JArray.!(r).v, last = 3 + LspReferences.MAX_LOCATIONS;
+		t.asserti(LspReferences.MAX_LOCATIONS, locations.length);
+		var ends = [locations[0], locations[locations.length - 1]];
+		expectSpots(t, s, JsonValue.JArray(ends), [Spot.new("Refs.v3", 4, 6, 7), Spot.new("Refs.v3", last, 6, 7)], "the first and the last");
+	}
+	var message = "the declaration x has more than 10000 references";
+	expectFailed(t, s.reply(s.references("Refs.v3", 1, 5, true)), message);
+	// An unsaved edit adds a line before every declaration.
+	s.change("Refs.v3", 2, Strings.format1("\n%s", text));
+	var waiting = s.references("Refs.v3", 2, 5, true);
+	t.assert(s.handled == null && s.reply(waiting) == null, "the reply waits");
+	s.settle();
+	expectFailed(t, s.reply(waiting), message);
+	s.server.close();
+}
+def test_params(t: Tester) {
+	var s = session(t);
+	var position = "\"position\":{\"line\":8,\"character\":7}", uri = s.uri("Refs.v3");
+	var cases = [
+		"null",
+		"[]",
+		"{}",
+		Strings.format1("{\"textDocument\":{\"uri\":\"%s\"},\"context\":{\"includeDeclaration\":true}}", uri),
+		"{\"textDocument\":{\"uri\":\"file:relative\"},\"position\":{\"line\":0,\"character\":0},\"context\":{\"includeDeclaration\":true}}",
+		Strings.format1("{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":-1,\"character\":0},\"context\":{\"includeDeclaration\":true}}", uri),
+		Strings.format2("{\"textDocument\":{\"uri\":\"%s\"},%s}", uri, position),
+		Strings.format2("{\"textDocument\":{\"uri\":\"%s\"},%s,\"context\":null}", uri, position),
+		Strings.format2("{\"textDocument\":{\"uri\":\"%s\"},%s,\"context\":{}}", uri, position),
+		Strings.format2("{\"textDocument\":{\"uri\":\"%s\"},%s,\"context\":{\"includeDeclaration\":1}}", uri, position),
+		Strings.format2("{\"textDocument\":{\"uri\":\"%s\"},%s,\"context\":{\"includeDeclaration\":\"true\"}}", uri, position),
+		Strings.format2("{\"textDocument\":{\"uri\":\"%s\"},%s,\"context\":{\"includeDeclaration\":null}}", uri, position)
+	];
+	for (i < cases.length) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/references\",\"params\":%s}", i + 1, cases[i]);
+		t.assert(s.server.handle(payload) == null, "replies use the sink");
+		var r = s.reply(i + 1);
+		t.assert(r != null && r.has("error"), cases[i]);
+		if (r != null && r.has("error")) {
+			t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(r["error"], "code"));
+			t.assert_string("references params require a valid textDocument.uri, position, and context.includeDeclaration", stringAt(r["error"], "message"));
+		}
+	}
+	// The same position with a valid context is answered.
+	var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},%s,\"context\":{\"includeDeclaration\":false}}}", uri, position);
+	t.assert(s.server.handle(payload) == null, "replies use the sink");
+	expectSpots(t, s, s.result(t, 99), [S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "valid parameters");
+	s.server.close();
+}

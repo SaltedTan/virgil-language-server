@@ -4,7 +4,7 @@ This page lists what the v0.1 alpha doesn't do, or does only in part. Each item 
 
 ## Features not yet implemented
 
-- Completion, references, rename, signature help, and workspace symbols aren't implemented. The server doesn't advertise them ([protocol invariants](architecture.md#protocol-invariants)), and [M5](../ROADMAP.md#m5--references-rename-signature-help-and-completion-48-weeks) plans them.
+- Completion, rename, and signature help aren't implemented. The server doesn't advertise them ([protocol invariants](architecture.md#protocol-invariants)), and [M5](../ROADMAP.md#m5--references-rename-signature-help-and-completion-48-weeks) plans them.
 - Formatting and debugging are out of scope, and incremental analysis comes after v0.1 ([v0.1 scope](../README.md#v01-scope)).
 
 ## Semantic features need a project file

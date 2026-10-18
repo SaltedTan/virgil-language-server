@@ -162,6 +162,46 @@ local function check()
     and symbol.location.range["end"].line == 5 and symbol.location.range["end"].character == 9,
     "unexpected workspace symbol: " .. vim.inspect(symbol))
 
+  -- The references of the same class, with its declaration: the use, the
+  -- class's name, and uses in other closed lib/util files, which the server
+  -- reads again. Each spells the name, in order of path and then position.
+  response, err = client:request_sync("textDocument/references", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
+    context = { includeDeclaration = true },
+  }, 10000, words_buf)
+  assert(response and not response.err, "references failed: " .. vim.inspect(err or response.err))
+  local references = response.result or {}
+  local found_use, found_class, previous = false, false, nil
+  local library_files = {}
+  for _, location in ipairs(references) do
+    local file, range = vim.uri_to_fname(location.uri), location.range
+    local text = file == vim.api.nvim_buf_get_name(words_buf)
+      and vim.api.nvim_buf_get_lines(words_buf, range.start.line, range.start.line + 1, true)[1]
+      or vim.fn.readfile(file)[range.start.line + 1]
+    local first = vim.str_byteindex(text, "utf-16", range.start.character, false)
+    local key = { file, range.start.line, range.start.character }
+    assert(range["end"].line == range.start.line
+      and text:sub(first + 1, first + #"StringBuilder") == "StringBuilder"
+      and vim.str_utfindex(text, "utf-16", first + #"StringBuilder", false) == range["end"].character,
+      "a reference does not spell StringBuilder: " .. vim.inspect(location))
+    assert(previous == nil or previous[1] < key[1] or (previous[1] == key[1]
+      and (previous[2] < key[2] or (previous[2] == key[2] and previous[3] < key[3]))),
+      "references out of order or repeated: " .. vim.inspect(references))
+    previous = key
+    if file == vim.api.nvim_buf_get_name(words_buf) then
+      assert(not found_use and range.start.line == use_line and range.start.character == start - 1,
+        "unexpected reference in words/Words.v3: " .. vim.inspect(location))
+      found_use = true
+    else
+      assert(vim.startswith(file, vim.fs.joinpath(vim.env.VIRGIL_LOC, "lib", "util") .. "/"),
+        "a reference outside the project: " .. vim.inspect(location))
+      library_files[file] = true
+      found_class = found_class or (file == library and range.start.line == class_line and range.start.character == 6)
+    end
+  end
+  assert(found_use and found_class and vim.tbl_count(library_files) > 1,
+    "unexpected references: " .. vim.inspect(references))
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -188,7 +228,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, references, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

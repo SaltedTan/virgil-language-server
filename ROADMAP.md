@@ -108,7 +108,7 @@ Treat each completed analysis as an immutable snapshot containing:
 - diagnostics grouped by URI;
 - declaration index: stable symbol key to declaration and source range;
 - occurrence index: source range to semantic binding;
-- reverse-reference index: declaration key to all occurrences;
+- reverse-reference index: declaration key to all occurrences *(not retained: [references](docs/architecture.md#references) scan the occurrence index, which is fast enough)*;
 - type/signature display cache *(present: [display text](docs/architecture.md#display-text))*.
 
 The [analysis snapshot contract](docs/architecture.md#analysis-snapshots-partly-present) owns freshness and planned publication/navigation behavior.
@@ -260,7 +260,7 @@ Exit criteria:
 Recommended order:
 
 1. `workspace/symbol` from the existing declaration index. *(present; [#122](https://github.com/SaltedTan/virgil-language-server/issues/122); see [Workspace symbols](docs/architecture.md#workspace-symbols))*
-2. `textDocument/references` from the reverse-occurrence index.
+2. `textDocument/references` from the reverse-occurrence index. *(present, from a scan of the occurrence index; [#123](https://github.com/SaltedTan/virgil-language-server/issues/123); see [References](docs/architecture.md#references))*
 3. `textDocument/prepareRename` and `textDocument/rename`, with conflict checks and versioned workspace edits.
 4. `textDocument/signatureHelp` using resolved call targets and method signatures.
 5. Basic completion for keywords and in-scope declarations.
@@ -352,7 +352,7 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 
 ### Visual Studio Code
 
-The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). Its [Extension Host test](clients/vscode/README.md#extension-host-test) covers activation, diagnostics, document symbols, a cross-file definition, hover, workspace symbols, project-file diagnostics, and restart.
+The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). Its [Extension Host test](clients/vscode/README.md#extension-host-test) covers activation, diagnostics, document symbols, a cross-file definition, hover, references, workspace symbols, project-file diagnostics, and restart.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.
 

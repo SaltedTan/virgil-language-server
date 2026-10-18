@@ -6,7 +6,7 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: pre-alpha.** The diagnostics milestones (M2–M3) are done, and semantic navigation (M4) is under way: go-to-definition, hover, and workspace symbols work; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, plus type errors, [go-to-definition](docs/architecture.md#definition), [hover](docs/architecture.md#hover), and [workspace symbols](docs/architecture.md#workspace-symbols) across the files of a [configured project](docs/configuration.md). The [occurrence index](docs/architecture.md#compiler-adapter) defines which names resolve, and the [architecture guide](docs/architecture.md) describes how each part works.
+> **Status: pre-alpha.** The diagnostics milestones (M2–M3) are done, and semantic navigation (M4) is under way: go-to-definition, hover, references, and workspace symbols work; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, plus type errors, [go-to-definition](docs/architecture.md#definition), [hover](docs/architecture.md#hover), [references](docs/architecture.md#references), and [workspace symbols](docs/architecture.md#workspace-symbols) across the files of a [configured project](docs/configuration.md). The [occurrence index](docs/architecture.md#compiler-adapter) defines which names resolve, and the [architecture guide](docs/architecture.md) describes how each part works.
 
 ## Why
 
@@ -23,7 +23,7 @@ One server, used by both LazyVim/Neovim and VS Code, providing:
 - hover with declaration signatures and inferred types
 - a [`.virgil-lsp.json` project file](docs/configuration.md) describing which sources form a program
 
-Completion, references, rename, and incremental analysis come after v0.1. Formatting and debugging are out of scope. [Known limitations](docs/known-limitations.md) lists what else the alpha doesn't do yet.
+Completion, rename, and incremental analysis come after v0.1; [references](docs/architecture.md#references) are already available. Formatting and debugging are out of scope. [Known limitations](docs/known-limitations.md) lists what else the alpha doesn't do yet.
 
 ## Architecture
 
