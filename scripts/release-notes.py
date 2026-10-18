@@ -33,11 +33,12 @@ SHARED = ("version", "tag", "sourceRevision", "dirty", "virgilRevision")
 MANIFEST = "extension/package.json"
 # What zipfile can raise for a damaged VSIX that is_zipfile accepts, as in
 # scripts/check-vsix.py: a bad header, central directory, or CRC; an entry
-# name that isn't the UTF-8 that its flags claim; corrupt or truncated
-# compressed data or an I/O error; and a compression method, feature, or
-# encryption that zipfile doesn't support (RuntimeError, including its
-# subclass NotImplementedError).
-ZIP_ERRORS = (zipfile.BadZipFile, UnicodeDecodeError, zlib.error, LZMAError, EOFError, OSError,
+# name that isn't the UTF-8 that its flags claim, or an offset too large to
+# seek to (ValueError); corrupt or truncated compressed data or an I/O error;
+# and a compression method, feature, or encryption that zipfile doesn't
+# support (RuntimeError, including its subclass NotImplementedError). Catch
+# them only around zipfile's own calls.
+ZIP_ERRORS = (zipfile.BadZipFile, ValueError, zlib.error, LZMAError, EOFError, OSError,
               RuntimeError)
 
 
@@ -75,6 +76,10 @@ def extension(assets):
     except ZIP_ERRORS as e:
         fail("cannot read %s: %s" % (path, e))
     with z:
+        # zipfile reads the last entry with the name, which it ends before any
+        # NUL, so refuse to choose between copies.
+        if sum(info.filename == MANIFEST for info in z.infolist()) > 1:
+            fail("%s holds more than one entry named %r" % (name, MANIFEST))
         try:
             data = z.read(MANIFEST)
         except KeyError:

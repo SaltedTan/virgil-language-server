@@ -78,14 +78,19 @@ PATTERN_SYNTAX = re.compile(r"\\[^/\\|]|([][{}]|[?*+@!]\(|\\)")
 # would only match a backslash. This script refuses an escape in such a
 # segment. Check these quirks again when vsce's minimatch is updated.
 SHORTCUT_SEGMENT = re.compile(r"\*+[^+@!?*[(]*|\?+[^+@!?*[(]*")
+# A character outside the Basic Multilingual Plane, which JavaScript strings,
+# and so minimatch's "?" and "*", count as two UTF-16 code units.
+NON_BMP = re.compile("[\U00010000-\U0010ffff]")
 # What zipfile can raise for a damaged VSIX that is_zipfile accepts: a bad
 # header, central directory, or CRC (BadZipFile); an entry name that isn't the
-# UTF-8 that its flags claim (UnicodeDecodeError); corrupt or truncated
-# compressed data (zlib.error, LZMAError, EOFError, and OSError, which bzip2
-# raises and which also covers I/O errors); and a compression method, feature,
-# or encryption that zipfile doesn't support (RuntimeError, including its
-# subclass NotImplementedError).
-ZIP_ERRORS = (zipfile.BadZipFile, UnicodeDecodeError, zlib.error, LZMAError, EOFError, OSError,
+# UTF-8 that its flags claim (UnicodeDecodeError, a ValueError) or an offset
+# too large to seek to, such as a ZIP64 offset of 2**64 - 1 (ValueError);
+# corrupt or truncated compressed data (zlib.error, LZMAError, EOFError, and
+# OSError, which bzip2 raises and which also covers I/O errors); and a
+# compression method, feature, or encryption that zipfile doesn't support
+# (RuntimeError, including its subclass NotImplementedError). Catch them only
+# around zipfile's own calls.
+ZIP_ERRORS = (zipfile.BadZipFile, ValueError, zlib.error, LZMAError, EOFError, OSError,
               RuntimeError)
 
 
@@ -115,10 +120,15 @@ def load_json(path):
 
 
 def unsupported(rule):
-    """Whether a pattern uses syntax that this script doesn't implement."""
+    """Whether a pattern uses syntax that this script doesn't implement. That
+    includes an empty segment between two others, which minimatch removes by
+    coalescing slashes, and a "." or ".." segment, which minimatch partly
+    resolves before matching, such as "tmp/../assets/keep.txt"."""
     if any(m.group(1) for m in PATTERN_SYNTAX.finditer(rule)):
         return True
-    return any("\\" in s and SHORTCUT_SEGMENT.fullmatch(s) for s in rule.lstrip("!").split("/"))
+    segments = rule.lstrip("!").split("/")
+    return ("" in segments[1:-1] or "." in segments or ".." in segments
+            or any("\\" in s and SHORTCUT_SEGMENT.fullmatch(s) for s in segments))
 
 
 def ignore_rules(path):
@@ -171,18 +181,29 @@ def match_parts(pattern, parts):
             and match_parts(pattern[1:], parts[1:]))
 
 
+def utf16(text):
+    """Replaces each character outside the Basic Multilingual Plane with its
+    UTF-16 surrogate pair, so that text has JavaScript's length."""
+    def pair(m):
+        c = ord(m.group()) - 0x10000
+        return chr(0xD800 + (c >> 10)) + chr(0xDC00 + (c & 0x3FF))
+    return NON_BMP.sub(pair, text)
+
+
 def minimatch(path, pattern):
     """minimatch(path, pattern, {dot: true}) for the syntax that ignore_rules accepts:
     "*", "?", and "\\" escapes within a segment, "**" as a whole segment for any
     number of segments (at least one at the end), dot files matched like any
-    other, a leading "!" for negation, and a leading "#" for a comment."""
+    other, a leading "!" for negation, and a leading "#" for a comment. Like
+    minimatch, "?" matches one UTF-16 code unit, so it matches only half of a
+    character outside the Basic Multilingual Plane, such as an emoji."""
     if pattern.startswith("#"):
         return False
     negate = False
     while pattern.startswith("!"):
         negate = not negate
         pattern = pattern[1:]
-    return match_parts(tuple(pattern.split("/")), tuple(path.split("/"))) != negate
+    return match_parts(tuple(utf16(pattern).split("/")), tuple(utf16(path).split("/"))) != negate
 
 
 def package_of(path):
@@ -230,7 +251,8 @@ def source_name(path, top):
 
 
 def read_vsix(vsix, name):
-    """Returns the entry names of a VSIX and its parsed extension/package.json."""
+    """Returns the entry names of a VSIX, as the archive records them, and its
+    parsed extension/package.json."""
     if not zipfile.is_zipfile(vsix):
         fail("%s is not a zip file" % vsix)
     try:
@@ -238,13 +260,24 @@ def read_vsix(vsix, name):
     except ZIP_ERRORS as e:
         fail("cannot read %s: %s" % (vsix, e))
     with z:
+        # zipfile finds an entry by its name, which it ends before any NUL, and
+        # reads the last entry of each name, so first refuse a name that
+        # zipfile changes or that the archive records more than once.
+        entries = [info.orig_filename for info in z.infolist()]
+        for info in z.infolist():
+            if info.orig_filename != info.filename:
+                fail("%s: the entry %r isn't a canonical relative path" % (name, info.orig_filename))
+        seen = set()
+        for entry in entries:
+            if entry in seen:
+                fail("%s holds more than one entry named %r" % (name, entry))
+            seen.add(entry)
         try:
             data = z.read(MANIFEST)
         except KeyError:
             fail("%s has no %s" % (name, MANIFEST))
         except ZIP_ERRORS as e:
             fail("%s: cannot read %s: %s" % (name, MANIFEST, e))
-        entries = z.namelist()
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as e:
