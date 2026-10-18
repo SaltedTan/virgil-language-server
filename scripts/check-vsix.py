@@ -60,6 +60,10 @@ VSCE_LICENSE = re.compile(r"licen[cs]e", re.I)
 # The files that vsce writes at the top of the VSIX, outside extension/.
 VSIX_ROOT_FILES = ("[Content_Types].xml", "extension.vsixmanifest")
 MANIFEST = "extension/package.json"
+# A character that a canonical entry name doesn't hold: a C0 control
+# character, which includes NUL, LF, and CR, DEL, U+2028, or U+2029. vsce's
+# file walk skips a name with LF, CR, U+2028, or U+2029.
+CONTROL = re.compile("[\x00-\x1f\x7f\u2028\u2029]")
 # Pattern syntax that minimatch supports and this script doesn't, because
 # .vscodeignore doesn't need it, in group 1: an unescaped bracket or brace,
 # which starts a character class or brace expansion; an extglob such as
@@ -78,6 +82,12 @@ PATTERN_SYNTAX = re.compile(r"\\[^/\\|]|([][{}]|[?*+@!]\(|\\)")
 # would only match a backslash. This script refuses an escape in such a
 # segment. Check these quirks again when vsce's minimatch is updated.
 SHORTCUT_SEGMENT = re.compile(r"\*+[^+@!?*[(]*|\?+[^+@!?*[(]*")
+# What JavaScript's String.prototype.trim() removes from each end of a string:
+# the WhiteSpace and LineTerminator characters of ECMAScript, which include a
+# byte order mark. Python's str.strip() keeps U+FEFF but removes U+001C to
+# U+001F and U+0085, which trim() keeps.
+JS_TRIM = ("\t\n\v\f\r \u00a0\u1680" + "".join(map(chr, range(0x2000, 0x200b)))
+           + "\u2028\u2029\u202f\u205f\u3000\ufeff")
 # A character outside the Basic Multilingual Plane, which JavaScript strings,
 # and so minimatch's "?" and "*", count as two UTF-16 code units.
 NON_BMP = re.compile("[\U00010000-\U0010ffff]")
@@ -133,7 +143,10 @@ def unsupported(rule):
 
 def ignore_rules(path):
     """Returns the ignore and negated patterns that vsce builds from .vscodeignore."""
-    lines = [line.strip() for line in re.split(r"[\n\r]", read(path))]
+    # vsce splits the file at each "\n" or "\r" and trims each line with
+    # JavaScript's trim(). Text mode turns "\r\n" and "\r" into "\n", which
+    # leaves the same nonempty lines.
+    lines = [line.strip(JS_TRIM) for line in re.split(r"[\n\r]", read(path))]
     lines = [line for line in lines if line and not line.startswith("#")]
     # vsce also matches everything under a pattern whose last segment has no
     # "*", in case it names a directory.
@@ -226,7 +239,8 @@ def package_of(path):
 def entry_problem(entry):
     """Why a ZIP entry isn't one that vsce writes, or None."""
     path = entry[:-1] if entry.endswith("/") else entry
-    if path.startswith("/") or "\\" in path or any(s in ("", ".", "..") for s in path.split("/")):
+    if (path.startswith("/") or "\\" in path or CONTROL.search(path)
+            or any(s in ("", ".", "..") for s in path.split("/"))):
         return "the entry %r isn't a canonical relative path" % entry
     if path != "extension" and not path.startswith("extension/") and (
             entry.endswith("/") or path not in VSIX_ROOT_FILES):

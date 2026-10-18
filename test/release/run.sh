@@ -280,6 +280,11 @@ check_vsix "an entry with an empty segment" 1 "the entry 'extension//src/secret\
     "$package" raw:extension//src/secret.ts
 check_vsix "an entry with a backslash" 1 "the entry 'extension/src.*secret\.ts' isn't a canonical" \
     "$package" 'raw:extension/src\secret.ts'
+check_vsix "an entry with an LF" 1 "the entry 'extension/out/a\\\\nb\.js' isn't a canonical relative path$" \
+    "$package" $'out/a\nb.js'
+# U+2028, which vsce's file walk skips like LF.
+check_vsix "an entry with a line separator" 1 \
+    "the entry 'extension/out/a\\\\u2028b\.js' isn't a canonical relative path$" "$package" $'out/a\xe2\x80\xa8b.js'
 check_vsix "an absolute entry" 1 "the entry '/extension/src/secret\.ts' isn't a canonical" \
     "$package" raw:/extension/src/secret.ts
 check_vsix "an entry outside extension/" 1 "the entry 'src/secret\.ts' is outside extension/$" \
@@ -364,6 +369,33 @@ done
 for f in assets/d.txt assets/draft.txt 'notes/{ab@(x)}.md' keep.txt; do
     vsix "$VSIX" "$package" "${files[@]}" "$f"
     expect_run "check-vsix.py: the escaped patterns keep $f" 0 - "" "$CHECK_VSIX" "$VSIX" "$TMP/escaped"
+done
+
+# rules_first <name> <expected-exit> <stderr-pattern> <rules> <file>: checks a
+# VSIX of the good files and <file> against $EXT with <rules>, written with
+# printf %b, before the lines of its .vscodeignore.
+rules_first() {
+    rm -rf "$TMP/rules-first"
+    cp -R "$EXT" "$TMP/rules-first"
+    { printf '%b' "$4"; cat "$EXT/.vscodeignore"; } > "$TMP/rules-first/.vscodeignore"
+    vsix "$VSIX" "$package" "${files[@]}" "$5"
+    expect_run "check-vsix.py: $1" "$2" - "$3" "$CHECK_VSIX" "$VSIX" "$TMP/rules-first"
+}
+# vsce splits .vscodeignore at each CR or LF and trims each line with
+# JavaScript's trim(), which removes a byte order mark and a no-break space
+# but not U+0085 or U+001F.
+rules_first "a byte order mark before the first rule" 1 \
+    "it holds private/x\.ts, which the ignore pattern 'private/\*\*' excludes$" \
+    '\xef\xbb\xbfprivate/**\n' private/x.ts
+rules_first "a byte order mark before a comment" 0 "" '\xef\xbb\xbf# see [notes]\n' notes.txt
+rules_first "a rule between no-break spaces" 1 \
+    "it holds secret\.txt, which the ignore pattern 'secret\.txt' excludes$" \
+    '\xc2\xa0secret.txt\xc2\xa0\n' secret.txt
+rules_first "a rule after U+0085, which trim() keeps" 0 "" '\xc2\x85secret.txt\n' secret.txt
+rules_first "a rule after U+001F, which trim() keeps" 0 "" '\x1fsecret.txt\n' secret.txt
+for f in one/x two/x three/x; do
+    rules_first "rules that end in CR, CR LF, and LF exclude $f" 1 \
+        "it holds $f, which the ignore pattern '${f%/x}/\*\*' excludes$" 'one/**\rtwo/**\r\nthree/**\n' "$f"
 done
 
 # As in minimatch, "?" matches one UTF-16 code unit, and an emoji is two.
