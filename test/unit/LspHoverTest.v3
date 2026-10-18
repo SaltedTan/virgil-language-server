@@ -1,0 +1,512 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/hover with the real worker. The project-fixtures/hover
+// directory is the build's own copy, so each session rewrites its source
+// before the project is loaded. Every reply arrives through the server's
+// outgoing-message sink. Hover shares its snapshot selection, freshness,
+// waiting, and position rules with definition, which LspDefinitionTest covers
+// in full; these tests cover what hover shows, and that it takes part in the
+// shared rules.
+def T = UnitTests.register;
+def X = [
+	T("LspHover:uses", test_uses),
+	T("LspHover:declaration_names", test_declaration_names),
+	T("LspHover:use_site_types", test_use_site_types),
+	T("LspHover:nothing_to_show", test_nothing_to_show),
+	T("LspHover:cursor_after_identifier", test_cursor_after_identifier),
+	T("LspHover:tabs_and_non_ascii", test_tabs_and_non_ascii),
+	T("LspHover:target_changed_on_disk", test_target_changed_on_disk),
+	T("LspHover:open_target_changed", test_open_target_changed),
+	T("LspHover:stale_waits_for_analysis", test_stale_waits_for_analysis),
+	T("LspHover:stale_without_analysis", test_stale_without_analysis),
+	T("LspHover:shared_waiting_bound", test_shared_waiting_bound),
+	T("LspHover:markdown_fences", test_markdown_fences),
+	T("LspHover:plaintext", test_plaintext),
+	T("LspHover:params", test_params),
+	()
+];
+// Every declaration kind, uses with a use-site type, a builtin member, names
+// that the occurrence index leaves out (a bit pattern's letters and a #packing
+// hint), and an unresolved name, which leaves the program unverified but still
+// indexed. The line of wide() has a tab in a block comment and non-ASCII text
+// (U+00E9, two UTF-8 bytes and one UTF-16 unit; U+1D11E, four bytes and two
+// units) before Hover.unit, which starts at UTF-16 character 37, byte 40, on
+// line 19.
+def SOURCE = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nenum Color { RED, GREEN }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\nclass Cell<T>(item: T) {\n\tdef get() -> T { return item; }\n}\ncomponent Hover {\n\tdef unit = 1;\n\tdef id<T>(p: T) -> T { return p; }\n\tdef wide() -> int { /*\t\xC3\xA9\xF0\x9D\x84\x9E*/ return Hover.unit; }\n\tdef run(b: Box, c: Color, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar total = box.grow(b.size) + Cell<Box>.new(box).get().size;\n\t\tif (c == Color.RED) total++;\n\t\tvar same = id(box);\n\t\tvar n = \"abc\".length + missing;\n\t\tvar f = id<int -> int>;\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\treturn total;\n\t}\n}\nlayout Tag {\n\t+0 kind: u8;\n\t=1;\n}\nlayout Pair {\n\t+0 head: Tag;\n\t+1 tags: Tag[2];\n\t+3 color: Color;\n\t=4;\n}\npacking Low(a: 4, b: 4): 8 = #concat(b, a);\npacking Wide(x: 4, y: 8): 16 = #concat(Low(x, 0b0000), y);\npacking Bits(c: 2): 4 = 0b_cc00;\ntype Packed {\n\tcase Two(f: u8) #packing Low(f, 0b0000);\n}\ncomponent Mem {\n\tdef head(r: Range<byte>) -> Ref<Tag> {\n\t\tvar p: Ref<Pair> = Ref<Pair>.of(r);\n\t\tvar t: ref<Tag> = p.tags[1];\n\t\treturn p.head;\n\t}\n}\n";
+def WIDE_LINE = 19;
+def WIDE_HOVER = 37;
+// Decl.v3, which every session writes, declares the targets of uses that
+// USES_DECL, appended to SOURCE, makes from Hover.v3. In "g[0]", the bracket
+// starts just past g, so the bracket's hover is not g's.
+def DECL = "component Decl {\n\tdef thing = 1;\n}\nclass Grid {\n\tdef [i: int] -> int { return i; }\n}\n";
+def DECL_BOOL = "component Decl {\n\tdef thing = false;\n}\nclass Grid {\n\tdef [i: int] -> int { return i; }\n}\n";
+def USES_DECL = "component UsesDecl {\n\tdef get(g: Grid) -> int {\n\t\tvar t = Decl.thing;\n\t\treturn g[0];\n\t}\n}\n";
+
+class HoverTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	var base: string;
+	// The responses received, in order.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	// What handle() returned for the last request; replies use the sink.
+	var handled: Array<byte>;
+	// {contentFormat}, if not null, is the client's hover.contentFormat.
+	new(t: Tester, contentFormat: Array<string>) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "hover"));
+		write(t, "Hover.v3", SOURCE);
+		write(t, "Decl.v3", DECL);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		if (contentFormat != null) {
+			var formats = Array<JsonValue>.new(contentFormat.length);
+			for (i < formats.length) formats[i] = JsonValue.String(contentFormat[i]);
+			var hover = Strings.newMap<JsonValue>(), doc = Strings.newMap<JsonValue>(), caps = Strings.newMap<JsonValue>();
+			hover["contentFormat"] = JsonValue.JArray(formats);
+			doc["hover"] = JsonValue.JObject(hover);
+			caps["textDocument"] = JsonValue.JObject(doc);
+			params["capabilities"] = JsonValue.JObject(caps);
+		}
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) replies.put(parsed);
+	}
+	def path() -> string { return ProjectFiles.join(base, "Hover.v3"); }
+	def uri() -> string { return ProjectFiles.uri(path()); }
+	def fileUri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(ProjectFiles.join(base, name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(fileUri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	def open(version: int, text: string) {
+		openFile("Hover.v3", version, text);
+	}
+	def openFile(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(fileUri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(version: int, text: string) {
+		changeFile("Hover.v3", version, text);
+	}
+	def changeFile(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(fileUri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// Sends a {method} request for {line}:{character} and returns its id.
+	def request(method: string, line: int, character: int) -> int {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri());
+		position["line"] = JsonValue.Int(line);
+		position["character"] = JsonValue.Int(character);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		var id = nextId++;
+		handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), method, JsonRpcParams.ByName(params)).encode());
+		return id;
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	// The result of the response to {id}, which must have arrived.
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		t.assert(r.has("result"), "the request succeeded");
+		return r["result"];
+	}
+	// Requests and returns the hover, which must be answered at once.
+	def hover(t: Tester, line: int, character: int) -> JsonValue {
+		var id = request("textDocument/hover", line, character);
+		t.assert(handled == null, "replies use the sink");
+		return result(t, id);
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri()).active;
+	}
+}
+// The LSP position of byte {skip} past the first {needle} in ASCII lines of {text}.
+def at(text: string, needle: string, skip: int) -> (int, int) {
+	var line = 0, start = 0;
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return (line, i + skip - start);
+		if (text[i] == '\n') {
+			line++;
+			start = i + 1;
+		}
+	}
+	return (-1, -1);
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = member(v, key);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+// The Markdown of {texts}, each in a fenced code block of three backquotes.
+def markdown(texts: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (i < texts.length) {
+		if (i > 0) buf.putc('\n');
+		buf.puts("```virgil\n").puts(texts[i]).puts("\n```");
+	}
+	return buf.toString();
+}
+// Checks that {hover} shows {kind} content {value} over {line}:{begin}-{line}:{end}.
+def expectHover(t: Tester, hover: JsonValue, kind: string, value: string, line: int, begin: int, end: int) {
+	t.assert(JsonValue.JObject.?(hover), "a Hover");
+	if (!JsonValue.JObject.?(hover)) return;
+	var contents = member(hover, "contents");
+	t.assert_string(kind, stringAt(contents, "kind"));
+	t.assert_string(value, stringAt(contents, "value"));
+	var range = member(hover, "range"), start = member(range, "start"), stop = member(range, "end");
+	t.asserti(line, intAt(start, "line"));
+	t.asserti(begin, intAt(start, "character"));
+	t.asserti(line, intAt(stop, "line"));
+	t.asserti(end, intAt(stop, "character"));
+}
+// Checks the hover {skip} bytes into the first {needle} in SOURCE: {texts}
+// in Markdown, over the {length} bytes from {skip2} bytes into {needle}.
+def expectAt(t: Tester, s: HoverTestSession, needle: string, skip: int, texts: Array<string>, skip2: int, length: int) {
+	var p = at(SOURCE, needle, skip), r = at(SOURCE, needle, skip2);
+	t.assert(p.0 >= 0, "fixture text found");
+	expectHover(t, s.hover(t, p.0, p.1), "markdown", markdown(texts), r.0, r.1, r.1 + length);
+}
+// The hover over the identifier {skip} bytes into {needle}: its {length}
+// bytes from there show {text}.
+def expectUse(t: Tester, s: HoverTestSession, needle: string, skip: int, length: int, text: string) {
+	expectAt(t, s, needle, skip, [text], skip, length);
+}
+def expectNull(t: Tester, v: JsonValue, what: string) {
+	t.assert(v == JsonValue.Null, what);
+}
+def session(t: Tester) -> HoverTestSession {
+	var s = HoverTestSession.new(t, null);
+	s.open(1, SOURCE);
+	s.settle();
+	return s;
+}
+// Each kind of use shows its declaration's signature.
+def test_uses(t: Tester) {
+	var s = session(t);
+	expectUse(t, s, "return next", 7, 4, "var next: int");				// local
+	expectUse(t, s, "size + by", 7, 2, "by: int");						// parameter
+	expectUse(t, s, "size + by", 0, 4, "var size: int");					// field
+	expectUse(t, s, "box.grow", 4, 4, "def grow(by: int) -> int");		// method
+	expectUse(t, s, "Box.new(1)", 4, 3, "new(size: int)");				// constructor
+	expectUse(t, s, "Box.new(1)", 0, 3, "class Box");					// class
+	expectUse(t, s, "run(b: Box", 7, 3, "class Box");					// type reference
+	expectUse(t, s, "Color.RED", 0, 5, "enum Color");					// enum
+	expectUse(t, s, "Color.RED", 6, 3, "Color.RED");						// enum case
+	expectUse(t, s, "s: Shape", 3, 5, "type Shape");						// variant
+	expectUse(t, s, "Circle(r) =>", 0, 6, "case Circle(r: int)");		// match-case variant case
+	expectUse(t, s, "Dot =>", 0, 3, "case Dot");							// variant case without parameters
+	expectUse(t, s, "+= r;", 3, 1, "def r: int");						// match-case binding
+	expectUse(t, s, "-> T { return item", 3, 1, "T");					// type parameter
+	expectUse(t, s, "return item", 7, 4, "def item: T");					// class parameter field
+	expectUse(t, s, "Ref<Tag>", 4, 3, "layout Tag");						// layout reference
+	expectUse(t, s, "ref<Tag>", 4, 3, "layout Tag");						// writable layout reference
+	expectUse(t, s, "Ref<Pair>.of", 4, 4, "layout Pair");				// layout reference in an expression
+	expectUse(t, s, "head: Tag", 6, 3, "layout Tag");					// layout memory type
+	expectUse(t, s, "Tag[2]", 0, 3, "layout Tag");						// repeated layout memory type
+	expectUse(t, s, "color: Color", 7, 5, "enum Color");					// enum memory type
+	expectUse(t, s, "p.head", 2, 4, "+0 head: Tag");						// layout field
+	expectUse(t, s, "#concat(b, a)", 8, 1, "b: 4");						// packing parameter
+	expectUse(t, s, "Low(x,", 0, 3, "packing Low(a: 4, b: 4): 8");		// packing application
+	expectUse(t, s, "Low(x,", 4, 1, "x: 4");								// packing parameter as an argument
+	expectUse(t, s, "), y)", 3, 1, "y: 8");								// packing parameter in #concat
+	s.server.close();
+}
+// A declaration's own name shows its signature.
+def test_declaration_names(t: Tester) {
+	var s = session(t);
+	expectUse(t, s, "class Box", 6, 3, "class Box");
+	expectUse(t, s, "var size", 4, 4, "var size: int");
+	expectUse(t, s, "new(size)", 0, 3, "new(size: int)");
+	expectUse(t, s, "new(size)", 4, 4, "size: int");
+	expectUse(t, s, "def grow", 4, 4, "def grow(by: int) -> int");
+	expectUse(t, s, "var next", 4, 4, "var next: int");
+	expectUse(t, s, "enum Color", 5, 5, "enum Color");
+	expectUse(t, s, "{ RED", 2, 3, "Color.RED");
+	expectUse(t, s, "case Circle", 5, 6, "case Circle(r: int)");
+	expectUse(t, s, "Cell<T>", 0, 4, "class Cell<T>(item: T)");
+	expectUse(t, s, "Cell<T>", 5, 1, "T");
+	expectUse(t, s, "id<T>", 0, 2, "def id<T>(p: T) -> T");
+	expectUse(t, s, "Circle(r) =>", 7, 1, "def r: int");
+	expectUse(t, s, "layout Tag", 7, 3, "layout Tag");
+	expectUse(t, s, "kind: u8", 0, 4, "+0 kind: u8");
+	expectUse(t, s, "tags: Tag", 0, 4, "+1 tags: Tag[2]");
+	expectUse(t, s, "packing Low", 8, 3, "packing Low(a: 4, b: 4): 8");
+	expectUse(t, s, "Low(a: 4", 4, 1, "a: 4");
+	s.server.close();
+}
+// A use whose type differs from its declaration's, as at a generic call,
+// shows the use-site type in a second block. Neither <, >, nor * is escaped
+// in a code block.
+def test_use_site_types(t: Tester) {
+	var s = session(t);
+	expectAt(t, s, "id(box)", 0, ["def id<T>(p: T) -> T", "Box -> Box"], 0, 2);
+	expectAt(t, s, "Cell<Box>.new", 0, ["class Cell<T>(item: T)", "Cell<Box>"], 0, 4);
+	expectAt(t, s, "Cell<Box>.new", 10, ["class Cell<T>(item: T)", "Box -> Cell<Box>"], 10, 3);
+	expectAt(t, s, ".get()", 1, ["def get() -> T", "void -> Box"], 1, 3);
+	var p = at(SOURCE, "id<int -> int>", 0);
+	expectHover(t, s.hover(t, p.0, p.1), "markdown",
+		"```virgil\ndef id<T>(p: T) -> T\n```\n```virgil\n(int -> int) -> int -> int\n```", p.0, p.1, p.1 + 2);
+	// A builtin member has a type and no declaration, and so does Ref in an
+	// expression.
+	expectUse(t, s, "\"abc\".length", 6, 6, "int");
+	expectUse(t, s, "Ref<Pair>.of", 0, 3, "Ref<Pair>");
+	s.server.close();
+}
+def test_nothing_to_show(t: Tester) {
+	var s = session(t);
+	var p = at(SOURCE, "+ missing", 2);
+	expectNull(t, s.hover(t, p.0, p.1), "an unresolved name");
+	p = at(SOURCE, "return total;", 0);
+	expectNull(t, s.hover(t, p.0, p.1), "a keyword");
+	p = at(SOURCE, "\"abc\"", 1);
+	expectNull(t, s.hover(t, p.0, p.1), "a string literal");
+	p = at(SOURCE, "-> Ref<Tag>", 3);
+	expectNull(t, s.hover(t, p.0, p.1), "a builtin type");
+	p = at(SOURCE, "0b_cc00", 3);
+	expectNull(t, s.hover(t, p.0, p.1), "a bit pattern's letter");
+	p = at(SOURCE, "#packing Low", 9);
+	expectNull(t, s.hover(t, p.0, p.1), "a #packing hint's packing");
+	p = at(SOURCE, "Low(f", 4);
+	expectNull(t, s.hover(t, p.0, p.1), "a #packing hint's field");
+	expectNull(t, s.hover(t, 1000, 0), "past the end of the document");
+	s.server.close();
+}
+// A position just past an identifier selects it, unless something starts there.
+def test_cursor_after_identifier(t: Tester) {
+	var s = session(t);
+	expectAt(t, s, "size + by;", 9, ["by: int"], 7, 2);					// a use before ;
+	expectAt(t, s, "var next =", 8, ["var next: int"], 4, 4);			// a declaration's name before a space
+	expectAt(t, s, "def grow(", 8, ["def grow(by: int) -> int"], 4, 4);	// a declaration's name before (
+	expectAt(t, s, "Box.new(1)", 3, ["class Box"], 0, 3);				// the . just past a class
+	expectAt(t, s, "\"abc\".length +", 12, ["int"], 6, 6);				// a builtin
+	// Just past a keyword, or two past an identifier, finds nothing.
+	var p = at(SOURCE, "return total;", 6);
+	expectNull(t, s.hover(t, p.0, p.1), "just past a keyword");
+	p = at(SOURCE, "return next;", 12);
+	expectNull(t, s.hover(t, p.0, p.1), "two past an identifier");
+	s.server.close();
+}
+def test_tabs_and_non_ascii(t: Tester) {
+	var s = session(t);
+	for (c = WIDE_HOVER + 6; c <= WIDE_HOVER + 10; c++) {
+		expectHover(t, s.hover(t, WIDE_LINE, c), "markdown", markdown(["def unit: int"]), WIDE_LINE, WIDE_HOVER + 6, WIDE_HOVER + 10);
+	}
+	expectHover(t, s.hover(t, WIDE_LINE, WIDE_HOVER), "markdown", markdown(["component Hover"]), WIDE_LINE, WIDE_HOVER, WIDE_HOVER + 5);
+	s.server.close();
+}
+// A use whose target is in a closed file changed on disk without a file event
+// shows nothing, as its definition is null: every stamp is still current,
+// but the target's bytes are no longer the ones analyzed. The byte before the
+// use is not tried instead. A declaration's name in the request's own file
+// still shows its signature.
+def test_target_changed_on_disk(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, USES_DECL);
+	s.open(1, text);
+	s.settle();
+	var thing = at(text, "Decl.thing", 5), bracket = at(text, "g[0]", 1);
+	expectHover(t, s.hover(t, thing.0, thing.1), "markdown", markdown(["def thing: int"]), thing.0, thing.1, thing.1 + 5);
+	expectHover(t, s.hover(t, bracket.0, bracket.1), "markdown", markdown(["def [i: int] -> int"]), bracket.0, bracket.1, bracket.1 + 1);
+	s.write(t, "Decl.v3", DECL_BOOL);
+	expectNull(t, s.hover(t, thing.0, thing.1), "the target changed on disk");
+	expectNull(t, s.hover(t, thing.0, thing.1 + 5), "just past a use whose target changed");
+	expectNull(t, s.hover(t, bracket.0, bracket.1), "not the use just before");
+	expectNull(t, s.result(t, s.request("textDocument/definition", thing.0, thing.1)), "no definition either");
+	expectAt(t, s, "class Box", 6, ["class Box"], 6, 3);
+	s.write(t, "Decl.v3", DECL);
+	expectHover(t, s.hover(t, thing.0, thing.1), "markdown", markdown(["def thing: int"]), thing.0, thing.1, thing.1 + 5);
+	// Once reported, the snapshot is stale and the reply waits for a new analysis.
+	s.write(t, "Decl.v3", DECL_BOOL);
+	s.reportChanged("Decl.v3");
+	var id = s.request("textDocument/hover", thing.0, thing.1);
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	expectHover(t, s.result(t, id), "markdown", markdown(["def thing: bool"]), thing.0, thing.1, thing.1 + 5);
+	s.server.close();
+}
+// A use whose target is in an open, unsaved buffer that changed after the
+// analysis: the snapshot is stale, so the reply is null at once if no analysis
+// is pending, and otherwise waits for one.
+def test_open_target_changed(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, USES_DECL);
+	s.open(1, text);
+	s.openFile("Decl.v3", 1, DECL);
+	s.settle();
+	var thing = at(text, "Decl.thing", 5);
+	expectHover(t, s.hover(t, thing.0, thing.1), "markdown", markdown(["def thing: int"]), thing.0, thing.1, thing.1 + 5);
+	// An edit that schedules no analysis.
+	t.assert(s.store.change(s.fileUri("Decl.v3"), 2, DECL_BOOL) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.hover(t, thing.0, thing.1), "the target's overlay changed");
+	// An edit the client sends schedules one, which the request waits for.
+	s.changeFile("Decl.v3", 3, DECL_BOOL);
+	var id = s.request("textDocument/hover", thing.0, thing.1);
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	expectHover(t, s.result(t, id), "markdown", markdown(["def thing: bool"]), thing.0, thing.1, thing.1 + 5);
+	s.server.close();
+}
+def test_stale_waits_for_analysis(t: Tester) {
+	var s = session(t);
+	var generation = s.context().snapshot.generation;
+	// An unsaved edit adds a line, so the position now names another
+	// identifier. The change waits for the debounce interval, which the
+	// requests skip.
+	s.change(2, Strings.format1("\n%s", SOURCE));
+	t.assertz(false, s.supervisor.busy());
+	var p = at(SOURCE, "return next", 7);
+	var hover = s.request("textDocument/hover", p.0 + 1, p.1), definition = s.request("textDocument/definition", p.0 + 1, p.1);
+	t.assert(s.handled == null, "replies use the sink");
+	t.assert(s.reply(hover) == null && s.reply(definition) == null, "both replies wait");
+	t.assertz(true, s.supervisor.busy());
+	s.settle();
+	t.assert(s.context().snapshot.generation > generation, "a new analysis completed");
+	expectHover(t, s.result(t, hover), "markdown", markdown(["var next: int"]), p.0 + 1, p.1, p.1 + 4);
+	t.assert(JsonValue.JObject.?(s.result(t, definition)), "the definition is answered too");
+	t.asserti(2, s.replies.length);
+	t.assert(s.replies[0]["id"] == JsonValue.Int(hover), "answered in arrival order");
+	s.server.close();
+}
+def test_stale_without_analysis(t: Tester) {
+	var s = session(t);
+	var p = at(SOURCE, "return next", 7);
+	expectAt(t, s, "return next", 7, ["var next: int"], 7, 4);
+	// An edit that schedules no analysis leaves the snapshot stale.
+	t.assert(s.store.change(s.uri(), 2, Strings.format1("%s\n", SOURCE)) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s.hover(t, p.0, p.1), "a stale snapshot");
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+// Definition and hover requests wait together, within one bound: one more
+// than MAX_WAITING answers the oldest waiting request with null, whatever its
+// method.
+def test_shared_waiting_bound(t: Tester) {
+	var s = session(t);
+	s.change(2, Strings.format1("%s\n", SOURCE));
+	var max = LspSnapshotRequests.new(null, null, null).MAX_WAITING;
+	var p = at(SOURCE, "return next", 7), ids = Array<int>.new(max + 2);
+	for (i < ids.length) {
+		ids[i] = s.request(if(i % 2 == 0, "textDocument/hover", "textDocument/definition"), p.0, p.1);
+	}
+	t.asserti(2, s.replies.length);
+	if (s.replies.length == 2) {
+		t.assert(s.replies[0]["id"] == JsonValue.Int(ids[0]), "the oldest, a hover, first");
+		t.assert(s.replies[1]["id"] == JsonValue.Int(ids[1]), "then the next oldest, a definition");
+		expectNull(t, s.result(t, ids[0]), "an evicted hover");
+		expectNull(t, s.result(t, ids[1]), "an evicted definition");
+	}
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	var text = markdown(["var next: int"]);
+	for (i = 2; i < ids.length; i++) {
+		var r = s.result(t, ids[i]);
+		if (i % 2 == 0) expectHover(t, r, "markdown", text, p.0, p.1, p.1 + 4);
+		else t.assert(JsonValue.JObject.?(r) && member(r, "uri") != JsonValue.Null, "a Location");
+	}
+	s.server.close();
+}
+// Each fence is longer than any run of backquotes in its text.
+def test_markdown_fences(t: Tester) {
+	var h = LspHover.new();
+	t.assert_string("```virgil\na`b\n```", h.render(["a`b"]));
+	t.assert_string("```virgil\n``\n```", h.render(["``"]));
+	t.assert_string("````virgil\nx```y\n````", h.render(["x```y"]));
+	t.assert_string("```````virgil\n``````\n```````", h.render(["``````"]));
+	t.assert_string("````virgil\n`a``b```\n````", h.render(["`a``b```"]));
+	t.assert_string("```virgil\n*p<T>* -> **q**\n```\n````virgil\n```\n````", h.render(["*p<T>* -> **q**", "```"]));
+	t.assert_string("```virgil\n\n```", h.render([""]));
+}
+// A client whose hover.contentFormat omits markdown gets plain text, one text
+// per line; one that lists it, or no formats, gets Markdown.
+def test_plaintext(t: Tester) {
+	var h = LspHover.new();
+	h.markdown = false;
+	t.assert_string("def id<T>(p: T) -> T\nBox -> Box", h.render(["def id<T>(p: T) -> T", "Box -> Box"]));
+	t.assert_string("a```b", h.render(["a```b"]));
+	var p = at(SOURCE, "id(box)", 0);
+	var formats = [["plaintext"], Array<string>.new(0), ["markdown", "plaintext"], ["plaintext", "markdown"]];
+	for (i < formats.length) {
+		var s = HoverTestSession.new(t, formats[i]);
+		s.open(1, SOURCE);
+		s.settle();
+		var plain = i < 2, texts = ["def id<T>(p: T) -> T", "Box -> Box"];
+		expectHover(t, s.hover(t, p.0, p.1), if(plain, "plaintext", "markdown"),
+			if(plain, "def id<T>(p: T) -> T\nBox -> Box", markdown(texts)), p.0, p.1, p.1 + 2);
+		s.server.close();
+	}
+}
+def test_params(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var cases = [
+		"null",
+		"{}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0,\"character\":-1}}"
+	];
+	for (i < cases.length) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/hover\",\"params\":%s}", i + 1, cases[i]);
+		t.assert(s.server.handle(payload) == null, "replies use the sink");
+		var r = s.reply(i + 1);
+		t.assert(r != null && r.has("error"), cases[i]);
+		if (r != null && r.has("error")) {
+			t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(r["error"], "code"));
+			t.assert_string("hover params require a valid textDocument.uri and position", stringAt(r["error"], "message"));
+		}
+	}
+	s.server.close();
+}

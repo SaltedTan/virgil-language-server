@@ -1,0 +1,70 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/hover from the display text of a current snapshot, which
+// LspSnapshotRequests selects as for a definition. See
+// docs/architecture.md#hover.
+class LspHover {
+	// False if the client's textDocument.hover.contentFormat omits markdown.
+	var markdown = true;
+
+	// The Hover of what contains {offset}, if anything does: an occurrence,
+	// with its declaration's signature and its use-site type; otherwise a
+	// declaration's name, with its signature; otherwise a builtin use, with
+	// its type. Null if there is no text to show, or if an occurrence's target
+	// is in a file whose bytes are no longer the ones analyzed, as for a
+	// definition; a declaration's name and a builtin use are in the request's
+	// own file, which is checked already.
+	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonValue) {
+		var s = at.snapshot, path = at.path();
+		var o = s.occurrenceAtOffset(path, offset);
+		if (o != null) {
+			if (at.target(o.declaration.range.path).0 < 0) return (true, JsonValue.Null);
+			return (true, hover(at, o.range, o.declaration.signature, o.useType));
+		}
+		var d = s.declarationAtOffset(path, offset);
+		if (d != null) return (true, hover(at, d.range, d.signature, null));
+		var b = s.builtinUseAtOffset(path, offset);
+		if (b != null) return (true, hover(at, b.range, b.useType, null));
+		return (false, JsonValue.Null);
+	}
+	private def hover(at: LspSnapshotPosition, range: AnalysisRange, first: string, second: string) -> JsonValue {
+		if (first == null) {
+			first = second;
+			second = null;
+		}
+		if (first == null) return JsonValue.Null;
+		var texts = if(second != null, [first, second], [first]);
+		var contents = Strings.newMap<JsonValue>(), result = Strings.newMap<JsonValue>();
+		contents["kind"] = JsonValue.String(if(markdown, "markdown", "plaintext"));
+		contents["value"] = JsonValue.String(render(texts));
+		result["contents"] = JsonValue.JObject(contents);
+		result["range"] = at.range(at.map, range.beginOffset, range.endOffset);
+		return JsonValue.JObject(result);
+	}
+	// The MarkupContent value of {texts}: in Markdown, each in its own fenced
+	// code block with the info string "virgil", and otherwise one per line.
+	// Each fence is a run of backquotes longer than any in its text, and at
+	// least three, so no text can close its block (CommonMark 0.31, 4.5).
+	def render(texts: Array<string>) -> string {
+		var buf = StringBuilder.new();
+		for (i < texts.length) {
+			var text = texts[i];
+			if (i > 0) buf.putc('\n');
+			if (!markdown) {
+				buf.puts(text);
+				continue;
+			}
+			var longest = 0, run = 0;
+			for (c in text) {
+				run = if(c == '`', run + 1, 0);
+				if (run > longest) longest = run;
+			}
+			var fence = if(longest < 3, 3, longest + 1);
+			for (j < fence) buf.putc('`');
+			buf.puts("virgil\n").puts(text).putc('\n');
+			for (j < fence) buf.putc('`');
+		}
+		return buf.toString();
+	}
+}

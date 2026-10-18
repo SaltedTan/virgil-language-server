@@ -68,6 +68,17 @@ async function definitions(editor, line, character) {
   return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
 }
 
+// The text of each hover at line:character, and the range of each that has one.
+async function hovers(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeHoverProvider', editor.document.uri, new vscode.Position(line, character),
+  );
+  return (result ?? []).map((hover) => [
+    hover.contents.map((content) => (typeof content === 'string' ? content : content.value)),
+    hover.range && range(hover),
+  ]);
+}
+
 async function symbols(editor) {
   const result = await vscode.commands.executeCommand(
     'vscode.executeDocumentSymbolProvider', editor.document.uri,
@@ -151,8 +162,13 @@ async function workspace(extension) {
   const library = path.join(root, 'lib', 'util', 'StringBuilder.v3');
   const declaration = fs.readFileSync(library, 'utf8').split('\n').findIndex((line) => line.startsWith('class StringBuilder'));
   assert.ok(declaration >= 0, `no StringBuilder class in ${library}`);
-  assert.deepEqual(await definitions(words, use, words.document.lineAt(use).text.indexOf('StringBuilder')), [
+  const column = words.document.lineAt(use).text.indexOf('StringBuilder');
+  assert.deepEqual(await definitions(words, use, column), [
     [library, declaration, 6, declaration, 19],
+  ]);
+  // Hover over the same use shows the class's signature in a Virgil code block.
+  assert.deepEqual(await hovers(words, use, column), [
+    [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
   ]);
 
   // Project file buffers go to the server too, so their configuration
@@ -177,7 +193,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

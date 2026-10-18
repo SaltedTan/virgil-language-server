@@ -449,7 +449,7 @@ def test_waiting_requests_bounded(t: Tester) {
 	var s = DefinitionTestSession.new("definition", t);
 	s.open("Use.v3", 1, USE);
 	s.settle();
-	var max = LspDefinition.new(null, null, null).MAX_WAITING, extra = 10;
+	var max = LspSnapshotRequests.new(null, null, null).MAX_WAITING, extra = 10;
 	var padding = Array<byte>.new(128 * 1024);
 	for (i < padding.length) padding[i] = 'x';
 	var before = liveBytes(), ids = Array<int>.new(max + extra);
@@ -530,7 +530,7 @@ def test_reentrant_reply_within_bound(t: Tester) {
 	s.open("Use.v3", 1, USE);
 	s.settle();
 	s.change("Use.v3", 2, Strings.format1("%s\n", USE));
-	var max = LspDefinition.new(null, null, null).MAX_WAITING;
+	var max = LspSnapshotRequests.new(null, null, null).MAX_WAITING;
 	var ids = Vector<int>.new();
 	for (i < max) ids.put(s.request("Use.v3", 2, USE_THING));
 	t.asserti(0, s.replies.length);
@@ -554,10 +554,10 @@ def test_reentrant_reply_within_bound(t: Tester) {
 // A scheduler stand-in that keeps the first listener for every request, and
 // a sink that notifies it from within the first cancellation reply.
 class RetainedListener {
-	var waiters: LspDefinitionWaiters;
+	var waiters: LspSnapshotWaiters;
 	var cancelling: bool;
 	def replies = Vector<HashMap<string, JsonValue>>.new();
-	def whenAnalyzed(ctx: ProjectContext, candidate: LspDefinitionWaiters) -> LspDefinitionWaiters {
+	def whenAnalyzed(ctx: ProjectContext, candidate: LspSnapshotWaiters) -> LspSnapshotWaiters {
 		if (waiters == null) waiters = candidate;
 		return waiters;
 	}
@@ -574,10 +574,10 @@ def test_close_cancels_each_once(t: Tester) {
 	var initialize = Strings.newMap<JsonValue>();
 	initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(s.base));
 	projects.initialize(initialize);
-	var stub = RetainedListener.new(), definition = LspDefinition.new(store, projects, stub.send);
+	var stub = RetainedListener.new(), definition = LspSnapshotRequests.new(store, projects, stub.send);
 	definition.whenAnalyzed = stub.whenAnalyzed;
 	var dispatcher = JsonRpcDispatcher.new();
-	definition.register(dispatcher);
+	definition.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
 	var count = 10;
 	for (i < count) {
 		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/definition\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":2,\"character\":41}}}", i + 1, s.uri("Use.v3"));

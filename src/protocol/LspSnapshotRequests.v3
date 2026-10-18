@@ -1,0 +1,245 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A method of requests at a document position, such as textDocument/definition,
+// and its answer function. Given a request's document in a current snapshot
+// and a byte offset in it, that returns whether it found something at the
+// offset, and the result to reply with, which may be null.
+class LspSnapshotMethod(owner: LspSnapshotRequests, label: string,
+	answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) {
+	def handle(request: JsonRpcMessage.Request) {
+		owner.receive(this, request);
+	}
+}
+// A request's document in a current snapshot, for an answer function: file
+// {index} of {snapshot}, whose analyzed text is {text}, which {map} converts.
+class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, index: int,
+		text: Array<byte>, map: PositionMap) {
+	def path() -> string {
+		return snapshot.paths[index];
+	}
+	// The index of the first of the snapshot's files at {path}, such as the
+	// file that declares a use's target, and its analyzed text; or -1 and null
+	// if there is no such file or its bytes are no longer the ones the worker
+	// analyzed. Stamps alone don't show a closed file changed on disk without
+	// a file event. The request's own file was checked already.
+	def target(path: string) -> (int, Array<byte>) {
+		var j = -1;
+		for (k < snapshot.paths.length) { if(j < 0 && Strings.equal(snapshot.paths[k], path)) j = k; }
+		if (j < 0) return (-1, null);
+		if (j == index) return (j, text);
+		var t = LspAnalysisCapture.analyzedText(store, snapshot, j);
+		return (if(t != null, j, -1), t);
+	}
+	// The LSP Range of the bytes from {begin} to {end} in the text {m} converts.
+	def range(m: PositionMap, begin: int, end: int) -> JsonValue {
+		var range = Strings.newMap<JsonValue>();
+		range["start"] = position(m.offsetToPosition(begin));
+		range["end"] = position(m.offsetToPosition(end));
+		return JsonValue.JObject(range);
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+}
+// A request waiting for an analysis, with the state of its document when it
+// arrived: the identity of the open overlay, or null and the disk stamp.
+// Neither retains the document's text.
+class LspSnapshotRequest(method: LspSnapshotMethod, id: JsonRpcId, uri: string, line: int, character: int,
+	identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
+	var answered: bool;
+}
+// The requests waiting for one pending analysis, in arrival order. It is that
+// analysis's listener (LspSemanticDiagnostics.whenAnalyzed), so a context has
+// at most two: for its waiting and its running analysis.
+class LspSnapshotWaiters(owner: LspSnapshotRequests) {
+	def requests = Vector<LspSnapshotRequest>.new();
+	var fired: bool;	// the analysis has ended
+	// Called once the analysis completes, fails, or is dropped.
+	def analyzed() {
+		fired = true;
+		owner.answer(this);
+	}
+}
+
+// Requests at a document position, such as textDocument/definition and
+// textDocument/hover, answered from the retained snapshot of the document's
+// active project context. Every reply goes through {send}: a request against
+// a missing or stale snapshot waits for the context's pending analysis. Each
+// method supplies only its answer function. See docs/architecture.md#definition
+// and docs/architecture.md#hover.
+class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
+	// Bounds the requests of every method that wait at once. A client rarely
+	// has more than a few outstanding; past this many, the oldest, the one most
+	// likely superseded, is answered with null.
+	def MAX_WAITING = 256;
+	// Returns the listener of a context's pending analysis, registering the
+	// candidate if it has none, or null if none is pending
+	// (LspSemanticDiagnostics.whenAnalyzed). Without it, a missing or stale
+	// snapshot is answered with null at once.
+	var whenAnalyzed: (ProjectContext, LspSnapshotWaiters) -> LspSnapshotWaiters;
+	// Every waiting request in arrival order, after some answered ones, which
+	// {compact} removes.
+	private var arrivals = Vector<LspSnapshotRequest>.new();
+	private var oldest: int;	// the requests before this index are answered
+	private var waitingCount: int;
+	// The waiters whose analysis has not ended.
+	private var batches = Vector<LspSnapshotWaiters>.new();
+
+	// Handles {method} with {answer}. {label} names it in parameter errors.
+	def register(dispatcher: JsonRpcDispatcher, method: string, label: string,
+			answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) {
+		dispatcher.onDeferredRequest(method, LspSnapshotMethod.new(this, label, answer).handle);
+	}
+	// The number of requests waiting.
+	def waiting() -> int {
+		return waitingCount;
+	}
+	// Answers every waiting request with RequestCancelled and {reason}. All
+	// are marked answered first, so a listener notified from within a reply
+	// finds none left to answer.
+	def close(reason: string) {
+		var error = JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason);
+		var cancelled = Vector<LspSnapshotRequest>.new();
+		for (i = oldest; i < arrivals.length; i++) {
+			var r = arrivals[i];
+			if (r.answered) continue;
+			r.answered = true;
+			cancelled.put(r);
+		}
+		arrivals.clear();
+		oldest = waitingCount = 0;
+		batches.clear();
+		for (i < cancelled.length) send(JsonRpcMessage.ErrorResponse(cancelled[i].id, error).encode());
+	}
+	// Answers or defers {request} for {method}.
+	def receive(method: LspSnapshotMethod, request: JsonRpcMessage.Request) {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = objectMember(params, "textDocument"), position = objectMember(params, "position");
+		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
+		var key = if(uri != null, DocumentUri.normalize(uri));
+		var line = intMember(position, "line"), character = intMember(position, "character");
+		if (key == null || line < 0 || character < 0) {
+			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
+				Strings.format1("%s params require a valid textDocument.uri and position", method.label));
+			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
+		}
+		var ctx = projects.forDocument(key).active;
+		if (ctx == null || whenAnalyzed == null || (ctx.snapshot != null && current(ctx, ctx.snapshot))) {
+			return reply(request.id, locate(method, ctx, key, line, character));
+		}
+		// Join the waiters of the analysis this request waits for.
+		var candidate = LspSnapshotWaiters.new(this);
+		var waiters = whenAnalyzed(ctx, candidate);
+		if (waiters == null) return reply(request.id, locate(method, ctx, key, line, character));
+		if (waiters == candidate && !waiters.fired) batches.put(waiters);
+		// Take the oldest waiting request's slot before answering it, so that
+		// a request sent from within that reply cannot exceed the bound.
+		var evicted = if(waitingCount >= MAX_WAITING, takeOldest());
+		var overlay = store.overlay(key);
+		var r = LspSnapshotRequest.new(method, request.id, key, line, character,
+			if(overlay != null, overlay.identity), if(overlay == null, store.diskStamp(key)));
+		waiters.requests.put(r);
+		arrivals.put(r);
+		waitingCount++;
+		if (evicted != null) reply(evicted.id, JsonValue.Null);
+		// The analysis ended before the request joined, if it could not start.
+		if (waiters.fired) answer(waiters);
+		compact();
+	}
+	// Answers the requests of {waiters} once their analysis has ended. Each is
+	// answered from the snapshot of its document's active context now, which
+	// a configuration change may have made another context, without waiting
+	// again.
+	def answer(waiters: LspSnapshotWaiters) {
+		var rest = Vector<LspSnapshotWaiters>.new();
+		for (i < batches.length) { if(batches[i] != waiters) rest.put(batches[i]); }
+		batches = rest;
+		var active = Strings.newMap<ProjectContext>(), requests = waiters.requests;
+		for (i < requests.length) {
+			var r = requests[i];
+			if (r.answered) continue;
+			if (!active.has(r.uri)) active[r.uri] = projects.forDocument(r.uri).active;
+			// The position refers to the text the request was made against.
+			var doc = store.overlay(r.uri);
+			var same = if(doc != null, doc.identity == r.identity, r.identity == null && store.diskStamp(r.uri) == r.disk);
+			finish(r, if(same, locate(r.method, active[r.uri], r.uri, r.line, r.character), JsonValue.Null));
+		}
+		compact();
+	}
+	// Marks the oldest waiting request answered, without replying, and returns it.
+	private def takeOldest() -> LspSnapshotRequest {
+		while (oldest < arrivals.length && arrivals[oldest].answered) oldest++;
+		if (oldest >= arrivals.length) return null;
+		var r = arrivals[oldest];
+		r.answered = true;
+		waitingCount--;
+		return r;
+	}
+	// Marks {r} answered before replying, so a request sent from within the
+	// reply sees the slot free.
+	private def finish(r: LspSnapshotRequest, result: JsonValue) {
+		r.answered = true;
+		waitingCount--;
+		reply(r.id, result);
+	}
+	// Drops answered requests once they are more than half of those recorded,
+	// so that each request is copied a bounded number of times.
+	private def compact() {
+		while (oldest < arrivals.length && arrivals[oldest].answered) oldest++;
+		if (arrivals.length - waitingCount <= arrivals.length / 2) return;
+		var rest = Vector<LspSnapshotRequest>.new();
+		for (i = oldest; i < arrivals.length; i++) { if(!arrivals[i].answered) rest.put(arrivals[i]); }
+		arrivals = rest;
+		oldest = 0;
+		for (i < batches.length) {
+			var requests = batches[i].requests, kept = Vector<LspSnapshotRequest>.new();
+			for (j < requests.length) { if(!requests[j].answered) kept.put(requests[j]); }
+			requests.clear();
+			requests.puta(kept.extract());
+		}
+	}
+	private def reply(id: JsonRpcId, result: JsonValue) {
+		send(JsonRpcMessage.Response(id, result).encode());
+	}
+	// The snapshot is current if its project revision is current, it analyzed
+	// the context's current source list, and every source matches its stamp:
+	// an edit to any file can change what an unchanged identifier binds to.
+	private def current(ctx: ProjectContext, s: AnalysisSnapshot) -> bool {
+		var versions = s.documentVersions;
+		if (!s.matchesProject() || versions.length != ctx.sources.length) return false;
+		for (i < versions.length) {
+			var key = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
+			if (key == null || !Strings.equal(key, versions[i].uri) || !versions[i].matchesDocument(store)) return false;
+		}
+		return true;
+	}
+	// {method}'s answer for the identifier at {line}:{character} in {key},
+	// from {ctx}'s current snapshot, or null.
+	private def locate(method: LspSnapshotMethod, ctx: ProjectContext, key: string, line: int, character: int) -> JsonValue {
+		var s = if(ctx != null, ctx.snapshot);
+		if (s == null || !current(ctx, s) || !s.parsed || !s.hasOccurrences) return JsonValue.Null;
+		var i = s.documentIndex(key), text = LspAnalysisCapture.analyzedText(store, s, i);
+		if (text == null) return JsonValue.Null;
+		var map = PositionMap.new(text, PositionEncoding.UTF16), offset = map.positionToOffset(line, character);
+		var at = LspSnapshotPosition.new(store, s, i, text, map), found = method.answer(at, offset);
+		// A cursor just past an identifier selects it. Something found at
+		// offset - 1 but not at {offset} ends exactly at {offset}, so only the
+		// identifier the cursor touches qualifies, and whatever contains
+		// {offset} always wins.
+		if (!found.0 && offset > 0) found = method.answer(at, offset - 1);
+		return if(found.0, found.1, JsonValue.Null);
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	// The integer member {key} of {obj}, or -1.
+	private def intMember(obj: HashMap<string, JsonValue>, key: string) -> int {
+		if (obj == null || !obj.has(key) || !JsonValue.Int.?(obj[key])) return -1;
+		return JsonValue.Int.!(obj[key]).v;
+	}
+}

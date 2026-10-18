@@ -131,6 +131,18 @@ local function check()
     and location.range["end"].line == class_line and location.range["end"].character == 19,
     "unexpected definition: " .. vim.inspect(location))
 
+  -- Hover over the same use shows the class's signature in a Virgil code block.
+  response, err = client:request_sync("textDocument/hover", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
+  }, 10000, words_buf)
+  assert(response and not response.err, "hover failed: " .. vim.inspect(err or response.err))
+  local hover = response.result
+  assert(hover and hover.contents and hover.contents.kind == "markdown"
+    and hover.contents.value == "```virgil\nclass StringBuilder\n```"
+    and hover.range.start.line == use_line and hover.range.start.character == start - 1
+    and hover.range["end"].line == use_line and hover.range["end"].character == start - 1 + #"StringBuilder",
+    "unexpected hover: " .. vim.inspect(hover))
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -157,7 +169,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, project file edits, and clean server exit")
 end
 
 vim.schedule(function()
