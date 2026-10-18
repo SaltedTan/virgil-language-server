@@ -26,12 +26,14 @@ def X = [
 	T("LspHover:params", test_params),
 	()
 ];
-// Every declaration kind but layouts, uses with a use-site type, a builtin member, and an
-// unresolved name, which leaves the program unverified but still indexed. The
-// line of wide() has a tab in a block comment and non-ASCII text (U+00E9, two
-// UTF-8 bytes and one UTF-16 unit; U+1D11E, four bytes and two units) before
-// Hover.unit, which starts at UTF-16 character 37, byte 40, on line 19.
-def SOURCE = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nenum Color { RED, GREEN }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\nclass Cell<T>(item: T) {\n\tdef get() -> T { return item; }\n}\ncomponent Hover {\n\tdef unit = 1;\n\tdef id<T>(p: T) -> T { return p; }\n\tdef wide() -> int { /*\t\xC3\xA9\xF0\x9D\x84\x9E*/ return Hover.unit; }\n\tdef run(b: Box, c: Color, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar total = box.grow(b.size) + Cell<Box>.new(box).get().size;\n\t\tif (c == Color.RED) total++;\n\t\tvar same = id(box);\n\t\tvar n = \"abc\".length + missing;\n\t\tvar f = id<int -> int>;\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\treturn total;\n\t}\n}\n";
+// Every declaration kind, uses with a use-site type, a builtin member, names
+// that the occurrence index leaves out (a bit pattern's letters and a #packing
+// hint), and an unresolved name, which leaves the program unverified but still
+// indexed. The line of wide() has a tab in a block comment and non-ASCII text
+// (U+00E9, two UTF-8 bytes and one UTF-16 unit; U+1D11E, four bytes and two
+// units) before Hover.unit, which starts at UTF-16 character 37, byte 40, on
+// line 19.
+def SOURCE = "class Box {\n\tvar size: int;\n\tnew(size) { }\n\tdef grow(by: int) -> int {\n\t\tvar next = size + by;\n\t\treturn next;\n\t}\n}\nenum Color { RED, GREEN }\ntype Shape {\n\tcase Circle(r: int);\n\tcase Dot;\n}\nclass Cell<T>(item: T) {\n\tdef get() -> T { return item; }\n}\ncomponent Hover {\n\tdef unit = 1;\n\tdef id<T>(p: T) -> T { return p; }\n\tdef wide() -> int { /*\t\xC3\xA9\xF0\x9D\x84\x9E*/ return Hover.unit; }\n\tdef run(b: Box, c: Color, s: Shape) -> int {\n\t\tvar box = Box.new(1);\n\t\tvar total = box.grow(b.size) + Cell<Box>.new(box).get().size;\n\t\tif (c == Color.RED) total++;\n\t\tvar same = id(box);\n\t\tvar n = \"abc\".length + missing;\n\t\tvar f = id<int -> int>;\n\t\tmatch (s) {\n\t\t\tCircle(r) => total += r;\n\t\t\tDot => total--;\n\t\t}\n\t\treturn total;\n\t}\n}\nlayout Tag {\n\t+0 kind: u8;\n\t=1;\n}\nlayout Pair {\n\t+0 head: Tag;\n\t+1 tags: Tag[2];\n\t+3 color: Color;\n\t=4;\n}\npacking Low(a: 4, b: 4): 8 = #concat(b, a);\npacking Wide(x: 4, y: 8): 16 = #concat(Low(x, 0b0000), y);\npacking Bits(c: 2): 4 = 0b_cc00;\ntype Packed {\n\tcase Two(f: u8) #packing Low(f, 0b0000);\n}\ncomponent Mem {\n\tdef head(r: Range<byte>) -> Ref<Tag> {\n\t\tvar p: Ref<Pair> = Ref<Pair>.of(r);\n\t\tvar t: ref<Tag> = p.tags[1];\n\t\treturn p.head;\n\t}\n}\n";
 def WIDE_LINE = 19;
 def WIDE_HOVER = 37;
 // Decl.v3, which every session writes, declares the targets of uses that
@@ -249,6 +251,17 @@ def test_uses(t: Tester) {
 	expectUse(t, s, "+= r;", 3, 1, "def r: int");						// match-case binding
 	expectUse(t, s, "-> T { return item", 3, 1, "T");					// type parameter
 	expectUse(t, s, "return item", 7, 4, "def item: T");					// class parameter field
+	expectUse(t, s, "Ref<Tag>", 4, 3, "layout Tag");						// layout reference
+	expectUse(t, s, "ref<Tag>", 4, 3, "layout Tag");						// writable layout reference
+	expectUse(t, s, "Ref<Pair>.of", 4, 4, "layout Pair");				// layout reference in an expression
+	expectUse(t, s, "head: Tag", 6, 3, "layout Tag");					// layout memory type
+	expectUse(t, s, "Tag[2]", 0, 3, "layout Tag");						// repeated layout memory type
+	expectUse(t, s, "color: Color", 7, 5, "enum Color");					// enum memory type
+	expectUse(t, s, "p.head", 2, 4, "+0 head: Tag");						// layout field
+	expectUse(t, s, "#concat(b, a)", 8, 1, "b: 4");						// packing parameter
+	expectUse(t, s, "Low(x,", 0, 3, "packing Low(a: 4, b: 4): 8");		// packing application
+	expectUse(t, s, "Low(x,", 4, 1, "x: 4");								// packing parameter as an argument
+	expectUse(t, s, "), y)", 3, 1, "y: 8");								// packing parameter in #concat
 	s.server.close();
 }
 // A declaration's own name shows its signature.
@@ -267,6 +280,11 @@ def test_declaration_names(t: Tester) {
 	expectUse(t, s, "Cell<T>", 5, 1, "T");
 	expectUse(t, s, "id<T>", 0, 2, "def id<T>(p: T) -> T");
 	expectUse(t, s, "Circle(r) =>", 7, 1, "def r: int");
+	expectUse(t, s, "layout Tag", 7, 3, "layout Tag");
+	expectUse(t, s, "kind: u8", 0, 4, "+0 kind: u8");
+	expectUse(t, s, "tags: Tag", 0, 4, "+1 tags: Tag[2]");
+	expectUse(t, s, "packing Low", 8, 3, "packing Low(a: 4, b: 4): 8");
+	expectUse(t, s, "Low(a: 4", 4, 1, "a: 4");
 	s.server.close();
 }
 // A use whose type differs from its declaration's, as at a generic call,
@@ -281,8 +299,10 @@ def test_use_site_types(t: Tester) {
 	var p = at(SOURCE, "id<int -> int>", 0);
 	expectHover(t, s.hover(t, p.0, p.1), "markdown",
 		"```virgil\ndef id<T>(p: T) -> T\n```\n```virgil\n(int -> int) -> int -> int\n```", p.0, p.1, p.1 + 2);
-	// A builtin member has a type and no declaration.
+	// A builtin member has a type and no declaration, and so does Ref in an
+	// expression.
 	expectUse(t, s, "\"abc\".length", 6, 6, "int");
+	expectUse(t, s, "Ref<Pair>.of", 0, 3, "Ref<Pair>");
 	s.server.close();
 }
 def test_nothing_to_show(t: Tester) {
@@ -293,6 +313,14 @@ def test_nothing_to_show(t: Tester) {
 	expectNull(t, s.hover(t, p.0, p.1), "a keyword");
 	p = at(SOURCE, "\"abc\"", 1);
 	expectNull(t, s.hover(t, p.0, p.1), "a string literal");
+	p = at(SOURCE, "-> Ref<Tag>", 3);
+	expectNull(t, s.hover(t, p.0, p.1), "a builtin type");
+	p = at(SOURCE, "0b_cc00", 3);
+	expectNull(t, s.hover(t, p.0, p.1), "a bit pattern's letter");
+	p = at(SOURCE, "#packing Low", 9);
+	expectNull(t, s.hover(t, p.0, p.1), "a #packing hint's packing");
+	p = at(SOURCE, "Low(f", 4);
+	expectNull(t, s.hover(t, p.0, p.1), "a #packing hint's field");
 	expectNull(t, s.hover(t, 1000, 0), "past the end of the document");
 	s.server.close();
 }
