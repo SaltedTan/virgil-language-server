@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Syntax-only symbols. Byte offsets are exclusive at the end; no compiler
-// types escape the adapter. The protocol maps them using PositionMap.
-class AnalysisDocumentSymbol(name: string, kind: int, begin: int, end: int,
+// types escape the adapter. The protocol maps them using PositionMap, and
+// their kinds, the kinds of the declarations that snapshots record, using
+// LspSymbolKind.
+class AnalysisDocumentSymbol(name: string, kind: AnalysisDeclKind, begin: int, end: int,
 		nameBegin: int, nameEnd: int, children: Array<AnalysisDocumentSymbol>) { }
 
 // The VST records names, but not complete declaration ranges. Record parser
@@ -51,15 +53,18 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		for (i < file.components.length) {
 			var d = file.components[i];
 			if (d.isFileScope) members(d, result);
-			else if (!d.isSynthetic) result.put(compound(d, 3)); // Namespace
+			else if (!d.isSynthetic) result.put(compound(d, AnalysisDeclKind.COMPONENT));
 		}
+		// The parser lifts each variant case's synthetic class to file scope;
+		// its case member under the variant names it instead. A data type is
+		// its own single case and has no case member.
 		for (i < file.classes.length) {
 			var d = file.classes[i];
-			if (!d.isSynthetic) result.put(compound(d, 5)); // Class
+			if (!d.isSynthetic) result.put(compound(d, AnalysisDeclKind.CLASS));
 		}
-		for (i < file.enums.length) result.put(compound(file.enums[i], 10)); // Enum
-		for (i < file.layouts.length) result.put(compound(file.layouts[i], 23)); // Struct
-		for (i < file.packings.length) result.put(compound(file.packings[i], 23));
+		for (i < file.enums.length) result.put(compound(file.enums[i], AnalysisDeclKind.ENUM));
+		for (i < file.layouts.length) result.put(compound(file.layouts[i], AnalysisDeclKind.LAYOUT));
+		for (i < file.packings.length) result.put(compound(file.packings[i], AnalysisDeclKind.PACKING));
 		return sorted(result);
 	}
 	private def sorted(v: Vector<AnalysisDocumentSymbol>) -> Array<AnalysisDocumentSymbol> {
@@ -69,16 +74,20 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	private def before(a: AnalysisDocumentSymbol, b: AnalysisDocumentSymbol) -> bool {
 		return a.nameBegin < b.nameBegin;
 	}
-	private def compound(d: VstCompound, kind: int) -> AnalysisDocumentSymbol {
+	private def compound(d: VstCompound, kind: AnalysisDeclKind) -> AnalysisDocumentSymbol {
+		var i = syntax.find(d.token), start = declarationStart(i);
+		return make(d, kind, start, declarationEnd(start, !VstPacking.?(d)), contents(d));
+	}
+	// The members of {d}, a compound or a variant case's class, and its
+	// header parameters, which declare fields, unlike method parameters.
+	private def contents(d: VstCompound) -> Array<AnalysisDocumentSymbol> {
 		var children = Vector<AnalysisDocumentSymbol>.new();
 		members(d, children);
-		// Class/enum header parameters declare fields, unlike method parameters.
 		if (d.params != null) for (p in d.params.asArray()) {
 			var i = syntax.find(p.token);
-			if (i >= 0) children.put(make(p, 8, if(p.isReadOnly, i, i - 1), parameterEnd(i), []));
+			if (i >= 0) children.put(make(p, AnalysisDeclKind.FIELD, if(p.isReadOnly, i, i - 1), parameterEnd(i), []));
 		}
-		var i = syntax.find(d.token), start = declarationStart(i);
-		return make(d, kind, start, declarationEnd(start, !VstPacking.?(d)), sorted(children));
+		return sorted(children);
 	}
 	private def members(d: VstCompound, result: Vector<AnalysisDocumentSymbol>) {
 		var fieldStart = -1, fieldEnd = -1;
@@ -89,11 +98,18 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 				x: VstEnumCase => {
 					var end = i;
 					if (i + 1 < tokens.length && ch(i + 1) == '(') end = matching(i + 1);
-					result.put(make(m, 22, i, end, [])); // EnumMember
+					result.put(make(m, AnalysisDeclKind.ENUM_CASE, i, end, []));
+				}
+				x: VstCaseMember => {
+					// A case, including the default case "_", ends at its
+					// semicolon or its body's closing brace.
+					var start = declarationStart(i);
+					result.put(make(m, AnalysisDeclKind.VARIANT_CASE, start, declarationEnd(start, true), contents(x.decl)));
 				}
 				x: VstMethod => {
 					var start = declarationStart(i);
-					result.put(make(m, if(VstNew.?(m), 9, 6), start, declarationEnd(start, BlockStmt.?(x.func.body)), []));
+					result.put(make(m, if(VstNew.?(m), AnalysisDeclKind.CONSTRUCTOR, AnalysisDeclKind.METHOD),
+						start, declarationEnd(start, BlockStmt.?(x.func.body)), []));
 				}
 				x: VstField => {
 					// A comma-separated var/def declares several fields. Each
@@ -102,11 +118,11 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 						fieldStart = declarationStart(i);
 						fieldEnd = declarationEnd(fieldStart, false);
 					}
-					result.put(make(m, 8, fieldStart, fieldEnd, []));
+					result.put(make(m, AnalysisDeclKind.FIELD, fieldStart, fieldEnd, []));
 				}
 				x: VstLayoutField => {
 					var start = declarationStart(i);
-					result.put(make(m, 8, start, declarationEnd(start, false), []));
+					result.put(make(m, AnalysisDeclKind.LAYOUT_FIELD, start, declarationEnd(start, false), []));
 				}
 				_ => ; // compiler-generated tag/name/descriptor members
 			}
@@ -160,7 +176,7 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		}
 		return i;
 	}
-	private def make(d: Decl, kind: int, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
+	private def make(d: Decl, kind: AnalysisDeclKind, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
 		var i = syntax.find(d.token), name = tokens[i];
 		return AnalysisDocumentSymbol.new(d.name(), kind, tokens[start].begin, tokens[end].end,
 			name.begin, name.end, children);

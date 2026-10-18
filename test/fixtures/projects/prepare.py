@@ -68,6 +68,13 @@ hover.mkdir(exist_ok=True)
     '{"version":1,"projects":[{"name":"h","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# LspDocumentSymbolsTest writes and changes the sources itself.
+symbols = root / "document-symbols"
+symbols.mkdir(exist_ok=True)
+(symbols / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"s","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
 # LspDefinitionTest writes the sources, and opens sub/.virgil-lsp.json only as
 # an unsaved buffer, so that a nearer project takes sub/Use.v3 over.
 ownership = root / "definition-ownership"

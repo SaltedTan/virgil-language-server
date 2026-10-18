@@ -244,7 +244,7 @@ Deliverables:
 - Occurrence index extending the [compiler adapter's current coverage](docs/architecture.md#compiler-adapter) to applications and named type references.
 - `textDocument/definition`.
 - `textDocument/hover` using the [snapshot display data](docs/architecture.md#display-text).
-- Workspace/document-symbol polishing.
+- Workspace/document-symbol polishing *(document symbols present, with [variant cases and signature details](docs/architecture.md#document-symbols); `workspace/symbol` planned, [#122](https://github.com/SaltedTan/virgil-language-server/issues/122))*.
 - End-to-end editor tests and a documented manual test matrix.
 - First tagged prerelease with checksums and install instructions.
 

@@ -14,7 +14,8 @@ TEXT = """component C {
 class K { var field: int; }
 enum E { A, B }
 layout L { +0 field: int; =4; }
-packing P(x: 1): 2 = 0b0x;"""
+packing P(x: 1): 2 = 0b0x;
+type V { case A(x: int); }"""
 
 
 def position(line, character):
@@ -49,6 +50,11 @@ OUTLINE = [
         symbol("field", 8, 6, 11, 6, 25, 6, 14),
     ]),
     symbol("P", 23, 7, 0, 7, 26, 7, 8),
+    symbol("V", 5, 8, 0, 8, 26, 8, 5, [
+        symbol("A", 22, 8, 9, 8, 24, 8, 14, [
+            symbol("x", 8, 8, 16, 8, 22, 8, 16),
+        ]),
+    ]),
 ]
 
 
