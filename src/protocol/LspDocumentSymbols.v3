@@ -1,6 +1,28 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
+// The LSP SymbolKind of each kind of declaration that snapshots record, for
+// document symbols and later workspace symbols. Variants and data types are
+// classes, and file-scope methods and fields are members of the file's
+// synthetic component, so they map as a component's members do. See
+// docs/architecture.md#document-symbols.
+component LspSymbolKind {
+	def of(kind: AnalysisDeclKind) -> int {
+		match (kind) {
+			COMPONENT => return 3;	// Namespace
+			CLASS => return 5;	// Class
+			METHOD => return 6;	// Method
+			FIELD, LAYOUT_FIELD => return 8;	// Field
+			CONSTRUCTOR => return 9;	// Constructor
+			ENUM => return 10;	// Enum
+			LOCAL, PARAMETER => return 13;	// Variable
+			ENUM_CASE, VARIANT_CASE => return 22;	// EnumMember
+			LAYOUT, PACKING => return 23;	// Struct
+			TYPE_PARAM => return 26;	// TypeParameter
+		}
+	}
+}
+
 // Outlines parse the overlay with the language options of the document's
 // active project, as its syntax diagnostics do.
 class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
@@ -30,7 +52,7 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		for (s in symbols) {
 			var obj = Strings.newMap<JsonValue>();
 			obj["name"] = JsonValue.String(s.name);
-			obj["kind"] = JsonValue.Int(s.kind);
+			obj["kind"] = JsonValue.Int(LspSymbolKind.of(s.kind));
 			obj["range"] = range(map, s.begin, s.end);
 			obj["selectionRange"] = range(map, s.nameBegin, s.nameEnd);
 			if (s.children.length > 0) obj["children"] = encodeSymbols(s.children, map);

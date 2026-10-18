@@ -77,16 +77,24 @@ local function check()
   -- An unsaved buffer edit must drive didChange, clear diagnostics, and update
   -- the outline. No direct RPC didOpen/didChange calls bypass the editor client.
   local before_edit = #publications
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "component C { def value = 1; }" })
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "component C { def value = 1; }", "type V { case A(x: int); }" })
   wait_for("published empty diagnostics after the edit", function()
     local last = publications[#publications]
     return #publications > before_edit and #last.diagnostics == 0
       and last.version > initial.version and #vim.diagnostic.get(bufnr) == 0
   end)
   local outline = symbols()
-  assert(#outline == 1 and outline[1].name == "C"
-    and outline[1].kind == vim.lsp.protocol.SymbolKind.Namespace,
-    "expected component C (kind 3): " .. vim.inspect(outline))
+  assert(#outline == 2 and outline[1].name == "C"
+    and outline[1].kind == vim.lsp.protocol.SymbolKind.Namespace
+    and outline[2].name == "V" and outline[2].kind == vim.lsp.protocol.SymbolKind.Class,
+    "expected component C (kind 3) and variant V (kind 5): " .. vim.inspect(outline))
+  -- A variant's case is its child, and selects its own name.
+  local case = outline[2].children and outline[2].children[1]
+  assert(#outline[2].children == 1 and case.name == "A"
+    and case.kind == vim.lsp.protocol.SymbolKind.EnumMember
+    and case.selectionRange.start.line == 1 and case.selectionRange.start.character == 14
+    and case.selectionRange["end"].line == 1 and case.selectionRange["end"].character == 15,
+    "expected case A (kind 22) of V: " .. vim.inspect(outline[2]))
 
   -- The fixture's project uses lib/util through virgilDependencies. run.sh sets
   -- VIRGIL_LOC to the pinned checkout, which the configuration passes on as

@@ -11,6 +11,8 @@ def X = [
 	T("LspDocumentSymbols:bound_index_operators", test_symbol_bound_index_operators),
 	T("LspDocumentSymbols:expression_bodies", test_symbol_expression_bodies),
 	T("LspDocumentSymbols:large_single_line", test_symbol_large_single_line),
+	T("LspDocumentSymbols:variant_cases", test_symbol_variant_cases),
+	T("LspDocumentSymbols:default_case", test_symbol_default_case),
 	()
 ];
 
@@ -218,4 +220,68 @@ def test_symbol_params(t: Tester) {
 	}
 	s.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}");
 	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32600,\"message\":\"the server is shutting down\"}}", s.handle(REQUEST));
+}
+
+def test_symbol_variant_cases(t: Tester) {
+	var s = running(t);
+	var text = "type Opt<T> {\n\tcase None;\n\tcase Some(v: T) {\n\t\tdef get() -> T { var s = \"};\"; return v; }\n\t}\n\tdef isSome() -> bool { return Opt<T>.Some.?(this); }\n}\ntype Row(m: int, index: int) {\n\tdef sum() -> int { return m + index; }\n}\ntype Empty;";
+	s.documents.open(URI, "virgil", 1, text);
+	var a = symbols(t, s);
+	t.asserti(3, a.length); // the lifted case classes are not symbols
+	checkSymbol(t, a[0], "Opt", 5, 0, 0, 6, 1, 0, 5);
+	var c = children(a[0]);
+	t.asserti(3, c.length); // no synthesized tag/name members
+	checkSymbol(t, c[0], "None", 22, 1, 1, 1, 11, 1, 6);
+	checkSymbol(t, c[1], "Some", 22, 2, 1, 4, 2, 2, 6);
+	checkSymbol(t, c[2], "isSome", 6, 5, 1, 5, 53, 5, 5);
+	t.assertz(false, JsonValue.JObject.!(c[0]).v.has("children"));
+	var members = children(c[1]);
+	t.asserti(2, members.length);
+	checkSymbol(t, members[0], "v", 8, 2, 11, 2, 15, 2, 11);
+	checkSymbol(t, members[1], "get", 6, 3, 2, 3, 44, 3, 6);
+	// A data type is its own single case: one symbol, with its fields.
+	checkSymbol(t, a[1], "Row", 5, 7, 0, 9, 1, 7, 5);
+	c = children(a[1]);
+	t.asserti(3, c.length);
+	checkSymbol(t, c[0], "m", 8, 7, 9, 7, 15, 7, 9);
+	checkSymbol(t, c[1], "index", 8, 7, 17, 7, 27, 7, 17);
+	checkSymbol(t, c[2], "sum", 6, 8, 1, 8, 39, 8, 5);
+	checkSymbol(t, a[2], "Empty", 5, 10, 0, 10, 11, 10, 5);
+	t.assertz(false, JsonValue.JObject.!(a[2]).v.has("children"));
+}
+
+// The byte offset of {needle} in {text}, or -1.
+def find(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return i;
+	}
+	return -1;
+}
+// Checks that {s} is a {kind} named {name} whose range is exactly the text
+// {decl}, with its name {skip} bytes in.
+def checkBytes(t: Tester, s: AnalysisDocumentSymbol, text: string, name: string, kind: AnalysisDeclKind,
+		decl: string, skip: int, children: int) {
+	var begin = find(text, decl);
+	t.assert(begin >= 0, "declaration text found");
+	t.assert_string(name, s.name);
+	t.assert(kind == s.kind, Strings.format2("%s is a %s", name, kind.name));
+	t.asserti(begin, s.begin);
+	t.asserti(begin + decl.length, s.end);
+	t.asserti(begin + skip, s.nameBegin);
+	t.asserti(begin + skip + name.length, s.nameEnd);
+	t.asserti(children, s.children.length);
+}
+// The default case "_" and a variant that extends another need -lang:open-types.
+def test_symbol_default_case(t: Tester) {
+	var text = "type V {\n\tcase A;\n\tcase _ {\n\t\tdef m() {}\n\t}\n}\ntype W extends V {\n\tcase B(x: int);\n}";
+	t.asserti(0, AeneasAdapter.documentSymbols("open.v3", text, []).length);
+	var a = AeneasAdapter.documentSymbols("open.v3", text, ["-lang:open-types"]);
+	t.asserti(2, a.length);
+	checkBytes(t, a[0], text, "V", AnalysisDeclKind.CLASS, "type V {\n\tcase A;\n\tcase _ {\n\t\tdef m() {}\n\t}\n}", 5, 2);
+	checkBytes(t, a[0].children[0], text, "A", AnalysisDeclKind.VARIANT_CASE, "case A;", 5, 0);
+	checkBytes(t, a[0].children[1], text, "_", AnalysisDeclKind.VARIANT_CASE, "case _ {\n\t\tdef m() {}\n\t}", 5, 1);
+	checkBytes(t, a[0].children[1].children[0], text, "m", AnalysisDeclKind.METHOD, "def m() {}", 4, 0);
+	checkBytes(t, a[1], text, "W", AnalysisDeclKind.CLASS, "type W extends V {\n\tcase B(x: int);\n}", 5, 1);
+	checkBytes(t, a[1].children[0], text, "B", AnalysisDeclKind.VARIANT_CASE, "case B(x: int);", 5, 1);
+	checkBytes(t, a[1].children[0].children[0], text, "x", AnalysisDeclKind.FIELD, "x: int", 0, 0);
 }

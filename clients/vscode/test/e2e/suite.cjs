@@ -79,11 +79,23 @@ async function hovers(editor, line, character) {
   ]);
 }
 
-async function symbols(editor) {
+async function documentSymbols(editor) {
   const result = await vscode.commands.executeCommand(
     'vscode.executeDocumentSymbolProvider', editor.document.uri,
   );
-  return (result ?? []).map((symbol) => ({ name: symbol.name, kind: symbol.kind }));
+  return result ?? [];
+}
+
+async function symbols(editor) {
+  return (await documentSymbols(editor)).map((symbol) => ({ name: symbol.name, kind: symbol.kind }));
+}
+
+// The children of the top-level symbol {name}, with the range of each one's name.
+async function children(editor, name) {
+  const symbol = (await documentSymbols(editor)).find((s) => s.name === name);
+  return (symbol?.children ?? []).map((child) => ({
+    name: child.name, kind: child.kind, selection: range({ range: child.selectionRange }),
+  }));
 }
 
 async function edit(editor, change) {
@@ -141,10 +153,15 @@ async function workspace(extension) {
   // An unsaved edit must reach the server through the client's didChange,
   // clear the diagnostic, and update the outline. Undo brings both back.
   await edit(bad, (builder) => builder.replace(
-    new vscode.Range(0, 0, bad.document.lineCount, 0), 'component C { def value = 1; }',
+    new vscode.Range(0, 0, bad.document.lineCount, 0), 'component C { def value = 1; }\ntype V { case A(x: int); }',
   ));
   await waitFor('cleared diagnostics after an unsaved edit', () => diagnostics(bad).length === 0);
-  assert.deepEqual(await symbols(bad), [{ name: 'C', kind: vscode.SymbolKind.Namespace }]);
+  assert.deepEqual(await symbols(bad), [
+    { name: 'C', kind: vscode.SymbolKind.Namespace },
+    { name: 'V', kind: vscode.SymbolKind.Class },
+  ]);
+  // A variant's case is its child, and selects its own name.
+  assert.deepEqual(await children(bad, 'V'), [{ name: 'A', kind: vscode.SymbolKind.EnumMember, selection: [1, 14, 1, 15] }]);
   await undo(bad, original);
   await expectParserDiagnostic(bad);
 

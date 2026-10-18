@@ -117,7 +117,7 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 - with no folder open, opening `bad.v3` activates the extension, which starts the server from `virgil.server.path`;
 - with the fixture as the workspace folder, its `.virgil-lsp.json` activates the extension before any document opens, and the output channel names the Virgil root from `virgil.virgilRoot`;
 - `bad.v3` has the parser diagnostic "invalid start of expression" (`ParseError`, from `aeneas`) with the empty range at line 3, column 27, and no document symbols;
-- an unsaved edit clears the diagnostic, and `vscode.executeDocumentSymbolProvider` then returns the component `C`; undoing the edit brings the diagnostic back;
+- an unsaved edit clears the diagnostic, and `vscode.executeDocumentSymbolProvider` then returns the component `C` and the variant `V`, with its case `A` as its child; undoing the edit brings the diagnostic back;
 - `words/Words.v3` has the single semantic diagnostic that needs `lib/util` from the Virgil root, and `vscode.executeDefinitionProvider` on its `StringBuilder` returns the name of `class StringBuilder` in the closed `lib/util/StringBuilder.v3`, and `vscode.executeHoverProvider` there returns its signature in a `virgil` code block;
 - an unsaved edit to `.virgil-lsp.json` produces an `UnknownField` diagnostic, and undoing it clears the diagnostic;
 - **Virgil: Restart Language Server** makes the server exit with status 0 (`Server process exited successfully`), and a new server starts and answers document symbol requests.
@@ -137,8 +137,8 @@ For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Re
 1. Open the fixture folder with the extension installed or loaded from source (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language. *(Automated on Linux.)*
 2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine. *(Automated on Linux.)*
 3. The Problems view shows one error, "invalid start of expression" from `aeneas`, at line 3, column 27. *(Automated on Linux.)*
-4. Without saving, replace the file's contents with `component C { def value = 1; }`. The error disappears. *(Automated on Linux.)*
-5. The Outline view shows the component `C`. *(Automated on Linux.)*
+4. Without saving, replace the file's contents with `component C { def value = 1; }` and, on a second line, `type V { case A(x: int); }`. The error disappears. *(Automated on Linux.)*
+5. The Outline view shows the component `C` and the variant `V`, with its case `A` inside it. *(Automated on Linux.)*
 6. Undo the edit. The error comes back without saving. *(Automated on Linux.)*
 7. Open `words/Words.v3`. The Problems view shows one error for it, "expected int in var initialization, got Array<byte>" from `aeneas`, on line 7. Without the library, it would also report that `StringBuilder` cannot be found. **Go to Definition** on `StringBuilder` opens the library's `lib/util/StringBuilder.v3` at `class StringBuilder`, and hovering over it shows `class StringBuilder`. *(Automated on Linux.)*
 8. Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. The Problems view shows an `UnknownField` error from `virgil-lsp` on that line. Undo the edit; the error disappears. *(Automated on Linux.)*

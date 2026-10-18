@@ -213,13 +213,30 @@ For example, `file:///tmp/%61%20b.v3` and `file:/tmp/a b.v3` share the key `file
 
 `LspDocumentSymbols` handles `textDocument/documentSymbol` and advertises `documentSymbolProvider: true`. It returns hierarchical `DocumentSymbol[]` from the requested open document's current overlay, without reading disk or running semantic verification. Malformed parameters receive `InvalidParams`; a closed/unopened document or any parse failure returns `[]`, never a stale or truncated outline.
 
-The analysis layer walks VST declarations in source order: components are namespaces, classes are classes, enums are enums (with enum-member children), layouts and packings are structs, methods are methods, constructors are constructors, and fields are fields. Class/enum header parameters are field children. File-scope methods and fields appear at the root rather than under the compiler's synthetic component. Compiler-generated tag/name members are omitted. Method locals and parameters are not outline symbols.
+The analysis layer walks VST declarations in source order. Each symbol carries the kind of declaration that [snapshots](#analysis-snapshots-partly-present) record (`AnalysisDeclKind`), and `LspSymbolKind.of` (`src/protocol/LspDocumentSymbols.v3`) gives its LSP `SymbolKind`. Workspace symbols ([#122](https://github.com/SaltedTan/virgil-language-server/issues/122)) are to use the same mapping:
 
-The VST does not store complete declaration ranges. `SymbolSyntaxIndex` records the parser's consumption spans **before** it skips whitespace and comments, associates VST name tokens with those spans, and balances consumed single-byte delimiters to find declaration ends. Strings, comments, and composite operators such as `[]` and `[]=` cannot introduce false delimiters. `range` includes modifiers and excludes trailing whitespace/comments. Body declarations include their final brace; semicolon-terminated declarations include their semicolon, including expression-bodied methods with nested function bodies. Comma-separated fields share their statement range. Class/enum header fields include `var` when present and stop before the separating comma or closing parenthesis; enum-member ranges include their argument lists when present. `selectionRange` selects each declaration's name. The adapter returns server-owned symbols with UTF-8 byte offsets; the protocol converts both ranges through `PositionMap` with UTF-16 positions. This also avoids the compiler's same-line block-comment tab column anomaly. CRLF and bare CR are normalized only in parser input, preserving byte offsets and leaving the overlay unchanged.
+| Declaration | `AnalysisDeclKind` | `SymbolKind` |
+| --- | --- | --- |
+| Component | `COMPONENT` | Namespace (3) |
+| Class, variant, or data type | `CLASS` | Class (5) |
+| Variant case, including the default case `_` | `VARIANT_CASE` | EnumMember (22) |
+| Enum | `ENUM` | Enum (10) |
+| Enum case | `ENUM_CASE` | EnumMember (22) |
+| Layout, packing | `LAYOUT`, `PACKING` | Struct (23) |
+| Method, including index and file-scope methods | `METHOD` | Method (6) |
+| Constructor | `CONSTRUCTOR` | Constructor (9) |
+| Field, including header parameters and file-scope fields | `FIELD` | Field (8) |
+| Layout field | `LAYOUT_FIELD` | Field (8) |
+
+Virgil's declaration forms decide the kinds. A variant, including a data type, is a class: verification makes it one, it can have methods, and with `-lang:open-types` it can extend another. Its cases, like an enum's, are the alternatives its values take, so both are enum members. A packing lays out bits as a layout lays out memory. File-scope methods and fields are members of the file's synthetic component, as a component's members are, so they are methods and fields, not functions and variables; they appear at the root rather than under the synthetic component. Locals, parameters, and type parameters are not outline symbols; they map to Variable (13) and TypeParameter (26).
+
+Class and enum header parameters, and a variant case's, are field children. A variant's cases, explicit or the default case `_`, are its children in source order, among its methods, each with its own fields and methods. The parser lifts each case's synthetic class to file scope; the outline shows it only as its case. A data type, such as `type Row(m: int, index: int)`, is its own single case and shares its name token with it, so it is one symbol, with its fields and methods. Compiler-generated tag/name members are omitted.
+
+The VST does not store complete declaration ranges. `SymbolSyntaxIndex` records the parser's consumption spans **before** it skips whitespace and comments, associates VST name tokens with those spans, and balances consumed single-byte delimiters to find declaration ends. Strings, comments, and composite operators such as `[]` and `[]=` cannot introduce false delimiters. `range` includes modifiers and excludes trailing whitespace/comments. Body declarations include their final brace; semicolon-terminated declarations include their semicolon, including expression-bodied methods with nested function bodies. Comma-separated fields share their statement range. Class/enum header fields include `var` when present and stop before the separating comma or closing parenthesis; enum-member ranges include their argument lists when present. A variant case runs from `case` to its semicolon or its body's closing brace. `selectionRange` selects each declaration's name. The adapter returns server-owned symbols with UTF-8 byte offsets; the protocol converts both ranges through `PositionMap` with UTF-16 positions. This also avoids the compiler's same-line block-comment tab column anomaly. CRLF and bare CR are normalized only in parser input, preserving byte offsets and leaving the overlay unchanged.
 
 The outline parses through `AnalysisSingleFileParser`, the same driver as [`parseFile`](#compiler-adapter); its skip observer feeds both the diagnostic position map and `SymbolSyntaxIndex`. [Aeneas crash paths](aeneas-crash-paths.md) owns the shared recovery and containment limits.
 
-Golden transcripts and handler-level unit tests cover all supported declaration kinds, nested bodies, exact ranges, unsaved replacements, parse failure/recovery (including malformed ranges typed one keystroke at a time), URI aliases, lifecycle/parameter errors, and UTF-16 positions.
+Golden transcripts and handler-level unit tests cover all supported declaration kinds, nested bodies, exact ranges, unsaved replacements, parse failure/recovery (including malformed ranges typed one keystroke at a time), URI aliases, lifecycle/parameter errors, and UTF-16 positions. [LspDocumentSymbolsTest](../test/unit/LspDocumentSymbolsTest.v3) also covers variant cases, default cases, and data types. The [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) and the VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test) check a variant case nested in its variant.
 
 ## Project files *(partly present)*
 
@@ -327,7 +344,7 @@ The JSON-RPC 2.0 message model in `src/protocol/` works on the JSON payload of o
 | `LspServer.v3` | The [lifecycle](#lifecycle) in front of the dispatcher, implemented capabilities, and the LSP error codes it uses. |
 | `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 | `LspWorkspaceEvents.v3` | Handles `workspace/didChangeWatchedFiles` and `workspace/didChangeWorkspaceFolders`, and registers the file watchers ([changes on disk](configuration.md#changes-on-disk)). |
-| `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, and converts byte ranges with `PositionMap`. |
+| `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, converts byte ranges with `PositionMap`, and maps declaration kinds to symbol kinds (`LspSymbolKind`). |
 | `LspSnapshotRequests.v3` | Answers [definition](#definition) and [hover](#hover) requests from the active context's snapshot, waiting for a pending analysis when it is stale. |
 | `LspDefinition.v3` | The definition answer: the declaration of the occurrence at an offset. |
 | `LspHover.v3` | The [hover](#hover) answer: the display text at an offset, in Markdown or plain text. |
