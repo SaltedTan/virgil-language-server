@@ -109,22 +109,58 @@ expect "changelog subsection heading" 1 "" "no '## \[0.1.0-alpha.1\]' section" \
 expect "changelog mention outside a heading" 1 "" "no '## \[0.1.0-alpha.1\]' section" \
     "0.1.0-alpha.1" 'See ## [0.1.0-alpha.1] below.' v0.1.0-alpha.1
 
-# vsix <path> <package.json|-> [<file>...]: writes a zip file like a VSIX, with
-# <package.json> as extension/package.json, or none for "-", and an empty
-# extension/<file> for each file, or an entry named exactly <entry> for each
-# raw:<entry>, such as a directory entry ending in "/".
+# vsix <path> <package.json|@<file>|-> [<file>...]: writes a zip file like a
+# VSIX, with <package.json>, or the bytes of <file> for @<file>, as
+# extension/package.json, or none for "-", and an empty extension/<file> for
+# each file, or an entry named exactly <entry> for each raw:<entry>, such as a
+# directory entry ending in "/". Its entries are stored, not compressed.
 vsix() {
     python3 - "$@" <<'PY'
 import sys, zipfile
 path, package, files = sys.argv[1], sys.argv[2], sys.argv[3:]
 with zipfile.ZipFile(path, "w") as z:
     z.writestr("extension.vsixmanifest", "<PackageManifest/>")
-    if package != "-":
+    if package.startswith("@"):
+        with open(package[1:], "rb") as f:
+            z.writestr("extension/package.json", f.read())
+    elif package != "-":
         z.writestr("extension/package.json", package)
     for f in files:
         z.writestr(f[4:] if f.startswith("raw:") else "extension/" + f, "")
 PY
 }
+
+# damage <vsix> <entry> data|name: damages a VSIX that is_zipfile still
+# accepts. For data, inverts the first byte of the entry's data, so that the
+# entry fails its CRC check; for name, marks the entry's name in the central
+# directory as UTF-8 and makes its first byte one that UTF-8 can't start with.
+damage() {
+    python3 - "$@" <<'PY'
+import struct, sys, zipfile
+path, entry, part = sys.argv[1:]
+with zipfile.ZipFile(path) as z:
+    offset = z.getinfo(entry).header_offset
+with open(path, "rb") as f:
+    data = bytearray(f.read())
+if part == "data":
+    name_length, extra_length = struct.unpack_from("<HH", data, offset + 26)
+    data[offset + 30 + name_length + extra_length] ^= 0xff
+else:
+    # The central directory follows every entry's data, so the name's last
+    # occurrence is in the entry's central directory header, 46 bytes after
+    # the header starts.
+    name = data.rindex(entry.encode())
+    flags, = struct.unpack_from("<H", data, name - 46 + 8)
+    struct.pack_into("<H", data, name - 46 + 8, flags | 0x800)
+    data[name] = 0xff
+with open(path, "wb") as f:
+    f.write(data)
+PY
+}
+# A JSON array nested more deeply than Python's json module can parse, and a
+# package.json that isn't UTF-8.
+python3 -c 'print("[" * 1000000)' > "$TMP/deep.json"
+printf '{"name": "\377"}' > "$TMP/not-utf-8.json"
 
 # An extension directory with a package.json, a lockfile, and clients/vscode's
 # .vscodeignore, and the files of a good VSIX packaged from it. Its version
@@ -186,6 +222,9 @@ check_vsix "another publisher" 1 "publisher is 'someone', but" "${package/virgil
 check_vsix "no extension/package.json" 1 "has no extension/package\.json" -
 check_vsix "malformed extension/package.json" 1 "extension/package\.json is not valid JSON" '{"name":'
 check_vsix "JSON array as extension/package.json" 1 "extension/package\.json is not a JSON object" '[]'
+check_vsix "extension/package.json that isn't UTF-8" 1 "extension/package\.json is not UTF-8: " "@$TMP/not-utf-8.json"
+check_vsix "deeply nested extension/package.json" 1 "extension/package\.json is nested too deeply to parse$" \
+    "@$TMP/deep.json"
 excluded "sources" src/extension.ts 'src/**'
 excluded "tests" test/lifecycle.cjs 'test/**'
 excluded "the test's VS Code download" .vscode-test/code '**/.vscode-test/**'
@@ -248,6 +287,16 @@ expect_run "check-vsix.py: named without its version" 1 - \
 echo "not a zip file" > "$VSIX"
 expect_run "check-vsix.py: not a zip file" 1 - "virgil-lsp-vscode-7\.8\.9\.vsix is not a zip file" \
     "$CHECK_VSIX" "$VSIX" "$EXT"
+vsix "$VSIX" "$package" "${files[@]}"
+damage "$VSIX" extension/package.json data
+expect_run "check-vsix.py: corrupt extension/package.json data" 1 - \
+    "virgil-lsp-vscode-7\.8\.9\.vsix: cannot read extension/package\.json: Bad CRC-32" \
+    "$CHECK_VSIX" "$VSIX" "$EXT"
+vsix "$VSIX" "$package" "${files[@]}"
+damage "$VSIX" extension/out/extension.js name
+expect_run "check-vsix.py: a central directory name that isn't UTF-8" 1 - \
+    "cannot read .*/virgil-lsp-vscode-7\.8\.9\.vsix: 'utf-8' codec can't decode" \
+    "$CHECK_VSIX" "$VSIX" "$EXT"
 
 # Rules that clients/vscode's .vscodeignore doesn't use: a negation, which vsce
 # applies after every ignore pattern, and a directory named without "/**".
@@ -262,10 +311,33 @@ printf 'src/keep.txt 0\nsrc/extension.ts 1\ndocs/notes.md 1\n' > "$TMP/rules.wan
 expect_run "check-vsix.py: a negation keeps a file, and a directory pattern excludes what it holds" 0 - "" \
     diff "$TMP/rules.want" "$TMP/rules.out"
 
-# Pattern syntax that .vscodeignore doesn't need is refused, not emulated.
+# An escaped character is a literal: an escaped bracket doesn't start a class,
+# an escaped brace, parenthesis, "*", or "?" matches only itself, and an
+# escaped leading "!" isn't a negation.
+cp -R "$EXT" "$TMP/escaped"
+escaped=('assets/\[draft\].txt' 'notes/\{\*\?\@\(x\)\}.md' '\!keep.txt')
+literal=('assets/[draft].txt' 'notes/{*?@(x)}.md' '!keep.txt')
+printf '%s\n' "${escaped[@]}" >> "$TMP/escaped/.vscodeignore"
+for i in "${!escaped[@]}"; do
+    vsix "$VSIX" "$package" "${files[@]}" "${literal[i]}"
+    expect_run "check-vsix.py: the escaped pattern ${escaped[i]} excludes ${literal[i]}" 1 - \
+        "it holds $(ere "${literal[i]}"), which the ignore pattern '$(ere "${escaped[i]}")' excludes$" \
+        "$CHECK_VSIX" "$VSIX" "$TMP/escaped"
+done
+for f in assets/d.txt assets/draft.txt 'notes/{ab@(x)}.md' keep.txt; do
+    vsix "$VSIX" "$package" "${files[@]}" "$f"
+    expect_run "check-vsix.py: the escaped patterns keep $f" 0 - "" "$CHECK_VSIX" "$VSIX" "$TMP/escaped"
+done
+
+# Pattern syntax that .vscodeignore doesn't need is refused, not emulated: an
+# unescaped bracket, even beside escaped ones or after an escaped backslash;
+# an escaped backslash or "|"; and an escape in a segment such as "*.js",
+# which minimatch matches without removing escapes.
 vsix "$VSIX" "$package" "${files[@]}"
 # shellcheck disable=SC1003 # 'tmp\' is a pattern that ends in a backslash
-for pattern in '*.{js,ts}' 'tmp/[a\-c].js' '[z-a]' 'src/+(a|b).ts' 'tmp\' 'tmp\/x'; do
+for pattern in '*.{js,ts}' 'tmp/[a\-c].js' '[z-a]' 'src/+(a|b).ts' 'tmp\' 'tmp\/x' \
+        'assets/[draft].txt' 'assets/\[draft].txt' 'assets/\\[draft\].txt' 'a\\b' 'a\|b*' \
+        'out/*\-old.js' '?\-'; do
     rm -rf "$TMP/unsupported"
     cp -R "$EXT" "$TMP/unsupported"
     printf '%s\n' "$pattern" >> "$TMP/unsupported/.vscodeignore"
@@ -348,6 +420,19 @@ vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" -
 notes "VSIX without extension/package.json" 1 - "has no extension/package\.json"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" '{"name": "virgil-lsp-vscode", "version":'
 notes "VSIX with malformed extension/package.json" 1 - "extension/package\.json is not valid JSON"
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "@$TMP/not-utf-8.json"
+notes "VSIX with extension/package.json that isn't UTF-8" 1 - "extension/package\.json is not UTF-8: "
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "@$TMP/deep.json"
+notes "VSIX with deeply nested extension/package.json" 1 - \
+    "extension/package\.json is nested too deeply to parse$"
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "$package" "${files[@]}"
+damage "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" extension/package.json data
+notes "VSIX with corrupt extension/package.json data" 1 - \
+    "virgil-lsp-vscode-7\.8\.9\.vsix: cannot read extension/package\.json: Bad CRC-32"
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "$package" "${files[@]}"
+damage "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" extension/out/extension.js name
+notes "VSIX with a central directory name that isn't UTF-8" 1 - \
+    "cannot read .*/virgil-lsp-vscode-7\.8\.9\.vsix: 'utf-8' codec can't decode"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" '{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server"}'
 notes "VSIX without a version" 1 - "lacks a name, publisher, or version"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "${package/7.8.9/7.9.0}"

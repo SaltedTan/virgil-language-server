@@ -25,6 +25,12 @@ import posixpath
 import re
 import sys
 import zipfile
+import zlib
+
+try:
+    from lzma import LZMAError
+except ImportError:  # zipfile then refuses LZMA entries with a RuntimeError.
+    LZMAError = RuntimeError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IDENTITY = ("name", "publisher", "version")
@@ -53,10 +59,34 @@ VSCE_RENAMES = (
 VSCE_LICENSE = re.compile(r"licen[cs]e", re.I)
 # The files that vsce writes at the top of the VSIX, outside extension/.
 VSIX_ROOT_FILES = ("[Content_Types].xml", "extension.vsixmanifest")
+MANIFEST = "extension/package.json"
 # Pattern syntax that minimatch supports and this script doesn't, because
-# .vscodeignore doesn't need it: braces, extglobs, character classes, and a
-# backslash at the end of a segment.
-UNSUPPORTED = re.compile(r"[][{}]|[?*+@!]\(|\\(/|$)")
+# .vscodeignore doesn't need it, in group 1: an unescaped bracket or brace,
+# which starts a character class or brace expansion; an extglob such as
+# "+(a|b)"; and a backslash at the end of a segment or before another
+# backslash or a "|". minimatch's brace expansion, which runs on a pattern
+# with braces even if they are escaped, turns an escaped backslash into one
+# that escapes the next character, and a VSIX entry can't hold a backslash
+# anyway. minimatch 10.2.6 copies an escaped "|" unescaped into the regular
+# expression for a segment with "*" or "?", where it separates alternatives.
+# The first alternative consumes every other escape, so that the escaped
+# character, such as the "[" in "\[draft\]", is a literal rather than syntax.
+PATTERN_SYNTAX = re.compile(r"\\[^/\\|]|([][{}]|[?*+@!]\(|\\)")
+# A segment such as "*.js" or "??.md", which minimatch 10.2.6 matches with a
+# shortcut (starDotExtRE and qmarksRE in its index.js) that compares the end
+# of a name with the rest of the segment as written, so that an escape there
+# would only match a backslash. This script refuses an escape in such a
+# segment. Check these quirks again when vsce's minimatch is updated.
+SHORTCUT_SEGMENT = re.compile(r"\*+[^+@!?*[(]*|\?+[^+@!?*[(]*")
+# What zipfile can raise for a damaged VSIX that is_zipfile accepts: a bad
+# header, central directory, or CRC (BadZipFile); an entry name that isn't the
+# UTF-8 that its flags claim (UnicodeDecodeError); corrupt or truncated
+# compressed data (zlib.error, LZMAError, EOFError, and OSError, which bzip2
+# raises and which also covers I/O errors); and a compression method, feature,
+# or encryption that zipfile doesn't support (RuntimeError, including its
+# subclass NotImplementedError).
+ZIP_ERRORS = (zipfile.BadZipFile, UnicodeDecodeError, zlib.error, LZMAError, EOFError, OSError,
+              RuntimeError)
 
 
 def fail(message):
@@ -71,11 +101,24 @@ def read(path):
         fail("cannot read %s: %s" % (path, e))
 
 
-def load_json(path):
+def parse_json(text, what):
     try:
-        return json.loads(read(path))
+        return json.loads(text)
     except ValueError as e:
-        fail("%s is not valid JSON: %s" % (path, e))
+        fail("%s is not valid JSON: %s" % (what, e))
+    except RecursionError:
+        fail("%s is nested too deeply to parse" % what)
+
+
+def load_json(path):
+    return parse_json(read(path), path)
+
+
+def unsupported(rule):
+    """Whether a pattern uses syntax that this script doesn't implement."""
+    if any(m.group(1) for m in PATTERN_SYNTAX.finditer(rule)):
+        return True
+    return any("\\" in s and SHORTCUT_SEGMENT.fullmatch(s) for s in rule.lstrip("!").split("/"))
 
 
 def ignore_rules(path):
@@ -88,7 +131,7 @@ def ignore_rules(path):
               for line in lines if not re.search(r"(^|/)[^/]*\*[^/]*$", line)]
     rules = list(VSCE_DEFAULT_IGNORE) + lines + list(VSCE_NOT_IGNORED)
     for rule in rules:
-        if UNSUPPORTED.search(rule):
+        if unsupported(rule):
             fail("%s: check-vsix.py doesn't support the pattern '%s'" % (path, rule))
     ignore = [r for r in rules if not r.startswith("!")]
     negated = [r[1:] for r in rules if r.startswith("!")]
@@ -103,7 +146,8 @@ def segment_regex(segment):
     while i < len(segment):
         c = segment[i]
         if c == "\\":
-            # ignore_rules refuses a backslash at the end of a segment.
+            # The escaped character is a literal. ignore_rules refuses a
+            # backslash at the end of a segment.
             out.append(re.escape(segment[i + 1]))
             i += 1
         elif c == "*":
@@ -185,6 +229,29 @@ def source_name(path, top):
     return candidates[0]
 
 
+def read_vsix(vsix, name):
+    """Returns the entry names of a VSIX and its parsed extension/package.json."""
+    if not zipfile.is_zipfile(vsix):
+        fail("%s is not a zip file" % vsix)
+    try:
+        z = zipfile.ZipFile(vsix)
+    except ZIP_ERRORS as e:
+        fail("cannot read %s: %s" % (vsix, e))
+    with z:
+        try:
+            data = z.read(MANIFEST)
+        except KeyError:
+            fail("%s has no %s" % (name, MANIFEST))
+        except ZIP_ERRORS as e:
+            fail("%s: cannot read %s: %s" % (name, MANIFEST, e))
+        entries = z.namelist()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        fail("%s: %s is not UTF-8: %s" % (name, MANIFEST, e))
+    return entries, parse_json(text, "%s: %s" % (name, MANIFEST))
+
+
 def required(entry):
     """Whether npm always installs a production package from package-lock.json."""
     return not any(entry.get(k) for k in ("optional", "devOptional", "os", "cpu", "link"))
@@ -213,18 +280,9 @@ def main():
     top = os.listdir(source)
 
     name = os.path.basename(vsix)
-    if not zipfile.is_zipfile(vsix):
-        fail("%s is not a zip file" % vsix)
-    with zipfile.ZipFile(vsix) as z:
-        entries = z.namelist()
-        try:
-            manifest = json.loads(z.read("extension/package.json").decode("utf-8"))
-        except KeyError:
-            fail("%s has no extension/package.json" % name)
-        except ValueError as e:
-            fail("%s: extension/package.json is not valid JSON: %s" % (name, e))
+    entries, manifest = read_vsix(vsix, name)
     if not isinstance(manifest, dict):
-        fail("%s: extension/package.json is not a JSON object" % name)
+        fail("%s: %s is not a JSON object" % (name, MANIFEST))
 
     problems = []
     for key in IDENTITY:

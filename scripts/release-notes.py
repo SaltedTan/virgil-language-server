@@ -16,6 +16,12 @@ import json
 import os
 import sys
 import zipfile
+import zlib
+
+try:
+    from lzma import LZMAError
+except ImportError:  # zipfile then refuses LZMA entries with a RuntimeError.
+    LZMAError = RuntimeError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLATFORMS = {
@@ -24,6 +30,15 @@ PLATFORMS = {
     "It is not a native arm64 build.",
 }
 SHARED = ("version", "tag", "sourceRevision", "dirty", "virgilRevision")
+MANIFEST = "extension/package.json"
+# What zipfile can raise for a damaged VSIX that is_zipfile accepts, as in
+# scripts/check-vsix.py: a bad header, central directory, or CRC; an entry
+# name that isn't the UTF-8 that its flags claim; corrupt or truncated
+# compressed data or an I/O error; and a compression method, feature, or
+# encryption that zipfile doesn't support (RuntimeError, including its
+# subclass NotImplementedError).
+ZIP_ERRORS = (zipfile.BadZipFile, UnicodeDecodeError, zlib.error, LZMAError, EOFError, OSError,
+              RuntimeError)
 
 
 def fail(message):
@@ -55,13 +70,25 @@ def extension(assets):
     name = os.path.basename(path)
     if not zipfile.is_zipfile(path):
         fail(name + " is not a zip file")
-    with zipfile.ZipFile(path) as z:
+    try:
+        z = zipfile.ZipFile(path)
+    except ZIP_ERRORS as e:
+        fail("cannot read %s: %s" % (path, e))
+    with z:
         try:
-            manifest = json.loads(z.read("extension/package.json").decode("utf-8"))
+            data = z.read(MANIFEST)
         except KeyError:
-            fail(name + " has no extension/package.json")
-        except ValueError as e:
-            fail("%s: extension/package.json is not valid JSON: %s" % (name, e))
+            fail("%s has no %s" % (name, MANIFEST))
+        except ZIP_ERRORS as e:
+            fail("%s: cannot read %s: %s" % (name, MANIFEST, e))
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        fail("%s: %s is not UTF-8: %s" % (name, MANIFEST, e))
+    except ValueError as e:
+        fail("%s: %s is not valid JSON: %s" % (name, MANIFEST, e))
+    except RecursionError:
+        fail("%s: %s is nested too deeply to parse" % (name, MANIFEST))
     if not isinstance(manifest, dict) or not all(
             isinstance(manifest.get(k), str) and manifest[k] for k in ("name", "publisher", "version")):
         fail(name + ": extension/package.json lacks a name, publisher, or version")
