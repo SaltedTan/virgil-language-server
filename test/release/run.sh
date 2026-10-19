@@ -244,7 +244,7 @@ check_vsix "no extension/package.json" 1 "has no extension/package\.json" -
 check_vsix "malformed extension/package.json" 1 "extension/package\.json is not valid JSON" '{"name":'
 check_vsix "a non-JSON constant in extension/package.json" 1 \
     "extension/package\.json is not valid JSON: it holds the non-JSON constant NaN$" \
-    "${package/'"preview": true'/'"preview": NaN'}"
+    "${package/true/NaN}"
 check_vsix "JSON array as extension/package.json" 1 "extension/package\.json is not a JSON object" '[]'
 check_vsix "extension/package.json that isn't UTF-8" 1 "extension/package\.json is not UTF-8: " "@$TMP/not-utf-8.json"
 check_vsix "deeply nested extension/package.json" 1 "extension/package\.json is nested too deeply to parse$" \
@@ -358,7 +358,7 @@ check_vsix "two entries with the same name" 1 \
 # an Infinity there is reported too, rather than accepted.
 rm -rf "$TMP/non-json"
 cp -R "$EXT" "$TMP/non-json"
-printf '%s\n' "${package/'"preview": true'/'"preview": Infinity'}" > "$TMP/non-json/package.json"
+printf '%s\n' "${package/true/Infinity}" > "$TMP/non-json/package.json"
 vsix "$VSIX" "$package" "${files[@]}"
 expect_run "check-vsix.py: a non-JSON constant in the extension directory's package.json" 1 - \
     "package\.json is not valid JSON: it holds the non-JSON constant Infinity$" \
@@ -530,7 +530,7 @@ vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" -
 notes "VSIX without extension/package.json" 1 - "has no extension/package\.json"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" '{"name": "virgil-lsp-vscode", "version":'
 notes "VSIX with malformed extension/package.json" 1 - "extension/package\.json is not valid JSON"
-vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "${package/'"preview": true'/'"preview": NaN'}"
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "${package/true/NaN}"
 notes "VSIX with a non-JSON constant in extension/package.json" 1 - \
     "extension/package\.json is not valid JSON: it holds the non-JSON constant NaN$"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "@$TMP/not-utf-8.json"
