@@ -1,6 +1,6 @@
 # VS Code extension
 
-> **Prerelease.** The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. It doesn't include the server, which you install separately. See the [project status](../../README.md) for current server features and [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions.
+> **Prerelease.** The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. It doesn't include the server, which you install separately. See the [project status](../../README.md) for current server features, [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions, and [known limitations](../../docs/known-limitations.md) for what the alpha doesn't do yet.
 
 A thin TypeScript extension built on `vscode-languageclient/node`. It:
 

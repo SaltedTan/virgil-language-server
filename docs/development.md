@@ -104,7 +104,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `clients/vscode/test/e2e/` | The VS Code client in a real Extension Host against the built server, run by CI job `vscode-extension-host` on Linux | See the [Extension Host test](../clients/vscode/README.md#extension-host-test) for source and installed-VSIX modes, coverage, commands, and requirements; not run by `make test` |
 | `test/fixtures/` | Source files used by tests. Bytes are preserved exactly (`-text` in `.gitattributes`). `test/fixtures/projects/` holds whole repositories with project files. | — |
 
-The [manual test matrix](manual-testing.md) covers the editor and platform combinations that these tests don't.
+The [manual test matrix](manual-testing.md) covers the editor and platform combinations that these tests don't. [Known limitations](known-limitations.md) lists what the alpha doesn't do yet.
 
 The [header of `test/protocol/run.sh`](../test/protocol/run.sh) owns the transcript format, including fragmented input and version placeholders. The files are raw bytes with CR LF header lines (`-text` in `.gitattributes`), and `Content-Length` must count the payload's bytes exactly, so write them with a tool rather than an editor, for example:
 
