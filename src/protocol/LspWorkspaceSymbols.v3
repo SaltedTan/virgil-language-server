@@ -1,0 +1,310 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// workspace/symbol from the declaration sites in the snapshots that loaded
+// project contexts already hold. It never waits for or starts an analysis,
+// so a project that has not been analyzed yet contributes nothing. A file's
+// symbols are returned only while one of those snapshots still matches its
+// text. See docs/architecture.md#workspace-symbols.
+class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
+	// The most symbols a reply holds: the first matches in rank order.
+	def MAX_RESULTS = 1000;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onRequest("workspace/symbol", workspaceSymbol);
+	}
+	private def workspaceSymbol(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var query = if(params != null && params.has("query"), params["query"]);
+		// A missing member reads as the default JsonValue, String(null).
+		if (!JsonValue.String.?(query) || JsonValue.String.!(query).v == null) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "workspace/symbol params require a query string"));
+		}
+		var matches = LspWorkspaceSymbolSearch.new(store, JsonValue.String.!(query).v, MAX_RESULTS)
+			.run(projects.loadedContexts());
+		var result = Array<JsonValue>.new(matches.length);
+		for (i < matches.length) result[i] = encode(matches[i]);
+		return JsonRpcReply.Result(JsonValue.JArray(result));
+	}
+	// A SymbolInformation: the declaration's name and kind, and the canonical
+	// URI and UTF-16 range of its name in the analyzed text.
+	private def encode(m: LspWorkspaceSymbolMatch) -> JsonValue {
+		var file = m.file, d = m.decl;
+		if (file.lines == null) file.lines = LspWorkspaceSymbolLines.new(file.text);
+		var location = Strings.newMap<JsonValue>();
+		location["uri"] = JsonValue.String(file.uri);
+		location["range"] = range(file.lines, d.range.beginOffset, d.range.endOffset);
+		var obj = Strings.newMap<JsonValue>();
+		obj["name"] = JsonValue.String(d.name);
+		obj["kind"] = JsonValue.Int(LspSymbolKind.of(d.kind));
+		obj["location"] = JsonValue.JObject(location);
+		return JsonValue.JObject(obj);
+	}
+	private def range(lines: LspWorkspaceSymbolLines, begin: int, end: int) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["start"] = position(lines.position(begin));
+		obj["end"] = position(lines.position(end));
+		return JsonValue.JObject(obj);
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+}
+
+// One file that the loaded snapshots analyzed, once however many did. Its
+// analyses are the search's entries from {next} to {end}, in context order.
+// Its declarations come from the first whose stamp still matches, until a
+// check of that analysis's text fails, and then from the next. Once checked,
+// {text} and {uri} are that analysis's.
+class LspWorkspaceSymbolFile(path: string, member: bool, end: int) {
+	var next: int;
+	var round: int;	// the last round that checked the file
+	var text: Array<byte>;
+	var uri: string;
+	var lines: LspWorkspaceSymbolLines;
+}
+// A declaration in {file} whose name matches the query with {quality}.
+class LspWorkspaceSymbolMatch(quality: int, file: LspWorkspaceSymbolFile, decl: AnalysisDeclaration) { }
+
+// One workspace/symbol request's search for the first {max} matches of
+// {query} in rank order: by match quality (see {quality}), then the loaded
+// projects' own sources before their dependencies, then by name ignoring
+// ASCII case, then by bytes, path, and offset. It keeps at most 2 * {max}
+// matches at once, never a list of every declaration.
+class LspWorkspaceSymbolSearch(store: DocumentStore, query: string, max: int) {
+	// The query in lower case. Names are ASCII, so other bytes never match.
+	private var lowered: Array<byte>;
+	// Each analysis of a file: its path, snapshot, and index there, in path
+	// order, and in context order for one path.
+	private var entries: Array<(string, AnalysisSnapshot, int)>;
+	private def kept = Vector<LspWorkspaceSymbolMatch>.new();
+	// Once {max} matches are kept, the last of them; only a match ranked
+	// before it can be kept.
+	private var worst: LspWorkspaceSymbolMatch;
+
+	// The first {max} matches in the snapshots of {contexts}, in rank order.
+	// Each round ranks every file's matches without reading a file, then
+	// checks the text of each file that has a match among the first {max},
+	// once. A file whose bytes are no longer the ones analyzed, though its
+	// stamp matches, as after a change on disk that the client didn't report,
+	// takes its next analysis in another round.
+	def run(contexts: Array<ProjectContext>) -> Array<LspWorkspaceSymbolMatch> {
+		lowered = Array<byte>.new(query.length);
+		for (i < query.length) lowered[i] = lower(query[i]);
+		var list = Vector<(string, AnalysisSnapshot, int)>.new(), members = Vector<string>.new();
+		for (ctx in contexts) {
+			for (source in ctx.sources) { if(source.member) members.put(source.path); }
+			var s = ctx.snapshot;
+			// A parse failure leaves a snapshot without a declaration-site
+			// index, so it contributes no symbols and must not hide a shared
+			// file from another program's analysis, which has one.
+			if (s == null || !s.matchesProject() || !s.hasDeclarationSites()) continue;
+			var n = Ints.min(s.paths.length, s.documentVersions.length);
+			for (i < n) list.put((s.paths[i], s, i));
+		}
+		entries = AnalysisTables.sort(list.extract(), entryBefore);
+		var own = AnalysisTables.sort(members.extract(), pathBefore), m = 0;
+		var files = Vector<LspWorkspaceSymbolFile>.new();
+		var i = 0;
+		while (i < entries.length) {
+			var path = entries[i].0, end = i + 1;
+			while (end < entries.length && Strings.equal(entries[end].0, path)) end++;
+			while (m < own.length && AnalysisTables.compareBytes(own[m], path) < 0) m++;
+			var file = LspWorkspaceSymbolFile.new(path, m < own.length && Strings.equal(own[m], path), end);
+			file.next = i;
+			files.put(file);
+			i = end;
+		}
+		for (round = 1; true; round++) {
+			for (j < files.length) scan(files[j]);
+			trim();
+			var matches = kept.extract(), stale = false;
+			for (found in matches) {
+				var file = found.file;
+				if (file.text != null || file.round == round) continue;
+				file.round = round;
+				var e = entries[file.next];
+				file.text = LspAnalysisCapture.analyzedText(store, e.1, e.2);
+				if (file.text != null) file.uri = e.1.documentVersions[e.2].uri;
+				else stale = true;
+			}
+			if (!stale) return matches;
+			for (j < files.length) {
+				var file = files[j];
+				if (file.round == round && file.text == null) file.next++;
+			}
+			worst = null;
+		}
+		return [];
+	}
+	// Offers each searchable declaration named in {file} whose name matches,
+	// from its first analysis whose stamp still matches, if any does.
+	private def scan(file: LspWorkspaceSymbolFile) {
+		while (file.next < file.end && !matchesDocument(entries[file.next])) file.next++;
+		if (file.next >= file.end) return;
+		var e = entries[file.next], s = e.1, run = s.declarationSiteRun(e.0);
+		for (k = run.0; k < run.1; k++) {
+			var d = s.declarations[k];
+			if (!searchable(d.kind)) continue;
+			var q = quality(d.name);
+			if (q < 0 || (worst != null && !before(q, file, d, worst))) continue;
+			kept.put(LspWorkspaceSymbolMatch.new(q, file, d));
+			if (kept.length >= 2 * max) trim();
+		}
+	}
+	private def matchesDocument(e: (string, AnalysisSnapshot, int)) -> bool {
+		return e.1.documentVersions[e.2].matchesDocument(store);
+	}
+	// Locals, parameters, and type parameters are not workspace symbols, nor
+	// are constructors, which are all named "new".
+	private def searchable(kind: AnalysisDeclKind) -> bool {
+		match (kind) {
+			LOCAL, PARAMETER, TYPE_PARAM, CONSTRUCTOR => return false;
+			_ => return true;
+		}
+	}
+	// How {name} matches the query, ignoring ASCII case: 0 if it is the
+	// query, 1 if it starts with it, 2 if it contains it, 3 if it contains
+	// the query's characters in order, and -1 if none of these. Every name
+	// matches the empty query with 0.
+	private def quality(name: string) -> int {
+		var n = lowered.length;
+		if (n == 0) return 0;
+		if (name.length < n) return -1;
+		for (start = 0; start + n <= name.length; start++) {
+			var i = 0;
+			while (i < n && lower(name[start + i]) == lowered[i]) i++;
+			if (i == n) return if(start > 0, 2, if(name.length == n, 0, 1));
+		}
+		var j = 0;
+		for (c in name) { if(j < n && lower(c) == lowered[j]) j++; }
+		return if(j == n, 3, -1);
+	}
+	// Keeps the first {max} matches, in rank order.
+	private def trim() {
+		var sorted = AnalysisTables.sort(kept.extract(), matchBefore);
+		if (sorted.length >= max) {
+			sorted = Arrays.range(sorted, 0, max);
+			worst = sorted[max - 1];
+		}
+		kept.puta(sorted);
+	}
+	// Whether {d}, in {file} and matching with {q}, ranks before {m}. Sites in
+	// one file have distinct offsets, so no two matches rank equal.
+	private def before(q: int, file: LspWorkspaceSymbolFile, d: AnalysisDeclaration, m: LspWorkspaceSymbolMatch) -> bool {
+		if (q != m.quality) return q < m.quality;
+		if (file.member != m.file.member) return file.member;
+		var c = compareNames(d.name, m.decl.name);
+		if (c != 0) return c < 0;
+		if (file != m.file) return AnalysisTables.compareBytes(file.path, m.file.path) < 0;
+		return d.range.beginOffset < m.decl.range.beginOffset;
+	}
+	private def matchBefore(a: LspWorkspaceSymbolMatch, b: LspWorkspaceSymbolMatch) -> bool {
+		return before(a.quality, a.file, a.decl, b);
+	}
+	// Negative, zero, or positive as {a} is before, equal to, or after {b}
+	// ignoring ASCII case, then in byte order.
+	private def compareNames(a: string, b: string) -> int {
+		var n = Ints.min(a.length, b.length);
+		for (i < n) {
+			var x = lower(a[i]), y = lower(b[i]);
+			if (x != y) return if(x < y, -1, 1);
+		}
+		if (a.length != b.length) return a.length - b.length;
+		return AnalysisTables.compareBytes(a, b);
+	}
+	private def entryBefore(a: (string, AnalysisSnapshot, int), b: (string, AnalysisSnapshot, int)) -> bool {
+		return AnalysisTables.compareBytes(a.0, b.0) < 0;
+	}
+	private def pathBefore(a: string, b: string) -> bool {
+		return AnalysisTables.compareBytes(a, b) < 0;
+	}
+	private def lower(b: byte) -> byte {
+		return if('A' <= b && b <= 'Z', byte.view(b + 32), b);
+	}
+}
+
+// The UTF-16 positions of byte offsets in one file's text, without a
+// PositionMap of the whole file. Lines end where PositionMap ends them, at
+// "\n", "\r\n", or "\r", and are found only as far as the offsets asked
+// for. A position's character is the number of bytes before it on its line
+// if they are all ASCII, and otherwise comes from a PositionMap of that line
+// alone, which no UTF-8 sequence crosses. Each touched line is inspected once, and its
+// map is built at most once, however many of its offsets are asked for. Line
+// starts are retained as they are found; only touched lines get inspections.
+class LspWorkspaceSymbolLines {
+	def text: Array<byte>;
+	private def starts = Vector<int>.new().put(0);	// the starts of the lines found
+	private var scanned: int;	// the bytes before this are scanned for line ends
+	// The lines whose positions were asked for, with the inspections of them.
+	// There are at most as many as the symbols in a reply, so a linear search
+	// is cheaper than a whole-file index, and it keeps memory proportional to
+	// the lines actually touched. Virgil's HashMap would cap at 1,024 keys.
+	private def touched = Vector<int>.new();
+	private def inspected = Vector<LspWorkspaceSymbolLine>.new();
+
+	new(text) { }
+
+	def position(offset: int) -> LspPosition {
+		if (offset < 0) offset = 0;
+		else if (offset > text.length) offset = text.length;
+		while (scanned < offset) {
+			var b = text[scanned++];
+			if (b == '\r' && scanned < text.length && text[scanned] == '\n') scanned++;
+			if (b == '\n' || b == '\r') starts.put(scanned);
+		}
+		var low = 0, high = starts.length - 1;
+		while (low < high) {
+			var mid = low + (high - low + 1) / 2;
+			if (starts[mid] <= offset) low = mid;
+			else high = mid - 1;
+		}
+		var line = inspect(low), start = line.start;
+		// A position inside a line terminator belongs to the end of its line.
+		if (offset > line.end) offset = line.end;
+		if (line.firstNonAscii >= 0 && offset > line.firstNonAscii) {
+			if (line.map == null) line.map = PositionMap.new(Arrays.range(text, start, line.end), PositionEncoding.UTF16);
+			return LspPosition.new(low, line.map.offsetToPosition(offset - start).character);
+		}
+		return LspPosition.new(low, offset - start);
+	}
+	// The inspection of line {index}, scanning it to its end if it is new.
+	private def inspect(index: int) -> LspWorkspaceSymbolLine {
+		for (i = inspected.length - 1; i >= 0; i--) {
+			if (touched[i] == index) return inspected[i];
+		}
+		var start = starts[index], end = endOf(index), first = -1;
+		for (i = start; i < end; i++) {
+			if (text[i] >= 0x80) { first = i; break; }
+		}
+		var line = LspWorkspaceSymbolLine.new(start, end, first);
+		touched.put(index);
+		inspected.put(line);
+		return line;
+	}
+	// The end of line {index}'s content, before its terminator if it has one.
+	private def endOf(index: int) -> int {
+		if (index + 1 >= starts.length) {
+			// The line's end is not known yet, so scan to its terminator or
+			// the end of the text.
+			while (scanned < text.length) {
+				var b = text[scanned++];
+				if (b == '\r' && scanned < text.length && text[scanned] == '\n') scanned++;
+				if (b == '\n' || b == '\r') { starts.put(scanned); break; }
+			}
+		}
+		if (index + 1 >= starts.length) return text.length;
+		var next = starts[index + 1];
+		return if(next - 2 >= starts[index] && text[next - 2] == '\r' && text[next - 1] == '\n', next - 2, next - 1);
+	}
+}
+
+// One line's content and the inspection of it that {position} caches: the
+// UTF-16 map is built on the first offset after its first non-ASCII byte,
+// which is -1 for an ASCII line.
+class LspWorkspaceSymbolLine(start: int, end: int, firstNonAscii: int) {
+	var map: PositionMap;
+}

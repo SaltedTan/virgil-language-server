@@ -1,9 +1,9 @@
-Content-Length: 343
+Content-Length: 374
 
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}}},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 94
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 94
 
-{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"the server is already initialized"}}Content-Length: 95
+{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"the server is already initialized"}}Content-Length: 102
 
-{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found: workspace/symbol"}}Content-Length: 38
+{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found: textDocument/formatting"}}Content-Length: 38
 
 {"jsonrpc":"2.0","id":4,"result":null}

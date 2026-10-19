@@ -75,6 +75,15 @@ symbols.mkdir(exist_ok=True)
     '{"version":1,"projects":[{"name":"s","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# LspWorkspaceSymbolsTest writes the project file and the sources itself. It
+# also loads configurations under a/ and z/ in that reverse order, and removes
+# them afterwards; recreate them so a failed run cannot leave them behind.
+workspace_symbols = root / "workspace-symbols"
+for name in ["one", "two", "shared", "lib"]:
+    (workspace_symbols / name).mkdir(parents=True, exist_ok=True)
+for name in ["a", "z"]:
+    shutil.rmtree(workspace_symbols / name, ignore_errors=True)
+    (workspace_symbols / name).mkdir(parents=True, exist_ok=True)
 # LspDefinitionTest writes the sources, and opens sub/.virgil-lsp.json only as
 # an unsaved buffer, so that a nearer project takes sub/Use.v3 over.
 ownership = root / "definition-ownership"

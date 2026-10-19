@@ -99,7 +99,8 @@ inputs = [
 outputs = [
     reply(1, dict(capabilities=dict(definitionProvider=True, documentSymbolProvider=True, hoverProvider=True,
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
-                                   workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True))),
+                                   workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True)),
+                                   workspaceSymbolProvider=True),
                   serverInfo=dict(name="virgil-lsp", version="@VERSION@"))),
     reply(2, OUTLINE),
     reply(3, [symbol("Edited", 5, 0, 0, 0, 15, 0, 6)]),
