@@ -232,9 +232,9 @@ class LspWorkspaceSymbolSearch(store: DocumentStore, query: string, max: int) {
 // "\n", "\r\n", or "\r", and are found only as far as the offsets asked
 // for. A position's character is the number of bytes before it on its line
 // if they are all ASCII, and otherwise comes from a PositionMap of that line
-// alone, which no UTF-8 sequence crosses. Each line is scanned once, and its
-// map is built at most once, however many of its offsets are asked for; only
-// the lines touched are remembered.
+// alone, which no UTF-8 sequence crosses. Each touched line is inspected once, and its
+// map is built at most once, however many of its offsets are asked for. Line
+// starts are retained as they are found; only touched lines get inspections.
 class LspWorkspaceSymbolLines {
 	def text: Array<byte>;
 	private def starts = Vector<int>.new().put(0);	// the starts of the lines found
