@@ -105,6 +105,13 @@ class AnalysisSnapshot {
 		if (file == null) return [];
 		return Arrays.range(declarations, file.firstSite, file.firstSite + file.siteCount);
 	}
+	// Whether the analysis has any declaration sites. A parse failure leaves
+	// the program unverified and records none at all, so there is nothing to
+	// answer definition, hover, or workspace-symbol queries from, though the
+	// wire result still carries an empty file index.
+	def hasDeclarationSites() -> bool {
+		return files != null && declarations.length > 0;
+	}
 	// The run of {declarations} that {declarationSites} returns for {path}:
 	// its first index and its end, exclusive. Does not allocate.
 	def declarationSiteRun(path: string) -> (int, int) {

@@ -20,6 +20,9 @@ def X = [
 	T("LspWorkspaceSymbols:another_analysis_of_a_shared_file", test_another_analysis),
 	T("LspWorkspaceSymbols:before_analysis", test_before_analysis),
 	T("LspWorkspaceSymbols:configuration_change", test_configuration_change),
+	T("LspWorkspaceSymbols:parse_failure_falls_through", test_parse_failure),
+	T("LspWorkspaceSymbols:context_order", test_context_order),
+	T("LspWorkspaceSymbols:line_positions", test_line_positions),
 	T("LspWorkspaceSymbols:params", test_params),
 	()
 ];
@@ -83,6 +86,16 @@ class WorkspaceSymbolTestSession {
 		if (fd < 0) return;
 		System.fileWriteK(fd, text, 0, text.length);
 		System.fileClose(fd);
+	}
+	// Removes {name}, so that a configuration written by one test does not
+	// load in the next.
+	def remove(t: Tester, name: string) {
+		var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(path(name), "\x00")], [0, 1, 2]);
+		t.assert(pid > 0, "fixture removal started");
+		if (pid <= 0) return;
+		var status = Array<int>.new(1);
+		t.asserti(pid, HostOs.wait(pid, status));
+		t.asserti(0, status[0]);
 	}
 	def open(name: string, version: int, text: string) {
 		var doc = Strings.newMap<JsonValue>();
@@ -423,6 +436,96 @@ def test_configuration_change(t: Tester) {
 	], s.symbols(t, "thing"));
 	s.write(t, ".virgil-lsp.json", CONFIG);
 	s.server.close();
+}
+// A program that fails to parse has no declaration-site index, so a file it
+// shares with a program that parsed takes its symbols from the latter rather
+// than stopping at the analysis with nothing to offer.
+def BROKEN_ONE = "component Par {\n\tdef par = ;\n}\n";
+def test_parse_failure(t: Tester) {
+	var s = WorkspaceSymbolTestSession.new(t, BROKEN_ONE);
+	s.openAll();
+	var one = s.context("one/One.v3").snapshot, two = s.context("two/Two.v3").snapshot;
+	t.assert(one != null && !one.hasDeclarationSites(), "one failed to parse");
+	t.assert(two != null && two.hasDeclarationSites(), "two parsed and has an index");
+	expectSymbols(t, ["Shared 3 shared/Shared.v3 0:10-0:16"], s.symbols(t, "Shared"));
+	expectSymbols(t, [
+		"thing 8 shared/Shared.v3 1:5-1:10",
+		"things 8 two/Two.v3 3:5-3:11"
+	], s.symbols(t, "thing"));
+	// lib/ is only one's dependency, and one's analysis has no sites at all.
+	expectSymbols(t, [], s.symbols(t, "Lib"));
+	s.server.close();
+}
+// Configurations are visited in configuration URI order, whatever order they
+// were loaded in: z/ is reported and loaded before a/, yet a/ comes first and
+// the order does not depend on discovery.
+def test_context_order(t: Tester) {
+	var s = session(t);
+	s.write(t, "z/.virgil-lsp.json", "{\"version\":1,\"projects\":[{\"name\":\"z\",\"sources\":[\"*.v3\"]}]}");
+	s.write(t, "z/Zed.v3", "component Zed {\n\tdef zed = 1;\n}\n");
+	s.write(t, "a/.virgil-lsp.json", "{\"version\":1,\"projects\":[{\"name\":\"a\",\"sources\":[\"*.v3\"]}]}");
+	s.write(t, "a/Ann.v3", "component Ann {\n\tdef ann = 1;\n}\n");
+	s.reportChanged("z/.virgil-lsp.json");
+	s.reportChanged("a/.virgil-lsp.json");
+	var contexts = s.server.projects.loadedContexts(), got = Array<string>.new(contexts.length);
+	var prefix = Strings.format1("%s/", ProjectFiles.uri(s.base));
+	for (i < contexts.length) {
+		var uri = contexts[i].config.uri;
+		got[i] = if(Strings.startsWith(uri, prefix), Arrays.range(uri, prefix.length, uri.length), uri);
+	}
+	expectSymbols(t, [".virgil-lsp.json", ".virgil-lsp.json", "a/.virgil-lsp.json", "z/.virgil-lsp.json"], got);
+	// Both configurations work, whichever was loaded first.
+	s.open("z/Zed.v3", 1, "component Zed {\n\tdef zed = 1;\n}\n");
+	s.open("a/Ann.v3", 1, "component Ann {\n\tdef ann = 1;\n}\n");
+	s.settle();
+	expectSymbols(t, ["Ann 3 a/Ann.v3 0:10-0:13", "ann 8 a/Ann.v3 1:5-1:8"], s.symbols(t, "Ann"));
+	expectSymbols(t, ["Zed 3 z/Zed.v3 0:10-0:13", "zed 8 z/Zed.v3 1:5-1:8"], s.symbols(t, "Zed"));
+	s.server.close();
+	s.remove(t, "a/Ann.v3");
+	s.remove(t, "a/.virgil-lsp.json");
+	s.remove(t, "z/Zed.v3");
+	s.remove(t, "z/.virgil-lsp.json");
+}
+// LspWorkspaceSymbolLines converts every offset exactly as PositionMap does,
+// including negative offsets, the end of the text, and offsets inside line
+// terminators, whether the offsets are asked for in increasing or decreasing
+// order; its per-line cache must not depend on that order.
+def LINE_TEXTS = [
+	"",
+	"a",
+	"ab\ncd",
+	"a\r\nb",
+	"a\rb",
+	"a\tb\n\tc\r\n\rd",
+	"a\xC3\xA9b\n\xF0\x9F\x98\x80\n",
+	"x\x80y\r\nz",
+	"\xC3\xA9\r\n\xC3\xA9",
+	"a\xC3\xA9\n",
+	"/* \xC3\xA9 */\n",
+	"a\xC3",
+	"\xF0\x9F\x98\x80\r\n\x80"
+];
+def test_line_positions(t: Tester) {
+	for (text in LINE_TEXTS) {
+		var map = PositionMap.new(text, PositionEncoding.UTF16);
+		var ascending = LspWorkspaceSymbolLines.new(text);
+		for (offset = -1; offset <= text.length + 1; offset++) {
+			expectLinePosition(t, text, offset, map.offsetToPosition(offset), ascending.position(offset));
+		}
+		var descending = LspWorkspaceSymbolLines.new(text);
+		for (offset = text.length + 1; offset >= -1; offset--) {
+			expectLinePosition(t, text, offset, map.offsetToPosition(offset), descending.position(offset));
+		}
+	}
+}
+def expectLinePosition(t: Tester, text: string, offset: int, want: LspPosition, got: LspPosition) {
+	if (got.line == want.line && got.character == want.character) return;
+	t.fail1("line positions differ at offset %d", offset);
+	t.fail1("  want line %d", want.line);
+	t.fail1("  got line %d", got.line);
+	t.fail1("  want character %d", want.character);
+	t.fail1("  got character %d", got.character);
+	t.fail1("  in text of length %d", text.length);
 }
 def test_params(t: Tester) {
 	var s = WorkspaceSymbolTestSession.new(t, ONE);

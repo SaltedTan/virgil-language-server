@@ -98,7 +98,10 @@ class LspWorkspaceSymbolSearch(store: DocumentStore, query: string, max: int) {
 		for (ctx in contexts) {
 			for (source in ctx.sources) { if(source.member) members.put(source.path); }
 			var s = ctx.snapshot;
-			if (s == null || !s.matchesProject()) continue;
+			// A parse failure leaves a snapshot without a declaration-site
+			// index, so it contributes no symbols and must not hide a shared
+			// file from another program's analysis, which has one.
+			if (s == null || !s.matchesProject() || !s.hasDeclarationSites()) continue;
 			var n = Ints.min(s.paths.length, s.documentVersions.length);
 			for (i < n) list.put((s.paths[i], s, i));
 		}
@@ -229,16 +232,25 @@ class LspWorkspaceSymbolSearch(store: DocumentStore, query: string, max: int) {
 // "\n", "\r\n", or "\r", and are found only as far as the offsets asked
 // for. A position's character is the number of bytes before it on its line
 // if they are all ASCII, and otherwise comes from a PositionMap of that line
-// alone, which no UTF-8 sequence crosses.
+// alone, which no UTF-8 sequence crosses. Each line is scanned once, and its
+// map is built at most once, however many of its offsets are asked for; only
+// the lines touched are remembered.
 class LspWorkspaceSymbolLines {
 	def text: Array<byte>;
 	private def starts = Vector<int>.new().put(0);	// the starts of the lines found
 	private var scanned: int;	// the bytes before this are scanned for line ends
+	// The lines whose positions were asked for, with the inspections of them.
+	// There are at most as many as the symbols in a reply, so a linear search
+	// is cheaper than a whole-file index, and it keeps memory proportional to
+	// the lines actually touched. Virgil's HashMap would cap at 1,024 keys.
+	private def touched = Vector<int>.new();
+	private def inspected = Vector<LspWorkspaceSymbolLine>.new();
 
 	new(text) { }
 
 	def position(offset: int) -> LspPosition {
-		if (offset > text.length) offset = text.length;
+		if (offset < 0) offset = 0;
+		else if (offset > text.length) offset = text.length;
 		while (scanned < offset) {
 			var b = text[scanned++];
 			if (b == '\r' && scanned < text.length && text[scanned] == '\n') scanned++;
@@ -250,14 +262,49 @@ class LspWorkspaceSymbolLines {
 			if (starts[mid] <= offset) low = mid;
 			else high = mid - 1;
 		}
-		var start = starts[low];
-		for (i = start; i < offset; i++) {
-			if (text[i] < 0x80) continue;
-			var end = i;
-			while (end < text.length && text[end] != '\n' && text[end] != '\r') end++;
-			var map = PositionMap.new(Arrays.range(text, start, end), PositionEncoding.UTF16);
-			return LspPosition.new(low, map.offsetToPosition(offset - start).character);
+		var line = inspect(low), start = line.start;
+		// A position inside a line terminator belongs to the end of its line.
+		if (offset > line.end) offset = line.end;
+		if (line.firstNonAscii >= 0 && offset > line.firstNonAscii) {
+			if (line.map == null) line.map = PositionMap.new(Arrays.range(text, start, line.end), PositionEncoding.UTF16);
+			return LspPosition.new(low, line.map.offsetToPosition(offset - start).character);
 		}
 		return LspPosition.new(low, offset - start);
 	}
+	// The inspection of line {index}, scanning it to its end if it is new.
+	private def inspect(index: int) -> LspWorkspaceSymbolLine {
+		for (i = inspected.length - 1; i >= 0; i--) {
+			if (touched[i] == index) return inspected[i];
+		}
+		var start = starts[index], end = endOf(index), first = -1;
+		for (i = start; i < end; i++) {
+			if (text[i] >= 0x80) { first = i; break; }
+		}
+		var line = LspWorkspaceSymbolLine.new(start, end, first);
+		touched.put(index);
+		inspected.put(line);
+		return line;
+	}
+	// The end of line {index}'s content, before its terminator if it has one.
+	private def endOf(index: int) -> int {
+		if (index + 1 >= starts.length) {
+			// The line's end is not known yet, so scan to its terminator or
+			// the end of the text.
+			while (scanned < text.length) {
+				var b = text[scanned++];
+				if (b == '\r' && scanned < text.length && text[scanned] == '\n') scanned++;
+				if (b == '\n' || b == '\r') { starts.put(scanned); break; }
+			}
+		}
+		if (index + 1 >= starts.length) return text.length;
+		var next = starts[index + 1];
+		return if(next - 2 >= starts[index] && text[next - 2] == '\r' && text[next - 1] == '\n', next - 2, next - 1);
+	}
+}
+
+// One line's content and the inspection of it that {position} caches: the
+// UTF-16 map is built on the first offset after its first non-ASCII byte,
+// which is -1 for an ASCII line.
+class LspWorkspaceSymbolLine(start: int, end: int, firstNonAscii: int) {
+	var map: PositionMap;
 }
