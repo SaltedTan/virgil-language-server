@@ -17,7 +17,7 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
 Requirements: a VS Code version and a server version that work with the extension's version, both listed in [compatibility](../../docs/compatibility.md#editors). Follow the [release installation instructions](../../docs/releasing.md#installing), or [build the server from source](../../README.md#building).
 
-1. Get `virgil-lsp-vscode-<version>.vsix`: from the `vsix` artifact of a [CI](../../.github/workflows/ci.yml) run (GitHub downloads artifacts as a zip file that contains the VSIX), or by [packaging](#packaging) it yourself. GitHub prereleases will include it once the release workflow attaches it.
+1. Get `virgil-lsp-vscode-<version>.vsix`: from a [GitHub prerelease](https://github.com/SaltedTan/virgil-language-server/releases), which attaches the VSIX that the release workflow tested against that release's server, and lists it in `SHA256SUMS` ([Releases](../../docs/releasing.md#vs-code-extension)); from the `vsix` artifact of a [CI](../../.github/workflows/ci.yml) run (GitHub downloads artifacts as a zip file that contains the VSIX); or by [packaging](#packaging) it yourself.
 2. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:
 
    ```sh
@@ -100,7 +100,7 @@ npm run package   # compile and package the extension as a VSIX
 npm run watch     # recompile on change
 ```
 
-CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux, [packages](#packaging) the VSIX, and uploads it as the workflow run's `vsix` artifact. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test), first on the extension in this directory and then on a VSIX that it packages and installs. Each job packages its own VSIX, so the uploaded artifact isn't byte-identical to the tested package. The [manual checklist](#manual-checklist) covers what the tests don't.
+CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm test` on Linux, [packages](#packaging) the VSIX, and uploads it as the workflow run's `vsix` artifact. A separate Linux job builds the server and runs the [Extension Host test](#extension-host-test), first on the extension in this directory and then on a VSIX that it packages and installs. Each job packages its own VSIX, so the uploaded artifact isn't byte-identical to the tested package. The [release workflow](../../docs/releasing.md#how-the-workflow-works) instead packages one VSIX, tests that file against the server from the release's Linux archive, and attaches the same file. The [manual checklist](#manual-checklist) covers what the tests don't.
 
 ### Packaging
 
