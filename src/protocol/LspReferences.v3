@@ -11,6 +11,17 @@ component LspReferences {
 	// encoded: a declaration with more references gets RequestFailed. See
 	// docs/architecture.md#references.
 	def MAX_LOCATIONS = 10000;
+	// Bounds the encoded size of a reply's Locations, which repeat the URI of
+	// their file: a count alone does not bound a reply whose paths make long
+	// URIs, and encoding one that fills the heap kills the process. A
+	// declaration whose references need more gets RequestFailed. See
+	// docs/architecture.md#references.
+	def MAX_REPLY_BYTES = 4194304;
+	// The most bytes that a Location's JSON adds beyond its URI as
+	// JsonRpcJson.stringBytes counts it, with the URI's quotes: the rest of
+	// the object, with four positions of at most 11 digits each, and the
+	// array's brackets and commas. It is 125.
+	def LOCATION_BYTES = 128;
 
 	// The answer function for a request's {params}, which keeps whether to
 	// include the declaration while the request waits, or null unless
@@ -19,7 +30,7 @@ component LspReferences {
 		var context = if(params.has("context") && JsonValue.JObject.?(params["context"]), JsonValue.JObject.!(params["context"]).v);
 		if (context == null || !context.has("includeDeclaration")) return null;
 		match (context["includeDeclaration"]) {
-			Bool(include) => return answer(_, _, include, MAX_LOCATIONS);
+			Bool(include) => return answer(_, _, include, MAX_LOCATIONS, MAX_REPLY_BYTES);
 			_ => return null;
 		}
 	}
@@ -28,9 +39,11 @@ component LspReferences {
 	// snapshot's references, with the declaration's name if
 	// {includeDeclaration}, in byte order of path and then in source order,
 	// except the uses that do not spell the name; or RequestFailed if there
-	// are more than {limit}. The locations in a file whose bytes are no longer
-	// the ones analyzed are left out, and only those.
-	def answer(at: LspSnapshotPosition, offset: int, includeDeclaration: bool, limit: int) -> (bool, JsonRpcReply) {
+	// are more than {limit}, or if their encoded JSON needs more than
+	// {maxBytes}. The locations in a file whose bytes are no longer the ones
+	// analyzed are left out, and only those.
+	def answer(at: LspSnapshotPosition, offset: int, includeDeclaration: bool, limit: int,
+			maxBytes: int) -> (bool, JsonRpcReply) {
 		var s = at.snapshot, path = at.path(), decl = s.definitionAtOffset(path, offset);
 		if (decl == null) decl = s.declarationAtOffset(path, offset);
 		if (decl == null) return (false, JsonRpcReply.Result(JsonValue.Null));
@@ -38,11 +51,14 @@ component LspReferences {
 		// select their opening bracket; a named call, such as c.[](i),
 		// spells the whole name.
 		var name = decl.name, bracket = name.length > 0 && name[0] == '[';
-		var locations = Vector<JsonValue>.new();
+		var locations = Vector<JsonValue>.new(), bytes = 0;
 		for (file in s.references(decl, includeDeclaration)) {
 			var target = at.target(file.0), j = target.0, text = target.1;
 			if (j < 0) continue;
 			var map = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16)), spans = file.1;
+			// Every Location of a file repeats that file's URI string, which they
+			// share, and encoding it repeats its bytes.
+			var locationBytes = JsonRpcJson.stringBytes(s.documentVersions[j].uri) + LOCATION_BYTES;
 			for (k = 0; k < spans.length; k += 2) {
 				var begin = spans[k], end = spans[k + 1];
 				// "this" and a default ".new" resolve to their class, but do
@@ -53,6 +69,12 @@ component LspReferences {
 						Strings.format2("the declaration %s has more than %d references", name, limit));
 					return (true, JsonRpcReply.Error(error));
 				}
+				if (bytes + locationBytes > maxBytes) {
+					var error = JsonRpcError.new(LspErrorCode.REQUEST_FAILED,
+						Strings.format2("the references of the declaration %s need more than %d bytes", name, maxBytes));
+					return (true, JsonRpcReply.Error(error));
+				}
+				bytes += locationBytes;
 				locations.put(at.location(j, map, begin, end));
 			}
 		}

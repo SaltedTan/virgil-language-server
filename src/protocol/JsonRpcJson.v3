@@ -222,6 +222,42 @@ component JsonRpcJson {
 		}
 		return buf;
 	}
+	// The number of bytes that {renderString} writes for {s}, including its
+	// quotes, so that a caller can bound a reply before it renders it. A null
+	// string renders as null, which has no quotes.
+	def stringBytes(s: string) -> int {
+		if (s == null) return 4;
+		var bytes = 2, i = 0;
+		while (i < s.length) {
+			var ch = s[i];
+			if (ch >= 0x80) {
+				var r = Utf8.decode1(s[i ...]);
+				if (r.0 > 0) {
+					bytes += r.0;
+					i += r.0;
+				} else {
+					bytes += 6;
+					i++;
+				}
+			} else if (shortEscape(ch)) {
+				bytes += 2;
+				i++;
+			} else if (ch < ' ') {
+				bytes += 6;
+				i++;
+			} else {
+				bytes++;
+				i++;
+			}
+		}
+		return bytes;
+	}
+	// Whether {renderString} writes {ch}, a quote, a backslash, or one of the
+	// five control characters with a one-letter escape, as two bytes.
+	private def shortEscape(ch: byte) -> bool {
+		return ch == '\"' || ch == '\\' || ch == '\x08' || ch == '\x0C' ||
+			ch == '\n' || ch == '\r' || ch == '\t';
+	}
 	// Renders {s} as a JSON string. Quotes, backslashes, and control characters
 	// are escaped. Each byte that is not part of valid UTF-8 becomes U+FFFD, so
 	// the output is always valid JSON. A null string renders as null.

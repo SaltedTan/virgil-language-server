@@ -26,7 +26,9 @@ def X = [
 	T("LspReferences:stale_without_analysis", test_stale_without_analysis),
 	T("LspReferences:shared_waiting_bound", test_shared_waiting_bound),
 	T("LspReferences:reply_bound", test_reply_bound),
+	T("LspReferences:reply_bytes", test_reply_bytes),
 	T("LspReferences:too_many_references", test_too_many_references),
+	T("LspReferences:long_uri_reply_bytes", test_long_uri_reply_bytes),
 	T("LspReferences:params", test_params),
 	()
 ];
@@ -47,6 +49,20 @@ def TWICE_SECOND = 45;
 // A change of the same length, which only the bytes reveal.
 def DECL_CHANGED = "// Declares Decl.thing!\ncomponent Decl {\n\tdef thing = 1;\n\tdef twice() -> int { /*\xC3\xA9\xF0\x9D\x84\x9E*/ return thing + thing; }\n}\n";
 
+// The project-fixtures/references directory, which prepare.py makes and each
+// session rewrites.
+def referencesBase() -> string {
+	return ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "references"));
+}
+// Writes {text} to {name} in the project fixture {base}.
+def writeFixture(t: Tester, base: string, name: string, text: string) {
+	var fd = System.fileOpen(ProjectFiles.join(base, name), false);
+	t.assert(fd >= 0, "fixture file written");
+	if (fd < 0) return;
+	System.fileWriteK(fd, text, 0, text.length);
+	System.fileClose(fd);
+}
+
 class ReferencesTestSession {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
 	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
@@ -58,7 +74,7 @@ class ReferencesTestSession {
 	// What handle() returned for the last request; replies use the sink.
 	var handled: Array<byte>;
 	new(t: Tester, source: string) {
-		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "references"));
+		base = referencesBase();
 		write(t, "Refs.v3", source);
 		write(t, "Decl.v3", DECL);
 		HostOs.ignoreSigpipe();
@@ -76,11 +92,7 @@ class ReferencesTestSession {
 	}
 	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
 	def write(t: Tester, name: string, text: string) {
-		var fd = System.fileOpen(ProjectFiles.join(base, name), false);
-		t.assert(fd >= 0, "fixture source written");
-		if (fd < 0) return;
-		System.fileWriteK(fd, text, 0, text.length);
-		System.fileClose(fd);
+		writeFixture(t, base, name, text);
 	}
 	def open(name: string, version: int, text: string) {
 		var doc = Strings.newMap<JsonValue>();
@@ -509,7 +521,7 @@ def expectFailed(t: Tester, reply: HashMap<string, JsonValue>, message: string) 
 // request's context.includeDeclaration is true.
 def threeLocations(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
 	var include = JsonValue.JObject.!(params["context"]).v["includeDeclaration"] == JsonValue.Bool(true);
-	return LspReferences.answer(_, _, include, 3);
+	return LspReferences.answer(_, _, include, 3, LspReferences.MAX_REPLY_BYTES);
 }
 // A reply lists every reference up to the bound, here three, from a second
 // handler over the server's snapshots; with more, the request fails. Uses that
@@ -540,6 +552,44 @@ def test_reply_bound(t: Tester) {
 	expectSpots(t, s, replies[3]["result"], nodes, "from an alias");
 	s.server.close();
 }
+// Answers the references of the server's snapshot with an encoded-size budget
+// of {maxBytes} instead of MAX_REPLY_BYTES, with the declaration's name if the
+// request's context.includeDeclaration is true.
+class BudgetedReferences(maxBytes: int) {
+	def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		var include = JsonValue.JObject.!(params["context"]).v["includeDeclaration"] == JsonValue.Bool(true);
+		return LspReferences.answer(_, _, include, LspReferences.MAX_LOCATIONS, maxBytes);
+	}
+}
+// The bound on a reply's encoded size, here small: a reply within it by one
+// byte lists every reference, and one byte less fails. Each Location of a file
+// costs its URI's encoded bytes, as JsonRpcJson.stringBytes counts them, and
+// LOCATION_BYTES for its object.
+def test_reply_bytes(t: Tester) {
+	var s = session(t);
+	var replies = Vector<HashMap<string, JsonValue>>.new();
+	var requests = LspSnapshotRequests.new(s.store, s.server.projects, fun (bytes: Array<byte>) {
+		replies.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	});
+	var dispatcher = JsonRpcDispatcher.new();
+	var p = at(SOURCE, "var step", 4);
+	var per = JsonRpcJson.stringBytes(s.uri("Refs.v3")) + LspReferences.LOCATION_BYTES, count = 3;
+	var budgets = [count * per, count * per - 1];
+	for (i < budgets.length) {
+		requests.registerPrepared(dispatcher, "textDocument/references", "references", LspReferences.REQUIRES, BudgetedReferences.new(budgets[i]).prepare);
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/references\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},",
+			i + 1, s.uri("Refs.v3"));
+		payload = Strings.format3("%s\"position\":{\"line\":%d,\"character\":%d},", payload, p.0, p.1);
+		payload = Strings.format1("%s\"context\":{\"includeDeclaration\":false}}}", payload);
+		t.assert(dispatcher.handle(payload) == null, "replies use the sink");
+	}
+	t.asserti(budgets.length, replies.length);
+	if (replies.length != budgets.length) return s.server.close();
+	expectSpots(t, s, replies[0]["result"], [S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "the reply within the budget");
+	var message = Strings.format1("the references of the declaration step need more than %d bytes", count * per - 1);
+	expectFailed(t, replies[1], message);
+	s.server.close();
+}
 // The bound, MAX_LOCATIONS, through the server: a declaration with exactly
 // that many references is answered in full; with its name, one more, the
 // request fails, also once it has waited for an analysis.
@@ -567,6 +617,40 @@ def test_too_many_references(t: Tester) {
 	s.settle();
 	expectFailed(t, s.reply(waiting), message);
 	s.server.close();
+}
+// A source file name whose percent-encoded URI is long: a name may be 255
+// bytes, and 240 "#" characters become 720 bytes as %23. The long-URI test
+// writes this file into the fixture, where it stays outside the project that
+// the test restores.
+def longName() -> string {
+	var b = StringBuilder.new();
+	for (i < 240) b.putc('#');
+	return b.puts(".v3").toString();
+}
+// A source with MAX_LOCATIONS uses of Decl.thing, one per statement.
+def longUses() -> string {
+	var b = StringBuilder.new().puts("component Long {\n\tdef f() -> int {\n\t\tvar y = 0;\n");
+	for (i < LspReferences.MAX_LOCATIONS) b.puts("\t\ty = Decl.thing;\n");
+	return b.puts("\t\treturn y;\n\t}\n}\n").toString();
+}
+// The bound on a reply's encoded size at MAX_LOCATIONS, where the count alone
+// is not enough: 10,000 Locations of a file whose long percent-encoded URI
+// repeats in the reply need more than MAX_REPLY_BYTES, so the request fails
+// instead of encoding a reply that would fill the heap. The test adds the
+// source and a project that includes it, then puts the fixture's project back.
+def test_long_uri_reply_bytes(t: Tester) {
+	var base = referencesBase(), configPath = ProjectFiles.join(base, ".virgil-lsp.json");
+	var config = System.fileLoad(configPath), name = longName();
+	writeFixture(t, base, name, longUses());
+	writeFixture(t, base, ".virgil-lsp.json", Strings.format1(
+		"{\"version\":1,\"projects\":[{\"name\":\"r\",\"sources\":[\"Refs.v3\",\"Decl.v3\",\"%s\"]}]}", name));
+	var s = ReferencesTestSession.new(t, SOURCE);
+	s.open("Refs.v3", 1, SOURCE);
+	s.settle();
+	expectFailed(t, s.reply(s.references("Decl.v3", 2, 5, false)),
+		Strings.format1("the references of the declaration thing need more than %d bytes", LspReferences.MAX_REPLY_BYTES));
+	s.server.close();
+	writeFixture(t, base, ".virgil-lsp.json", config);
 }
 def test_params(t: Tester) {
 	var s = session(t);
