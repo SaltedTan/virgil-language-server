@@ -60,6 +60,10 @@ VSCE_LICENSE = re.compile(r"licen[cs]e", re.I)
 # The files that vsce writes at the top of the VSIX, outside extension/.
 VSIX_ROOT_FILES = ("[Content_Types].xml", "extension.vsixmanifest")
 MANIFEST = "extension/package.json"
+# How much of a member to read at a time. read_vsix reads every member in
+# full, so that zipfile checks each one, but the main file and the dependency
+# bundles can be large, so it doesn't read a member into memory all at once.
+READ_SIZE = 1 << 16
 # A character that a canonical entry name doesn't hold: a C0 control
 # character, which includes NUL, LF, and CR, DEL, U+2028, or U+2029. vsce's
 # file walk skips a name with LF, CR, U+2028, or U+2029.
@@ -117,8 +121,12 @@ def read(path):
 
 
 def parse_json(text, what):
+    """Parses JSON, refusing the NaN, Infinity, and -Infinity constants that
+    Python's json module accepts and JSON doesn't."""
+    def constant(value):
+        fail("%s is not valid JSON: it holds the non-JSON constant %s" % (what, value))
     try:
-        return json.loads(text)
+        return json.loads(text, parse_constant=constant)
     except ValueError as e:
         fail("%s is not valid JSON: %s" % (what, e))
     except RecursionError:
@@ -286,12 +294,28 @@ def read_vsix(vsix, name):
             if entry in seen:
                 fail("%s holds more than one entry named %r" % (name, entry))
             seen.add(entry)
-        try:
-            data = z.read(MANIFEST)
-        except KeyError:
+        # Read every member, not only the manifest: z.read(MANIFEST) checks
+        # that one member alone, so a flipped byte in a payload file such as
+        # LICENSE.txt would otherwise pass. Opening a member checks its local
+        # header and decompresses its data, and reading it to the end checks
+        # its CRC.
+        data = None
+        for info in z.infolist():
+            chunks = [] if info.filename == MANIFEST else None
+            try:
+                with z.open(info) as member:
+                    while True:
+                        chunk = member.read(READ_SIZE)
+                        if not chunk:
+                            break
+                        if chunks is not None:
+                            chunks.append(chunk)
+            except ZIP_ERRORS as e:
+                fail("%s: cannot read %s: %s" % (name, info.filename, e))
+            if chunks is not None:
+                data = b"".join(chunks)
+        if data is None:
             fail("%s has no %s" % (name, MANIFEST))
-        except ZIP_ERRORS as e:
-            fail("%s: cannot read %s: %s" % (name, MANIFEST, e))
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as e:

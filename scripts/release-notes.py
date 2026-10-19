@@ -46,6 +46,28 @@ def fail(message):
     sys.exit("release-notes.py: error: " + message)
 
 
+def parse_json(text, what):
+    """Parses JSON, refusing the NaN, Infinity, and -Infinity constants that
+    Python's json module accepts and JSON doesn't."""
+    def constant(value):
+        fail("%s is not valid JSON: it holds the non-JSON constant %s" % (what, value))
+    try:
+        return json.loads(text, parse_constant=constant)
+    except ValueError as e:
+        fail("%s is not valid JSON: %s" % (what, e))
+    except RecursionError:
+        fail("%s is nested too deeply to parse" % what)
+
+
+def load_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, ValueError) as e:
+        fail("cannot read %s: %s" % (path, e))
+    return parse_json(text, path)
+
+
 def changelog_section(heading):
     prefix = "## [%s]" % heading
     lines = None
@@ -87,13 +109,10 @@ def extension(assets):
         except ZIP_ERRORS as e:
             fail("%s: cannot read %s: %s" % (name, MANIFEST, e))
     try:
-        manifest = json.loads(data.decode("utf-8"))
+        text = data.decode("utf-8")
     except UnicodeDecodeError as e:
         fail("%s: %s is not UTF-8: %s" % (name, MANIFEST, e))
-    except ValueError as e:
-        fail("%s: %s is not valid JSON: %s" % (name, MANIFEST, e))
-    except RecursionError:
-        fail("%s: %s is nested too deeply to parse" % (name, MANIFEST))
+    manifest = parse_json(text, "%s: %s" % (name, MANIFEST))
     if not isinstance(manifest, dict) or not all(
             isinstance(manifest.get(k), str) and manifest[k] for k in ("name", "publisher", "version")):
         fail(name + ": extension/package.json lacks a name, publisher, or version")
@@ -108,8 +127,7 @@ def main():
     heading, assets = sys.argv[1:]
     manifests = []
     for path in sorted(glob.glob(os.path.join(assets, "*.manifest.json"))):
-        with open(path, encoding="utf-8") as f:
-            manifests.append(json.load(f))
+        manifests.append(load_json(path))
     if not manifests:
         fail("no build manifests in " + assets)
     first = manifests[0]

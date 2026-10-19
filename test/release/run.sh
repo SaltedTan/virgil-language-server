@@ -113,7 +113,8 @@ expect "changelog mention outside a heading" 1 "" "no '## \[0.1.0-alpha.1\]' sec
 # VSIX, with <package.json>, or the bytes of <file> for @<file>, as
 # extension/package.json, or none for "-", and an empty extension/<file> for
 # each file, or an entry named exactly <entry> for each raw:<entry>, such as a
-# directory entry ending in "/". Its entries are stored, not compressed. A
+# directory entry ending in "/", or an entry named <entry> that holds <text>
+# for each text:<entry>=<text>. Its entries are stored, not compressed. A
 # name may repeat, without zipfile's warning.
 vsix() {
     python3 -W "ignore:Duplicate name" - "$@" <<'PY'
@@ -127,7 +128,11 @@ with zipfile.ZipFile(path, "w") as z:
     elif package != "-":
         z.writestr("extension/package.json", package)
     for f in files:
-        z.writestr(f[4:] if f.startswith("raw:") else "extension/" + f, "")
+        if f.startswith("text:"):
+            entry, _, text = f[5:].partition("=")
+            z.writestr(entry, text)
+        else:
+            z.writestr(f[4:] if f.startswith("raw:") else "extension/" + f, "")
 PY
 }
 
@@ -237,6 +242,9 @@ check_vsix "another name" 1 "name is 'virgil-lsp', but" "${package/virgil-lsp-vs
 check_vsix "another publisher" 1 "publisher is 'someone', but" "${package/virgil-language-server/someone}"
 check_vsix "no extension/package.json" 1 "has no extension/package\.json" -
 check_vsix "malformed extension/package.json" 1 "extension/package\.json is not valid JSON" '{"name":'
+check_vsix "a non-JSON constant in extension/package.json" 1 \
+    "extension/package\.json is not valid JSON: it holds the non-JSON constant NaN$" \
+    "${package/'"preview": true'/'"preview": NaN'}"
 check_vsix "JSON array as extension/package.json" 1 "extension/package\.json is not a JSON object" '[]'
 check_vsix "extension/package.json that isn't UTF-8" 1 "extension/package\.json is not UTF-8: " "@$TMP/not-utf-8.json"
 check_vsix "deeply nested extension/package.json" 1 "extension/package\.json is nested too deeply to parse$" \
@@ -313,6 +321,13 @@ damage "$VSIX" extension/package.json data
 expect_run "check-vsix.py: corrupt extension/package.json data" 1 - \
     "virgil-lsp-vscode-7\.8\.9\.vsix: cannot read extension/package\.json: Bad CRC-32" \
     "$CHECK_VSIX" "$VSIX" "$EXT"
+# A payload member other than the manifest: flipping a byte in its data fails
+# its CRC check, even though the central directory stays valid.
+vsix "$VSIX" "$package" "${files[@]}" 'text:extension/out/bundle.js=console.log(1);'
+damage "$VSIX" extension/out/bundle.js data
+expect_run "check-vsix.py: corrupt data in a member other than the manifest" 1 - \
+    "virgil-lsp-vscode-7\.8\.9\.vsix: cannot read extension/out/bundle\.js: Bad CRC-32" \
+    "$CHECK_VSIX" "$VSIX" "$EXT"
 vsix "$VSIX" "$package" "${files[@]}"
 damage "$VSIX" extension/out/extension.js name
 expect_run "check-vsix.py: a central directory name that isn't UTF-8" 1 - \
@@ -339,6 +354,15 @@ check_vsix "two extension/package.json entries" 1 \
     "holds more than one entry named 'extension/package\.json'$" "$package" raw:extension/package.json
 check_vsix "two entries with the same name" 1 \
     "holds more than one entry named 'extension/out/extension\.js'$" "$package" out/extension.js
+# The extension directory's own package.json is read with the same parser, so
+# an Infinity there is reported too, rather than accepted.
+rm -rf "$TMP/non-json"
+cp -R "$EXT" "$TMP/non-json"
+printf '%s\n' "${package/'"preview": true'/'"preview": Infinity'}" > "$TMP/non-json/package.json"
+vsix "$VSIX" "$package" "${files[@]}"
+expect_run "check-vsix.py: a non-JSON constant in the extension directory's package.json" 1 - \
+    "package\.json is not valid JSON: it holds the non-JSON constant Infinity$" \
+    "$CHECK_VSIX" "$VSIX" "$TMP/non-json"
 
 # Rules that clients/vscode's .vscodeignore doesn't use: a negation, which vsce
 # applies after every ignore pattern, and a directory named without "/**".
@@ -506,6 +530,9 @@ vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" -
 notes "VSIX without extension/package.json" 1 - "has no extension/package\.json"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" '{"name": "virgil-lsp-vscode", "version":'
 notes "VSIX with malformed extension/package.json" 1 - "extension/package\.json is not valid JSON"
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "${package/'"preview": true'/'"preview": NaN'}"
+notes "VSIX with a non-JSON constant in extension/package.json" 1 - \
+    "extension/package\.json is not valid JSON: it holds the non-JSON constant NaN$"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "@$TMP/not-utf-8.json"
 notes "VSIX with extension/package.json that isn't UTF-8" 1 - "extension/package\.json is not UTF-8: "
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "@$TMP/deep.json"
@@ -535,6 +562,14 @@ notes "VSIX without a version" 1 - "lacks a name, publisher, or version"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "${package/7.8.9/7.9.0}"
 notes "VSIX named for another version" 1 - \
     "virgil-lsp-vscode-7\.8\.9\.vsix holds version 7\.9\.0 of virgil-lsp-vscode"
+assets
+# A build manifest is read with the same parser, so an Infinity or NaN there
+# is reported rather than accepted.
+printf '%s\n' '{"version": NaN, "tag": null, "target": "x86-64-linux",
+    "sourceRevision": "x", "dirty": false, "virgilRevision": "y"}' \
+    > "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.manifest.json"
+notes "a build manifest with a non-JSON constant" 1 - \
+    "manifest\.json is not valid JSON: it holds the non-JSON constant NaN$"
 assets
 rm "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.tar.gz"
 notes "missing archive" 1 - "missing archive virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz"
