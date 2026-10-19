@@ -132,7 +132,7 @@ Run it on each platform before a release, with the extension [installed from the
 
 On Linux, the [Extension Host test](#extension-host-test) automates the steps marked *(automated on Linux)*. Run them by hand on the other platforms.
 
-For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Remote-WSL** (from Windows into WSL 2), and **macOS** (Apple Silicon, with Rosetta 2):
+For each VS Code setup in the [manual test matrix](../../docs/manual-testing.md#matrix), check the [known limitations](../../docs/known-limitations.md) and follow these steps:
 
 1. Open the fixture folder with the extension installed or loaded from source (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language. *(Automated on Linux.)*
 2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine. *(Automated on Linux.)*
