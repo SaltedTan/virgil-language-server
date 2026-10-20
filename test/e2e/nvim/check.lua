@@ -151,6 +151,21 @@ local function check()
     and hover.range["end"].line == use_line and hover.range["end"].character == start - 1 + #"StringBuilder",
     "unexpected hover: " .. vim.inspect(hover))
 
+  -- Signature help just after the ( of .puts(a) on the same line shows the
+  -- method's label with its one parameter as label offsets, which Neovim
+  -- supports. The fixture's type error leaves the program parsed and analyzed.
+  local puts = vim.api.nvim_buf_get_lines(words_buf, use_line, use_line + 1, true)[1]:find(".puts(", 1, true)
+  response, err = client:request_sync("textDocument/signatureHelp", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = puts - 1 + #".puts(" },
+  }, 10000, words_buf)
+  assert(response and not response.err, "signature help failed: " .. vim.inspect(err or response.err))
+  local help = response.result
+  local signature = help and help.signatures and help.signatures[1]
+  assert(signature and #help.signatures == 1 and help.activeSignature == 0 and help.activeParameter == 0
+    and signature.label == "def puts(s: Array<byte>) -> this"
+    and #signature.parameters == 1 and vim.deep_equal(signature.parameters[1].label, { 9, 23 }),
+    "unexpected signature help: " .. vim.inspect(help))
+
   -- Workspace symbols come from the same analysis: join, which nothing uses,
   -- is a method in the project's own words/Words.v3.
   response, err = client:request_sync("workspace/symbol", { query = "join" }, 10000, words_buf)
@@ -228,7 +243,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, references, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

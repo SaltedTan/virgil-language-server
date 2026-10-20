@@ -1,0 +1,92 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/signatureHelp from the call sites of a current snapshot, which
+// LspSnapshotRequests selects as for a hover. See
+// docs/architecture.md#signature-help.
+class LspSignatureHelp {
+	// True if the client's textDocument.signatureHelp.signatureInformation
+	// .parameterInformation.labelOffsetSupport is true, so that parameters
+	// are labelled by their UTF-16 offsets in the signature's label.
+	var labelOffsets: bool;
+
+	// The SignatureHelp of the innermost call whose argument list holds
+	// {offset}, after its opening parenthesis and up to its closing one, if
+	// that call has a signature; otherwise null. It always reports finding
+	// something, so that the byte before is not looked up instead: a cursor
+	// just past a closing parenthesis is outside its call. A call whose
+	// target is in a file whose bytes are no longer the ones analyzed gets
+	// null, as its hover does.
+	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonValue) {
+		var call = at.snapshot.callAt(at.path(), offset);
+		if (call == null || call.signature == null) return (true, JsonValue.Null);
+		if (call.target != null && at.target(call.target.range.path).0 < 0) return (true, JsonValue.Null);
+		return (true, help(call.signature, activeParameter(at.text, call, offset)));
+	}
+	// The SignatureHelp of {s} with parameter {active} active. It lists only
+	// the parameters that the label holds, and reports {active} unclamped,
+	// even past the last parameter listed: where the label is cut short, or
+	// the cursor follows as many commas as the function has parameters, after
+	// a trailing comma or among too many arguments. How a client shows such
+	// an index varies; LSP 3.17 has it default to parameter 0.
+	def help(s: AnalysisSignature, active: int) -> JsonValue {
+		var params = Vector<JsonValue>.new();
+		// A label is one line, so a position's character is its UTF-16 offset.
+		var map = if(labelOffsets, PositionMap.new(s.label, PositionEncoding.UTF16));
+		for (i < s.params.length) {
+			if (!s.holds(i)) break;
+			var p = Strings.newMap<JsonValue>();
+			if (map != null) {
+				var begin = s.paramOffset(i), end = begin + s.params[i].length;
+				p["label"] = JsonValue.JArray([
+					JsonValue.Int(map.offsetToPosition(begin).character),
+					JsonValue.Int(map.offsetToPosition(end).character)
+				]);
+			} else {
+				p["label"] = JsonValue.String(s.params[i]);
+			}
+			params.put(JsonValue.JObject(p));
+		}
+		var info = Strings.newMap<JsonValue>(), result = Strings.newMap<JsonValue>();
+		info["label"] = JsonValue.String(s.label);
+		info["parameters"] = JsonValue.JArray(params.extract());
+		result["signatures"] = JsonValue.JArray([JsonValue.JObject(info)]);
+		result["activeSignature"] = JsonValue.Int(0);
+		result["activeParameter"] = JsonValue.Int(active);
+		return JsonValue.JObject(result);
+	}
+	// The number of commas that separate {call}'s arguments, or trail the
+	// last one, before {offset} in {text}, its analyzed text: a cursor up to
+	// the comma after argument k is in argument k, and one past it is in
+	// argument k + 1.
+	def activeParameter(text: Array<byte>, call: AnalysisCall, offset: int) -> int {
+		var args = call.args, n = call.argCount(), k = 0;
+		while (k + 1 < n && offset > separator(text, args[2 * k + 1], args[2 * k + 2])) k++;
+		// The parser accepts a comma between the last argument and ')', which
+		// is at call.close - 1.
+		if (k + 1 == n && offset > separator(text, args[2 * k + 1], call.close - 1)) k = n;
+		return k;
+	}
+	// The offset of the comma between {begin} and {end} in {text}, outside
+	// comments, or {end} if there is none. Only whitespace, comments, and one
+	// comma separate two arguments. Comments are skipped as Aeneas does: a
+	// line comment ends at a newline, and block comments don't nest.
+	def separator(text: Array<byte>, begin: int, end: int) -> int {
+		if (end > text.length) end = text.length;
+		var i = begin;
+		while (i < end) {
+			var c = text[i];
+			if (c == ',') return i;
+			if (c == '/' && i + 1 < end && text[i + 1] == '/') {
+				while (i < end && text[i] != '\n') i++;
+			} else if (c == '/' && i + 1 < end && text[i + 1] == '*') {
+				i += 2;
+				while (i < end && !(text[i] == '*' && i + 1 < end && text[i + 1] == '/')) i++;
+				i += 2;
+			} else {
+				i++;
+			}
+		}
+		return end;
+	}
+}

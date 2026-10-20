@@ -53,10 +53,12 @@ class LspServer {
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
-	// Definition, hover, and references requests, answered from snapshots.
+	// Definition, hover, references, and signature help requests, answered
+	// from snapshots.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private def prepareRename = LspPrepareRename.new(projects);
+	private def signatureHelp = LspSignatureHelp.new();
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	// Watched-file and workspace-folder notifications, and the watcher registration.
@@ -85,6 +87,7 @@ class LspServer {
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
 		snapshotRequests.registerPrepared(dispatcher, "textDocument/references", "references",
 			LspReferences.REQUIRES, LspReferences.prepare);
+		snapshotRequests.register(dispatcher, "textDocument/signatureHelp", "signatureHelp", signatureHelp.answer);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
 		workspaceEvents.warn = projectWarning;
@@ -290,7 +293,11 @@ class LspServer {
 		projects.initialize(params);
 		var watched = member(member(member(params, "capabilities"), "workspace"), "didChangeWatchedFiles");
 		workspaceEvents.dynamicWatchers = watched != null && watched["dynamicRegistration"] == JsonValue.Bool(true);
-		hover.markdown = acceptsMarkdown(member(member(member(params, "capabilities"), "textDocument"), "hover"));
+		var textDocument = member(member(params, "capabilities"), "textDocument");
+		hover.markdown = acceptsMarkdown(member(textDocument, "hover"));
+		var parameterInformation = member(member(member(textDocument, "signatureHelp"), "signatureInformation"), "parameterInformation");
+		signatureHelp.labelOffsets = parameterInformation != null
+			&& parameterInformation["labelOffsetSupport"] == JsonValue.Bool(true);
 		state = LspServerState.RUNNING;
 		var serverInfo = Strings.newMap<JsonValue>();
 		serverInfo["name"] = JsonValue.String(BuildInfo.NAME);
@@ -310,6 +317,10 @@ class LspServer {
 		capabilities["hoverProvider"] = JsonValue.Bool(true);
 		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["referencesProvider"] = JsonValue.Bool(true);
+		var signature = Strings.newMap<JsonValue>();
+		signature["triggerCharacters"] = JsonValue.JArray([JsonValue.String("("), JsonValue.String(",")]);
+		signature["retriggerCharacters"] = JsonValue.JArray([JsonValue.String(")")]);
+		capabilities["signatureHelpProvider"] = JsonValue.JObject(signature);
 		var folders = Strings.newMap<JsonValue>();
 		folders["supported"] = JsonValue.Bool(true);
 		folders["changeNotifications"] = JsonValue.Bool(true);

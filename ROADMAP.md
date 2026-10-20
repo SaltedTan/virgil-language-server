@@ -56,7 +56,7 @@ A user can install the server following the [build and executable placement guid
 
 ### Later releases
 
-- v0.2: prepare-rename/rename, signature help.
+- v0.2: prepare-rename/rename.
 - v0.3: context-aware completion, better behavior on incomplete syntax, faster reanalysis.
 - v0.5: platform-specific VS Code packages, an upstream `nvim-lspconfig` configuration, compatibility testing. Release automation is [present](docs/releasing.md).
 - v1.0: stable configuration format, defined performance budgets, robust error recovery, completion/references/rename suitable for everyday use, and a documented compatibility policy for Virgil versions.
@@ -261,7 +261,7 @@ Recommended order:
 1. `workspace/symbol` from the existing declaration index. *(present; [#122](https://github.com/SaltedTan/virgil-language-server/issues/122); see [Workspace symbols](docs/architecture.md#workspace-symbols))*
 2. `textDocument/references` from the occurrence index. *(present; [#123](https://github.com/SaltedTan/virgil-language-server/issues/123); see [References](docs/architecture.md#references) for the query design and measurements)*
 3. `textDocument/prepareRename` and `textDocument/rename`, with conflict checks and versioned workspace edits. *(eligibility and prepare-rename handler present but disabled; [#124](https://github.com/SaltedTan/virgil-language-server/issues/124); see [Prepare rename](docs/architecture.md#prepare-rename-partly-present); rename and capability advertisement remain for #125)*
-4. `textDocument/signatureHelp` using resolved call targets and method signatures. *(call-site analysis present; [#126](https://github.com/SaltedTan/virgil-language-server/issues/126); see [Call sites](docs/architecture.md#call-sites); the LSP request remains planned)*
+4. `textDocument/signatureHelp` using resolved call targets and method signatures. *(present; call sites from [#126](https://github.com/SaltedTan/virgil-language-server/issues/126), the request from [#127](https://github.com/SaltedTan/virgil-language-server/issues/127); see [Signature help](docs/architecture.md#signature-help); incomplete calls wait for [#128](https://github.com/SaltedTan/virgil-language-server/issues/128))*
 5. Basic completion for keywords and in-scope declarations.
 6. Member completion based on receiver type.
 
@@ -320,7 +320,7 @@ Exit criteria:
 | P1       | workspace symbols     | declaration index                      | Ranking and multi-project results             |
 | P1       | references            | [occurrence index](docs/architecture.md#references) | Reads/writes and synthetic constructs         |
 | P1       | rename                | references plus scope validation       | Conflicts, private names, stale edits         |
-| P1       | signature help        | resolved call target                   | Nested calls and partial argument lists       |
+| P1       | signature help        | [call sites](docs/architecture.md#signature-help) | Nested calls and partial argument lists       |
 | P1       | completion            | scope/type context plus partial parser | Incomplete syntax, ranking, latency           |
 | P2       | semantic tokens       | verified occurrence kinds              | Delta encoding and overlap policy             |
 | P2       | inlay hints           | inferred types/parameters              | Noise policy and performance                  |
@@ -351,7 +351,7 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 
 ### Visual Studio Code
 
-The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). Its [Extension Host test](clients/vscode/README.md#extension-host-test) covers activation, diagnostics, document symbols, a cross-file definition, hover, references, workspace symbols, project-file diagnostics, and restart.
+The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). Its [Extension Host test](clients/vscode/README.md#extension-host-test) covers activation, diagnostics, document symbols, a cross-file definition, hover, signature help, references, workspace symbols, project-file diagnostics, and restart.
 
 Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.
 

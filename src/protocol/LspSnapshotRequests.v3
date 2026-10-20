@@ -11,7 +11,7 @@
 // what it needs of the other parameters, such as a references request's
 // context.includeDeclaration, while the request waits. {failure}, if not null,
 // is the reply for a request that cannot be answered, given the reason, as
-// prepareRename's; definition, hover, and references answer null instead.
+// prepareRename's; methods without a failure reply answer null instead.
 class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: string,
 	prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
 	failure: string -> JsonRpcReply) {
@@ -82,14 +82,13 @@ class LspSnapshotWaiters(owner: LspSnapshotRequests) {
 	}
 }
 
-// Requests at a document position, such as textDocument/definition,
-// textDocument/hover, and textDocument/references, answered from the retained
-// snapshot of the document's active project context. Every reply goes through
+// Requests at a document position, answered from the retained snapshot of the
+// document's active project context. Every reply goes through
 // {send}: a request against a missing or stale snapshot waits for the
 // context's pending analysis. Each method supplies its answer function,
 // how to prepare it from other parameters, and an optional failure reply. See
-// docs/architecture.md#definition, docs/architecture.md#hover, and
-// docs/architecture.md#references.
+// docs/architecture.md#definition for the shared rules; each method owns its
+// lookup policy, including whether the byte before the position is eligible.
 class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	// Bounds the requests of every method that wait at once. A client rarely
 	// has more than a few outstanding; past this many, the oldest, the one most
@@ -278,10 +277,9 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		}
 		return true;
 	}
-	// The reply of {lookup} for the identifier at {line}:{character} in
+	// The reply of {lookup} at {line}:{character} in
 	// {key}, from {ctx}'s current snapshot, or {failure}'s reply with the
-	// reason it cannot be answered. Without a failure, that reply is null, as
-	// definition, hover, and references answer.
+	// reason it cannot be answered. Without a failure, that reply is null.
 	private def locate(lookup: (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
 			failure: string -> JsonRpcReply, ctx: ProjectContext, key: string, line: int,
 			character: int) -> JsonRpcReply {

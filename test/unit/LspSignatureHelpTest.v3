@@ -1,0 +1,636 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/signatureHelp with the real worker. The
+// project-fixtures/signature-help directory is the build's own copy, so each
+// session rewrites its sources before the project is loaded. Every reply
+// arrives through the server's outgoing-message sink. Signature help shares
+// its snapshot selection, freshness, waiting, and parameter rules with
+// definition and hover, which LspDefinitionTest covers in full; these tests
+// cover the call and parameter it selects, what it shows, and that it takes
+// part in the shared rules.
+def T = UnitTests.register;
+def X = [
+	T("LspSignatureHelp:cursor_boundaries", test_cursor_boundaries),
+	T("LspSignatureHelp:comments_between_arguments", test_comments_between_arguments),
+	T("LspSignatureHelp:trailing_comma", test_trailing_comma),
+	T("LspSignatureHelp:nested_calls", test_nested_calls),
+	T("LspSignatureHelp:zero_arguments", test_zero_arguments),
+	T("LspSignatureHelp:signature_kinds", test_signature_kinds),
+	T("LspSignatureHelp:semantic_errors", test_semantic_errors),
+	T("LspSignatureHelp:cut_label", test_cut_label),
+	T("LspSignatureHelp:label_offsets", test_label_offsets),
+	T("LspSignatureHelp:utf16_label_offsets", test_utf16_label_offsets),
+	T("LspSignatureHelp:separators", test_separators),
+	T("LspSignatureHelp:tabs_and_non_ascii", test_tabs_and_non_ascii),
+	T("LspSignatureHelp:target_changed_on_disk", test_target_changed_on_disk),
+	T("LspSignatureHelp:stale_waits_for_analysis", test_stale_waits_for_analysis),
+	T("LspSignatureHelp:stale_without_analysis", test_stale_without_analysis),
+	T("LspSignatureHelp:parse_failure", test_parse_failure),
+	T("LspSignatureHelp:shared_waiting_bound", test_shared_waiting_bound),
+	T("LspSignatureHelp:no_project", test_no_project),
+	T("LspSignatureHelp:context_ignored", test_context_ignored),
+	T("LspSignatureHelp:params", test_params),
+	()
+];
+// A call of each kind that the analysis records: component functions, a
+// method on a receiver, through its class, and inherited, a zero-argument
+// method, default and explicit constructors, a variant case, a closure, a
+// builtin, explicit and inferred generic calls, a nested call, a partial
+// application, a tuple passed whole, a label cut at 256 bytes, and arguments
+// around comments, one with a comma and one with a parenthesis. A call
+// follows a tab and non-ASCII text (U+00E9, two UTF-8 bytes and one UTF-16
+// unit; U+1D11E, four bytes and two units) in a block comment. The last call
+// is of Decl.pick, in Decl.v3.
+def SOURCE = "class C(x: int) {\n\tdef m(a: int, b: int) -> int { return a + b; }\n\tdef none() { }\n}\nclass D {\n\tnew(v: int) { }\n}\nclass Base {\n\tdef get(i: int, j: int) -> int { return i + j; }\n}\nclass Sub extends Base { }\nclass G<T>(v: T) {\n\tdef pair<U>(u: U) -> (T, U) { return (v, u); }\n}\ntype V {\n\tcase B(f: int, s: string);\n}\ncomponent M {\n\tdef add(a: int, b: int) -> int { return a + b; }\n\tdef id<T>(p: T) -> T { return p; }\n\tdef wide(a_rather_long_parameter_name_0: int, a_rather_long_parameter_name_1: int, a_rather_long_parameter_name_2: int, a_rather_long_parameter_name_3: int, a_rather_long_parameter_name_4: int, a_rather_long_parameter_name_5: int, a_rather_long_parameter_name_6: int, a_rather_long_parameter_name_7: int) { }\n\tdef run(c: C, s: Sub, g: G<int>, f: int -> int, t: (int, int)) {\n\t\tvar sum = add(10, 20);\n\t\tvar w = add( // comment with )\n\t\t\t11, /* comma , */\n\t\t\t22);\n\t\tvar k = add(30 /* , */ , 40);\n\t\tvar nested = add(5, id(6));\n\t\tc.none();\n\t\tvar gen = id<int>(1);\n\t\tvar inf = id(gen);\n\t\tvar r = g.pair(true);\n\t\tvar inherited = s.get(7, 8);\n\t\tvar made = C.new(1);\n\t\tvar d = D.new(2);\n\t\tvar q = C.m(c, 5, 6);\n\t\tvar v = V.B(7, \"x(y\");\n\t\tvar cl = f(9);\n\t\tvar a = Array<int>.new(4);\n\t\tvar p = add(_, 9);\n\t\tvar whole = add(t);\n\t\twide(0, 1, 2, 3, 4, 5, 6, 7);\n\t\tvar u = /*\t\xC3\xA9\xF0\x9D\x84\x9E */ add(12, 13);\n\t\tvar x = Decl.pick(14, 15);\n\t}\n}\n";
+// Decl.v3, which every session writes, declares Decl.pick. DECL_RENAMED
+// renames its first parameter.
+def DECL = "component Decl {\n\tdef pick(x: int, y: int) -> int { return x; }\n}\n";
+def DECL_RENAMED = "component Decl {\n\tdef pick(first: int, y: int) -> int { return first; }\n}\n";
+// Calls with semantic errors, appended to SOURCE: too few arguments, too many,
+// an unresolved callee around a call, and one inside a call.
+def ERRORS = "component Errors {\n\tdef run() {\n\t\tM.add();\n\t\tM.add(1, 2, 3);\n\t\tmissing(1, M.add(2, 3));\n\t\tM.add(missing(), 4);\n\t}\n}\n";
+// Calls with a comma after the last argument, which the parser accepts,
+// appended to SOURCE: after one argument, which is too few, after as many
+// arguments as parameters, and with a comma in a comment after the last
+// argument, with and without a real comma before or after it.
+def TRAILING = "component Trailing {\n\tdef run() {\n\t\tM.add(1,);\n\t\tM.add(1, 2,);\n\t\tM.add(1 /* , */ );\n\t\tM.add(1 /* , */ , );\n\t\tM.add(1, /* , */ );\n\t\tM.add(1, 2 // ,\n\t\t);\n\t}\n}\n";
+def ADD = "def add(a: int, b: int) -> int";
+def ADD_PARAMS = ["a: int", "b: int"];
+
+class SignatureHelpTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	var base: string;
+	// The responses received, in order.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	// What handle() returned for the last request; replies use the sink.
+	var handled: Array<byte>;
+	// {labelOffsetSupport}, unless JsonValue.Null, is the client's
+	// signatureHelp.signatureInformation.parameterInformation.labelOffsetSupport.
+	new(t: Tester, labelOffsetSupport: JsonValue) {
+		base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", "signature-help"));
+		write(t, "Sig.v3", SOURCE);
+		write(t, "Decl.v3", DECL);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		if (labelOffsetSupport != JsonValue.Null) {
+			var parameter = Strings.newMap<JsonValue>(), signature = Strings.newMap<JsonValue>();
+			var help = Strings.newMap<JsonValue>(), doc = Strings.newMap<JsonValue>(), caps = Strings.newMap<JsonValue>();
+			parameter["labelOffsetSupport"] = labelOffsetSupport;
+			signature["parameterInformation"] = JsonValue.JObject(parameter);
+			help["signatureInformation"] = JsonValue.JObject(signature);
+			doc["signatureHelp"] = JsonValue.JObject(help);
+			caps["textDocument"] = JsonValue.JObject(doc);
+			params["capabilities"] = JsonValue.JObject(caps);
+		}
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) replies.put(parsed);
+	}
+	def uri() -> string { return fileUri("Sig.v3"); }
+	def fileUri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def write(t: Tester, name: string, text: string) {
+		var fd = System.fileOpen(ProjectFiles.join(base, name), false);
+		t.assert(fd >= 0, "fixture source written");
+		if (fd < 0) return;
+		System.fileWriteK(fd, text, 0, text.length);
+		System.fileClose(fd);
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(fileUri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	def open(version: int, text: string) {
+		openUri(uri(), version, text);
+	}
+	def openUri(uri: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri);
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri());
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	// Sends a {method} request in {uri} for {p}, with {context} unless it is
+	// JsonValue.Null, and returns its id.
+	def requestIn(method: string, uri: string, p: (int, int), context: JsonValue) -> int {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri);
+		position["line"] = JsonValue.Int(p.0);
+		position["character"] = JsonValue.Int(p.1);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		if (context != JsonValue.Null) params["context"] = context;
+		var id = nextId++;
+		handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), method, JsonRpcParams.ByName(params)).encode());
+		return id;
+	}
+	def request(method: string, p: (int, int)) -> int {
+		return requestIn(method, uri(), p, JsonValue.Null);
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	// The result of the response to {id}, which must have arrived.
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		t.assert(r.has("result"), "the request succeeded");
+		return r["result"];
+	}
+	// Requests and returns the signature help at {p}, which must be
+	// answered at once.
+	def help(t: Tester, p: (int, int)) -> JsonValue {
+		var id = request("textDocument/signatureHelp", p);
+		t.assert(handled == null, "replies use the sink");
+		return result(t, id);
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri()).active;
+	}
+}
+// The LSP position, in UTF-16, of byte {skip} past the first {needle} in {text}.
+def at(text: string, needle: string, skip: int) -> (int, int) {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (!Strings.equal(Arrays.range(text, i, i + needle.length), needle)) continue;
+		var p = PositionMap.new(text, PositionEncoding.UTF16).offsetToPosition(i + skip);
+		return (p.line, p.character);
+	}
+	return (-1, -1);
+}
+def render(v: JsonValue) -> string {
+	return JsonRpcJson.render(StringBuilder.new(), v).toString();
+}
+// The SignatureHelp of {label} with parameter {active} active, whose
+// parameters are labelled by {params}, already rendered as JSON.
+def renderHelp(label: string, params: Array<string>, active: int) -> string {
+	var buf = StringBuilder.new().puts("{\"activeParameter\":").putd(active);
+	buf.puts(",\"activeSignature\":0,\"signatures\":[{\"label\":");
+	JsonRpcJson.renderString(buf, label).puts(",\"parameters\":[");
+	for (i < params.length) {
+		if (i > 0) buf.putc(',');
+		buf.puts("{\"label\":").puts(params[i]).putc('}');
+	}
+	return buf.puts("]}]}").toString();
+}
+// The SignatureHelp of {label} with parameter {active} active, whose
+// parameters are labelled by the strings {params}.
+def strings(label: string, params: Array<string>, active: int) -> string {
+	var rendered = Array<string>.new(params.length);
+	for (i < params.length) rendered[i] = JsonRpcJson.renderString(StringBuilder.new(), params[i]).toString();
+	return renderHelp(label, rendered, active);
+}
+// Checks the signature help {skip} bytes into the first {needle} in {text}.
+def expectIn(t: Tester, s: SignatureHelpTestSession, text: string, needle: string, skip: int, expected: string) {
+	var p = at(text, needle, skip);
+	t.assert(p.0 >= 0, "fixture text found");
+	t.assert_string(expected, render(s.help(t, p)));
+}
+// Checks the signature help {skip} bytes into the first {needle} in SOURCE:
+// {label}, with string parameter labels {params}, and parameter {active}.
+def expectAt(t: Tester, s: SignatureHelpTestSession, needle: string, skip: int, label: string,
+		params: Array<string>, active: int) {
+	expectIn(t, s, SOURCE, needle, skip, strings(label, params, active));
+}
+def expectNullIn(t: Tester, s: SignatureHelpTestSession, text: string, needle: string, skip: int, what: string) {
+	var p = at(text, needle, skip);
+	t.assert(p.0 >= 0, "fixture text found");
+	t.assert(s.help(t, p) == JsonValue.Null, what);
+}
+def expectNull(t: Tester, s: SignatureHelpTestSession, needle: string, skip: int, what: string) {
+	expectNullIn(t, s, SOURCE, needle, skip, what);
+}
+def session(t: Tester) -> SignatureHelpTestSession {
+	var s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	s.open(1, SOURCE);
+	s.settle();
+	return s;
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+
+// Each position in and around "add(10, 20)", which no other call holds.
+def test_cursor_boundaries(t: Tester) {
+	var s = session(t);
+	var call = "add(10, 20);";
+	expectNull(t, s, call, 0, "at the callee");
+	expectNull(t, s, call, 3, "before (");
+	expectAt(t, s, call, 4, ADD, ADD_PARAMS, 0);		// just after (
+	expectAt(t, s, call, 5, ADD, ADD_PARAMS, 0);		// inside an argument
+	expectAt(t, s, call, 6, ADD, ADD_PARAMS, 0);		// at an argument's end, before its comma
+	expectAt(t, s, call, 7, ADD, ADD_PARAMS, 1);		// after the comma
+	expectAt(t, s, call, 8, ADD, ADD_PARAMS, 1);		// before the next argument
+	expectAt(t, s, call, 10, ADD, ADD_PARAMS, 1);	// before )
+	expectNull(t, s, call, 11, "after )");
+	expectNull(t, s, call, 12, "after the statement");
+	s.server.close();
+}
+// A comma counts only outside comments, and a parenthesis in a comment or a
+// string ends nothing.
+def test_comments_between_arguments(t: Tester) {
+	var s = session(t);
+	var w = "add( // comment with )";
+	expectAt(t, s, w, 4, ADD, ADD_PARAMS, 0);		// before a line comment
+	expectAt(t, s, w, 21, ADD, ADD_PARAMS, 0);		// in it, before its parenthesis
+	expectAt(t, s, w, 22, ADD, ADD_PARAMS, 0);		// at its end
+	expectAt(t, s, "11, /* comma", 2, ADD, ADD_PARAMS, 0);	// before the comma
+	expectAt(t, s, "11, /* comma", 3, ADD, ADD_PARAMS, 1);	// after it
+	expectAt(t, s, "comma , */", 6, ADD, ADD_PARAMS, 1);		// after a comma in a block comment
+	expectAt(t, s, "22);", 0, ADD, ADD_PARAMS, 1);
+	expectAt(t, s, "22);", 2, ADD, ADD_PARAMS, 1);
+	expectNull(t, s, "22);", 3, "after )");
+	var k = "add(30 /* , */ , 40)";
+	expectAt(t, s, k, 6, ADD, ADD_PARAMS, 0);		// at an argument's end
+	expectAt(t, s, k, 10, ADD, ADD_PARAMS, 0);		// past the comma in a comment
+	expectAt(t, s, k, 14, ADD, ADD_PARAMS, 0);		// past the comment
+	expectAt(t, s, k, 15, ADD, ADD_PARAMS, 0);		// before the comma
+	expectAt(t, s, k, 16, ADD, ADD_PARAMS, 1);		// after it
+	// A parenthesis in a string closes nothing.
+	expectAt(t, s, "\"x(y\")", 3, "case B(f: int, s: Array<byte>)", ["f: int", "s: Array<byte>"], 1);
+	s.server.close();
+}
+// A comma after the last argument counts like one between arguments, and a
+// comma in a comment after the last argument doesn't.
+def test_trailing_comma(t: Tester) {
+	var s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	var text = Strings.format2("%s%s", SOURCE, TRAILING);
+	s.open(1, text);
+	s.settle();
+	var one = "M.add(1,);";
+	expectIn(t, s, text, one, 7, strings(ADD, ADD_PARAMS, 0));		// before the trailing comma
+	expectIn(t, s, text, one, 8, strings(ADD, ADD_PARAMS, 1));		// after it, before )
+	expectNullIn(t, s, text, one, 9, "after )");
+	// As many arguments as parameters: one past the last parameter.
+	var two = "M.add(1, 2,);";
+	expectIn(t, s, text, two, 10, strings(ADD, ADD_PARAMS, 1));		// before the trailing comma
+	expectIn(t, s, text, two, 11, strings(ADD, ADD_PARAMS, 2));		// after it
+	var none = "M.add(1 /* , */ );";
+	expectIn(t, s, text, none, 12, strings(ADD, ADD_PARAMS, 0));	// past the comma in a comment
+	expectIn(t, s, text, none, 16, strings(ADD, ADD_PARAMS, 0));	// before )
+	var after = "M.add(1 /* , */ , );";
+	expectIn(t, s, text, after, 12, strings(ADD, ADD_PARAMS, 0));	// past the comma in a comment
+	expectIn(t, s, text, after, 16, strings(ADD, ADD_PARAMS, 0));	// before the real comma
+	expectIn(t, s, text, after, 17, strings(ADD, ADD_PARAMS, 1));	// after it
+	expectIn(t, s, text, after, 18, strings(ADD, ADD_PARAMS, 1));	// before )
+	var before = "M.add(1, /* , */ );";
+	expectIn(t, s, text, before, 7, strings(ADD, ADD_PARAMS, 0));	// before the real comma
+	expectIn(t, s, text, before, 8, strings(ADD, ADD_PARAMS, 1));	// after it
+	expectIn(t, s, text, before, 13, strings(ADD, ADD_PARAMS, 1));	// past the comma in a comment
+	expectIn(t, s, text, before, 17, strings(ADD, ADD_PARAMS, 1));	// before )
+	expectIn(t, s, text, "M.add(1, 2 // ,", 15, strings(ADD, ADD_PARAMS, 1));	// at a line comment's end
+	expectIn(t, s, text, "// ,\n\t\t)", 7, strings(ADD, ADD_PARAMS, 1));		// before )
+	s.server.close();
+}
+// The innermost call whose argument list holds the cursor; just past an
+// inner call's ), the outer one.
+def test_nested_calls(t: Tester) {
+	var s = session(t);
+	var call = "add(5, id(6));", id = "def id(p: int) -> int";
+	expectAt(t, s, call, 7, ADD, ADD_PARAMS, 1);		// at the inner callee
+	expectAt(t, s, call, 9, ADD, ADD_PARAMS, 1);		// before the inner (
+	expectAt(t, s, call, 10, id, ["p: int"], 0);	// just after it
+	expectAt(t, s, call, 11, id, ["p: int"], 0);	// before the inner )
+	expectAt(t, s, call, 12, ADD, ADD_PARAMS, 1);	// after it, before the outer )
+	expectNull(t, s, call, 13, "after the outer )");
+	s.server.close();
+}
+// A call without arguments is at parameter 0, whether its function has
+// parameters or not.
+def test_zero_arguments(t: Tester) {
+	var s = session(t);
+	expectAt(t, s, "c.none()", 7, "def none()", [], 0);
+	expectNull(t, s, "c.none()", 8, "after )");
+	s.server.close();
+	// An editor that closes ( at once leaves a complete call, with a
+	// semantic error, which still has a signature.
+	s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	var text = Strings.format2("%s%s", SOURCE, ERRORS);
+	s.open(1, text);
+	s.settle();
+	expectIn(t, s, text, "M.add();", 6, strings(ADD, ADD_PARAMS, 0));
+	s.server.close();
+}
+// Each kind of signature, as the analysis records it: generic calls as the
+// call instantiates them, an inherited method, constructors, a method called
+// through its class with its receiver first, a variant case, a closure and a
+// builtin by their types, a partial application, and a tuple passed whole.
+def test_signature_kinds(t: Tester) {
+	var s = session(t);
+	var id = "def id(p: int) -> int";
+	expectAt(t, s, "id<int>(1)", 8, id, ["p: int"], 0);
+	expectAt(t, s, "id(gen)", 3, id, ["p: int"], 0);
+	expectAt(t, s, "g.pair(true)", 7, "def pair(u: bool) -> (int, bool)", ["u: bool"], 0);
+	expectAt(t, s, "s.get(7, 8)", 9, "def get(i: int, j: int) -> int", ["i: int", "j: int"], 1);
+	expectAt(t, s, "C.new(1)", 6, "class C(x: int)", ["x: int"], 0);
+	expectAt(t, s, "D.new(2)", 6, "new(v: int)", ["v: int"], 0);
+	var m = "def m(C, a: int, b: int) -> int", mParams = ["C", "a: int", "b: int"];
+	expectAt(t, s, "C.m(c, 5, 6)", 4, m, mParams, 0);
+	expectAt(t, s, "C.m(c, 5, 6)", 8, m, mParams, 1);
+	expectAt(t, s, "C.m(c, 5, 6)", 11, m, mParams, 2);
+	expectAt(t, s, "V.B(7", 4, "case B(f: int, s: Array<byte>)", ["f: int", "s: Array<byte>"], 0);
+	expectAt(t, s, "f(9)", 2, "int -> int", ["int"], 0);
+	expectAt(t, s, "Array<int>.new(4)", 15, "int -> Array<int>", ["int"], 0);
+	expectAt(t, s, "add(_, 9)", 4, ADD, ADD_PARAMS, 0);
+	expectAt(t, s, "add(_, 9)", 8, ADD, ADD_PARAMS, 1);
+	expectAt(t, s, "add(t)", 5, ADD, ADD_PARAMS, 0);
+	expectAt(t, s, "Decl.pick(14, 15)", 14, "def pick(x: int, y: int) -> int", ["x: int", "y: int"], 1);
+	s.server.close();
+}
+// A program with semantic errors still answers from its analysis: more
+// arguments than parameters give an index past the last, and a call without
+// a known signature, such as of an unresolved name, gets null rather than
+// the call around it. Under an unresolved callee, verification leaves the
+// calls in its arguments without signatures too.
+def test_semantic_errors(t: Tester) {
+	var s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	var text = Strings.format2("%s%s", SOURCE, ERRORS);
+	s.open(1, text);
+	s.settle();
+	expectIn(t, s, text, "M.add(1, 2, 3)", 13, strings(ADD, ADD_PARAMS, 2));
+	expectNullIn(t, s, text, "missing(1,", 9, "an unresolved callee");
+	expectNullIn(t, s, text, "M.add(2, 3)", 9, "a call under an unresolved callee");
+	expectNullIn(t, s, text, "missing()", 8, "not the call around an unresolved callee");
+	expectIn(t, s, text, "missing(), 4", 11, strings(ADD, ADD_PARAMS, 1));
+	expectIn(t, s, text, "add(10, 20)", 8, strings(ADD, ADD_PARAMS, 1));
+	s.server.close();
+}
+// The label of wide() is cut at 256 bytes, with an ellipsis: only the
+// parameters it holds are listed, and an active parameter past them is
+// still reported.
+def test_cut_label(t: Tester) {
+	var buf = StringBuilder.new().puts("def wide(");
+	var params = Array<string>.new(6);
+	for (i < params.length) {
+		params[i] = Strings.format1("a_rather_long_parameter_name_%d: int", i);
+		buf.puts(params[i]).puts(", ");
+	}
+	var label = buf.puts("\xE2\x80\xA6").toString();
+	var s = session(t);
+	expectAt(t, s, "wide(0, 1", 5, label, params, 0);
+	expectAt(t, s, "5, 6, 7)", 0, label, params, 5);
+	expectAt(t, s, "5, 6, 7)", 3, label, params, 6);
+	expectAt(t, s, "5, 6, 7)", 6, label, params, 7);
+	s.server.close();
+	// With label offsets, the held parameters' offsets precede the ellipsis.
+	s = SignatureHelpTestSession.new(t, JsonValue.Bool(true));
+	s.open(1, SOURCE);
+	s.settle();
+	var offsets = Array<string>.new(6);
+	for (i < offsets.length) offsets[i] = Strings.format2("[%d,%d]", 9 + 37 * i, 9 + 37 * i + 35);
+	expectIn(t, s, SOURCE, "5, 6, 7)", 6, renderHelp(label, offsets, 7));
+	s.server.close();
+}
+// A client with labelOffsetSupport gets each parameter's [start, end) in the
+// label; one without it, or with it false, gets the parameter's own label.
+def test_label_offsets(t: Tester) {
+	var caps = [JsonValue.Bool(true), JsonValue.Bool(false), JsonValue.Int(1), JsonValue.Null];
+	for (i < caps.length) {
+		var s = SignatureHelpTestSession.new(t, caps[i]);
+		s.open(1, SOURCE);
+		s.settle();
+		var offsets = i == 0;
+		expectIn(t, s, SOURCE, "add(10, 20)", 8, if(offsets,
+			renderHelp(ADD, ["[8,14]", "[16,22]"], 1), strings(ADD, ADD_PARAMS, 1)));
+		var m = "def m(C, a: int, b: int) -> int";
+		expectIn(t, s, SOURCE, "C.m(c, 5, 6)", 4, if(offsets,
+			renderHelp(m, ["[6,7]", "[9,15]", "[17,23]"], 0), strings(m, ["C", "a: int", "b: int"], 0)));
+		expectIn(t, s, SOURCE, "f(9)", 2, if(offsets,
+			renderHelp("int -> int", ["[0,3]"], 0), strings("int -> int", ["int"], 0)));
+		expectIn(t, s, SOURCE, "c.none()", 7, renderHelp("def none()", [], 0));
+		s.server.close();
+	}
+}
+// Label offsets count UTF-16 code units. Virgil identifiers and type names
+// are ASCII, so only a cut label's final ellipsis is not, after every
+// parameter the label holds; a label with non-ASCII text before and inside
+// its parameters checks the conversion itself.
+def test_utf16_label_offsets(t: Tester) {
+	var h = LspSignatureHelp.new();
+	h.labelOffsets = true;
+	var e = "\xC3\xA9", clef = "\xF0\x9D\x84\x9E";
+	var label = Strings.format3("d%s(%s: int, %s: int) -> int", clef, e, clef);
+	var sig = AnalysisSignature.new(label, 6, [Strings.format1("%s: int", e), Strings.format1("%s: int", clef)]);
+	// "d", two units, "(", then "é: int" over six units, ", ", and seven.
+	t.assert_string(renderHelp(label, ["[4,10]", "[12,19]"], 1), render(h.help(sig, 1)));
+	h.labelOffsets = false;
+	t.assert_string(strings(label, sig.params, 1), render(h.help(sig, 1)));
+}
+// The comma between two argument spans, outside comments.
+def test_separators(t: Tester) {
+	var h = LspSignatureHelp.new();
+	var cases: Array<(string, int)> = [
+		(" , ", 1),
+		("/* , */,", 7),
+		("// ,\n,", 5),
+		("/*/ , */ ,", 9),
+		("/**/,", 4),
+		("// , */\n ,", 9),
+		("  ", 2),		// no comma: the next argument's start
+		("/* , ", 5)		// an unterminated comment
+	];
+	for (c in cases) t.asserti(c.1, h.separator(c.0, 0, c.0.length));
+	// Only the bytes from begin to end count.
+	t.asserti(4, h.separator("a, b", 2, 4));
+}
+// The position converts through the analyzed text after a tab and non-ASCII
+// text before the call.
+def test_tabs_and_non_ascii(t: Tester) {
+	var s = session(t);
+	var call = "add(12, 13)", p = at(SOURCE, call, 0);
+	var line = at(SOURCE, "var u = ", 0);
+	// "var u = /*", the tab, U+00E9, U+1D11E, then " */ ": 18 units for 21 bytes.
+	t.asserti(line.1 + 18, p.1);
+	expectAt(t, s, call, 4, ADD, ADD_PARAMS, 0);
+	expectAt(t, s, call, 7, ADD, ADD_PARAMS, 1);
+	expectNull(t, s, call, 3, "before (");
+	expectNull(t, s, call, 11, "after )");
+	s.server.close();
+}
+// A call whose target is in a closed file changed on disk without a file
+// event gets null, as its hover does; once the change is reported, the reply
+// waits for a new analysis.
+def test_target_changed_on_disk(t: Tester) {
+	var s = session(t);
+	var pick = "Decl.pick(14, 15)";
+	expectAt(t, s, pick, 10, "def pick(x: int, y: int) -> int", ["x: int", "y: int"], 0);
+	s.write(t, "Decl.v3", DECL_RENAMED);
+	expectNull(t, s, pick, 10, "the target changed on disk");
+	expectAt(t, s, "add(10, 20)", 4, ADD, ADD_PARAMS, 0);
+	s.reportChanged("Decl.v3");
+	var id = s.request("textDocument/signatureHelp", at(SOURCE, pick, 10));
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	t.assert_string(strings("def pick(first: int, y: int) -> int", ["first: int", "y: int"], 0), render(s.result(t, id)));
+	s.server.close();
+}
+def test_stale_waits_for_analysis(t: Tester) {
+	var s = session(t);
+	var generation = s.context().snapshot.generation;
+	// An unsaved edit adds a line, so the position is now in another call.
+	// The change waits for the debounce interval, which the requests skip.
+	s.change(2, Strings.format1("\n%s", SOURCE));
+	t.assertz(false, s.supervisor.busy());
+	var p = at(SOURCE, "add(10, 20)", 8);
+	var help = s.request("textDocument/signatureHelp", (p.0 + 1, p.1));
+	var hover = s.request("textDocument/hover", (p.0 + 1, p.1 - 5));
+	t.assert(s.handled == null, "replies use the sink");
+	t.assert(s.reply(help) == null && s.reply(hover) == null, "both replies wait");
+	t.assertz(true, s.supervisor.busy());
+	s.settle();
+	t.assert(s.context().snapshot.generation > generation, "a new analysis completed");
+	t.assert_string(strings(ADD, ADD_PARAMS, 1), render(s.result(t, help)));
+	t.assert(JsonValue.JObject.?(s.result(t, hover)), "the hover is answered too");
+	t.asserti(2, s.replies.length);
+	t.assert(s.replies[0]["id"] == JsonValue.Int(help), "answered in arrival order");
+	s.server.close();
+}
+def test_stale_without_analysis(t: Tester) {
+	var s = session(t);
+	expectAt(t, s, "add(10, 20)", 8, ADD, ADD_PARAMS, 1);
+	// An edit that schedules no analysis leaves the snapshot stale: the reply
+	// is null at once, never from the old snapshot at the new text's offsets.
+	t.assert(s.store.change(s.uri(), 2, Strings.format1("%s\n", SOURCE)) == null, "edit");
+	t.assertz(false, s.server.analyzing());
+	expectNull(t, s, "add(10, 20)", 8, "a stale snapshot");
+	t.assertz(false, s.server.analyzing());
+	s.server.close();
+}
+// While the document fails to parse, as an unclosed call does, the snapshot
+// has no calls, so the reply is null; once it parses again, the reply that
+// waited for that analysis answers.
+def test_parse_failure(t: Tester) {
+	var s = session(t);
+	var broken = Strings.format1("%s\ncomponent Broken { def f() { M.add(1, } }\n", SOURCE);
+	s.change(2, broken);
+	var id = s.request("textDocument/signatureHelp", at(broken, "M.add(1, }", 9));
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	t.assert(s.result(t, id) == JsonValue.Null, "an unparseable document");
+	expectNullIn(t, s, broken, "add(10, 20)", 8, "nor any other call while it fails to parse");
+	s.change(3, SOURCE);
+	id = s.request("textDocument/signatureHelp", at(SOURCE, "add(10, 20)", 8));
+	t.assert(s.reply(id) == null, "the reply waits");
+	s.settle();
+	t.assert_string(strings(ADD, ADD_PARAMS, 1), render(s.result(t, id)));
+	s.server.close();
+}
+// Signature help and hover requests wait together, within one bound: one
+// more than MAX_WAITING answers the oldest waiting request with null,
+// whatever its method.
+def test_shared_waiting_bound(t: Tester) {
+	var s = session(t);
+	s.change(2, Strings.format1("%s\n", SOURCE));
+	var max = LspSnapshotRequests.new(null, null, null).MAX_WAITING;
+	var p = at(SOURCE, "add(10, 20)", 8), ids = Array<int>.new(max + 2);
+	for (i < ids.length) {
+		ids[i] = s.request(if(i % 2 == 0, "textDocument/signatureHelp", "textDocument/hover"), if(i % 2 == 0, p, (p.0, p.1 - 5)));
+	}
+	t.asserti(2, s.replies.length);
+	if (s.replies.length == 2) {
+		t.assert(s.replies[0]["id"] == JsonValue.Int(ids[0]), "the oldest, a signature help, first");
+		t.assert(s.replies[1]["id"] == JsonValue.Int(ids[1]), "then the next oldest, a hover");
+		t.assert(s.result(t, ids[0]) == JsonValue.Null, "an evicted signature help");
+		t.assert(s.result(t, ids[1]) == JsonValue.Null, "an evicted hover");
+	}
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	var expected = strings(ADD, ADD_PARAMS, 1);
+	for (i = 2; i < ids.length; i++) {
+		var r = s.result(t, ids[i]);
+		if (i % 2 == 0) t.assert_string(expected, render(r));
+		else t.assert(JsonValue.JObject.?(r), "a Hover");
+	}
+	s.server.close();
+}
+// A document in no project has no snapshot, so the reply is null, as a
+// hover's is.
+def test_no_project(t: Tester) {
+	var s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	var uri = "untitled:Sig.v3";
+	s.openUri(uri, 1, SOURCE);
+	s.settle();
+	var id = s.requestIn("textDocument/signatureHelp", uri, at(SOURCE, "add(10, 20)", 8), JsonValue.Null);
+	t.assert(s.result(t, id) == JsonValue.Null, "no project");
+	s.server.close();
+}
+// The optional context, a SignatureHelpContext, changes nothing, even when
+// it is malformed.
+def test_context_ignored(t: Tester) {
+	var s = session(t);
+	var context = Strings.newMap<JsonValue>();
+	context["triggerKind"] = JsonValue.Int(2);
+	context["triggerCharacter"] = JsonValue.String(",");
+	context["isRetrigger"] = JsonValue.Bool(true);
+	var p = at(SOURCE, "add(10, 20)", 7), expected = strings(ADD, ADD_PARAMS, 1);
+	var contexts = [JsonValue.JObject(context), JsonValue.Int(1), JsonValue.String(",")];
+	for (c in contexts) {
+		var id = s.requestIn("textDocument/signatureHelp", s.uri(), p, c);
+		t.assert_string(expected, render(s.result(t, id)));
+	}
+	s.server.close();
+}
+def test_params(t: Tester) {
+	var s = SignatureHelpTestSession.new(t, JsonValue.Null);
+	var cases = [
+		"null",
+		"{}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"}}",
+		"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0,\"character\":-1}}",
+		"{\"textDocument\":{\"uri\":1},\"position\":{\"line\":0,\"character\":0}}",
+		"{\"position\":{\"line\":0,\"character\":0},\"context\":{\"triggerKind\":1}}"
+	];
+	for (i < cases.length) {
+		var payload = Strings.format2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/signatureHelp\",\"params\":%s}", i + 1, cases[i]);
+		t.assert(s.server.handle(payload) == null, "replies use the sink");
+		var r = s.reply(i + 1);
+		t.assert(r != null && r.has("error"), cases[i]);
+		if (r != null && r.has("error")) {
+			t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(r["error"], "code"));
+			t.assert_string("signatureHelp params require a valid textDocument.uri and position", stringAt(r["error"], "message"));
+		}
+	}
+	s.server.close();
+}
