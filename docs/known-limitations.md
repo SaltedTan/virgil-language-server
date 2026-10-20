@@ -14,7 +14,7 @@ Without a `.virgil-lsp.json` that selects it, a document gets syntax diagnostics
 ## No error-tolerant parsing
 
 - While any file of a project has a syntax error, Aeneas doesn't type-check the program. The project's type errors disappear, and definition, hover, references, and signature help return nothing, until every file parses again ([Semantic diagnostics](architecture.md#semantic-diagnostics), [Definition](architecture.md#definition)). The server doesn't fall back to an earlier analysis, which described other text: that needs an edit-mapping policy, and error tolerance belongs to [M6](../ROADMAP.md#m6--error-tolerance-and-incrementality-48-weeks-evidence-driven).
-- Signature help therefore shows nothing for a call that is still being typed, such as `f(a,` or an unclosed `f(`: it doesn't parse. A complete call with a semantic error, such as the `f()` that an editor leaves when it closes `(` at once, does parse, and gets its signature. Repairing incomplete calls is [#128](https://github.com/SaltedTan/virgil-language-server/issues/128)'s work ([Signature help](architecture.md#signature-help)).
+- Signature help requires a complete, parseable call; see [Signature help](architecture.md#signature-help) for incomplete calls and semantic errors.
 - If document-symbol parsing fails, the outline is empty, never stale or truncated. That parse normalizes carriage returns, so a CRLF file can have syntax diagnostics and still an outline ([Document symbols](architecture.md#document-symbols)).
 - An analysis stops at 15 errors, and an Information diagnostic (`ErrorLimit`) then says that errors elsewhere may be missing. Aeneas rejects carriage returns, as `v3c` does, with one error per CRLF line, so a single CRLF file reaches the limit. Convert CRLF files to LF, which WSL users' checkouts may need ([error limit](architecture.md#semantic-diagnostics)).
 
@@ -60,14 +60,7 @@ Only the uses that the [occurrence index](architecture.md#compiler-adapter) reco
 
 ## Signature help
 
-[Signature help](architecture.md#signature-help) shows the signature that the analysis recorded for the call around the cursor, and owns the details. In particular:
-
-- A signature's label is cut at 256 bytes and then ends with `…`. Only the parameters that the cut label holds are listed, and a later active parameter is reported as its index past the list.
-- A call with more arguments than its function has parameters, which is a type error, reports the parameter index past the last, as does a cursor after a trailing comma that follows as many arguments as there are parameters, as in `add(1, 2,)`.
-- How a client shows an active parameter past the list varies: LSP 3.17 specifies that it defaults to parameter 0, VS Code highlights no parameter, and Neovim 0.11.6 highlights the last.
-- A client without `labelOffsetSupport` gets each parameter's label as a string, and finds it in the signature's label itself: in `(int, int) -> int`, both parameters are `int`, and such a client may highlight the first for either. VS Code and Neovim both support label offsets, which are exact.
-- A call without a known signature gets nothing: an unresolved callee, and the calls in its arguments, which verification doesn't check either.
-- There is no documentation, since the analysis doesn't keep doc comments.
+The [signature-help contract](architecture.md#signature-help) owns the limits on labels and documentation, unresolved callees, and client-dependent parameter highlighting.
 
 ## Crashes in the compiler front end
 
