@@ -164,14 +164,17 @@ class ProgramAnalysis {
 	private var packings: AnalysisPackings;
 	// For each file's collector in turn.
 	private def callEnds = AnalysisCallEnds.new();
+	// The names that the program's files declare, for each file's collector.
+	private var names: AnalysisDeclaredNames;
 
 	new(diagnostics, stats, parsed, verified, prog: Program) {
 		if (parsed) {
 			packings = AnalysisPackings.new(prog);
+			names = AnalysisDeclaredNames.new(prog.vst.files);
 			for (i < prog.files.length) sources.add(prog.files[i], prog.inputs[i]);
 			for (f in prog.vst.files) {
 				// Preserve the first file's bindings if an input path is repeated.
-				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings, callEnds);
+				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings, callEnds, names);
 			}
 		}
 	}
@@ -287,7 +290,7 @@ class ProgramAnalysis {
 // Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
 // repeated walk, allocation, or sort for subsequent binding queries.
 class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: AnalysisPackings,
-		callEnds: AnalysisCallEnds) {
+		callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames) {
 	private var uses: Array<AnalysisOccurrence>;
 	def var skipped: int;
 	def var located: int;
@@ -298,7 +301,7 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 
 	def occurrences() -> Array<AnalysisOccurrence> {
 		if (uses == null) {
-			var collector = OccurrenceCollector.new(sources, display, packings, callEnds);
+			var collector = OccurrenceCollector.new(sources, display, packings, callEnds, names);
 			uses = collector.collect(file);
 			skipped = collector.skipped;
 			located = collector.located;

@@ -11,6 +11,7 @@ def X = [
 	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
 	T("AnalysisDisplay:generic_call_signatures", test_generic_call_signatures),
 	T("OccurrenceCollector:unbound_call_exclusions", unbound_call_exclusions),
+	T("OccurrenceCollector:shadowed_unbound_calls", shadowed_unbound_calls),
 	T("AnalysisDisplay:generic_index_operations", test_generic_index_operations),
 	T("AnalysisDisplay:substituted_function_types", test_substituted_function_types),
 	T("AnalysisDisplay:inherited_index_methods", test_inherited_index_methods),
@@ -200,20 +201,46 @@ def unbound_call_exclusions(t: Tester) {
 	];
 	for (form in forms) {
 		var prefix = "component C { var field: int; def known(x: int) -> int { return x; } def f() { ";
-		var text = Strings.format2("%s%s; } }", prefix, form.0);
-		var r = analyze(t, text, form.2), path = PATH;
-		if (r.1 == null) continue;
-		for (calls in [r.0.calls(path), r.1.calls(path)]) {
-			t.asserti(form.1.length, calls.length);
-			for (i < Ints.min(form.1.length, calls.length)) {
-				var c = calls[i];
-				OccurrenceCollectorTest.checkCall(t, text, c);
-				t.assert_string(form.1[i], Arrays.range(text, c.open, c.close));
-			}
-		}
-		t.asserti(0, r.0.skippedUses(path));
-		t.asserti(0, r.1.stats.skippedUses);
+		assertCallSpans(t, Strings.format2("%s%s; } }", prefix, form.0), form.1, form.2);
 	}
+}
+
+// A program that declares something named "void" or "Pointer" may call it
+// where verification leaves the call unbound.
+def shadowed_unbound_calls(t: Tester) {
+	var forms: Array<(string, Array<string>)> = [
+		("component C { def void(x: int) -> int { return x; } def f() { missing(void(1)); } }",
+			["(void(1))", "(1)"]),
+		("component C { def known(x: int) -> int { return x; } def f() { var void = known; missing(void(1)); } }",
+			["(void(1))", "(1)"]),
+		("class P { def atField(x: int) -> int { return x; } } component C { def f(Pointer: P) { missing(Pointer.atField(1)); } }",
+			["(Pointer.atField(1))", "(1)"]),
+		("class Pointer { } component C { def f(p: Pointer) { missing(Pointer.atField(1)); } }",
+			["(Pointer.atField(1))", "(1)"]),
+		// A declaration named "void" does not shadow "Pointer", or the reverse.
+		("component C { def void(x: int) -> int { return x; } def f() { missing(Pointer.atField(1)); } }",
+			["(Pointer.atField(1))"]),
+		("class P { def atField(x: int) -> int { return x; } } component C { def f(Pointer: P) { missing(void(1)); } }",
+			["(void(1))"])
+	];
+	for (form in forms) assertCallSpans(t, form.0, form.1, false);
+}
+
+// Checks that {text} has calls with the spans {want}, from the opening
+// parenthesis to the closing one, both in the analysis and decoded.
+def assertCallSpans(t: Tester, text: string, want: Array<string>, verified: bool) {
+	var r = analyze(t, text, verified), path = PATH;
+	if (r.1 == null) return;
+	for (calls in [r.0.calls(path), r.1.calls(path)]) {
+		t.asserti(want.length, calls.length);
+		for (i < Ints.min(want.length, calls.length)) {
+			var c = calls[i];
+			OccurrenceCollectorTest.checkCall(t, text, c);
+			t.assert_string(want[i], Arrays.range(text, c.open, c.close));
+		}
+	}
+	t.asserti(0, r.0.skippedUses(path));
+	t.asserti(0, r.1.stats.skippedUses);
 }
 
 def test_generic_call_signatures(t: Tester) {

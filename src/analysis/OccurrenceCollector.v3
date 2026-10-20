@@ -5,9 +5,9 @@
 // docs/architecture.md#compiler-adapter, and display data in
 // docs/architecture.md#display-text.
 // {packings} is the program's packings, or null if it was not verified.
-// {callEnds} is shared by the program's files.
+// {callEnds} and {names} are shared by the program's files.
 class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
-		packings: AnalysisPackings, callEnds: AnalysisCallEnds) extends VstVisitor<void, void> {
+		packings: AnalysisPackings, callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
 	// Declaration sites in the order the walk finds them, which breaks ties.
@@ -560,10 +560,13 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				match (v.varbind) {
 					PtrAtField => return -1;
 					None => {
-						if (v.expr == null && Strings.equal(v.ident.name.image, "void")) return -1;
+						// Each name could also be a declaration of the program's,
+						// called like any other, so it excludes a call only where
+						// the program declares nothing by that name.
+						if (v.expr == null && Strings.equal(v.ident.name.image, "void") && !names.declaresVoid()) return -1;
 						if (VarExpr.?(v.expr) && Strings.equal(v.ident.name.image, "atField")) {
 							var owner = VarExpr.!(v.expr);
-							if (owner.expr == null && Strings.equal(owner.ident.name.image, "Pointer")) return -1;
+							if (owner.expr == null && Strings.equal(owner.ident.name.image, "Pointer") && !names.declaresPointer()) return -1;
 						}
 					}
 					_ => ;
@@ -1111,5 +1114,205 @@ class AnalysisPackings {
 					&& Strings.equal(r.fileName, t.fileName) && Strings.equal(l.head.error, "PackingDeclError")) return true;
 		}
 		return false;
+	}
+}
+
+// Whether a program declares anything named "void" or "Pointer", in any
+// file and of any kind, for OccurrenceCollector.call, which asks only of an
+// application that verification left unbound. The first question walks
+// every file's syntax tree once; the parser built it whole, including the
+// bodies and declarations that verification never reached.
+class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void> {
+	private var scanned: bool;
+	private var hasVoid: bool;
+	private var hasPointer: bool;
+
+	def declaresVoid() -> bool {
+		scan();
+		return hasVoid;
+	}
+	def declaresPointer() -> bool {
+		scan();
+		return hasPointer;
+	}
+	private def scan() {
+		if (scanned) return;
+		scanned = true;
+		if (files == null) return;
+		for (f in files) {
+			if (f == null) continue;
+			for (i < f.components.length) compound(f.components[i]);
+			for (i < f.classes.length) compound(f.classes[i]);
+			for (i < f.enums.length) compound(f.enums[i]);
+			for (i < f.layouts.length) compound(f.layouts[i]);
+			for (i < f.packings.length) compound(f.packings[i]);
+			for (i < f.exports.length) {
+				var x = f.exports[i];
+				name(x.token);
+				if (x.synthetic != null) compound(x.synthetic);
+			}
+		}
+	}
+	private def name(t: Token) {
+		if (t == null) return;
+		if (Strings.equal(t.image, "void")) hasVoid = true;
+		else if (Strings.equal(t.image, "Pointer")) hasPointer = true;
+	}
+	private def compound(c: VstCompound) {
+		name(c.token);
+		typeParams(c.typeParams);
+		params(c.params);
+		if (c.superclause != null) expr(c.superclause.args);
+		if (VstPacking.?(c)) {
+			var pparams = VstPacking.!(c).pparams;
+			if (pparams != null) for (l = pparams.list; l != null; l = l.tail) name(l.head.token);
+		}
+		for (l = c.members; l != null; l = l.tail) {
+			name(l.head.token);
+			match (l.head) {
+				x: VstNew => {
+					if (x.superclause != null) expr(x.superclause.args);
+					func(x.func);
+				}
+				x: VstMethod => {
+					typeParams(x.typeParams);
+					func(x.func);
+				}
+				x: VstField => expr(x.init);
+				x: VstEnumCase => exprs(x.args);
+				_ => ;
+			}
+		}
+	}
+	private def typeParams(list: List<TypeParamType>) {
+		for (l = list; l != null; l = l.tail) name(l.head.token);
+	}
+	private def params(list: VstList<ParamDecl>) {
+		if (list != null) for (l = list.list; l != null; l = l.tail) name(l.head.token);
+	}
+	private def func(f: VstFunc) {
+		params(f.params);
+		stmt(f.body);
+	}
+	private def varDecl(v: VarDecl) {
+		if (v == null) return;
+		name(v.token);
+		expr(v.init);
+	}
+	private def stmt(s: Stmt) {
+		if (s != null) s.accept(this, ());
+	}
+	private def expr(e: Expr) {
+		if (e != null) e.accept(this, ());
+	}
+	private def exprs(list: VstList<Expr>) {
+		if (list != null) for (l = list.list; l != null; l = l.tail) expr(l.head);
+	}
+
+	def visitIf(s: IfStmt, env: void) {
+		expr(s.cond);
+		stmt(s.tbranch);
+		stmt(s.fbranch);
+	}
+	def visitBlock(s: BlockStmt, env: void) {
+		for (l = s.stmts.list; l != null; l = l.tail) stmt(l.head);
+	}
+	def visitWhile(s: WhileStmt, env: void) {
+		expr(s.cond);
+		stmt(s.body);
+	}
+	def visitFor(s: ForStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.cond);
+		expr(s.update);
+		stmt(s.body);
+	}
+	def visitForeach(s: ForeachStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitForLess(s: ForLessStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitLocal(s: LocalStmt, env: void) {
+		for (l = s.vars; l != null; l = l.tail) varDecl(l.head);
+	}
+	def visitBreak(s: BreakStmt, env: void) { }
+	def visitContinue(s: ContinueStmt, env: void) { }
+	def visitExpr(s: ExprStmt, env: void) {
+		expr(s.expr);
+	}
+	def visitMatch(s: MatchStmt, env: void) {
+		expr(s.expr);
+		for (l = s.cases.list; l != null; l = l.tail) {
+			var c = l.head;
+			for (p = c.patterns.list; p != null; p = p.tail) {
+				var pat = p.head;
+				expr(pat.expr);
+				if (pat.params != null) for (v = pat.params.list; v != null; v = v.tail) varDecl(v.head);
+				varDecl(pat.vdecl);
+			}
+			stmt(c.stmt);
+		}
+	}
+	def visitEmpty(s: EmptyStmt, env: void) { }
+	def visitReturn(s: ReturnStmt, env: void) {
+		expr(s.expr);
+	}
+
+	def visitTuple(e: TupleExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitParamExpr(e: ParamExpr, env: void) { }
+	def visitAutoExpr(e: AutoExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitArray(e: ArrayExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitVar(e: VarExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitLiteral(e: Literal, env: void) { }
+	def visitString(e: StringExpr, env: void) { }
+	def visitApp(e: AppExpr, env: void) {
+		expr(e.func);
+		expr(e.args);
+	}
+	def visitIndex(e: IndexExpr, env: void) {
+		expr(e.expr);
+		exprs(e.exprs);
+	}
+	def visitRange(e: RangeExpr, env: void) {
+		expr(e.expr);
+		expr(e.start);
+		expr(e.end);
+	}
+	def visitNot(e: NotExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitNeg(e: NegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitBitwiseNeg(e: BitwiseNegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitAssign(e: AssignExpr, env: void) {
+		expr(e.target);
+		expr(e.expr);
+	}
+	def visitBinOp(e: BinOpExpr, env: void) {
+		expr(e.left);
+		expr(e.right);
+	}
+	def visitIfExpr(e: IfExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitFunExpr(e: FunExpr, env: void) {
+		name(e.name);
+		func(e.func);
 	}
 }
