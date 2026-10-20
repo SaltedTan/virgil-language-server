@@ -7,6 +7,8 @@ def X = [
 	T("ProjectExpansion:glob", test_glob),
 	T("ProjectExpansion:glob_selects", test_glob_selects),
 	T("ProjectExpansion:glob_budget", test_glob_budget),
+	T("ProjectExpansion:glob_exhausted_work", test_glob_exhausted_work),
+	T("WorkspaceProjects:ownership_exhausted_work", test_ownership_exhausted_work),
 	T("ProjectExpansion:fixtures", test_expansion_fixtures),
 	T("ProjectExpansion:order_exclude_deduplicate", test_order_exclude),
 	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
@@ -141,6 +143,70 @@ def test_glob_budget(t: Tester) {
 		var short = budgeted(cost - 1, c.0, c.1, c.2);
 		t.assertz(false, short.0);
 		t.assertz(true, short.1.exhausted());
+	}
+}
+class ExhaustionCountingMatcher extends ProjectGlobMatcher {
+	def limit: int;
+	var checks: int;
+	new(limit) super(limit) { }
+	def exhausted() -> bool {
+		checks++;
+		return spent > limit;
+	}
+}
+def test_glob_exhausted_work(t: Tester) {
+	var path = Array<string>.new(1000), patterns = Array<Array<string>>.new(30000);
+	for (i < path.length) path[i] = "d";
+	for (i < patterns.length) patterns[i] = ["Z.v3"];
+	var one = ExhaustionCountingMatcher.new(0), many = ExhaustionCountingMatcher.new(0);
+	t.assertz(false, one.selects([patterns[0]], [], path));
+	t.assertz(false, many.selects(patterns, [], path));
+	t.asserti(one.checks, many.checks);
+	t.assert(many.checks < 10, "exhaustion ends the pattern loop");
+	t.asserti(one.spent, many.spent);
+	var before = many.checks;
+	t.assertz(false, many.matches([], []));
+	t.assertz(false, many.matches(patterns[0], path));
+	t.asserti(2, many.checks - before);
+	before = many.checks;
+	t.assertz(false, many.selects(patterns, patterns, path));
+	t.asserti(1, many.checks - before);
+	one = ExhaustionCountingMatcher.new(path.length + 1);
+	many = ExhaustionCountingMatcher.new(path.length + 1);
+	t.assertz(false, one.selects([["**"]], [patterns[0]], path));
+	t.assertz(false, many.selects([["**"]], patterns, path));
+	t.asserti(one.checks, many.checks);
+	t.assert(many.checks < 10, "exhaustion ends the exclusion loop");
+}
+class OwnershipExhaustingMatcher extends ProjectGlobMatcher {
+	def exhaustAt: int;
+	var selections: int;
+	new(exhaustAt) super(1000000) { }
+	def selects(patterns: Array<Array<string>>, exclude: Array<Array<string>>, path: Range<string>) -> bool {
+		if (++selections == exhaustAt) charge(1000001);
+		return false;
+	}
+}
+def test_ownership_exhausted_work(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var path = ProjectFiles.join(base, "exhausted.json");
+	var projects = StringBuilder.new();
+	for (i < 3) {
+		if (i > 0) projects.puts(",");
+		projects.puts(Strings.format1("{\"name\":\"p%d\",\"sources\":[\"Z.v3\"],\"dependencies\":[\"Z.v3\"],\"virgilDependencies\":[\"Z.v3\"]}", i));
+	}
+	store.open(ProjectFiles.uri(path), "json", 1, Strings.format1("{\"version\":1,\"projects\":[%s]}", projects.extract()));
+	w.virgilRoot = base;
+	var config = w.load(path);
+	t.asserti(0, config.diagnostics.length);
+	t.asserti(3, config.contexts.length);
+	for (field = 1; field <= 3; field++) {
+		var m = OwnershipExhaustingMatcher.new(field);
+		var other = w.otherProgram(config.contexts[0], [ProjectFiles.join(base, "A.v3")], m);
+		t.assertz(true, m.exhausted());
+		t.asserti(field, m.selections);
+		t.assert(other.0 == null && other.1 == null, "exhaustion returns no owner");
 	}
 }
 def test_expansion_fixtures(t: Tester) {

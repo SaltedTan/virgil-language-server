@@ -40,6 +40,7 @@ class ProjectGlobMatcher(budget: int) {
 	// Whether {text} starts with {prefix}, spending a step per byte compared.
 	// False once exhausted.
 	def startsWith(text: string, prefix: string) -> bool {
+		if (exhausted()) return false;
 		var i = 0;
 		if (prefix.length <= text.length) {
 			while (i < prefix.length && text[i] == prefix[i]) i++;
@@ -63,12 +64,18 @@ class ProjectGlobMatcher(budget: int) {
 	}
 	// {program}'s patterns, split; or null once exhausted.
 	def patterns(program: ProjectDefinition) -> ProjectGlobPatterns {
-		var sources = splitAll(program.sources), dependencies = splitAll(program.dependencies);
-		var exclude = splitAll(program.exclude), virgilDependencies = splitAll(program.virgilDependencies);
-		if (exhausted()) return null;
+		var sources = splitAll(program.sources);
+		if (sources == null) return null;
+		var dependencies = splitAll(program.dependencies);
+		if (dependencies == null) return null;
+		var exclude = splitAll(program.exclude);
+		if (exclude == null) return null;
+		var virgilDependencies = splitAll(program.virgilDependencies);
+		if (virgilDependencies == null) return null;
 		return ProjectGlobPatterns.new(sources, dependencies, exclude, virgilDependencies);
 	}
 	private def splitAll(patterns: Array<ProjectPattern>) -> Array<Array<string>> {
+		if (exhausted()) return null;
 		var result = Array<Array<string>>.new(patterns.length);
 		for (i < patterns.length) {
 			result[i] = split(patterns[i].text);
@@ -81,8 +88,13 @@ class ProjectGlobMatcher(budget: int) {
 	// directory it enters on the way, so one that matches a directory of
 	// {path} removes it too. False once exhausted.
 	def selects(patterns: Array<Array<string>>, exclude: Array<Array<string>>, path: Range<string>) -> bool {
+		if (exhausted()) return false;
 		var selected = false;
-		for (p in patterns) { if(matches(p, path)) { selected = true; break; } }
+		for (p in patterns) {
+			var matched = matches(p, path);
+			if (exhausted()) return false;
+			if (matched) { selected = true; break; }
+		}
 		if (!selected) return false;
 		for (e in exclude) {
 			if (!fill(e, path)) return false;
@@ -99,6 +111,7 @@ class ProjectGlobMatcher(budget: int) {
 	// exponential backtracking through multiple **. A row of false stays so,
 	// which ends the work early.
 	private def fill(pattern: Array<string>, path: Range<string>) -> bool {
+		if (exhausted()) return false;
 		var n = path.length;
 		if (row.length <= n) {
 			row = Array<bool>.new(n + 1);
@@ -119,9 +132,9 @@ class ProjectGlobMatcher(budget: int) {
 				next[0] = false;
 				for (i < n) {
 					next[i + 1] = row[i] && segment(p, path[i]);
+					if (exhausted()) return false;
 					any = any || next[i + 1];
 				}
-				if (exhausted()) return false;
 			}
 			var t = row;
 			row = next;

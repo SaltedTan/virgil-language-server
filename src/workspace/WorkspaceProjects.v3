@@ -166,6 +166,7 @@ class WorkspaceProjects(store: DocumentStore) {
 	// a path into a map, where paths chosen to collide would make each
 	// insertion and lookup cost more.
 	def otherProgram(ctx: ProjectContext, paths: Array<string>, matcher: ProjectGlobMatcher) -> (string, ProjectContext) {
+		if (matcher.exhausted()) return (null, null);
 		// Each other context with its configuration's directory, the base of
 		// its patterns. A base is a directory prefix of a path when the path's
 		// prefix with as many separators hashes the same and, checked only
@@ -201,6 +202,7 @@ class WorkspaceProjects(store: DocumentStore) {
 			if (prefixes.length < segments.length) prefixes = Array<int>.new(segments.length);
 			directories(path, prefixes);
 			var inLibrary = library != null && matcher.startsWith(path, library);
+			if (matcher.exhausted()) return (null, null);
 			var owner: ProjectContext, below = false;
 			for (i < others.length) {
 				if (!matcher.charge(1)) return (null, null);
@@ -210,6 +212,7 @@ class WorkspaceProjects(store: DocumentStore) {
 				if (i == 0 || bases[i] != bases[i - 1]) {
 					below = depths[i] < segments.length && prefixes[depths[i]] == hashes[i]
 						&& matcher.startsWith(path, bases[i]);
+					if (matcher.exhausted()) return (null, null);
 				}
 				var selectsLibrary = inLibrary && p.virgilDependencies.length > 0;
 				if (!below && !selectsLibrary) continue;
@@ -218,13 +221,16 @@ class WorkspaceProjects(store: DocumentStore) {
 				var s = split[i], selected = false;
 				if (below) {
 					var relative = segments[depths[i] ...];
-					selected = matcher.selects(s.sources, s.exclude, relative)
-						|| matcher.selects(s.dependencies, s.exclude, relative);
+					selected = matcher.selects(s.sources, s.exclude, relative);
+					if (matcher.exhausted()) return (null, null);
+					if (!selected) selected = matcher.selects(s.dependencies, s.exclude, relative);
+					if (matcher.exhausted()) return (null, null);
 				}
 				if (!selected && selectsLibrary) selected = matcher.selects(s.virgilDependencies, [], segments[libraryDepth ...]);
+				if (matcher.exhausted()) return (null, null);
 				if (selected && (owner == null || ownerBefore(c, owner, matcher))) owner = c;
+				if (matcher.exhausted()) return (null, null);
 			}
-			if (matcher.exhausted()) return (null, null);
 			if (owner != null) return (path, owner);
 		}
 		return (null, null);
