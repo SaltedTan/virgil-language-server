@@ -1,12 +1,20 @@
 # Neovim / LazyVim
 
-> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI; the LazyVim configuration is **untested**.
+> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for 0.1.0-alpha.1 ([results](../../docs/manual-testing.md#results)).
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
 ## LazyVim
 
 Copy [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to `~/.config/nvim/lua/plugins/virgil.lua`, and make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Set `VIRGIL_LOC` as described under [The Virgil root](#the-virgil-root).
+
+LazyVim's keys reach the server: `gd`, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help.
+
+LazyVim's noice.nvim drops `window/showMessage` notifications from every language server ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)), so warnings such as "Invalid project file …" don't appear, although the project file's diagnostics do. To see them, turn off noice's LSP message handler in a plugin spec, so that Neovim's own handler shows them:
+
+```lua
+{ "folke/noice.nvim", opts = { lsp = { message = { enabled = false } } } },
+```
 
 ## Plain Neovim
 
