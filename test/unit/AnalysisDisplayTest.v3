@@ -10,6 +10,7 @@ def X = [
 	T("AnalysisDisplay:numbered_file_declarations", test_numbered_file_declarations),
 	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
 	T("AnalysisDisplay:generic_call_signatures", test_generic_call_signatures),
+	T("AnalysisDisplay:closure_parameter_depth", test_closure_parameter_depth),
 	T("OccurrenceCollector:unbound_call_exclusions", unbound_call_exclusions),
 	T("OccurrenceCollector:shadowed_unbound_calls", shadowed_unbound_calls),
 	T("AnalysisDisplay:generic_index_operations", test_generic_index_operations),
@@ -289,6 +290,52 @@ def test_generic_call_signatures(t: Tester) {
 	assertDeclares(t, r, text, "f<T>(x", 0, AnalysisDeclKind.METHOD, "def f<T>(x: int) -> int");
 	assertDeclares(t, r, text, "id<T>(x", 0, AnalysisDeclKind.METHOD, "def id<T>(x: T) -> T");
 	assertDeclares(t, r, text, "type Data<T>", 5, AnalysisDeclKind.CLASS, "type Data<T>(value: int)");
+}
+
+def test_closure_parameter_depth(t: Tester) {
+	var nested = repeat("A<", 10), closes = repeat(">", 10), p = Strings.format2("%sbool%s", nested, closes);
+	var text = lines([
+		"class A<T> { }",
+		"component C {",
+		Strings.format2("  def pair(f: (%s, int) -> int, p: %s) { f(p, 1); }", p, p),
+		Strings.format2("  def single(f: %s -> int, p: %s) { f(p); }", p, p),
+		Strings.format2("  def higher(f: (%s -> int) -> int, p: %s -> int) { f(p); }", p, p),
+		"}"
+	]);
+	var r = analyze(t, text, true);
+	if (r.1 == null) return;
+	var elided = Strings.format3("%s%s%s", nested, ELISION, closes);
+	var want: Array<(string, Array<string>)> = [
+		(Strings.format1("(%s, int) -> int", elided), [elided, "int"]),
+		(Strings.format1("%s -> int", p), [p]),
+		(Strings.format1("(%s -> int) -> int", elided), [Strings.format1("%s -> int", elided)])
+	];
+	for (calls in [r.0.calls(PATH), r.1.calls(PATH)]) {
+		t.asserti(want.length, calls.length);
+		for (i < Ints.min(want.length, calls.length)) {
+			var s = calls[i].signature, w = want[i];
+			if (s == null) {
+				t.fail("a closure call has a signature");
+				continue;
+			}
+			t.assert_string(w.0, s.label);
+			t.asserti(w.1.length, s.params.length);
+			for (j < Ints.min(w.1.length, s.params.length)) {
+				t.assert_string(w.1[j], s.params[j]);
+				t.assert(s.holds(j), "the label holds the parameter at its exact offset");
+			}
+		}
+	}
+	AnalysisTypeCache.prepare();
+	var pt: Type = Bool.TYPE;
+	for (i < 10) pt = Function.newType(pt, Bool.TYPE);
+	var display = AnalysisDisplay.new(AnalysisSourceMaps.new());
+	for (params in [pt, Tuple.fromTypeArray([pt, Bool.TYPE])]) {
+		var ft = Function.newFuncRefType(params, Bool.TYPE);
+		var s = display.callSignatureAt(display.callSignature(null, VarBinding.None, ft));
+		for (i < s.params.length) t.assert(s.holds(i), "function-reference parameters have exact offsets");
+	}
+	AnalysisTypeCache.release();
 }
 
 def KINDS = lines([

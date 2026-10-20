@@ -1126,6 +1126,7 @@ class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void
 	private var scanned: bool;
 	private var hasVoid: bool;
 	private var hasPointer: bool;
+	def var visited: int;
 
 	def declaresVoid() -> bool {
 		scan();
@@ -1146,21 +1147,18 @@ class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void
 			for (i < f.enums.length) compound(f.enums[i]);
 			for (i < f.layouts.length) compound(f.layouts[i]);
 			for (i < f.packings.length) compound(f.packings[i]);
-			for (i < f.exports.length) {
-				var x = f.exports[i];
-				name(x.token);
-				if (x.synthetic != null) compound(x.synthetic);
-			}
+			for (i < f.exports.length) name(f.exports[i].token);
 		}
 	}
 	private def name(t: Token) {
 		if (t == null) return;
+		visited++;
 		if (Strings.equal(t.image, "void")) hasVoid = true;
 		else if (Strings.equal(t.image, "Pointer")) hasPointer = true;
 	}
 	private def compound(c: VstCompound) {
 		name(c.token);
-		typeParams(c.typeParams);
+		if (!c.isSynthetic) typeParams(c.typeParams);
 		params(c.params);
 		if (c.superclause != null) expr(c.superclause.args);
 		if (VstPacking.?(c)) {
@@ -1171,10 +1169,12 @@ class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void
 			name(l.head.token);
 			match (l.head) {
 				x: VstNew => {
-					if (x.superclause != null) expr(x.superclause.args);
-					func(x.func);
+					if (x.superclause != null && x.superclause != c.superclause) expr(x.superclause.args);
+					if (!x.isSynthetic && x.func.params != c.params) params(x.func.params);
+					stmt(x.func.body);
 				}
 				x: VstMethod => {
+					if (x.isSynthetic) continue;
 					typeParams(x.typeParams);
 					func(x.func);
 				}
@@ -1200,10 +1200,16 @@ class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void
 		expr(v.init);
 	}
 	private def stmt(s: Stmt) {
-		if (s != null) s.accept(this, ());
+		if (s != null) {
+			visited++;
+			s.accept(this, ());
+		}
 	}
 	private def expr(e: Expr) {
-		if (e != null) e.accept(this, ());
+		if (e != null) {
+			visited++;
+			e.accept(this, ());
+		}
 	}
 	private def exprs(list: VstList<Expr>) {
 		if (list != null) for (l = list.list; l != null; l = l.tail) expr(l.head);

@@ -246,7 +246,11 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	private def function(t: Type) -> AnalysisSignature {
 		var types = Tuple.toTypeArray(resolve(t.nested.head, 0));
 		var labels = Array<string>.new(types.length);
-		for (i < types.length) labels[i] = paramLabel(null, types[i], false);
+		for (i < types.length) {
+			start();
+			putType(types[i], if(types.length > 1, 2, 1));
+			labels[i] = strings.intern(buf);
+		}
 		// As putType writes "&((a, b) -> c)" or "(a -> b) -> c".
 		var offset = if(Function_TypeCon.!(t.typeCon).kind == Kind.FUNCREF, 2);
 		if (types.length > 1 || (types.length == 1 && isFunction(types[0]))) offset++;

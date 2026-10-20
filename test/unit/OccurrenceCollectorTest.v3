@@ -20,6 +20,8 @@ component OccurrenceCollectorTest {
 		T("OccurrenceCollector:unresolved_match_cases", unresolved_match_cases),
 		T("OccurrenceCollector:call_sites", call_sites),
 		T("OccurrenceCollector:nested_call_scaling", nested_call_scaling),
+		T("OccurrenceCollector:declared_name_scaling", declared_name_scaling),
+		T("OccurrenceCollector:declared_names", declared_names),
 		()
 	];
 	def MATCH_CASES = "test/fixtures/analysis/match-cases/main.v3";
@@ -271,6 +273,70 @@ component OccurrenceCollectorTest {
 		t.asserti(0, a.skippedUses(path));
 		t.asserti(calls, a.callRecords(path).1);
 		return a.locatedExprs(path);
+	}
+	def declared_name_scaling(t: Tester) {
+		for (shape in [exportedFunctions, nestedFunctions, variantCases]) {
+			var small = declaredNames(t, shape(40), false), large = declaredNames(t, shape(80), false);
+			t.assertz(false, small.declaresVoid());
+			t.assertz(false, small.declaresPointer());
+			t.assertz(false, large.declaresVoid());
+			t.assertz(false, large.declaresPointer());
+			t.assert(small.visited > 0 && large.visited <= 2 * small.visited + 16,
+				"declared-name scanning visits a linear number of nodes");
+			var visited = large.visited;
+			large.declaresVoid();
+			large.declaresPointer();
+			t.asserti(visited, large.visited);
+		}
+	}
+	def exportedFunctions(n: int) -> string {
+		var b = StringBuilder.new();
+		for (i < n) b.put1("export def f%d() { missing(void(1)); }\n", i);
+		return b.toString();
+	}
+	def nestedFunctions(n: int) -> string {
+		return StringBuilder.new().puts("component C { def f() { ")
+			.puts(nest("var g = fun () { ", "missing(void(1));", " };", n)).puts(" } }").toString();
+	}
+	def variantCases(n: int) -> string {
+		var b = StringBuilder.new().puts("type V<");
+		for (i < n) {
+			if (i > 0) b.puts(", ");
+			b.put1("T%d", i);
+		}
+		b.puts("> { ");
+		for (i < n) b.put1("case C%d; ", i);
+		return b.puts("} component C { def f() { missing(void(1)); } }").toString();
+	}
+	def declaredNames(t: Tester, text: string, verified: bool) -> AnalysisDeclaredNames {
+		AnalysisTypeCache.prepare();
+		var prog = Program.new();
+		SystemCalls.install(prog);
+		prog.files = ["declared-names.v3"];
+		prog.inputs = [text];
+		var compilation = Compilation.new(Compiler.new(null), prog);
+		t.assertz(true, compilation.parse());
+		t.assertz(verified, compilation.verify());
+		var names = AnalysisDeclaredNames.new(prog.vst.files);
+		names.declaresVoid();
+		AnalysisTypeCache.release();
+		return names;
+	}
+	def declared_names(t: Tester) {
+		var forms: Array<(string, bool, bool)> = [
+			("export def void() { }", true, false),
+			("export def Pointer() { }", false, true),
+			("class C<Pointer> { def f() { var g = fun () { var void = 1; }; } }", true, true),
+			("class C { def f<Pointer>() { var g = fun () { var h = fun () { var void = 1; }; }; } }", true, true),
+			("type V<Pointer> { case A(void: int); case B { def f() { var g = fun () { var void = 1; }; } } }", true, true),
+			("class Base(x: int) { } class C(Pointer: int) extends Base((fun () -> int { var void = 1; return void; })()) { new() { } }", true, true),
+			("class Base(x: int) { } class C extends Base { new(Pointer: int) super((fun () -> int { var void = 1; return void; })()) { } }", true, true)
+		];
+		for (form in forms) {
+			var names = declaredNames(t, form.0, true);
+			t.assertz(form.1, names.declaresVoid());
+			t.assertz(form.2, names.declaresPointer());
+		}
 	}
 	def twoNests(n: int) -> string {
 		return Strings.format2("g(%s, %s)", nest("f(", "1", ")", n / 2), nest("f(", "1", ")", n / 2 - 1));
