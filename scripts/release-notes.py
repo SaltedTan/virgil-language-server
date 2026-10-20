@@ -30,6 +30,20 @@ PLATFORMS = {
     "It is not a native arm64 build.",
 }
 SHARED = ("version", "tag", "sourceRevision", "dirty", "virgilRevision")
+# The fields that main() reads from each build manifest and the types that
+# scripts/package-release.sh writes, which the release notes depend on: the
+# version and target name the archive, dirty refuses a modified build, tag is
+# null for a dry run, and the revisions are linked. Each string must also be
+# non-empty and encode as UTF-8, or print() can't write it. workerHeap,
+# compiler, and sha256 are in the manifest but the notes don't read them.
+MANIFEST_FIELDS = (
+    ("version", "a non-empty string"),
+    ("tag", "a non-empty string or null"),
+    ("target", "a non-empty string"),
+    ("sourceRevision", "a non-empty string"),
+    ("dirty", "a boolean"),
+    ("virgilRevision", "a non-empty string"),
+)
 MANIFEST = "extension/package.json"
 # What zipfile can raise for a damaged VSIX that is_zipfile accepts, as in
 # scripts/check-vsix.py: a bad header, central directory, or CRC; an entry
@@ -66,6 +80,69 @@ def load_json(path):
     except (OSError, ValueError) as e:
         fail("cannot read %s: %s" % (path, e))
     return parse_json(text, path)
+
+
+def json_type(value):
+    """Names the JSON type of a decoded value, with the article that a message
+    reads with. bool is a subclass of int, so check it before int."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, dict):
+        return "an object"
+    return "a " + type(value).__name__
+
+
+def string_fault(value, want):
+    """What is wrong with a value that main() reads as a string, as the text
+    that follows the field's name, or None if it is usable: it isn't a string,
+    it is empty, or it holds a lone surrogate, as a JSON escape such as
+    \\ud800 decodes to, which print() can't encode as UTF-8."""
+    if not isinstance(value, str):
+        return "is %s, not %s" % (json_type(value), want)
+    if not value:
+        return "is an empty string, not %s" % want
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return "is not valid Unicode"
+    return None
+
+
+def validate_manifest(path, manifest):
+    """Checks that a build manifest is an object with the fields that main()
+    reads, each of the type that scripts/package-release.sh writes, and that
+    each string is non-empty and encodes as UTF-8, then reports every problem
+    with it at once."""
+    if not isinstance(manifest, dict):
+        fail("%s is not a JSON object" % path)
+    problems = []
+    missing = [key for key, _ in MANIFEST_FIELDS if key not in manifest]
+    if missing:
+        problems.append("lacks required fields: " + ", ".join(missing))
+    for key, want in MANIFEST_FIELDS:
+        if key not in manifest:
+            continue
+        value = manifest[key]
+        if key == "dirty":
+            ok = isinstance(value, bool)
+            why = "is %s, not %s" % (json_type(value), want)
+        elif key == "tag" and value is None:
+            ok = True
+        else:
+            why = string_fault(value, want)
+            ok = why is None
+        if not ok:
+            problems.append("%s %s" % (key, why))
+    if problems:
+        fail("%s: %s" % (path, "; ".join(problems)))
 
 
 def changelog_section(heading):
@@ -114,7 +191,8 @@ def extension(assets):
         fail("%s: %s is not UTF-8: %s" % (name, MANIFEST, e))
     manifest = parse_json(text, "%s: %s" % (name, MANIFEST))
     if not isinstance(manifest, dict) or not all(
-            isinstance(manifest.get(k), str) and manifest[k] for k in ("name", "publisher", "version")):
+            string_fault(manifest.get(k), "a non-empty string") is None
+            for k in ("name", "publisher", "version")):
         fail(name + ": extension/package.json lacks a name, publisher, or version")
     if name != "%s-%s.vsix" % (manifest["name"], manifest["version"]):
         fail("%s holds version %s of %s" % (name, manifest["version"], manifest["name"]))
@@ -127,7 +205,9 @@ def main():
     heading, assets = sys.argv[1:]
     manifests = []
     for path in sorted(glob.glob(os.path.join(assets, "*.manifest.json"))):
-        manifests.append(load_json(path))
+        manifest = load_json(path)
+        validate_manifest(path, manifest)
+        manifests.append(manifest)
     if not manifests:
         fail("no build manifests in " + assets)
     first = manifests[0]
