@@ -140,12 +140,12 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// docs/architecture.md#call-sites. A method, constructor, or variant case
 	// has its declaration's form and parameter names, and a class constructed
 	// by its default constructor has its own; any other function's signature
-	// is its type. A call with its callee's declared parameter types, as most
-	// have, has its declaration's signature text, and its parameters have their
-	// declarations' texts. Otherwise the types are the call's, without type
-	// parameters, and so is the result. A method called through its class, as
-	// in C.m(c, x), has the receiver as its first parameter, a type without a
-	// name, and always the call's types.
+	// is its type. Matching declared parameter and result types preserves
+	// declaration-style text, including a return of "this". Generic parameter
+	// declarations are omitted from call labels even when those types match.
+	// Otherwise the types are the call's, and so is the result. A method
+	// called through its class, as in C.m(c, x), has the receiver as its first
+	// parameter, a type without a name, and always the call's types.
 	def callSignature(target: AnalysisDeclaration, b: VarBinding, t: Type) -> int {
 		t = resolve(t, 0);
 		if (unknown(t) || !Function_TypeCon.?(t.typeCon) || t.nested == null || t.nested.tail == null) return -1;

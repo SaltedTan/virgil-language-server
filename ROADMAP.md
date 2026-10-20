@@ -261,7 +261,7 @@ Recommended order:
 1. `workspace/symbol` from the existing declaration index. *(present; [#122](https://github.com/SaltedTan/virgil-language-server/issues/122); see [Workspace symbols](docs/architecture.md#workspace-symbols))*
 2. `textDocument/references` from the occurrence index. *(present; [#123](https://github.com/SaltedTan/virgil-language-server/issues/123); see [References](docs/architecture.md#references) for the query design and measurements)*
 3. `textDocument/prepareRename` and `textDocument/rename`, with conflict checks and versioned workspace edits.
-4. `textDocument/signatureHelp` using resolved call targets and method signatures.
+4. `textDocument/signatureHelp` using resolved call targets and method signatures. *(call-site analysis present; [#126](https://github.com/SaltedTan/virgil-language-server/issues/126); see [Call sites](docs/architecture.md#call-sites); the LSP request remains planned)*
 5. Basic completion for keywords and in-scope declarations.
 6. Member completion based on receiver type.
 
