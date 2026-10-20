@@ -56,6 +56,7 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 
 [Rename](architecture.md#rename) is deliberately conservative: it refuses rather than risk an edit that changes what the program means, and its reason says why. [Prepare rename](architecture.md#prepare-rename) lists the rules for which names can be renamed, and [Rename](architecture.md#rename) the rules for new names and edits.
 
+- Start rename or prepare rename from an open editor document. Requests from closed files are refused because their positions can move on disk without a file notification; the rename can still edit other closed files ([request document](architecture.md#rename)).
 - It refuses to rename anything while the project's analysis has any error, a parse error or a semantic one, anywhere in the project. A use that the verifier did not resolve would be missed ([eligibility](architecture.md#prepare-rename)).
 - It analyzes the whole program again with the edits applied before it replies, so a rename takes about as long as an analysis of the project ([measurements](architecture.md#rename)). One rename is checked at a time; another sent meanwhile is refused until the first is answered ([scheduling](architecture.md#rename)).
 - It refuses a method that shares its name with any other method, in any class or component, since the analysis records no class hierarchy and cannot tell an override from an unrelated method ([eligibility](architecture.md#prepare-rename)).

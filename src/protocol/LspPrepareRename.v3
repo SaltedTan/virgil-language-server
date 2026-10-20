@@ -4,10 +4,19 @@
 // textDocument/prepareRename over LspRenameEligibility: the range and
 // placeholder of the name at a position, or RequestFailed with the reason it
 // cannot be renamed. See docs/architecture.md#prepare-rename.
-class LspPrepareRename(projects: WorkspaceProjects) {
+class LspPrepareRename(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
-		requests.registerRejecting(dispatcher, "textDocument/prepareRename", "prepareRename",
-			answer, fail);
+		dispatcher.onDeferredRequest("textDocument/prepareRename", receive(requests, _));
+	}
+	private def receive(requests: LspSnapshotRequests, request: JsonRpcMessage.Request) {
+		if (LspRenameEligibility.closedRequest(store, request)) {
+			var error = JsonRpcError.new(LspErrorCode.REQUEST_FAILED, LspRenameEligibility.OPEN_DOCUMENT);
+			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
+		}
+		requests.submit(request, "prepareRename", "a valid textDocument.uri and position", prepare, fail, null);
+	}
+	private def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return answer;
 	}
 	// The prepared range and placeholder of the use or declaration containing
 	// {offset}, or false if neither is there and the caller should try the byte

@@ -384,19 +384,20 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		configs = live;
 	}
-	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
+	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, original: AnalysisSnapshot, incomingBytes: long) -> bool {
 		if (active != null) active.lastUsed = ++nextUse;
 		var retained = if(latest != null, latest.retainedBytes, 0L);
+		if (original != null && original != latest) retained += original.retainedBytes;
 		for (i < configs.length) {
 			for (ctx in configs[i].contexts) {
-				if (ctx.snapshot != null && ctx.snapshot != latest) retained += ctx.snapshot.retainedBytes;
+				if (ctx.snapshot != null && ctx.snapshot != latest && ctx.snapshot != original) retained += ctx.snapshot.retainedBytes;
 			}
 		}
 		while (retained > long.view(MAX_SNAPSHOT_BYTES) - incomingBytes) {
 			var victim: ProjectContext;
 			for (i < configs.length) {
 				for (ctx in configs[i].contexts) {
-					if (ctx == active || ctx.snapshot == null || ctx.snapshot == latest) continue;
+					if (ctx == active || ctx.snapshot == null || ctx.snapshot == latest || ctx.snapshot == original) continue;
 					if (victim == null || ctx.lastUsed < victim.lastUsed) victim = ctx;
 				}
 			}

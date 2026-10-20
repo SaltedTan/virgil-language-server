@@ -503,6 +503,7 @@ def test_dependencies(t: Tester) {
 	var s = PrepareRenameTestSession.new("rename-deps",
 		files(["Main.v3", "Use.v3", "dep/Lib.v3"], [DEP_MAIN, DEP_USE, DEP_LIB]), t);
 	s.open("Main.v3", 1, DEP_MAIN);
+	s.open("dep/Lib.v3", 1, DEP_LIB);
 	s.settle();
 	expectFailureIn(t, s, "dep/Lib.v3", DEP_LIB, "component Lib", 10,
 		"cannot rename 'Lib': it is declared in a dependency, not in the project's own sources");
@@ -519,6 +520,8 @@ def test_many_member_files(t: Tester) {
 	var use = "component U0999 { def get(g: Gadget) -> Widget { return Widget.new(); } }\n";
 	var s = PrepareRenameTestSession.new("rename-members", Array<(string, string)>.new(0), t);
 	s.open("Main.v3", 1, main);
+	s.open("use/U0999.v3", 1, use);
+	s.open("dep/Lib.v3", 1, lib);
 	s.settle();
 	t.asserti(1002, s.server.projects.forDocument(s.uri("Main.v3")).active.sources.length);
 	var widget = at(main, "class Widget", 6);
@@ -781,10 +784,8 @@ def test_stale_other_file(t: Tester) {
 	s.settle();
 	var use = at(MAIN, "return Widget", 7);
 	expectPreparedAt(t, s, "Main.v3", use.line, use.begin, span(MAIN, "return Widget", 7, 6), "Widget");
-	// A use in another file of the same program is eligible, and its range is
-	// in the requested document.
 	var otherUse = at(OTHER, "return Widget", 7);
-	expectPreparedAt(t, s, "Other.v3", otherUse.line, otherUse.begin, span(OTHER, "return Widget", 7, 6), "Widget");
+	expectFailureAt(t, s, "Other.v3", otherUse.line, otherUse.begin, "open the document to rename from it");
 	s.write(t, "Other.v3", "def other = 2;\n");
 	expectFailureAt(t, s, "Main.v3", use.line, use.begin,
 		Strings.format1("the project's analysis is stale: the bytes of %s changed since it was analyzed", s.path("Other.v3")));

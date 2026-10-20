@@ -12,6 +12,20 @@ class LspRenameSelection(decl: AnalysisDeclaration, token: string, begin: int, e
 // textDocument/rename (LspRename) both select the name with {select}, so a
 // rename refuses everything prepareRename refuses, with the same reason.
 component LspRenameEligibility {
+	def OPEN_DOCUMENT = "open the document to rename from it";
+	def closedRequest(store: DocumentStore, request: JsonRpcMessage.Request) -> bool {
+		if (!JsonRpcParams.ByName.?(request.params)) return false;
+		var params = JsonRpcParams.ByName.!(request.params).v;
+		if (!JsonValue.JObject.?(params["textDocument"])) return false;
+		var doc = JsonValue.JObject.!(params["textDocument"]).v;
+		if (!JsonValue.String.?(doc["uri"])) return false;
+		var key = DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v);
+		if (!JsonValue.JObject.?(params["position"])) return false;
+		var position = JsonValue.JObject.!(params["position"]).v;
+		if (!JsonValue.Int.?(position["line"]) || !JsonValue.Int.?(position["character"])) return false;
+		if (JsonValue.Int.!(position["line"]).v < 0 || JsonValue.Int.!(position["character"]).v < 0) return false;
+		return key != null && store.overlay(key) == null;
+	}
 	// The renameable name at {offset} in {at}'s document: whether the offset
 	// selects something there, and either the selection or the reason it
 	// cannot be renamed. Without a selection or a reason, the offset selects
@@ -20,6 +34,7 @@ component LspRenameEligibility {
 	// name; otherwise a position with no name is left to the caller's error.
 	def select(at: LspSnapshotPosition, projects: WorkspaceProjects, offset: int) -> (bool, LspRenameSelection, string) {
 		var s = at.snapshot, path = at.path();
+		if (at.store.overlay(s.documentVersions[at.index].uri) == null) return (true, null, OPEN_DOCUMENT);
 		var decl = s.definitionAtOffset(path, offset), begin: int, end: int, token: string;
 		if (decl != null) {
 			var o = s.occurrenceAtOffset(path, offset);

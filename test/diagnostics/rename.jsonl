@@ -25,7 +25,7 @@
 {"send":{"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":5,"character":9},"newName":"r"}}}
 {"recv":{"jsonrpc":"2.0","id":4,"error":{"code":-32803,"message":"renaming 'total' to 'r' would cause an error at @TMPDIR@/main.v3:5:14: VarDeclError: variable \"r\" redefined"}}}
 # A keyword cannot be a name; this is refused before any analysis.
-{"send":{"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/shapes.v3"},"position":{"line":1,"character":13},"newName":"while"}}}
+{"send":{"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":5,"character":19},"newName":"while"}}}
 {"recv":{"jsonrpc":"2.0","id":5,"error":{"code":-32803,"message":"'while' is a reserved word in Virgil and cannot be a name"}}}
 {"send":{"jsonrpc":"2.0","id":6,"method":"shutdown"}}
 {"recv":{"jsonrpc":"2.0","id":6,"result":null}}

@@ -90,6 +90,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		if (newName.length > LspRenameNames.MAX_LENGTH) {
 			return respond(request.id, fail(Strings.format1("the new name is longer than %d bytes", LspRenameNames.MAX_LENGTH)));
 		}
+		if (LspRenameEligibility.closedRequest(store, request)) return respond(request.id, fail(LspRenameEligibility.OPEN_DOCUMENT));
 		if (pending != null) return respond(request.id, fail("another rename is being checked; try again once it is answered"));
 		var r = LspRenameRequest.new(this, request.id, newName);
 		pending = r;
@@ -209,7 +210,12 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	def begin(r: LspRenameRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		var p = r.plan, sources = p.sources;
 		p.sources = null;
-		if (!projects.admitSnapshot(p.ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
+		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
+		if (ctx != p.ctx || !p.ctx.config.current) {
+			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the documents changed while the rename was checked");
+		}
+		if (!projects.admitSnapshot(p.ctx, supervisor.snapshot, p.at.snapshot,
+				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
 		return supervisor.beginTemporary(sources, p.ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);

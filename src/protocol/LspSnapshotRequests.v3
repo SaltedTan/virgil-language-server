@@ -9,12 +9,9 @@
 // offset in it, the answer function returns whether it found something at the
 // offset, and the reply: a result, which may be null, or an error. It keeps
 // what it needs of the other parameters, such as a references request's
-// context.includeDeclaration, while the request waits. {failure}, if not null,
-// is the reply for a request that cannot be answered, given the reason, as
-// prepareRename's; methods without a failure reply answer null instead.
+// context.includeDeclaration, while the request waits.
 class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: string,
-	prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-	failure: string -> JsonRpcReply) {
+	prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
 	def handle(request: JsonRpcMessage.Request) {
 		owner.receive(this, request);
 	}
@@ -121,34 +118,15 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) {
 		registerPrepared(dispatcher, method, label, "a valid textDocument.uri and position", always(answer, _));
 	}
-	// Handles {method} as {register} does, but answers a request that cannot be
-	// answered with {failure}'s reply instead of null; prepareRename uses it to
-	// report why a position cannot be renamed.
-	def registerRejecting(dispatcher: JsonRpcDispatcher, method: string, label: string,
-			answer: (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-			failure: string -> JsonRpcReply) {
-		registerPreparedWithFailure(dispatcher, method, label, "a valid textDocument.uri and position",
-			alwaysReply(answer, _), failure);
-	}
 	// Handles {method}, whose requests also have other parameters, with the
 	// answer function that {prepare} returns for each (see LspSnapshotMethod).
 	def registerPrepared(dispatcher: JsonRpcDispatcher, method: string, label: string, requires: string,
 			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
-		registerPreparedWithFailure(dispatcher, method, label, requires, prepare, null);
-	}
-	private def registerPreparedWithFailure(dispatcher: JsonRpcDispatcher, method: string, label: string,
-			requires: string,
-			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-			failure: string -> JsonRpcReply) {
-		dispatcher.onDeferredRequest(method, LspSnapshotMethod.new(this, label, requires, prepare, failure).handle);
+		dispatcher.onDeferredRequest(method, LspSnapshotMethod.new(this, label, requires, prepare).handle);
 	}
 	private def always(answer: (LspSnapshotPosition, int) -> (bool, JsonValue),
 			params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
 		return succeed(answer, _, _);
-	}
-	private def alwaysReply(answer: (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-			params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
-		return answer;
 	}
 	private def succeed(answer: (LspSnapshotPosition, int) -> (bool, JsonValue),
 			at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
@@ -184,10 +162,10 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	}
 	// Answers or defers {request} for {method}.
 	def receive(method: LspSnapshotMethod, request: JsonRpcMessage.Request) {
-		submit(request, method.label, method.requires, method.prepare, method.failure, null);
+		submit(request, method.label, method.requires, method.prepare, null, null);
 	}
 	// Answers or defers {request}, as a registered method with {label},
-	// {requires}, {prepare}, and {failure} would be (see LspSnapshotMethod),
+	// {requires}, {prepare}, and {failure} would be,
 	// but gives its reply to {deliver}, if not null, instead of sending it.
 	// Rename does, since its answer needs a further analysis before a reply.
 	// Returns the deferred request, which {withdraw} drops, or null if it was

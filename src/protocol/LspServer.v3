@@ -57,7 +57,7 @@ class LspServer {
 	// answered from snapshots.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
-	private def prepareRename = LspPrepareRename.new(projects);
+	private def prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 	private def signatureHelp = LspSignatureHelp.new();
 	// textDocument/rename; tests may lower its bounds.
 	var rename: LspRename;

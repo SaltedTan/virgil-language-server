@@ -27,6 +27,7 @@ def X = [
 	T("WorkspaceProjects:project_capacity_recovery", test_project_capacity_recovery),
 	T("WorkspaceProjects:discovery_overflow", test_discovery_overflow),
 	T("WorkspaceProjects:snapshot_budget", test_snapshot_budget),
+	T("WorkspaceProjects:rename_snapshot_budget", test_rename_snapshot_budget),
 	T("WorkspaceProjects:watched_configurations", test_watched_configurations),
 	T("WorkspaceProjects:folder_changes", test_folder_changes),
 	T("WorkspaceProjects:affected_contexts", test_affected_contexts),
@@ -698,8 +699,8 @@ def test_snapshot_budget(t: Tester) {
 	var contexts = w.load(path).contexts, latest: AnalysisSnapshot;
 	var reserve = long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + 1024 + 128 + 4;
 	for (i < contexts.length) {
-		if (i == 6) t.assertz(true, w.admitSnapshot(contexts[0], latest, reserve));
-		t.assertz(true, w.admitSnapshot(contexts[i], latest, reserve));
+		if (i == 6) t.assertz(true, w.admitSnapshot(contexts[0], latest, null, reserve));
+		t.assertz(true, w.admitSnapshot(contexts[i], latest, null, reserve));
 		if (i == 6) {
 			t.assert(contexts[0].snapshot != null, "recently used context survives eviction");
 			t.assert(contexts[1].snapshot == null, "least recently used inactive context evicted first");
@@ -713,15 +714,40 @@ def test_snapshot_budget(t: Tester) {
 		t.assert(retained <= w.MAX_SNAPSHOT_BYTES, "aggregate snapshots remain bounded");
 	}
 	t.assert(contexts[0].snapshot == null, "old context eventually evicted");
-	t.assertz(true, w.admitSnapshot(contexts[0], latest, reserve));
+	t.assertz(true, w.admitSnapshot(contexts[0], latest, null, reserve));
 	contexts[0].snapshot = occurrenceSnapshot(34);
 	t.assert(contexts[0].snapshot.definitionAt("p.v3", 1, 1) != null, "evicted context reanalyzes on demand");
 	var active = contexts[0].snapshot;
-	t.assertz(false, w.admitSnapshot(contexts[0], latest, long.view(w.MAX_SNAPSHOT_BYTES)));
+	t.assertz(false, w.admitSnapshot(contexts[0], latest, null, long.view(w.MAX_SNAPSHOT_BYTES)));
 	t.assert(contexts[0].snapshot == active, "rejection preserves active last good result");
 	t.assert(contexts[32].snapshot == latest, "rejection preserves supervisor last good result");
-	t.assertz(true, w.admitSnapshot(null, latest, reserve));
+	t.assertz(true, w.admitSnapshot(null, latest, null, reserve));
 	t.assert(contexts[32].snapshot == latest, "explicit URI admission preserves latest result");
+}
+
+def test_rename_snapshot_budget(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var path = ProjectFiles.join(base, "snapshot.json");
+	store.open(ProjectFiles.uri(path), "json", 1, projectDefinitions(3));
+	var contexts = w.load(path).contexts;
+	var original = occurrenceSnapshot(1), latest = occurrenceSnapshot(2);
+	if (original == null || latest == null) return t.fail("snapshot fixture rejected");
+	var available = long.view(w.MAX_SNAPSHOT_BYTES) - original.retainedBytes - latest.retainedBytes;
+	contexts[0].snapshot = original;
+	contexts[1].snapshot = latest;
+	contexts[2].snapshot = occurrenceSnapshot(3);
+	t.assertz(true, w.admitSnapshot(contexts[0], latest, original, available));
+	t.assert(contexts[2].snapshot == null, "inactive snapshot is evicted to count the original only once");
+	t.assert(contexts[0].snapshot == original, "the plan's original is protected");
+	contexts[0].snapshot = null;
+	t.assertz(false, w.admitSnapshot(contexts[0], latest, original, available + 1));
+	t.assertz(true, w.admitSnapshot(contexts[0], latest, original, available));
+	t.assertz(true, w.admitSnapshot(contexts[0], latest, latest,
+		long.view(w.MAX_SNAPSHOT_BYTES) - latest.retainedBytes));
+	contexts[2].snapshot = original;
+	t.assertz(false, w.admitSnapshot(contexts[0], latest, original, available + 1));
+	t.assert(contexts[2].snapshot == original, "an original owned by another context cannot be evicted");
 }
 
 def test_unreadable_matches(t: Tester) {
