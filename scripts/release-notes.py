@@ -18,8 +18,10 @@
 # outside the repository root, a root-relative or protocol-relative target, a
 # target that the checkout lacks, and any other text after "](", such as a
 # title, angle brackets, spaces, or parentheses, fail. So do "]:", which every
-# reference link definition holds, and an HTML tag with an href, src, or srcset
-# attribute, whatever their target. See docs/releasing.md.
+# reference link definition holds, and any HTML tag with an attribute, whatever
+# the attribute, since a URL reaches an HTML element only through one; that
+# includes a tag in a code span, so write `a < b` rather than `a<b c`. See
+# docs/releasing.md.
 # Usage: release-notes.py <changelog-section> <asset-directory>
 # <changelog-section> is a version, or "Unreleased" for a dry run.
 import glob
@@ -58,14 +60,17 @@ MANIFEST_FIELDS = (
     ("virgilRevision", "a non-empty string"),
 )
 MANIFEST = "extension/package.json"
-# What release_links() matches in the CHANGELOG section: every "](", with the
-# target that follows it if that is a plain one, which has no spaces,
-# parentheses, or angle brackets and ends at ")". Then each HTML tag, up to a
-# ">" outside quotes or the end of the section, and an href, src, or srcset
-# attribute in it. Neither can backtrack far, so each pass is linear.
+# What release_links() matches in the CHANGELOG section: an HTML tag with an
+# attribute, which is a tag name as CommonMark defines it, then whitespace or
+# "/", which the HTML tokenizer treats alike after a tag name, then any
+# character but whitespace, "/", or ">". Where a name runs into any other
+# character, such as the comma in Map<K, V>, the tokenizer takes that character
+# into the name, which then names no element that GitHub keeps. Then every
+# "](", with the target that follows it if that is a plain one, which has no
+# spaces, parentheses, or angle brackets and ends at ")". Neither can backtrack
+# far, so each pass is linear.
+TAG = re.compile(r"<[A-Za-z][A-Za-z0-9-]*[\s/]+[^\s/>]")
 LINK = re.compile(r"\]\((?:(?P<target>[^\s()<>]+)\))?")
-TAG = re.compile(r"""<[a-z][^>"']*(?:(?:"[^"]*"?|'[^']*'?)[^>"']*)*""", re.I)
-HTML_LINK = re.compile(r"\s(?:href|src|srcset)\s*=", re.I)
 SCHEME = re.compile(r"[a-z][a-z0-9+.-]*:", re.I)
 # What zipfile can raise for a damaged VSIX that is_zipfile accepts, as in
 # scripts/check-vsix.py: a bad header, central directory, or CRC; an entry
@@ -209,11 +214,12 @@ def release_links(section, url, ref):
         line = section[section.rfind("\n", 0, at) + 1:].partition("\n")[0]
         fail("CHANGELOG.md: cannot rewrite %r: the release notes don't support reference "
              "link definitions" % line)
-    for tag in TAG.finditer(section):
-        attribute = HTML_LINK.search(tag[0])
-        if attribute:
-            fail("CHANGELOG.md: cannot rewrite %r: the release notes don't rewrite HTML "
-                 "href, src, or srcset attributes" % tag[0][:attribute.end()])
+    tag = TAG.search(section)
+    if tag:
+        start = section.rfind("\n", 0, tag.start()) + 1
+        end = section.find("\n", tag.end())
+        fail("CHANGELOG.md: cannot rewrite %r: the release notes don't support HTML tags with "
+             "attributes" % section[start:None if end < 0 else end])
 
     def rewrite(match):
         if match["target"] is None:

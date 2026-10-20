@@ -732,7 +732,7 @@ links "a link to a missing file" 1 - "links to docs/missing\.md#x, which does no
     '- [A](docs/missing.md#x)'
 # Each form is <section>|<pattern for the text that the error names>.
 for form in '[A](docs/a.md "Title")|\]\(docs/a\.md "Title"\)' \
-    '[A](<docs/a.md>)|\]\(<docs/a\.md>\)' \
+    '[A](<a.md>)|\]\(<a\.md>\)' \
     '[A]( docs/a.md)|\]\( docs/a\.md\)' \
     '[A](https://example.com/a_(b))|\]\(https://example\.com/a_\(b\)' \
     '`[a](b c)`|\]\(b c\)' \
@@ -764,20 +764,49 @@ b]: docs/a.md|b\]: docs/a\.md'; do
 
 ${form%%|*}"
 done
-for form in '<a href="docs/a.md">A</a>|<a href=' \
-    "<A HREF='docs/a.md'>A</A>|<A HREF=" \
-    '<img src=docs/sub/b.png>|<img src=' \
-    '<IMG SRC="https://example.com/b.png">|<IMG SRC=' \
-    '<img alt=">" src="docs/sub/b.png">|<img alt=">" src=' \
-    '<source srcset="docs/sub/b.png">|<source srcset=' \
+# Any HTML tag with an attribute is refused, whatever the attribute, since a
+# URL reaches an HTML element only through one; the error names the line. A
+# tag in a code span is refused too. Each form is <section>|<pattern for the
+# line that the error names>.
+for form in '<a href="docs/a.md">A</a>|<a href="docs/a\.md">A</a>' \
+    '<a href="https://example.com">K</a>|<a href="https://example\.com">K</a>' \
+    "<A HREF='docs/a.md'>A</A>|<A HREF='docs/a\.md'>A</A>" \
+    '<img src=docs/sub/b.png>|<img src=docs/sub/b\.png>' \
+    '<IMG SRC="https://example.com/b.png">|<IMG SRC="https://example\.com/b\.png">' \
+    '<img alt=">" src="docs/sub/b.png">|<img alt=">" src="docs/sub/b\.png">' \
+    '<source srcset="docs/sub/b.png">|<source srcset="docs/sub/b\.png">' \
+    '<div>
+<a title=""href="docs/a.md">A</a>
+<img alt=""src="docs/sub/b.png">
+</div>|<a title=""href="docs/a\.md">A</a>' \
+    '<div>
+<img alt=""src="docs/sub/b.png">
+</div>|<img alt=""src="docs/sub/b\.png">' \
+    '<q cite="docs/a.md">A</q>|<q cite="docs/a\.md">A</q>' \
+    '<blockquote cite="docs/a.md">A</blockquote>|<blockquote cite="docs/a\.md">A</blockquote>' \
+    '<ins cite="docs/a.md">A</ins>|<ins cite="docs/a\.md">A</ins>' \
+    '<del cite="docs/a.md">A</del>|<del cite="docs/a\.md">A</del>' \
+    '<img longdesc="docs/a.md" usemap="docs/a.md#m">|<img longdesc="docs/a\.md" usemap="docs/a\.md#m">' \
+    '<img/src="docs/sub/b.png">|<img/src="docs/sub/b\.png">' \
+    '<h1 id="x">A</h1>|<h1 id="x">A</h1>' \
     '<a
-href="docs/a.md">A</a>|<a\\nhref='; do
-    links "an HTML link: ${form%%|*}" 1 - \
-        "cannot rewrite '${form#*|}': the release notes don't rewrite HTML href, src, or srcset" \
+href="docs/a.md">A</a>|<a\\nhref="docs/a\.md">A</a>' \
+    '<span title="The src= directory">A</span>|<span title="The src= directory">A</span>' \
+    '[A](<docs/a.md>)|\[A\]\(<docs/a\.md>\)' \
+    '- Compare `a<b c`.|- Compare `a<b c`\.'; do
+    links "an HTML tag with an attribute: ${form%%|*}" 1 - \
+        "cannot rewrite [\"']${form#*|}[\"']: the release notes don't support HTML tags with attributes$" \
         "- Entry.
 
 ${form%%|*}"
 done
+links "angle brackets that aren't a tag with an attribute are kept" 0 \
+    '^- Breaks <br>, <br/>, and <br />, a closing </a>, Ref<L>, Map<K, V>, and a < b\.$' "" \
+    '- Breaks <br>, <br/>, and <br />, a closing </a>, Ref<L>, Map<K, V>, and a < b.'
+links "an unclosed angle bracket doesn't take later prose for a tag" 0 \
+    '^- Documented `List<T`\.$' "" \
+    '- Documented `List<T`.
+- The src= directory is now supported.'
 # Every accepted form at once, after which no "](" in the notes may have a
 # target without a URI scheme.
 links "every accepted form" 0 '^## Downloads$' "" \
@@ -785,7 +814,7 @@ links "every accepted form" 0 '^## Downloads$' "" \
 - `[a](docs/sub/../a.md)` and \[A](docs/a.md), escaped \` [A](docs/a.md) \`.
 - `example
   2. [a](docs/a.md)
-  continuation` xs[i][j], the src= directory.'
+  continuation` xs[i][j], the src= directory, Map<K, V>, <br>, and a < b.'
 cp "$TMP/out" "$TMP/notes.md"
 expect_run "release-notes.py: no relative link target remains" 1 - "" \
     bash -c "grep -oE '\]\([^)]*' \"\$1\" | grep -vE '^\]\([A-Za-z][A-Za-z0-9+.-]*:'" - \
