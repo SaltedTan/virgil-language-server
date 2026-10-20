@@ -19,6 +19,9 @@ vim.lsp.config("virgil_lsp", {
   end,
   -- The Virgil checkout that project files' virgilDependencies are relative to.
   init_options = { virgilRoot = vim.env.VIRGIL_LOC },
+  -- Rename replies with versioned documentChanges, which Neovim applies but
+  -- does not declare; the server refuses to rename for a client without them.
+  capabilities = { workspace = { workspaceEdit = { documentChanges = true } } },
 })
 
 vim.lsp.enable("virgil_lsp")

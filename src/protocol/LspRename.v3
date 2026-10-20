@@ -1,0 +1,418 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// One textDocument/rename request, from its arrival to its reply. Its answer
+// function and reply sink are bound to it, so that a request that was
+// cancelled or replaced is told apart from the pending one.
+class LspRenameRequest(owner: LspRename, id: JsonRpcId, newName: string) {
+	// Its reply has been sent.
+	var answered: bool;
+	// Its record while it waits for an analysis (LspSnapshotRequests.submit).
+	var waiting: LspSnapshotRequest;
+	// The edits and their preflight, once the snapshot has selected them.
+	var plan: LspRenamePlan;
+	var job: LspAnalysisJob;
+
+	def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return answer;
+	}
+	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		return owner.plan(this, at, offset);
+	}
+	def deliver(reply: JsonRpcReply) {
+		owner.delivered(this, reply);
+	}
+	def begin(supervisor: AnalysisSupervisor) -> AnalysisOutcome {
+		return owner.begin(this, supervisor);
+	}
+	def complete(outcome: AnalysisOutcome) {
+		owner.complete(this, outcome);
+	}
+}
+// A rename that eligibility accepted, for its preflight and reply: the
+// selection in {at}'s snapshot, the edits, each edited file's snapshot index,
+// its edits' UTF-16 ranges in the analyzed text (four ints each: start line
+// and character, end line and character), and the edited sources, until the
+// worker request holds a copy.
+class LspRenamePlan(at: LspSnapshotPosition, ctx: ProjectContext, selection: LspRenameSelection,
+		edits: LspRenameEdits, files: Array<int>, ranges: Array<Array<int>>) {
+	var sources: Array<AnalysisSource>;
+	var snapshotBytes: long;
+}
+
+// textDocument/rename: the WorkspaceEdit that renames the declaration at a
+// position, after a preflight shows that the renamed program binds every use
+// as before, or RequestFailed with the reason it cannot. Eligibility is
+// prepareRename's (LspRenameEligibility.select). The preflight analyzes the
+// snapshot's exact analyzed bytes with the edits applied as an ordinary
+// ANALYZE, through the scheduler's jobs (LspAnalysisJob), and compares the
+// result with the snapshot (LspRenameBindings); the result is then dropped.
+// One rename is checked at a time. See docs/architecture.md#rename.
+class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: LspSnapshotRequests,
+		send: Array<byte> -> void) {
+	def REQUIRES = "a valid textDocument.uri, position, and newName";
+	// Bounds a reply as references' are bounded (LspReferences): a rename
+	// with more edits, or whose edits need more encoded JSON, gets
+	// RequestFailed rather than a partial edit. Tests lower them.
+	var maxEdits = LspReferences.MAX_LOCATIONS;
+	var maxReplyBytes = LspReferences.MAX_REPLY_BYTES;
+	// The most bytes that a TextEdit's JSON adds beyond its new text as
+	// JsonRpcJson.stringBytes counts it: the object, its range with four
+	// numbers of at most 11 digits, and the array's comma. It is 127.
+	def EDIT_BYTES = 128;
+	// The most bytes that a TextDocumentEdit adds beyond its URI and edits:
+	// the object, a version of at most 11 digits, the edits' brackets, and the
+	// array's comma. It is 59.
+	def DOCUMENT_BYTES = 64;
+	// The client accepts WorkspaceEdit.documentChanges, which carry the
+	// versions of open documents (workspace.workspaceEdit.documentChanges).
+	var documentChanges: bool;
+	// Starts preflights, or null without an analysis worker.
+	var scheduler: LspSemanticDiagnostics;
+	// The number of preflights whose bindings matched, for tests.
+	def var checked: int;
+	private var pending: LspRenameRequest;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onDeferredRequest("textDocument/rename", receive);
+		dispatcher.onNotification("$/cancelRequest", cancel);
+	}
+	private def receive(request: JsonRpcMessage.Request) {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var newName = if(params != null && params.has("newName") && JsonValue.String.?(params["newName"]),
+			JsonValue.String.!(params["newName"]).v);
+		if (newName == null) {
+			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, Strings.format1("rename params require %s", REQUIRES));
+			return respond(request.id, JsonRpcReply.Error(error));
+		}
+		var invalid = LspRenameNames.check(newName);
+		if (invalid != null) return respond(request.id, fail(invalid));
+		if (LspRenameEligibility.closedRequest(store, request)) return respond(request.id, fail(LspRenameEligibility.OPEN_DOCUMENT));
+		if (pending != null) return respond(request.id, fail("another rename is being checked; try again once it is answered"));
+		var r = LspRenameRequest.new(this, request.id, newName);
+		pending = r;
+		var waiting = requests.submit(request, "rename", REQUIRES, r.prepare, fail, r.deliver);
+		if (pending == r) r.waiting = waiting;
+	}
+	// Plans {r} from the current snapshot {at} if its position selects an
+	// eligible name, as prepareRename would, and the new name and the client
+	// allow it: the edits, their ranges, and the edited sources. Returns
+	// whether {offset} selects something, and a reply, which for a plan is a
+	// placeholder that {delivered} replaces with the preflight.
+	def plan(r: LspRenameRequest, at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		if (r.answered) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var selected = LspRenameEligibility.select(at, projects, offset);
+		if (!selected.0) return (false, JsonRpcReply.Result(JsonValue.Null));
+		if (selected.2 != null) return (true, fail(selected.2));
+		var sel = selected.1, s = at.snapshot, name = sel.decl.name;
+		if (!documentChanges) {
+			return (true, fail("rename needs a client that accepts versioned edits (workspace.workspaceEdit.documentChanges), so that an edit to a changed document is refused"));
+		}
+		if (Strings.equal(r.newName, name)) return (true, JsonRpcReply.Result(workspaceEdit([])));
+		// Snapshots carry no class hierarchy, so a method given another
+		// method's name may start to override it or be overridden by it, while
+		// every use binds as before and the preflight cannot tell. Eligibility
+		// refuses a method whose current name another has; this refuses the new
+		// name likewise. A field or a method that takes the name of a member of
+		// a subclass or superclass of another kind fails to verify instead.
+		if (sel.decl.kind == AnalysisDeclKind.METHOD) {
+			for (d in s.declarations) {
+				if (d == sel.decl || d.kind != AnalysisDeclKind.METHOD || !Strings.equal(d.name, r.newName)) continue;
+				return (true, fail(Strings.format3("cannot rename '%s' to '%s': another method is named '%s', and the analysis cannot rule out an override",
+					name, r.newName, r.newName)));
+			}
+		}
+		var ctx = projects.forDocument(s.documentVersions[at.index].uri).active;
+		if (ctx == null) return (true, fail("the document is not in a loaded project"));
+		// The edited tokens are the references with the declaration's name,
+		// less the uses that do not spell the name: "this" and a default
+		// ".new" resolve to their class without naming it, and keep their
+		// spelling and their binding.
+		var refs = s.references(sel.decl, true), count = 0, bytes = 32;
+		var sites = Vector<(string, Array<int>)>.new(), files = Vector<int>.new(), ranges = Vector<Array<int>>.new();
+		var texts = Array<Array<byte>>.new(s.paths.length), order = pathOrder(s.paths);
+		var editBytes = JsonRpcJson.stringBytes(r.newName) + EDIT_BYTES;
+		for (file in refs) {
+			var j = find(s.paths, order, file.0), text = if(j >= 0, at.analyzedText(j));
+			if (text == null) return (true, fail(Strings.format1("the analyzed text of %s is no longer available", file.0)));
+			var spans = file.1, begins = Vector<int>.new();
+			for (k = 0; k < spans.length; k += 2) {
+				if (spells(text, spans[k], spans[k + 1], name)) begins.put(spans[k]);
+			}
+			if (begins.length == 0) continue;
+			var map = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16));
+			var positions = Array<int>.new(4 * begins.length);
+			bytes += JsonRpcJson.stringBytes(s.documentVersions[j].uri) + DOCUMENT_BYTES;
+			for (k < begins.length) {
+				if (count == maxEdits) {
+					return (true, fail(Strings.format2("renaming '%s' needs more than %d edits", name, maxEdits)));
+				}
+				if (bytes > maxReplyBytes - editBytes) {
+					return (true, fail(Strings.format2("the edits that rename '%s' need more than %d bytes", name, maxReplyBytes)));
+				}
+				count++;
+				bytes += editBytes;
+				var start = map.offsetToPosition(begins[k]), end = map.offsetToPosition(begins[k] + name.length);
+				positions[4 * k] = start.line;
+				positions[4 * k + 1] = start.character;
+				positions[4 * k + 2] = end.line;
+				positions[4 * k + 3] = end.character;
+			}
+			texts[j] = text;
+			sites.put((file.0, begins.extract()));
+			files.put(j);
+			ranges.put(positions);
+		}
+		if (bytes > maxReplyBytes) {
+			return (true, fail(Strings.format2("the edits that rename '%s' need more than %d bytes", name, maxReplyBytes)));
+		}
+		var edits = LspRenameEdits.new(name, r.newName, sites.extract());
+		var p = LspRenamePlan.new(at, ctx, sel, edits, files.extract(), ranges.extract());
+		// The snapshot's exact analyzed bytes of every source, edited, within
+		// the budget of a capture (LspAnalysisCapture.capture).
+		var sources = Array<AnalysisSource>.new(s.paths.length), total = 32L;
+		p.snapshotBytes = 1024L;
+		for (i < sources.length) {
+			var text = texts[i];
+			if (text == null) text = LspAnalysisCapture.analyzedText(store, s, i);
+			if (text == null) return (true, fail(Strings.format1("the project's analysis is stale: the bytes of %s changed since it was analyzed", s.paths[i])));
+			var cuts = edits.cuts(s.paths[i]);
+			total += long.view(s.paths[i].length) + 16 + text.length + long.view(edits.delta) * cuts.length;
+			p.snapshotBytes += 272L + s.paths[i].length + s.documentVersions[i].uri.length;
+			if (total > LspAnalysisCapture.MAX_SOURCE_BYTES) {
+				return (true, fail("the renamed sources exceed the analysis size budget"));
+			}
+			sources[i] = AnalysisSource.new(s.paths[i], if(cuts.length > 0, edit(text, cuts, edits), text));
+		}
+		p.sources = sources;
+		r.plan = p;
+		projects.renameSnapshot = s;
+		return (true, JsonRpcReply.Result(JsonValue.Null));
+	}
+	// Replies to {r} with {reply}, unless it is a plan's placeholder: then
+	// the plan's preflight is queued, and replies when it completes.
+	def delivered(r: LspRenameRequest, reply: JsonRpcReply) {
+		r.waiting = null;
+		if (r.answered) return;
+		if (r.plan == null) return finish(r, reply);
+		if (scheduler == null) return finish(r, fail("rename needs the analysis worker to check its edits"));
+		r.job = LspAnalysisJob.new(r.begin, r.complete);
+		if (!scheduler.submit(r.job)) finish(r, fail("the server is shutting down"));
+	}
+	// Starts {r}'s preflight: an ordinary analysis of the edited sources with
+	// occurrences and the project's language options, admitted within the
+	// snapshot budget as an automatic analysis is, which the supervisor does
+	// not keep as its latest snapshot.
+	def begin(r: LspRenameRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
+		var p = r.plan;
+		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
+		if (r.answered || ctx != p.ctx || !p.ctx.config.current) {
+			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the documents changed while the rename was checked");
+		}
+		var sources = p.sources;
+		p.sources = null;
+		if (!projects.admitSnapshot(p.ctx, supervisor.snapshot,
+				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
+			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
+		}
+		return supervisor.beginTemporary(sources, p.ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);
+	}
+	// Replies to {r} once its preflight ends: the edit, if the analysis of the
+	// edits binds as the snapshot does and nothing changed meanwhile, and
+	// otherwise the reason. The analysis is dropped either way.
+	def complete(r: LspRenameRequest, outcome: AnalysisOutcome) {
+		if (r.answered) return;
+		var reply: JsonRpcReply;
+		match (outcome) {
+			Completed(edited) => reply = conclude(r.plan, edited);
+			Failed(failure, reason) => reply = fail(Strings.format1("the rename could not be checked: %s", reason));
+			Pending => reply = fail("the rename could not be checked: its analysis is still pending");
+		}
+		finish(r, reply);
+	}
+	private def conclude(p: LspRenamePlan, edited: AnalysisSnapshot) -> JsonRpcReply {
+		var s = p.at.snapshot;
+		var reason = LspRenameBindings.compare(s, edited, p.selection.decl, p.edits, where(s, _, _));
+		if (reason != null) return fail(reason);
+		checked++;
+		// The preflight took time: every source must still be what was
+		// analyzed and edited, and the project the same, with the same files,
+		// as eligibility checks them.
+		var ctx = projects.forDocument(s.documentVersions[p.at.index].uri).active;
+		if (ctx != p.ctx || !requests.current(ctx, s)
+				|| LspRenameEligibility.check(p.at, projects, p.selection.decl, p.selection.token) != null) {
+			return fail("the documents changed while the rename was checked");
+		}
+		var changes = Array<JsonValue>.new(p.files.length);
+		for (f < changes.length) {
+			var j = p.files[f], v = s.documentVersions[j], positions = p.ranges[f];
+			var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+			doc["uri"] = JsonValue.String(v.uri);
+			// An open document's version, which the client checks before it
+			// edits; null for a closed file, which has none.
+			doc["version"] = if(v.identity != null, JsonValue.Int(v.version), JsonValue.Null);
+			var textEdits = Array<JsonValue>.new(positions.length / 4);
+			for (k < textEdits.length) {
+				var e = Strings.newMap<JsonValue>();
+				e["range"] = range(positions, 4 * k);
+				e["newText"] = JsonValue.String(p.edits.newName);
+				textEdits[k] = JsonValue.JObject(e);
+			}
+			change["textDocument"] = JsonValue.JObject(doc);
+			change["edits"] = JsonValue.JArray(textEdits);
+			changes[f] = JsonValue.JObject(change);
+		}
+		return JsonRpcReply.Result(workspaceEdit(changes));
+	}
+	// Answers the pending rename with RequestCancelled if {n} cancels it, and
+	// drops its preflight. Other cancellations are ignored.
+	private def cancel(n: JsonRpcMessage.Notification) {
+		if (pending == null || !JsonRpcParams.ByName.?(n.params)) return;
+		var params = JsonRpcParams.ByName.!(n.params).v, id: JsonRpcId;
+		if (!params.has("id")) return;
+		match (params["id"]) {
+			Int(v) => id = JsonRpcId.Int(v);
+			String(v) => id = JsonRpcId.String(v);
+			_ => return;
+		}
+		if (pending.id.equal(id)) drop("the rename was cancelled");
+	}
+	// Answers the pending rename with RequestCancelled and {reason}, at
+	// shutdown, exit, or the end of the input.
+	def close(reason: string) {
+		if (pending != null) drop(reason);
+	}
+	def configChanged() {
+		if (pending != null && pending.plan != null && !pending.plan.ctx.config.current) {
+			finish(pending, fail("the documents changed while the rename was checked"));
+		}
+	}
+	private def drop(reason: string) {
+		finish(pending, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
+	}
+	private def finish(r: LspRenameRequest, reply: JsonRpcReply) {
+		if (r.answered) return;
+		r.answered = true;
+		if (pending == r) pending = null;
+		if (r.plan != null) projects.renameSnapshot = null;
+		r.plan = null;
+		requests.withdraw(r.waiting);
+		r.waiting = null;
+		if (r.job != null && scheduler != null) scheduler.withdraw(r.job);
+		respond(r.id, reply);
+	}
+	private def respond(id: JsonRpcId, reply: JsonRpcReply) {
+		match (reply) {
+			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
+			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
+		}
+	}
+	// The RequestFailed reply for a rename that cannot be made, with the reason.
+	def fail(reason: string) -> JsonRpcReply {
+		return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED, reason));
+	}
+	private def workspaceEdit(changes: Array<JsonValue>) -> JsonValue {
+		var result = Strings.newMap<JsonValue>();
+		result["documentChanges"] = JsonValue.JArray(changes);
+		return JsonValue.JObject(result);
+	}
+	private def range(positions: Array<int>, i: int) -> JsonValue {
+		var range = Strings.newMap<JsonValue>();
+		range["start"] = position(positions[i], positions[i + 1]);
+		range["end"] = position(positions[i + 2], positions[i + 3]);
+		return JsonValue.JObject(range);
+	}
+	private def position(line: int, character: int) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(line);
+		obj["character"] = JsonValue.Int(character);
+		return JsonValue.JObject(obj);
+	}
+	// "path:line:column" for byte {offset} of the file at {path} in {s}, one-based
+	// in UTF-16 code units, as an editor shows a position; or the path alone if
+	// the file's analyzed text is no longer available.
+	private def where(s: AnalysisSnapshot, path: string, offset: int) -> string {
+		for (j < s.paths.length) {
+			if (!Strings.equal(s.paths[j], path)) continue;
+			var text = LspAnalysisCapture.analyzedText(store, s, j);
+			if (text == null || offset < 0 || offset > text.length) break;
+			var p = PositionMap.new(text, PositionEncoding.UTF16).offsetToPosition(offset);
+			return Strings.format3("%s:%d:%d", path, p.line + 1, p.character + 1);
+		}
+		return path;
+	}
+	// {text} with the token of {edits}' name at each of {cuts} replaced by
+	// the new name.
+	private def edit(text: Array<byte>, cuts: Array<int>, edits: LspRenameEdits) -> Array<byte> {
+		var result = Array<byte>.new(text.length + edits.delta * cuts.length), from = 0, to = 0;
+		var name = edits.newName;
+		for (c in cuts) {
+			while (from < c) result[to++] = text[from++];
+			for (b in name) result[to++] = b;
+			from = c + edits.name.length;
+		}
+		while (from < text.length) result[to++] = text[from++];
+		return result;
+	}
+	// The indexes of {paths} in byte order of path. Planning finds each
+	// referenced file in it, rather than scanning the paths for each file.
+	private def pathOrder(paths: Array<string>) -> Array<int> {
+		var order = Array<int>.new(paths.length);
+		for (i < order.length) order[i] = i;
+		return AnalysisTables.sort(order, fun (a: int, b: int) => AnalysisTables.compareBytes(paths[a], paths[b]) < 0);
+	}
+	// The index of the first of {paths} that is {path}, by binary search of
+	// their {order}, or -1. The sort is stable, so the first of equal paths
+	// comes first.
+	private def find(paths: Array<string>, order: Array<int>, path: string) -> int {
+		var low = 0, high = order.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (AnalysisTables.compareBytes(paths[order[mid]], path) < 0) low = mid + 1;
+			else high = mid;
+		}
+		return if(low < order.length && Strings.equal(paths[order[low]], path), order[low], -1);
+	}
+	// Whether the bytes from {begin} to {end} of {text} are {name}.
+	private def spells(text: Array<byte>, begin: int, end: int, name: string) -> bool {
+		if (begin < 0 || end > text.length || end - begin != name.length) return false;
+		for (i < name.length) if (text[begin + i] != name[i]) return false;
+		return true;
+	}
+}
+
+// The names a rename may give: Virgil identifiers that the Aeneas parser does
+// not treat specially.
+component LspRenameNames {
+	// The most bytes of a new name. No identifier needs more, and a request
+	// that waits keeps its new name, so a longer one is refused on arrival.
+	def MAX_LENGTH = 255;
+	// The keywords of the pinned Aeneas parser (Keywords in
+	// vendor/virgil/aeneas/src/vst/Parser.v3), which no identifier may spell,
+	// and "this", which names a method's receiver.
+	def RESERVED = ["break", "case", "class", "component", "continue", "def", "describes", "descriptor",
+		"else", "enum", "export", "extends", "false", "for", "fun", "if", "import", "in", "layout",
+		"match", "new", "null", "packing", "private", "return", "struct", "super", "thread", "this",
+		"true", "type", "var", "while"];
+
+	// The reason that {name} cannot be a new name, or null if it can. An
+	// identifier, as Aeneas lexes it (Char.isIdentStart and isIdentMiddle),
+	// is an ASCII letter followed by ASCII letters, digits, and underscores.
+	def check(name: string) -> string {
+		if (name.length > MAX_LENGTH) return Strings.format1("the new name is longer than %d bytes", MAX_LENGTH);
+		if (name.length == 0) return "the new name is empty";
+		var c = name[0];
+		var valid = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+		for (i = 1; valid && i < name.length; i++) {
+			c = name[i];
+			valid = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+		}
+		if (!valid) {
+			return Strings.format1("'%s' is not a Virgil identifier: it must start with an ASCII letter, followed by ASCII letters, digits, or underscores", name);
+		}
+		for (w in RESERVED) {
+			if (Strings.equal(w, name)) return Strings.format1("'%s' is a reserved word in Virgil and cannot be a name", name);
+		}
+		return null;
+	}
+}

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Rename (`textDocument/rename`) and prepare rename (`textDocument/prepareRename`) from open documents in configured projects, including unsaved buffers, with versioned edits across open and closed files and a preflight that checks bindings. The Neovim configurations now declare support for versioned edits. See [Rename](docs/architecture.md#rename) for the rules, refusals, and measurements, and [Prepare rename](docs/architecture.md#prepare-rename) for what can be renamed.
+
 ## [0.1.0-alpha.1] - 2026-10-20
 
 ### Added

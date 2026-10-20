@@ -217,6 +217,40 @@ local function check()
   assert(found_use and found_class and vim.tbl_count(library_files) > 1,
     "unexpected references: " .. vim.inspect(references))
 
+  -- Rename needs a program that verifies, so an unsaved edit fixes the type
+  -- error first. The client's own rename, with its prepareRename and the
+  -- server's versioned edit, renames both uses of the local line, and one
+  -- undo restores them; a second restores the type error.
+  local original = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
+  vim.api.nvim_buf_set_lines(words_buf, 6, 8, true, {
+    "\t\tvar line = StringBuilder.new().puts(a).putc(' ').puts(b).toString();",
+    "\t\treturn line.length;",
+  })
+  local fixed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
+  -- Edits from one script share an undo block unless it is closed, as a
+  -- user's separate commands are.
+  vim.o.undolevels = vim.o.undolevels
+  local notified, notify = {}, vim.notify
+  vim.notify = function(message, ...)
+    notified[#notified + 1] = message
+    return notify(message, ...)
+  end
+  vim.api.nvim_win_set_cursor(0, { use_line + 1, 6 })
+  vim.lsp.buf.rename("text", { bufnr = words_buf })
+  assert(vim.wait(40000, function()
+    local lines = vim.api.nvim_buf_get_lines(words_buf, 6, 8, true)
+    return lines[1] == "\t\tvar text = StringBuilder.new().puts(a).putc(' ').puts(b).toString();"
+      and lines[2] == "\t\treturn text.length;"
+  end, 10), "the rename was not applied: " .. vim.inspect(notified))
+  vim.notify = notify
+  vim.o.undolevels = vim.o.undolevels
+  vim.cmd("silent undo")
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), fixed),
+    "undo did not restore the renamed local")
+  vim.cmd("silent undo")
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
+    "undo did not restore the type error")
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -243,7 +277,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, rename and undo, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

@@ -97,7 +97,7 @@ inputs = [
     notify("exit", {}),
 ]
 outputs = [
-    reply(1, dict(capabilities=dict(definitionProvider=True, documentSymbolProvider=True, hoverProvider=True, referencesProvider=True,
+    reply(1, dict(capabilities=dict(definitionProvider=True, documentSymbolProvider=True, hoverProvider=True, referencesProvider=True, renameProvider=True,
                                    signatureHelpProvider=dict(retriggerCharacters=[")"], triggerCharacters=["(", ","]),
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
                                    workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True)),

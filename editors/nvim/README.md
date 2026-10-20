@@ -44,6 +44,10 @@ The server notices changes made outside the editor, such as a checkout, only fro
 
 `vim.lsp.buf.add_workspace_folder()` and `vim.lsp.buf.remove_workspace_folder()` send `workspace/didChangeWorkspaceFolders`, which the server handles.
 
+## Rename
+
+`vim.lsp.buf.rename()` (`grn`) asks the server first whether the name under the cursor can be renamed, and then for the edit, which it applies to the open buffers and the closed files it names ([Rename](../../docs/architecture.md#rename)). The server sends versioned `documentChanges`, and refuses to rename for a client that does not declare them. Neovim 0.11 applies them but does not declare `workspace.workspaceEdit.documentChanges`, so both configurations add it to `capabilities`; `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].capabilities.workspace.workspaceEdit` shows it. Neovim checks the version of only the first document of an edit. A refused rename shows the server's reason, such as "rename needs a program that verifies" while the project has errors.
+
 ## Headless smoke test
 
 From the repository root, run `make test-nvim` (also included in `make test`).
@@ -54,8 +58,9 @@ published and cleared after an unsaved edit, document symbols, including a
 variant case nested in its variant, semantic diagnostics for the fixture's
 project, which uses `lib/util` from the Virgil root, a definition in that
 closed library file, a hover over the same use, signature help in a call on the
-same line, its references in that file and other closed library files, a
-workspace symbol that nothing uses, configuration
+same line, its references in that file and other closed library files, a rename
+of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
+error, and its undo, a workspace symbol that nothing uses, configuration
 diagnostics after an unsaved edit to the project file, that other JSON buffers
 stay detached, and a graceful server shutdown with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the
