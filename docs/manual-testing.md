@@ -22,7 +22,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-Try each setup with each feature: diagnostics, document symbols, definition, hover, configuration changes, and restart.
+Try each setup with each feature: diagnostics, document symbols, definition, hover, references, configuration changes, and restart.
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
@@ -48,7 +48,7 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 
 ### VS Code
 
-Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS. Its steps check the features as follows: diagnostics in steps 3, 4, 6, and 7; document symbols in step 5; definition and hover in step 7; configuration changes in steps 8 to 10; and restart in step 11. Steps 1, 2, and 12 to 15 check startup, startup errors, the message trace, and recovery.
+Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS, including references in step 7.
 
 ### Neovim and LazyVim
 
@@ -58,8 +58,9 @@ Set `VIRGIL_LOC` to the checkout's `vendor/virgil`, change to `/tmp/virgil-check
 2. **Document symbols.** In `words/Words.v3`, `gO` (or `:lua vim.lsp.buf.document_symbol()`) lists the component `Words` and its method `join`.
 3. **Definition.** On `StringBuilder` in line 7, `CTRL-]` (`gd` in LazyVim, or `:lua vim.lsp.buf.definition()`) opens Virgil's `lib/util/StringBuilder.v3` at `class StringBuilder`, on line 19.
 4. **Hover.** On the same `StringBuilder`, `K` shows `class StringBuilder`.
-5. **Configuration changes.** Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. An `UnknownField` error from `virgil-lsp` appears on that line. Undo the edit; the error disappears. Close the file, and add the same line on disk from a terminal. Whether the error appears at once depends on whether Neovim declares file watching, which `:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles` shows ([Changes on disk](../editors/nvim/README.md#changes-on-disk)). On macOS, Neovim 0.11 declares it, the server registers its watchers, and the error appears without further action. On Linux and in WSL 2, it doesn't, and the error appears when a `.v3` buffer is next opened, changed, or saved. Remove the line again. Then quit, start Neovim with `VIRGIL_LOC` unset, and open `.virgil-lsp.json`: Neovim shows the warning "Invalid project file …", and the file has a `MissingVirgilRoot` error on the `virgilDependencies` line. Quit again.
-6. **Restart.** Start Neovim with `VIRGIL_LOC` set again, open `words/Words.v3`, and wait for its type error on line 7. In LazyVim, run `:LspRestart`. In plain Neovim, run `:lua vim.lsp.stop_client(vim.lsp.get_clients({ name = "virgil_lsp" }))`, then `:edit`. A new server attaches, and `words/Words.v3` gets its error again. If the old server exited with a nonzero status, Neovim warns "Client virgil_lsp quit with exit code …".
+5. **References.** On the same `StringBuilder`, run `:lua vim.lsp.buf.references()`. The list includes the use in `words/Words.v3`, the class's name, and uses in other `lib/util` files; see the [reference contract](architecture.md#references).
+6. **Configuration changes.** Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. An `UnknownField` error from `virgil-lsp` appears on that line. Undo the edit; the error disappears. Close the file, and add the same line on disk from a terminal. Whether the error appears at once depends on whether Neovim declares file watching, which `:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles` shows ([Changes on disk](../editors/nvim/README.md#changes-on-disk)). On macOS, Neovim 0.11 declares it, the server registers its watchers, and the error appears without further action. On Linux and in WSL 2, it doesn't, and the error appears when a `.v3` buffer is next opened, changed, or saved. Remove the line again. Then quit, start Neovim with `VIRGIL_LOC` unset, and open `.virgil-lsp.json`: Neovim shows the warning "Invalid project file …", and the file has a `MissingVirgilRoot` error on the `virgilDependencies` line. Quit again.
+7. **Restart.** Start Neovim with `VIRGIL_LOC` set again, open `words/Words.v3`, and wait for its type error on line 7. In LazyVim, run `:LspRestart`. In plain Neovim, run `:lua vim.lsp.stop_client(vim.lsp.get_clients({ name = "virgil_lsp" }))`, then `:edit`. A new server attaches, and `words/Words.v3` gets its error again. If the old server exited with a nonzero status, Neovim warns "Client virgil_lsp quit with exit code …".
 
 ### Collecting logs
 

@@ -252,7 +252,6 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-  console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
     + 'Virgil root, definition, hover, references, workspace symbols, project file edits, and restart with a clean server exit');
 }
 

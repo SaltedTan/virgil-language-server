@@ -108,7 +108,6 @@ Treat each completed analysis as an immutable snapshot containing:
 - diagnostics grouped by URI;
 - declaration index: stable symbol key to declaration and source range;
 - occurrence index: source range to semantic binding;
-- reverse-reference index: declaration key to all occurrences *(not retained: [references](docs/architecture.md#references) scan the occurrence index, which is fast enough)*;
 - type/signature display cache *(present: [display text](docs/architecture.md#display-text))*.
 
 The [analysis snapshot contract](docs/architecture.md#analysis-snapshots-partly-present) owns freshness and planned publication/navigation behavior.
@@ -260,7 +259,7 @@ Exit criteria:
 Recommended order:
 
 1. `workspace/symbol` from the existing declaration index. *(present; [#122](https://github.com/SaltedTan/virgil-language-server/issues/122); see [Workspace symbols](docs/architecture.md#workspace-symbols))*
-2. `textDocument/references` from the reverse-occurrence index. *(present, from a scan of the occurrence index; [#123](https://github.com/SaltedTan/virgil-language-server/issues/123); see [References](docs/architecture.md#references))*
+2. `textDocument/references` from the occurrence index. *(present; [#123](https://github.com/SaltedTan/virgil-language-server/issues/123); see [References](docs/architecture.md#references) for the query design and measurements)*
 3. `textDocument/prepareRename` and `textDocument/rename`, with conflict checks and versioned workspace edits.
 4. `textDocument/signatureHelp` using resolved call targets and method signatures.
 5. Basic completion for keywords and in-scope declarations.
