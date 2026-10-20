@@ -56,6 +56,7 @@ class LspServer {
 	// Definition, hover, and references requests, answered from snapshots.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
+	private def prepareRename = LspPrepareRename.new(projects);
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	// Watched-file and workspace-folder notifications, and the watcher registration.
@@ -108,6 +109,15 @@ class LspServer {
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;
 		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
+	}
+	// Registers textDocument/prepareRename, which #125 calls after it advertises
+	// renameProvider with prepareProvider. Until then the server neither
+	// advertises nor dispatches it: advertised capabilities exactly match
+	// implemented handlers, and clients do not send the request without the
+	// capability. Unit tests call this to reach the handler. See
+	// docs/architecture.md#prepare-rename-partly-present.
+	def enablePrepareRename() {
+		prepareRename.register(dispatcher, snapshotRequests);
 	}
 	// Called after every poll, including a timeout. Completes analyses and
 	// expires server requests the client hasn't answered in time.

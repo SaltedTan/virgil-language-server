@@ -12,17 +12,20 @@ component ProjectLimits {
 	def MAX_DEPTH = 64;
 }
 // Expansion reads directory records and metadata only, never source contents.
+// It keys no map by path: its sets are OrderedStringSets, whose work does not
+// depend on how the paths hash. The sets of one pattern's walk hold paths
+// relative to its base, which are shorter to compare.
 class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 	private def sources = Vector<ProjectSource>.new();
-	private def seen = Strings.newMap<bool>();
+	private def seen = OrderedStringSet.new();
 	private def errors = Vector<ProjectConfigDiagnostic>.new();
 	private var visits: int;
 	private var pathBytes: int;
 	private var bytes = 32L;
 	private var current: ProjectPattern;
 	private var exclusions: Array<ProjectPattern>;
-	private var visited: HashMap<string, bool>;
-	private var matches: HashMap<string, bool>;
+	private var visited: OrderedStringSet;
+	private var matches: OrderedStringSet;
 	private var found: Vector<string>;
 
 	def expand(base: string, root: string, p: ProjectDefinition) -> ProjectExpansionResult {
@@ -42,13 +45,13 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 		for (pattern in patterns) {
 			if (errors.length > 0) return;
 			current = pattern;
-			visited = Strings.newMap<bool>(); matches = Strings.newMap<bool>(); found = Vector<string>.new();
+			visited = OrderedStringSet.new(); matches = OrderedStringSet.new(); found = Vector<string>.new();
 			walk(base, "", Strings.split(pattern.text, "/", -1), 0, 0);
 			if (errors.length > 0) return;
 			var paths = found.extract();
 			paths = Arrays.sort(paths, 0, paths.length, ProjectFiles.before);
 			for (path in paths) {
-				if (seen.has(path)) continue;
+				if (!seen.add(path)) continue;
 				if (sources.length >= maxFiles) { error(ProjectConfigCode.EXPANSION_LIMIT, "project selects too many source files"); return; }
 				var fd = ProjectFiles.open(path, false);
 				if (fd < 0) { error(ProjectConfigCode.SOURCE_IO, "selected source is no longer a readable regular file"); return; }
@@ -60,7 +63,6 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 				var overhead = long.view(path.length) + 16;
 				if (size > long.view(maxBytes) - bytes - overhead) { error(ProjectConfigCode.SOURCE_BUDGET, "project exceeds the aggregate analysis source budget"); return; }
 				bytes += size + overhead;
-				seen[path] = true;
 				sources.put(ProjectSource.new(path, member));
 			}
 		}
@@ -73,18 +75,18 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 		if (errors.length > 0) return;
 		if (++visits > ProjectLimits.MAX_VISITS || depth > ProjectLimits.MAX_DEPTH) { error(ProjectConfigCode.EXPANSION_LIMIT, "project directory traversal limit exceeded"); return; }
 		var path = if(relative.length == 0, base, ProjectFiles.join(base, relative));
-		var key = Strings.format2("%d:%s", at, path);
-		if (visited.has(key)) return;
-		pathBytes += key.length;
+		var key = Strings.format2("%d:%s", at, relative);
+		if (!visited.add(key)) return;
+		// The budget counts the key with the whole path.
+		pathBytes += key.length - relative.length + path.length;
 		if (pathBytes > ProjectLimits.MAX_PATH_BYTES) { error(ProjectConfigCode.EXPANSION_LIMIT, "project traversal path budget exceeded"); return; }
-		visited[key] = true;
 		if (at == parts.length) {
 			var meta = ProjectFiles.metadata(path);
 			if (ProjectFiles.metadataError(meta.0)) { error(ProjectConfigCode.SOURCE_IO, Strings.format1("cannot inspect readable project source: %s", path)); return; }
 			if (meta.0 != ProjectFiles.REGULAR) return;
-			if (!matches.has(path) && !seen.has(path)) {
+			if (!seen.has(path) && matches.add(relative)) {
 				if (found.length + sources.length >= maxFiles) { error(ProjectConfigCode.EXPANSION_LIMIT, "project selects too many source files"); return; }
-				matches[path] = true; found.put(path);
+				found.put(path);
 			}
 			return;
 		}
@@ -95,11 +97,12 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 		visits += entries.examined;
 		if (entries.overflow) { error(ProjectConfigCode.EXPANSION_LIMIT, "project directory traversal limit exceeded"); return; }
 		if (entries.names == null) { error(ProjectConfigCode.SOURCE_IO, "cannot enumerate project directory"); return; }
-		for (entry in entries.names) {
+		for (i < entries.names.length) {
+			var entry = entries.names[i];
 			if (!ProjectGlob.segment(if(recursive, "*", part), entry)) continue;
 			var rel = if(relative.length == 0, entry, ProjectFiles.join(relative, entry));
 			if (excluded(rel)) continue;
-			var child = ProjectFiles.join(base, rel), kind = entries.types[entry];
+			var child = ProjectFiles.join(base, rel), kind = entries.types[i];
 			if (recursive || at + 1 < parts.length) {
 				if (kind == 0) {
 					var meta = ProjectFiles.metadata(child);
