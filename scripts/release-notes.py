@@ -10,17 +10,18 @@
 # one VSIX, named <name>-<version>.vsix after its extension/package.json.
 # GitHub doesn't resolve relative links in a release, so the CHANGELOG
 # section's repository links, such as [Hover](docs/architecture.md#hover), are
-# rewritten to the files at the release's tag, or at the source revision for a
-# dry run, like the Downloads links; a fragment alone links to CHANGELOG.md
-# itself. The script doesn't parse Markdown: every "](" starts a link target,
-# even in a code span or after a backslash escape, so that no inline link or
-# image can be missed. A target with a URI scheme is kept as it is. A target
-# outside the repository root, a root-relative or protocol-relative target, a
-# target that the checkout lacks, and any other text after "](", such as a
-# title, angle brackets, spaces, or parentheses, fail. So do "]:", which every
-# reference link definition holds, and any HTML tag with an attribute, whatever
-# the attribute, since a URL reaches an HTML element only through one; that
-# includes a tag in a code span, so write `a < b` rather than `a<b c`. See
+# rewritten with the Downloads links' repository URL and ref: the manifests'
+# tag when present, otherwise the source revision; a fragment alone links to
+# CHANGELOG.md itself. The script doesn't parse Markdown: every "](" starts a
+# link target, even in a code span or after a backslash escape, so that no
+# inline link or image can be missed. A target with a URI scheme is kept as
+# it is. A target outside the repository root, a root-relative or
+# protocol-relative target, a target that the checkout lacks, and any other
+# text after "](", such as a title, angle brackets, whitespace, or
+# parentheses, fail. So do "]:", which every reference link definition holds,
+# and any HTML tag with an attribute, whatever the attribute, since a URL
+# reaches an HTML element only through one; that includes a tag in a code
+# span, so write `a < b` rather than `a<b c`. See
 # docs/releasing.md.
 # Usage: release-notes.py <changelog-section> <asset-directory>
 # <changelog-section> is a version, or "Unreleased" for a dry run.
