@@ -8,16 +8,18 @@
 # manifest in the asset directory must record the same version, tag, and
 # revisions, and its archive must be present. The directory must hold exactly
 # one VSIX, named <name>-<version>.vsix after its extension/package.json.
-# GitHub doesn't resolve relative links in a release, so each repository link
-# in the CHANGELOG section, an inline link or image such as
-# [Hover](docs/architecture.md#hover), is rewritten to the file at the
-# release's tag, or at the source revision for a dry run, like the Downloads
-# links; a fragment alone links to CHANGELOG.md itself. Links with a URI scheme
-# and text in code spans are kept as they are. A link outside the repository
-# root, a root-relative or protocol-relative link, or a link to a file that the
-# checkout lacks fails. So does any other link form, whatever its target: an
-# inline link with a title or angle brackets, a reference link or definition,
-# or an HTML href or src attribute. See docs/releasing.md.
+# GitHub doesn't resolve relative links in a release, so the CHANGELOG
+# section's repository links, such as [Hover](docs/architecture.md#hover), are
+# rewritten to the files at the release's tag, or at the source revision for a
+# dry run, like the Downloads links; a fragment alone links to CHANGELOG.md
+# itself. The script doesn't parse Markdown: every "](" starts a link target,
+# even in a code span or after a backslash escape, so that no inline link or
+# image can be missed. A target with a URI scheme is kept as it is. A target
+# outside the repository root, a root-relative or protocol-relative target, a
+# target that the checkout lacks, and any other text after "](", such as a
+# title, angle brackets, spaces, or parentheses, fail. So do "]:", which every
+# reference link definition holds, and an HTML tag with an href, src, or srcset
+# attribute, whatever their target. See docs/releasing.md.
 # Usage: release-notes.py <changelog-section> <asset-directory>
 # <changelog-section> is a version, or "Unreleased" for a dry run.
 import glob
@@ -56,18 +58,14 @@ MANIFEST_FIELDS = (
     ("virgilRevision", "a non-empty string"),
 )
 MANIFEST = "extension/package.json"
-# What release_links() finds in the CHANGELOG section, scanning from the left:
-# a code span, which is kept as it is and which ends before a blank line or a
-# list item, so that a stray backtick can't hide the links in later entries;
-# then the target of an inline link or image after its text, which has no
-# spaces, parentheses, or angle brackets; then the start of a link form that
-# it doesn't rewrite.
-LINK = re.compile(
-    r"(?P<code>(?<!`)(`+)(?!`)(?:(?!\n[ \t]*(?:\n|[-*+][ \t]|\d+[.)][ \t])).)*?(?<!`)\2(?!`))"
-    r"|\]\((?P<target>[^\s()<>]+)\)"
-    r"|(?P<other>\]\([^\n]*?(?:\)|$)|\]\[[^\]\n]*\]?|^ {0,3}\[[^\]\n]+\]:[^\n]*"
-    r"|\b(?:href|src)\s*=[^\s>]*)",
-    re.S | re.M | re.I)
+# What release_links() matches in the CHANGELOG section: every "](", with the
+# target that follows it if that is a plain one, which has no spaces,
+# parentheses, or angle brackets and ends at ")". Then each HTML tag, up to a
+# ">" outside quotes or the end of the section, and an href, src, or srcset
+# attribute in it. Neither can backtrack far, so each pass is linear.
+LINK = re.compile(r"\]\((?:(?P<target>[^\s()<>]+)\))?")
+TAG = re.compile(r"""<[a-z][^>"']*(?:(?:"[^"]*"?|'[^']*'?)[^>"']*)*""", re.I)
+HTML_LINK = re.compile(r"\s(?:href|src|srcset)\s*=", re.I)
 SCHEME = re.compile(r"[a-z][a-z0-9+.-]*:", re.I)
 # What zipfile can raise for a damaged VSIX that is_zipfile accepts, as in
 # scripts/check-vsix.py: a bad header, central directory, or CRC; an entry
@@ -206,12 +204,25 @@ def release_link(target, url, ref):
 def release_links(section, url, ref):
     """Rewrites the repository links in a CHANGELOG.md section, which are
     relative to the repository root, as links to the files at ref."""
+    at = section.find("]:")
+    if at >= 0:
+        line = section[section.rfind("\n", 0, at) + 1:].partition("\n")[0]
+        fail("CHANGELOG.md: cannot rewrite %r: the release notes don't support reference "
+             "link definitions" % line)
+    for tag in TAG.finditer(section):
+        attribute = HTML_LINK.search(tag[0])
+        if attribute:
+            fail("CHANGELOG.md: cannot rewrite %r: the release notes don't rewrite HTML "
+                 "href, src, or srcset attributes" % tag[0][:attribute.end()])
+
     def rewrite(match):
-        if match["other"]:
-            fail("CHANGELOG.md: cannot rewrite the link at %r: the release notes rewrite "
-                 "only inline links without a title or angle brackets" % match["other"])
-        if match["code"]:
-            return match["code"]
+        if match["target"] is None:
+            text = section[match.start():].partition("\n")[0]
+            if ")" in text:
+                text = text[:text.index(")") + 1]
+            fail("CHANGELOG.md: cannot rewrite the link at %r: the release notes treat every "
+                 "\"](\" as a link and rewrite only targets without spaces, parentheses, or "
+                 "angle brackets" % text)
         return "](%s)" % release_link(match["target"], url, ref)
     return LINK.sub(rewrite, section)
 

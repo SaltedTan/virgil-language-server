@@ -689,13 +689,36 @@ links "./ and ../ are normalized" 0 \
 links "https and mailto links are kept" 0 \
     '^- \[K\]\(https://example\.com/a\.md\) \[M\]\(mailto:a@example\.com\)$' "" \
     '- [K](https://example.com/a.md) [M](mailto:a@example.com)'
-links "code spans are kept" 0 \
-    '^- `\[a\]\(docs/missing\.md\)` and ``x `\[b\]\(c "t"\)` y`` `\[x\]: y`$' "" \
-    '- `[a](docs/missing.md)` and ``x `[b](c "t")` y`` `[x]: y`'
+# The script doesn't parse Markdown: every "](" is a link target, even in a
+# code span or after a backslash escape, so no backtick or escape can hide a
+# link, and every "]:" is refused, so no definition can make a reference link.
+links "a link in a code span is rewritten too" 0 \
+    "^- \`\[a\]\($base/docs/a\.md\)\` and \`\`x \`!\[b\]\($base/docs/sub/b\.png\)\` y\`\`$" "" \
+    '- `[a](docs/a.md)` and ``x `![b](docs/sub/b.png)` y``'
+links "a link in a code span is checked too" 1 - "links to docs/missing\.md, which does not exist$" \
+    '- `[a](docs/missing.md)`'
+links "a link after a backslash escape is rewritten too" 0 \
+    "^- [\]\[A\]\($base/docs/a\.md\) and \[B[\]\]\($base/docs/a\.md\)$" "" \
+    '- \[A](docs/a.md) and [B\](docs/a.md)'
+links "escaped backticks don't hide a link" 0 \
+    "^- Escape [\]\` before \[A\]\($base/docs/a\.md\) and [\]\` after\.$" "" \
+    '- Escape \` before [A](docs/a.md) and \` after.'
 links "a stray backtick doesn't hide a later entry's link" 0 "^- \[A\]\($base/docs/a\.md\)$" "" \
     '- A ` stray backtick.
 - [A](docs/a.md)
 - `code`'
+links "a stray backtick doesn't hide a heading's link" 0 "^### \[A\]\($base/docs/a\.md\)$" "" \
+    'A ` stray backtick.
+### [A](docs/a.md)
+`code`'
+links "a link in a code span across list-item lines is rewritten" 0 \
+    "^  2\. \[a\]\($base/docs/a\.md\)$" "" \
+    '- `example
+  2. [a](docs/a.md)
+  continuation`'
+links "brackets in prose and src= or href= outside a tag are kept" 0 \
+    '^- Index xs\[i\]\[j\], `xs\[i\]\[j\]`, \[A\]\[\], and \[a\]\[b\]; the src= directory and href=x\.$' "" \
+    '- Index xs[i][j], `xs[i][j]`, [A][], and [a][b]; the src= directory and href=x.'
 links "a link outside the repository" 1 - "links to \.\./a\.md, outside the repository$" \
     '- [A](../a.md)'
 links "a link that leaves the repository after descending" 1 - \
@@ -710,19 +733,63 @@ links "a link to a missing file" 1 - "links to docs/missing\.md#x, which does no
 # Each form is <section>|<pattern for the text that the error names>.
 for form in '[A](docs/a.md "Title")|\]\(docs/a\.md "Title"\)' \
     '[A](<docs/a.md>)|\]\(<docs/a\.md>\)' \
+    '[A]( docs/a.md)|\]\( docs/a\.md\)' \
     '[A](https://example.com/a_(b))|\]\(https://example\.com/a_\(b\)' \
-    '[A][a]|\]\[a\]' \
-    '[A][]|\]\[\]' \
-    '<a href="docs/a.md">A</a>|href="docs/a\.md"' \
-    '<img src="docs/sub/b.png">|src="docs/sub/b\.png"' \
-    '[a]: docs/a.md|\[a\]: docs/a\.md' \
-    '[a]: https://example.com|\[a\]: https://example\.com'; do
-    links "a link that can't be rewritten: ${form%%|*}" 1 - \
-        "cannot rewrite the link at '${form#*|}': the release notes rewrite only inline links" \
+    '`[a](b c)`|\]\(b c\)' \
+    '[A](docs/a.md and more|\]\(docs/a\.md and more' \
+    '[A](|\]\('; do
+    links "a \"](\" that isn't a plain target: ${form%%|*}" 1 - \
+        "cannot rewrite the link at '${form#*|}': the release notes treat every \"\]\(\" as a link" \
         "- Entry.
 
 ${form%%|*}"
 done
+for form in '[a]: docs/a.md|\[a\]: docs/a\.md' \
+    '[a]: https://example.com|\[a\]: https://example\.com' \
+    '`[x]: y`|`\[x\]: y`' \
+    '[^1]: A footnote.|\[\^1\]: A footnote\.' \
+    '> [guide]: docs/a.md
+>
+> [guide]|> \[guide\]: docs/a\.md' \
+    '- Entry.
+
+    [guide]: docs/a.md
+
+[guide]|    \[guide\]: docs/a\.md' \
+    '[a
+b]: docs/a.md|b\]: docs/a\.md'; do
+    links "a reference definition: ${form%%|*}" 1 - \
+        "cannot rewrite '${form#*|}': the release notes don't support reference link definitions$" \
+        "- Entry.
+
+${form%%|*}"
+done
+for form in '<a href="docs/a.md">A</a>|<a href=' \
+    "<A HREF='docs/a.md'>A</A>|<A HREF=" \
+    '<img src=docs/sub/b.png>|<img src=' \
+    '<IMG SRC="https://example.com/b.png">|<IMG SRC=' \
+    '<img alt=">" src="docs/sub/b.png">|<img alt=">" src=' \
+    '<source srcset="docs/sub/b.png">|<source srcset=' \
+    '<a
+href="docs/a.md">A</a>|<a\\nhref='; do
+    links "an HTML link: ${form%%|*}" 1 - \
+        "cannot rewrite '${form#*|}': the release notes don't rewrite HTML href, src, or srcset" \
+        "- Entry.
+
+${form%%|*}"
+done
+# Every accepted form at once, after which no "](" in the notes may have a
+# target without a URI scheme.
+links "every accepted form" 0 '^## Downloads$' "" \
+    '- See [A](docs/a.md#x), ![B](./docs/sub/b.png), [Top](#unreleased), and [K](https://example.com).
+- `[a](docs/sub/../a.md)` and \[A](docs/a.md), escaped \` [A](docs/a.md) \`.
+- `example
+  2. [a](docs/a.md)
+  continuation` xs[i][j], the src= directory.'
+cp "$TMP/out" "$TMP/notes.md"
+expect_run "release-notes.py: no relative link target remains" 1 - "" \
+    bash -c "grep -oE '\]\([^)]*' \"\$1\" | grep -vE '^\]\([A-Za-z][A-Za-z0-9+.-]*:'" - \
+    "$TMP/notes.md"
 assets '"v1.2.3-alpha.4"'
 links "a repository link at the release's tag" 0 \
     '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
