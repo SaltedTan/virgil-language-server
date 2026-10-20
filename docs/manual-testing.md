@@ -77,7 +77,7 @@ For each release, record every run with its date, the server's source revision, 
 
 ### 0.1.0-alpha.1
 
-These runs are at `8b2ea9f`, on `main` before hover ([#106](https://github.com/SaltedTan/virgil-language-server/issues/106)), references ([#123](https://github.com/SaltedTan/virgil-language-server/issues/123)), workspace symbols ([#122](https://github.com/SaltedTan/virgil-language-server/issues/122)), signature help ([#127](https://github.com/SaltedTan/virgil-language-server/issues/127)), and the release VSIX ([#117](https://github.com/SaltedTan/virgil-language-server/issues/117)) were merged, so they don't check those four features. The dry run of the release preparation branch, and the manual tests with its archives and VSIX, replace them.
+The first six runs are at `8b2ea9f`, on `main` before hover ([#106](https://github.com/SaltedTan/virgil-language-server/issues/106)), references ([#123](https://github.com/SaltedTan/virgil-language-server/issues/123)), workspace symbols ([#122](https://github.com/SaltedTan/virgil-language-server/issues/122)), signature help ([#127](https://github.com/SaltedTan/virgil-language-server/issues/127)), and the release VSIX ([#117](https://github.com/SaltedTan/virgil-language-server/issues/117)) were merged, so they don't check those four features. The later runs are at `2be8831`, the release preparation commit: its pull request's CI, the branch's [dry run](releasing.md#dry-runs), and local runs with that dry run's Linux archive and VSIX. The matrix records what they check; the manual tests with the same archives and VSIX fill in the rest.
 
 | Date | Commit | Where | Command | Editor | Result |
 | --- | --- | --- | --- | --- | --- |
@@ -87,15 +87,21 @@ These runs are at `8b2ea9f`, on `main` before hover ([#106](https://github.com/S
 | 2026-10-18 | `8b2ea9f` | Ubuntu 26.04.1, x86-64 | `REQUIRE_NVIM=1 make test-nvim` | Neovim 0.11.6 | Pass |
 | 2026-10-18 | `8b2ea9f` | Ubuntu 26.04.1, x86-64, under Xvfb | `xvfb-run -a npm run test:e2e` | VS Code 1.142.0, extension from source | Pass |
 | 2026-10-18 | `8b2ea9f` | Ubuntu 26.04.1, x86-64, under Xvfb | `npm run package`, then `xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix` | VS Code 1.142.0, extension 0.1.0 installed from the VSIX | Pass |
+| 2026-10-20 | `2be8831` | CI job `test`, `ubuntu-24.04`, [run 39407691447](https://github.com/SaltedTan/virgil-language-server/actions/runs/39407691447) | `make test` | Neovim 0.11.6 | Pass |
+| 2026-10-20 | `2be8831` | CI job `test-macos`, `macos-15`, same run | `make test` | Neovim 0.12.5 | Pass |
+| 2026-10-20 | `2be8831` | CI job `vscode-extension-host`, `ubuntu-24.04`, same run | `xvfb-run -a npm run test:e2e`, then on the packaged VSIX with `--vsix` | VS Code 1.142.0 | Pass |
+| 2026-10-20 | `2be8831` | Release dry run, job "Package and test the VS Code extension", `ubuntu-24.04`, [run 39408586780](https://github.com/SaltedTan/virgil-language-server/actions/runs/39408586780) | The Extension Host test on the packaged VSIX, with the server from the run's Linux archive | VS Code 1.142.0, extension 0.1.0 installed from the VSIX | Pass |
+| 2026-10-20 | `2be8831` | Ubuntu 26.04.1, x86-64, server from the dry run's Linux archive | `REQUIRE_NVIM=1 test/e2e/nvim/run.sh <archive>/virgil-lsp` | Neovim 0.11.6 | Pass |
+| 2026-10-20 | `2be8831` | Ubuntu 26.04.1, x86-64, under Xvfb, server from the dry run's Linux archive | `xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix <archive>/virgil-lsp` | VS Code 1.142.0, extension 0.1.0 installed from the dry run's VSIX | Pass |
 
 | Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Workspace symbols | Signature help |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| VS Code, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Not yet run | Unsaved project-file edit only (automated) | Pass (automated) | Not yet run | Not yet run | Not yet run |
+| VS Code, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) |
 | VS Code, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
 | VS Code Remote-SSH | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
 | VS Code Remote-WSL | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| Neovim, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Not yet run | Unsaved project-file edit only (automated) | Not yet run | Not yet run | Not yet run | Not yet run |
-| Neovim, macOS | Pass (automated) | Pass (automated) | Pass (automated) | Not yet run | Unsaved project-file edit only (automated) | Not yet run | Not yet run | Not yet run | Not yet run |
+| Neovim, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Not yet run | Pass (automated) | Pass (automated) | Pass (automated) |
+| Neovim, macOS | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Not yet run | Pass (automated) | Pass (automated) | Pass (automated) |
 | Neovim, WSL 2 | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
 | LazyVim, Linux | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
 | LazyVim, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
