@@ -1,0 +1,161 @@
+ok: 1 files parsed and verified
+test/fixtures/analysis/call-sites/main.v3:12:7-12:8 declares CLASS: class C(x: int)
+test/fixtures/analysis/call-sites/main.v3:12:9-12:10 declares FIELD: def x: int
+test/fixtures/analysis/call-sites/main.v3:13:13-13:14 declares METHOD: def m(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:13:15-13:16 declares PARAMETER: a: int
+test/fixtures/analysis/call-sites/main.v3:13:23-13:24 declares PARAMETER: b: int
+test/fixtures/analysis/call-sites/main.v3:13:47-13:48 uses PARAMETER: a: int
+test/fixtures/analysis/call-sites/main.v3:13:51-13:52 uses PARAMETER: b: int
+test/fixtures/analysis/call-sites/main.v3:14:13-14:17 declares METHOD: def none()
+test/fixtures/analysis/call-sites/main.v3:16:7-16:8 declares CLASS: class D
+test/fixtures/analysis/call-sites/main.v3:17:13-17:18 declares FIELD: var value: int
+test/fixtures/analysis/call-sites/main.v3:18:9-18:12 declares CONSTRUCTOR: new(v: int)
+test/fixtures/analysis/call-sites/main.v3:18:13-18:14 declares PARAMETER: v: int
+test/fixtures/analysis/call-sites/main.v3:18:23-18:28 uses FIELD: var value: int
+test/fixtures/analysis/call-sites/main.v3:18:31-18:32 uses PARAMETER: v: int
+test/fixtures/analysis/call-sites/main.v3:20:7-20:8 declares CLASS: class E
+test/fixtures/analysis/call-sites/main.v3:21:6-21:7 declares CLASS: type V
+test/fixtures/analysis/call-sites/main.v3:22:14-22:15 declares VARIANT_CASE: case A
+test/fixtures/analysis/call-sites/main.v3:23:14-23:15 declares VARIANT_CASE: case B(f: int, s: Array<byte>)
+test/fixtures/analysis/call-sites/main.v3:23:16-23:17 declares FIELD: def f: int
+test/fixtures/analysis/call-sites/main.v3:23:24-23:25 declares FIELD: def s: Array<byte>
+test/fixtures/analysis/call-sites/main.v3:25:7-25:8 declares CLASS: class F extends C
+test/fixtures/analysis/call-sites/main.v3:25:17-25:18 uses CLASS: class C(x: int)
+test/fixtures/analysis/call-sites/main.v3:26:9-26:12 declares CONSTRUCTOR: new()
+test/fixtures/analysis/call-sites/main.v3:28:7-28:8 declares CLASS: class G<T>(v: T)
+test/fixtures/analysis/call-sites/main.v3:28:9-28:10 declares TYPE_PARAM: T
+test/fixtures/analysis/call-sites/main.v3:28:12-28:13 declares FIELD: def v: T
+test/fixtures/analysis/call-sites/main.v3:28:15-28:16 uses TYPE_PARAM: T
+test/fixtures/analysis/call-sites/main.v3:29:13-29:17 declares METHOD: def pair<U>(u: U) -> (T, U)
+test/fixtures/analysis/call-sites/main.v3:29:18-29:19 declares TYPE_PARAM: U
+test/fixtures/analysis/call-sites/main.v3:29:21-29:22 declares PARAMETER: u: U
+test/fixtures/analysis/call-sites/main.v3:29:24-29:25 uses TYPE_PARAM: U
+test/fixtures/analysis/call-sites/main.v3:29:31-29:32 uses TYPE_PARAM: T
+test/fixtures/analysis/call-sites/main.v3:29:34-29:35 uses TYPE_PARAM: U
+test/fixtures/analysis/call-sites/main.v3:29:47-29:48 uses FIELD: def v: T
+test/fixtures/analysis/call-sites/main.v3:29:50-29:51 uses PARAMETER: u: U
+test/fixtures/analysis/call-sites/main.v3:31:7-31:8 declares CLASS: class H
+test/fixtures/analysis/call-sites/main.v3:32:13-32:14 declares METHOD: def h() -> int
+test/fixtures/analysis/call-sites/main.v3:32:33-32:34 uses COMPONENT: component M
+test/fixtures/analysis/call-sites/main.v3:32:35-32:38 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1143-1151 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1144-1146, @1148-1150
+test/fixtures/analysis/call-sites/main.v3:34:11-34:12 declares COMPONENT: component M
+test/fixtures/analysis/call-sites/main.v3:35:13-35:16 declares METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:35:17-35:18 declares PARAMETER: a: int
+test/fixtures/analysis/call-sites/main.v3:35:25-35:26 declares PARAMETER: b: int
+test/fixtures/analysis/call-sites/main.v3:35:49-35:50 uses PARAMETER: a: int
+test/fixtures/analysis/call-sites/main.v3:35:53-35:54 uses PARAMETER: b: int
+test/fixtures/analysis/call-sites/main.v3:36:13-36:15 declares METHOD: def id<T>(p: T) -> T
+test/fixtures/analysis/call-sites/main.v3:36:16-36:17 declares TYPE_PARAM: T
+test/fixtures/analysis/call-sites/main.v3:36:19-36:20 declares PARAMETER: p: T
+test/fixtures/analysis/call-sites/main.v3:36:22-36:23 uses TYPE_PARAM: T
+test/fixtures/analysis/call-sites/main.v3:36:28-36:29 uses TYPE_PARAM: T
+test/fixtures/analysis/call-sites/main.v3:36:39-36:40 uses PARAMETER: p: T
+test/fixtures/analysis/call-sites/main.v3:37:13-37:18 declares METHOD: def twice(f: int -> int, x: int) -> int
+test/fixtures/analysis/call-sites/main.v3:37:19-37:20 declares PARAMETER: f: int -> int
+test/fixtures/analysis/call-sites/main.v3:37:36-37:37 declares PARAMETER: x: int
+test/fixtures/analysis/call-sites/main.v3:37:60-37:61 uses PARAMETER: f: int -> int
+test/fixtures/analysis/call-sites/main.v3:@1310-1316 call PARAMETER f: int -> int; parameters [int]; arguments @1311-1315
+test/fixtures/analysis/call-sites/main.v3:37:62-37:63 uses PARAMETER: f: int -> int
+test/fixtures/analysis/call-sites/main.v3:@1312-1315 call PARAMETER f: int -> int; parameters [int]; arguments @1313-1314
+test/fixtures/analysis/call-sites/main.v3:37:64-37:65 uses PARAMETER: x: int
+test/fixtures/analysis/call-sites/main.v3:38:13-38:18 declares METHOD: def adder() -> (int, int) -> int
+test/fixtures/analysis/call-sites/main.v3:38:51-38:54 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:39:13-39:16 declares METHOD: def run()
+test/fixtures/analysis/call-sites/main.v3:40:21-40:22 declares LOCAL: var c: C
+test/fixtures/analysis/call-sites/main.v3:40:25-40:26 uses CLASS: class C(x: int)
+test/fixtures/analysis/call-sites/main.v3:40:27-40:30 uses CLASS: class C(x: int); type: int -> C
+test/fixtures/analysis/call-sites/main.v3:@1398-1401 call CLASS C: class C(x: int); parameters [x: int]; arguments @1399-1400
+test/fixtures/analysis/call-sites/main.v3:41:21-41:22 declares LOCAL: var d: D
+test/fixtures/analysis/call-sites/main.v3:41:25-41:26 uses CLASS: class D
+test/fixtures/analysis/call-sites/main.v3:41:27-41:30 uses CONSTRUCTOR: new(v: int)
+test/fixtures/analysis/call-sites/main.v3:@1418-1421 call CONSTRUCTOR new: new(v: int); parameters [v: int]; arguments @1419-1420
+test/fixtures/analysis/call-sites/main.v3:42:21-42:22 declares LOCAL: var e: E
+test/fixtures/analysis/call-sites/main.v3:42:25-42:26 uses CLASS: class E
+test/fixtures/analysis/call-sites/main.v3:42:27-42:30 uses CLASS: class E; type: void -> E
+test/fixtures/analysis/call-sites/main.v3:@1438-1440 call CLASS E: class E; parameters; arguments
+test/fixtures/analysis/call-sites/main.v3:43:21-43:24 declares LOCAL: var sum: int
+test/fixtures/analysis/call-sites/main.v3:43:27-43:30 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1457-1463 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1458-1459, @1461-1462
+test/fixtures/analysis/call-sites/main.v3:44:17-44:18 uses LOCAL: var c: C
+test/fixtures/analysis/call-sites/main.v3:44:19-44:23 uses METHOD: def none()
+test/fixtures/analysis/call-sites/main.v3:@1473-1475 call METHOD none: def none(); parameters; arguments
+test/fixtures/analysis/call-sites/main.v3:45:21-45:22 declares LOCAL: var m: int
+test/fixtures/analysis/call-sites/main.v3:45:25-45:26 uses LOCAL: var c: C
+test/fixtures/analysis/call-sites/main.v3:45:27-45:28 uses METHOD: def m(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1490-1496 call METHOD m: def m(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1491-1492, @1494-1495
+test/fixtures/analysis/call-sites/main.v3:46:21-46:22 declares LOCAL: var q: int
+test/fixtures/analysis/call-sites/main.v3:46:25-46:26 uses CLASS: class C(x: int)
+test/fixtures/analysis/call-sites/main.v3:46:27-46:28 uses METHOD: def m(a: int, b: int) -> int; type: (C, int, int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1511-1520 call METHOD m: def m(C, a: int, b: int) -> int; parameters [C] [a: int] [b: int]; arguments @1512-1513, @1515-1516, @1518-1519
+test/fixtures/analysis/call-sites/main.v3:46:29-46:30 uses LOCAL: var c: C
+test/fixtures/analysis/call-sites/main.v3:47:21-47:22 declares LOCAL: var v: V.B
+test/fixtures/analysis/call-sites/main.v3:47:25-47:26 uses CLASS: type V
+test/fixtures/analysis/call-sites/main.v3:47:27-47:28 uses VARIANT_CASE: case B(f: int, s: Array<byte>); type: (int, Array<byte>) -> V.B
+test/fixtures/analysis/call-sites/main.v3:@1535-1545 call VARIANT_CASE B: case B(f: int, s: Array<byte>); parameters [f: int] [s: Array<byte>]; arguments @1536-1537, @1539-1544
+test/fixtures/analysis/call-sites/main.v3:48:21-48:22 declares LOCAL: var w: int
+test/fixtures/analysis/call-sites/main.v3:48:25-48:28 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1560-1605 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1583-1584, @1603-1604
+test/fixtures/analysis/call-sites/main.v3:51:21-51:22 declares LOCAL: var i: int
+test/fixtures/analysis/call-sites/main.v3:52:21-52:24 declares LOCAL: var pre: int
+test/fixtures/analysis/call-sites/main.v3:52:27-52:30 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1635-1645 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1636-1639, @1641-1644
+test/fixtures/analysis/call-sites/main.v3:52:33-52:34 uses LOCAL: var i: int
+test/fixtures/analysis/call-sites/main.v3:52:36-52:37 uses LOCAL: var i: int
+test/fixtures/analysis/call-sites/main.v3:53:21-53:24 declares LOCAL: var gen: int
+test/fixtures/analysis/call-sites/main.v3:53:27-53:29 uses METHOD: def id<T>(p: T) -> T; type: int -> int
+test/fixtures/analysis/call-sites/main.v3:@1666-1669 call METHOD id: def id(p: int) -> int; parameters [p: int]; arguments @1667-1668
+test/fixtures/analysis/call-sites/main.v3:54:21-54:24 declares LOCAL: var inf: int
+test/fixtures/analysis/call-sites/main.v3:54:27-54:29 uses METHOD: def id<T>(p: T) -> T; type: int -> int
+test/fixtures/analysis/call-sites/main.v3:@1685-1690 call METHOD id: def id(p: int) -> int; parameters [p: int]; arguments @1686-1689
+test/fixtures/analysis/call-sites/main.v3:54:30-54:33 uses LOCAL: var gen: int
+test/fixtures/analysis/call-sites/main.v3:55:21-55:27 declares LOCAL: var nested: int
+test/fixtures/analysis/call-sites/main.v3:55:30-55:33 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1710-1732 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1711-1720, @1722-1731
+test/fixtures/analysis/call-sites/main.v3:55:34-55:37 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1714-1720 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1715-1716, @1718-1719
+test/fixtures/analysis/call-sites/main.v3:55:45-55:48 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1725-1731 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1726-1727, @1729-1730
+test/fixtures/analysis/call-sites/main.v3:56:21-56:28 declares LOCAL: var builtin: Array<int>
+test/fixtures/analysis/call-sites/main.v3:56:31-56:36 builtin: Array<int>
+test/fixtures/analysis/call-sites/main.v3:56:42-56:45 builtin: int -> Array<int>
+test/fixtures/analysis/call-sites/main.v3:@1764-1767 call builtin: int -> Array<int>; parameters [int]; arguments @1765-1766
+test/fixtures/analysis/call-sites/main.v3:57:21-57:28 declares LOCAL: var closure: int
+test/fixtures/analysis/call-sites/main.v3:57:31-57:36 uses METHOD: def twice(f: int -> int, x: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1790-1816 call METHOD twice: def twice(f: int -> int, x: int) -> int; parameters [f: int -> int] [x: int]; arguments @1791-1812, @1814-1815
+test/fixtures/analysis/call-sites/main.v3:57:42-57:43 declares PARAMETER: x: int
+test/fixtures/analysis/call-sites/main.v3:57:53-57:54 uses PARAMETER: x: int
+test/fixtures/analysis/call-sites/main.v3:59:13-59:17 declares METHOD: def more(a: Array<int>, g: G<int>)
+test/fixtures/analysis/call-sites/main.v3:59:18-59:19 declares PARAMETER: a: Array<int>
+test/fixtures/analysis/call-sites/main.v3:59:33-59:34 declares PARAMETER: g: G<int>
+test/fixtures/analysis/call-sites/main.v3:59:36-59:37 uses CLASS: class G<T>(v: T); type: G<int>
+test/fixtures/analysis/call-sites/main.v3:60:21-60:22 declares LOCAL: var p: int -> int
+test/fixtures/analysis/call-sites/main.v3:60:25-60:28 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1872-1878 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1873-1874, @1876-1877
+test/fixtures/analysis/call-sites/main.v3:61:22-61:25 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1890-1898 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1891-1893, @1895-1897
+test/fixtures/analysis/call-sites/main.v3:62:21-62:22 declares LOCAL: var x: int
+test/fixtures/analysis/call-sites/main.v3:62:25-62:26 uses PARAMETER: a: Array<int>
+test/fixtures/analysis/call-sites/main.v3:63:21-63:22 declares LOCAL: var k: int
+test/fixtures/analysis/call-sites/main.v3:63:25-63:30 uses METHOD: def adder() -> (int, int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1932-1934 call METHOD adder: def adder() -> (int, int) -> int; parameters; arguments
+test/fixtures/analysis/call-sites/main.v3:@1934-1942 call: (int, int) -> int; parameters [int] [int]; arguments @1935-1937, @1939-1941
+test/fixtures/analysis/call-sites/main.v3:64:21-64:22 declares LOCAL: var h: int
+test/fixtures/analysis/call-sites/main.v3:64:25-64:26 uses COMPONENT: component M
+test/fixtures/analysis/call-sites/main.v3:64:27-64:30 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@1959-1967 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @1960-1962, @1964-1966
+test/fixtures/analysis/call-sites/main.v3:65:21-65:22 declares LOCAL: var r: (int, bool)
+test/fixtures/analysis/call-sites/main.v3:65:25-65:26 uses PARAMETER: g: G<int>
+test/fixtures/analysis/call-sites/main.v3:65:27-65:31 uses METHOD: def pair<U>(u: U) -> (T, U); type: bool -> (int, bool)
+test/fixtures/analysis/call-sites/main.v3:@1985-1991 call METHOD pair: def pair(u: bool) -> (int, bool); parameters [u: bool]; arguments @1986-1990
+test/fixtures/analysis/call-sites/main.v3:66:21-66:22 declares LOCAL: var t: (int, int)
+test/fixtures/analysis/call-sites/main.v3:67:21-67:22 declares LOCAL: var s: int
+test/fixtures/analysis/call-sites/main.v3:67:25-67:28 uses METHOD: def add(a: int, b: int) -> int
+test/fixtures/analysis/call-sites/main.v3:@2026-2029 call METHOD add: def add(a: int, b: int) -> int; parameters [a: int] [b: int]; arguments @2027-2028
+test/fixtures/analysis/call-sites/main.v3:67:29-67:30 uses LOCAL: var t: (int, int)
+test/fixtures/analysis/call-sites/main.v3:69:17-69:23 uses METHOD: def accept(f: void -> void)
+test/fixtures/analysis/call-sites/main.v3:@2105-2114 call METHOD accept: def accept(f: void -> void); parameters [f: void -> void]; arguments @2106-2113
+test/fixtures/analysis/call-sites/main.v3:71:13-71:19 declares METHOD: def accept(f: void -> void)
+test/fixtures/analysis/call-sites/main.v3:71:20-71:21 declares PARAMETER: f: void -> void
+test/fixtures/analysis/call-sites/main.v3:71:35-71:36 uses PARAMETER: f: void -> void
+test/fixtures/analysis/call-sites/main.v3:@2147-2149 call PARAMETER f: void -> void; parameters; arguments
