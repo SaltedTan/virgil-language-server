@@ -5,8 +5,8 @@
 // function and reply sink are bound to it, so that a request that was
 // cancelled or replaced is told apart from the pending one.
 class LspRenameRequest(owner: LspRename, id: JsonRpcId, newName: string) {
-	// Its reply has been sent, as a cancellation or at shutdown.
-	var cancelled: bool;
+	// Its reply has been sent.
+	var answered: bool;
 	// Its record while it waits for an analysis (LspSnapshotRequests.submit).
 	var waiting: LspSnapshotRequest;
 	// The edits and their preflight, once the snapshot has selected them.
@@ -103,7 +103,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// whether {offset} selects something, and a reply, which for a plan is a
 	// placeholder that {delivered} replaces with the preflight.
 	def plan(r: LspRenameRequest, at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
-		if (r.cancelled) return (true, JsonRpcReply.Result(JsonValue.Null));
+		if (r.answered) return (true, JsonRpcReply.Result(JsonValue.Null));
 		var selected = LspRenameEligibility.select(at, projects, offset);
 		if (!selected.0) return (false, JsonRpcReply.Result(JsonValue.Null));
 		if (selected.2 != null) return (true, fail(selected.2));
@@ -191,13 +191,14 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		}
 		p.sources = sources;
 		r.plan = p;
+		projects.renameSnapshot = s;
 		return (true, JsonRpcReply.Result(JsonValue.Null));
 	}
 	// Replies to {r} with {reply}, unless it is a plan's placeholder: then
 	// the plan's preflight is queued, and replies when it completes.
 	def delivered(r: LspRenameRequest, reply: JsonRpcReply) {
 		r.waiting = null;
-		if (r.cancelled) return;
+		if (r.answered) return;
 		if (r.plan == null) return finish(r, reply);
 		if (scheduler == null) return finish(r, fail("rename needs the analysis worker to check its edits"));
 		r.job = LspAnalysisJob.new(r.begin, r.complete);
@@ -208,13 +209,14 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// snapshot budget as an automatic analysis is, which the supervisor does
 	// not keep as its latest snapshot.
 	def begin(r: LspRenameRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
-		var p = r.plan, sources = p.sources;
-		p.sources = null;
+		var p = r.plan;
 		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
-		if (ctx != p.ctx || !p.ctx.config.current) {
+		if (r.answered || ctx != p.ctx || !p.ctx.config.current) {
 			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the documents changed while the rename was checked");
 		}
-		if (!projects.admitSnapshot(p.ctx, supervisor.snapshot, p.at.snapshot,
+		var sources = p.sources;
+		p.sources = null;
+		if (!projects.admitSnapshot(p.ctx, supervisor.snapshot,
 				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
@@ -224,7 +226,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	// edits binds as the snapshot does and nothing changed meanwhile, and
 	// otherwise the reason. The analysis is dropped either way.
 	def complete(r: LspRenameRequest, outcome: AnalysisOutcome) {
-		if (r.cancelled) return;
+		if (r.answered) return;
 		var reply: JsonRpcReply;
 		match (outcome) {
 			Completed(edited) => reply = conclude(r.plan, edited);
@@ -285,21 +287,23 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	def close(reason: string) {
 		if (pending != null) drop(reason);
 	}
+	def configChanged() {
+		if (pending != null && pending.plan != null && !pending.plan.ctx.config.current) {
+			finish(pending, fail("the documents changed while the rename was checked"));
+		}
+	}
 	private def drop(reason: string) {
-		var r = pending;
-		pending = null;
-		r.cancelled = true;
+		finish(pending, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
+	}
+	private def finish(r: LspRenameRequest, reply: JsonRpcReply) {
+		if (r.answered) return;
+		r.answered = true;
+		if (pending == r) pending = null;
+		if (r.plan != null) projects.renameSnapshot = null;
 		r.plan = null;
-		// Nothing may keep a cancelled request: a client can cancel requests
-		// as fast as it sends them.
 		requests.withdraw(r.waiting);
 		r.waiting = null;
 		if (r.job != null && scheduler != null) scheduler.withdraw(r.job);
-		respond(r.id, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, reason)));
-	}
-	private def finish(r: LspRenameRequest, reply: JsonRpcReply) {
-		if (pending == r) pending = null;
-		r.plan = null;
 		respond(r.id, reply);
 	}
 	private def respond(id: JsonRpcId, reply: JsonRpcReply) {

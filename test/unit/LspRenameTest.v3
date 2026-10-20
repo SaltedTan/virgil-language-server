@@ -32,6 +32,8 @@ def X = [
 	T("LspRename:closed_request", test_closed_request),
 	T("LspRename:closed_while_waiting", test_closed_while_waiting),
 	T("LspRename:replaced_context_while_waiting", test_replaced_context_while_waiting),
+	T("LspRename:replaced_context_during_preflight", test_replaced_context_during_preflight),
+	T("LspRename:cancelled_preflight_snapshot_budget", test_cancelled_preflight_snapshot_budget),
 	T("LspRename:changed_while_waiting", test_changed_while_waiting),
 	T("LspRename:changed_while_checked", test_changed_while_checked),
 	T("LspRename:closed_file_changed_while_checked", test_closed_file_changed_while_checked),
@@ -291,6 +293,7 @@ class RenameTestSession {
 		var checked = server.rename.checked, id = rename(t, name, p.line, p.character, newName);
 		settle();
 		var edit = result(t, id);
+		t.assert(server.projects.renameSnapshot == null, "a successful rename releases its snapshot pin");
 		t.asserti(checked + 1, server.rename.checked);
 		return edit;
 	}
@@ -302,6 +305,7 @@ class RenameTestSession {
 		var id = rename(t, name, p.line, p.character, newName);
 		settle();
 		expectFailed(t, this, id, message);
+		t.assert(server.projects.renameSnapshot == null, "a refused rename releases its snapshot pin");
 	}
 	// The name of {uri} relative to the session's directory.
 	def relative(uri: string) -> string {
@@ -806,11 +810,102 @@ def test_replaced_context_while_waiting(t: Tester) {
 	s.write(t, ".virgil-lsp.json", Arrays.concat(config, "\n"));
 	s.reportChanged(".virgil-lsp.json");
 	t.assertz(false, a.config.current);
+	expectFailed(t, s, id, "the documents changed while the rename was checked");
+	t.assert(projects.renameSnapshot == null, "a retired context releases its pin before the worker completes");
 	s.settle();
-	expectFailed(t, s, id, "the rename could not be checked: the documents changed while the rename was checked");
 	t.asserti(1, s.count(id));
 	t.asserti(0, s.server.rename.checked);
 	t.asserti(generation + 3, s.supervisor.snapshot.generation);
+	s.server.close();
+}
+def test_replaced_context_during_preflight(t: Tester) {
+	for (watched in [false, true]) {
+		var s = kindsSession(t), p = at(KINDS, "var area", 4);
+		var id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+		t.assert(s.server.projects.renameSnapshot != null, "the running rename pins its original");
+		s.write(t, ".virgil-lsp.json", Arrays.concat(CONFIG, "\n"));
+		if (watched) {
+			s.reportChanged(".virgil-lsp.json");
+			expectFailed(t, s, id, "the documents changed while the rename was checked");
+			t.assert(s.server.projects.renameSnapshot == null, "retirement ends the running rename immediately");
+		}
+		s.settle();
+		expectFailed(t, s, id, "the documents changed while the rename was checked");
+		t.asserti(1, s.count(id));
+		t.assert(s.server.projects.renameSnapshot == null, "completion cannot retain the retired plan");
+		s.server.close();
+	}
+}
+def snapshotBudget(t: Tester, s: RenameTestSession) {
+	var latest = s.supervisor.snapshot, pinned = s.server.projects.renameSnapshot;
+	var retained = if(latest != null, latest.retainedBytes, 0L);
+	if (pinned != null && pinned != latest) retained += pinned.retainedBytes;
+	for (ctx in s.server.projects.loadedContexts()) {
+		var snapshot = ctx.snapshot;
+		if (snapshot != null && snapshot != latest && snapshot != pinned) retained += snapshot.retainedBytes;
+	}
+	t.assert(retained <= s.server.projects.MAX_SNAPSHOT_BYTES, "all retained snapshots fit the shared budget");
+}
+def test_cancelled_preflight_snapshot_budget(t: Tester) {
+	var sourceA = "component A { def get() -> int { var x = 1; return x; } }\n";
+	var sourceB = "component B { def get() -> int { var x = 2; return x; } }\n";
+	var s = RenameTestSession.new("rename-budget", [
+		(".virgil-lsp.json", "{\"version\":1,\"projects\":[]}"),
+		("a/.virgil-lsp.json", single("A.v3")), ("a/A.v3", sourceA),
+		("b/.virgil-lsp.json", single("B.v3")), ("b/B.v3", sourceB),
+		("c/.virgil-lsp.json", single("C.v3")), ("c/C.v3", "component C { }\n")], true, null, t);
+	s.open("a/A.v3", 1, sourceA);
+	s.open("b/B.v3", 1, sourceB);
+	s.settle();
+	var projects = s.server.projects, scheduler = s.server.rename.scheduler;
+	var a = projects.forDocument(s.uri("a/A.v3")).active;
+	var b = projects.forDocument(s.uri("b/B.v3")).active;
+	var c = projects.forDocument(s.uri("c/C.v3")).active;
+	scheduler.schedule([a, b], false);
+	s.settle();
+	var original = a.snapshot, latest = b.snapshot, oldC = c.snapshot;
+	t.assert(s.supervisor.snapshot == latest, "B is latest before the cancelled preflight");
+	var p = at(sourceB, "var x", 4), cancelled = s.rename(t, "b/B.v3", p.line, p.character, "next");
+	t.assert(s.supervisor.busy(), "B's preflight occupies the worker");
+	t.assert(projects.renameSnapshot == latest, "B pins its original");
+	s.cancel(cancelled);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(cancelled)["error"], "code"));
+	t.assert(projects.renameSnapshot == null, "cancelling B releases its pin");
+	p = at(sourceA, "var x", 4);
+	var id = s.rename(t, "a/A.v3", p.line, p.character, "value");
+	t.assert(s.reply(id) == null, "A waits behind the cancelled preflight");
+	t.assert(projects.renameSnapshot == original, "A pins its original while queued");
+	original.retainedBytes = 9L * 1024 * 1024;
+	latest.retainedBytes = 8L * 1024 * 1024;
+	a.snapshot = null;
+	var incoming = long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + 1024;
+	t.assertz(false, projects.admitSnapshot(c, latest, incoming));
+	t.assert(projects.renameSnapshot == original, "admission cannot evict a detached original");
+	var params = Strings.newMap<JsonValue>();
+	params["uris"] = JsonValue.JArray([JsonValue.String(s.uri("c/C.v3"))]);
+	var development = s.send(t, "virgil-lsp/analyze", params);
+	var error = s.reply(development)["error"];
+	t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(error, "code"));
+	t.assert_string("retained analysis snapshots exceed the workspace budget", stringAt(error, "message"));
+	snapshotBudget(t, s);
+	scheduler.schedule([c], false);
+	s.write(t, "a/.virgil-lsp.json", Arrays.concat(single("A.v3"), "\n"));
+	s.reportChanged("a/.virgil-lsp.json");
+	expectFailed(t, s, id, "the documents changed while the rename was checked");
+	t.assert(projects.renameSnapshot == null, "retirement releases A before another project's admission");
+	t.assert(s.supervisor.busy(), "the cancelled preflight has not completed yet");
+	t.assertz(true, projects.admitSnapshot(c, latest, incoming));
+	var fds = Array<int>.new(4);
+	while (s.server.analyzing()) {
+		var count = s.supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.server.pollTimeout());
+		s.server.onPoll();
+		snapshotBudget(t, s);
+	}
+	t.assert(c.snapshot != oldC && c.snapshot != null && c.snapshot.verified, "C is admitted and analyzed after the cancelled preflight");
+	t.asserti(1, s.count(cancelled));
+	t.asserti(1, s.count(id));
+	t.asserti(0, s.server.rename.checked);
 	s.server.close();
 }
 def test_changed_while_waiting(t: Tester) {
@@ -880,6 +975,7 @@ def test_preflight_time_limit(t: Tester) {
 		var message = stringAt(r["error"], "message");
 		t.assert(Strings.startsWith(message, "the rename could not be checked: the analysis worker timed out"), message);
 	}
+	t.assert(s.server.projects.renameSnapshot == null, "timeout releases the snapshot pin");
 	s.limits.timeoutMs = 10000;
 	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
 		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
@@ -906,6 +1002,7 @@ def preflightFails(t: Tester, newName: string, reason: string) {
 	t.assert(snapshot != null && snapshot.verified, "the synthetic worker analyzed the project");
 	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, newName);
 	s.settle();
+	t.assert(s.server.projects.renameSnapshot == null, "worker failure releases the snapshot pin");
 	t.asserti(1, s.count(id));
 	var r = s.reply(id);
 	t.assert(r != null && r.has("error"), "the rename was refused");
@@ -954,12 +1051,15 @@ def test_cancel(t: Tester) {
 	s.cancel(id + 1000);
 	t.assert(s.reply(id) == null, "another id cancels nothing");
 	s.cancel(id);
+	t.assert(s.server.projects.renameSnapshot == null, "cancellation releases the running plan's pin");
 	var r = s.reply(id);
 	t.assert(r != null && r.has("error"), "cancelled at once");
 	if (r != null) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
 	// Another rename may start while the dropped preflight still runs.
 	var next = s.rename(t, "Kinds.v3", p.line, p.character, "region");
+	t.assert(s.server.projects.renameSnapshot != null, "the next rename owns its own pin");
 	s.settle();
+	t.assert(s.server.projects.renameSnapshot == null, "the next reply releases its pin");
 	t.asserti(1, s.count(id));
 	t.asserti(3, array(member(s.result(t, next), "documentChanges")).length);
 	t.asserti(1, s.server.rename.checked);
@@ -1004,8 +1104,10 @@ def test_cancelled_waiting_renames_are_released(t: Tester) {
 def test_shutdown(t: Tester) {
 	var s = kindsSession(t);
 	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	t.assert(s.server.projects.renameSnapshot != null, "the pending rename holds a pin");
 	var shutdown = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.ByName(Strings.newMap<JsonValue>())).encode());
 	t.assert(shutdown != null, "shutdown answered");
+	t.assert(s.server.projects.renameSnapshot == null, "shutdown releases the snapshot pin");
 	var r = s.reply(id);
 	t.assert(r != null && r.has("error"), "the rename was cancelled");
 	if (r != null) {

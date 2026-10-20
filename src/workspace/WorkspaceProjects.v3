@@ -50,6 +50,7 @@ class WorkspaceProjects(store: DocumentStore) {
 	var ownershipSteps = MAX_OWNERSHIP_STEPS;
 	var warn: string -> void;
 	var onConfig: WorkspaceConfig -> void;
+	var renameSnapshot: AnalysisSnapshot;
 	private var discovered: bool;
 	private var configs = Vector<WorkspaceConfig>.new();
 	private var nextUse: long;
@@ -384,8 +385,9 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		configs = live;
 	}
-	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, original: AnalysisSnapshot, incomingBytes: long) -> bool {
+	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
 		if (active != null) active.lastUsed = ++nextUse;
+		var original = renameSnapshot;
 		var retained = if(latest != null, latest.retainedBytes, 0L);
 		if (original != null && original != latest) retained += original.retainedBytes;
 		for (i < configs.length) {

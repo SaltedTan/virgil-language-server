@@ -140,6 +140,8 @@ rename_shared.mkdir(exist_ok=True)
 # LspRenameTest writes each test's project file and sources itself. The
 # Virgil root of rename-root holds a library that its project depends on.
 (root / "rename-edits").mkdir(exist_ok=True)
+for name in ["a", "b", "c"]:
+    (root / "rename-budget" / name).mkdir(parents=True, exist_ok=True)
 rename_root = root / "rename-root"
 (rename_root / "vroot" / "lib").mkdir(parents=True, exist_ok=True)
 (rename_root / ".virgil-lsp.json").write_text(

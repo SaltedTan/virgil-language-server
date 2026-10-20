@@ -214,7 +214,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		var captured = LspAnalysisCapture.capture(store, keys, true);
 		if (captured.1 != null) return failed(ctx, captured.1);
 		var inputs = captured.0;
-		if (!projects.admitSnapshot(ctx, supervisor.snapshot, null, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
+		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
 			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
 		}
 		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);

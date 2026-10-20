@@ -138,6 +138,7 @@ class LspServer {
 		return analysis;
 	}
 	private def configChanged(c: WorkspaceConfig) {
+		rename.configChanged();
 		projectDiagnostics.update(c);
 		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
 		configurationChanged = true;
