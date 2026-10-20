@@ -5,6 +5,7 @@
 | Server version | Pinned Virgil revision | Notes |
 | --- | --- | --- |
 | `main` (unreleased) | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Required CI |
+| `0.1.0-alpha.1` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | First prerelease |
 
 The scheduled `virgil-master` workflow builds and tests against current upstream `master` as an advisory signal. A failure there does not block merges.
 
@@ -20,7 +21,7 @@ The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.m
 | --- | --- | --- | --- |
 | Linux x86-64 | **Supported** | `x86-64-linux` | Required |
 | Windows x86-64 with WSL 2 | **Supported**, using the Linux build inside WSL 2 | `x86-64-linux` | Covered by the Linux job |
-| macOS on Apple Silicon | **Supported** (interim), using the Intel build under Rosetta 2 | `x86-64-darwin` | `macos-15` (Apple Silicon), required before v0.1-alpha |
+| macOS on Apple Silicon | **Supported** (interim), using the Intel build under Rosetta 2 | `x86-64-darwin` | Required, on `macos-15` (Apple Silicon) |
 | macOS on Intel | Best effort: same build, untested | `x86-64-darwin` | None |
 | Native Windows | Not supported. Use WSL 2. | — | — |
 | Linux arm64 | Not supported yet | — | — |
@@ -59,4 +60,4 @@ Server and VS Code extension versions are independent, and the extension's versi
 
 | VS Code extension | Server versions |
 | --- | --- |
-| `0.1.0` (prerelease VSIX, `clients/vscode` on `main`) | `main` (unreleased, `0.0.0-dev`), the only server version so far. The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`, `textDocument/references`, `textDocument/signatureHelp`, `workspace/symbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. It also needs `virgil-lsp-worker` beside `virgil-lsp`, which its startup checks verify. |
+| `0.1.0` (prerelease VSIX, attached to server `0.1.0-alpha.1`; `clients/vscode` on `main`) | `0.1.0-alpha.1`, the first server prerelease, and `main`. The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`, `textDocument/references`, `textDocument/signatureHelp`, `workspace/symbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. It also needs `virgil-lsp-worker` beside `virgil-lsp`, which its startup checks verify. |

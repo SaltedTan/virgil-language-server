@@ -50,11 +50,11 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 - Nothing is published to a package manager, the Visual Studio Marketplace, or Open VSX. Install the server from a release archive and the extension from its VSIX by hand ([Installing](releasing.md#installing), [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)). VS Code doesn't update an extension installed from a VSIX.
 - The archives don't include Virgil's library sources. A project with `virgilDependencies` needs a Virgil checkout at the revision that `virgil-lsp --version` prints ([The Virgil root](releasing.md#the-virgil-root)).
 
-## Names that definition and hover don't cover
+## Names that definition, hover, and references don't cover
 
 Only the uses that the [occurrence index](architecture.md#compiler-adapter) records resolve; it owns the full list. In particular:
 
-- Builtin types, such as `int`, `Array` in `Array<Foo>`, `set` in `E.set`, and `Ref` in `Ref<L>`, have no definition. Hover shows the type of a builtin used in an expression, such as `.length`, but nothing for a builtin type in a type position ([Hover](architecture.md#hover)).
+- Builtin types, such as `int`, `Array` in `Array<Foo>`, `set` in `E.set`, and `Ref` in `Ref<L>`, have no definition or references. Hover shows the type of a builtin used in an expression, such as `.length`, but nothing for a builtin type in a type position ([Hover](architecture.md#hover)).
 - The letters of a bit pattern, such as `0b_aabb`, and the names in a `#packing` hint on a variant case aren't indexed ([#111](https://github.com/SaltedTan/virgil-language-server/issues/111)).
 - Hover shows nothing at a keyword, a literal, or an unresolved name, and doesn't show the type of a larger expression.
 
