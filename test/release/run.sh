@@ -486,18 +486,19 @@ done
 rm "$TMP/lock/package-lock.json"
 expect_run "check-vsix.py: no lockfile" 1 - "cannot read .*/package-lock\.json" "$CHECK_VSIX" "$VSIX" "$TMP/lock"
 
-# Release assets as the build and vsix jobs produce them: a manifest and an
-# empty archive for each target, and the VSIX.
+# assets [<tag as JSON>]: release assets as the build and vsix jobs produce
+# them: a manifest and an empty archive for each target, and the VSIX. The
+# manifests' tag is null, as for a dry run, unless <tag> is given.
 ASSETS=$TMP/assets
 revision=0123456789abcdef0123456789abcdef01234567
 virgil=fedcba9876543210fedcba9876543210fedcba98
 assets() {
-    local target
+    local target tag=${1:-null}
     rm -rf "$ASSETS"
     mkdir "$ASSETS"
     for target in x86-64-linux x86-64-darwin; do
-        printf '{"version": "1.2.3-alpha.4", "tag": null, "target": "%s", "sourceRevision": "%s",
-            "dirty": false, "virgilRevision": "%s"}\n' "$target" "$revision" "$virgil" \
+        printf '{"version": "1.2.3-alpha.4", "tag": %s, "target": "%s", "sourceRevision": "%s",
+            "dirty": false, "virgilRevision": "%s"}\n' "$tag" "$target" "$revision" "$virgil" \
             > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.manifest.json"
         : > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.tar.gz"
     done
@@ -655,6 +656,172 @@ notes "an unreadable build manifest" 1 - "cannot read .*manifest\.json: "
 assets
 rm "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.tar.gz"
 notes "missing archive" 1 - "missing archive virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz"
+
+# CHANGELOG.md's links are relative to the repository root, which
+# release-notes.py finds from its own path, so these cases run a copy of it
+# from a temporary root with a fixture CHANGELOG.md and the files it links.
+REPO=$TMP/repo
+mkdir -p "$REPO/scripts" "$REPO/docs/sub"
+cp "$NOTES" "$REPO/scripts/"
+: > "$REPO/docs/a.md"
+: > "$REPO/docs/sub/b.png"
+base="https://example\.test/o/r/blob/$revision"
+# links <name> <expected-exit> <stdout-pattern|-> <stderr-pattern|-|""> <section>
+# Prints the notes for an Unreleased section holding <section>, with the
+# repository URL set as the release workflow sets it.
+links() {
+    printf '# Changelog\n\n## [Unreleased]\n\n%s\n\n## [0.1.0] - 2026-01-01\n\n- Old.\n' "$5" \
+        > "$REPO/CHANGELOG.md"
+    expect_run "release-notes.py: $1" "$2" "$3" "$4" \
+        env GITHUB_SERVER_URL=https://example.test GITHUB_REPOSITORY=o/r \
+        "$REPO/scripts/release-notes.py" Unreleased "$ASSETS"
+}
+assets
+notes "today's CHANGELOG.md Unreleased section" 0 '^## Downloads$' ""
+links "a repository link at the revision of a dry run, with its fragment" 0 \
+    "^- See \[A\]\($base/docs/a\.md#x\)\.$" "" '- See [A](docs/a.md#x).'
+links "a fragment alone links to CHANGELOG.md" 0 \
+    "^- \[Top\]\($base/CHANGELOG\.md#unreleased\)$" "" '- [Top](#unreleased)'
+links "an image" 0 "^- !\[B\]\($base/docs/sub/b\.png\)$" "" '- ![B](docs/sub/b.png)'
+links "./ and ../ are normalized" 0 \
+    "^- \[A\]\($base/docs/a\.md\) \[A\]\($base/docs/a\.md\)$" "" \
+    '- [A](./docs/a.md) [A](docs/sub/../a.md)'
+links "https and mailto links are kept" 0 \
+    '^- \[K\]\(https://example\.com/a\.md\) \[M\]\(mailto:a@example\.com\)$' "" \
+    '- [K](https://example.com/a.md) [M](mailto:a@example.com)'
+# The script doesn't parse Markdown: every "](" is a link target, even in a
+# code span or after a backslash escape, so no backtick or escape can hide a
+# link, and every "]:" is refused, so no definition can make a reference link.
+links "a link in a code span is rewritten too" 0 \
+    "^- \`\[a\]\($base/docs/a\.md\)\` and \`\`x \`!\[b\]\($base/docs/sub/b\.png\)\` y\`\`$" "" \
+    '- `[a](docs/a.md)` and ``x `![b](docs/sub/b.png)` y``'
+links "a link in a code span is checked too" 1 - "links to docs/missing\.md, which does not exist$" \
+    '- `[a](docs/missing.md)`'
+links "a link after a backslash escape is rewritten too" 0 \
+    "^- [\]\[A\]\($base/docs/a\.md\) and \[B[\]\]\($base/docs/a\.md\)$" "" \
+    '- \[A](docs/a.md) and [B\](docs/a.md)'
+links "escaped backticks don't hide a link" 0 \
+    "^- Escape [\]\` before \[A\]\($base/docs/a\.md\) and [\]\` after\.$" "" \
+    '- Escape \` before [A](docs/a.md) and \` after.'
+links "a stray backtick doesn't hide a later entry's link" 0 "^- \[A\]\($base/docs/a\.md\)$" "" \
+    '- A ` stray backtick.
+- [A](docs/a.md)
+- `code`'
+links "a stray backtick doesn't hide a heading's link" 0 "^### \[A\]\($base/docs/a\.md\)$" "" \
+    'A ` stray backtick.
+### [A](docs/a.md)
+`code`'
+links "a link in a code span across list-item lines is rewritten" 0 \
+    "^  2\. \[a\]\($base/docs/a\.md\)$" "" \
+    '- `example
+  2. [a](docs/a.md)
+  continuation`'
+links "brackets in prose and src= or href= outside a tag are kept" 0 \
+    '^- Index xs\[i\]\[j\], `xs\[i\]\[j\]`, \[A\]\[\], and \[a\]\[b\]; the src= directory and href=x\.$' "" \
+    '- Index xs[i][j], `xs[i][j]`, [A][], and [a][b]; the src= directory and href=x.'
+links "a link outside the repository" 1 - "links to \.\./a\.md, outside the repository$" \
+    '- [A](../a.md)'
+links "a link that leaves the repository after descending" 1 - \
+    "links to docs/\.\./\.\./a\.md, outside the repository$" '- [A](docs/../../a.md)'
+links "a root-relative link" 1 - \
+    "links to /docs/a\.md, which is not relative to the repository root$" '- [A](/docs/a.md)'
+links "a protocol-relative link" 1 - \
+    "links to //example\.com/a, which is not relative to the repository root$" \
+    '- [A](//example.com/a)'
+links "a link to a missing file" 1 - "links to docs/missing\.md#x, which does not exist$" \
+    '- [A](docs/missing.md#x)'
+# Each form is <section>|<pattern for the text that the error names>.
+for form in '[A](docs/a.md "Title")|\]\(docs/a\.md "Title"\)' \
+    '[A](<a.md>)|\]\(<a\.md>\)' \
+    '[A]( docs/a.md)|\]\( docs/a\.md\)' \
+    '[A](https://example.com/a_(b))|\]\(https://example\.com/a_\(b\)' \
+    '`[a](b c)`|\]\(b c\)' \
+    '[A](docs/a.md and more|\]\(docs/a\.md and more' \
+    '[A](|\]\('; do
+    links "a \"](\" that isn't a plain target: ${form%%|*}" 1 - \
+        "cannot rewrite the link at '${form#*|}': the release notes treat every \"\]\(\" as a link" \
+        "- Entry.
+
+${form%%|*}"
+done
+for form in '[a]: docs/a.md|\[a\]: docs/a\.md' \
+    '[a]: https://example.com|\[a\]: https://example\.com' \
+    '`[x]: y`|`\[x\]: y`' \
+    '[^1]: A footnote.|\[\^1\]: A footnote\.' \
+    '> [guide]: docs/a.md
+>
+> [guide]|> \[guide\]: docs/a\.md' \
+    '- Entry.
+
+    [guide]: docs/a.md
+
+[guide]|    \[guide\]: docs/a\.md' \
+    '[a
+b]: docs/a.md|b\]: docs/a\.md'; do
+    links "a reference definition: ${form%%|*}" 1 - \
+        "cannot rewrite '${form#*|}': the release notes don't support reference link definitions$" \
+        "- Entry.
+
+${form%%|*}"
+done
+# Any HTML tag with an attribute is refused, whatever the attribute, since a
+# URL reaches an HTML element only through one; the error names the line. A
+# tag in a code span is refused too. Each form is <section>|<pattern for the
+# line that the error names>.
+for form in '<a href="docs/a.md">A</a>|<a href="docs/a\.md">A</a>' \
+    '<a href="https://example.com">K</a>|<a href="https://example\.com">K</a>' \
+    "<A HREF='docs/a.md'>A</A>|<A HREF='docs/a\.md'>A</A>" \
+    '<img src=docs/sub/b.png>|<img src=docs/sub/b\.png>' \
+    '<IMG SRC="https://example.com/b.png">|<IMG SRC="https://example\.com/b\.png">' \
+    '<img alt=">" src="docs/sub/b.png">|<img alt=">" src="docs/sub/b\.png">' \
+    '<source srcset="docs/sub/b.png">|<source srcset="docs/sub/b\.png">' \
+    '<div>
+<a title=""href="docs/a.md">A</a>
+<img alt=""src="docs/sub/b.png">
+</div>|<a title=""href="docs/a\.md">A</a>' \
+    '<div>
+<img alt=""src="docs/sub/b.png">
+</div>|<img alt=""src="docs/sub/b\.png">' \
+    '<q cite="docs/a.md">A</q>|<q cite="docs/a\.md">A</q>' \
+    '<blockquote cite="docs/a.md">A</blockquote>|<blockquote cite="docs/a\.md">A</blockquote>' \
+    '<ins cite="docs/a.md">A</ins>|<ins cite="docs/a\.md">A</ins>' \
+    '<del cite="docs/a.md">A</del>|<del cite="docs/a\.md">A</del>' \
+    '<img longdesc="docs/a.md" usemap="docs/a.md#m">|<img longdesc="docs/a\.md" usemap="docs/a\.md#m">' \
+    '<img/src="docs/sub/b.png">|<img/src="docs/sub/b\.png">' \
+    '<h1 id="x">A</h1>|<h1 id="x">A</h1>' \
+    '<a
+href="docs/a.md">A</a>|<a\\nhref="docs/a\.md">A</a>' \
+    '<span title="The src= directory">A</span>|<span title="The src= directory">A</span>' \
+    '[A](<docs/a.md>)|\[A\]\(<docs/a\.md>\)' \
+    '- Compare `a<b c`.|- Compare `a<b c`\.'; do
+    links "an HTML tag with an attribute: ${form%%|*}" 1 - \
+        "cannot rewrite [\"']${form#*|}[\"']: the release notes don't support HTML tags with attributes$" \
+        "- Entry.
+
+${form%%|*}"
+done
+links "angle brackets that aren't a tag with an attribute are kept" 0 \
+    '^- Breaks <br>, <br/>, and <br />, a closing </a>, Ref<L>, Map<K, V>, and a < b\.$' "" \
+    '- Breaks <br>, <br/>, and <br />, a closing </a>, Ref<L>, Map<K, V>, and a < b.'
+links "an unclosed angle bracket doesn't take later prose for a tag" 0 \
+    '^- Documented `List<T`\.$' "" \
+    '- Documented `List<T`.
+- The src= directory is now supported.'
+# Every accepted form at once, after which no "](" in the notes may have a
+# target without a URI scheme.
+links "every accepted form" 0 '^## Downloads$' "" \
+    '- See [A](docs/a.md#x), ![B](./docs/sub/b.png), [Top](#unreleased), and [K](https://example.com).
+- `[a](docs/sub/../a.md)` and \[A](docs/a.md), escaped \` [A](docs/a.md) \`.
+- `example
+  2. [a](docs/a.md)
+  continuation` xs[i][j], the src= directory, Map<K, V>, <br>, and a < b.'
+cp "$TMP/out" "$TMP/notes.md"
+expect_run "release-notes.py: no relative link target remains" 1 - "" \
+    bash -c "grep -oE '\]\([^)]*' \"\$1\" | grep -vE '^\]\([A-Za-z][A-Za-z0-9+.-]*:'" - \
+    "$TMP/notes.md"
+assets '"v1.2.3-alpha.4"'
+links "a repository link at the release's tag" 0 \
+    '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
 
 echo "release scripts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

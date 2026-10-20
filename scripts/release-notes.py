@@ -7,13 +7,29 @@
 # VS Code extension with the version recorded in the VSIX itself. Every
 # manifest in the asset directory must record the same version, tag, and
 # revisions, and its archive must be present. The directory must hold exactly
-# one VSIX, named <name>-<version>.vsix after its extension/package.json. See
+# one VSIX, named <name>-<version>.vsix after its extension/package.json.
+# GitHub doesn't resolve relative links in a release, so the CHANGELOG
+# section's repository links, such as [Hover](docs/architecture.md#hover), are
+# rewritten with the Downloads links' repository URL and ref: the manifests'
+# tag when present, otherwise the source revision; a fragment alone links to
+# CHANGELOG.md itself. The script doesn't parse Markdown: every "](" starts a
+# link target, even in a code span or after a backslash escape, so that no
+# inline link or image can be missed. A target with a URI scheme is kept as
+# it is. A target outside the repository root, a root-relative or
+# protocol-relative target, a target that the checkout lacks, and any other
+# text after "](", such as a title, angle brackets, whitespace, or
+# parentheses, fail. So do "]:", which every reference link definition holds,
+# and any HTML tag with an attribute, whatever the attribute, since a URL
+# reaches an HTML element only through one; that includes a tag in a code
+# span, so write `a < b` rather than `a<b c`. See
 # docs/releasing.md.
 # Usage: release-notes.py <changelog-section> <asset-directory>
 # <changelog-section> is a version, or "Unreleased" for a dry run.
 import glob
 import json
 import os
+import posixpath
+import re
 import sys
 import zipfile
 import zlib
@@ -45,6 +61,18 @@ MANIFEST_FIELDS = (
     ("virgilRevision", "a non-empty string"),
 )
 MANIFEST = "extension/package.json"
+# What release_links() matches in the CHANGELOG section: an HTML tag with an
+# attribute, which is a tag name as CommonMark defines it, then whitespace or
+# "/", which the HTML tokenizer treats alike after a tag name, then any
+# character but whitespace, "/", or ">". Where a name runs into any other
+# character, such as the comma in Map<K, V>, the tokenizer takes that character
+# into the name, which then names no element that GitHub keeps. Then every
+# "](", with the target that follows it if that is a plain one, which has no
+# spaces, parentheses, or angle brackets and ends at ")". Neither can backtrack
+# far, so each pass is linear.
+TAG = re.compile(r"<[A-Za-z][A-Za-z0-9-]*[\s/]+[^\s/>]")
+LINK = re.compile(r"\]\((?:(?P<target>[^\s()<>]+)\))?")
+SCHEME = re.compile(r"[a-z][a-z0-9+.-]*:", re.I)
 # What zipfile can raise for a damaged VSIX that is_zipfile accepts, as in
 # scripts/check-vsix.py: a bad header, central directory, or CRC; an entry
 # name that isn't the UTF-8 that its flags claim, or an offset too large to
@@ -162,6 +190,50 @@ def changelog_section(heading):
     return "\n".join(lines).strip()
 
 
+def release_link(target, url, ref):
+    """Rewrites the target of a CHANGELOG.md link to the file at ref, keeping
+    any fragment, unless it has a URI scheme."""
+    if SCHEME.match(target):
+        return target
+    if target.startswith("/"):
+        fail("CHANGELOG.md links to %s, which is not relative to the repository root"
+             % target)
+    path, sep, fragment = target.partition("#")
+    path = posixpath.normpath(path) if path else "CHANGELOG.md"
+    if path == ".." or path.startswith("../"):
+        fail("CHANGELOG.md links to %s, outside the repository" % target)
+    if not os.path.exists(os.path.join(ROOT, path)):
+        fail("CHANGELOG.md links to %s, which does not exist" % target)
+    return "%s/blob/%s/%s%s%s" % (url, ref, path, sep, fragment)
+
+
+def release_links(section, url, ref):
+    """Rewrites the repository links in a CHANGELOG.md section, which are
+    relative to the repository root, as links to the files at ref."""
+    at = section.find("]:")
+    if at >= 0:
+        line = section[section.rfind("\n", 0, at) + 1:].partition("\n")[0]
+        fail("CHANGELOG.md: cannot rewrite %r: the release notes don't support reference "
+             "link definitions" % line)
+    tag = TAG.search(section)
+    if tag:
+        start = section.rfind("\n", 0, tag.start()) + 1
+        end = section.find("\n", tag.end())
+        fail("CHANGELOG.md: cannot rewrite %r: the release notes don't support HTML tags with "
+             "attributes" % section[start:None if end < 0 else end])
+
+    def rewrite(match):
+        if match["target"] is None:
+            text = section[match.start():].partition("\n")[0]
+            if ")" in text:
+                text = text[:text.index(")") + 1]
+            fail("CHANGELOG.md: cannot rewrite the link at %r: the release notes treat every "
+                 "\"](\" as a link and rewrite only targets without spaces, parentheses, or "
+                 "angle brackets" % text)
+        return "](%s)" % release_link(match["target"], url, ref)
+    return LINK.sub(rewrite, section)
+
+
 def extension(assets):
     vsixes = sorted(glob.glob(os.path.join(assets, "*.vsix")))
     if len(vsixes) != 1:
@@ -228,7 +300,7 @@ def main():
     revision, virgil = first["sourceRevision"], first["virgilRevision"]
     ref = first["tag"] or revision
 
-    out = [changelog_section(heading), "", "## Downloads", ""]
+    out = [release_links(changelog_section(heading), url, ref), "", "## Downloads", ""]
     out.append("| Archive | Platform |")
     out.append("| --- | --- |")
     for m in manifests:
