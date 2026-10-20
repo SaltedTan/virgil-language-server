@@ -57,7 +57,7 @@ class LspServer {
 	// answered from snapshots.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
-	private def prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
+	private var prepareRename: LspPrepareRename;
 	private def signatureHelp = LspSignatureHelp.new();
 	// textDocument/rename; tests may lower its bounds.
 	var rename: LspRename;
@@ -90,6 +90,7 @@ class LspServer {
 		snapshotRequests.registerPrepared(dispatcher, "textDocument/references", "references",
 			LspReferences.REQUIRES, LspReferences.prepare);
 		snapshotRequests.register(dispatcher, "textDocument/signatureHelp", "signatureHelp", signatureHelp.answer);
+		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
 		rename.register(dispatcher);

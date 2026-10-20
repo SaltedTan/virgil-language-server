@@ -906,6 +906,7 @@ def test_cancelled_preflight_snapshot_budget(t: Tester) {
 	t.assert(projects.renameSnapshot == original, "admission cannot evict a detached original");
 	var params = Strings.newMap<JsonValue>();
 	params["uris"] = JsonValue.JArray([JsonValue.String(s.uri("c/C.v3"))]);
+	s.server.documents.withBoundedReader(ProjectFiles.load);
 	var development = s.send(t, "virgil-lsp/analyze", params);
 	var error = s.reply(development)["error"];
 	t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(error, "code"));
