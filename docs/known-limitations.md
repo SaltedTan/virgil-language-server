@@ -28,7 +28,7 @@ Semantic results come from the newest analysis of the document's project. An ana
 
 ## Supported program size
 
-The largest program tested is the Aeneas sources and their dependencies, 205 files and 3.0 MB of source. Its analysis result uses 76% of the 16 MiB result budget, and tests require it to stay within 80%. At similar density, a program about 1.3 times as large would exhaust the budget; that is an estimate, not a supported capacity ([supported program size](decisions/0004-analysis-worker-process.md#supported-program-size)). The result's size, not a line count, is the main limit.
+The largest program tested is the Aeneas sources and their dependencies, 205 files and 3.0 MB of source. Its analysis result uses 79% of the 16 MiB result budget, and tests require it to stay within 80%. At similar density, a program about 1.25 times as large would exhaust the budget; that is an estimate, not a supported capacity ([supported program size](decisions/0004-analysis-worker-process.md#supported-program-size)). The result's size, not a line count, is the main limit.
 
 A project's program may also select at most 1,024 files and 4 MiB of paths and source ([Patterns](configuration.md#patterns)), and each analysis gets the worker's 384 MB heap and 10 seconds. A project over the file or source limit gets a configuration diagnostic. A program whose result is over budget gets no semantic results: its analyses fail with a warning. Analyze fewer files together, as a smaller project; a larger `WORKER_HEAP` doesn't raise the result budget.
 
