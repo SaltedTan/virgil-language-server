@@ -4,14 +4,158 @@
 component ProjectGlob {
 	// Greedy single-star matching, advancing by UTF-8 code points, not bytes.
 	def segment(pattern: string, name: string) -> bool {
+		return ProjectGlobMatcher.new(int.max).segment(pattern, name);
+	}
+	// Whether {pattern} matches all of {path}, a path below its base.
+	def matches(pattern: string, path: string) -> bool {
+		var m = ProjectGlobMatcher.new(int.max);
+		return m.matches(m.split(pattern), m.split(path));
+	}
+}
+
+// A program's patterns, split at '/' by a ProjectGlobMatcher.
+class ProjectGlobPatterns(sources: Array<Array<string>>, dependencies: Array<Array<string>>,
+	exclude: Array<Array<string>>, virgilDependencies: Array<Array<string>>) { }
+
+// Matches patterns against paths, split at '/' once each, as expansion would,
+// and counts its work in steps: a byte split or compared, a cell of the
+// matching table, an iteration of a segment's matching loop, and what callers
+// charge for their own work. Once it has spent more than {budget} steps it is
+// exhausted and matches nothing more, so a caller that matches many paths
+// against many patterns bounds its time and can tell an exhausted search from
+// one that found nothing.
+class ProjectGlobMatcher(budget: int) {
+	var spent: int;
+	private var row: Array<bool> = [];
+	private var next: Array<bool> = [];
+
+	def exhausted() -> bool {
+		return spent > budget;
+	}
+	// Spends {steps}, of work here or elsewhere; false once exhausted.
+	def charge(steps: int) -> bool {
+		if (!exhausted()) spent += steps;
+		return !exhausted();
+	}
+	// Whether {text} starts with {prefix}, spending a step per byte compared.
+	// False once exhausted.
+	def startsWith(text: string, prefix: string) -> bool {
+		if (exhausted()) return false;
+		var i = 0;
+		if (prefix.length <= text.length) {
+			while (i < prefix.length && text[i] == prefix[i]) i++;
+		}
+		return charge(i + 1) && i == prefix.length;
+	}
+	// {text} split at every '/', as Strings.split does; or null once exhausted.
+	def split(text: string) -> Array<string> {
+		if (!charge(text.length + 1)) return null;
+		var count = 1;
+		for (c in text) { if(c == '/') count++; }
+		var result = Array<string>.new(count), start = 0, k = 0;
+		for (i < text.length) {
+			if (text[i] == '/') {
+				result[k++] = Arrays.range(text, start, i);
+				start = i + 1;
+			}
+		}
+		result[k] = Arrays.range(text, start, text.length);
+		return result;
+	}
+	// {program}'s patterns, split; or null once exhausted.
+	def patterns(program: ProjectDefinition) -> ProjectGlobPatterns {
+		var sources = splitAll(program.sources);
+		if (sources == null) return null;
+		var dependencies = splitAll(program.dependencies);
+		if (dependencies == null) return null;
+		var exclude = splitAll(program.exclude);
+		if (exclude == null) return null;
+		var virgilDependencies = splitAll(program.virgilDependencies);
+		if (virgilDependencies == null) return null;
+		return ProjectGlobPatterns.new(sources, dependencies, exclude, virgilDependencies);
+	}
+	private def splitAll(patterns: Array<ProjectPattern>) -> Array<Array<string>> {
+		if (exhausted()) return null;
+		var result = Array<Array<string>>.new(patterns.length);
+		for (i < patterns.length) {
+			result[i] = split(patterns[i].text);
+			if (result[i] == null) return null;
+		}
+		return result;
+	}
+	// Whether one of {patterns} matches {path}, a path below their base, and
+	// none of {exclude} prunes it. Expansion tests the excludes at every
+	// directory it enters on the way, so one that matches a directory of
+	// {path} removes it too. False once exhausted.
+	def selects(patterns: Array<Array<string>>, exclude: Array<Array<string>>, path: Range<string>) -> bool {
+		if (exhausted()) return false;
+		var selected = false;
+		for (p in patterns) {
+			var matched = matches(p, path);
+			if (exhausted()) return false;
+			if (matched) { selected = true; break; }
+		}
+		if (!selected) return false;
+		for (e in exclude) {
+			if (!fill(e, path)) return false;
+			for (k = 1; k <= path.length; k++) { if(row[k]) return false; }
+		}
+		return true;
+	}
+	// Whether {pattern} matches all of {path}. False once exhausted.
+	def matches(pattern: Array<string>, path: Range<string>) -> bool {
+		return fill(pattern, path) && row[path.length];
+	}
+	// Fills the row whose entry k says whether {pattern} matches the first k
+	// segments of {path}; false once exhausted. Dynamic programming avoids
+	// exponential backtracking through multiple **. A row of false stays so,
+	// which ends the work early.
+	private def fill(pattern: Array<string>, path: Range<string>) -> bool {
+		if (exhausted()) return false;
+		var n = path.length;
+		if (row.length <= n) {
+			row = Array<bool>.new(n + 1);
+			next = Array<bool>.new(n + 1);
+		}
+		row[0] = true;
+		for (i < n) row[i + 1] = false;
+		for (p in pattern) {
+			if (!charge(n + 1)) return false;
+			var any = false;
+			if (Strings.equal(p, "**")) {
+				next[0] = any = row[0];
+				for (i < n) {
+					next[i + 1] = row[i + 1] || (next[i] && path[i].length > 0 && path[i][0] != '.');
+					any = any || next[i + 1];
+				}
+			} else {
+				next[0] = false;
+				for (i < n) {
+					next[i + 1] = row[i] && segment(p, path[i]);
+					if (exhausted()) return false;
+					any = any || next[i + 1];
+				}
+			}
+			var t = row;
+			row = next;
+			next = t;
+			if (!any) break;
+		}
+		return true;
+	}
+	// Greedy single-star matching of one segment, advancing by UTF-8 code
+	// points, not bytes. False once exhausted.
+	def segment(pattern: string, name: string) -> bool {
+		if (!charge(1)) return false;
 		if (name.length > 0 && name[0] == '.' && (pattern.length == 0 || pattern[0] != '.')) return false;
 		var p = 0, n = 0, star = -1, retry = 0;
 		while (n < name.length) {
+			if (!charge(1)) return false;
 			if (p < pattern.length && pattern[p] == '*') { star = p++; retry = n; continue; }
 			if (p < pattern.length && pattern[p] == '?') {
-				var next = step(name, n);
-				if (next < 0) return false;
-				p++; n = next; continue;
+				var after = step(name, n);
+				if (after < 0) return false;
+				p++; n = after; continue;
 			}
 			if (p < pattern.length && pattern[p] == name[n]) { p++; n++; continue; }
 			if (star < 0) return false;
@@ -19,29 +163,16 @@ component ProjectGlob {
 			if (retry < 0) return false;
 			n = retry; p = star + 1;
 		}
-		while (p < pattern.length && pattern[p] == '*') p++;
+		while (p < pattern.length && pattern[p] == '*') {
+			if (!charge(1)) return false;
+			p++;
+		}
 		return p == pattern.length;
 	}
 	private def step(s: string, i: int) -> int {
 		if (i >= s.length) return -1;
+		if (s[i] < 0x80) return i + 1;
 		var r = Utf8.decode1(s[i ...]);
 		return if(r.0 > 0, i + r.0, -1);
-	}
-	// Dynamic programming avoids exponential backtracking through multiple **.
-	def matches(pattern: string, path: string) -> bool {
-		var ps = Strings.split(pattern, "/", -1), ns = Strings.split(path, "/", -1);
-		var prev = Array<bool>.new(ns.length + 1);
-		prev[0] = true;
-		for (p in ps) {
-			var next = Array<bool>.new(ns.length + 1);
-			if (Strings.equal(p, "**")) {
-				next[0] = prev[0];
-				for (i < ns.length) next[i + 1] = prev[i + 1] || (next[i] && ns[i].length > 0 && ns[i][0] != '.');
-			} else {
-				for (i < ns.length) next[i + 1] = prev[i] && segment(p, ns[i]);
-			}
-			prev = next;
-		}
-		return prev[ns.length];
 	}
 }

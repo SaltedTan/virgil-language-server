@@ -120,7 +120,7 @@ This deliberately favors bounded, reproducible traversal over support for symlin
 
 `virgilDependencies` name files in a Virgil checkout or installation: the directory that holds Virgil's `lib/`, `rt/`, and `bin/`. Patterns are relative to that directory, as in `aeneas/DEPS`, which lists `lib/util/*.v3` and `lib/asm/x86-64/*.v3`. Other paths to the library need rewriting: `$VIRGIL_LIB/util/*.v3` in a build script, or `../../lib/util/*.v3` in the `DEPS` file of one of Virgil's apps, becomes `lib/util/*.v3`.
 
-A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If the option is absent or isn't an absolute path string, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic. An absolute root whose required directories cannot be listed instead reports `SourceIO`.
+A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If the option is absent or isn't an absolute path string, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic. An absolute root whose required directories cannot be listed instead reports `SourceIO`. The server reads the option only during `initialize`, so the root stays fixed for the session; a changed root takes effect when the server restarts.
 
 The editor clients set the option:
 

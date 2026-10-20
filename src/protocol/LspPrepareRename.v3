@@ -1,0 +1,91 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/prepareRename over LspRenameEligibility: the range and
+// placeholder of the name at a position, or RequestFailed with the reason it
+// cannot be renamed. The server does not advertise or dispatch this request
+// until #125 adds rename itself, because advertised capabilities exactly match
+// implemented handlers; LspServer.enablePrepareRename registers it for #125 and
+// the unit tests. See docs/architecture.md#prepare-rename-partly-present.
+class LspPrepareRename(projects: WorkspaceProjects) {
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		requests.registerRejecting(dispatcher, "textDocument/prepareRename", "prepareRename",
+			answer, fail);
+	}
+	// The prepared range and placeholder of the use or declaration containing
+	// {offset}, or false if neither is there and the caller should try the byte
+	// before it. A builtin, or an identifier that resolves to nothing, at the
+	// offset is refused here by name; otherwise a position with no name is
+	// left to the caller's error.
+	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		var s = at.snapshot, path = at.path();
+		var decl = s.definitionAtOffset(path, offset), begin: int, end: int, token: string;
+		if (decl != null) {
+			var o = s.occurrenceAtOffset(path, offset);
+			if (o == null) return (false, JsonRpcReply.Result(JsonValue.Null));
+			begin = o.range.beginOffset;
+			end = o.range.endOffset;
+			token = textAt(at.text, begin, end);
+		} else {
+			decl = s.declarationAtOffset(path, offset);
+			if (decl == null) {
+				var b = s.builtinUseAtOffset(path, offset);
+				if (b != null) {
+					return (true, fail(Strings.format1("builtin '%s' cannot be renamed",
+						textAt(at.text, b.range.beginOffset, b.range.endOffset))));
+				}
+				// A builtin type such as int in Array<int> has no builtin use.
+				var word = wordAt(at.text, offset);
+				if (word == null) return (false, JsonRpcReply.Result(JsonValue.Null));
+				return (true, fail(Strings.format1(
+					"'%s' is not a declaration in the project's sources (a builtin type, a keyword, or a name the occurrence index omits)",
+					word)));
+			}
+			begin = decl.range.beginOffset;
+			end = decl.range.endOffset;
+			token = decl.name;
+		}
+		var reason = LspRenameEligibility.check(at, projects, decl, token);
+		if (reason != null) return (true, fail(reason));
+		var result = Strings.newMap<JsonValue>();
+		// The prepared range is the token in the requested document, which is
+		// where the editor starts the rename; the placeholder is the
+		// declaration's name, which a use's alias never is.
+		result["range"] = at.range(at.map, begin, end);
+		result["placeholder"] = JsonValue.String(decl.name);
+		return (true, JsonRpcReply.Result(JsonValue.JObject(result)));
+	}
+	// The RequestFailed reply for a request that cannot be prepared, with the
+	// reason in the message, rather than null, which would not show a reason.
+	def fail(reason: string) -> JsonRpcReply {
+		return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED, reason));
+	}
+	private def textAt(bytes: Array<byte>, begin: int, end: int) -> string {
+		if (begin < 0 || end > bytes.length || end < begin) return "";
+		return Arrays.range(bytes, begin, end);
+	}
+	// The identifier or keyword containing {offset} in {text}, or null if
+	// {offset} is in none, such as in a comment, a string or character
+	// literal, a number, or an operator. Scans from the start of the text,
+	// since only that shows whether a word is inside a comment or literal.
+	private def wordAt(text: Array<byte>, offset: int) -> string {
+		var i = 0;
+		while (i <= offset && i < text.length) {
+			var b = text[i], start = i;
+			if (b == '/' && i + 1 < text.length && text[i + 1] == '/') {
+				while (i < text.length && text[i] != '\n') i++;
+			} else if (b == '/' && i + 1 < text.length && text[i + 1] == '*') {
+				i += 2;
+				while (i < text.length && !(text[i] == '*' && i + 1 < text.length && text[i + 1] == '/')) i++;
+				i += 2;
+			} else if (b == '\"' || b == '\'') {
+				var size = if(b == '\"', Strings.parseLiteral(text, i).0, Chars.parseLiteral(text, i).0);
+				i += Ints.max(1, size);
+			} else if (Char.isIdentMiddle(b)) {
+				while (i < text.length && Char.isIdentMiddle(text[i])) i++;
+				if (offset < i && Char.isIdentStart(b)) return Arrays.range(text, start, i);
+			} else i++;
+		}
+		return null;
+	}
+}

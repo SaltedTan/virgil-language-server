@@ -1,0 +1,169 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Whether the name at a current snapshot position can be renamed safely, and
+// why not otherwise. The rules are conservative; see docs/architecture.md
+// #prepare-rename-partly-present. textDocument/prepareRename is a thin handler
+// over this module (LspPrepareRename), and the rename of #125 reuses these
+// rules.
+component LspRenameEligibility {
+	// The reason that {decl}, selected by the token {token} in {at}'s
+	// snapshot, cannot be renamed; or null if it can. {token} is the exact
+	// source spelling under the cursor: the declaration's name at its own
+	// name, or a use's bytes, which differ for navigation aliases such as
+	// "this" and a default "new".
+	def check(at: LspSnapshotPosition, projects: WorkspaceProjects, decl: AnalysisDeclaration,
+			token: string) -> string {
+		var s = at.snapshot, name = decl.name, r = decl.range;
+		// Rename edits source text, so it needs a program that the verifier
+		// accepted whole: a use the verifier did not resolve would be missed.
+		if (!s.verified) return "the project's analysis has errors; rename needs a program that verifies";
+		if (r == null || r.path == null || r.beginOffset < 0 || r.endOffset <= r.beginOffset) {
+			return "the declaration has no name in the project's sources";
+		}
+		// "new" is a constructor or a class's default constructor, which is
+		// not a name that the source spells as the class's name.
+		if (decl.kind == AnalysisDeclKind.CONSTRUCTOR || Strings.equal(name, "new")) {
+			return "constructors cannot be renamed";
+		}
+		if (decl.kind == AnalysisDeclKind.METHOD) {
+			if (name.length > 0 && name[0] == '[') return "index operators cannot be renamed";
+			if (!identifier(name)) return Strings.format1("the operator '%s' cannot be renamed", name);
+		}
+		// A packing's #packing hints name it without an occurrence, so a
+		// rename would miss them (see OccurrenceCollector.packingExpr).
+		if (decl.kind == AnalysisDeclKind.PACKING) {
+			return "packings cannot be renamed: #packing hints do not name them in the occurrence index";
+		}
+		// A use can resolve to a declaration without spelling its name.
+		if (!Strings.equal(token, name)) {
+			if (Strings.equal(token, "this")) {
+				return Strings.format1("'this' is a navigation alias for the class '%s'; rename the class at its declaration", name);
+			}
+			if (Strings.equal(token, "new")) {
+				return Strings.format1("'new' is a navigation alias for the class '%s'; rename the class at its declaration", name);
+			}
+			return "the name at this position is a navigation alias, not the declaration's name";
+		}
+		// A bit pattern's letters select packing parameters by their initials,
+		// and the occurrence index does not record them. The compiler records
+		// packing parameters as PARAMETER declarations after the packing's own
+		// site, so a run of them identifies one (see OccurrenceCollector).
+		if (decl.kind == AnalysisDeclKind.PARAMETER && packingParameter(s, decl)) {
+			return "packing parameters cannot be renamed: bit patterns select them by their initials";
+		}
+		// Two declarations of one name token need two different new names,
+		// which a single-token rename cannot supply. A parameterized variant
+		// and its single case, and a class parameter and its field, share one.
+		// The snapshot holds every declaration's site once, and a second
+		// declaration of a site only if some occurrence targets it, so this
+		// refuses a declaration exactly when another declaration that has uses
+		// in the analysis shares its token. A sharer without uses has nothing
+		// to rename, references already return the uses of every sharer, and
+		// the rename's re-analysis (#125) verifies every binding before it edits.
+		for (i < s.declarations.length) {
+			var q = s.declarations[i].range;
+			if (s.declarations[i] == decl || q == null || q.path == null) continue;
+			if (q.beginOffset == r.beginOffset && q.endOffset == r.endOffset && Strings.equal(q.path, r.path)) {
+				return Strings.format1("cannot rename '%s': its name token declares more than one thing", name);
+			}
+		}
+		// Snapshots carry no class hierarchy, so any other method with the name
+		// may override or be overridden. This refuses a superset of those; the
+		// re-analysis preflight of the rename itself (#125) can refine it.
+		if (decl.kind == AnalysisDeclKind.METHOD) {
+			for (i < s.declarations.length) {
+				var d = s.declarations[i];
+				if (d != decl && d.kind == AnalysisDeclKind.METHOD && Strings.equal(d.name, name)) {
+					return Strings.format1("rename of methods that share a name with another method isn't supported yet: '%s' may override or be overridden", name);
+				}
+			}
+		}
+		var ctx = projects.forDocument(s.documentVersions[at.index].uri).active;
+		if (ctx == null) return "the document is not in a loaded project";
+		// A file created or deleted without a file event can leave ctx.sources
+		// unchanged, hiding its uses and errors from the snapshot. Re-expand
+		// without updating the context to check the analyzed membership.
+		var now = projects.expandNow(ctx);
+		if (now == null || !sameSources(now, ctx.sources)) {
+			return "the project's files changed since the last analysis; an analysis starts on the next open, edit, save, close, or file event";
+		}
+		// Rename only edits the project's own sources, never a dependency or a
+		// library under the Virgil root, which the expansion marks non-member.
+		// The member paths are indexed once: checking each file by scanning
+		// the sources would cost the files times the sources.
+		var members = OrderedStringSet.new();
+		for (source in ctx.sources) { if(source.member) members.add(source.path); }
+		if (!members.has(r.path)) {
+			return Strings.format1("cannot rename '%s': it is declared in a dependency, not in the project's own sources", name);
+		}
+		var uses = s.references(decl, false);
+		for (u in uses) {
+			if (!members.has(u.0)) {
+				return Strings.format1("cannot rename '%s': a use is in a dependency, not in the project's own sources", name);
+			}
+		}
+		// A file shared by two loaded programs may have uses in the other
+		// program that this snapshot does not contain. Another program holds a
+		// file if its patterns select the file's path, which needs no expansion
+		// of it: globs do not depend on the disk, and the expansion above shows
+		// that every file here still exists. A file they select is in that
+		// program's list, which holds only files they selected, or was created
+		// after it was expanded, as one created without a file event is. Paths
+		// compare lexically, so a program that reaches a file under another
+		// spelling, such as a hard link, is not matched.
+		var paths = Vector<string>.new().put(r.path);
+		for (u in uses) { if(!Strings.equal(u.0, paths[paths.length - 1])) paths.put(u.0); }
+		// Matching is bounded: the files and the other programs' patterns can
+		// each number in the thousands.
+		var matcher = ProjectGlobMatcher.new(projects.ownershipSteps);
+		var other = projects.otherProgram(ctx, paths.extract(), matcher);
+		if (matcher.exhausted()) {
+			return "the workspace has too many project patterns to check which programs own the renamed files";
+		}
+		if (other.1 != null) {
+			return Strings.format3("cannot rename '%s': the file %s belongs to another loaded program, '%s'", name, other.0, other.1.definition.name);
+		}
+		// Stamps do not show a closed file changed on disk without a file event.
+		// Rename needs the exact bytes of every source, not only the queried
+		// and declaring files, because a use in any of them would move.
+		for (i < s.documentVersions.length) {
+			if (LspAnalysisCapture.analyzedText(at.store, s, i) == null) {
+				return Strings.format1("the project's analysis is stale: the bytes of %s changed since it was analyzed", s.paths[i]);
+			}
+		}
+		return null;
+	}
+	// Whether {decl} is a parameter of a packing: the site after a PACKING
+	// declaration and before the next non-PARAMETER declaration in its file.
+	private def packingParameter(s: AnalysisSnapshot, decl: AnalysisDeclaration) -> bool {
+		var run = s.declarationSiteRun(decl.range.path), inPacking = false;
+		for (i = run.0; i < run.1; i++) {
+			var d = s.declarations[i];
+			if (d.kind == AnalysisDeclKind.PACKING) inPacking = true;
+			else if (d.kind != AnalysisDeclKind.PARAMETER) inPacking = false;
+			else if (d == decl) return inPacking;
+		}
+		return false;
+	}
+	// Whether {a} and {b} list the same paths, in order, with the same
+	// membership. An expansion of unchanged files is in the same order.
+	private def sameSources(a: Array<ProjectSource>, b: Array<ProjectSource>) -> bool {
+		if (a.length != b.length) return false;
+		for (i < a.length) {
+			if (a[i].member != b[i].member || !Strings.equal(a[i].path, b[i].path)) return false;
+		}
+		return true;
+	}
+	// Whether {name} is an ASCII identifier, which a rename can spell.
+	private def identifier(name: string) -> bool {
+		if (name.length == 0) return false;
+		var c = name[0];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')) return false;
+		for (i = 1; i < name.length; i++) {
+			c = name[i];
+			if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+		}
+		return true;
+	}
+}

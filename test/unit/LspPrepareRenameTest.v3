@@ -1,0 +1,866 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/prepareRename with the real worker. The project-fixtures/rename
+// directory is the build's own copy, so each session rewrites its sources
+// before the project is loaded. The server does not advertise or dispatch
+// prepareRename until #125, so each session calls enablePrepareRename.
+// LspDefinitionTest covers the shared snapshot selection, freshness, waiting,
+// bound, and position rules in full; these tests cover rename eligibility,
+// the prepared range and placeholder, and each refusal's RequestFailed reply.
+def T = UnitTests.register;
+def X = [
+	T("LspPrepareRename:classes_and_components", test_classes_and_components),
+	T("LspPrepareRename:fields_methods_and_parameters", test_fields_methods_and_parameters),
+	T("LspPrepareRename:types_and_cases", test_types_and_cases),
+	T("LspPrepareRename:cursor_after_identifier", test_cursor_after_identifier),
+	T("LspPrepareRename:cursor_after_refused_token", test_cursor_after_refused_token),
+	T("LspPrepareRename:constructors_and_aliases", test_constructors_and_aliases),
+	T("LspPrepareRename:no_name_and_builtins", test_no_name_and_builtins),
+	T("LspPrepareRename:index_operators_and_packings", test_index_operators_and_packings),
+	T("LspPrepareRename:shared_name_tokens", test_shared_name_tokens),
+	T("LspPrepareRename:same_named_methods", test_same_named_methods),
+	T("LspPrepareRename:dependencies", test_dependencies),
+	T("LspPrepareRename:many_member_files", test_many_member_files),
+	T("LspPrepareRename:shared_programs", test_shared_programs),
+	T("LspPrepareRename:source_added_or_removed_without_event", test_source_added_or_removed_without_event),
+	T("LspPrepareRename:shared_program_added_without_event", test_shared_program_added_without_event),
+	T("LspPrepareRename:shared_program_by_pattern", test_shared_program_by_pattern),
+	T("LspPrepareRename:shared_program_excluded", test_shared_program_excluded),
+	T("LspPrepareRename:many_other_programs", test_many_other_programs),
+	T("LspPrepareRename:ownership_budget", test_ownership_budget),
+	T("LspPrepareRename:ownership_budget_ordinary", test_ownership_budget_ordinary),
+	T("LspPrepareRename:ownership_budget_exhausted", test_ownership_budget_exhausted),
+	T("LspPrepareRename:ownership_colliding_paths", test_ownership_colliding_paths),
+	T("LspPrepareRename:parse_and_semantic_errors", test_parse_and_semantic_errors),
+	T("LspPrepareRename:stale_other_file", test_stale_other_file),
+	T("LspPrepareRename:document_changed_while_waiting", test_document_changed_while_waiting),
+	T("LspPrepareRename:too_many_waiting", test_too_many_waiting),
+	T("LspPrepareRename:no_project", test_no_project),
+	T("LspPrepareRename:not_dispatched", test_not_dispatched),
+	()
+];
+// A verified program with every eligible declaration kind, name tokens shared
+// by two declarations, methods with the same name, packings, index operators,
+// navigation aliases, and a builtin use. Every line is ASCII.
+def SOURCE = "// Type references, type parameters, variant cases used as types, and index\n// operators. Tab-indented on purpose: columns are tab-expanded compiler columns.\nclass Foo {\n\tvar next: Foo;\n\tdef same(p: Foo) -> Foo { return p; }\n}\nclass Child extends Foo { }\nclass Pair(first: Foo, var second: Foo) { }\nclass Made {\n\tnew(f: Foo) { }\n}\nclass Box<T> {\n\tvar value: T;\n\tdef get() -> T { return value; }\n}\nclass Grid {\n\tvar cells: Array<int> = Array<int>.new(4);\n\tdef [i: int] -> int { return cells[i]; }\n\tdef [i: int] = v: int { cells[i] = v; }\n}\ntype Opt<T> {\n\tcase Some(v: T);\n\tcase None;\n}\ntype V {\n\tcase A;\n\tcase B(f: Foo) { def variant() -> int { return 1; } }\n}\nenum E { X, Y }\ncomponent Parts { }\ncomponent Alpha { def comp() -> int { return 1; } }\ncomponent Beta { def comp() -> int { return 2; } }\ntype W {\n\tcase C { def variant() -> int { return 2; } }\n}\ncomponent M {\n\tdef parts: Parts;\n\tdef id<T>(p: T) -> T {\n\t\tvar d: T = T.default;\n\t\tif (T.?(p)) return T.!(p);\n\t\treturn d;\n\t}\n\tdef types(a: V.A, fs: Array<Foo>, g: (Foo, int) -> (Foo, Box<Foo>), s: E.set) -> Child {\n\t\tvar box: Box<Foo> = Box<Foo>.new();\n\t\tvar c = Child.!<Foo>(box.get());\n\t\tvar x = id<Foo>(c), y = id(c), z = M.id<Foo>(c);\n\t\tfor (f: Foo in fs) { }\n\t\tvar o = Opt<Foo>.Some(x);\n\t\tvar n: Opt<Foo>.None;\n\t\treturn c;\n\t}\n\tdef enumCase() -> E { return E.X; }\n\tdef variantField(v: V) -> Foo {\n\t\tmatch (v) {\n\t\t\tb: V.B => return b.f;\n\t\t\t_ => return null;\n\t\t}\n\t}\n\tdef cases(v: V) -> int {\n\t\tmatch (v) {\n\t\t\tb: V.B => return 1;\n\t\t\t_ => return 0;\n\t\t}\n\t}\n\tdef index(g: Grid) -> int {\n\t\tvar x = g[0];\n\t\tg[1] = x;\n\t\tg[2] += 3;\n\t\tg[g[0]] = g.[](1);\n\t\treturn x;\n\t}\n}\n// Layout references and packing parameters.\nlayout Inner {\n\t+0 tag: u8;\n\t=1;\n}\nlayout Outer {\n\t+0 inner: Inner;\n\t+1 pair: Inner[2];\n\t+3 mode: E;\n\t=4;\n}\npacking Halves(lo: 4, hi: 4): 8 = #concat(hi, lo);\npacking Swapped(x: 4, y: 4): 8 = Halves(y, x);\ncomponent Mem {\n\tdef outer(r: Range<byte>) -> Ref<Inner> {\n\t\tvar o: Ref<Outer> = Ref<Outer>.of(r);\n\t\treturn o.pair[1];\n\t}\n}\nclass Node {\n\tdef self() -> Node { return this; }\n}\nclass Bare { }\nclass Base(other: int) { }\nclass C(x: int) { }\nclass D(var y: int) { }\nclass Ext(z: int) extends Base(z) { }\nclass Dup(width: int) extends Base(width) { }\ntype Row(m: int, index: int) { }\ntype Used(m: int) { }\nclass Rect {\n\tdef area() -> int { return 1; }\n}\nclass Square {\n\tdef area() -> int { return 2; }\n}\ndef cField(c: C) -> int { return c.x; }\ndef dField(d: D) -> int { return d.y; }\ndef rowType(r: Row) -> int { return r.m + r.index; }\ndef usedValue() -> Used { return Used(1); }\ndef fileShared(p: int) -> int { return p; }\ndef fileValue = 1;\ndef fileMethod(p: int) -> int { return p; }\ncomponent Extra {\n\tdef make() -> Bare { return Bare.new(); }\n\tdef aliases(n: Node, r: Rect, q: Square) -> int {\n\t\tvar area = r.area() + q.area();\n\t\tvar len = \"abc\".length;\n\t\treturn area + len + fileValue + fileMethod(1);\n\t}\n}\n";
+// A use and its target in the project's own files, for the staleness tests.
+def MAIN = "class Widget { }\ncomponent Main { def make() -> Widget { return Widget.new(); } }\n";
+def OTHER = "component Other { def use() -> Widget { return Widget.new(); } }\n";
+// The dependency fixture: Widget is declared in a project source and used in
+// both a project source and a dependency.
+def DEP_MAIN = "class Widget { }\n";
+def DEP_USE = "component Use { def get() -> Widget { return Widget.new(); } }\n";
+def DEP_LIB = "component Lib { def make() -> Widget { return Widget.new(); } }\n";
+// The shared-programs fixture: project one owns Widget and its uses, project
+// two shares SharedUse.v3 (a use) and SharedDecl.v3 (a declaration).
+def SHARED_DECL = "class Widget { }\n";
+def SHARED_USE = "component Use { def get() -> Widget { return Widget.new(); } }\n";
+def SHARED_SHARED_USE = "component SharedUse { def get() -> Widget { return Widget.new(); } }\n";
+def SHARED_SHARED_DECL = "class Gadget { }\n";
+// The scan-shared fixture: one/ selects only Main.v3 until the test adds
+// SharedUse.v3; the root program selects SharedUse.v3 throughout.
+def SCAN_ONE = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"Main.v3\"]}]}";
+def SCAN_ONE_SHARED = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"Main.v3\",\"SharedUse.v3\"]}]}";
+def SCAN_TWO = "{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"one/SharedUse.v3\"]}]}";
+// Root programs that select one/SharedUse.v3 by a source, a dependency, or a
+// Virgil dependency pattern, with the Virgil root at one/, and Overflow.v3,
+// which the test makes too large to expand.
+def SCAN_TWO_PATTERNS = [
+	"{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"one/SharedUse.v3\",\"Overflow.v3\"]}]}",
+	"{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"Overflow.v3\"],\"dependencies\":[\"one/SharedUse.v3\"]}]}",
+	"{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"Overflow.v3\"],\"virgilDependencies\":[\"SharedUse.v3\"]}]}"
+];
+// Root programs whose excludes remove one/SharedUse.v3, at its directory and
+// at the file.
+def SCAN_TWO_EXCLUDED = [
+	"{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"**/*.v3\"],\"exclude\":[\"one\"]}]}",
+	"{\"version\":1,\"projects\":[{\"name\":\"two\",\"sources\":[\"**/*.v3\"],\"dependencies\":[\"one/*.v3\"],\"exclude\":[\"**/Shared*.v3\",\"**/Main.v3\"]}]}"
+];
+
+// The refusal of an identifier that names no declaration.
+def NOT_DECLARATION = "'%s' is not a declaration in the project's sources (a builtin type, a keyword, or a name the occurrence index omits)";
+
+// The LSP position of byte {skip} past the first {needle} in ASCII {text}.
+class RenameSpot(line: int, begin: int, end: int) { }
+def at(text: string, needle: string, skip: int) -> RenameSpot {
+	var line = 0, start = 0;
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) {
+			var begin = i + skip - start;
+			return RenameSpot.new(line, begin, begin);
+		}
+		if (text[i] == '\n') {
+			line++;
+			start = i + 1;
+		}
+	}
+	return RenameSpot.new(-1, -1, -1);
+}
+// The {length} bytes from {skip} bytes into the first {needle} in {text}.
+def span(text: string, needle: string, skip: int, length: int) -> RenameSpot {
+	var p = at(text, needle, skip);
+	return RenameSpot.new(p.line, p.begin, p.begin + length);
+}
+// The {length} bytes from {skip} bytes into the first {needle} in SOURCE.
+def S(needle: string, skip: int, length: int) -> RenameSpot {
+	return span(SOURCE, needle, skip, length);
+}
+def files(names: Array<string>, texts: Array<string>) -> Array<(string, string)> {
+	var result = Array<(string, string)>.new(names.length);
+	for (i < names.length) result[i] = (names[i], texts[i]);
+	return result;
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def hasMember(v: JsonValue, key: string) -> bool {
+	return JsonValue.JObject.?(v) && JsonValue.JObject.!(v).v.has(key);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = member(v, key);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+def writeFixture(t: Tester, base: string, name: string, text: string) {
+	var fd = System.fileOpen(ProjectFiles.join(base, name), false);
+	t.assert(fd >= 0, "fixture file written");
+	if (fd < 0) return;
+	System.fileWriteK(fd, text, 0, text.length);
+	System.fileClose(fd);
+}
+def fixtureDirectory(fixture: string) -> string {
+	return ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+}
+// Removes {name} from the {fixture} project-fixtures directory, before a
+// session loads it or after a test that created it.
+def removeFixture(t: Tester, fixture: string, name: string) {
+	removeFile(t, fixtureDirectory(fixture), name);
+}
+def removeFile(t: Tester, base: string, name: string) {
+	var path = ProjectFiles.join(base, name);
+	var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(path, "\x00")], [0, 1, 2]);
+	t.assert(pid > 0, "fixture removal started");
+	if (pid <= 0) return;
+	var status = Array<int>.new(1);
+	t.asserti(pid, HostOs.wait(pid, status));
+	t.asserti(0, status[0]);
+}
+class PrepareRenameTestSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def store = server.documents;
+	var base: string;
+	// The responses received, in order.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	// What handle() returned for the last request; replies use the sink.
+	var handled: Array<byte>;
+	// The initialize response, which handle() returns rather than the sink.
+	var initializeReply: Array<byte>;
+	new(fixture: string, sources: Array<(string, string)>, enable: bool, t: Tester) {
+		base = fixtureDirectory(fixture);
+		for (source in sources) write(t, source.0, source.1);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		if (enable) server.enablePrepareRename();
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		initializeReply = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) replies.put(parsed);
+	}
+	def path(name: string) -> string { return ProjectFiles.join(base, name); }
+	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
+	def write(t: Tester, name: string, text: string) {
+		writeFixture(t, base, name, text);
+	}
+	// Removes {name} from disk, for a later reportRemoved.
+	def remove(t: Tester, name: string) {
+		removeFile(t, base, name);
+	}
+	// Reports {name} changed, created, or deleted on disk, without writing or
+	// removing its bytes here. FileChangeType values: 1 created, 2 changed,
+	// 3 deleted.
+	def reportChanged(name: string) {
+		report(name, 2);
+	}
+	def reportCreated(name: string) {
+		report(name, 1);
+	}
+	def reportRemoved(name: string) {
+		report(name, 3);
+	}
+	private def report(name: string, kind: int) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(uri(name));
+		change["type"] = JsonValue.Int(kind);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	def open(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis runs or waits, including the debounce interval.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	private def payload(name: string, line: int, character: int) -> Array<byte> {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		position["line"] = JsonValue.Int(line);
+		position["character"] = JsonValue.Int(character);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		var id = nextId++;
+		return JsonRpcMessage.Request(JsonRpcId.Int(id), "textDocument/prepareRename", JsonRpcParams.ByName(params)).encode();
+	}
+	// Sends a prepareRename request and returns its id.
+	def request(name: string, line: int, character: int) -> int {
+		var id = nextId;
+		handled = server.handle(payload(name, line, character));
+		return id;
+	}
+	// Sends a prepareRename request and returns handle()'s reply, for a server
+	// that does not dispatch it.
+	def raw(name: string, line: int, character: int) -> Array<byte> {
+		return server.handle(payload(name, line, character));
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		t.assert(r.has("result"), "the request succeeded");
+		return r["result"];
+	}
+	// Requests and returns the result, which must be answered at once.
+	def answer(t: Tester, name: string, line: int, character: int) -> JsonValue {
+		var id = request(name, line, character);
+		t.assert(handled == null, "replies use the sink");
+		return result(t, id);
+	}
+	def context() -> ProjectContext {
+		return server.projects.forDocument(uri("Rename.v3")).active;
+	}
+}
+// Checks that prepareRename at {line}:{character} in {name} returns the range
+// {want} and {placeholder}.
+def expectPreparedAt(t: Tester, s: PrepareRenameTestSession, name: string, line: int, character: int,
+		want: RenameSpot, placeholder: string) {
+	var result = s.answer(t, name, line, character), what = Strings.format1("prepareRename of %s", placeholder);
+	t.assert(JsonValue.JObject.?(result), what);
+	if (!JsonValue.JObject.?(result)) return;
+	var range = member(result, "range"), start = member(range, "start"), stop = member(range, "end");
+	t.asserti(want.line, intAt(start, "line"));
+	t.asserti(want.begin, intAt(start, "character"));
+	t.asserti(want.line, intAt(stop, "line"));
+	t.asserti(want.end, intAt(stop, "character"));
+	t.assert_string(placeholder, stringAt(result, "placeholder"));
+}
+// Checks prepareRename at {skip} bytes into {needle} in SOURCE.
+def expectPrepared(t: Tester, s: PrepareRenameTestSession, needle: string, skip: int, length: int,
+		placeholder: string) {
+	var p = S(needle, skip, length);
+	t.assert(p.line >= 0, "fixture text found");
+	expectPreparedAt(t, s, "Rename.v3", p.line, p.begin, p, placeholder);
+}
+// Checks that prepareRename at {line}:{character} fails with {message}.
+def expectFailureAt(t: Tester, s: PrepareRenameTestSession, name: string, line: int, character: int,
+		message: string) {
+	var id = s.request(name, line, character);
+	t.assert(s.handled == null, "replies use the sink");
+	var r = s.reply(id), what = Strings.format1("RequestFailed: %s", message);
+	t.assert(r != null, "the request was answered");
+	if (r == null) return;
+	t.assert(r.has("error"), what);
+	if (!r.has("error")) return;
+	t.asserti(LspErrorCode.REQUEST_FAILED, intAt(r["error"], "code"));
+	t.assert_string(message, stringAt(r["error"], "message"));
+}
+// Checks that prepareRename at {skip} bytes into {needle} in {text} fails.
+def expectFailureIn(t: Tester, s: PrepareRenameTestSession, name: string, text: string, needle: string,
+		skip: int, message: string) {
+	var p = at(text, needle, skip);
+	t.assert(p.line >= 0, "fixture text found");
+	expectFailureAt(t, s, name, p.line, p.begin, message);
+}
+def expectFailure(t: Tester, s: PrepareRenameTestSession, needle: string, skip: int, message: string) {
+	expectFailureIn(t, s, "Rename.v3", SOURCE, needle, skip, message);
+}
+def renameSession(t: Tester) -> PrepareRenameTestSession {
+	var s = PrepareRenameTestSession.new("rename", files(["Rename.v3"], [SOURCE]), true, t);
+	s.open("Rename.v3", 1, SOURCE);
+	s.settle();
+	return s;
+}
+// Classes, components, enums, variants, and layouts: the declaration's name
+// and, for classes and components, a use.
+def test_classes_and_components(t: Tester) {
+	var s = renameSession(t);
+	expectPrepared(t, s, "class Bare", 6, 4, "Bare");
+	expectPrepared(t, s, "Bare { }", 0, 4, "Bare");
+	expectPrepared(t, s, "g: Grid", 3, 4, "Grid");
+	expectPrepared(t, s, "class Child", 6, 5, "Child");
+	expectPrepared(t, s, "component Parts", 10, 5, "Parts");
+	expectPrepared(t, s, "parts: Parts", 7, 5, "Parts");
+	expectPrepared(t, s, "component M {", 10, 1, "M");
+	expectPrepared(t, s, "layout Inner", 7, 5, "Inner");
+	expectPrepared(t, s, "Ref<Inner>", 4, 5, "Inner");
+	expectPrepared(t, s, "pair: Inner", 0, 4, "pair");
+	expectPrepared(t, s, "o.pair[1]", 2, 4, "pair");
+	s.server.close();
+}
+// Fields, methods, parameters, locals, type parameters, and file-scope
+// declarations, at the declaration and at a use.
+def test_fields_methods_and_parameters(t: Tester) {
+	var s = renameSession(t);
+	expectPrepared(t, s, "var value: T;", 4, 5, "value");
+	expectPrepared(t, s, "return value;", 7, 5, "value");
+	expectPrepared(t, s, "class Pair(first", 11, 5, "first");
+	expectPrepared(t, s, "def same(p", 9, 1, "p");
+	expectPrepared(t, s, "return p;", 7, 1, "p");
+	expectPrepared(t, s, "def same", 4, 4, "same");
+	expectPrepared(t, s, "def get()", 4, 3, "get");
+	expectPrepared(t, s, "box.get()", 4, 3, "get");
+	expectPrepared(t, s, "def fileValue", 4, 9, "fileValue");
+	expectPrepared(t, s, "fileValue +", 0, 9, "fileValue");
+	expectPrepared(t, s, "def fileMethod", 4, 10, "fileMethod");
+	expectPrepared(t, s, "fileMethod(1)", 0, 10, "fileMethod");
+	expectPrepared(t, s, "var x = g[0]", 4, 1, "x");
+	expectPrepared(t, s, "g[1] = x", 7, 1, "x");
+	expectPrepared(t, s, "var d: T", 4, 1, "d");
+	expectPrepared(t, s, "def outer(r", 10, 1, "r");
+	expectPrepared(t, s, "of(r)", 3, 1, "r");
+	s.server.close();
+}
+// Type parameters, enum cases, variant cases and their fields, and the
+// variant cases in expressions and patterns.
+def test_types_and_cases(t: Tester) {
+	var s = renameSession(t);
+	expectPrepared(t, s, "class Box<T>", 10, 1, "T");
+	expectPrepared(t, s, "var value: T", 11, 1, "T");
+	expectPrepared(t, s, "type Opt<T>", 9, 1, "T");
+	expectPrepared(t, s, "enum E {", 5, 1, "E");
+	expectPrepared(t, s, "enum E { X", 9, 1, "X");
+	expectPrepared(t, s, "case Some(v", 5, 4, "Some");
+	expectPrepared(t, s, "Opt<Foo>.Some", 9, 4, "Some");
+	expectPrepared(t, s, "case B(f", 5, 1, "B");
+	expectPrepared(t, s, "V.B", 2, 1, "B");
+	expectPrepared(t, s, "case B(f", 7, 1, "f");
+	expectPrepared(t, s, "b.f", 2, 1, "f");
+	expectPrepared(t, s, "E.X", 2, 1, "X");
+	s.server.close();
+}
+// A cursor just past an identifier selects it, as for definition.
+def test_cursor_after_identifier(t: Tester) {
+	var s = renameSession(t);
+	var declaration = S("class Bare", 6, 4);
+	expectPreparedAt(t, s, "Rename.v3", declaration.line, declaration.begin + 4, declaration, "Bare");
+	var use = S("g: Grid", 3, 4);
+	expectPreparedAt(t, s, "Rename.v3", use.line, use.begin + 4, use, "Grid");
+	s.server.close();
+}
+// A cursor just past a refused token refuses for the token's reason, not the
+// generic no-name reason: the handler looks one byte back.
+def test_cursor_after_refused_token(t: Tester) {
+	var s = renameSession(t);
+	var nothing = "there is no renameable name at this position (an operator, literal, comment, or whitespace)";
+	expectFailure(t, s, "Bare.new()", 8,
+		"'new' is a navigation alias for the class 'Bare'; rename the class at its declaration");
+	expectFailure(t, s, "return this;", 11,
+		"'this' is a navigation alias for the class 'Node'; rename the class at its declaration");
+	expectFailure(t, s, "g[0]", 2, "index operators cannot be renamed");
+	expectFailure(t, s, "area + len", 6, nothing);
+	expectFailure(t, s, "\"abc\".length", 12, "builtin 'length' cannot be renamed");
+	expectFailure(t, s, "Array<int>", 9, Strings.format1(NOT_DECLARATION, "int"));
+	expectFailure(t, s, "def same", 3, Strings.format1(NOT_DECLARATION, "def"));
+	s.server.close();
+}
+// Constructors, and the two navigation aliases, which name their class
+// without spelling it.
+def test_constructors_and_aliases(t: Tester) {
+	var s = renameSession(t);
+	expectFailure(t, s, "new(f: Foo)", 0, "constructors cannot be renamed");
+	expectFailure(t, s, "Bare.new()", 5,
+		"'new' is a navigation alias for the class 'Bare'; rename the class at its declaration");
+	expectFailure(t, s, "return this;", 7,
+		"'this' is a navigation alias for the class 'Node'; rename the class at its declaration");
+	s.server.close();
+}
+// Keywords, operators, literals, and builtins do not name a declaration. An
+// identifier that names no declaration is a builtin type or a keyword, and
+// the reply names it; a non-identifier position, or one inside a comment,
+// string, or character literal, has nothing to name.
+def test_no_name_and_builtins(t: Tester) {
+	var s = renameSession(t);
+	var nothing = "there is no renameable name at this position (an operator, literal, comment, or whitespace)";
+	expectFailure(t, s, "return this;", 0, Strings.format1(NOT_DECLARATION, "return"));
+	expectFailure(t, s, "def same", 0, Strings.format1(NOT_DECLARATION, "def"));
+	expectFailure(t, s, "class Bare", 0, Strings.format1(NOT_DECLARATION, "class"));
+	expectFailure(t, s, "Array<int>", 6, Strings.format1(NOT_DECLARATION, "int"));
+	expectFailure(t, s, "area + len", 5, nothing);
+	expectFailure(t, s, "\"abc\".length", 1, nothing);
+	expectFailure(t, s, "// Type references", 3, nothing);
+	expectFailure(t, s, "Array<int>.new(4)", 15, nothing);
+	expectFailure(t, s, "\"abc\".length", 6, "builtin 'length' cannot be renamed");
+	s.server.close();
+}
+// Index operators are declarations whose name is not an identifier; packings
+// and their parameters are selected by tokens the occurrence index omits.
+def test_index_operators_and_packings(t: Tester) {
+	var s = renameSession(t);
+	expectFailure(t, s, "def [i: int] -> int", 4, "index operators cannot be renamed");
+	expectFailure(t, s, "def [i: int] = v", 4, "index operators cannot be renamed");
+	expectFailure(t, s, "packing Halves", 8,
+		"packings cannot be renamed: #packing hints do not name them in the occurrence index");
+	expectFailure(t, s, "Halves(lo", 7,
+		"packing parameters cannot be renamed: bit patterns select them by their initials");
+	expectFailure(t, s, "lo: 4, hi", 7,
+		"packing parameters cannot be renamed: bit patterns select them by their initials");
+	s.server.close();
+}
+// A declaration is refused when another declaration that has uses in the
+// analysis shares its name token, since one token cannot become two names.
+// A class parameter and its field share one, and the parameter has a use
+// only in a superclass call, as in Ext and Dup; a parameterized data type and
+// its single case share one, and the case has a use only in a construction,
+// as in Used. C's and D's parameters and the unconstructed Row have no such
+// sharer, so they are eligible.
+def test_shared_name_tokens(t: Tester) {
+	var s = renameSession(t);
+	expectPrepared(t, s, "class C(x", 8, 1, "x");
+	expectPrepared(t, s, "c.x", 2, 1, "x");
+	expectPrepared(t, s, "class D(var y", 12, 1, "y");
+	expectPrepared(t, s, "d.y", 2, 1, "y");
+	expectPrepared(t, s, "type Row(m", 5, 3, "Row");
+	expectPrepared(t, s, "r: Row", 3, 3, "Row");
+	expectPrepared(t, s, "type Row(m", 9, 1, "m");
+	expectPrepared(t, s, "r.m", 2, 1, "m");
+	expectPrepared(t, s, "class Pair(first", 11, 5, "first");
+	var shared = "cannot rename '%s': its name token declares more than one thing";
+	expectFailure(t, s, "class Dup(width", 10, Strings.format1(shared, "width"));
+	expectFailure(t, s, "class Ext(z", 10, Strings.format1(shared, "z"));
+	expectFailure(t, s, "extends Base(z)", 13, Strings.format1(shared, "z"));
+	expectFailure(t, s, "type Used(m", 5, Strings.format1(shared, "Used"));
+	expectFailure(t, s, "return Used(1)", 7, Strings.format1(shared, "Used"));
+	s.server.close();
+}
+// Two methods with the same name may override or be overridden; snapshots
+// carry no hierarchy, so either declaration refuses. Classes, components,
+// variant cases, and same-named file-scope functions in two project files.
+def test_same_named_methods(t: Tester) {
+	var s = renameSession(t);
+	var area = "rename of methods that share a name with another method isn't supported yet: 'area' may override or be overridden";
+	expectFailure(t, s, "def area() -> int { return 1; }", 4, area);
+	expectFailure(t, s, "def area() -> int { return 2; }", 4, area);
+	var comp = "rename of methods that share a name with another method isn't supported yet: 'comp' may override or be overridden";
+	expectFailure(t, s, "component Alpha { def comp", 22, comp);
+	expectFailure(t, s, "component Beta { def comp", 21, comp);
+	var variant = "rename of methods that share a name with another method isn't supported yet: 'variant' may override or be overridden";
+	expectFailure(t, s, "def variant", 4, variant);
+	expectFailure(t, s, "case C { def variant", 13, variant);
+	var fileShared = "rename of methods that share a name with another method isn't supported yet: 'fileShared' may override or be overridden";
+	expectFailure(t, s, "def fileShared", 4, fileShared);
+	s.server.close();
+}
+// Rename edits only project sources, never a dependency that the project
+// merely loads, whether the dependency declares the name or uses it.
+def test_dependencies(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename-deps",
+		files(["Main.v3", "Use.v3", "dep/Lib.v3"], [DEP_MAIN, DEP_USE, DEP_LIB]), true, t);
+	s.open("Main.v3", 1, DEP_MAIN);
+	s.settle();
+	expectFailureIn(t, s, "dep/Lib.v3", DEP_LIB, "component Lib", 10,
+		"cannot rename 'Lib': it is declared in a dependency, not in the project's own sources");
+	var widget = at(DEP_MAIN, "class Widget", 6);
+	expectFailureAt(t, s, "Main.v3", widget.line, widget.begin,
+		"cannot rename 'Widget': a use is in a dependency, not in the project's own sources");
+	s.server.close();
+}
+// A program of 1,002 sources: Widget and Gadget are used in 1,000 files, and
+// Gadget also in a dependency. Every use's file is checked for membership.
+def test_many_member_files(t: Tester) {
+	var main = "class Widget { }\nclass Gadget { }\n";
+	var lib = "component Lib { def get(g: Gadget) -> int { return 0; } }\n";
+	var use = "component U0999 { def get(g: Gadget) -> Widget { return Widget.new(); } }\n";
+	var s = PrepareRenameTestSession.new("rename-members", Array<(string, string)>.new(0), true, t);
+	s.open("Main.v3", 1, main);
+	s.settle();
+	t.asserti(1002, s.server.projects.forDocument(s.uri("Main.v3")).active.sources.length);
+	var widget = at(main, "class Widget", 6);
+	expectPreparedAt(t, s, "Main.v3", widget.line, widget.begin, span(main, "class Widget", 6, 6), "Widget");
+	var p = at(use, "return Widget", 7);
+	expectPreparedAt(t, s, "use/U0999.v3", p.line, p.begin, span(use, "return Widget", 7, 6), "Widget");
+	var gadget = at(main, "class Gadget", 6);
+	expectFailureAt(t, s, "Main.v3", gadget.line, gadget.begin,
+		"cannot rename 'Gadget': a use is in a dependency, not in the project's own sources");
+	expectFailureIn(t, s, "use/U0999.v3", use, "g: Gadget", 3,
+		"cannot rename 'Gadget': a use is in a dependency, not in the project's own sources");
+	expectFailureIn(t, s, "dep/Lib.v3", lib, "component Lib", 10,
+		"cannot rename 'Lib': it is declared in a dependency, not in the project's own sources");
+	s.server.close();
+}
+// A file shared by two loaded programs may have uses the snapshot lacks.
+def test_shared_programs(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename-shared",
+		files(["Decl.v3", "Use.v3", "SharedUse.v3", "SharedDecl.v3"],
+			[SHARED_DECL, SHARED_USE, SHARED_SHARED_USE, SHARED_SHARED_DECL]), true, t);
+	s.open("SharedUse.v3", 1, SHARED_SHARED_USE);
+	s.open("SharedDecl.v3", 1, SHARED_SHARED_DECL);
+	s.settle();
+	var gadget = at(SHARED_SHARED_DECL, "class Gadget", 6);
+	expectFailureAt(t, s, "SharedDecl.v3", gadget.line, gadget.begin,
+		Strings.format1("cannot rename 'Gadget': the file %s belongs to another loaded program, 'two'", s.path("SharedDecl.v3")));
+	var use = at(SHARED_SHARED_USE, "return Widget", 7);
+	expectFailureAt(t, s, "SharedUse.v3", use.line, use.begin,
+		Strings.format1("cannot rename 'Widget': the file %s belongs to another loaded program, 'two'", s.path("SharedUse.v3")));
+	s.server.close();
+}
+// A source created or removed after the analysis, without a file event, leaves
+// the analyzed source list unchanged, and its uses or errors would be missed;
+// prepareRename refuses until an event re-analyzes the project.
+def test_source_added_or_removed_without_event(t: Tester) {
+	removeFixture(t, "rename-scan", "Other.v3");
+	var s = PrepareRenameTestSession.new("rename-scan", files(["Main.v3"], [MAIN]), true, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
+	expectPreparedAt(t, s, "Main.v3", p.line, p.begin, widget, "Widget");
+	var changed = "the project's files changed since the last analysis; an analysis starts on the next open, edit, save, close, or file event";
+	s.write(t, "Other.v3", OTHER);
+	expectFailureAt(t, s, "Main.v3", p.line, p.begin, changed);
+	s.reportCreated("Other.v3");
+	s.settle();
+	expectPreparedAt(t, s, "Main.v3", p.line, p.begin, widget, "Widget");
+	s.remove(t, "Other.v3");
+	expectFailureAt(t, s, "Main.v3", p.line, p.begin, changed);
+	s.reportRemoved("Other.v3");
+	s.settle();
+	expectPreparedAt(t, s, "Main.v3", p.line, p.begin, widget, "Widget");
+	s.server.close();
+}
+// A second loaded program can select a source that exists but is not in its
+// analyzed list: one/SharedUse.v3 is created and one/'s configuration adds it
+// without a file event, so the second program's cached list stays empty. The
+// file a use is in then belongs to that program, which the rename must not
+// leave behind.
+def test_shared_program_added_without_event(t: Tester) {
+	removeFixture(t, "rename-shared-scan", "one/SharedUse.v3");
+	var s = PrepareRenameTestSession.new("rename-shared-scan",
+		files(["one/Main.v3", "one/.virgil-lsp.json", ".virgil-lsp.json"], [MAIN, SCAN_ONE, SCAN_TWO]), true, t);
+	s.open("one/Main.v3", 1, MAIN);
+	s.settle();
+	var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
+	expectPreparedAt(t, s, "one/Main.v3", p.line, p.begin, widget, "Widget");
+	s.write(t, "one/SharedUse.v3", OTHER);
+	s.write(t, "one/.virgil-lsp.json", SCAN_ONE_SHARED);
+	s.reportChanged("one/.virgil-lsp.json");
+	s.settle();
+	expectFailureAt(t, s, "one/Main.v3", p.line, p.begin,
+		Strings.format1("cannot rename 'Widget': the file %s belongs to another loaded program, 'two'", s.path("one/SharedUse.v3")));
+	s.server.close();
+}
+// Starts a rename-shared-scan session whose root program is {two}, with the
+// Virgil root at one/, and then, without a file event for the root program,
+// creates one/SharedUse.v3 and adds it to program one. Program two's analyzed
+// list therefore lacks the file, whatever its patterns select.
+def sharedScanSession(t: Tester, two: string) -> PrepareRenameTestSession {
+	removeFixture(t, "rename-shared-scan", "one/SharedUse.v3");
+	removeFixture(t, "rename-shared-scan", "Overflow.v3");
+	var s = PrepareRenameTestSession.new("rename-shared-scan",
+		files(["one/Main.v3", "one/.virgil-lsp.json", ".virgil-lsp.json"], [MAIN, SCAN_ONE, two]), true, t);
+	s.server.projects.virgilRoot = s.path("one");
+	s.open("one/Main.v3", 1, MAIN);
+	s.settle();
+	s.write(t, "one/SharedUse.v3", OTHER);
+	s.write(t, "one/.virgil-lsp.json", SCAN_ONE_SHARED);
+	s.reportChanged("one/.virgil-lsp.json");
+	s.settle();
+	for (c in s.server.projects.loadedContexts()) {
+		if (Strings.equal(c.definition.name, "two")) t.assertz(false, c.contains(s.path("one/SharedUse.v3"), false));
+	}
+	return s;
+}
+// Another program whose patterns select a use's file holds it, though its
+// analyzed list lacks the file and expanding it again would fail: Overflow.v3,
+// created without a file event, exceeds the source budget. Matching relates
+// a source or dependency pattern to the project directory and a Virgil
+// dependency pattern to the Virgil root.
+def test_shared_program_by_pattern(t: Tester) {
+	for (two in SCAN_TWO_PATTERNS) {
+		var s = sharedScanSession(t, two);
+		s.write(t, "Overflow.v3", Array<byte>.new(ProjectLimits.MAX_BYTES + 1));
+		var p = at(MAIN, "class Widget", 6);
+		expectFailureAt(t, s, "one/Main.v3", p.line, p.begin,
+			Strings.format1("cannot rename 'Widget': the file %s belongs to another loaded program, 'two'", s.path("one/SharedUse.v3")));
+		s.server.close();
+		removeFixture(t, "rename-shared-scan", "Overflow.v3");
+	}
+	removeFixture(t, "rename-shared-scan", "one/SharedUse.v3");
+}
+// An exclude that removes a use's file from another program's patterns, at a
+// directory on the way or at the file, leaves the file to this program alone.
+def test_shared_program_excluded(t: Tester) {
+	for (two in SCAN_TWO_EXCLUDED) {
+		var s = sharedScanSession(t, two);
+		var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
+		expectPreparedAt(t, s, "one/Main.v3", p.line, p.begin, widget, "Widget");
+		s.server.close();
+	}
+	removeFixture(t, "rename-shared-scan", "one/SharedUse.v3");
+}
+// Twelve other loaded programs, each with 256 sources in its own directory,
+// and one whose pattern names Main.v3 below its own directory, select none of
+// this program's files, so the rename is eligible. Their patterns are matched
+// against this program's paths; none of them is expanded again.
+def test_many_other_programs(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename-many", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), true, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	t.asserti(14, s.server.projects.loadedContexts().length);
+	var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
+	expectPreparedAt(t, s, "Main.v3", p.line, p.begin, widget, "Widget");
+	s.server.close();
+}
+// The request spends exactly what otherProgram counts for the files of the
+// declaration and its uses: that budget answers, and one step less refuses.
+def test_ownership_budget(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename-many", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), true, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	var projects = s.server.projects, m = ProjectGlobMatcher.new(int.max);
+	var other = projects.otherProgram(projects.forDocument(s.uri("Main.v3")).active, [s.path("Main.v3"), s.path("Other.v3")], m);
+	t.assert(other.1 == null && !m.exhausted(), "no other program owns the files");
+	var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
+	projects.ownershipSteps = m.spent;
+	expectPreparedAt(t, s, "Main.v3", p.line, p.begin, widget, "Widget");
+	projects.ownershipSteps = m.spent - 1;
+	expectFailureAt(t, s, "Main.v3", p.line, p.begin,
+		"the workspace has too many project patterns to check which programs own the renamed files");
+	s.server.close();
+}
+// Loads {configs} in order into a workspace with the Virgil root {root}, and
+// returns it with the first configuration's first context.
+def ownershipWorkspace(t: Tester, configs: Array<string>, root: string) -> (WorkspaceProjects, ProjectContext) {
+	var projects = WorkspaceProjects.new(DocumentStore.new(System.fileLoad, DocumentLimits.MAX_BYTES)), first: ProjectContext;
+	projects.virgilRoot = root;
+	for (path in configs) {
+		var config = projects.load(path);
+		t.asserti(0, config.diagnostics.length);
+		if (first == null && config.contexts.length > 0) first = config.contexts[0];
+	}
+	return (projects, first);
+}
+// As many paths below {directory} as a program can hold sources. Matching
+// needs no files.
+def ownershipPaths(directory: string, count: int) -> Array<string> {
+	var paths = Array<string>.new(count);
+	for (i < count) paths[i] = ProjectFiles.join(directory, Strings.format2("d%d/F%d.v3", i / 64, i));
+	return paths;
+}
+// An ordinary workspace stays well within the budget: as many files as a
+// program can hold, under the Virgil root, beside 127 other programs with five
+// ordinary patterns each, whose Virgil dependency pattern every path is
+// matched against.
+def test_ownership_budget_ordinary(t: Tester) {
+	var base = ProjectFiles.join(fixtureDirectory("rename-ownership"), "ordinary"), root = ProjectFiles.join(base, "virgil");
+	var configs = Array<string>.new(128);
+	configs[0] = ProjectFiles.join(root, "aeneas/.virgil-lsp.json");
+	for (i < 127) configs[i + 1] = ProjectFiles.join(base, Strings.format1("others/c%d/.virgil-lsp.json", i));
+	var w = ownershipWorkspace(t, configs, root);
+	t.asserti(128, w.0.loadedContexts().length);
+	var m = ProjectGlobMatcher.new(w.0.MAX_OWNERSHIP_STEPS);
+	var other = w.0.otherProgram(w.1, ownershipPaths(ProjectFiles.join(root, "aeneas/src"), ProjectLimits.MAX_FILES), m);
+	t.assert(other.1 == null && !m.exhausted(), "no other program owns the files, within the budget");
+	t.assert(m.spent * 4 < w.0.MAX_OWNERSHIP_STEPS, "with more than three quarters of the budget left");
+}
+// One program whose 2,000 patterns select nothing, above as many files as a
+// program can hold: every path is matched against every pattern, which
+// exhausts the budget. A few of the paths fit.
+def test_ownership_budget_exhausted(t: Tester) {
+	var base = ProjectFiles.join(fixtureDirectory("rename-ownership"), "pathological");
+	var w = ownershipWorkspace(t, [ProjectFiles.join(base, "active/.virgil-lsp.json"), ProjectFiles.join(base, ".virgil-lsp.json")], null);
+	t.asserti(2, w.0.loadedContexts().length);
+	var directory = ProjectFiles.join(base, "active"), m = ProjectGlobMatcher.new(w.0.MAX_OWNERSHIP_STEPS);
+	var other = w.0.otherProgram(w.1, ownershipPaths(directory, ProjectLimits.MAX_FILES), m);
+	t.assert(m.exhausted(), "the budget is exhausted");
+	t.assert(other.0 == null && other.1 == null, "an exhausted search finds nothing");
+	m = ProjectGlobMatcher.new(w.0.MAX_OWNERSHIP_STEPS);
+	other = w.0.otherProgram(w.1, ownershipPaths(directory, 64), m);
+	t.assert(other.1 == null && !m.exhausted(), "64 paths fit");
+}
+// {count} blocks of "Aa" or "BB", as bit k of {index} selects for block k,
+// as test/fixtures/projects/prepare.py names the colliding/ fixture.
+def blocks(count: int, index: int) -> string {
+	var b = StringBuilder.new(), n = index;
+	for (k < count) {
+		b.puts(if(n % 2 == 1, "BB", "Aa"));
+		n = n / 2;
+	}
+	return b.extract();
+}
+// Thirty-two other programs hold 4,096 sources whose paths, below a 600-byte
+// shared prefix, all hash alike, as do 1,024 paths of the active program.
+// Ownership matches patterns, not the other programs' source lists, so it
+// hashes none of those paths: it counts every step, spends a bound
+// proportional to the paths and patterns, and still finds the program that
+// selects a path.
+def test_ownership_colliding_paths(t: Tester) {
+	var base = ProjectFiles.join(fixtureDirectory("rename-ownership"), "colliding"), d = Array<byte>.new(200);
+	for (i < d.length) d[i] = 'd';
+	for (i < 3) base = ProjectFiles.join(base, d);
+	var w = ownershipWorkspace(t, [ProjectFiles.join(base, "active/.virgil-lsp.json"), ProjectFiles.join(base, ".virgil-lsp.json")], null);
+	var contexts = w.0.loadedContexts(), listed = 0;
+	t.asserti(33, contexts.length);
+	for (c in contexts) listed += c.sources.length;
+	t.asserti(4096, listed);
+	var paths = Array<string>.new(1025), active = ProjectFiles.join(base, "active");
+	for (i < 1024) paths[i] = ProjectFiles.join(active, Strings.format1("%s.v3", blocks(10, i)));
+	var owned = ProjectFiles.join(base, Strings.format2("%s/%s.v3", blocks(5, 2), blocks(7, 127)));
+	paths[1024] = owned;
+	var m = ProjectGlobMatcher.new(w.0.MAX_OWNERSHIP_STEPS);
+	var other = w.0.otherProgram(w.1, paths, m);
+	t.assert(!m.exhausted(), "within the budget");
+	t.assert(other.0 != null && Strings.equal(owned, other.0), "the selected path is found");
+	t.assert(other.1 != null && Strings.equal("o2", other.1.definition.name), "by the program that selects it");
+	// Each path is split, hashed, and compared with the programs' shared base
+	// once, about three steps a byte, and matched against each program's one
+	// pattern in a few steps.
+	t.assert(m.spent > 0 && m.spent < paths.length * (3 * owned.length + 16 * 32), "the steps are counted, within a bound");
+}
+// Parse and semantic errors both refuse, with their own reasons.
+def test_parse_and_semantic_errors(t: Tester) {
+	var s = renameSession(t);
+	s.change("Rename.v3", 2, Strings.format1("%s}\n", SOURCE));
+	s.settle();
+	expectFailure(t, s, "class Bare", 6, "the project's analysis has parse errors");
+	s.change("Rename.v3", 3, Strings.format1("%sdef broken = missing;\n", SOURCE));
+	s.settle();
+	expectFailure(t, s, "class Bare", 6, "the project's analysis has errors; rename needs a program that verifies");
+	s.server.close();
+}
+// A closed file's changed bytes do not move its stamp, but a rename must not
+// miss uses there; a reported change makes the whole snapshot stale.
+def test_stale_other_file(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename-multi", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), true, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	var use = at(MAIN, "return Widget", 7);
+	expectPreparedAt(t, s, "Main.v3", use.line, use.begin, span(MAIN, "return Widget", 7, 6), "Widget");
+	// A use in another file of the same program is eligible, and its range is
+	// in the requested document.
+	var otherUse = at(OTHER, "return Widget", 7);
+	expectPreparedAt(t, s, "Other.v3", otherUse.line, otherUse.begin, span(OTHER, "return Widget", 7, 6), "Widget");
+	s.write(t, "Other.v3", "def other = 2;\n");
+	expectFailureAt(t, s, "Main.v3", use.line, use.begin,
+		Strings.format1("the project's analysis is stale: the bytes of %s changed since it was analyzed", s.path("Other.v3")));
+	s.store.diskChanged(s.uri("Other.v3"));
+	expectFailureAt(t, s, "Main.v3", use.line, use.begin,
+		"the project's analysis is stale; it does not describe the current sources");
+	s.server.close();
+}
+// A request whose document changes while it waits gets RequestFailed, not a
+// null result that would hide the reason.
+def test_document_changed_while_waiting(t: Tester) {
+	var s = renameSession(t);
+	s.change("Rename.v3", 2, Strings.format1("%s\n", SOURCE));
+	var p = S("class Bare", 6, 4), id = s.request("Rename.v3", p.line, p.begin);
+	t.assert(s.reply(id) == null, "the reply waits for the analysis");
+	s.change("Rename.v3", 3, Strings.format1("\n%s", SOURCE));
+	s.settle();
+	var r = s.reply(id);
+	t.assert(r != null, "the waiting request is answered");
+	if (r == null) { s.server.close(); return; }
+	t.assert(r.has("error"), "a changed document fails");
+	if (r.has("error")) {
+		t.asserti(LspErrorCode.REQUEST_FAILED, intAt(r["error"], "code"));
+		t.assert_string("the document changed while the rename request waited", stringAt(r["error"], "message"));
+	}
+	s.server.close();
+}
+// An evicted waiting request is failed with the reason, and the rest keep
+// waiting.
+def test_too_many_waiting(t: Tester) {
+	var s = renameSession(t);
+	s.change("Rename.v3", 2, Strings.format1("%s\n", SOURCE));
+	var p = S("class Bare", 6, 4), max = LspSnapshotRequests.new(null, null, null).MAX_WAITING;
+	var ids = Array<int>.new(max + 1);
+	for (i < ids.length) ids[i] = s.request("Rename.v3", p.line, p.begin);
+	var oldest = s.reply(ids[0]);
+	t.assert(oldest != null, "the oldest waiting request is answered");
+	if (oldest != null) {
+		t.assert(oldest.has("error"), "the evicted request fails");
+		if (oldest.has("error")) {
+			t.asserti(LspErrorCode.REQUEST_FAILED, intAt(oldest["error"], "code"));
+			t.assert_string("too many requests are waiting", stringAt(oldest["error"], "message"));
+		}
+	}
+	t.assert(s.reply(ids[1]) == null, "the next oldest still waits");
+	s.settle();
+	s.server.close();
+}
+// A document in no project has no snapshot and no one to analyze it.
+def test_no_project(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename-no-project", files(["Loose.v3"], [SOURCE]), true, t);
+	s.open("Loose.v3", 1, SOURCE);
+	s.settle();
+	var p = S("class Bare", 6, 4);
+	expectFailureAt(t, s, "Loose.v3", p.line, p.begin, "the document is not in a loaded project");
+	s.server.close();
+}
+// The server neither advertises nor dispatches prepareRename until #125, so
+// an enabled handler and unchanged capabilities are both verified here.
+def test_not_dispatched(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename", files(["Rename.v3"], [SOURCE]), false, t);
+	s.open("Rename.v3", 1, SOURCE);
+	s.settle();
+	var p = S("class Bare", 6, 4), bytes = s.raw("Rename.v3", p.line, p.begin);
+	t.assert(bytes != null, "an unregistered method is answered");
+	if (bytes != null) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		t.asserti(JsonRpcErrorCode.METHOD_NOT_FOUND, intAt(parsed["error"], "code"));
+		t.assert_string("method not found: textDocument/prepareRename", stringAt(parsed["error"], "message"));
+	}
+	t.assert(s.initializeReply != null, "initialize was answered");
+	if (s.initializeReply != null) {
+		var init = JsonValue.JObject.!(JsonRpcJsonParser.new(s.initializeReply).parseDocument()).v;
+		t.assert(init.has("result"), "initialize succeeded");
+		t.assert(!hasMember(member(init["result"], "capabilities"), "renameProvider"), "rename is not advertised");
+	}
+	s.server.close();
+}

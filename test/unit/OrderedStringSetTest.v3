@@ -1,0 +1,88 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("OrderedStringSet:membership", test_membership),
+	T("OrderedStringSet:shared_prefixes", test_shared_prefixes),
+	T("OrderedStringSet:colliding_keys", test_colliding_keys),
+	()
+];
+def test_membership(t: Tester) {
+	var set = OrderedStringSet.new();
+	t.assertz(false, set.has(""));
+	t.assertz(true, set.add("b"));
+	t.assertz(true, set.add(""));
+	t.assertz(true, set.add("ba"));
+	t.assertz(true, set.add("a"));
+	t.assertz(true, set.add("\xFF"));
+	t.assertz(false, set.add("ba"));
+	t.assertz(false, set.add(""));
+	t.asserti(5, set.length);
+	for (key in ["", "a", "b", "ba", "\xFF"]) t.assertz(true, set.has(key));
+	for (key in ["\x00", "aa", "bb", "b\x00", "\xFE"]) t.assertz(false, set.has(key));
+}
+// Every string of "a" and "b" up to six bytes long, so that many keys are
+// prefixes of others. Half are added in a scattered order, and membership
+// agrees with a scan for every string, whichever order the search skips
+// shared bytes in.
+def test_shared_prefixes(t: Tester) {
+	var all = Vector<string>.new().put("");
+	for (i = 0; i < all.length && all[i].length < 6; i++) {
+		all.put(Strings.format1("%sa", all[i])).put(Strings.format1("%sb", all[i]));
+	}
+	var keys = all.extract(), n = keys.length, set = OrderedStringSet.new();
+	var added = Array<bool>.new(n);
+	for (i < n) {
+		var j = (i * 37) % n;
+		if (j % 2 == 0) continue;
+		added[j] = true;
+		t.assertz(true, set.add(keys[j]));
+	}
+	for (i < n) {
+		var j = (i * 37) % n;
+		t.assertz(added[j], set.has(keys[j]));
+		t.assertz(!added[j], set.add(keys[j]));
+		t.assertz(true, set.has(keys[j]));
+	}
+	t.asserti(n, set.length);
+}
+// {count} blocks of "Aa" or "BB", as bit k of {index} selects for block k.
+def blocks(count: int, index: int) -> string {
+	var b = StringBuilder.new();
+	for (k < count) b.puts(if((index >> byte.view(k)) % 2 == 1, "BB", "Aa"));
+	return b.extract();
+}
+// Keys that Strings.newMap hashes alike cost the set what as many ordinary
+// keys do, in any order: the tree's shape depends only on the keys' order, and
+// each operation compares at most about 2 log2(n) keys.
+def test_colliding_keys(t: Tester) {
+	var n = 1024, colliding = Array<string>.new(n), ordinary = Array<string>.new(n);
+	for (i < n) {
+		colliding[i] = blocks(10, i);
+		ordinary[i] = Strings.format1("N%dxxxxxxxxxxxxxx", 10000 + i);
+	}
+	var hash = Strings.hash(colliding[0]);
+	for (key in colliding) t.asserti(hash, Strings.hash(key));
+	colliding = Arrays.sort(colliding, 0, n, ProjectFiles.before);
+	for (keys in [colliding, ordinary]) {
+		// Sorted insertion is the order expansion uses; reversed and
+		// interleaved orders take other paths through the rotations.
+		var orders = [keys, Arrays.dup(keys), Array<string>.new(n)];
+		for (i < n) orders[1][i] = keys[n - 1 - i];
+		for (i < n) orders[2][i] = keys[if(i % 2 == 0, i / 2, n - 1 - i / 2)];
+		for (order in orders) {
+			var set = OrderedStringSet.new();
+			for (key in order) t.assertz(true, set.add(key));
+			for (key in order) t.assertz(false, set.add(key));
+			for (key in order) t.assertz(true, set.has(key));
+			t.asserti(n, set.length);
+			// 3n operations, each within 2 log2(n + 1) + 1 comparisons.
+			t.assert(set.compares <= 3 * n * 21, "each operation compares O(log n) keys");
+		}
+	}
+	var a = OrderedStringSet.new(), b = OrderedStringSet.new();
+	for (key in colliding) a.add(key);
+	for (key in ordinary) b.add(key);
+	t.assertl(b.compares, a.compares);
+}

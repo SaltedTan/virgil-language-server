@@ -1,7 +1,9 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-class ProjectDirectory(names: Array<string>, types: HashMap<string, byte>, examined: int, overflow: bool) { }
+// A directory's entry names in byte order, and at the same index each entry's
+// d_type: 4 for a directory, 8 for a regular file, 0 if unknown.
+class ProjectDirectory(names: Array<string>, types: Array<byte>, examined: int, overflow: bool) { }
 
 // No realpath: lexical document identity and no symlink traversal. Descriptors
 // anchor each path component, so renaming/replacing it cannot redirect a walk.
@@ -84,7 +86,7 @@ component ProjectFiles {
 	def list(path: string, maxEntries: int) -> ProjectDirectory {
 		var fd = open(path, true);
 		if (fd < 0) return ProjectDirectory.new(null, null, 0, false);
-		var names = Vector<string>.new(), types = Strings.newMap<byte>();
+		var entries = Vector<(string, byte)>.new();
 		var buf = Array<byte>.new(8192), ok = false;
 		var examined = 0, overflow = false;
 		while (true) {
@@ -104,8 +106,7 @@ component ProjectFiles {
 				var name = Arrays.range(buf, start, end);
 				if (!Strings.equal(name, ".") && !Strings.equal(name, "..")) {
 					if (++examined > maxEntries) { overflow = true; break; }
-					names.put(name);
-					types[name] = buf[at + HostOs.directoryTypeOffset];
+					entries.put((name, buf[at + HostOs.directoryTypeOffset]));
 				}
 				at += len;
 			}
@@ -113,8 +114,16 @@ component ProjectFiles {
 		}
 		HostOs.close(fd);
 		if (!ok) return ProjectDirectory.new(null, null, examined, overflow);
-		var result = names.extract();
-		return ProjectDirectory.new(Arrays.sort(result, 0, result.length, before), types, examined, false);
+		// Each type is sorted with its name rather than looked up by it, since
+		// a map keyed by names can be made to collide (see OrderedStringSet).
+		var sorted = entries.extract();
+		sorted = Arrays.sort(sorted, 0, sorted.length, entryBefore);
+		var names = Array<string>.new(sorted.length), types = Array<byte>.new(sorted.length);
+		for (i < sorted.length) { names[i] = sorted[i].0; types[i] = sorted[i].1; }
+		return ProjectDirectory.new(names, types, examined, false);
+	}
+	private def entryBefore(a: (string, byte), b: (string, byte)) -> bool {
+		return before(a.0, b.0);
 	}
 	def before(a: string, b: string) -> bool {
 		for (i = 0; i < a.length && i < b.length; i++) {

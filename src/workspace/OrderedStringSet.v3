@@ -1,0 +1,95 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+class OrderedStringNode(key: string) {
+	var level = 1;
+	var left: OrderedStringNode;
+	var right: OrderedStringNode;
+}
+// A set of strings in byte order, as ProjectFiles.before orders them, for
+// keys such as paths that a workspace chooses. Strings.newMap hashes a string
+// polynomially, so equal-length keys built from "Aa" and "BB" blocks all
+// collide, and its table stops growing at 1,024 buckets. This set hashes
+// nothing: an AA tree keeps it balanced, so each operation visits at most
+// about 2 log2(n) keys, whatever the keys are.
+//
+// Paths share long prefixes, so a search does not compare them again: every
+// key below a node lies between the nearest keys the search has passed on
+// either side, and so shares with the searched key at least the shorter of
+// the prefixes they share with it. A search that has passed keys on one side
+// only knows no shared prefix, so it can compare a long prefix again at each
+// key it visits: an operation compares O(log n) keys and reads O(L log n)
+// bytes of a key of L bytes, and the skip saves only what both nearest keys
+// already share with it.
+class OrderedStringSet {
+	private var root: OrderedStringNode;
+	var length: int;
+	// The keys visited so far, which tests use to bound the work.
+	var compares: long;
+	// The result of the last compare(): the bytes {key} and the visited key
+	// share, and their order.
+	private var common: int;
+	private var order: int;
+
+	def has(key: string) -> bool {
+		var n = root, below = 0, above = 0;
+		while (n != null) {
+			compare(key, n.key, if(below < above, below, above));
+			if (order == 0) return true;
+			if (order < 0) {
+				above = common;
+				n = n.left;
+			} else {
+				below = common;
+				n = n.right;
+			}
+		}
+		return false;
+	}
+	// Adds {key}, and returns whether it was absent.
+	def add(key: string) -> bool {
+		var before = length;
+		root = insert(root, key, 0, 0);
+		return length > before;
+	}
+	// {below} and {above} are the bytes that {key} shares with the nearest
+	// keys passed on the way to {n} that are less and greater than it.
+	private def insert(n: OrderedStringNode, key: string, below: int, above: int) -> OrderedStringNode {
+		if (n == null) {
+			length++;
+			return OrderedStringNode.new(key);
+		}
+		compare(key, n.key, if(below < above, below, above));
+		if (order == 0) return n;
+		if (order < 0) n.left = insert(n.left, key, below, common);
+		else n.right = insert(n.right, key, common, above);
+		return split(skew(n));
+	}
+	// Rotates right when {n}'s left child is on its level.
+	private def skew(n: OrderedStringNode) -> OrderedStringNode {
+		var l = n.left;
+		if (l == null || l.level != n.level) return n;
+		n.left = l.right;
+		l.right = n;
+		return l;
+	}
+	// Rotates left and raises the new parent when {n} has two right children
+	// on its level.
+	private def split(n: OrderedStringNode) -> OrderedStringNode {
+		var r = n.right;
+		if (r == null || r.right == null || r.right.level != n.level) return n;
+		n.right = r.left;
+		r.left = n;
+		r.level++;
+		return r;
+	}
+	// Compares {a} with {b}, whose first {skip} bytes are known to be equal.
+	private def compare(a: string, b: string, skip: int) {
+		compares++;
+		var n = if(a.length < b.length, a.length, b.length), i = skip;
+		while (i < n && a[i] == b[i]) i++;
+		common = i;
+		if (i < n) order = if(a[i] < b[i], -1, 1);
+		else order = a.length - b.length;
+	}
+}

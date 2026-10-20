@@ -5,12 +5,17 @@ def T = UnitTests.register;
 def X = [
 	T("ProjectExpansion:host_directory", test_host_directory),
 	T("ProjectExpansion:glob", test_glob),
+	T("ProjectExpansion:glob_selects", test_glob_selects),
+	T("ProjectExpansion:glob_budget", test_glob_budget),
+	T("ProjectExpansion:glob_exhausted_work", test_glob_exhausted_work),
+	T("WorkspaceProjects:ownership_exhausted_work", test_ownership_exhausted_work),
 	T("ProjectExpansion:fixtures", test_expansion_fixtures),
 	T("ProjectExpansion:order_exclude_deduplicate", test_order_exclude),
 	T("ProjectExpansion:limits_before_reads", test_limits_before_reads),
 	T("ProjectExpansion:symlinks_and_special_files", test_symlinks),
 	T("ProjectExpansion:unreadable_matches", test_unreadable_matches),
 	T("ProjectExpansion:unrelated_and_excluded_entries", test_unrelated_and_excluded_entries),
+	T("ProjectExpansion:colliding_names", test_colliding_names),
 	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
@@ -44,8 +49,8 @@ def test_host_directory(t: Tester) {
 	t.assert_string("client", names[1]);
 	t.assert_string("server", names[2]);
 	t.assert_string("shared", names[3]);
-	t.asserti(8, listing.types[".virgil-lsp.json"]);
-	t.asserti(4, listing.types["shared"]);
+	t.asserti(8, listing.types[0]);
+	t.asserti(4, listing.types[3]);
 	listing = ProjectFiles.list(dir, 3);
 	t.assertz(true, listing.overflow);
 	t.asserti(4, listing.examined);
@@ -75,6 +80,135 @@ def test_glob(t: Tester) {
 	t.assertz(true, ProjectGlob.matches("a*b*c.v3", "axbybc.v3"));
 	t.assertz(false, ProjectGlob.matches("a*b*c.v3", "axbybd.v3"));
 }
+// ProjectGlobMatcher.selects agrees with expansion about each file of a fixture,
+// including the leading-dot rule and excludes that prune a directory.
+def test_glob_selects(t: Tester) {
+	var hidden = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/ownership-hidden-empty");
+	var cases = [
+		(ProjectFiles.join(FIXTURES, "two-programs"), ["client/Program.v3", "server/Program.v3", "shared/Greeting.v3"], [
+			"{\"name\":\"p\",\"sources\":[\"**/*.v3\"]}",
+			"{\"name\":\"p\",\"sources\":[\"*/G*.v3\",\"*.v3\"]}",
+			"{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"exclude\":[\"client\"]}",
+			"{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"exclude\":[\"*/Program.v3\"]}",
+			"{\"name\":\"p\",\"sources\":[\"s*/*.v3\",\"client/Program.v3\"],\"exclude\":[\"sh*\"]}",
+			"{\"name\":\"p\",\"sources\":[\"**/*.v3\"],\"exclude\":[\"**\"]}"
+		]),
+		(hidden, ["main.v3", ".hidden/A.v3"], [
+			"{\"name\":\"p\",\"sources\":[\"**/*.v3\"]}",
+			"{\"name\":\"p\",\"sources\":[\"*/A.v3\",\"?.v3\"]}",
+			"{\"name\":\"p\",\"sources\":[\".*/*.v3\",\"**/main.v3\"]}",
+			"{\"name\":\"p\",\"sources\":[\".hidden/A.v3\"],\"exclude\":[\"*\"]}"
+		])
+	];
+	for (c in cases) {
+		for (json in c.2) {
+			var p = definition(json), r = expand(c.0, null, p);
+			var m = ProjectGlobMatcher.new(int.max), split = m.patterns(p);
+			t.asserti(0, r.diagnostics.length);
+			for (path in c.1) {
+				var listed = false;
+				for (source in r.sources) listed = listed || Strings.equal(source.path, ProjectFiles.join(c.0, path));
+				t.assertz(listed, m.selects(split.sources, split.exclude, m.split(path)));
+			}
+		}
+	}
+}
+// {pattern}, and {exclude} unless empty, matched against {path} by a matcher
+// with {budget} steps.
+def budgeted(budget: int, pattern: string, exclude: string, path: string) -> (bool, ProjectGlobMatcher) {
+	var m = ProjectGlobMatcher.new(budget);
+	var p = m.split(pattern), e = m.split(exclude), relative = m.split(path);
+	if (p == null || e == null || relative == null) return (false, m);
+	var excludes: Array<Array<string>> = if(exclude.length > 0, [e], []);
+	return (m.selects([p], excludes, relative), m);
+}
+// ProjectGlobMatcher counts its work: a budget of exactly that work gives the
+// unbounded answer, and one step less exhausts it, which matches nothing.
+def test_glob_budget(t: Tester) {
+	var cases = [
+		("src/*.v3", "", "src/A.v3", true),
+		("src/**/A?.v3", "", "src/a/b/Aé.v3", true),
+		("a*b*c.v3", "", "axbybd.v3", false),
+		("**/*.v3", "**/B*", "a/A.v3", true),
+		("**/*.v3", "a", "a/A.v3", false)
+	];
+	for (c in cases) {
+		var full = budgeted(int.max, c.0, c.1, c.2), cost = full.1.spent;
+		t.assertz(c.3, full.0);
+		t.assert(cost > 0 && !full.1.exhausted(), "the work is counted");
+		var exact = budgeted(cost, c.0, c.1, c.2);
+		t.assertz(c.3, exact.0);
+		t.asserti(cost, exact.1.spent);
+		t.assertz(false, exact.1.exhausted());
+		var short = budgeted(cost - 1, c.0, c.1, c.2);
+		t.assertz(false, short.0);
+		t.assertz(true, short.1.exhausted());
+	}
+}
+class ExhaustionCountingMatcher extends ProjectGlobMatcher {
+	def limit: int;
+	var checks: int;
+	new(limit) super(limit) { }
+	def exhausted() -> bool {
+		checks++;
+		return spent > limit;
+	}
+}
+def test_glob_exhausted_work(t: Tester) {
+	var path = Array<string>.new(1000), patterns = Array<Array<string>>.new(30000);
+	for (i < path.length) path[i] = "d";
+	for (i < patterns.length) patterns[i] = ["Z.v3"];
+	var one = ExhaustionCountingMatcher.new(0), many = ExhaustionCountingMatcher.new(0);
+	t.assertz(false, one.selects([patterns[0]], [], path));
+	t.assertz(false, many.selects(patterns, [], path));
+	t.asserti(one.checks, many.checks);
+	t.assert(many.checks < 10, "exhaustion ends the pattern loop");
+	t.asserti(one.spent, many.spent);
+	var before = many.checks;
+	t.assertz(false, many.matches([], []));
+	t.assertz(false, many.matches(patterns[0], path));
+	t.asserti(2, many.checks - before);
+	before = many.checks;
+	t.assertz(false, many.selects(patterns, patterns, path));
+	t.asserti(1, many.checks - before);
+	one = ExhaustionCountingMatcher.new(path.length + 1);
+	many = ExhaustionCountingMatcher.new(path.length + 1);
+	t.assertz(false, one.selects([["**"]], [patterns[0]], path));
+	t.assertz(false, many.selects([["**"]], patterns, path));
+	t.asserti(one.checks, many.checks);
+	t.assert(many.checks < 10, "exhaustion ends the exclusion loop");
+}
+class OwnershipExhaustingMatcher extends ProjectGlobMatcher {
+	def exhaustAt: int;
+	var selections: int;
+	new(exhaustAt) super(1000000) { }
+	def selects(patterns: Array<Array<string>>, exclude: Array<Array<string>>, path: Range<string>) -> bool {
+		if (++selections == exhaustAt) charge(1000001);
+		return false;
+	}
+}
+def test_ownership_exhausted_work(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var path = ProjectFiles.join(base, "exhausted.json");
+	var projects = StringBuilder.new();
+	for (i < 3) {
+		if (i > 0) projects.puts(",");
+		projects.puts(Strings.format1("{\"name\":\"p%d\",\"sources\":[\"Z.v3\"],\"dependencies\":[\"Z.v3\"],\"virgilDependencies\":[\"Z.v3\"]}", i));
+	}
+	store.open(ProjectFiles.uri(path), "json", 1, Strings.format1("{\"version\":1,\"projects\":[%s]}", projects.extract()));
+	w.virgilRoot = base;
+	var config = w.load(path);
+	t.asserti(0, config.diagnostics.length);
+	t.asserti(3, config.contexts.length);
+	for (field = 1; field <= 3; field++) {
+		var m = OwnershipExhaustingMatcher.new(field);
+		var other = w.otherProgram(config.contexts[0], [ProjectFiles.join(base, "A.v3")], m);
+		t.assertz(true, m.exhausted());
+		t.asserti(field, m.selections);
+		t.assert(other.0 == null && other.1 == null, "exhaustion returns no owner");
+	}
+}
 def test_expansion_fixtures(t: Tester) {
 	var base = ProjectFiles.join(FIXTURES, "two-programs");
 	var config = ProjectConfigParser.parse(System.fileLoad(ProjectFiles.join(base, ".virgil-lsp.json"))).config;
@@ -100,6 +234,36 @@ def test_expansion_fixtures(t: Tester) {
 	r = expand(base, null, config.projects[0]);
 	t.asserti(1, r.diagnostics.length);
 	t.assert(r.diagnostics[0].code == ProjectConfigCode.MISSING_VIRGIL_ROOT, "missing library root");
+}
+// 1,024 file names of one length built from "Aa" and "BB" blocks, which all
+// hash alike, below a 600-byte directory, and 1,024 ordinary names. Expansion
+// keys no map by path, so it treats both alike: each file once, in byte order,
+// with "**" finding each again without counting it against the file limit.
+def test_colliding_names(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/expansion-names");
+	var d = Array<byte>.new(200);
+	for (i < d.length) d[i] = 'd';
+	for (i < 3) base = ProjectFiles.join(base, d);
+	var colliding = Array<string>.new(1024), ordinary = Array<string>.new(1024);
+	for (i < 1024) {
+		var b = StringBuilder.new();
+		for (k < 10) b.puts(if((i >> byte.view(k)) % 2 == 1, "BB", "Aa"));
+		colliding[i] = Strings.format1("%s.v3", b.extract());
+		ordinary[i] = Strings.format1("N%dxxxxxxxxxxxxxx.v3", 10000 + i);
+	}
+	for (kind in [("colliding", colliding), ("ordinary", ordinary)]) {
+		var p = definition(Strings.format2("{\"name\":\"p\",\"sources\":[\"%s/*.v3\",\"%s/**/*.v3\"]}", kind.0, kind.0));
+		var r = expand(base, null, p), names = kind.1;
+		names = Arrays.sort(names, 0, names.length, ProjectFiles.before);
+		t.asserti(0, r.diagnostics.length);
+		t.asserti(names.length, r.sources.length);
+		if (r.sources.length != names.length) continue;
+		for (i < names.length) {
+			if (Strings.equal(ProjectFiles.join(base, ProjectFiles.join(kind.0, names[i])), r.sources[i].path)) continue;
+			t.fail2("%s source %d is out of order", kind.0, i);
+			break;
+		}
+	}
 }
 def test_order_exclude(t: Tester) {
 	var p = definition("{\"name\":\"p\",\"sources\":[\"shared/*.v3\",\"**/*.v3\"],\"dependencies\":[\"shared/*.v3\"],\"exclude\":[\"client/**\"]}");

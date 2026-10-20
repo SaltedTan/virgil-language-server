@@ -39,8 +39,15 @@ class WorkspaceProjects(store: DocumentStore) {
 	def MAX_RETAINED_BYTES = 4 * 1024 * 1024;
 	def MAX_SOURCE_REFERENCES = 8192;
 	def MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
+	// The work, in ProjectGlobMatcher steps, that one request may spend to find
+	// whether another program owns its files (otherProgram). Tests lower it.
+	def MAX_OWNERSHIP_STEPS = 8000000;
 	def var folders: Array<string> = [];
+	// Fixed for the session: initialize() sets it, and clients restart the
+	// server to change it. Were it to change, otherProgram() could miss a
+	// dependency that a context's list still holds from the old root.
 	var virgilRoot: string;
+	var ownershipSteps = MAX_OWNERSHIP_STEPS;
 	var warn: string -> void;
 	var onConfig: WorkspaceConfig -> void;
 	private var discovered: bool;
@@ -91,11 +98,11 @@ class WorkspaceProjects(store: DocumentStore) {
 			if (warn != null) warn(Strings.format1("cannot enumerate workspace project discovery directory: %s", dir));
 			return;
 		}
-		for (name in listing.names) {
-			var path = ProjectFiles.join(dir, name);
+		for (i < listing.names.length) {
+			var name = listing.names[i], path = ProjectFiles.join(dir, name);
 			if (Strings.equal(name, FILE)) load(path);
 			else if (name.length > 0 && name[0] != '.') {
-				var kind = listing.types[name];
+				var kind = listing.types[i];
 				if (kind == 4) discover(path, depth + 1);
 				else if (kind == 0) {
 					var meta = ProjectFiles.metadata(path);
@@ -128,6 +135,133 @@ class WorkspaceProjects(store: DocumentStore) {
 	// created or deleted on disk.
 	def reexpand() {
 		refreshConfigs(true);
+	}
+	// The sources that {ctx}'s patterns select on disk now, expanded as {update}
+	// does, without changing {ctx}; or null if the expansion fails or {ctx} is
+	// no longer loaded. Unlike ctx.sources, it shows a file created or deleted
+	// without a file event.
+	def expandNow(ctx: ProjectContext) -> Array<ProjectSource> {
+		for (i < configs.length) {
+			var c = configs[i];
+			for (x in c.contexts) {
+				if (x != ctx) continue;
+				var expanded = ProjectExpansion.new(store, ProjectLimits.MAX_FILES, ProjectLimits.MAX_BYTES)
+					.expand(ProjectFiles.parent(c.path), virgilRoot, ctx.definition);
+				return if(expanded.diagnostics.length == 0, expanded.sources);
+			}
+		}
+		return null;
+	}
+	// The first of {paths} that the patterns of a loaded context other than
+	// {ctx} select, as their expansion would if a regular file were there, with
+	// the first such context in loadedContexts() order; or (null, null). Every
+	// source a context retains was selected by its patterns, with the fixed
+	// Virgil root, so the patterns also find every file it lists, though it
+	// need not list every file they select: expanding it again replaces the
+	// list, and a failed expansion clears it. Matching reads nothing on disk,
+	// retains nothing, and cannot fail, but it spends {matcher}'s budget, and
+	// once that is exhausted the result is (null, null) and says nothing:
+	// check matcher.exhausted() first. All its work is charged, including
+	// finding the contexts, their bases, and the first owner, and none hashes
+	// a path into a map, where paths chosen to collide would make each
+	// insertion and lookup cost more.
+	def otherProgram(ctx: ProjectContext, paths: Array<string>, matcher: ProjectGlobMatcher) -> (string, ProjectContext) {
+		if (matcher.exhausted()) return (null, null);
+		// Each other context with its configuration's directory, the base of
+		// its patterns. A base is a directory prefix of a path when the path's
+		// prefix with as many separators hashes the same and, checked only
+		// then, is equal. So testing every base costs about one step, not the
+		// shared bytes again.
+		var others = Vector<ProjectContext>.new(), bases = Vector<string>.new();
+		var depths = Vector<int>.new(), hashes = Vector<int>.new();
+		for (i < configs.length) {
+			var c = configs[i], base: string, depth = 0, hash = 0;
+			if (!matcher.charge(1)) return (null, null);
+			for (x in c.contexts) {
+				if (!matcher.charge(1)) return (null, null);
+				if (x == ctx || !x.config.current) continue;
+				if (base == null) {
+					base = ProjectFiles.join(ProjectFiles.parent(c.path), "");
+					if (!matcher.charge(c.path.length + 3 * base.length)) return (null, null);
+					depth = directories(base, null);
+					hash = directoryHash(base);
+				}
+				others.put(x); bases.put(base); depths.put(depth); hashes.put(hash);
+			}
+		}
+		// A path below a base splits into the base's segments and the relative
+		// path's. A context's patterns are split when a path is first below its
+		// base or the Virgil root.
+		var library = if(virgilRoot != null, ProjectFiles.join(virgilRoot, ""));
+		if (library != null && !matcher.charge(virgilRoot.length + 2 * library.length)) return (null, null);
+		var libraryDepth = if(library != null, directories(library, null));
+		var split = Array<ProjectGlobPatterns>.new(others.length), prefixes: Array<int> = [];
+		for (path in paths) {
+			var segments = matcher.split(path);
+			if (segments == null || !matcher.charge(path.length)) return (null, null);
+			if (prefixes.length < segments.length) prefixes = Array<int>.new(segments.length);
+			directories(path, prefixes);
+			var inLibrary = library != null && matcher.startsWith(path, library);
+			if (matcher.exhausted()) return (null, null);
+			var owner: ProjectContext, below = false;
+			for (i < others.length) {
+				if (!matcher.charge(1)) return (null, null);
+				var c = others[i], p = c.definition;
+				// The contexts of one configuration are adjacent and share its
+				// base, which is compared once.
+				if (i == 0 || bases[i] != bases[i - 1]) {
+					below = depths[i] < segments.length && prefixes[depths[i]] == hashes[i]
+						&& matcher.startsWith(path, bases[i]);
+					if (matcher.exhausted()) return (null, null);
+				}
+				var selectsLibrary = inLibrary && p.virgilDependencies.length > 0;
+				if (!below && !selectsLibrary) continue;
+				if (split[i] == null) split[i] = matcher.patterns(p);
+				if (split[i] == null) return (null, null);
+				var s = split[i], selected = false;
+				if (below) {
+					var relative = segments[depths[i] ...];
+					selected = matcher.selects(s.sources, s.exclude, relative);
+					if (matcher.exhausted()) return (null, null);
+					if (!selected) selected = matcher.selects(s.dependencies, s.exclude, relative);
+					if (matcher.exhausted()) return (null, null);
+				}
+				if (!selected && selectsLibrary) selected = matcher.selects(s.virgilDependencies, [], segments[libraryDepth ...]);
+				if (matcher.exhausted()) return (null, null);
+				if (selected && (owner == null || ownerBefore(c, owner, matcher))) owner = c;
+				if (matcher.exhausted()) return (null, null);
+			}
+			if (owner != null) return (path, owner);
+		}
+		return (null, null);
+	}
+	// Whether {a} comes before {b} in loadedContexts() order, as contextBefore
+	// says, spending a step per byte compared.
+	private def ownerBefore(a: ProjectContext, b: ProjectContext, matcher: ProjectGlobMatcher) -> bool {
+		var x = a.config.uri, y = b.config.uri, i = 0;
+		while (i < x.length && i < y.length && x[i] == y[i]) i++;
+		matcher.charge(i + 1);
+		if (i < x.length && i < y.length) return x[i] < y[i];
+		if (x.length != y.length) return x.length < y.length;
+		return a.definition.begin < b.definition.begin;
+	}
+	// The number of separators in {path}. If {hashes} is not null, it receives
+	// at index d the hash of {path} up to and including separator d.
+	private def directories(path: string, hashes: Array<int>) -> int {
+		var n = 0, h = 0;
+		for (c in path) {
+			h = h * 31 + c;
+			if (c != '/') continue;
+			n++;
+			if (hashes != null) hashes[n] = h;
+		}
+		return n;
+	}
+	// The hash of {directory}, ending in '/', as directories() computes it.
+	private def directoryHash(directory: string) -> int {
+		var h = 0;
+		for (c in directory) h = h * 31 + c;
+		return h;
 	}
 	// Loads the configuration at {path}, reported created or changed on disk,
 	// if it isn't loaded and discovery would find it: inside a workspace folder,
