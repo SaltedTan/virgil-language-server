@@ -10,7 +10,7 @@ Build one editor-independent server executable in Virgil, reuse Aeneas's parser 
 
 You will be the initial maintainer, but structure the repository as an ordinary open-source project: publish the roadmap, accept issues and pull requests, document contribution expectations, and make technical decisions in public. Additional maintainers can be added later if sustained contribution and project growth make that useful.
 
-The recommended v0.1 is deliberately smaller than a “complete IDE”: correct protocol handling, file synchronization, syntax and semantic diagnostics, document symbols, go-to-definition, hover, and documented setup for LazyVim and VS Code. Completion, references, rename, error-tolerant parsing, and incremental compilation should follow after that foundation. Expect approximately 12–20 part-time weeks to reach a credible v0.1 alpha from an empty repository.
+The recommended v0.1 is deliberately smaller than a “complete IDE”: correct protocol handling, file synchronization, syntax and semantic diagnostics, document symbols, go-to-definition, hover, and documented setup for LazyVim and VS Code. Completion, rename, error-tolerant parsing, and incremental compilation should follow after that foundation. Expect approximately 12–20 part-time weeks to reach a credible v0.1 alpha from an empty repository.
 
 ## Open-source project model
 
@@ -56,7 +56,7 @@ A user can install the server following the [build and executable placement guid
 
 ### Later releases
 
-- v0.2: find references, prepare-rename/rename, signature help.
+- v0.2: prepare-rename/rename, signature help.
 - v0.3: context-aware completion, better behavior on incomplete syntax, faster reanalysis.
 - v0.5: platform-specific VS Code packages, an upstream `nvim-lspconfig` configuration, compatibility testing. Release automation is [present](docs/releasing.md).
 - v1.0: stable configuration format, defined performance budgets, robust error recovery, completion/references/rename suitable for everyday use, and a documented compatibility policy for Virgil versions.
@@ -318,7 +318,7 @@ Exit criteria:
 | P0       | definition            | verified bindings                      | Finding the smallest occurrence at the cursor |
 | P0       | hover                 | declaration plus inferred type         | Stable readable type/signature rendering      |
 | P1       | workspace symbols     | declaration index                      | Ranking and multi-project results             |
-| P1       | references            | reverse binding index                  | Reads/writes and synthetic constructs         |
+| P1       | references            | [occurrence index](docs/architecture.md#references) | Reads/writes and synthetic constructs         |
 | P1       | rename                | references plus scope validation       | Conflicts, private names, stale edits         |
 | P1       | signature help        | resolved call target                   | Nested calls and partial argument lists       |
 | P1       | completion            | scope/type context plus partial parser | Incomplete syntax, ranking, latency           |

@@ -393,9 +393,10 @@ The JSON-RPC 2.0 message model in `src/protocol/` works on the JSON payload of o
 | `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 | `LspWorkspaceEvents.v3` | Handles `workspace/didChangeWatchedFiles` and `workspace/didChangeWorkspaceFolders`, and registers the file watchers ([changes on disk](configuration.md#changes-on-disk)). |
 | `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, converts byte ranges with `PositionMap`, maps declaration kinds to symbol kinds (`LspSymbolKind`), and adds [details](#document-symbols) from a snapshot of that overlay. |
-| `LspSnapshotRequests.v3` | Answers [definition](#definition) and [hover](#hover) requests from the active context's snapshot, waiting for a pending analysis when it is stale. |
+| `LspSnapshotRequests.v3` | Answers [definition](#definition), [hover](#hover), and [references](#references) requests from the active context's snapshot, waiting for a pending analysis when it is stale. |
 | `LspDefinition.v3` | The definition answer: the declaration of the occurrence at an offset. |
 | `LspHover.v3` | The [hover](#hover) answer: the display text at an offset, in Markdown or plain text. |
+| `LspReferences.v3` | The [references](#references) answer. |
 | `LspParserDiagnostics.v3` | Computes [parser diagnostics](#parser-diagnostics) for accepted overlays and clears them on close. `LspDiagnostics` converts compiler diagnostics to LSP. |
 | `LspDiagnosticLists.v3` | Merges each URI's parser and [semantic diagnostics](#semantic-diagnostics) into the list it publishes. |
 | `LspSemanticDiagnostics.v3` | Schedules automatic project analyses and publishes their [semantic diagnostics](#semantic-diagnostics). |
@@ -518,4 +519,4 @@ Once decoded as a valid notification, `$/cancelRequest` is ignored and never get
 - Notifications never receive a response. Unknown notifications are ignored. Request errors depend on the [lifecycle state](#lifecycle). *(present)*
 - `Content-Length` counts bytes. Reads may be partial and messages may be fragmented. Messages above a size limit are skipped. *(present)*
 - Standard output carries protocol bytes only. *(present; the [transcripts](../test/protocol/) compare it byte for byte)*
-- Advertised capabilities exactly match implemented handlers. *(present: full-text document synchronization with open/close and save, document symbols, definition, and hover)*
+- Advertised capabilities exactly match implemented handlers. *(present; see [LspServer](../src/protocol/LspServer.v3) for the capability registration)*
