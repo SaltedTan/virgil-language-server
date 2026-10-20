@@ -1,6 +1,6 @@
 # Known limitations
 
-This page lists what the v0.1 alpha doesn't do, or does only in part. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
+This page lists what the v0.1 alpha doesn't do, or does only in part, as of `main`. Rename came after `0.1.0-alpha.1`, which doesn't have it, so [What rename refuses](#what-rename-refuses) applies to `main` only. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
 
 ## Features not yet implemented
 
