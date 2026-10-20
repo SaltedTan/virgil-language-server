@@ -1,6 +1,6 @@
 # VS Code extension
 
-> **Prerelease.** The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. It doesn't include the server, which you install separately. See the [project status](../../README.md) for current server features and [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions.
+> **Prerelease.** The extension is packaged as a VSIX to [install by hand](#installing-from-a-vsix); it isn't published to the Visual Studio Marketplace or Open VSX. It doesn't include the server, which you install separately. See the [project status](../../README.md) for current server features, [compatibility](../../docs/compatibility.md#editors) for the supported VS Code and server versions, and [known limitations](../../docs/known-limitations.md) for what the alpha doesn't do yet.
 
 A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
@@ -132,7 +132,7 @@ Run it on each platform before a release, with the extension [installed from the
 
 On Linux, the [Extension Host test](#extension-host-test) automates the steps marked *(automated on Linux)*. Run them by hand on the other platforms.
 
-For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Remote-WSL** (from Windows into WSL 2), and **macOS** (Apple Silicon, with Rosetta 2):
+For each VS Code setup in the [manual test matrix](../../docs/manual-testing.md#matrix), check the [known limitations](../../docs/known-limitations.md) and follow these steps:
 
 1. Open the fixture folder with the extension installed or loaded from source (see [Setup](#setup)) and open `bad.v3`. The status bar shows "Virgil" as the language. *(Automated on Linux.)*
 2. The "Virgil Language Server" output channel shows `Virgil root: <root> (from virgil.virgilRoot)`, `Starting <path> --stdio`, and `Started virgil-lsp <version>`. With a remote, both paths are on the remote machine. *(Automated on Linux.)*
@@ -150,4 +150,4 @@ For each of **Linux**, **Remote-SSH** (from any desktop into Linux x86-64), **Re
 14. Set the channel's log level to Trace. The channel shows the LSP messages, including `textDocument/didChange` after an edit.
 15. Close any buffers that contain a known parser crash input, then terminate the server process to trigger automatic recovery. During recovery, separately try **Virgil: Restart Language Server**, changing `virgil.server.path`, and closing the window. Each action waits for recovery to finish; restart and configuration changes stop the recovered server before starting its replacement, and closing the window sends `shutdown` then `exit` to the recovered server. Confirm that only one server remains after a restart and none remains after closing the window.
 
-Record the VS Code version, the platform, and the server version in the pull request.
+Record the VS Code version, the platform, and the server version in the pull request, and for a release in the [manual test results](../../docs/manual-testing.md#results).

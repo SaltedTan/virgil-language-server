@@ -45,6 +45,8 @@ The language server runs on the machine that holds the files, which isn't always
 | VS Code Remote-WSL, or Neovim inside WSL | Inside WSL 2 | The WSL distribution |
 | Editor on a Mac, local files | The Mac | macOS |
 
+The [manual test matrix](manual-testing.md) records which of these setups were tried with each editor for each release. [Known limitations](known-limitations.md#platforms-and-editors) lists what the platforms and editors don't support.
+
 ## Editors
 
 | Editor | Minimum version | Status |

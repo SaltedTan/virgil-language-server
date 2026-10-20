@@ -59,6 +59,7 @@ Unlike the server's executables, a VSIX isn't reproducible: its zip entries reco
    - In `CHANGELOG.md`, move the entries under `## [Unreleased]` into a new section, `## [0.1.0-alpha.1] - YYYY-MM-DD`, and leave an empty `## [Unreleased]` above it. The new section becomes the release notes.
    - If the VS Code extension changed since the last release, raise its version with `npm version --no-git-tag-version <x.y.z>` in `clients/vscode`, which updates `package.json` and `package-lock.json`, so that the release doesn't attach different contents under a version that an earlier release attached ([versions](../clients/vscode/README.md#versions)).
    - In [docs/compatibility.md](compatibility.md), add a row for the version to the Virgil revision table, and update the extension compatibility table if needed.
+   - Update [docs/known-limitations.md](known-limitations.md). [Dry-run](#dry-runs) the workflow on the branch, run the [manual tests](manual-testing.md#procedure) with its archives and VSIX, and add their [results](manual-testing.md#results).
 3. Merge the pull request, then [dry-run](#dry-runs) the workflow on `main` and read its release notes and manifests, and check the VSIX's version.
 4. Tag the merged commit on `main` with an annotated tag, so that `--version` reports the tag as the source revision, and push the tag:
 

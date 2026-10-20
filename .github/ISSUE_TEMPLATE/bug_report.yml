@@ -6,6 +6,16 @@ body:
     attributes:
       value: |
         Thanks for reporting! A minimal reproduction makes bugs much faster to fix.
+
+        Please check the [known limitations](https://github.com/SaltedTan/virgil-language-server/blob/main/docs/known-limitations.md) first.
+        For example, type errors, definition, and hover need a project file, and they stop while any file of the project has a syntax error.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before reporting
+      options:
+        - label: I checked the known limitations and the existing issues.
+          required: true
   - type: textarea
     id: what-happened
     attributes:
@@ -18,12 +28,21 @@ body:
     attributes:
       label: Steps to reproduce
       description: |
-        Include the smallest `.v3` file(s) and `.virgil-lsp.json` that show the problem,
-        and the editor actions you took.
+        Include the smallest `.v3` file(s) that show the problem, and the editor actions you took.
       placeholder: |
         1. Open `example.v3` containing ...
         2. Hover over ...
         3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: project-file
+    attributes:
+      label: Project file
+      description: |
+        Paste the `.virgil-lsp.json` that governs the file, the nearest one above it.
+        Write "none" if there isn't one.
+      render: json
     validations:
       required: true
   - type: textarea
@@ -35,12 +54,35 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: install
+    attributes:
+      label: How the server was installed
+      options:
+        - Release archive
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: build
+    attributes:
+      label: Archive manifest or source revision
+      description: |
+        For a release archive, paste the `manifest.json` from its directory.
+        For a build from source, give the commit (`git rev-parse HEAD`), say whether the checkout had local changes, and name any other Virgil checkout or compiler you built with (`VIRGIL`, `VIRGIL_V3C`).
+      render: text
+    validations:
+      required: true
+  - type: dropdown
     id: editor
     attributes:
       label: Editor
       options:
-        - Neovim / LazyVim
         - VS Code
+        - VS Code with Remote-SSH
+        - VS Code with Remote-WSL
+        - Neovim
+        - LazyVim
         - Other
         - Not editor-specific (command line)
     validations:
@@ -49,19 +91,42 @@ body:
     id: editor-version
     attributes:
       label: Editor and extension versions
-      placeholder: "e.g. Neovim 0.11.4, LazyVim 15.x; or VS Code 1.105, extension 0.1.0"
+      description: |
+        Neovim: `nvim --version`. VS Code: `code --version`, and the extension's version in the Extensions view.
+        Write "none" for a command-line problem.
+      placeholder: "e.g. Neovim 0.11.6, LazyVim 15.x; or VS Code 1.142.0, extension 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform where the server runs
+      description: With Remote-SSH, Remote-WSL, or Neovim over SSH, this is the remote machine or WSL, not the one showing the editor.
+      options:
+        - Linux x86-64
+        - WSL 2 on Windows x86-64
+        - macOS on Apple Silicon (Rosetta 2)
+        - macOS on Intel
+        - Other
+    validations:
+      required: true
   - type: input
     id: os
     attributes:
-      label: Operating system and architecture
-      placeholder: "e.g. Ubuntu 24.04 x86-64, macOS 15 (Intel), Windows 11 + WSL2"
+      label: Operating system versions
+      placeholder: "e.g. Ubuntu 24.04; macOS 15.5; Windows 11 with Ubuntu 24.04 in WSL 2"
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: Logs
+      label: Server log
       description: |
-        Server stderr or the LSP log. In Neovim, `:LspLog`. In VS Code, the "Virgil Language Server" output channel.
+        - VS Code: the "Virgil Language Server" output channel, which also holds the server's stderr. For LSP messages, set its log level to Trace with **Developer: Set Log Level...**.
+        - Neovim: the LSP log, where the server's stderr appears as lines marked `"stderr"`. `:LspLog` opens it with nvim-lspconfig, which LazyVim includes; otherwise `:lua =vim.lsp.log.get_filename()` prints its path. For LSP messages, run `:lua vim.lsp.log.set_level("debug")` before reproducing the problem.
+        - Command line: the command's stderr.
+
         Remove anything private before pasting.
       render: text
+    validations:
+      required: true

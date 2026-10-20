@@ -61,4 +61,4 @@ The test skips with a message if Neovim is missing or older than 0.11. Set
 
 - `:checkhealth vim.lsp` shows whether the client attached.
 - `:LspInfo` (with nvim-lspconfig) or `:lua =vim.lsp.get_clients()` lists running clients.
-- `:LspLog` opens the client log. Server logs are written to stderr and appear there.
+- `:LspLog` (with nvim-lspconfig) opens the client log; without it, `:lua =vim.lsp.log.get_filename()` prints the log's path. Server logs are written to stderr and appear there, as lines marked `"stderr"`.
