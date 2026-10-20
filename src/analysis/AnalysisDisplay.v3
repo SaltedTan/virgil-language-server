@@ -205,22 +205,15 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		start();
 		if (method != null) {
 			put("def ").put(method.token.image);
-			if (declared) putTypeParams(method.typeParams);
 		}
 		match (form) {
 			x: VstNew => put("new");
 			x: VstCaseMember => {
 				put(if(fields, "type ", "case ")).put(x.token.image);
-				if (declared && fields) putTypeParams(x.decl.typeParams);
 			}
 			x: VstClass => {
 				put(if(x.kind == Kind.VARIANT, "type ", "class "));
-				if (declared) {
-					put(x.token.image);
-					putTypeParams(x.typeParams);
-				} else {
-					putType(ret, 0);
-				}
+				putType(ret, 0);
 			}
 		}
 		var offset = if(params != null || receiver, paramList(labels), buf.length);

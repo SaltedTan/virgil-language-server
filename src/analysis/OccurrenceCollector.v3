@@ -555,6 +555,20 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			// Verifier.visitPtrAtField.
 			PtrAtComponentField, PtrAtObjectField, PtrAtRefLayoutField,
 			PtrAtUnboxedObjectField, PtrAtUnboxedComponentField => return -1;
+			None => if (VarExpr.?(e.func)) {
+				var v = VarExpr.!(e.func);
+				match (v.varbind) {
+					PtrAtField => return -1;
+					None => {
+						if (v.expr == null && Strings.equal(v.ident.name.image, "void")) return -1;
+						if (VarExpr.?(v.expr) && Strings.equal(v.ident.name.image, "atField")) {
+							var owner = VarExpr.!(v.expr);
+							if (owner.expr == null && Strings.equal(owner.ident.name.image, "Pointer")) return -1;
+						}
+					}
+					_ => ;
+				}
+			}
 			_ => ;
 		}
 		var list = e.args.exprs;

@@ -9,6 +9,8 @@ def X = [
 	T("AnalysisDisplay:declaration_kinds", test_declaration_kinds),
 	T("AnalysisDisplay:numbered_file_declarations", test_numbered_file_declarations),
 	T("AnalysisDisplay:generic_use_sites", test_generic_use_sites),
+	T("AnalysisDisplay:generic_call_signatures", test_generic_call_signatures),
+	T("OccurrenceCollector:unbound_call_exclusions", unbound_call_exclusions),
 	T("AnalysisDisplay:generic_index_operations", test_generic_index_operations),
 	T("AnalysisDisplay:substituted_function_types", test_substituted_function_types),
 	T("AnalysisDisplay:inherited_index_methods", test_inherited_index_methods),
@@ -181,6 +183,85 @@ def assertBounded(t: Tester, r: (ProgramAnalysis, AnalysisSnapshot)) {
 	for (d in r.1.declarations) t.assert(d.signature.length <= limit, "bounded decoded signature");
 	for (o in r.1.occurrences(PATH)) t.assert(o.useType == null || o.useType.length <= limit, "bounded decoded use-site type");
 	for (b in r.1.builtinUses(PATH)) t.assert(b.useType.length <= limit, "bounded decoded builtin type");
+}
+
+def unbound_call_exclusions(t: Tester) {
+	var forms: Array<(string, Array<string>, bool)> = [
+		("missing(void(1))", ["(void(1))"], false),
+		("missing(void(known(1)))", ["(void(known(1)))", "(1)"], false),
+		("missing(Pointer.atField(C.field))", ["(Pointer.atField(C.field))"], false),
+		("missing(Pointer<u32>.atField(C.field))", ["(Pointer<u32>.atField(C.field))"], false),
+		("Pointer.atField(C.field)", [], false),
+		("void(known(1))", ["(1)"], true),
+		("missing(other.atField(1))", ["(other.atField(1))", "(1)"], false),
+		("missing(atField(1))", ["(atField(1))", "(1)"], false),
+		("missing(other.void(1))", ["(other.void(1))", "(1)"], false),
+		("missing(other.Pointer.atField(1))", ["(other.Pointer.atField(1))", "(1)"], false)
+	];
+	for (form in forms) {
+		var prefix = "component C { var field: int; def known(x: int) -> int { return x; } def f() { ";
+		var text = Strings.format2("%s%s; } }", prefix, form.0);
+		var r = analyze(t, text, form.2), path = PATH;
+		if (r.1 == null) continue;
+		for (calls in [r.0.calls(path), r.1.calls(path)]) {
+			t.asserti(form.1.length, calls.length);
+			for (i < Ints.min(form.1.length, calls.length)) {
+				var c = calls[i];
+				OccurrenceCollectorTest.checkCall(t, text, c);
+				t.assert_string(form.1[i], Arrays.range(text, c.open, c.close));
+			}
+		}
+		t.asserti(0, r.0.skippedUses(path));
+		t.asserti(0, r.1.stats.skippedUses);
+	}
+}
+
+def test_generic_call_signatures(t: Tester) {
+	var text = lines([
+		"class Box<T>(value: T) { }",
+		"type Data<T>(value: int) { }",
+		"component M {",
+		"  def f<T>(x: int) -> int { return x; }",
+		"  def id<T>(x: T) -> T { return x; }",
+		"  def forward<T>(x: T) -> T {",
+		"    var unchanged = f<T>(1);",
+		"    var data = Data<T>(2);",
+		"    var box = Box<T>.new(x);",
+		"    return id<T>(x);",
+		"  }",
+		"  def run() { var value = f<bool>(1); var data = Data<bool>(2); }",
+		"}"
+	]);
+	var r = analyze(t, text, true);
+	if (r.1 == null) return;
+	var want = [
+		("def f(x: int) -> int", "def f<T>(x: int) -> int", "x: int"),
+		("type Data(value: int)", "type Data<T>(value: int)", "value: int"),
+		("class Box<T>(value: T)", "class Box<T>(value: T)", "value: T"),
+		("def id(x: T) -> T", "def id<T>(x: T) -> T", "x: T"),
+		("def f(x: int) -> int", "def f<T>(x: int) -> int", "x: int"),
+		("type Data(value: int)", "type Data<T>(value: int)", "value: int")
+	];
+	for (calls in [r.0.calls(PATH), r.1.calls(PATH)]) {
+		t.asserti(want.length, calls.length);
+		for (i < Ints.min(want.length, calls.length)) {
+			var c = calls[i], s = c.signature, w = want[i];
+			if (s == null || c.target == null) {
+				t.fail("a generic call has a target and signature");
+				continue;
+			}
+			t.assert_string(w.0, s.label);
+			t.assert_string(w.1, c.target.signature);
+			t.asserti(1, s.params.length);
+			if (s.params.length == 1) {
+				t.assert_string(w.2, s.params[0]);
+				t.assert(s.holds(0), "the call label holds its parameter at its offset");
+			}
+		}
+	}
+	assertDeclares(t, r, text, "f<T>(x", 0, AnalysisDeclKind.METHOD, "def f<T>(x: int) -> int");
+	assertDeclares(t, r, text, "id<T>(x", 0, AnalysisDeclKind.METHOD, "def id<T>(x: T) -> T");
+	assertDeclares(t, r, text, "type Data<T>", 5, AnalysisDeclKind.CLASS, "type Data<T>(value: int)");
 }
 
 def KINDS = lines([
