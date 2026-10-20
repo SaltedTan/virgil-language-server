@@ -39,8 +39,9 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 
 ## Platforms and editors
 
-- Supported hosts are Linux x86-64, including SSH remotes and WSL 2 on x86-64 Windows, and macOS on Apple Silicon, which runs the Intel (`x86-64-darwin`) build under Rosetta 2 ([host platforms](compatibility.md#host-platforms)).
-- Native Windows, WSL 1, and Linux arm64 aren't supported. On Windows, use WSL 2; the VS Code extension refuses to start natively on Windows ([startup checks](../clients/vscode/README.md#startup-checks)). macOS on Intel uses the same build but is untested.
+- Supported hosts are Linux x86-64, including SSH remotes, and macOS on Apple Silicon, which runs the Intel (`x86-64-darwin`) build under Rosetta 2 ([host platforms](compatibility.md#host-platforms)).
+- WSL 2 on x86-64 Windows is best effort. The Linux build is expected to run inside it, but nobody tests it there, and CI runs only on Linux itself ([host platforms](compatibility.md#host-platforms)).
+- Native Windows, WSL 1, and Linux arm64 aren't supported. On Windows, use WSL 2, on a best-effort basis; the VS Code extension refuses to start natively on Windows ([startup checks](../clients/vscode/README.md#startup-checks)). macOS on Intel uses the same build but is untested.
 - Apple Silicon needs Rosetta 2 until Virgil can build for `arm64-darwin`. Apple has said that macOS 27 is the last release with full Rosetta 2 support ([ADR-0003](decisions/0003-supported-platforms.md)).
 - Neovim needs version 0.11 or later, and VS Code 1.91 or later. The LazyVim configuration is untested ([editors](compatibility.md#editors)). The [manual test matrix](manual-testing.md) records which editor and platform combinations were tried.
 

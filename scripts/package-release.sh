@@ -110,7 +110,8 @@ cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
 
 case $target in
     x86-64-linux)
-        platform="Linux x86-64, including WSL 2 on x86-64 Windows."
+        platform="Linux x86-64. WSL 2 on x86-64 Windows is expected to run it, on a best-effort
+basis: it isn't tested there."
         ;;
     x86-64-darwin)
         platform="macOS. This is an Intel (x86-64) build, not a native arm64 one: Apple Silicon

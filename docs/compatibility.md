@@ -20,10 +20,10 @@ The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.m
 | Platform | Status | Build | CI |
 | --- | --- | --- | --- |
 | Linux x86-64 | **Supported** | `x86-64-linux` | Required |
-| Windows x86-64 with WSL 2 | **Supported**, using the Linux build inside WSL 2 | `x86-64-linux` | Covered by the Linux job |
+| Windows x86-64 with WSL 2 | Best effort: the Linux build, run inside WSL 2, is untested | `x86-64-linux` | Linux job only; nothing runs inside WSL |
 | macOS on Apple Silicon | **Supported** (interim), using the Intel build under Rosetta 2 | `x86-64-darwin` | Required, on `macos-15` (Apple Silicon) |
 | macOS on Intel | Best effort: same build, untested | `x86-64-darwin` | None |
-| Native Windows | Not supported. Use WSL 2. | — | — |
+| Native Windows | Not supported. WSL 2 runs the Linux build on a best-effort basis. | — | — |
 | Linux arm64 | Not supported yet | — | — |
 | WSL 1 | Not supported | — | — |
 

@@ -52,7 +52,7 @@ A user can install the server following the [build and executable placement guid
 - hover text containing declaration signatures and inferred types;
 - reliable startup, shutdown, logging, and recovery from malformed requests;
 - a project configuration that describes the source files Aeneas must analyze;
-- documented installation for the supported platforms: Linux x86-64 (including remote use over SSH), Windows through WSL 2, and Apple Silicon macOS ([ADR-0003](docs/decisions/0003-supported-platforms.md)).
+- documented installation for the supported platforms: Linux x86-64 (including remote use over SSH) and Apple Silicon macOS. Windows through WSL 2 is best effort since 2026-10-20 ([ADR-0003](docs/decisions/0003-supported-platforms.md)).
 
 ### Later releases
 
@@ -294,7 +294,7 @@ Do not promise “incremental compilation” until measurements identify the bot
 Deliverables:
 
 - GitHub release automation. *(present; [release runbook](docs/releasing.md))*
-- A clear support matrix: Linux x86-64 (also used by WSL 2 and SSH remotes) and Apple Silicon macOS, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
+- A clear support matrix: Linux x86-64 (also used by SSH remotes) and Apple Silicon macOS, with WSL 2 best effort since 2026-10-20, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
 - VS Code extension setting for an external server path during development. *(present; [client settings](clients/vscode/README.md#settings))*
 - Later, platform-specific VSIX packages or verified binary download/install logic.
 - Marketplace README, changelog, privacy statement, and troubleshooting guide.

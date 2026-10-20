@@ -94,15 +94,17 @@ The first six runs are at `8b2ea9f`, on `main` before hover ([#106](https://gith
 | 2026-10-20 | `2be8831` | Ubuntu 26.04.1, x86-64, server from the dry run's Linux archive | `REQUIRE_NVIM=1 test/e2e/nvim/run.sh <archive>/virgil-lsp` | Neovim 0.11.6 | Pass |
 | 2026-10-20 | `2be8831` | Ubuntu 26.04.1, x86-64, under Xvfb, server from the dry run's Linux archive | `xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix <archive>/virgil-lsp` | VS Code 1.142.0, extension 0.1.0 installed from the dry run's VSIX | Pass |
 
+WSL 2 is best effort, and none of its setups were tested for this alpha.
+
 | Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Workspace symbols | Signature help |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | VS Code, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) |
 | VS Code, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
 | VS Code Remote-SSH | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| VS Code Remote-WSL | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+| VS Code Remote-WSL | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) |
 | Neovim, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Not yet run | Pass (automated) | Pass (automated) | Pass (automated) |
 | Neovim, macOS | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Not yet run | Pass (automated) | Pass (automated) | Pass (automated) |
-| Neovim, WSL 2 | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+| Neovim, WSL 2 | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) |
 | LazyVim, Linux | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
 | LazyVim, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| LazyVim, WSL 2 | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+| LazyVim, WSL 2 | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) |

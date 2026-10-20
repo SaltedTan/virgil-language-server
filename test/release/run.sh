@@ -510,6 +510,8 @@ notes() {
 
 assets
 notes "lists the archives" 0 '^[|] `virgil-lsp-1\.2\.3-alpha\.4-x86-64-darwin\.tar\.gz` [|] macOS' ""
+notes "says that WSL 2 is best effort" 0 \
+    '^[|] `virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz` [|] Linux x86-64; WSL 2 on a best-effort basis [|]$' ""
 notes "lists the VSIX with the version that it records" 0 \
     '^`virgil-lsp-vscode-7\.8\.9\.vsix` is version 7\.8\.9 of the VS Code extension \(`virgil-language-server\.virgil-lsp-vscode`\), a preview\. Its versions' ""
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" \

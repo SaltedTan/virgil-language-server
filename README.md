@@ -31,7 +31,7 @@ The [architecture guide](docs/architecture.md) describes the server and its comp
 
 ## Building
 
-Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac with Rosetta 2, plus the [development prerequisites](docs/development.md#prerequisites). See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
+Requirements: Linux x86-64 or an Apple Silicon Mac with Rosetta 2, plus the [development prerequisites](docs/development.md#prerequisites). WSL 2 on Windows is best effort. See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
 
 ```sh
 git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-server.git

@@ -47,7 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - JSON parsing and rendering on top of Virgil's `lib/file/json`, with fixes for string escapes, carriage returns, numbers that aren't 32-bit integers, deep nesting, messages with more values than the heap can hold, and invalid JSON output. See [JSON limits](docs/architecture.md#json-limitations-and-workarounds) for admission rules.
 - Whole-program analysis in the Aeneas adapter: in-memory sources are parsed and verified as one program (no initialization or code generation). Syntax and semantic errors come back as `AnalysisDiagnostic`s, and a verified use can be followed to its declaration.
 - Development command `analyze` (with `--bindings`, `--stats`, `--repeat=<n>`) and `scripts/bench-analysis.sh`.
-- ADR-0003: supported platforms are Linux x86-64 (including WSL 2) and macOS on Apple Silicon (Rosetta 2 for now).
+- ADR-0003: supported platforms are Linux x86-64 and macOS on Apple Silicon (Rosetta 2 for now). WSL 2 was supported at first and is best effort since the ADR's 2026-10-20 amendment.
 - macOS CI job on an Apple Silicon runner, and macOS in the weekly Virgil-master check.
 - Repository foundation: Apache-2.0 license, roadmap, community documents, issue and pull-request templates, and CI.
 - ADR-0001 (Virgil-native server) and ADR-0002 (pinned Virgil adapter boundary).
@@ -57,6 +57,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- WSL 2 on x86-64 Windows is best effort: the Linux build is expected to run there but isn't tested ([compatibility](docs/compatibility.md#host-platforms)).
 - Analysis results carry exact UTF-8 byte offsets for every declaration and occurrence, and snapshots look up uses by byte offset. Result allocation charges are unchanged. See [Coordinates](docs/architecture.md#coordinates) and ADR-0004's [supported program size](docs/decisions/0004-analysis-worker-process.md#supported-program-size).
 - Pinned Virgil moved from `9945e430` to [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08). The server and worker now include upstream's garbage-collector fix for forwarding pointers in 64-bit heaps above 4 GiB, where the macOS build's heap lives. The compiler front end is unchanged, so diagnostics, bindings, and document symbols are identical.
 - The development `analyze` command now uses the analysis worker, with timeout and analysis-count tuning options; see [Running](docs/development.md#running) for options and failure output. `make` also builds `build/virgil-lsp-worker`; see [Building](README.md#building) for executable placement.
