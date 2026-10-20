@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A method of requests at a document position, such as textDocument/definition,
-// and its answer function. Given a request's document in a current snapshot
-// and a byte offset in it, that returns whether it found something at the
-// offset, and the result to reply with, which may be null.
-class LspSnapshotMethod(owner: LspSnapshotRequests, label: string,
-	answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) {
+// and how to answer one. Given a request's parameters, whose document and
+// position are valid, {prepare} returns its answer function, or null if its
+// other parameters are invalid; {requires} describes the valid parameters in
+// errors. Given the request's document in a current snapshot and a byte
+// offset in it, the answer function returns whether it found something at the
+// offset, and the reply: a result, which may be null, or an error. It keeps
+// what it needs of the other parameters, such as a references request's
+// context.includeDeclaration, while the request waits.
+class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: string,
+	prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
 	def handle(request: JsonRpcMessage.Request) {
 		owner.receive(this, request);
 	}
@@ -31,6 +36,14 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 		var t = LspAnalysisCapture.analyzedText(store, snapshot, j);
 		return (if(t != null, j, -1), t);
 	}
+	// The Location of the bytes from {begin} to {end} in the snapshot's file
+	// {j}, whose text {m} converts.
+	def location(j: int, m: PositionMap, begin: int, end: int) -> JsonValue {
+		var location = Strings.newMap<JsonValue>();
+		location["uri"] = JsonValue.String(snapshot.documentVersions[j].uri);
+		location["range"] = range(m, begin, end);
+		return JsonValue.JObject(location);
+	}
 	// The LSP Range of the bytes from {begin} to {end} in the text {m} converts.
 	def range(m: PositionMap, begin: int, end: int) -> JsonValue {
 		var range = Strings.newMap<JsonValue>();
@@ -45,11 +58,11 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 		return JsonValue.JObject(obj);
 	}
 }
-// A request waiting for an analysis, with the state of its document when it
-// arrived: the identity of the open overlay, or null and the disk stamp.
-// Neither retains the document's text.
-class LspSnapshotRequest(method: LspSnapshotMethod, id: JsonRpcId, uri: string, line: int, character: int,
-	identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
+// A request waiting for an analysis, with its answer function, {lookup}, and
+// the state of its document when it arrived: the identity of the open overlay,
+// or null and the disk stamp. None retains the document's text.
+class LspSnapshotRequest(lookup: (LspSnapshotPosition, int) -> (bool, JsonRpcReply), id: JsonRpcId,
+	uri: string, line: int, character: int, identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
 	var answered: bool;
 }
 // The requests waiting for one pending analysis, in arrival order. It is that
@@ -65,17 +78,20 @@ class LspSnapshotWaiters(owner: LspSnapshotRequests) {
 	}
 }
 
-// Requests at a document position, such as textDocument/definition and
-// textDocument/hover, answered from the retained snapshot of the document's
-// active project context. Every reply goes through {send}: a request against
-// a missing or stale snapshot waits for the context's pending analysis. Each
-// method supplies only its answer function. See docs/architecture.md#definition
-// and docs/architecture.md#hover.
+// Requests at a document position, such as textDocument/definition,
+// textDocument/hover, and textDocument/references, answered from the retained
+// snapshot of the document's active project context. Every reply goes through
+// {send}: a request against a missing or stale snapshot waits for the
+// context's pending analysis. Each method supplies only its answer function,
+// and how to prepare it from a request's other parameters if it has any. See
+// docs/architecture.md#definition, docs/architecture.md#hover, and
+// docs/architecture.md#references.
 class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	// Bounds the requests of every method that wait at once. A client rarely
 	// has more than a few outstanding; past this many, the oldest, the one most
 	// likely superseded, is answered with null.
 	def MAX_WAITING = 256;
+	private def NULL = JsonRpcReply.Result(JsonValue.Null);
 	// Returns the listener of a context's pending analysis, registering the
 	// candidate if it has none, or null if none is pending
 	// (LspSemanticDiagnostics.whenAnalyzed). Without it, a missing or stale
@@ -89,10 +105,27 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// The waiters whose analysis has not ended.
 	private var batches = Vector<LspSnapshotWaiters>.new();
 
-	// Handles {method} with {answer}. {label} names it in parameter errors.
+	// Handles {method}, whose requests have only a document and a position,
+	// with {answer}, which returns whether it found something and the result.
+	// {label} names it in parameter errors.
 	def register(dispatcher: JsonRpcDispatcher, method: string, label: string,
 			answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) {
-		dispatcher.onDeferredRequest(method, LspSnapshotMethod.new(this, label, answer).handle);
+		registerPrepared(dispatcher, method, label, "a valid textDocument.uri and position", always(answer, _));
+	}
+	// Handles {method}, whose requests also have other parameters, with the
+	// answer function that {prepare} returns for each (see LspSnapshotMethod).
+	def registerPrepared(dispatcher: JsonRpcDispatcher, method: string, label: string, requires: string,
+			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
+		dispatcher.onDeferredRequest(method, LspSnapshotMethod.new(this, label, requires, prepare).handle);
+	}
+	private def always(answer: (LspSnapshotPosition, int) -> (bool, JsonValue),
+			params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return succeed(answer, _, _);
+	}
+	private def succeed(answer: (LspSnapshotPosition, int) -> (bool, JsonValue),
+			at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		var found = answer(at, offset);
+		return (found.0, JsonRpcReply.Result(found.1));
 	}
 	// The number of requests waiting.
 	def waiting() -> int {
@@ -122,30 +155,31 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
 		var key = if(uri != null, DocumentUri.normalize(uri));
 		var line = intMember(position, "line"), character = intMember(position, "character");
-		if (key == null || line < 0 || character < 0) {
+		var lookup = if(key != null && line >= 0 && character >= 0, method.prepare(params));
+		if (lookup == null) {
 			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
-				Strings.format1("%s params require a valid textDocument.uri and position", method.label));
+				Strings.format2("%s params require %s", method.label, method.requires));
 			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
 		}
 		var ctx = projects.forDocument(key).active;
 		if (ctx == null || whenAnalyzed == null || (ctx.snapshot != null && current(ctx, ctx.snapshot))) {
-			return reply(request.id, locate(method, ctx, key, line, character));
+			return respond(request.id, locate(lookup, ctx, key, line, character));
 		}
 		// Join the waiters of the analysis this request waits for.
 		var candidate = LspSnapshotWaiters.new(this);
 		var waiters = whenAnalyzed(ctx, candidate);
-		if (waiters == null) return reply(request.id, locate(method, ctx, key, line, character));
+		if (waiters == null) return respond(request.id, locate(lookup, ctx, key, line, character));
 		if (waiters == candidate && !waiters.fired) batches.put(waiters);
 		// Take the oldest waiting request's slot before answering it, so that
 		// a request sent from within that reply cannot exceed the bound.
 		var evicted = if(waitingCount >= MAX_WAITING, takeOldest());
 		var overlay = store.overlay(key);
-		var r = LspSnapshotRequest.new(method, request.id, key, line, character,
+		var r = LspSnapshotRequest.new(lookup, request.id, key, line, character,
 			if(overlay != null, overlay.identity), if(overlay == null, store.diskStamp(key)));
 		waiters.requests.put(r);
 		arrivals.put(r);
 		waitingCount++;
-		if (evicted != null) reply(evicted.id, JsonValue.Null);
+		if (evicted != null) respond(evicted.id, NULL);
 		// The analysis ended before the request joined, if it could not start.
 		if (waiters.fired) answer(waiters);
 		compact();
@@ -166,7 +200,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			// The position refers to the text the request was made against.
 			var doc = store.overlay(r.uri);
 			var same = if(doc != null, doc.identity == r.identity, r.identity == null && store.diskStamp(r.uri) == r.disk);
-			finish(r, if(same, locate(r.method, active[r.uri], r.uri, r.line, r.character), JsonValue.Null));
+			finish(r, if(same, locate(r.lookup, active[r.uri], r.uri, r.line, r.character), NULL));
 		}
 		compact();
 	}
@@ -181,10 +215,10 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	}
 	// Marks {r} answered before replying, so a request sent from within the
 	// reply sees the slot free.
-	private def finish(r: LspSnapshotRequest, result: JsonValue) {
+	private def finish(r: LspSnapshotRequest, reply: JsonRpcReply) {
 		r.answered = true;
 		waitingCount--;
-		reply(r.id, result);
+		respond(r.id, reply);
 	}
 	// Drops answered requests once they are more than half of those recorded,
 	// so that each request is copied a bounded number of times.
@@ -202,8 +236,11 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			requests.puta(kept.extract());
 		}
 	}
-	private def reply(id: JsonRpcId, result: JsonValue) {
-		send(JsonRpcMessage.Response(id, result).encode());
+	private def respond(id: JsonRpcId, reply: JsonRpcReply) {
+		match (reply) {
+			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
+			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
+		}
 	}
 	// The snapshot is current if its project revision is current, it analyzed
 	// the context's current source list, and every source matches its stamp:
@@ -217,21 +254,22 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		}
 		return true;
 	}
-	// {method}'s answer for the identifier at {line}:{character} in {key},
-	// from {ctx}'s current snapshot, or null.
-	private def locate(method: LspSnapshotMethod, ctx: ProjectContext, key: string, line: int, character: int) -> JsonValue {
+	// The reply of {lookup} for the identifier at {line}:{character} in
+	// {key}, from {ctx}'s current snapshot, or null.
+	private def locate(lookup: (LspSnapshotPosition, int) -> (bool, JsonRpcReply), ctx: ProjectContext,
+			key: string, line: int, character: int) -> JsonRpcReply {
 		var s = if(ctx != null, ctx.snapshot);
-		if (s == null || !current(ctx, s) || !s.parsed || !s.hasOccurrences) return JsonValue.Null;
+		if (s == null || !current(ctx, s) || !s.parsed || !s.hasOccurrences) return NULL;
 		var i = s.documentIndex(key), text = LspAnalysisCapture.analyzedText(store, s, i);
-		if (text == null) return JsonValue.Null;
+		if (text == null) return NULL;
 		var map = PositionMap.new(text, PositionEncoding.UTF16), offset = map.positionToOffset(line, character);
-		var at = LspSnapshotPosition.new(store, s, i, text, map), found = method.answer(at, offset);
+		var at = LspSnapshotPosition.new(store, s, i, text, map), found = lookup(at, offset);
 		// A cursor just past an identifier selects it. Something found at
 		// offset - 1 but not at {offset} ends exactly at {offset}, so only the
 		// identifier the cursor touches qualifies, and whatever contains
 		// {offset} always wins.
-		if (!found.0 && offset > 0) found = method.answer(at, offset - 1);
-		return if(found.0, found.1, JsonValue.Null);
+		if (!found.0 && offset > 0) found = lookup(at, offset - 1);
+		return if(found.0, found.1, NULL);
 	}
 	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
 		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;

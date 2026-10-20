@@ -8,6 +8,7 @@ def X = [
 	T("JsonRpcJson:render_escapes", test_render_escapes),
 	T("JsonRpcJson:render_control_characters", test_render_control_characters),
 	T("JsonRpcJson:render_utf8", test_render_utf8),
+	T("JsonRpcJson:string_bytes", test_string_bytes),
 	T("JsonRpcJson:render_values", test_render_values),
 	T("JsonRpcJson:render_null_references", test_render_null_references),
 	T("JsonRpcJson:parse_string_escapes", test_parse_string_escapes),
@@ -110,6 +111,15 @@ def test_render_utf8(t: Tester) {
 	t.assert_string("\"\\ufffd\"", renderJson(JsonValue.String("\x80")));
 	t.assert_string("\"x\\ufffd\"", renderJson(JsonValue.String("x\xC3")));
 	t.assert_string("\"\\ufffd\\ufffd\\ufffd\"", renderJson(JsonValue.String("\xED\xA0\x80")));
+}
+
+// {JsonRpcJson.stringBytes} counts exactly what renderString writes, including
+// its quotes, which LspReferences budgets a reply's Locations with.
+def test_string_bytes(t: Tester) {
+	var cases = ["", "a/b", "\"", "\\", "\x08\x0C\n\r\t", "\x00\x01\x1B\x1F", " ~\x7F",
+		"\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80", "a\xFFb", "\x80", "x\xC3", "\xED\xA0\x80"];
+	for (s in cases) t.asserti(renderJson(JsonValue.String(s)).length, JsonRpcJson.stringBytes(s));
+	t.asserti(4, JsonRpcJson.stringBytes(null));
 }
 
 def test_render_values(t: Tester) {

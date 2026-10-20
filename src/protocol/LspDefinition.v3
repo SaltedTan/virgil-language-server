@@ -15,9 +15,6 @@ component LspDefinition {
 		var target = at.target(decl.range.path), j = target.0;
 		if (j < 0) return (true, JsonValue.Null);
 		var map = if(j == at.index, at.map, PositionMap.new(target.1, PositionEncoding.UTF16));
-		var location = Strings.newMap<JsonValue>();
-		location["uri"] = JsonValue.String(s.documentVersions[j].uri);
-		location["range"] = at.range(map, decl.range.beginOffset, decl.range.endOffset);
-		return (true, JsonValue.JObject(location));
+		return (true, at.location(j, map, decl.range.beginOffset, decl.range.endOffset));
 	}
 }

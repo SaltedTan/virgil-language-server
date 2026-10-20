@@ -85,6 +85,23 @@ async function workspaceSymbols(query) {
   return (result ?? []).map((symbol) => [symbol.name, symbol.kind, symbol.location.uri.fsPath, ...range(symbol.location)]);
 }
 
+// The file, range, and text of each Location that a references request at
+// line:character returns.
+async function references(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeReferenceProvider', editor.document.uri, new vscode.Position(line, character),
+  );
+  return (result ?? []).map((location) => {
+    const { start, end } = location.range;
+    const text = fs.readFileSync(location.uri.fsPath, 'utf8').split('\n')[start.line];
+    return {
+      file: location.uri.fsPath,
+      range: range(location),
+      text: start.line === end.line ? text.slice(start.character, end.character) : null,
+    };
+  });
+}
+
 async function documentSymbols(editor) {
   const result = await vscode.commands.executeCommand(
     'vscode.executeDocumentSymbolProvider', editor.document.uri,
@@ -199,6 +216,20 @@ async function workspace(extension) {
     ['join', vscode.SymbolKind.Method, words.document.uri.fsPath, 5, 5, 5, 9],
   ]);
 
+  // The references of the same class include the use, the class's name, and
+  // uses in other closed lib/util files, which the server reads again; each
+  // spells the name.
+  const uses = await references(words, use, column);
+  const libraryDirectory = path.join(root, 'lib', 'util') + path.sep;
+  assert.deepEqual(uses.filter((u) => u.file === words.document.uri.fsPath).map((u) => u.range), [
+    [use, column, use, column + 'StringBuilder'.length],
+  ]);
+  assert.ok(uses.some((u) => u.file === library && u.range[0] === declaration && u.range[1] === 6),
+    'the references do not include the class name');
+  assert.deepEqual(uses.filter((u) => u.text !== 'StringBuilder'
+    || (u.file !== words.document.uri.fsPath && !u.file.startsWith(libraryDirectory))), []);
+  assert.ok(new Set(uses.map((u) => u.file)).size > 2, 'no references in other library files');
+
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -221,7 +252,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, references, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

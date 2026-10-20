@@ -207,6 +207,60 @@ def displayError(s: AnalysisSnapshot, source: AnalysisSource) -> string {
 	}
 	return null;
 }
+// Asserts that the snapshot's references of the declarations that uses name,
+// every {stride}th of them in the order of their names, are exactly those uses
+// of a declaration with the same name token, in byte order of path and then
+// in source order, with the name itself only if asked for.
+def assertReferences(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>, stride: int) {
+	var uses = Vector<(AnalysisDeclaration, string, int, int)>.new();
+	for (source in sources) {
+		for (o in s.occurrences(source.path)) uses.put((o.declaration, source.path, o.range.beginOffset, o.range.endOffset));
+	}
+	var sorted = AnalysisTables.sort(uses.extract(), useBefore), checked = 0;
+	for (i = 0; i < sorted.length; ) {
+		var d = sorted[i].0, j = i;
+		while (j < sorted.length && compareNames(sorted[j].0, d) == 0) j++;
+		if (checked++ % stride == 0) {
+			var name = (d, d.range.path, d.range.beginOffset, d.range.endOffset);
+			var named = AnalysisTables.sort(Arrays.append(name, Arrays.range(sorted, i, j)), useBefore);
+			for (withName in [false, true]) {
+				var want = if(withName, named, Arrays.range(sorted, i, j)), got = s.references(d, withName);
+				var error = referencesError(want, got);
+				if (error != null) return t.fail3("references of %s%s: %s", describe(d), if(withName, " with its name", ""), error);
+			}
+		}
+		i = j;
+	}
+	t.assert(checked > 0, "the program has uses");
+}
+// Why the references {got} are not {want}, or null.
+def referencesError(want: Array<(AnalysisDeclaration, string, int, int)>, got: Array<(string, Array<int>)>) -> string {
+	var k = 0;
+	for (file in got) {
+		if (file.1.length == 0) return Strings.format1("no references in %s", file.0);
+		for (n = 0; n < file.1.length; n += 2) {
+			if (k >= want.length) return Strings.format2("an extra reference at %s:%d", file.0, file.1[n]);
+			var w = want[k++];
+			if (!Strings.equal(w.1, file.0) || w.2 != file.1[n] || w.3 != file.1[n + 1]) {
+				return Strings.format3("expected %s:%d, got %s", w.1, w.2, Strings.format2("%s:%d", file.0, file.1[n]));
+			}
+		}
+	}
+	return if(k < want.length, Strings.format2("no reference at %s:%d", want[k].1, want[k].2));
+}
+// Orders uses by their declaration's name token, then by path and offset.
+def useBefore(a: (AnalysisDeclaration, string, int, int), b: (AnalysisDeclaration, string, int, int)) -> bool {
+	var c = compareNames(a.0, b.0);
+	if (c != 0) return c < 0;
+	c = AnalysisTables.compareBytes(a.1, b.1);
+	return if(c != 0, c < 0, a.2 < b.2);
+}
+def compareNames(a: AnalysisDeclaration, b: AnalysisDeclaration) -> int {
+	var c = AnalysisTables.compareBytes(a.range.path, b.range.path);
+	if (c != 0) return c;
+	if (a.range.beginOffset != b.range.beginOffset) return a.range.beginOffset - b.range.beginOffset;
+	return a.range.endOffset - b.range.endOffset;
+}
 // Whether {site} is {d} or shares its span, as a data type, "type T(x: int)",
 // shares its name with its single case.
 def sameSite(site: AnalysisDeclaration, d: AnalysisDeclaration) -> bool {
@@ -856,6 +910,7 @@ def test_fixture(t: Tester) {
 	if (r.1 == null) return;
 	assertRoundTrip(t, r.0, r.1, sources);
 	assertSound(t, r.1, sources);
+	assertReferences(t, r.1, sources, 1);
 }
 // A whole real program, analyzed and decoded in this process.
 def test_lib_util(t: Tester) {
@@ -868,6 +923,7 @@ def test_lib_util(t: Tester) {
 	if (r.1 == null) return;
 	assertRoundTrip(t, r.0, r.1, sources);
 	assertSound(t, r.1, sources);
+	assertReferences(t, r.1, sources, 1);
 }
 // Upstream Aeneas traps on these fixtures with or without occurrence
 // collection; see docs/aeneas-crash-paths.md.
@@ -996,6 +1052,7 @@ def test_aeneas_sources(t: Tester) {
 		Completed(snapshot) => {
 			t.assertz(true, snapshot.verified);
 			assertSound(t, snapshot, sources);
+			assertReferences(t, snapshot, sources, 100);
 			// ADR-0004 records this program's share of the result budget.
 			t.assert(snapshot.resultAllocation <= long.view(AnalysisWire.MAX_RESULT_ALLOCATION) * 4 / 5,
 				"the Aeneas sources use at most 80% of the result budget");

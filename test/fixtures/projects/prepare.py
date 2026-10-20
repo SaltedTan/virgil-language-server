@@ -84,6 +84,14 @@ for name in ["one", "two", "shared", "lib"]:
 for name in ["a", "z"]:
     shutil.rmtree(workspace_symbols / name, ignore_errors=True)
     (workspace_symbols / name).mkdir(parents=True, exist_ok=True)
+# LspReferencesTest writes and changes the sources itself. They are analyzed in
+# this order, which is not their paths' byte order.
+references = root / "references"
+references.mkdir(exist_ok=True)
+(references / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"r","sources":["Refs.v3","Decl.v3"]}]}',
+    encoding="utf-8",
+)
 # LspDefinitionTest writes the sources, and opens sub/.virgil-lsp.json only as
 # an unsaved buffer, so that a nearer project takes sub/Use.v3 over.
 ownership = root / "definition-ownership"

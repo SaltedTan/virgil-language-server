@@ -191,6 +191,66 @@ class AnalysisSnapshot {
 		var i = file.findOffset(offset);
 		return if(i >= 0, declarations[file.targets[i]]);
 	}
+	// The references of {decl}, one of {declarations}: the uses that
+	// definitionAtOffset resolves to it, or to another declaration with the
+	// same name token, such as a data type's single case or a class
+	// parameter's field; and its name if {withName}, and otherwise never. For
+	// each file that has any, in byte order of path: the path, and the begin
+	// and end offsets of each, in source order and once. Navigation aliases,
+	// which resolve to a declaration without naming it, are among them: "this"
+	// and a default ".new" resolve to their class (see OccurrenceCollector).
+	// Scans every file's targets without an object per use, and allocates
+	// only the result. See docs/architecture.md#references.
+	def references(decl: AnalysisDeclaration, withName: bool) -> Array<(string, Array<int>)> {
+		if (files == null || decl == null) return [];
+		var r = decl.range, ids = sharingName(decl), result = Vector<(string, Array<int>)>.new();
+		for (k < files.paths.length) {
+			var path = files.pathAt(k), file = files.fileAt(k);
+			// In the declaring file, a use with the name's range is the name.
+			var own = r.beginOffset >= 0 && Strings.equal(path, r.path);
+			var name = own && withName, count = 0;
+			var targets: Array<int> = if(file != null, file.targets, []);
+			for (i < targets.length) {
+				if (among(ids, targets[i]) && !(own && file.spans(i, r.beginOffset, r.endOffset))) count++;
+			}
+			if (name) count++;
+			if (count == 0) continue;
+			var spans = Array<int>.new(2 * count), n = 0;
+			for (i < targets.length) {
+				if (!among(ids, targets[i]) || (own && file.spans(i, r.beginOffset, r.endOffset))) continue;
+				var begin = file.ranges[4 * i + 2], end = begin + file.ranges[4 * i + 3];
+				if (name && r.beginOffset < begin) {
+					spans[n++] = r.beginOffset;
+					spans[n++] = r.endOffset;
+					name = false;
+				}
+				spans[n++] = begin;
+				spans[n++] = end;
+			}
+			if (name) {
+				spans[n++] = r.beginOffset;
+				spans[n++] = r.endOffset;
+			}
+			result.put((path, spans));
+		}
+		return result.extract();
+	}
+	// The indexes in {declarations} of {decl} and of each declaration with the
+	// same name token. Declarations differ by kind or token, so these differ
+	// only by kind.
+	private def sharingName(decl: AnalysisDeclaration) -> Array<int> {
+		var r = decl.range, ids = Vector<int>.new();
+		for (i < declarations.length) {
+			var d = declarations[i], q = d.range;
+			if (d == decl || (r.beginOffset >= 0 && q.beginOffset == r.beginOffset
+					&& q.endOffset == r.endOffset && Strings.equal(q.path, r.path))) ids.put(i);
+		}
+		return ids.extract();
+	}
+	private def among(ids: Array<int>, target: int) -> bool {
+		for (id in ids) if (id == target) return true;
+		return false;
+	}
 }
 
 // One canonical URI's submission stamp. A null identity denotes disk, not
@@ -265,6 +325,14 @@ class AnalysisSnapshotFiles {
 		if (low < sorted.length && AnalysisTables.compareBytes(paths[sorted[low]], path) == 0) return files[sorted[low]];
 		return null;
 	}
+	// The path of the {k}th file in byte order of path.
+	def pathAt(k: int) -> string {
+		return paths[sorted[k]];
+	}
+	// The index of the {k}th file in byte order of path, or null.
+	def fileAt(k: int) -> AnalysisSnapshotFile {
+		return files[sorted[k]];
+	}
 	// Whether file {index} has no index yet.
 	def isNew(index: int) -> bool {
 		return u32.view(index) < u32.view(files.length) && files[index] == null;
@@ -290,6 +358,11 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 		firstSite: int, siteCount: int) {
 	def range(path: string, i: int) -> AnalysisRange {
 		return span(path, ranges, 4 * i);
+	}
+	// Whether occurrence {i} has exactly the byte range from {begin} to {end}.
+	def spans(i: int, begin: int, end: int) -> bool {
+		var r = 4 * i;
+		return ranges[r + 2] == begin && ranges[r + 2] + ranges[r + 3] == end;
 	}
 	def builtinCount() -> int {
 		return builtins.length / 5;

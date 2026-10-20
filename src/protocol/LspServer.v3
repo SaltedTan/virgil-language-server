@@ -5,6 +5,7 @@
 component LspErrorCode {
 	def SERVER_NOT_INITIALIZED = -32002;	// a request arrived before initialize
 	def REQUEST_CANCELLED = -32800;		// the request was cancelled
+	def REQUEST_FAILED = -32803;		// a valid request could not be answered
 }
 
 // Where the server is in the LSP lifecycle.
@@ -52,7 +53,7 @@ class LspServer {
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
-	// Definition and hover requests, answered from snapshots.
+	// Definition, hover, and references requests, answered from snapshots.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
@@ -81,6 +82,8 @@ class LspServer {
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
 		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
+		snapshotRequests.registerPrepared(dispatcher, "textDocument/references", "references",
+			LspReferences.REQUIRES, LspReferences.prepare);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
 		workspaceEvents.warn = projectWarning;
@@ -296,6 +299,7 @@ class LspServer {
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["hoverProvider"] = JsonValue.Bool(true);
 		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
+		capabilities["referencesProvider"] = JsonValue.Bool(true);
 		var folders = Strings.newMap<JsonValue>();
 		folders["supported"] = JsonValue.Bool(true);
 		folders["changeNotifications"] = JsonValue.Bool(true);
