@@ -1,6 +1,6 @@
 # 0003. Supported platforms
 
-- Status: Accepted
+- Status: Accepted, amended 2026-10-20 ([WSL 2 is best effort](#amendment-2026-10-20))
 - Date: 2026-10-01
 
 ## Context
@@ -51,3 +51,9 @@ Other platforms are not promised:
 - **Require native `arm64-darwin` before claiming Apple Silicon support.** That would block macOS support on upstream work with no date. Rosetta 2 gives a tested path now.
 - **Use the JVM build everywhere.** It's portable, including to native Windows, but adds a Java dependency, slower startup and more memory use for every user. It stays the fallback, not the default.
 - **Support native Windows.** Virgil has no native Windows target, and WSL 2 already covers Windows developers with the Linux build.
+
+## Amendment (2026-10-20)
+
+WSL 2 on x86-64 Windows moves from supported to best effort, like macOS on Intel, because no maintainer setup uses or tests it any more. Its only CI coverage is the Linux job; nothing runs inside WSL.
+
+The single Linux x86-64 binary and the workspace-side VS Code extension are unchanged, so WSL 2 is still expected to work, and the documentation still describes how to use it. Native Windows and WSL 1 stay unsupported, and Windows users are still pointed at WSL 2. WSL 2 can return to supported if someone tests it.

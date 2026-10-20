@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Linux x86-64 (including WSL 2), or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`)
+- Linux x86-64, or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`). WSL 2 on Windows is best effort.
 - `git`, `make`, `bash`; Python 3.9+ for project-fixture preparation and cleanup, interactive protocol tests, and editor tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 - Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).

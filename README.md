@@ -6,7 +6,7 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: pre-alpha.** The diagnostics milestones (M2–M3) are done, and navigation and editor assistance (M4–M5) are under way; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, plus type errors, [go-to-definition](docs/architecture.md#definition), [hover](docs/architecture.md#hover), [references](docs/architecture.md#references), [workspace symbols](docs/architecture.md#workspace-symbols), and [signature help](docs/architecture.md#signature-help) across the files of a [configured project](docs/configuration.md). The [occurrence index](docs/architecture.md#compiler-adapter) defines which names resolve, and the [architecture guide](docs/architecture.md) describes how each part works.
+> **Status: alpha.** `0.1.0-alpha.1` is the first [prerelease](docs/releasing.md). With it, the diagnostics and navigation milestones (M2–M4) are complete, and work on rename and completion (M5) is under way; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, plus type errors, [go-to-definition](docs/architecture.md#definition), [hover](docs/architecture.md#hover), [references](docs/architecture.md#references), [workspace symbols](docs/architecture.md#workspace-symbols), and [signature help](docs/architecture.md#signature-help) across the files of a [configured project](docs/configuration.md). The [occurrence index](docs/architecture.md#compiler-adapter) defines which names resolve, and the [architecture guide](docs/architecture.md) describes how each part works.
 
 ## Why
 
@@ -31,7 +31,7 @@ The [architecture guide](docs/architecture.md) describes the server and its comp
 
 ## Building
 
-Requirements: Linux x86-64 (including WSL 2 on Windows) or an Apple Silicon Mac with Rosetta 2, plus the [development prerequisites](docs/development.md#prerequisites). See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
+Requirements: Linux x86-64 or an Apple Silicon Mac with Rosetta 2, plus the [development prerequisites](docs/development.md#prerequisites). WSL 2 on Windows is best effort. See [docs/compatibility.md](docs/compatibility.md) for the full platform list. The Virgil compiler comes from the pinned submodule, so you don't need a separate Virgil install.
 
 ```sh
 git clone --recurse-submodules https://github.com/SaltedTan/virgil-language-server.git

@@ -22,7 +22,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-Try each setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, configuration changes, and restart.
+Try each setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, workspace symbols, configuration changes, and restart.
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
@@ -58,10 +58,11 @@ Set `VIRGIL_LOC` to the checkout's `vendor/virgil`, change to `/tmp/virgil-check
 2. **Document symbols.** In `words/Words.v3`, `gO` (or `:lua vim.lsp.buf.document_symbol()`) lists the component `Words` and its method `join`.
 3. **Definition.** On `StringBuilder` in line 7, `CTRL-]` (`gd` in LazyVim, or `:lua vim.lsp.buf.definition()`) opens Virgil's `lib/util/StringBuilder.v3` at `class StringBuilder`, on line 19.
 4. **Hover.** On the same `StringBuilder`, `K` shows `class StringBuilder`.
-5. **Signature help.** In `words/Words.v3`, put the cursor just after the `(` of `.puts(a)` in line 7 and, in Insert mode, press `CTRL-S` (Neovim 0.11's default mapping, or `:lua vim.lsp.buf.signature_help()` from Normal mode). A window shows `def puts(s: Array<byte>) -> this`, with `s: Array<byte>` highlighted. Just past the `)`, it shows nothing. Neovim doesn't open the window as you type `(` or `,` without a plugin or an `LspAttach` autocommand that calls it ([Signature help](architecture.md#signature-help)).
+5. **Signature help.** In `words/Words.v3`, put the cursor just after the `(` of `.puts(a)` in line 7 and, in Insert mode, press `CTRL-S` (Neovim 0.11's default mapping; in LazyVim, `CTRL-S` saves the file, so press `CTRL-K`), or run `:lua vim.lsp.buf.signature_help()` (`gK` in LazyVim) from Normal mode. A window shows `def puts(s: Array<byte>) -> this`, with `s: Array<byte>` highlighted. Just past the `)`, it shows nothing. Plain Neovim doesn't open the window as you type `(` or `,` without a plugin or an `LspAttach` autocommand that calls it; LazyVim's noice.nvim does ([Signature help](architecture.md#signature-help)).
 6. **References.** Return to `words/Words.v3`, since the library file that step 3 opened belongs to another server without the fixture's project. On `StringBuilder` in line 7, run `:lua vim.lsp.buf.references()`. The list includes this use, the class's name in `lib/util/StringBuilder.v3`, and its uses in the other `lib/util` files that the fixture's project includes ([References](architecture.md#references)).
-7. **Configuration changes.** Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. An `UnknownField` error from `virgil-lsp` appears on that line. Undo the edit; the error disappears. Close the file, and add the same line on disk from a terminal. Whether the error appears at once depends on whether Neovim declares file watching, which `:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles` shows ([Changes on disk](../editors/nvim/README.md#changes-on-disk)). On macOS, Neovim 0.11 declares it, the server registers its watchers, and the error appears without further action. On Linux and in WSL 2, it doesn't, and the error appears when a `.v3` buffer is next opened, changed, or saved. Remove the line again. Then quit, start Neovim with `VIRGIL_LOC` unset, and open `.virgil-lsp.json`: Neovim shows the warning "Invalid project file …", and the file has a `MissingVirgilRoot` error on the `virgilDependencies` line. Quit again.
-8. **Restart.** Start Neovim with `VIRGIL_LOC` set again, open `words/Words.v3`, and wait for its type error on line 7. In LazyVim, run `:LspRestart`. In plain Neovim, run `:lua vim.lsp.stop_client(vim.lsp.get_clients({ name = "virgil_lsp" }))`, then `:edit`. A new server attaches, and `words/Words.v3` gets its error again. If the old server exited with a nonzero status, Neovim warns "Client virgil_lsp quit with exit code …".
+7. **Workspace symbols.** Back in `words/Words.v3`, run `:lua vim.lsp.buf.workspace_symbol("join")`. The list shows the method `join` in `words/Words.v3`, on line 6, although nothing uses it ([Workspace symbols](architecture.md#workspace-symbols)).
+8. **Configuration changes.** Open `.virgil-lsp.json` and, without saving, add `"bogus": 1,` after the opening brace. An `UnknownField` error from `virgil-lsp` appears on that line. Undo the edit; the error disappears. Close the file, and add the same line on disk from a terminal. Whether the error appears at once depends on whether Neovim declares file watching, which `:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles` shows ([Changes on disk](../editors/nvim/README.md#changes-on-disk)). On macOS, Neovim 0.11 declares it, the server registers its watchers, and the error appears without further action. On Linux and in WSL 2, it doesn't, and the error appears when a `.v3` buffer is next opened, changed, or saved. Remove the line again. Then quit, start Neovim with `VIRGIL_LOC` unset, and open `.virgil-lsp.json`: Neovim shows the warning "Invalid project file …" (LazyVim doesn't, unless noice's LSP message handler is turned off; see [LazyVim](../editors/nvim/README.md#lazyvim)), and the file has a `MissingVirgilRoot` error on the `virgilDependencies` line. Quit again.
+9. **Restart.** Start Neovim with `VIRGIL_LOC` set again, open `words/Words.v3`, and wait for its type error on line 7. In LazyVim, run `:LspRestart`. In plain Neovim, run `:lua vim.lsp.stop_client(vim.lsp.get_clients({ name = "virgil_lsp" }))`, then `:edit`. A new server attaches, and `words/Words.v3` gets its error again. If the old server exited with a nonzero status, Neovim warns "Client virgil_lsp quit with exit code …".
 
 ### Collecting logs
 
@@ -76,7 +77,7 @@ For each release, record every run with its date, the server's source revision, 
 
 ### 0.1.0-alpha.1
 
-These runs are at `8b2ea9f`, on `main` before hover ([#106](https://github.com/SaltedTan/virgil-language-server/issues/106)) and the release VSIX ([#117](https://github.com/SaltedTan/virgil-language-server/issues/117)) were merged, so they don't check hover. Run them again at the release commit.
+The first six runs are at `8b2ea9f`, on `main` before hover ([#106](https://github.com/SaltedTan/virgil-language-server/issues/106)), references ([#123](https://github.com/SaltedTan/virgil-language-server/issues/123)), workspace symbols ([#122](https://github.com/SaltedTan/virgil-language-server/issues/122)), signature help ([#127](https://github.com/SaltedTan/virgil-language-server/issues/127)), and the release VSIX ([#117](https://github.com/SaltedTan/virgil-language-server/issues/117)) were merged, so they don't check those four features. The later runs are at `2be8831`, the release preparation commit (the pull request's CI checks out its merge with `main`, `f78d572`, which has the same tree), and the LazyVim run at the final branch's dry run: its pull request's CI, the branch's [dry run](releasing.md#dry-runs), and local runs with that dry run's Linux archive and VSIX. The matrix records what they check; the manual tests with the same archives and VSIX fill in the rest.
 
 | Date | Commit | Where | Command | Editor | Result |
 | --- | --- | --- | --- | --- | --- |
@@ -86,16 +87,25 @@ These runs are at `8b2ea9f`, on `main` before hover ([#106](https://github.com/S
 | 2026-10-18 | `8b2ea9f` | Ubuntu 26.04.1, x86-64 | `REQUIRE_NVIM=1 make test-nvim` | Neovim 0.11.6 | Pass |
 | 2026-10-18 | `8b2ea9f` | Ubuntu 26.04.1, x86-64, under Xvfb | `xvfb-run -a npm run test:e2e` | VS Code 1.142.0, extension from source | Pass |
 | 2026-10-18 | `8b2ea9f` | Ubuntu 26.04.1, x86-64, under Xvfb | `npm run package`, then `xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix` | VS Code 1.142.0, extension 0.1.0 installed from the VSIX | Pass |
+| 2026-10-20 | `f78d572`, the pull request's merge of `2be8831`, same tree | CI job `test`, `ubuntu-24.04`, [run 39407691447](https://github.com/SaltedTan/virgil-language-server/actions/runs/39407691447) | `make test` | Neovim 0.11.6 | Pass |
+| 2026-10-20 | `f78d572`, the pull request's merge of `2be8831`, same tree | CI job `test-macos`, `macos-15`, same run | `make test` | Neovim 0.12.5 | Pass |
+| 2026-10-20 | `f78d572`, the pull request's merge of `2be8831`, same tree | CI job `vscode-extension-host`, `ubuntu-24.04`, same run | `xvfb-run -a npm run test:e2e`, then on the packaged VSIX with `--vsix` | VS Code 1.142.0 | Pass |
+| 2026-10-20 | `2be8831` | Release dry run, job "Package and test the VS Code extension", `ubuntu-24.04`, [run 39408586780](https://github.com/SaltedTan/virgil-language-server/actions/runs/39408586780) | The Extension Host test on the packaged VSIX, with the server from the run's Linux archive | VS Code 1.142.0, extension 0.1.0 installed from the VSIX | Pass |
+| 2026-10-20 | `2be8831` | Ubuntu 26.04.1, x86-64, server from the dry run's Linux archive | `REQUIRE_NVIM=1 test/e2e/nvim/run.sh <archive>/virgil-lsp` | Neovim 0.11.6 | Pass |
+| 2026-10-20 | `2be8831` | Ubuntu 26.04.1, x86-64, under Xvfb, server from the dry run's Linux archive | `xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.0.vsix <archive>/virgil-lsp` | VS Code 1.142.0, extension 0.1.0 installed from the dry run's VSIX | Pass |
+| 2026-10-20 | `5cd321e`, the release dry run's merge of `cbd871a`, same tree | Ubuntu 26.04.1, x86-64, in a detached tmux session, server from [dry run 39415504970](https://github.com/SaltedTan/virgil-language-server/actions/runs/39415504970)'s Linux archive | A scripted run of the procedure's Neovim steps under the [LazyVim starter](https://github.com/LazyVim/starter) at `803bc18` with `editors/nvim/lazyvim/virgil.lua`, through LazyVim's own client and keys (`gd`, `K`, `<C-k>`, `gK`, `:LspRestart`) | Neovim 0.11.6, LazyVim 16.0.1, nvim-lspconfig 2.12.0-29 | Pass |
 
-| Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart |
-| --- | --- | --- | --- | --- | --- | --- |
-| VS Code, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Not yet run | Unsaved project-file edit only (automated) | Pass (automated) |
-| VS Code, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| VS Code Remote-SSH | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| VS Code Remote-WSL | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| Neovim, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Not yet run | Unsaved project-file edit only (automated) | Not yet run |
-| Neovim, macOS | Pass (automated) | Pass (automated) | Pass (automated) | Not yet run | Unsaved project-file edit only (automated) | Not yet run |
-| Neovim, WSL 2 | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| LazyVim, Linux | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| LazyVim, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
-| LazyVim, WSL 2 | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+WSL 2 is best effort, and none of its setups were tested for this alpha.
+
+| Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Workspace symbols | Signature help |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| VS Code, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) |
+| VS Code, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+| VS Code Remote-SSH | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+| VS Code Remote-WSL | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) |
+| Neovim, Linux | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Not yet run | Pass (automated) | Pass (automated) | Pass (automated) |
+| Neovim, macOS | Pass (automated) | Pass (automated) | Pass (automated) | Pass (automated) | Unsaved project-file edit only (automated) | Not yet run | Pass (automated) | Pass (automated) | Pass (automated) |
+| Neovim, WSL 2 | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) |
+| LazyVim, Linux | Pass | Pass | Pass | Pass | Pass; noice.nvim hides the missing-root warning, not its diagnostic | Pass | Pass | Pass | Pass |
+| LazyVim, macOS | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run | Not yet run |
+| LazyVim, WSL 2 | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) | Not tested (best effort) |

@@ -52,7 +52,7 @@ A user can install the server following the [build and executable placement guid
 - hover text containing declaration signatures and inferred types;
 - reliable startup, shutdown, logging, and recovery from malformed requests;
 - a project configuration that describes the source files Aeneas must analyze;
-- documented installation for the supported platforms: Linux x86-64 (including remote use over SSH), Windows through WSL 2, and Apple Silicon macOS ([ADR-0003](docs/decisions/0003-supported-platforms.md)).
+- documented installation for the supported platforms: Linux x86-64 (including remote use over SSH) and Apple Silicon macOS. Windows through WSL 2 is best effort since 2026-10-20 ([ADR-0003](docs/decisions/0003-supported-platforms.md)).
 
 ### Later releases
 
@@ -238,21 +238,21 @@ Exit criteria:
 
 Deliverables:
 
-- VST visitor/walker for declarations, type references, statements, and expressions.
-- Symbol identities for local variables, fields, methods, compounds, enum cases, layouts, and packings.
-- Occurrence index extending the [compiler adapter's current coverage](docs/architecture.md#compiler-adapter) to applications and named type references.
-- `textDocument/definition`.
-- `textDocument/hover` using the [snapshot display data](docs/architecture.md#display-text).
+- VST visitor/walker for declarations, type references, statements, and expressions. *(present; [occurrence collection](docs/architecture.md#compiler-adapter))*
+- Symbol identities for local variables, fields, methods, compounds, enum cases, layouts, and packings. *(present; declarations in the [compiler adapter](docs/architecture.md#compiler-adapter))*
+- Occurrence index extending the [compiler adapter's current coverage](docs/architecture.md#compiler-adapter) to applications and named type references. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
+- `textDocument/definition`. *(present; [Definition](docs/architecture.md#definition))*
+- `textDocument/hover` using the [snapshot display data](docs/architecture.md#display-text). *(present; [Hover](docs/architecture.md#hover))*
 - Workspace/document-symbol polishing *(document symbols present, with [variant cases and signature details](docs/architecture.md#document-symbols); [`workspace/symbol`](docs/architecture.md#workspace-symbols) present, [#122](https://github.com/SaltedTan/virgil-language-server/issues/122))*.
-- End-to-end editor tests and a documented manual test matrix.
-- First tagged prerelease with checksums and install instructions.
+- End-to-end editor tests and a documented manual test matrix. *(present; [headless Neovim test](editors/nvim/README.md#headless-smoke-test), [Extension Host test](clients/vscode/README.md#extension-host-test), and [manual test matrix](docs/manual-testing.md))*
+- First tagged prerelease with checksums and install instructions. *(present with v0.1.0-alpha.1; [release runbook](docs/releasing.md))*
 
 Exit criteria:
 
-- The same server binary supplies diagnostics, symbols, definition, and hover in LazyVim and VS Code.
-- Definition results are semantic, not name-only text searches.
-- Requests against stale snapshots fail safely or return a newer matching snapshot.
-- The alpha has known limitations and a reproducible issue template.
+- The same server binary supplies diagnostics, symbols, definition, and hover in LazyVim and VS Code. *(present for plain Neovim and VS Code, whose automated tests the [release workflow](docs/releasing.md#how-the-workflow-works) runs with the same Linux executables; the LazyVim configuration passed a scripted run on Linux for v0.1.0-alpha.1 but isn't tested in CI)*
+- Definition results are semantic, not name-only text searches. *(present; [occurrence index](docs/architecture.md#compiler-adapter))*
+- Requests against stale snapshots fail safely or return a newer matching snapshot. *(present; [freshness](docs/architecture.md#definition))*
+- The alpha has known limitations and a reproducible issue template. *(present; [known limitations](docs/known-limitations.md) and the [bug report form](.github/ISSUE_TEMPLATE/bug_report.yml))*
 
 ### M5 — References, rename, signature help, and completion (4–8 weeks)
 
@@ -294,7 +294,7 @@ Do not promise “incremental compilation” until measurements identify the bot
 Deliverables:
 
 - GitHub release automation. *(present; [release runbook](docs/releasing.md))*
-- A clear support matrix: Linux x86-64 (also used by WSL 2 and SSH remotes) and Apple Silicon macOS, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
+- A clear support matrix: Linux x86-64 (also used by SSH remotes) and Apple Silicon macOS, with WSL 2 best effort since 2026-10-20, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
 - VS Code extension setting for an external server path during development. *(present; [client settings](clients/vscode/README.md#settings))*
 - Later, platform-specific VSIX packages or verified binary download/install logic.
 - Marketplace README, changelog, privacy statement, and troubleshooting guide.

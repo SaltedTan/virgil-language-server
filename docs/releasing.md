@@ -8,7 +8,7 @@ Every release is a GitHub **prerelease**. Before v1.0, use tags such as `vX.Y.Z-
 
 | Asset | Contents |
 | --- | --- |
-| `virgil-lsp-<version>-x86-64-linux.tar.gz` | Linux x86-64, including WSL 2 on x86-64 Windows |
+| `virgil-lsp-<version>-x86-64-linux.tar.gz` | Linux x86-64; WSL 2 on x86-64 Windows on a best-effort basis |
 | `virgil-lsp-<version>-x86-64-darwin.tar.gz` | macOS. This is the Intel (`x86-64-darwin`) build, which Apple Silicon runs under Rosetta 2; it is not a native arm64 build ([ADR-0003](decisions/0003-supported-platforms.md)). |
 | `virgil-lsp-<version>-<target>.manifest.json` | A copy of each archive's build manifest |
 | `virgil-lsp-vscode-<extension version>.vsix` | The VS Code extension, a preview, for every platform. It holds no server. |

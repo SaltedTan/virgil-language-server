@@ -39,10 +39,11 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 
 ## Platforms and editors
 
-- Supported hosts are Linux x86-64, including SSH remotes and WSL 2 on x86-64 Windows, and macOS on Apple Silicon, which runs the Intel (`x86-64-darwin`) build under Rosetta 2 ([host platforms](compatibility.md#host-platforms)).
-- Native Windows, WSL 1, and Linux arm64 aren't supported. On Windows, use WSL 2; the VS Code extension refuses to start natively on Windows ([startup checks](../clients/vscode/README.md#startup-checks)). macOS on Intel uses the same build but is untested.
+- Supported hosts are Linux x86-64, including SSH remotes, and macOS on Apple Silicon, which runs the Intel (`x86-64-darwin`) build under Rosetta 2 ([host platforms](compatibility.md#host-platforms)).
+- WSL 2 on x86-64 Windows is best effort. The Linux build is expected to run inside it, but nobody tests it there, and CI runs only on Linux itself ([host platforms](compatibility.md#host-platforms)).
+- Native Windows, WSL 1, and Linux arm64 aren't supported. On Windows, use WSL 2, on a best-effort basis; the VS Code extension refuses to start natively on Windows ([startup checks](../clients/vscode/README.md#startup-checks)). macOS on Intel uses the same build but is untested.
 - Apple Silicon needs Rosetta 2 until Virgil can build for `arm64-darwin`. Apple has said that macOS 27 is the last release with full Rosetta 2 support ([ADR-0003](decisions/0003-supported-platforms.md)).
-- Neovim needs version 0.11 or later, and VS Code 1.91 or later. The LazyVim configuration is untested ([editors](compatibility.md#editors)). The [manual test matrix](manual-testing.md) records which editor and platform combinations were tried.
+- Neovim needs version 0.11 or later, and VS Code 1.91 or later. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for this alpha ([editors](compatibility.md#editors)). In LazyVim, noice.nvim drops servers' `window/showMessage` warnings, such as "Invalid project file …", although the diagnostics still appear; [the LazyVim setup](../editors/nvim/README.md#lazyvim) shows how to turn its handler off. The [manual test matrix](manual-testing.md) records which editor and platform combinations were tried.
 
 ## Installation
 
@@ -50,11 +51,11 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 - Nothing is published to a package manager, the Visual Studio Marketplace, or Open VSX. Install the server from a release archive and the extension from its VSIX by hand ([Installing](releasing.md#installing), [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)). VS Code doesn't update an extension installed from a VSIX.
 - The archives don't include Virgil's library sources. A project with `virgilDependencies` needs a Virgil checkout at the revision that `virgil-lsp --version` prints ([The Virgil root](releasing.md#the-virgil-root)).
 
-## Names that definition and hover don't cover
+## Names that definition, hover, and references don't cover
 
 Only the uses that the [occurrence index](architecture.md#compiler-adapter) records resolve; it owns the full list. In particular:
 
-- Builtin types, such as `int`, `Array` in `Array<Foo>`, `set` in `E.set`, and `Ref` in `Ref<L>`, have no definition. Hover shows the type of a builtin used in an expression, such as `.length`, but nothing for a builtin type in a type position ([Hover](architecture.md#hover)).
+- Builtin types, such as `int`, `Array` in `Array<Foo>`, `set` in `E.set`, and `Ref` in `Ref<L>`, have no definition or references. Hover shows the type of a builtin used in an expression, such as `.length`, but nothing for a builtin type in a type position ([Hover](architecture.md#hover)).
 - The letters of a bit pattern, such as `0b_aabb`, and the names in a `#packing` hint on a variant case aren't indexed ([#111](https://github.com/SaltedTan/virgil-language-server/issues/111)).
 - Hover shows nothing at a keyword, a literal, or an unresolved name, and doesn't show the type of a larger expression.
 

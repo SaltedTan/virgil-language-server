@@ -25,7 +25,7 @@ except ImportError:  # zipfile then refuses LZMA entries with a RuntimeError.
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLATFORMS = {
-    "x86-64-linux": "Linux x86-64, including WSL 2",
+    "x86-64-linux": "Linux x86-64; WSL 2 on a best-effort basis",
     "x86-64-darwin": "macOS: an x86-64 build, which Apple Silicon runs under Rosetta 2. "
     "It is not a native arm64 build.",
 }
