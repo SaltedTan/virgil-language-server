@@ -85,11 +85,8 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, Strings.format1("rename params require %s", REQUIRES));
 			return respond(request.id, JsonRpcReply.Error(error));
 		}
-		// Refused before the request keeps it: a request that waits keeps its
-		// new name until it is answered.
-		if (newName.length > LspRenameNames.MAX_LENGTH) {
-			return respond(request.id, fail(Strings.format1("the new name is longer than %d bytes", LspRenameNames.MAX_LENGTH)));
-		}
+		var invalid = LspRenameNames.check(newName);
+		if (invalid != null) return respond(request.id, fail(invalid));
 		if (LspRenameEligibility.closedRequest(store, request)) return respond(request.id, fail(LspRenameEligibility.OPEN_DOCUMENT));
 		if (pending != null) return respond(request.id, fail("another rename is being checked; try again once it is answered"));
 		var r = LspRenameRequest.new(this, request.id, newName);
@@ -111,8 +108,6 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		if (!documentChanges) {
 			return (true, fail("rename needs a client that accepts versioned edits (workspace.workspaceEdit.documentChanges), so that an edit to a changed document is refused"));
 		}
-		var invalid = LspRenameNames.check(r.newName);
-		if (invalid != null) return (true, fail(invalid));
 		if (Strings.equal(r.newName, name)) return (true, JsonRpcReply.Result(workspaceEdit([])));
 		// Snapshots carry no class hierarchy, so a method given another
 		// method's name may start to override it or be overridden by it, while
@@ -404,6 +399,7 @@ component LspRenameNames {
 	// identifier, as Aeneas lexes it (Char.isIdentStart and isIdentMiddle),
 	// is an ASCII letter followed by ASCII letters, digits, and underscores.
 	def check(name: string) -> string {
+		if (name.length > MAX_LENGTH) return Strings.format1("the new name is longer than %d bytes", MAX_LENGTH);
 		if (name.length == 0) return "the new name is empty";
 		var c = name[0];
 		var valid = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');

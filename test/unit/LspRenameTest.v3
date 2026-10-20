@@ -25,6 +25,7 @@ def X = [
 	T("LspRename:capture_by_existing_local", test_capture_by_existing_local),
 	T("LspRename:duplicate_names", test_duplicate_names),
 	T("LspRename:invalid_names", test_invalid_names),
+	T("LspRename:invalid_name_while_waiting", test_invalid_name_while_waiting),
 	T("LspRename:name_length", test_name_length),
 	T("LspRename:parse_and_semantic_errors", test_parse_and_semantic_errors),
 	T("LspRename:dependency_and_virgil_root", test_dependency_and_virgil_root),
@@ -706,6 +707,28 @@ def test_name_length(t: Tester) {
 	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", longest, join([
 		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
 		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.close();
+}
+def test_invalid_name_while_waiting(t: Tester) {
+	var s = kindsSession(t);
+	s.change("Kinds.v3", 3, Arrays.concat(KINDS, "\n"));
+	var p = at(KINDS, "var area", 4), invalid = s.rename(t, "Kinds.v3", p.line, p.character, "while");
+	expectFailed(t, s, invalid, "'while' is a reserved word in Virgil and cannot be a name");
+	t.asserti(0, s.server.rename.requests.waiting());
+	t.asserti(0, s.server.rename.requests.recorded());
+	t.assert(s.server.projects.renameSnapshot == null, "an invalid name retains no snapshot");
+	var valid = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	t.assert(s.reply(valid) == null, "the valid rename waits for analysis");
+	t.asserti(1, s.server.rename.requests.waiting());
+	s.settle();
+	var edit = s.result(t, valid);
+	t.assert_string(join([
+		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
+		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
+		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]), render(s, edit, 0, false));
+	t.asserti(1, s.server.rename.checked);
+	t.asserti(1, s.count(invalid));
+	t.asserti(1, s.count(valid));
 	s.server.close();
 }
 def test_parse_and_semantic_errors(t: Tester) {
