@@ -250,6 +250,28 @@ async function workspace(extension) {
     || (u.file !== words.document.uri.fsPath && !u.file.startsWith(libraryDirectory))), []);
   assert.ok(new Set(uses.map((u) => u.file)).size > 2, 'no references in other library files');
 
+  // Rename needs a program that verifies, so an unsaved edit fixes the type
+  // error first. The server's versioned edit renames both uses of the local
+  // line, VS Code applies it, and one undo restores them; a second restores
+  // the type error.
+  const unedited = words.document.getText();
+  await edit(words, (builder) => builder.replace(new vscode.Range(use, 0, use + 2, 0),
+    "\t\tvar line = StringBuilder.new().puts(a).putc(' ').puts(b).toString();\n\t\treturn line.length;\n"));
+  const fixed = words.document.getText();
+  const renaming = await vscode.commands.executeCommand(
+    'vscode.executeDocumentRenameProvider', words.document.uri, new vscode.Position(use, 6), 'text',
+  );
+  assert.deepEqual(renaming.entries().map(([uri, edits]) => [uri.fsPath, edits.map((e) => [...range(e), e.newText])]), [
+    [words.document.uri.fsPath, [[use, 6, use, 10, 'text'], [use + 1, 9, use + 1, 13, 'text']]],
+  ]);
+  assert.ok(await vscode.workspace.applyEdit(renaming), 'the rename was not applied');
+  assert.equal(words.document.lineAt(use).text, "\t\tvar text = StringBuilder.new().puts(a).putc(' ').puts(b).toString();");
+  assert.equal(words.document.lineAt(use + 1).text, '\t\treturn text.length;');
+  await vscode.window.showTextDocument(words.document);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the rename', () => words.document.getText() === fixed);
+  await undo(words, unedited);
+
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -272,7 +294,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, signature help, references, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, signature help, references, rename and undo, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

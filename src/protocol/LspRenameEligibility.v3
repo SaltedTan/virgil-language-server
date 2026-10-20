@@ -1,12 +1,55 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
+// The name that a rename at a position would rename: the declaration, the
+// token under the cursor, which {LspRenameEligibility.check} takes, and its
+// byte range in the requested document.
+class LspRenameSelection(decl: AnalysisDeclaration, token: string, begin: int, end: int) { }
+
 // Whether the name at a current snapshot position can be renamed safely, and
 // why not otherwise. The rules are conservative; see docs/architecture.md
-// #prepare-rename-partly-present. textDocument/prepareRename is a thin handler
-// over this module (LspPrepareRename), and the rename of #125 reuses these
-// rules.
+// #prepare-rename. textDocument/prepareRename (LspPrepareRename) and
+// textDocument/rename (LspRename) both select the name with {select}, so a
+// rename refuses everything prepareRename refuses, with the same reason.
 component LspRenameEligibility {
+	// The renameable name at {offset} in {at}'s document: whether the offset
+	// selects something there, and either the selection or the reason it
+	// cannot be renamed. Without a selection or a reason, the offset selects
+	// nothing, and the caller tries the byte before it. A builtin, or an
+	// identifier that resolves to nothing, at the offset is refused here by
+	// name; otherwise a position with no name is left to the caller's error.
+	def select(at: LspSnapshotPosition, projects: WorkspaceProjects, offset: int) -> (bool, LspRenameSelection, string) {
+		var s = at.snapshot, path = at.path();
+		var decl = s.definitionAtOffset(path, offset), begin: int, end: int, token: string;
+		if (decl != null) {
+			var o = s.occurrenceAtOffset(path, offset);
+			if (o == null) return (false, null, null);
+			begin = o.range.beginOffset;
+			end = o.range.endOffset;
+			token = textAt(at.text, begin, end);
+		} else {
+			decl = s.declarationAtOffset(path, offset);
+			if (decl == null) {
+				var b = s.builtinUseAtOffset(path, offset);
+				if (b != null) {
+					return (true, null, Strings.format1("builtin '%s' cannot be renamed",
+						textAt(at.text, b.range.beginOffset, b.range.endOffset)));
+				}
+				// A builtin type such as int in Array<int> has no builtin use.
+				var word = wordAt(at.text, offset);
+				if (word == null) return (false, null, null);
+				return (true, null, Strings.format1(
+					"'%s' is not a declaration in the project's sources (a builtin type, a keyword, or a name the occurrence index omits)",
+					word));
+			}
+			begin = decl.range.beginOffset;
+			end = decl.range.endOffset;
+			token = decl.name;
+		}
+		var reason = check(at, projects, decl, token);
+		if (reason != null) return (true, null, reason);
+		return (true, LspRenameSelection.new(decl, token, begin, end), null);
+	}
 	// The reason that {decl}, selected by the token {token} in {at}'s
 	// snapshot, cannot be renamed; or null if it can. {token} is the exact
 	// source spelling under the cursor: the declaration's name at its own
@@ -154,6 +197,34 @@ component LspRenameEligibility {
 			if (a[i].member != b[i].member || !Strings.equal(a[i].path, b[i].path)) return false;
 		}
 		return true;
+	}
+	private def textAt(bytes: Array<byte>, begin: int, end: int) -> string {
+		if (begin < 0 || end > bytes.length || end < begin) return "";
+		return Arrays.range(bytes, begin, end);
+	}
+	// The identifier or keyword containing {offset} in {text}, or null if
+	// {offset} is in none, such as in a comment, a string or character
+	// literal, a number, or an operator. Scans from the start of the text,
+	// since only that shows whether a word is inside a comment or literal.
+	private def wordAt(text: Array<byte>, offset: int) -> string {
+		var i = 0;
+		while (i <= offset && i < text.length) {
+			var b = text[i], start = i;
+			if (b == '/' && i + 1 < text.length && text[i + 1] == '/') {
+				while (i < text.length && text[i] != '\n') i++;
+			} else if (b == '/' && i + 1 < text.length && text[i + 1] == '*') {
+				i += 2;
+				while (i < text.length && !(text[i] == '*' && i + 1 < text.length && text[i + 1] == '/')) i++;
+				i += 2;
+			} else if (b == '\"' || b == '\'') {
+				var size = if(b == '\"', Strings.parseLiteral(text, i).0, Chars.parseLiteral(text, i).0);
+				i += Ints.max(1, size);
+			} else if (Char.isIdentMiddle(b)) {
+				while (i < text.length && Char.isIdentMiddle(text[i])) i++;
+				if (offset < i && Char.isIdentStart(b)) return Arrays.range(text, start, i);
+			} else i++;
+		}
+		return null;
 	}
 	// Whether {name} is an ASCII identifier, which a rename can spell.
 	private def identifier(name: string) -> bool {

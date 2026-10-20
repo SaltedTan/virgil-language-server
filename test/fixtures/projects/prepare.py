@@ -137,6 +137,18 @@ rename_shared.mkdir(exist_ok=True)
     '{"name":"two","sources":["SharedUse.v3","SharedDecl.v3"]}]}',
     encoding="utf-8",
 )
+# LspRenameTest writes each test's project file and sources itself. The
+# Virgil root of rename-root holds a library that its project depends on.
+(root / "rename-edits").mkdir(exist_ok=True)
+rename_root = root / "rename-root"
+(rename_root / "vroot" / "lib").mkdir(parents=True, exist_ok=True)
+(rename_root / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"r","sources":["Main.v3"],"virgilDependencies":["lib/*.v3"]}]}',
+    encoding="utf-8",
+)
+(rename_root / "vroot" / "lib" / "Lib.v3").write_text(
+    "component Lib { def twice(n: int) -> int { return n + n; } }\n", encoding="utf-8"
+)
 # LspPrepareRenameTest creates and removes sources here without a file event
 # first, then reports the event.
 rename_scan = root / "rename-scan"

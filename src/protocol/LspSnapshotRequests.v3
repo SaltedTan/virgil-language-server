@@ -35,9 +35,13 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 		var j = -1;
 		for (k < snapshot.paths.length) { if(j < 0 && Strings.equal(snapshot.paths[k], path)) j = k; }
 		if (j < 0) return (-1, null);
-		if (j == index) return (j, text);
-		var t = LspAnalysisCapture.analyzedText(store, snapshot, j);
+		var t = analyzedText(j);
 		return (if(t != null, j, -1), t);
+	}
+	// The analyzed text of the snapshot's file {j}, or null if its bytes are
+	// no longer the ones the worker analyzed.
+	def analyzedText(j: int) -> Array<byte> {
+		return if(j == index, text, LspAnalysisCapture.analyzedText(store, snapshot, j));
 	}
 	// The Location of the bytes from {begin} to {end} in the snapshot's file
 	// {j}, whose text {m} converts.
@@ -61,12 +65,13 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 		return JsonValue.JObject(obj);
 	}
 }
-// A request waiting for an analysis, with its answer function, {lookup}, and
-// the state of its document when it arrived: the identity of the open overlay,
-// or null and the disk stamp. None retains the document's text.
+// A request waiting for an analysis, with its answer function, {lookup}, where
+// its reply goes, and the state of its document when it arrived: the identity
+// of the open overlay, or null and the disk stamp. None retains the
+// document's text.
 class LspSnapshotRequest(lookup: (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-	failure: string -> JsonRpcReply, id: JsonRpcId, uri: string, line: int, character: int,
-	identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
+	failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void, id: JsonRpcId, uri: string,
+	line: int, character: int, identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
 	var answered: bool;
 }
 // The requests waiting for one pending analysis, in arrival order. It is that
@@ -83,12 +88,13 @@ class LspSnapshotWaiters(owner: LspSnapshotRequests) {
 }
 
 // Requests at a document position, answered from the retained snapshot of the
-// document's active project context. Every reply goes through
-// {send}: a request against a missing or stale snapshot waits for the
-// context's pending analysis. Each method supplies its answer function,
-// how to prepare it from other parameters, and an optional failure reply. See
-// docs/architecture.md#definition for the shared rules; each method owns its
-// lookup policy, including whether the byte before the position is eligible.
+// document's active project context. Every reply goes through {send}, unless
+// a submitter takes it (see {submit}): a request against a missing or stale
+// snapshot waits for the context's pending analysis. Each method supplies its
+// answer function, how to prepare it from other parameters, and an optional
+// failure reply. See docs/architecture.md#definition for the shared rules;
+// each method owns its lookup policy, including whether the byte before the
+// position is eligible.
 class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	// Bounds the requests of every method that wait at once. A client rarely
 	// has more than a few outstanding; past this many, the oldest, the one most
@@ -153,6 +159,12 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	def waiting() -> int {
 		return waitingCount;
 	}
+	// The number of request records held, answered or not, for tests.
+	def recorded() -> int {
+		var n = arrivals.length;
+		for (i < batches.length) n += batches[i].requests.length;
+		return n;
+	}
 	// Answers every waiting request with RequestCancelled and {reason}. All
 	// are marked answered first, so a listener notified from within a reply
 	// finds none left to answer.
@@ -168,43 +180,69 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		arrivals.clear();
 		oldest = waitingCount = 0;
 		batches.clear();
-		for (i < cancelled.length) send(JsonRpcMessage.ErrorResponse(cancelled[i].id, error).encode());
+		for (i < cancelled.length) reply(cancelled[i].deliver, cancelled[i].id, JsonRpcReply.Error(error));
 	}
 	// Answers or defers {request} for {method}.
 	def receive(method: LspSnapshotMethod, request: JsonRpcMessage.Request) {
+		submit(request, method.label, method.requires, method.prepare, method.failure, null);
+	}
+	// Answers or defers {request}, as a registered method with {label},
+	// {requires}, {prepare}, and {failure} would be (see LspSnapshotMethod),
+	// but gives its reply to {deliver}, if not null, instead of sending it.
+	// Rename does, since its answer needs a further analysis before a reply.
+	// Returns the deferred request, which {withdraw} drops, or null if it was
+	// answered.
+	def submit(request: JsonRpcMessage.Request, label: string, requires: string,
+			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
+			failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void) -> LspSnapshotRequest {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
 		var doc = objectMember(params, "textDocument"), position = objectMember(params, "position");
 		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
 		var key = if(uri != null, DocumentUri.normalize(uri));
 		var line = intMember(position, "line"), character = intMember(position, "character");
-		var lookup = if(key != null && line >= 0 && character >= 0, method.prepare(params));
+		var lookup = if(key != null && line >= 0 && character >= 0, prepare(params));
 		if (lookup == null) {
 			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
-				Strings.format2("%s params require %s", method.label, method.requires));
-			return send(JsonRpcMessage.ErrorResponse(request.id, error).encode());
+				Strings.format2("%s params require %s", label, requires));
+			reply(deliver, request.id, JsonRpcReply.Error(error));
+			return null;
 		}
 		var ctx = projects.forDocument(key).active;
 		if (ctx == null || whenAnalyzed == null || (ctx.snapshot != null && current(ctx, ctx.snapshot))) {
-			return respond(request.id, locate(lookup, method.failure, ctx, key, line, character));
+			reply(deliver, request.id, locate(lookup, failure, ctx, key, line, character));
+			return null;
 		}
 		// Join the waiters of the analysis this request waits for.
 		var candidate = LspSnapshotWaiters.new(this);
 		var waiters = whenAnalyzed(ctx, candidate);
-		if (waiters == null) return respond(request.id, locate(lookup, method.failure, ctx, key, line, character));
+		if (waiters == null) {
+			reply(deliver, request.id, locate(lookup, failure, ctx, key, line, character));
+			return null;
+		}
 		if (waiters == candidate && !waiters.fired) batches.put(waiters);
 		// Take the oldest waiting request's slot before answering it, so that
 		// a request sent from within that reply cannot exceed the bound.
 		var evicted = if(waitingCount >= MAX_WAITING, takeOldest());
 		var overlay = store.overlay(key);
-		var r = LspSnapshotRequest.new(lookup, method.failure, request.id, key, line, character,
+		var r = LspSnapshotRequest.new(lookup, failure, deliver, request.id, key, line, character,
 			if(overlay != null, overlay.identity), if(overlay == null, store.diskStamp(key)));
 		waiters.requests.put(r);
 		arrivals.put(r);
 		waitingCount++;
-		if (evicted != null) respond(evicted.id, reject(evicted.failure, "too many requests are waiting"));
+		if (evicted != null) reply(evicted.deliver, evicted.id, reject(evicted.failure, "too many requests are waiting"));
 		// The analysis ended before the request joined, if it could not start.
 		if (waiters.fired) answer(waiters);
 		compact();
+		return if(r.answered, null, r);
+	}
+	// Drops {r}, deferred by {submit}, without answering it, as a rename that
+	// its submitter answered on cancellation is. Its record goes at once, with
+	// the answer function and reply sink that keep the request's parameters.
+	def withdraw(r: LspSnapshotRequest) {
+		if (r == null || r.answered) return;
+		r.answered = true;
+		waitingCount--;
+		purge();
 	}
 	// Answers the requests of {waiters} once their analysis has ended. Each is
 	// answered from the snapshot of its document's active context now, which
@@ -238,16 +276,20 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	}
 	// Marks {r} answered before replying, so a request sent from within the
 	// reply sees the slot free.
-	private def finish(r: LspSnapshotRequest, reply: JsonRpcReply) {
+	private def finish(r: LspSnapshotRequest, result: JsonRpcReply) {
 		r.answered = true;
 		waitingCount--;
-		respond(r.id, reply);
+		reply(r.deliver, r.id, result);
 	}
 	// Drops answered requests once they are more than half of those recorded,
 	// so that each request is copied a bounded number of times.
 	private def compact() {
 		while (oldest < arrivals.length && arrivals[oldest].answered) oldest++;
 		if (arrivals.length - waitingCount <= arrivals.length / 2) return;
+		purge();
+	}
+	// Drops every answered request's record.
+	private def purge() {
 		var rest = Vector<LspSnapshotRequest>.new();
 		for (i = oldest; i < arrivals.length; i++) { if(!arrivals[i].answered) rest.put(arrivals[i]); }
 		arrivals = rest;
@@ -259,6 +301,11 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			requests.puta(kept.extract());
 		}
 	}
+	// Gives {result} to {deliver}, or sends it as the response to {id}.
+	private def reply(deliver: JsonRpcReply -> void, id: JsonRpcId, result: JsonRpcReply) {
+		if (deliver != null) deliver(result);
+		else respond(id, result);
+	}
 	private def respond(id: JsonRpcId, reply: JsonRpcReply) {
 		match (reply) {
 			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
@@ -268,7 +315,8 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// The snapshot is current if its project revision is current, it analyzed
 	// the context's current source list, and every source matches its stamp:
 	// an edit to any file can change what an unchanged identifier binds to.
-	private def current(ctx: ProjectContext, s: AnalysisSnapshot) -> bool {
+	// Rename checks it again before it replies.
+	def current(ctx: ProjectContext, s: AnalysisSnapshot) -> bool {
 		var versions = s.documentVersions;
 		if (!s.matchesProject() || versions.length != ctx.sources.length) return false;
 		for (i < versions.length) {

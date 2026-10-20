@@ -50,6 +50,8 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private var paths: Array<string>;
 	private var activeId: int;
 	private var pending: bool;
+	// The pending analysis's snapshot is not kept as {snapshot}.
+	private var temporary: bool;
 
 	def busy() -> bool { return pending; }
 
@@ -88,6 +90,15 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		pending = true;
 		if (!starting) sendRequest();
 		return AnalysisOutcome.Pending;
+	}
+	// Begins an analysis as {begin} does, whose completed snapshot goes only
+	// to the caller: {snapshot} keeps the last analysis that was not
+	// temporary. A rename's preflight (LspRename) analyzes edited sources
+	// that no project has, so its result must not replace the latest.
+	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
+		var outcome = begin(sources, options, flags);
+		if (AnalysisOutcome.Pending.?(outcome)) temporary = true;
+		return outcome;
 	}
 	def pollFds(fds: Array<int>, index: int) -> int {
 		return if(pending, worker.pollFds(fds, index), 0);
@@ -132,14 +143,14 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 				}
 				if (result.id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				generation++;
-				snapshot = result.snapshot;
+				if (!temporary) snapshot = result.snapshot;
 				// Every use the collector finds should be a token span; see
 				// AnalysisRange.isTokenSpan.
-				var skipped = snapshot.stats.skippedUses;
+				var skipped = result.snapshot.stats.skippedUses;
 				if (skipped > 0) log(warn, Strings.format1("analysis omitted %d uses that are not token spans", skipped));
 				clearPending();
 				retireIfOverLimit(result.state);
-				return AnalysisOutcome.Completed(snapshot);
+				return AnalysisOutcome.Completed(result.snapshot);
 			}
 			Closed(reason) => {
 				var what = if(starting, "closed its result pipe before its handshake", "crashed during an analysis");
@@ -172,6 +183,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	}
 	private def clearPending() {
 		pending = false;
+		temporary = false;
 		request = null;
 		paths = null;
 	}

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Rename (`textDocument/rename`) and prepare rename (`textDocument/prepareRename`) for configured projects, including unsaved buffers and closed files. Prepare rename returns the name's range and the declaration's name, or the reason it cannot be renamed. A rename edits the declaration's name and every use that spells it, in a `WorkspaceEdit` whose `documentChanges` carry each open document's version, after a preflight analyzes the project with the edits applied and finds every use bound as before: a new name that would capture a use, even without an error, or that the program rejects, is refused with the place and reason, and so is a document changed meanwhile. A rename is never partial. The new name must be a Virgil identifier of at most 255 bytes and not a keyword, a method may not take another method's name, since the analysis cannot rule out an override, and the client must accept versioned edits; the Neovim configurations now declare them. The worker protocol is unchanged. See [Rename](docs/architecture.md#rename) for the rules, refusals, and measurements, and [Prepare rename](docs/architecture.md#prepare-rename) for what can be renamed.
+
 ## [0.1.0-alpha.1] - 2026-10-20
 
 ### Added

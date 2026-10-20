@@ -1,0 +1,1069 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/rename with the real worker. Each session writes its project
+// file and sources into the build's project-fixtures/rename-edits directory
+// before the project is loaded. A rename's edits are checked exactly, then
+// applied to the open documents and the closed files, and renamed back: the
+// edited program's analysis must bind the same uses, so the reverse rename
+// passes its own preflight and edits the same tokens. LspPrepareRenameTest
+// covers eligibility, which rename shares, in full.
+def T = UnitTests.register;
+def X = [
+	T("LspRename:locals_and_parameters", test_locals_and_parameters),
+	T("LspRename:fields_and_methods", test_fields_and_methods),
+	T("LspRename:classes_and_components", test_classes_and_components),
+	T("LspRename:enums_and_variants", test_enums_and_variants),
+	T("LspRename:layouts_and_type_parameters", test_layouts_and_type_parameters),
+	T("LspRename:shared_name_tokens", test_shared_name_tokens),
+	T("LspRename:refuses_what_prepare_refuses", test_refuses_what_prepare_refuses),
+	T("LspRename:same_name", test_same_name),
+	T("LspRename:same_named_methods", test_same_named_methods),
+	T("LspRename:members_across_subclasses", test_members_across_subclasses),
+	T("LspRename:utf16_ranges", test_utf16_ranges),
+	T("LspRename:capture_by_new_local", test_capture_by_new_local),
+	T("LspRename:capture_by_existing_local", test_capture_by_existing_local),
+	T("LspRename:duplicate_names", test_duplicate_names),
+	T("LspRename:invalid_names", test_invalid_names),
+	T("LspRename:name_length", test_name_length),
+	T("LspRename:parse_and_semantic_errors", test_parse_and_semantic_errors),
+	T("LspRename:dependency_and_virgil_root", test_dependency_and_virgil_root),
+	T("LspRename:no_document_changes", test_no_document_changes),
+	T("LspRename:changed_while_waiting", test_changed_while_waiting),
+	T("LspRename:changed_while_checked", test_changed_while_checked),
+	T("LspRename:closed_file_changed_while_checked", test_closed_file_changed_while_checked),
+	T("LspRename:stale_snapshot", test_stale_snapshot),
+	T("LspRename:preflight_time_limit", test_preflight_time_limit),
+	T("LspRename:preflight_worker_crash", test_preflight_worker_crash),
+	T("LspRename:preflight_result_too_large", test_preflight_result_too_large),
+	T("LspRename:concurrent", test_concurrent),
+	T("LspRename:cancel", test_cancel),
+	T("LspRename:cancelled_waiting_renames_are_released", test_cancelled_waiting_renames_are_released),
+	T("LspRename:shutdown", test_shutdown),
+	T("LspRename:reply_bounds", test_reply_bounds),
+	T("LspRename:preflight_is_not_kept", test_preflight_is_not_kept),
+	T("LspRename:jobs_and_analyses_take_turns", test_jobs_and_analyses_take_turns),
+	T("LspRename:parameter_errors", test_parameter_errors),
+	T("LspRename:advertised", test_advertised),
+	()
+];
+
+def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"Kinds.v3\",\"Open.v3\",\"Uses.v3\"]}]}";
+// Kinds.v3 is open with unsaved changes: KINDS_DISK on disk, KINDS in the
+// editor. Open.v3 is open and unchanged; Uses.v3 is closed. Every line is ASCII.
+def KINDS_DISK = "class Shape(sides: int) {\n\tvar area: int;\n}\n";
+def KINDS = "class Shape(sides: int) {\n\tvar area: int;\n\tdef scale(factor: int) -> int {\n\t\tvar total = area * factor;\n\t\treturn total + sides;\n\t}\n\tdef self() -> Shape { return this; }\n}\ncomponent Registry {\n\tdef count = 3;\n\tdef make(n: int) -> Shape { return Shape.new(n); }\n}\nenum Color { RED, GREEN }\ntype Token {\n\tcase Word(text: string);\n\tcase End;\n}\nlayout Header {\n\t+0 tag: u8;\n\t=1;\n}\nclass Holder<T> {\n\tvar item: T;\n\tdef get() -> T { return item; }\n}\npacking Pair(a: 4, b: 4): 8 = #concat(a, b);\n";
+def OPEN = "component Opened {\n\tdef measure(s: Shape) -> int { return s.area + Registry.count; }\n}\n";
+def USES = "component Uses {\n\tdef run(s: Shape, c: Color, t: Token, r: Ref<Header>) -> int {\n\t\tvar h = Holder<Shape>.new();\n\t\th.item = s;\n\t\tvar x = s.scale(Registry.count) + h.get().area;\n\t\tif (c == Color.RED) x++;\n\t\tmatch (t) {\n\t\t\tWord(text) => x += text.length;\n\t\t\tEnd => x--;\n\t\t}\n\t\treturn x + r.tag;\n\t}\n}\n";
+
+// The LSP position, in UTF-16 code units, of byte {skip} past the first
+// {needle} in {text}.
+class RenameTestSpot(line: int, character: int) { }
+def at(text: string, needle: string, skip: int) -> RenameTestSpot {
+	var line = 0, start = 0;
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return RenameTestSpot.new(line, units(text, start, i + skip));
+		if (text[i] == '\n') {
+			line++;
+			start = i + 1;
+		}
+	}
+	return RenameTestSpot.new(-1, -1);
+}
+// The UTF-16 code units that encode the UTF-8 bytes of {text} from {begin} to
+// {end}: one for each character, and two for one of four bytes.
+def units(text: string, begin: int, end: int) -> int {
+	var n = 0;
+	for (i = begin; i < end; i++) {
+		var b: int = text[i];
+		if ((b & 0xC0) != 0x80) n += if(b >= 0xF0, 2, 1);
+	}
+	return n;
+}
+// The expected edits of one document of {s}, as {render} writes them: its
+// name, its current version, and the "line:begin-end" of the {length} bytes at {skip} into each
+// of {needles} in {text}.
+def doc(s: RenameTestSession, name: string, text: string, needles: Array<(string, int)>, length: int) -> string {
+	var f = s.file(name), buf = StringBuilder.new().puts(name);
+	if (f.version >= 0) buf.put1("@%d:", f.version);
+	else buf.puts("@null:");
+	for (n in needles) {
+		var p = at(text, n.0, n.1);
+		buf.put3(" %d:%d-%d", p.line, p.character, p.character + length);
+	}
+	return buf.toString();
+}
+def join(docs: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (i < docs.length) {
+		if (i > 0) buf.puts("; ");
+		buf.puts(docs[i]);
+	}
+	return buf.toString();
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = member(v, key);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+def array(v: JsonValue) -> Array<JsonValue> {
+	return if(JsonValue.JArray.?(v), JsonValue.JArray.!(v).v, []);
+}
+def writeFile(t: Tester, path: string, text: string) {
+	var fd = System.fileOpen(path, false);
+	t.assert(fd >= 0, "fixture file written");
+	if (fd < 0) return;
+	System.fileWriteK(fd, text, 0, text.length);
+	System.fileClose(fd);
+}
+def fixtureDirectory(fixture: string) -> string {
+	return ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+}
+// A source of a session: its text as the editor or the disk has it, and its
+// open version, or -1 while it is closed.
+class RenameTestFile(name: string) {
+	var text: string;
+	var version = -1;
+}
+class RenameTestSession {
+	def limits = AnalysisWorkerLimits.new();
+	var supervisor: AnalysisSupervisor;
+	var server: LspServer;
+	def files = Vector<RenameTestFile>.new();
+	var base: string;
+	// The responses received, in order, and the notifications.
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	def notifications = Vector<HashMap<string, JsonValue>>.new();
+	var nextId = 100;
+	var initializeReply: Array<byte>;
+
+	// Writes {sources}, the project file among them, and initializes the
+	// server, with the documentChanges capability if {documentChanges}, on the
+	// analysis worker at {worker}, or the real one if it is null.
+	new(fixture: string, sources: Array<(string, string)>, documentChanges: bool, worker: string, t: Tester) {
+		supervisor = AnalysisSupervisor.new(if(worker != null, worker, WorkerProcesses.defaultPath()), limits);
+		server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+		base = fixtureDirectory(fixture);
+		for (source in sources) write(t, source.0, source.1);
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var edit = Strings.newMap<JsonValue>(), workspace = Strings.newMap<JsonValue>();
+		var rename = Strings.newMap<JsonValue>(), textDocument = Strings.newMap<JsonValue>();
+		var capabilities = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		if (documentChanges) edit["documentChanges"] = JsonValue.Bool(true);
+		workspace["workspaceEdit"] = JsonValue.JObject(edit);
+		rename["prepareSupport"] = JsonValue.Bool(true);
+		textDocument["rename"] = JsonValue.JObject(rename);
+		capabilities["workspace"] = JsonValue.JObject(workspace);
+		capabilities["textDocument"] = JsonValue.JObject(textDocument);
+		params["capabilities"] = JsonValue.JObject(capabilities);
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		initializeReply = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (parsed.has("id")) replies.put(parsed);
+		else notifications.put(parsed);
+	}
+	def path(name: string) -> string { return ProjectFiles.join(base, name); }
+	def uri(name: string) -> string { return ProjectFiles.uri(path(name)); }
+	def file(name: string) -> RenameTestFile {
+		for (i < files.length) if (Strings.equal(files[i].name, name)) return files[i];
+		var f = RenameTestFile.new(name);
+		files.put(f);
+		return f;
+	}
+	def text(name: string) -> string { return file(name).text; }
+	// Writes {name} on disk, without a file event.
+	def write(t: Tester, name: string, text: string) {
+		writeFile(t, path(name), text);
+		var f = file(name);
+		if (f.version < 0) f.text = text;
+	}
+	def reportChanged(name: string) {
+		var change = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(uri(name));
+		change["type"] = JsonValue.Int(2);
+		params["changes"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	}
+	def open(name: string, version: int, text: string) {
+		var f = file(name), doc = Strings.newMap<JsonValue>();
+		f.text = text;
+		f.version = version;
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["languageId"] = JsonValue.String("virgil");
+		doc["version"] = JsonValue.Int(version);
+		doc["text"] = JsonValue.String(text);
+		notify("textDocument/didOpen", doc, null);
+	}
+	def change(name: string, version: int, text: string) {
+		var f = file(name), doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+		f.text = text;
+		f.version = version;
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		change["text"] = JsonValue.String(text);
+		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["textDocument"] = JsonValue.JObject(doc);
+		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
+	}
+	// Polls until no analysis or preflight runs or waits.
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+	def params(name: string, line: int, character: int) -> HashMap<string, JsonValue> {
+		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		position["line"] = JsonValue.Int(line);
+		position["character"] = JsonValue.Int(character);
+		params["textDocument"] = JsonValue.JObject(doc);
+		params["position"] = JsonValue.JObject(position);
+		return params;
+	}
+	// Sends a request with {params} and returns its id. Replies use the sink.
+	def send(t: Tester, method: string, params: HashMap<string, JsonValue>) -> int {
+		var id = nextId++;
+		var handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), method, JsonRpcParams.ByName(params)).encode());
+		t.assert(handled == null, "replies use the sink");
+		return id;
+	}
+	// Sends a rename request, without waiting for its preflight.
+	def rename(t: Tester, name: string, line: int, character: int, newName: string) -> int {
+		var p = params(name, line, character);
+		p["newName"] = JsonValue.String(newName);
+		return send(t, "textDocument/rename", p);
+	}
+	def cancel(id: int) {
+		var params = Strings.newMap<JsonValue>();
+		params["id"] = JsonValue.Int(id);
+		server.handle(JsonRpcMessage.Notification("$/cancelRequest", JsonRpcParams.ByName(params)).encode());
+	}
+	// The response to {id}, or null if none has arrived.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+		}
+		return null;
+	}
+	// The number of responses to {id}.
+	def count(id: int) -> int {
+		var n = 0;
+		for (i < replies.length) if (replies[i]["id"] == JsonValue.Int(id)) n++;
+		return n;
+	}
+	def result(t: Tester, id: int) -> JsonValue {
+		var r = reply(id);
+		t.assert(r != null, "the request was answered");
+		if (r == null) return JsonValue.Null;
+		if (r.has("error")) t.fail1("the request failed: %s", stringAt(r["error"], "message"));
+		return r["result"];
+	}
+	// Renames at {skip} bytes into {needle} in {name} and returns the
+	// WorkspaceEdit, once its preflight has passed.
+	def renamed(t: Tester, name: string, needle: string, skip: int, newName: string) -> JsonValue {
+		var p = at(text(name), needle, skip);
+		t.assert(p.line >= 0, "fixture text found");
+		var checked = server.rename.checked, id = rename(t, name, p.line, p.character, newName);
+		settle();
+		var edit = result(t, id);
+		t.asserti(checked + 1, server.rename.checked);
+		return edit;
+	}
+	// Checks that the rename at {skip} bytes into {needle} in {name} fails with
+	// RequestFailed and {message}, with no edit.
+	def refused(t: Tester, name: string, needle: string, skip: int, newName: string, message: string) {
+		var p = at(text(name), needle, skip);
+		t.assert(p.line >= 0, "fixture text found");
+		var id = rename(t, name, p.line, p.character, newName);
+		settle();
+		expectFailed(t, this, id, message);
+	}
+	// The name of {uri} relative to the session's directory.
+	def relative(uri: string) -> string {
+		var prefix = this.uri("");
+		return if(Strings.startsWith(uri, prefix), Arrays.range(uri, prefix.length, uri.length), uri);
+	}
+	// Applies {edit}, a WorkspaceEdit that writes {newName}: changes the open
+	// documents and writes and reports the closed files.
+	def apply(t: Tester, edit: JsonValue, newName: string) {
+		for (d in array(member(edit, "documentChanges"))) {
+			var name = relative(stringAt(member(d, "textDocument"), "uri")), f = file(name);
+			var text = f.text, edits = array(member(d, "edits"));
+			// From the last, so that earlier positions stay valid.
+			for (k = edits.length - 1; k >= 0; k--) {
+				var range = member(edits[k], "range");
+				var begin = offset(text, member(range, "start")), end = offset(text, member(range, "end"));
+				t.assert_string(newName, stringAt(edits[k], "newText"));
+				text = Arrays.concat(Arrays.concat(Arrays.range(text, 0, begin), newName), Arrays.range(text, end, text.length));
+			}
+			if (f.version >= 0) change(name, f.version + 1, text);
+			else {
+				write(t, name, text);
+				reportChanged(name);
+			}
+		}
+	}
+	// The byte offset of LSP position {p}, in UTF-16 code units, in {text}.
+	private def offset(text: string, p: JsonValue) -> int {
+		var line = intAt(p, "line"), i = 0;
+		while (line > 0 && i < text.length) {
+			if (text[i++] == '\n') line--;
+		}
+		var end = i;
+		while (end < text.length && units(text, i, end) < intAt(p, "character")) end++;
+		// The rest of the character's bytes.
+		while (end < text.length && (int.!(text[end]) & 0xC0) == 0x80) end++;
+		return end;
+	}
+}
+// {edit} as "name@version: line:begin-end ..." for each document, in order,
+// with each range moved as its tokens would be once the edits before it on
+// its line change their length by {delta}, and the session's current
+// version if {current}.
+def render(s: RenameTestSession, edit: JsonValue, delta: int, current: bool) -> string {
+	var docs = Vector<string>.new();
+	for (change in array(member(edit, "documentChanges"))) {
+		var textDocument = member(change, "textDocument"), name = s.relative(stringAt(textDocument, "uri"));
+		var v = member(textDocument, "version"), version = "null";
+		if (current) {
+			var f = s.file(name);
+			if (f.version >= 0) version = Strings.format1("%d", f.version);
+		} else if (JsonValue.Int.?(v)) {
+			version = Strings.format1("%d", JsonValue.Int.!(v).v);
+		}
+		var buf = StringBuilder.new().put2("%s@%s:", name, version), line = -1, moved = 0;
+		for (e in array(member(change, "edits"))) {
+			var range = member(e, "range"), start = member(range, "start"), end = member(range, "end");
+			var l = intAt(start, "line");
+			if (l != line) moved = 0;
+			line = l;
+			var begin = intAt(start, "character") + moved, length = intAt(end, "character") - intAt(start, "character") + delta;
+			if (intAt(end, "line") != l) buf.puts(" <multi-line>");
+			buf.put3(" %d:%d-%d", l, begin, begin + length);
+			moved += delta;
+		}
+		docs.put(buf.toString());
+	}
+	return join(docs.extract());
+}
+def expectFailed(t: Tester, s: RenameTestSession, id: int, message: string) {
+	var r = s.reply(id), what = Strings.format1("RequestFailed: %s", message);
+	t.assert(r != null, "the request was answered");
+	if (r == null) return;
+	t.assert(r.has("error"), what);
+	if (!r.has("error")) return;
+	t.asserti(LspErrorCode.REQUEST_FAILED, intAt(r["error"], "code"));
+	t.assert_string(message, stringAt(r["error"], "message"));
+}
+// The fixture's session, with Kinds.v3 open and edited, Open.v3 open, and
+// Uses.v3 closed, analyzed.
+def kindsSession(t: Tester) -> RenameTestSession {
+	return kindsSessionOn(null, t);
+}
+// The fixture's session on the analysis worker at {worker}.
+def kindsSessionOn(worker: string, t: Tester) -> RenameTestSession {
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", CONFIG), ("Kinds.v3", KINDS_DISK),
+		("Open.v3", OPEN), ("Uses.v3", USES)], true, worker, t);
+	s.open("Kinds.v3", 1, KINDS_DISK);
+	s.change("Kinds.v3", 2, KINDS);
+	s.open("Open.v3", 1, OPEN);
+	s.settle();
+	return s;
+}
+// Renames {oldName} at {skip} bytes into {needle} in {name} to {newName},
+// checks the edits against {expected}, applies them, renames back from the
+// first edited token, checks that the reverse rename edits the same tokens,
+// moved, and applies it, which restores every text.
+def roundTrip(t: Tester, s: RenameTestSession, name: string, needle: string, skip: int, oldName: string,
+		newName: string, expected: string) {
+	var before = Array<string>.new(s.files.length);
+	for (i < before.length) before[i] = s.files[i].text;
+	var edit = s.renamed(t, name, needle, skip, newName);
+	t.assert_string(expected, render(s, edit, 0, false));
+	s.apply(t, edit, newName);
+	s.settle();
+	var reverse = render(s, edit, newName.length - oldName.length, true);
+	// The first edited token, which the first edit's start still begins.
+	var changes = array(member(edit, "documentChanges"));
+	t.assert(changes.length > 0, "the rename edits something");
+	if (changes.length == 0) return;
+	var file = s.relative(stringAt(member(changes[0], "textDocument"), "uri"));
+	var start = member(member(array(member(changes[0], "edits"))[0], "range"), "start");
+	var p = s.params(file, intAt(start, "line"), intAt(start, "character"));
+	p["newName"] = JsonValue.String(oldName);
+	var checked = s.server.rename.checked, id = s.send(t, "textDocument/rename", p);
+	s.settle();
+	var back = s.result(t, id);
+	t.asserti(checked + 1, s.server.rename.checked);
+	t.assert_string(reverse, render(s, back, 0, false));
+	s.apply(t, back, oldName);
+	s.settle();
+	for (i < before.length) t.assert_string(before[i], s.files[i].text);
+}
+
+def test_locals_and_parameters(t: Tester) {
+	var s = kindsSession(t);
+	roundTrip(t, s, "Kinds.v3", "return total", 7, "total", "sum",
+		doc(s, "Kinds.v3", KINDS, [("var total", 4), ("return total", 7)], 5));
+	roundTrip(t, s, "Kinds.v3", "scale(factor", 6, "factor", "k",
+		doc(s, "Kinds.v3", KINDS, [("scale(factor", 6), ("* factor", 2)], 6));
+	// A local and a parameter of a closed file, which only it uses.
+	roundTrip(t, s, "Uses.v3", "var x", 4, "x", "count",
+		doc(s, "Uses.v3", USES, [("var x", 4), ("x++", 0), ("x +=", 0), ("x--", 0), ("return x", 7)], 1));
+	roundTrip(t, s, "Uses.v3", "s.scale", 0, "s", "shape",
+		doc(s, "Uses.v3", USES, [("(s: Shape", 1), ("= s;", 2), ("s.scale", 0)], 1));
+	// A match binding.
+	roundTrip(t, s, "Uses.v3", "Word(text", 5, "text", "word",
+		doc(s, "Uses.v3", USES, [("Word(text", 5), ("+= text", 3)], 4));
+	s.server.close();
+}
+def test_fields_and_methods(t: Tester) {
+	var s = kindsSession(t);
+	// Uses in the edited document, the unchanged open one, and the closed one.
+	roundTrip(t, s, "Kinds.v3", "var area", 4, "area", "surface", join([
+		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
+		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
+		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]));
+	// A component's field, from a use in the closed file.
+	roundTrip(t, s, "Uses.v3", "Registry.count", 9, "count", "size", join([
+		doc(s, "Kinds.v3", KINDS, [("def count", 4)], 5),
+		doc(s, "Open.v3", OPEN, [("Registry.count", 9)], 5),
+		doc(s, "Uses.v3", USES, [("Registry.count", 9)], 5)]));
+	// A field of a generic class.
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	// Methods: a class's, and a generic class's.
+	roundTrip(t, s, "Kinds.v3", "def scale", 4, "scale", "resize", join([
+		doc(s, "Kinds.v3", KINDS, [("def scale", 4)], 5),
+		doc(s, "Uses.v3", USES, [("s.scale", 2)], 5)]));
+	roundTrip(t, s, "Uses.v3", "get()", 0, "get", "fetch", join([
+		doc(s, "Kinds.v3", KINDS, [("def get", 4)], 3),
+		doc(s, "Uses.v3", USES, [("get()", 0)], 3)]));
+	s.server.close();
+}
+def test_classes_and_components(t: Tester) {
+	var s = kindsSession(t);
+	// "this" and the default constructor's ".new" resolve to the class
+	// without naming it: they are not edited, and still bind to it after.
+	roundTrip(t, s, "Kinds.v3", "class Shape", 6, "Shape", "Figure", join([
+		doc(s, "Kinds.v3", KINDS, [("class Shape", 6), ("self() -> Shape", 10), ("int) -> Shape", 8), ("return Shape.new", 7)], 5),
+		doc(s, "Open.v3", OPEN, [("s: Shape", 3)], 5),
+		doc(s, "Uses.v3", USES, [("s: Shape", 3), ("<Shape>", 1)], 5)]));
+	roundTrip(t, s, "Open.v3", "+ Registry", 2, "Registry", "Catalog", join([
+		doc(s, "Kinds.v3", KINDS, [("component Registry", 10)], 8),
+		doc(s, "Open.v3", OPEN, [("+ Registry", 2)], 8),
+		doc(s, "Uses.v3", USES, [("(Registry", 1)], 8)]));
+	roundTrip(t, s, "Uses.v3", "Holder<", 0, "Holder", "Box", join([
+		doc(s, "Kinds.v3", KINDS, [("class Holder", 6)], 6),
+		doc(s, "Uses.v3", USES, [("Holder<", 0)], 6)]));
+	s.server.close();
+}
+def test_enums_and_variants(t: Tester) {
+	var s = kindsSession(t);
+	roundTrip(t, s, "Kinds.v3", "enum Color", 5, "Color", "Hue", join([
+		doc(s, "Kinds.v3", KINDS, [("enum Color", 5)], 5),
+		doc(s, "Uses.v3", USES, [("c: Color", 3), ("== Color", 3)], 5)]));
+	roundTrip(t, s, "Uses.v3", ".RED", 1, "RED", "CRIMSON", join([
+		doc(s, "Kinds.v3", KINDS, [("{ RED", 2)], 3),
+		doc(s, "Uses.v3", USES, [(".RED", 1)], 3)]));
+	roundTrip(t, s, "Kinds.v3", "type Token", 5, "Token", "Lexeme", join([
+		doc(s, "Kinds.v3", KINDS, [("type Token", 5)], 5),
+		doc(s, "Uses.v3", USES, [("t: Token", 3)], 5)]));
+	roundTrip(t, s, "Kinds.v3", "case Word", 5, "Word", "Term", join([
+		doc(s, "Kinds.v3", KINDS, [("case Word", 5)], 4),
+		doc(s, "Uses.v3", USES, [("\t\t\tWord", 3)], 4)]));
+	s.server.close();
+}
+def test_layouts_and_type_parameters(t: Tester) {
+	var s = kindsSession(t);
+	roundTrip(t, s, "Kinds.v3", "layout Header", 7, "Header", "Prefix", join([
+		doc(s, "Kinds.v3", KINDS, [("layout Header", 7)], 6),
+		doc(s, "Uses.v3", USES, [("Ref<Header", 4)], 6)]));
+	roundTrip(t, s, "Uses.v3", "r.tag", 2, "tag", "kind", join([
+		doc(s, "Kinds.v3", KINDS, [("+0 tag", 3)], 3),
+		doc(s, "Uses.v3", USES, [("r.tag", 2)], 3)]));
+	roundTrip(t, s, "Kinds.v3", "item: T", 6, "T", "E",
+		doc(s, "Kinds.v3", KINDS, [("Holder<T", 7), ("item: T", 6), ("-> T", 3)], 1));
+	s.server.close();
+}
+// A class parameter and its field share a name token, and so do a data
+// type's parameters and fields; one token is renamed, with the uses of both.
+def test_shared_name_tokens(t: Tester) {
+	var shared = "class Point(var x: int) {\n\tdef get() -> int { return x; }\n}\ntype Size(w: int, h: int) { }\ncomponent Geo {\n\tdef area(s: Size, p: Point) -> int { return s.w * s.h + p.x; }\n\tdef make() -> Point { return Point.new(1); }\n}\n";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Shared.v3")), ("Shared.v3", shared)], true, null, t);
+	s.open("Shared.v3", 1, shared);
+	s.settle();
+	roundTrip(t, s, "Shared.v3", "p.x", 2, "x", "px",
+		doc(s, "Shared.v3", shared, [("var x", 4), ("return x", 7), ("p.x", 2)], 1));
+	roundTrip(t, s, "Shared.v3", "Size(w", 5, "w", "width",
+		doc(s, "Shared.v3", shared, [("Size(w", 5), ("s.w", 2)], 1));
+	roundTrip(t, s, "Shared.v3", "type Size", 5, "Size", "Extent",
+		doc(s, "Shared.v3", shared, [("type Size", 5), ("s: Size", 3)], 4));
+	s.server.close();
+}
+// Rename selects the name with prepareRename's rules, so it refuses what
+// prepareRename refuses, with the same reason: navigation aliases, packings
+// and their parameters, constructors, builtins, and keywords.
+def test_refuses_what_prepare_refuses(t: Tester) {
+	var s = kindsSession(t);
+	var cases = [("Kinds.v3", "return this", 7), ("Kinds.v3", "packing Pair", 8), ("Kinds.v3", "Pair(a", 5),
+		("Kinds.v3", "Shape.new", 6), ("Uses.v3", "text.length", 5), ("Kinds.v3", "def scale", 1),
+		("Kinds.v3", "(sides: int", 8), ("Uses.v3", "x++", 2)];
+	for (c in cases) {
+		var p = at(s.text(c.0), c.1, c.2);
+		t.assert(p.line >= 0, "fixture text found");
+		var prepare = s.send(t, "textDocument/prepareRename", s.params(c.0, p.line, p.character));
+		var id = s.rename(t, c.0, p.line, p.character, "renamed");
+		s.settle();
+		var r = s.reply(prepare);
+		t.assert(r != null && r.has("error"), Strings.format1("prepareRename refuses %s", c.1));
+		if (r == null || !r.has("error")) continue;
+		expectFailed(t, s, id, stringAt(r["error"], "message"));
+	}
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+}
+// A new name equal to the current one needs no edit and no preflight.
+def test_same_name(t: Tester) {
+	var s = kindsSession(t);
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "area");
+	t.assert(s.reply(id) != null, "answered at once");
+	var result = s.result(t, id);
+	t.assertz(true, JsonValue.JArray.?(member(result, "documentChanges")));
+	t.asserti(0, array(member(result, "documentChanges")).length);
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+}
+// HIERARCHY's methods share no name, so each is eligible, but a method given
+// another method's name may start to override it or be overridden by it, with
+// every use bound as before: renaming Base.foo to bar would make use(c) call
+// Child.bar. The analysis has no class hierarchy, so a method is refused a
+// name that any other method has, in any class or component.
+def HIERARCHY = "class Base {\n\tvar count: int;\n\tdef foo() -> int { return 1; }\n}\nclass Child extends Base {\n\tvar size: int;\n\tdef bar() -> int { return 2; }\n}\ncomponent Util {\n\tdef helper() -> int { return 3; }\n}\ncomponent Main {\n\tdef use(b: Base) -> int { return b.foo() + b.count; }\n\tdef main() -> int { var c = Child.new(); return use(c) + c.bar() + c.size + Util.helper(); }\n}\n";
+def hierarchySession(t: Tester) -> RenameTestSession {
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Hierarchy.v3")), ("Hierarchy.v3", HIERARCHY)], true, null, t);
+	s.open("Hierarchy.v3", 1, HIERARCHY);
+	s.settle();
+	return s;
+}
+def test_same_named_methods(t: Tester) {
+	var s = hierarchySession(t);
+	var reason = "cannot rename '%s' to '%s': another method is named '%s', and the analysis cannot rule out an override";
+	// A base method renamed to a subclass method's name would be overridden.
+	s.refused(t, "Hierarchy.v3", "def foo", 4, "bar", Strings.format3(reason, "foo", "bar", "bar"));
+	// A subclass method renamed to a base method's name would override it.
+	s.refused(t, "Hierarchy.v3", "c.bar", 2, "foo", Strings.format3(reason, "bar", "foo", "foo"));
+	// A component's method, which nothing overrides, is refused the same way.
+	s.refused(t, "Hierarchy.v3", "def helper", 4, "foo", Strings.format3(reason, "helper", "foo", "foo"));
+	t.asserti(0, s.server.rename.checked);
+	// A name that no method has is eligible.
+	roundTrip(t, s, "Hierarchy.v3", "def foo", 4, "foo", "baz",
+		doc(s, "Hierarchy.v3", HIERARCHY, [("def foo", 4), ("b.foo", 2)], 3));
+	s.server.close();
+}
+// A field and a method of one name in a class and its subclass fail to verify,
+// in either order, so the preflight refuses them for their error: a field
+// renamed to a subclass method's name or the reverse, a method renamed to a
+// subclass field's name or the reverse, and a field renamed to a subclass
+// field's name.
+def test_members_across_subclasses(t: Tester) {
+	var s = hierarchySession(t);
+	var path = s.path("Hierarchy.v3");
+	var cases = [
+		("var count", 4, "count", "bar", "7:6: InheritanceError: cannot override non-method member"),
+		("def bar", 4, "bar", "count", "7:6: InheritanceError: cannot override non-method member"),
+		("def foo", 4, "foo", "size", "6:6: MemberRedefined: member \"size\" redefined"),
+		("var size", 4, "size", "foo", "6:6: MemberRedefined: member \"foo\" redefined"),
+		("var size", 4, "size", "count", "6:6: MemberRedefined: member \"count\" redefined")
+	];
+	for (c in cases) {
+		s.refused(t, "Hierarchy.v3", c.0, c.1, c.3, Strings.format3("renaming '%s' to '%s' would cause an error at %s", c.2, c.3,
+			Strings.format2("%s:%s", path, c.4)));
+	}
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+}
+// Ranges count UTF-16 code units: a non-ASCII string before the renamed
+// tokens on their line moves them by one unit for é and two for 😀, which
+// UTF-8 encodes in two and four bytes.
+def test_utf16_ranges(t: Tester) {
+	var emoji = "component Emoji {\n\tdef run() -> int { var s = \"\xf0\x9f\x98\x80\xc3\xa9\"; var n = s.length; return n + n; }\n}\n";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Emoji.v3")), ("Emoji.v3", emoji)], true, null, t);
+	s.open("Emoji.v3", 1, emoji);
+	s.settle();
+	var edit = s.renamed(t, "Emoji.v3", "var n", 4, "total");
+	t.assert_string("Emoji.v3@1: 1:39-40 1:60-61 1:64-65", render(s, edit, 0, false));
+	s.server.close();
+	s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Emoji.v3")), ("Emoji.v3", emoji)], true, null, t);
+	s.open("Emoji.v3", 1, emoji);
+	s.settle();
+	roundTrip(t, s, "Emoji.v3", "var n", 4, "n", "total",
+		doc(s, "Emoji.v3", emoji, [("var n", 4), ("return n", 7), ("+ n", 2)], 1));
+	s.server.close();
+}
+// The new name of a local hides a field that a later use in its scope reads:
+// the program still verifies, but that use would bind to the local.
+def test_capture_by_new_local(t: Tester) {
+	var counter = "class Counter {\n\tvar count: int;\n\tdef bump() -> int {\n\t\tvar n = 1;\n\t\treturn n + count;\n\t}\n}\n";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Counter.v3")), ("Counter.v3", counter)], true, null, t);
+	s.open("Counter.v3", 1, counter);
+	s.settle();
+	s.refused(t, "Counter.v3", "var n", 4, "count", Strings.format1(
+		"renaming 'n' to 'count' would make the use of another 'count' at %s:5:14 refer to the renamed declaration", s.path("Counter.v3")));
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+}
+// The new name of a field is a local's that a method reads before the field:
+// the field's renamed use would bind to the local.
+def test_capture_by_existing_local(t: Tester) {
+	var tally = "class Tally {\n\tvar total: int;\n\tdef sum() -> int {\n\t\tvar acc = 2;\n\t\treturn acc + total;\n\t}\n}\n";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Tally.v3")), ("Tally.v3", tally)], true, null, t);
+	s.open("Tally.v3", 1, tally);
+	s.settle();
+	s.refused(t, "Tally.v3", "var total", 4, "acc", Strings.format1(
+		"renaming 'total' to 'acc' would make the use at %s:5:16 refer to another declaration", s.path("Tally.v3")));
+	s.server.close();
+}
+// A new name already declared in the same scope makes the program fail to
+// verify, and the first error is the reason. It is never published.
+def test_duplicate_names(t: Tester) {
+	var pair = "class Pair {\n\tvar left: int;\n\tvar right: int;\n\tdef sum() -> int {\n\t\tvar a = left;\n\t\tvar b = right;\n\t\treturn a + b;\n\t}\n}\n";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Pair.v3")), ("Pair.v3", pair)], true, null, t);
+	s.open("Pair.v3", 1, pair);
+	s.settle();
+	var published = s.notifications.length;
+	s.refused(t, "Pair.v3", "var a", 4, "b", Strings.format1(
+		"renaming 'a' to 'b' would cause an error at %s:6:7: VarDeclError: variable \"b\" redefined", s.path("Pair.v3")));
+	s.refused(t, "Pair.v3", "var left", 4, "right", Strings.format1(
+		"renaming 'left' to 'right' would cause an error at %s:3:6: MemberRedefined: member \"right\" redefined", s.path("Pair.v3")));
+	t.asserti(published, s.notifications.length);
+	s.server.close();
+}
+// The new name must be an identifier as Aeneas lexes it, and not a keyword
+// or "this".
+def test_invalid_names(t: Tester) {
+	var s = kindsSession(t);
+	var syntax = "'%s' is not a Virgil identifier: it must start with an ASCII letter, followed by ASCII letters, digits, or underscores";
+	var p = at(KINDS, "var area", 4);
+	for (name in ["2x", "_x", "a-b", "a b", "caf\xc3\xa9", "x.y"]) {
+		var id = s.rename(t, "Kinds.v3", p.line, p.character, name);
+		expectFailed(t, s, id, Strings.format1(syntax, name));
+	}
+	var id = s.rename(t, "Kinds.v3", p.line, p.character, "");
+	expectFailed(t, s, id, "the new name is empty");
+	for (name in ["if", "class", "this", "true", "null", "packing", "var", "super", "layout"]) {
+		id = s.rename(t, "Kinds.v3", p.line, p.character, name);
+		expectFailed(t, s, id, Strings.format1("'%s' is a reserved word in Virgil and cannot be a name", name));
+	}
+	// Underscores and digits after the first letter are allowed.
+	roundTrip(t, s, "Kinds.v3", "var area", 4, "area", "a_2", join([
+		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
+		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
+		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]));
+	s.server.close();
+}
+// A new name is at most LspRenameNames.MAX_LENGTH bytes. A longer one is
+// refused on arrival, and leaves no rename pending.
+def test_name_length(t: Tester) {
+	var s = kindsSession(t);
+	var name = Array<byte>.new(LspRenameNames.MAX_LENGTH + 1);
+	for (i < name.length) name[i] = 'a';
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, name);
+	expectFailed(t, s, id, Strings.format1("the new name is longer than %d bytes", LspRenameNames.MAX_LENGTH));
+	var longest = Arrays.range(name, 0, LspRenameNames.MAX_LENGTH);
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", longest, join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.close();
+}
+def test_parse_and_semantic_errors(t: Tester) {
+	var s = kindsSession(t);
+	var broken = "component Opened {\n\tdef measure(s: Shape) -> int { return s.area + missing; }\n}\n";
+	s.change("Open.v3", 2, broken);
+	s.settle();
+	s.refused(t, "Kinds.v3", "var area", 4, "surface", "the project's analysis has errors; rename needs a program that verifies");
+	s.change("Open.v3", 3, "component Opened {\n");
+	s.settle();
+	s.refused(t, "Kinds.v3", "var area", 4, "surface", "the project's analysis has parse errors");
+	s.change("Open.v3", 4, OPEN);
+	s.settle();
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.close();
+}
+// Neither a dependency nor a library under the Virgil root is edited.
+def test_dependency_and_virgil_root(t: Tester) {
+	var main = "class Widget { }\n";
+	var use = "component Use { def get() -> Widget { return Widget.new(); } }\n";
+	var lib = "component Lib { def make() -> Widget { return Widget.new(); } }\n";
+	var s = RenameTestSession.new("rename-deps", [("Main.v3", main), ("Use.v3", use), ("dep/Lib.v3", lib)], true, null, t);
+	s.open("Main.v3", 1, main);
+	s.settle();
+	s.refused(t, "Main.v3", "class Widget", 6, "Gadget", "cannot rename 'Widget': a use is in a dependency, not in the project's own sources");
+	s.write(t, "dep/Lib.v3", lib);
+	s.refused(t, "dep/Lib.v3", "component Lib", 10, "Library", "cannot rename 'Lib': it is declared in a dependency, not in the project's own sources");
+	s.server.close();
+	var rooted = "component Main { def four() -> int { return Lib.twice(2); } }\n";
+	var r = RenameTestSession.new("rename-root", [("Main.v3", rooted)], true, null, t);
+	r.server.projects.virgilRoot = r.path("vroot");
+	r.open("Main.v3", 1, rooted);
+	r.settle();
+	r.refused(t, "Main.v3", "Lib.twice", 4, "double", "cannot rename 'twice': it is declared in a dependency, not in the project's own sources");
+	r.refused(t, "Main.v3", "Lib.twice", 0, "Library", "cannot rename 'Lib': it is declared in a dependency, not in the project's own sources");
+	r.server.close();
+}
+// Without versioned edits, a client could apply an edit to a document that
+// changed since it was planned.
+def test_no_document_changes(t: Tester) {
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", CONFIG), ("Kinds.v3", KINDS),
+		("Open.v3", OPEN), ("Uses.v3", USES)], false, null, t);
+	s.open("Kinds.v3", 1, KINDS);
+	s.settle();
+	s.refused(t, "Kinds.v3", "var area", 4, "surface",
+		"rename needs a client that accepts versioned edits (workspace.workspaceEdit.documentChanges), so that an edit to a changed document is refused");
+	// Eligibility comes first, with prepareRename's reason.
+	s.refused(t, "Kinds.v3", "return this", 7, "that", "'this' is a navigation alias for the class 'Shape'; rename the class at its declaration");
+	s.server.close();
+}
+// A rename that waits for an analysis is refused if its document changes
+// again before that analysis ends.
+def test_changed_while_waiting(t: Tester) {
+	var s = kindsSession(t);
+	var edited = Arrays.concat(KINDS, "\n");
+	s.change("Kinds.v3", 3, edited);
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	t.assert(s.reply(id) == null, "the rename waits for the analysis");
+	s.change("Kinds.v3", 4, KINDS);
+	s.settle();
+	expectFailed(t, s, id, "the document changed while the rename request waited");
+	t.asserti(0, s.server.rename.checked);
+	// Once analyzed, the same rename succeeds.
+	roundTrip(t, s, "Kinds.v3", "var area", 4, "area", "surface", join([
+		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
+		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
+		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]));
+	s.server.close();
+}
+// An edit while the preflight runs refuses the rename, which describes the
+// text before it; no subset of the edits is returned.
+def test_changed_while_checked(t: Tester) {
+	var s = kindsSession(t);
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	t.assert(s.reply(id) == null, "the rename waits for its preflight");
+	s.change("Open.v3", 2, Arrays.concat(OPEN, "\n"));
+	s.settle();
+	expectFailed(t, s, id, "the documents changed while the rename was checked");
+	t.asserti(1, s.server.rename.checked);
+	s.server.close();
+}
+// A closed file changed on disk without a file event while the preflight
+// runs: its stamp is current, but its bytes are not the ones analyzed.
+def test_closed_file_changed_while_checked(t: Tester) {
+	var s = kindsSession(t);
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	s.write(t, "Uses.v3", Arrays.concat(USES, "\n"));
+	s.settle();
+	expectFailed(t, s, id, "the documents changed while the rename was checked");
+	// Before the next preflight, the bytes no longer match the analysis.
+	id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	s.settle();
+	expectFailed(t, s, id, Strings.format1("the project's analysis is stale: the bytes of %s changed since it was analyzed", s.path("Uses.v3")));
+	s.server.close();
+}
+// A snapshot that is stale with no analysis pending, after a failed
+// analysis, is refused at once, as prepareRename refuses it.
+def test_stale_snapshot(t: Tester) {
+	var s = kindsSession(t);
+	s.limits.timeoutMs = 0;
+	s.change("Open.v3", 2, Arrays.concat(OPEN, "\n"));
+	s.settle();
+	s.limits.timeoutMs = 10000;
+	s.refused(t, "Kinds.v3", "var area", 4, "surface", "the project's analysis is stale; it does not describe the current sources");
+	s.server.close();
+}
+// A preflight that the worker does not finish in time refuses the rename.
+def test_preflight_time_limit(t: Tester) {
+	var s = kindsSession(t);
+	s.limits.timeoutMs = 0;
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	s.settle();
+	var r = s.reply(id);
+	t.assert(r != null && r.has("error"), "the rename was refused");
+	if (r != null && r.has("error")) {
+		t.asserti(LspErrorCode.REQUEST_FAILED, intAt(r["error"], "code"));
+		var message = stringAt(r["error"], "message");
+		t.assert(Strings.startsWith(message, "the rename could not be checked: the analysis worker timed out"), message);
+	}
+	s.limits.timeoutMs = 10000;
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.close();
+}
+// The number of publishDiagnostics notifications {s} has received.
+def publications(s: RenameTestSession) -> int {
+	var n = 0;
+	for (i < s.notifications.length) {
+		if (Strings.equal("textDocument/publishDiagnostics", stringAt(JsonValue.JObject(s.notifications[i]), "method"))) n++;
+	}
+	return n;
+}
+// A preflight that fails in the worker refuses its rename once, with the
+// failure's reason, and keeps the context's and the supervisor's snapshots
+// and the published diagnostics; the replaced worker checks the next rename.
+// The unit-test executable is the worker: it analyzes sources as the real one
+// does, but fails an analysis whose sources spell {newName}.
+def preflightFails(t: Tester, newName: string, reason: string) {
+	var s = kindsSessionOn(HostOs.executablePath(), t);
+	var ctx = s.server.projects.forDocument(s.uri("Kinds.v3")).active, snapshot = ctx.snapshot;
+	var latest = s.supervisor.snapshot, published = publications(s), started = s.supervisor.workersStarted;
+	t.assert(snapshot != null && snapshot.verified, "the synthetic worker analyzed the project");
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, newName);
+	s.settle();
+	t.asserti(1, s.count(id));
+	var r = s.reply(id);
+	t.assert(r != null && r.has("error"), "the rename was refused");
+	if (r != null && r.has("error")) {
+		t.asserti(LspErrorCode.REQUEST_FAILED, intAt(r["error"], "code"));
+		var message = stringAt(r["error"], "message");
+		t.assert(Strings.startsWith(message, Strings.format1("the rename could not be checked: %s", reason)), message);
+	}
+	t.asserti(0, s.server.rename.checked);
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(s.supervisor.snapshot == latest, "the supervisor keeps its latest snapshot");
+	t.asserti(published, publications(s));
+	roundTrip(t, s, "Kinds.v3", "var area", 4, "area", "surface", join([
+		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
+		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
+		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]));
+	t.asserti(started + 1, s.supervisor.workersStarted);
+	s.server.close();
+}
+// The worker ends during the preflight, so the supervisor reads the end of its
+// result pipe.
+def test_preflight_worker_crash(t: Tester) {
+	preflightFails(t, SyntheticAnalysisWorker.CRASH, "the analysis worker crashed");
+}
+// The preflight's result exceeds the decoding budget.
+def test_preflight_result_too_large(t: Tester) {
+	preflightFails(t, SyntheticAnalysisWorker.TOO_LARGE, "the program is too large to analyze");
+}
+// One rename is checked at a time; a second is refused at once.
+def test_concurrent(t: Tester) {
+	var s = kindsSession(t);
+	var p = at(KINDS, "var area", 4), first = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	var second = s.rename(t, "Kinds.v3", p.line, p.character, "region");
+	expectFailed(t, s, second, "another rename is being checked; try again once it is answered");
+	s.settle();
+	var result = s.result(t, first);
+	t.asserti(3, array(member(result, "documentChanges")).length);
+	t.asserti(1, s.count(first));
+	s.server.close();
+}
+// $/cancelRequest answers a pending rename with RequestCancelled at once,
+// while it waits for an analysis or for its preflight, and nothing else.
+def test_cancel(t: Tester) {
+	var s = kindsSession(t);
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	s.cancel(id + 1000);
+	t.assert(s.reply(id) == null, "another id cancels nothing");
+	s.cancel(id);
+	var r = s.reply(id);
+	t.assert(r != null && r.has("error"), "cancelled at once");
+	if (r != null) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+	// Another rename may start while the dropped preflight still runs.
+	var next = s.rename(t, "Kinds.v3", p.line, p.character, "region");
+	s.settle();
+	t.asserti(1, s.count(id));
+	t.asserti(3, array(member(s.result(t, next), "documentChanges")).length);
+	t.asserti(1, s.server.rename.checked);
+	// While the rename waits for the analysis of an edit.
+	s.change("Kinds.v3", 3, Arrays.concat(KINDS, "\n"));
+	id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	s.cancel(id);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(id)["error"], "code"));
+	s.settle();
+	t.asserti(1, s.count(id));
+	t.asserti(1, s.server.rename.checked);
+	s.server.close();
+}
+// A cancelled rename that waited for an analysis keeps nothing: neither the
+// waiting requests nor the rename hold it or its new name. More renames than
+// the waiting bound are cancelled in turn while one analysis stays pending,
+// each with the longest new name.
+def test_cancelled_waiting_renames_are_released(t: Tester) {
+	var s = kindsSession(t);
+	var requests = s.server.rename.requests, name = Array<byte>.new(LspRenameNames.MAX_LENGTH);
+	for (i < name.length) name[i] = 'a';
+	s.change("Kinds.v3", 3, Arrays.concat(KINDS, "\n"));
+	var p = at(KINDS, "var area", 4);
+	for (k < requests.MAX_WAITING + 8) {
+		var id = s.rename(t, "Kinds.v3", p.line, p.character, name);
+		t.assert(s.reply(id) == null, "the rename waits for the analysis");
+		t.asserti(1, requests.waiting());
+		s.cancel(id);
+		t.asserti(1, s.count(id));
+		t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(id)["error"], "code"));
+		t.asserti(0, requests.waiting());
+		t.asserti(0, requests.recorded());
+	}
+	s.settle();
+	t.asserti(0, s.server.rename.checked);
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.close();
+}
+// Shutdown answers a rename whose preflight runs with RequestCancelled.
+def test_shutdown(t: Tester) {
+	var s = kindsSession(t);
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	var shutdown = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.ByName(Strings.newMap<JsonValue>())).encode());
+	t.assert(shutdown != null, "shutdown answered");
+	var r = s.reply(id);
+	t.assert(r != null && r.has("error"), "the rename was cancelled");
+	if (r != null) {
+		t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+		t.assert_string("the server is shutting down", stringAt(r["error"], "message"));
+	}
+	t.asserti(1, s.count(id));
+	s.server.close();
+}
+// A rename past either bound is refused whole, before its preflight.
+def test_reply_bounds(t: Tester) {
+	var s = kindsSession(t);
+	s.server.rename.maxEdits = 4;
+	roundTrip(t, s, "Kinds.v3", "var area", 4, "area", "surface", join([
+		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
+		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
+		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]));
+	s.server.rename.maxEdits = 3;
+	s.refused(t, "Kinds.v3", "var area", 4, "surface", "renaming 'area' needs more than 3 edits");
+	s.server.rename.maxEdits = LspReferences.MAX_LOCATIONS;
+	// Two edits of Holder's field item: the document wrapper of each file,
+	// its URI as JsonRpcJson.stringBytes counts it, and an edit's bytes.
+	var newName = "held", edit = JsonRpcJson.stringBytes(newName) + s.server.rename.EDIT_BYTES;
+	var need = 32 + JsonRpcJson.stringBytes(s.uri("Kinds.v3")) + s.server.rename.DOCUMENT_BYTES + 2 * edit
+		+ JsonRpcJson.stringBytes(s.uri("Uses.v3")) + s.server.rename.DOCUMENT_BYTES + edit;
+	s.server.rename.maxReplyBytes = need;
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", newName, join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.rename.maxReplyBytes = need - 1;
+	s.refused(t, "Kinds.v3", "var item", 4, newName, Strings.format1("the edits that rename 'item' need more than %d bytes", need - 1));
+	s.server.close();
+}
+// The preflight's analysis is never the project's or the supervisor's
+// snapshot, publishes nothing, and is not retained.
+def test_preflight_is_not_kept(t: Tester) {
+	var s = kindsSession(t);
+	var ctx = s.server.projects.forDocument(s.uri("Kinds.v3")).active, snapshot = ctx.snapshot;
+	var latest = s.supervisor.snapshot, published = s.notifications.length;
+	var p = at(KINDS, "var area", 4), id = s.rename(t, "Kinds.v3", p.line, p.character, "surface");
+	s.settle();
+	t.asserti(3, array(member(s.result(t, id), "documentChanges")).length);
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(s.supervisor.snapshot == latest, "the supervisor keeps its latest snapshot");
+	t.asserti(published, s.notifications.length);
+	s.server.close();
+}
+// A job queued behind a running analysis starts as soon as it ends, before a
+// due context; one queued behind a job waits for a due context first.
+def test_jobs_and_analyses_take_turns(t: Tester) {
+	var s = kindsSession(t);
+	var scheduler = s.server.rename.scheduler, ctx = s.server.projects.forDocument(s.uri("Kinds.v3")).active;
+	var order = Vector<string>.new();
+	var source = [AnalysisSource.new(s.path("Job.v3"), "component Job { }\n")];
+	var job = fun (label: string) => LspAnalysisJob.new(
+		fun (supervisor: AnalysisSupervisor) -> AnalysisOutcome {
+			order.put(Strings.format2("%s after %d", label, ctx.snapshot.generation));
+			return supervisor.beginTemporary(source, [], AnalysisWire.WANT_OCCURRENCES);
+		},
+		fun (outcome: AnalysisOutcome) { order.put(Strings.format1("%s done", label)); });
+	var generation = ctx.snapshot.generation;
+	// The first job starts at once; the context and the second job wait.
+	t.assertz(true, scheduler.submit(job("one")));
+	scheduler.schedule([ctx], false);
+	t.assertz(true, scheduler.submit(job("two")));
+	t.assertz(false, scheduler.submit(job("three")));
+	s.settle();
+	t.assert_string(Strings.format1("one after %d", generation), order[0]);
+	t.assert_string("one done", order[1]);
+	// The context's analysis came between the jobs.
+	t.assert_string(Strings.format1("two after %d", generation + 2), order[2]);
+	t.assert_string("two done", order[3]);
+	t.asserti(4, order.length);
+	// A job submitted while a context's analysis runs starts after it, before
+	// another due context. Each analysis, a job's too, takes a generation.
+	order.clear();
+	generation = ctx.snapshot.generation + 1;
+	scheduler.schedule([ctx], false);
+	t.assertz(true, scheduler.submit(job("four")));
+	scheduler.schedule([ctx], false);
+	s.settle();
+	t.assert_string(Strings.format1("four after %d", generation + 1), order[0]);
+	t.assert_string("four done", order[1]);
+	t.asserti(generation + 3, ctx.snapshot.generation);
+	s.server.close();
+}
+def test_parameter_errors(t: Tester) {
+	var s = kindsSession(t);
+	var requires = "rename params require a valid textDocument.uri, position, and newName";
+	var p = at(KINDS, "var area", 4), params = s.params("Kinds.v3", p.line, p.character);
+	for (bad in [JsonValue.Null, JsonValue.Int(1), JsonValue.Bool(true)]) {
+		params["newName"] = bad;
+		var id = s.send(t, "textDocument/rename", params);
+		t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(s.reply(id)["error"], "code"));
+		t.assert_string(requires, stringAt(s.reply(id)["error"], "message"));
+	}
+	params.remove("newName");
+	var id = s.send(t, "textDocument/rename", params);
+	t.assert_string(requires, stringAt(s.reply(id)["error"], "message"));
+	params = s.params("Kinds.v3", -1, 0);
+	params["newName"] = JsonValue.String("surface");
+	id = s.send(t, "textDocument/rename", params);
+	t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(s.reply(id)["error"], "code"));
+	t.assert_string(requires, stringAt(s.reply(id)["error"], "message"));
+	// A parameter error leaves no rename pending.
+	roundTrip(t, s, "Kinds.v3", "var item", 4, "item", "held", join([
+		doc(s, "Kinds.v3", KINDS, [("var item", 4), ("return item", 7)], 4),
+		doc(s, "Uses.v3", USES, [("h.item", 2)], 4)]));
+	s.server.close();
+}
+// renameProvider has prepareProvider for a client with prepareSupport, and
+// is true for one without, which RenameOptions may not be sent to.
+def test_advertised(t: Tester) {
+	var s = kindsSession(t);
+	var init = JsonRpcJsonParser.new(s.initializeReply).parseDocument();
+	var provider = member(member(member(init, "result"), "capabilities"), "renameProvider");
+	t.assert(member(provider, "prepareProvider") == JsonValue.Bool(true), "prepareProvider is advertised");
+	s.server.close();
+	var server = LspServer.new(DocumentLimits.MAX_BYTES), params = Strings.newMap<JsonValue>();
+	params["capabilities"] = JsonValue.JObject(Strings.newMap<JsonValue>());
+	var reply = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
+	var plain = JsonRpcJsonParser.new(reply).parseDocument();
+	t.assert(member(member(member(plain, "result"), "capabilities"), "renameProvider") == JsonValue.Bool(true), "rename is advertised");
+	server.close();
+}
+// A project file that selects only {name}.
+def single(name: string) -> string {
+	return Strings.format1("{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"%s\"]}]}", name);
+}

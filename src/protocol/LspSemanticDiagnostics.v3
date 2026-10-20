@@ -16,8 +16,18 @@ class LspSemanticWait(context: ProjectContext) {
 	var listener: LspSnapshotWaiters;
 }
 
+// An analysis that one request needs and no project has, such as a rename's
+// preflight (LspRename). {begin} starts it on the supervisor and returns
+// Pending or the failure; {complete} receives the outcome of one that started,
+// once, unless it was withdrawn. Its snapshot is never published, never a
+// context's, and never the supervisor's latest.
+class LspAnalysisJob(begin: AnalysisSupervisor -> AnalysisOutcome, complete: AnalysisOutcome -> void) {
+	var withdrawn: bool;
+}
+
 // Automatic whole-program analysis of configured projects and publication of
-// its diagnostics. See docs/architecture.md#semantic-diagnostics.
+// its diagnostics, and the one-off analyses of jobs. See
+// docs/architecture.md#semantic-diagnostics and docs/architecture.md#rename.
 class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, supervisor: AnalysisSupervisor,
 		lists: LspDiagnosticLists, send: Array<byte> -> void) {
 	// See "Semantic diagnostics" in docs/architecture.md for the measurements.
@@ -27,6 +37,11 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	var development: LspDevelopmentAnalysis;
 	private var running: LspSemanticRun;
 	private var waiting = Vector<LspSemanticWait>.new();
+	// A job waiting for the supervisor, and the one it runs.
+	private var job: LspAnalysisJob;
+	private var runningJob: LspAnalysisJob;
+	// The last analysis started was a job's, so a due context starts next.
+	private var jobLast: bool;
 	private var configurationChanged: bool;
 	private var failureReported: bool;
 	private var closed: bool;
@@ -53,9 +68,25 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	def configChanged() {
 		if (!closed) configurationChanged = true;
 	}
-	// True while the supervisor runs an analysis or a context waits.
+	// True while the supervisor runs an analysis, or a context or a job waits.
 	def busy() -> bool {
-		return supervisor.busy() || waitingCount() > 0;
+		return supervisor.busy() || waitingCount() > 0 || job != null;
+	}
+	// Queues {j} to start once the supervisor is free, which may be before
+	// this returns. Jobs and due contexts take turns, so that neither starves
+	// the other. Returns false, without queueing it, after close or while
+	// another job waits.
+	def submit(j: LspAnalysisJob) -> bool {
+		if (closed || job != null) return false;
+		job = j;
+		update();
+		return true;
+	}
+	// Drops {j}: if it waits, it never starts, and if it runs, its outcome is
+	// discarded when the supervisor completes it.
+	def withdraw(j: LspAnalysisJob) {
+		j.withdrawn = true;
+		if (job == j) job = null;
 	}
 	def waitingCount() -> int {
 		return waiting.length;
@@ -77,6 +108,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		var outcome = supervisor.onPoll();
 		if (!AnalysisOutcome.Pending.?(outcome)) {
 			if (running != null) complete(outcome);
+			else if (runningJob != null) completeJob(outcome);
 			else if (development != null) development.complete(outcome);
 		}
 		update();
@@ -113,6 +145,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	def close() {
 		closed = true;
 		running = null;
+		job = runningJob = null;
 		waiting.clear();
 		configurationChanged = false;
 	}
@@ -156,7 +189,12 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				var w = waiting[i];
 				if (w.due - now <= 0 && (next == null || (w.urgent && !next.urgent))) next = w;
 			}
+			if (job != null && (next == null || !jobLast)) {
+				startJob();
+				continue;
+			}
 			if (next == null) return;
+			jobLast = false;
 			var rest = Vector<LspSemanticWait>.new();
 			for (i < waiting.length) { if(waiting[i] != next) rest.put(waiting[i]); }
 			waiting = rest;
@@ -185,6 +223,19 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			Failed(failure, reason) => failed(ctx, reason);
 			_ => running = LspSemanticRun.new(ctx, keys, inputs);
 		}
+	}
+	private def startJob() {
+		var j = job;
+		job = null;
+		jobLast = true;
+		var outcome = j.begin(supervisor);
+		if (AnalysisOutcome.Pending.?(outcome)) runningJob = j;
+		else j.complete(outcome);
+	}
+	private def completeJob(outcome: AnalysisOutcome) {
+		var j = runningJob;
+		runningJob = null;
+		if (!j.withdrawn) j.complete(outcome);
 	}
 	private def complete(outcome: AnalysisOutcome) {
 		var run = running, ctx = run.context;

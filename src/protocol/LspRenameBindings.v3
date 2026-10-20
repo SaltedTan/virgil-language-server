@@ -1,0 +1,162 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A rename's edits: the tokens that spell {name} at each of {sites}, a path
+// and the begin offsets of its edited tokens in source order, for each file
+// that has any in byte order of path, all replaced by {newName}. Every edited
+// token changes length by {delta}, so an offset after k edited tokens of its
+// file moves by k times {delta}.
+class LspRenameEdits(name: string, newName: string, sites: Array<(string, Array<int>)>) {
+	def delta = newName.length - name.length;
+
+	// The begin offsets of the edited tokens in {path}, or none.
+	def cuts(path: string) -> Array<int> {
+		var low = 0, high = sites.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (AnalysisTables.compareBytes(sites[mid].0, path) < 0) low = mid + 1;
+			else high = mid;
+		}
+		if (low < sites.length && Strings.equal(sites[low].0, path)) return sites[low].1;
+		return [];
+	}
+	// Where {offset} of a file whose edited tokens begin at {cuts} is once they
+	// are edited: an edited token's begin stays its begin, and its end becomes
+	// the end of the new name.
+	def shift(cuts: Array<int>, offset: int) -> int {
+		return offset + delta * before(cuts, offset);
+	}
+	// Whether an edited token of {cuts} begins at {offset}.
+	def isSite(cuts: Array<int>, offset: int) -> bool {
+		var k = before(cuts, offset);
+		return k < cuts.length && cuts[k] == offset;
+	}
+	// The offset before the edits of {offset} in the edited text: the begin of
+	// the new name that holds it, if one does.
+	def unshift(cuts: Array<int>, offset: int) -> int {
+		var k = 0;
+		for (c in cuts) {
+			var begin = c + k * delta;
+			if (offset < begin) break;
+			if (offset < begin + newName.length) return c;
+			k++;
+		}
+		return offset - k * delta;
+	}
+	// The number of {cuts} before {offset}.
+	private def before(cuts: Array<int>, offset: int) -> int {
+		var low = 0, high = cuts.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (cuts[mid] < offset) low = mid + 1;
+			else high = mid;
+		}
+		return low;
+	}
+}
+
+// The binding check of a rename's preflight: whether the analysis of a
+// project's sources with a rename's edits applied binds everything as the
+// snapshot that planned them does. Offsets are translated through the edits,
+// and a declaration is the same across the two analyses if it has the same
+// kind and file, its translated name range, and its name, or the new name if
+// it is named by an edited token. See docs/architecture.md#rename.
+component LspRenameBindings {
+	// The reason that {e}, the analysis of {s}'s sources with {edits} applied,
+	// differs from {s} other than by the rename of {decl}; or null if it does
+	// not. {where} names a byte offset of a file of {s} for the reason. The
+	// edited program must have no diagnostic at all; each file must have the
+	// same declaration sites, uses, and builtin uses, translated; and every
+	// use must bind to the translated declaration it bound to, which also
+	// holds for the edited uses, the uses of {decl} and of the declarations
+	// that share its name token.
+	def compare(s: AnalysisSnapshot, e: AnalysisSnapshot, decl: AnalysisDeclaration, edits: LspRenameEdits,
+			where: (string, int) -> string) -> string {
+		var what = Strings.format2("renaming '%s' to '%s'", edits.name, edits.newName);
+		if (e.diagnostics.length > 0) {
+			// A new name can redeclare a name in scope, or make a use ambiguous.
+			var d = e.diagnostics[0], place = "the program";
+			if (d.path != null) place = if(d.beginOffset >= 0, where(d.path, edits.unshift(edits.cuts(d.path), d.beginOffset)), d.path);
+			var message = if(d.kind != null, Strings.format2("%s: %s", d.kind, Strings.nonnull(d.message)), Strings.nonnull(d.message));
+			return Strings.format3("%s would cause an error at %s: %s", what, place, message);
+		}
+		if (!e.parsed || !e.verified) return Strings.format1("%s would make the program fail to verify", what);
+		if (!e.hasOccurrences || e.paths.length != s.paths.length) {
+			return Strings.format1("%s could not be checked: the analysis of the edits has no occurrence index", what);
+		}
+		// The declaration of each declaration of {s} in {e}, or -1 until known.
+		// Declaration sites come first, a run for each file, and then the
+		// declarations that only uses name.
+		var map = Array<int>.new(s.declarations.length), siteEnd = 0;
+		for (i < map.length) map[i] = -1;
+		for (path in s.paths) {
+			var a = s.fileIndex(path), b = e.fileIndex(path), cuts = edits.cuts(path);
+			if (a == null || b == null) {
+				if (a != b) return Strings.format2("%s would change the uses in %s", what, path);
+				continue;
+			}
+			if (a.siteCount != b.siteCount) return Strings.format2("%s would change the declarations in %s", what, path);
+			for (i < a.siteCount) {
+				var x = s.declarations[a.firstSite + i], y = e.declarations[b.firstSite + i];
+				if (!same(x, y, cuts, edits)) {
+					return Strings.format2("%s would change the declaration at %s", what, where(path, x.range.beginOffset));
+				}
+				map[a.firstSite + i] = b.firstSite + i;
+			}
+			siteEnd = Ints.max(siteEnd, a.firstSite + a.siteCount);
+			var moved = spans(a.ranges, b.ranges, 4, cuts, edits);
+			if (moved >= 0) return Strings.format2("%s would change the uses at %s", what, where(path, moved));
+			moved = spans(a.builtins, b.builtins, 5, cuts, edits);
+			if (moved >= 0) return Strings.format2("%s would change the builtin uses at %s", what, where(path, moved));
+		}
+		var renamed = -1;
+		for (i < s.declarations.length) if (s.declarations[i] == decl) renamed = i;
+		for (path in s.paths) {
+			var a = s.fileIndex(path), b = e.fileIndex(path);
+			if (a == null) continue;
+			for (i < a.targets.length) {
+				var t = a.targets[i], u = b.targets[i];
+				if (map[t] == u) continue;
+				// A declaration that only uses name is matched at its first use.
+				var x = s.declarations[t];
+				if (map[t] < 0 && t >= siteEnd && same(x, e.declarations[u], edits.cuts(x.range.path), edits)) {
+					map[t] = u;
+					continue;
+				}
+				var begin = a.ranges[4 * i + 2], place = where(path, begin);
+				if (edits.isSite(edits.cuts(path), begin)) {
+					return Strings.format2("%s would make the use at %s refer to another declaration", what, place);
+				}
+				if (renamed >= 0 && u == map[renamed]) {
+					return Strings.format3("%s would make the use of another '%s' at %s refer to the renamed declaration",
+						what, edits.newName, place);
+				}
+				return Strings.format2("%s would change what the use at %s refers to", what, place);
+			}
+		}
+		if (renamed < 0 || map[renamed] < 0) return Strings.format1("%s could not be checked: the analysis of the edits lacks the declaration", what);
+		return null;
+	}
+	// Whether {y} of the edited analysis is {x}, whose file has edited tokens
+	// at {cuts}.
+	private def same(x: AnalysisDeclaration, y: AnalysisDeclaration, cuts: Array<int>, edits: LspRenameEdits) -> bool {
+		var r = x.range, q = y.range;
+		if (x.kind != y.kind || !Strings.equal(r.path, q.path)) return false;
+		if (q.beginOffset != edits.shift(cuts, r.beginOffset) || q.endOffset != edits.shift(cuts, r.endOffset)) return false;
+		// A declaration that an edited token names has the new name; another
+		// declaration there, such as a class's default constructor, keeps its own.
+		var renamed = edits.isSite(cuts, r.beginOffset) && Strings.equal(x.name, edits.name);
+		return Strings.equal(y.name, if(renamed, edits.newName, x.name));
+	}
+	// The offset in the unedited text of the first of the spans {a}, of
+	// {stride} ints each and starting with a range as AnalysisSnapshotFile's,
+	// that {b} lacks once translated, or -1 if {b} has exactly those.
+	private def spans(a: Array<int>, b: Array<int>, stride: int, cuts: Array<int>, edits: LspRenameEdits) -> int {
+		for (r = 0; r < a.length; r += stride) {
+			var begin = a[r + 2], end = begin + a[r + 3];
+			if (r >= b.length || b[r + 2] != edits.shift(cuts, begin) || b[r + 2] + b[r + 3] != edits.shift(cuts, end)) return begin;
+		}
+		if (b.length > a.length) return edits.unshift(cuts, b[a.length + 2]);
+		return -1;
+	}
+}

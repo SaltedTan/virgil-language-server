@@ -4,7 +4,15 @@
 // The unit-test executable can serve deterministic RESULT fixtures on the real
 // worker pipes. This exercises admission, replacement, and snapshot preservation
 // without needing a compiler program large enough to exhaust a decoding budget.
+// A request for .v3 sources is analyzed as the real worker analyzes it
+// (AnalysisWorker.handle), so that a server can run on this worker, unless a
+// source spells {CRASH} or {TOO_LARGE}: the worker then ends without a reply,
+// or sends a result over the decoding budget. A rename to such a name fails
+// in its preflight alone.
 component SyntheticAnalysisWorker {
+	def CRASH = "workerEndsHere";
+	def TOO_LARGE = "resultTooLarge";
+
 	def run() -> int {
 		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, 384L * 1024 * 1024))) return 1;
 		var reader = WorkerFrameReader.new(WorkerFraming.MAX_PAYLOAD);
@@ -18,8 +26,18 @@ component SyntheticAnalysisWorker {
 			if (reader.error != null) return 1;
 			if (payload == null) continue;
 			var request = AnalysisWire.decodeAnalyze(payload);
-			if (request == null || request.sources.length != 1) return 1;
+			if (request == null || request.sources.length == 0) return 1;
 			var mode = request.sources[0].path;
+			if (Strings.endsWith(mode, ".v3")) {
+				if (spells(request.sources, CRASH)) return 1;
+				if (!spells(request.sources, TOO_LARGE)) {
+					if (!send(analyze(request))) return 1;
+					continue;
+				}
+				mode = "too-large";
+			} else if (request.sources.length != 1) {
+				return 1;
+			}
 			var large = Strings.equal(mode, "too-large") || Strings.equal(mode, "wrong-id");
 			var id = request.id + if(Strings.equal(mode, "wrong-id"), 1);
 			var w = WorkerFraming.start().putb(AnalysisWire.RESULT).put_b32(id).put_b32(1).put_b32(1).put_b64(0);
@@ -43,6 +61,34 @@ component SyntheticAnalysisWorker {
 			if (!send(WorkerFraming.finish(w))) return 1;
 		}
 		return 0;
+	}
+	// The result of the real worker for {request}, without its statistics.
+	private def analyze(request: AnalysisWorkerRequest) -> Range<byte> {
+		var analysis = AeneasAdapter.analyzeProgram(request.sources, request.options, false);
+		var files: Array<(string, Array<AnalysisOccurrence>)>;
+		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
+			var list = Vector<(string, Array<AnalysisOccurrence>)>.new();
+			for (i < request.sources.length) {
+				var path = request.sources[i].path, seen = false;
+				for (j < i) seen = seen || Strings.equal(request.sources[j].path, path);
+				if (!seen) list.put((path, analysis.occurrences(path)));
+			}
+			files = list.extract();
+		}
+		return AnalysisWire.finishResult(AnalysisWire.encodeResult(request.id, 1, AeneasAdapter.uidCounter(),
+			analysis, -1, -1, files), 0);
+	}
+	// Whether any of {sources} contains the bytes of {word}.
+	private def spells(sources: Array<AnalysisSource>, word: string) -> bool {
+		for (s in sources) {
+			var input = s.input;
+			for (i = 0; i + word.length <= input.length; i++) {
+				var k = 0;
+				while (k < word.length && input[i + k] == word[k]) k++;
+				if (k == word.length) return true;
+			}
+		}
+		return false;
 	}
 	private def send(frame: Range<byte>) -> bool {
 		while (frame.length > 0) {

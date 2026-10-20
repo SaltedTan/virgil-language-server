@@ -78,6 +78,12 @@ class AnalysisSnapshot {
 	private def fileOf(path: string) -> AnalysisSnapshotFile {
 		return if(files != null, files[path]);
 	}
+	// The index of the file at {path}, or null without occurrences or for a
+	// path the analysis did not have. A rename's preflight compares two
+	// snapshots' indexes with it (LspRenameBindings).
+	def fileIndex(path: string) -> AnalysisSnapshotFile {
+		return fileOf(path);
+	}
 	// Records the string table that the files' type indexes refer to.
 	def setStrings(table: Array<string>) {
 		strings = table;

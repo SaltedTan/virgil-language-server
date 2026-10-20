@@ -3,8 +3,8 @@
 
 // textDocument/prepareRename with the real worker. The project-fixtures/rename
 // directory is the build's own copy, so each session rewrites its sources
-// before the project is loaded. The server does not advertise or dispatch
-// prepareRename until #125, so each session calls enablePrepareRename.
+// before the project is loaded. LspRenameTest covers rename itself, which
+// refuses what prepareRename refuses, with the same reasons.
 // LspDefinitionTest covers the shared snapshot selection, freshness, waiting,
 // bound, and position rules in full; these tests cover rename eligibility,
 // the prepared range and placeholder, and each refusal's RequestFailed reply.
@@ -37,7 +37,7 @@ def X = [
 	T("LspPrepareRename:document_changed_while_waiting", test_document_changed_while_waiting),
 	T("LspPrepareRename:too_many_waiting", test_too_many_waiting),
 	T("LspPrepareRename:no_project", test_no_project),
-	T("LspPrepareRename:not_dispatched", test_not_dispatched),
+	T("LspPrepareRename:advertised", test_advertised),
 	()
 ];
 // A verified program with every eligible declaration kind, name tokens shared
@@ -161,13 +161,17 @@ class PrepareRenameTestSession {
 	var handled: Array<byte>;
 	// The initialize response, which handle() returns rather than the sink.
 	var initializeReply: Array<byte>;
-	new(fixture: string, sources: Array<(string, string)>, enable: bool, t: Tester) {
+	new(fixture: string, sources: Array<(string, string)>, t: Tester) {
 		base = fixtureDirectory(fixture);
 		for (source in sources) write(t, source.0, source.1);
 		HostOs.ignoreSigpipe();
 		server.sendNotification = receive;
-		if (enable) server.enablePrepareRename();
-		var params = Strings.newMap<JsonValue>();
+		var params = Strings.newMap<JsonValue>(), rename = Strings.newMap<JsonValue>();
+		var textDocument = Strings.newMap<JsonValue>(), capabilities = Strings.newMap<JsonValue>();
+		rename["prepareSupport"] = JsonValue.Bool(true);
+		textDocument["rename"] = JsonValue.JObject(rename);
+		capabilities["textDocument"] = JsonValue.JObject(textDocument);
+		params["capabilities"] = JsonValue.JObject(capabilities);
 		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
 		initializeReply = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
 	}
@@ -249,11 +253,6 @@ class PrepareRenameTestSession {
 		handled = server.handle(payload(name, line, character));
 		return id;
 	}
-	// Sends a prepareRename request and returns handle()'s reply, for a server
-	// that does not dispatch it.
-	def raw(name: string, line: int, character: int) -> Array<byte> {
-		return server.handle(payload(name, line, character));
-	}
 	// The response to {id}, or null if none has arrived.
 	def reply(id: int) -> HashMap<string, JsonValue> {
 		for (i < replies.length) {
@@ -323,7 +322,7 @@ def expectFailure(t: Tester, s: PrepareRenameTestSession, needle: string, skip: 
 	expectFailureIn(t, s, "Rename.v3", SOURCE, needle, skip, message);
 }
 def renameSession(t: Tester) -> PrepareRenameTestSession {
-	var s = PrepareRenameTestSession.new("rename", files(["Rename.v3"], [SOURCE]), true, t);
+	var s = PrepareRenameTestSession.new("rename", files(["Rename.v3"], [SOURCE]), t);
 	s.open("Rename.v3", 1, SOURCE);
 	s.settle();
 	return s;
@@ -502,7 +501,7 @@ def test_same_named_methods(t: Tester) {
 // merely loads, whether the dependency declares the name or uses it.
 def test_dependencies(t: Tester) {
 	var s = PrepareRenameTestSession.new("rename-deps",
-		files(["Main.v3", "Use.v3", "dep/Lib.v3"], [DEP_MAIN, DEP_USE, DEP_LIB]), true, t);
+		files(["Main.v3", "Use.v3", "dep/Lib.v3"], [DEP_MAIN, DEP_USE, DEP_LIB]), t);
 	s.open("Main.v3", 1, DEP_MAIN);
 	s.settle();
 	expectFailureIn(t, s, "dep/Lib.v3", DEP_LIB, "component Lib", 10,
@@ -518,7 +517,7 @@ def test_many_member_files(t: Tester) {
 	var main = "class Widget { }\nclass Gadget { }\n";
 	var lib = "component Lib { def get(g: Gadget) -> int { return 0; } }\n";
 	var use = "component U0999 { def get(g: Gadget) -> Widget { return Widget.new(); } }\n";
-	var s = PrepareRenameTestSession.new("rename-members", Array<(string, string)>.new(0), true, t);
+	var s = PrepareRenameTestSession.new("rename-members", Array<(string, string)>.new(0), t);
 	s.open("Main.v3", 1, main);
 	s.settle();
 	t.asserti(1002, s.server.projects.forDocument(s.uri("Main.v3")).active.sources.length);
@@ -539,7 +538,7 @@ def test_many_member_files(t: Tester) {
 def test_shared_programs(t: Tester) {
 	var s = PrepareRenameTestSession.new("rename-shared",
 		files(["Decl.v3", "Use.v3", "SharedUse.v3", "SharedDecl.v3"],
-			[SHARED_DECL, SHARED_USE, SHARED_SHARED_USE, SHARED_SHARED_DECL]), true, t);
+			[SHARED_DECL, SHARED_USE, SHARED_SHARED_USE, SHARED_SHARED_DECL]), t);
 	s.open("SharedUse.v3", 1, SHARED_SHARED_USE);
 	s.open("SharedDecl.v3", 1, SHARED_SHARED_DECL);
 	s.settle();
@@ -556,7 +555,7 @@ def test_shared_programs(t: Tester) {
 // prepareRename refuses until an event re-analyzes the project.
 def test_source_added_or_removed_without_event(t: Tester) {
 	removeFixture(t, "rename-scan", "Other.v3");
-	var s = PrepareRenameTestSession.new("rename-scan", files(["Main.v3"], [MAIN]), true, t);
+	var s = PrepareRenameTestSession.new("rename-scan", files(["Main.v3"], [MAIN]), t);
 	s.open("Main.v3", 1, MAIN);
 	s.settle();
 	var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
@@ -582,7 +581,7 @@ def test_source_added_or_removed_without_event(t: Tester) {
 def test_shared_program_added_without_event(t: Tester) {
 	removeFixture(t, "rename-shared-scan", "one/SharedUse.v3");
 	var s = PrepareRenameTestSession.new("rename-shared-scan",
-		files(["one/Main.v3", "one/.virgil-lsp.json", ".virgil-lsp.json"], [MAIN, SCAN_ONE, SCAN_TWO]), true, t);
+		files(["one/Main.v3", "one/.virgil-lsp.json", ".virgil-lsp.json"], [MAIN, SCAN_ONE, SCAN_TWO]), t);
 	s.open("one/Main.v3", 1, MAIN);
 	s.settle();
 	var p = at(MAIN, "class Widget", 6), widget = span(MAIN, "class Widget", 6, 6);
@@ -603,7 +602,7 @@ def sharedScanSession(t: Tester, two: string) -> PrepareRenameTestSession {
 	removeFixture(t, "rename-shared-scan", "one/SharedUse.v3");
 	removeFixture(t, "rename-shared-scan", "Overflow.v3");
 	var s = PrepareRenameTestSession.new("rename-shared-scan",
-		files(["one/Main.v3", "one/.virgil-lsp.json", ".virgil-lsp.json"], [MAIN, SCAN_ONE, two]), true, t);
+		files(["one/Main.v3", "one/.virgil-lsp.json", ".virgil-lsp.json"], [MAIN, SCAN_ONE, two]), t);
 	s.server.projects.virgilRoot = s.path("one");
 	s.open("one/Main.v3", 1, MAIN);
 	s.settle();
@@ -649,7 +648,7 @@ def test_shared_program_excluded(t: Tester) {
 // this program's files, so the rename is eligible. Their patterns are matched
 // against this program's paths; none of them is expanded again.
 def test_many_other_programs(t: Tester) {
-	var s = PrepareRenameTestSession.new("rename-many", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), true, t);
+	var s = PrepareRenameTestSession.new("rename-many", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), t);
 	s.open("Main.v3", 1, MAIN);
 	s.settle();
 	t.asserti(14, s.server.projects.loadedContexts().length);
@@ -660,7 +659,7 @@ def test_many_other_programs(t: Tester) {
 // The request spends exactly what otherProgram counts for the files of the
 // declaration and its uses: that budget answers, and one step less refuses.
 def test_ownership_budget(t: Tester) {
-	var s = PrepareRenameTestSession.new("rename-many", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), true, t);
+	var s = PrepareRenameTestSession.new("rename-many", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), t);
 	s.open("Main.v3", 1, MAIN);
 	s.settle();
 	var projects = s.server.projects, m = ProjectGlobMatcher.new(int.max);
@@ -777,7 +776,7 @@ def test_parse_and_semantic_errors(t: Tester) {
 // A closed file's changed bytes do not move its stamp, but a rename must not
 // miss uses there; a reported change makes the whole snapshot stale.
 def test_stale_other_file(t: Tester) {
-	var s = PrepareRenameTestSession.new("rename-multi", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), true, t);
+	var s = PrepareRenameTestSession.new("rename-multi", files(["Main.v3", "Other.v3"], [MAIN, OTHER]), t);
 	s.open("Main.v3", 1, MAIN);
 	s.settle();
 	var use = at(MAIN, "return Widget", 7);
@@ -836,31 +835,26 @@ def test_too_many_waiting(t: Tester) {
 }
 // A document in no project has no snapshot and no one to analyze it.
 def test_no_project(t: Tester) {
-	var s = PrepareRenameTestSession.new("rename-no-project", files(["Loose.v3"], [SOURCE]), true, t);
+	var s = PrepareRenameTestSession.new("rename-no-project", files(["Loose.v3"], [SOURCE]), t);
 	s.open("Loose.v3", 1, SOURCE);
 	s.settle();
 	var p = S("class Bare", 6, 4);
 	expectFailureAt(t, s, "Loose.v3", p.line, p.begin, "the document is not in a loaded project");
 	s.server.close();
 }
-// The server neither advertises nor dispatches prepareRename until #125, so
-// an enabled handler and unchanged capabilities are both verified here.
-def test_not_dispatched(t: Tester) {
-	var s = PrepareRenameTestSession.new("rename", files(["Rename.v3"], [SOURCE]), false, t);
+// The server dispatches prepareRename and advertises it in renameProvider
+// to a client with textDocument.rename.prepareSupport.
+def test_advertised(t: Tester) {
+	var s = PrepareRenameTestSession.new("rename", files(["Rename.v3"], [SOURCE]), t);
 	s.open("Rename.v3", 1, SOURCE);
 	s.settle();
-	var p = S("class Bare", 6, 4), bytes = s.raw("Rename.v3", p.line, p.begin);
-	t.assert(bytes != null, "an unregistered method is answered");
-	if (bytes != null) {
-		var parsed = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
-		t.asserti(JsonRpcErrorCode.METHOD_NOT_FOUND, intAt(parsed["error"], "code"));
-		t.assert_string("method not found: textDocument/prepareRename", stringAt(parsed["error"], "message"));
-	}
+	expectPrepared(t, s, "class Bare", 6, 4, "Bare");
 	t.assert(s.initializeReply != null, "initialize was answered");
 	if (s.initializeReply != null) {
 		var init = JsonValue.JObject.!(JsonRpcJsonParser.new(s.initializeReply).parseDocument()).v;
 		t.assert(init.has("result"), "initialize succeeded");
-		t.assert(!hasMember(member(init["result"], "capabilities"), "renameProvider"), "rename is not advertised");
+		var provider = member(member(init["result"], "capabilities"), "renameProvider");
+		t.assert(member(provider, "prepareProvider") == JsonValue.Bool(true), "rename is advertised with prepareRename");
 	}
 	s.server.close();
 }
