@@ -1,0 +1,72 @@
+// Call sites of every supported kind, so the collector and wire tests can
+// cover them: a component function, a method called on a receiver and
+// through its class, a zero-argument method, default and explicit
+// constructors, a variant case, a closure, a builtin, explicit and inferred
+// generic calls, nested calls, and arguments around comments, a string with
+// a parenthesis, and prefix and postfix operators; then, in more(), a
+// partial application, a call of a call's result, a qualified call, a
+// generic class's method, and a tuple passed whole, beside forms that are
+// not calls: void(...), a super clause, and an index operation. The
+// collector visits components before classes, so it finds H's call after
+// M's and must sort them. See docs/architecture.md#call-sites.
+class C(x: int) {
+	def m(a: int, b: int) -> int { return a + b; }
+	def none() { }
+}
+class D {
+	var value: int;
+	new(v: int) { value = v; }
+}
+class E { }
+type V {
+	case A;
+	case B(f: int, s: string);
+}
+class F extends C {
+	new() super(8) { }
+}
+class G<T>(v: T) {
+	def pair<U>(u: U) -> (T, U) { return (v, u); }
+}
+class H {
+	def h() -> int { return M.add(19, 20); }
+}
+component M {
+	def add(a: int, b: int) -> int { return a + b; }
+	def id<T>(p: T) -> T { return p; }
+	def twice(f: (int) -> int, x: int) -> int { return f(f(x)); }
+	def adder() -> (int, int) -> int { return add; }
+	def run() {
+		var c = C.new(1);
+		var d = D.new(2);
+		var e = E.new();
+		var sum = add(1, 2);
+		c.none();
+		var m = c.m(3, 4);
+		var q = C.m(c, 5, 6);
+		var v = V.B(7, "x(y");
+		var w = add( // comment with )
+			1, /* comma , */
+			2);
+		var i = 0;
+		var pre = add(++i, i++);
+		var gen = id<int>(1);
+		var inf = id(gen);
+		var nested = add(add(1, 2), add(3, 4));
+		var builtin = Array<int>.new(4);
+		var closure = twice(fun (x: int) => x + 1, 5);
+	}
+	def more(a: Array<int>, g: G<int>) {
+		var p = add(_, 9);
+		void(add(10, 11));
+		var x = a[0];
+		var k = adder()(12, 13);
+		var h = M.add(14, 15);
+		var r = g.pair(true);
+		var t = (16, 17);
+		var s = add(t);
+		// A function literal with an empty body ends at its semicolon.
+		accept(fun (););
+	}
+	def accept(f: () -> ()) { f(); }
+}

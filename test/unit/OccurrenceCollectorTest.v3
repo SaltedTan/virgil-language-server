@@ -18,10 +18,13 @@ component OccurrenceCollectorTest {
 		T("OccurrenceCollector:enum_nonliteral_parameter_field", enum_nonliteral_parameter_field),
 		T("OccurrenceCollector:enum_count_parameter_field", enum_count_parameter_field),
 		T("OccurrenceCollector:unresolved_match_cases", unresolved_match_cases),
+		T("OccurrenceCollector:call_sites", call_sites),
+		T("OccurrenceCollector:nested_call_scaling", nested_call_scaling),
 		()
 	];
 	def MATCH_CASES = "test/fixtures/analysis/match-cases/main.v3";
 	def ENUM_FIELDS = "test/fixtures/analysis/enum-parameter-fields/main.v3";
+	def CALL_SITES = "test/fixtures/analysis/call-sites/main.v3";
 
 	def analyze(t: Tester, path: string) -> ProgramAnalysis {
 		var input = System.fileLoad(path);
@@ -200,5 +203,197 @@ component OccurrenceCollectorTest {
 		assertOnce(t, a, path, 10, 33, "k");
 		assertOnce(t, a, path, 10, 40, "K");
 		assertOnce(t, a, path, 10, 42, "k");
+	}
+
+	// Every call in the call-sites fixture is located by its own source, and
+	// its callee, signature, parameters, and arguments are the reported
+	// ones, in source order; void(...), a super clause, and an index
+	// operation are not calls. See the fixture for the kinds it covers.
+	def call_sites(t: Tester) {
+		var input = System.fileLoad(CALL_SITES);
+		if (input == null) return t.fail1("cannot read %s; run the unit tests from the repository root", CALL_SITES);
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(CALL_SITES, input)], [], false);
+		if (a == null) return;
+		t.asserti(0, a.diagnostics.length);
+		t.assertz(true, a.verified);
+		t.asserti(0, a.skippedUses(CALL_SITES));
+		checkCalls(t, input, a.calls(CALL_SITES));
+	}
+	// Nested calls are located in work linear in their depth: doubling the
+	// calls of a shape at most doubles the expressions that collection reads
+	// to locate them, as it does for calls in sequence, whether a nested call
+	// is a last argument among others, follows an operator, is one of two
+	// nests in one call, is inside an index, or is called for its result,
+	// with no arguments, as in h(h(1)())() and fs[fs[0]()](). Locating each
+	// call's arguments afresh read a number of expressions quadratic in the
+	// depth. Verification overflows the stack at about 3,000 nested calls,
+	// and sooner inside indexes, and the parser at about 3,700 nested
+	// brackets; see docs/aeneas-crash-paths.md.
+	def nested_call_scaling(t: Tester) {
+		// Each shape's statement for depth n, which is repeated ten times,
+		// its calls, and the smaller of the two depths it is collected at.
+		var shapes: Array<(string, int -> string, int -> int, int)> = [
+			("in sequence", repeat("f(1); ", _), int.!<int>, 1000),
+			("nested", nest("f(", "1", ")", _), int.!<int>, 1000),
+			("nested last among two", nest("g(1, ", "1", ")", _), int.!<int>, 1000),
+			("nested after an operator", nest("f(1 + ", "1", ")", _), int.!<int>, 1000),
+			("nested twice in one call", twoNests, int.!<int>, 1000),
+			("nested in an index", nest("f(a[", "0", "])", _), int.!<int>, 500),
+			("called for its result", nest("h(", "1", ")()", _), twice, 500),
+			("called for its result in parentheses", nest("(h(", "1", "))()", _), twice, 250),
+			("called from an index", nest("fs[", "0", "]()", _), int.!<int>, 500)
+		];
+		for (shape in shapes) {
+			var n = shape.3;
+			var small = located(t, shape.1(n), 10 * shape.2(n));
+			var large = located(t, shape.1(2 * n), 10 * shape.2(2 * n));
+			if (small <= 0 || large > 2 * small + 100) {
+				var msg = StringBuilder.new().put3("locating %s calls read %d expressions at depth %d, ", shape.0, large, 2 * n);
+				t.fail(msg.put2("against %d at depth %d", small, n).toString());
+			}
+		}
+	}
+	// The expressions read to locate the calls of a function whose body is
+	// {statement} ten times, which has {calls} calls.
+	def located(t: Tester, statement: string, calls: int) -> int {
+		var b = StringBuilder.new().puts("component C {\n\tdef f(x: int) -> int { return x; }\n");
+		b.puts("\tdef g(x: int, y: int) -> int { return x; }\n");
+		b.puts("\tdef h(x: int) -> void -> int { return fun () => x; }\n");
+		b.puts("\tdef run(a: Array<int>, fs: Array<void -> int>) {\n");
+		for (i < 10) b.puts("\t\t").puts(statement).puts(";\n");
+		var path = "scaling.v3", source = b.puts("\t}\n}\n").toString();
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, source)], [], false);
+		if (a == null) {
+			t.fail("no analysis");
+			return -1;
+		}
+		t.assertz(true, a.verified);
+		t.asserti(0, a.skippedUses(path));
+		t.asserti(calls, a.callRecords(path).1);
+		return a.locatedExprs(path);
+	}
+	def twoNests(n: int) -> string {
+		return Strings.format2("g(%s, %s)", nest("f(", "1", ")", n / 2), nest("f(", "1", ")", n / 2 - 1));
+	}
+	def twice(n: int) -> int {
+		return 2 * n;
+	}
+	def nest(open: string, inner: string, close: string, depth: int) -> string {
+		var b = StringBuilder.new();
+		for (i < depth) b.puts(open);
+		b.puts(inner);
+		for (i < depth) b.puts(close);
+		return b.toString();
+	}
+	def repeat(s: string, n: int) -> string {
+		var b = StringBuilder.new();
+		for (i < n) b.puts(s);
+		return b.toString();
+	}
+	// Checks {calls}, the call-sites fixture's, against callWants.
+	def checkCalls(t: Tester, input: Array<byte>, calls: Array<AnalysisCall>) {
+		var want = callWants();
+		t.asserti(want.length, calls.length);
+		for (i < Ints.min(want.length, calls.length)) {
+			var c = calls[i], w = want[i], s = c.signature;
+			checkCall(t, input, c);
+			t.assert_string(w.0, callee(c));
+			if (s == null) {
+				t.fail1("call %d has no signature", i);
+				continue;
+			}
+			t.assert_string(w.1, s.label);
+			t.asserti(w.2.length, s.params.length);
+			for (k < Ints.min(w.2.length, s.params.length)) {
+				t.assert_string(w.2[k], s.params[k]);
+				t.assert(s.holds(k), "the label holds each parameter at its offset");
+			}
+			t.asserti(w.3.length, c.argCount());
+			for (k < Ints.min(w.3.length, c.argCount())) {
+				t.assert_string(w.3[k], Arrays.range(input, c.args[2 * k], c.args[2 * k + 1]));
+			}
+		}
+		// Neither parenthesis opens a call. The count shows that the index
+		// operation does not either.
+		for (form in [("void(add", 4), ("super(8", 5)]) {
+			var open = indexOf(input, form.0) + form.1;
+			t.assert(open > form.1, form.0);
+			for (c in calls) if (c.open == open) t.fail1("%s is a call", form.0);
+		}
+	}
+	// A call's callee: "KIND name" for a declaration, "builtin" for a builtin
+	// use, or "" for none.
+	def callee(c: AnalysisCall) -> string {
+		if (c.target != null) return Strings.format2("%s %s", c.target.kind.name, c.target.name);
+		return if(c.callee >= 0, "builtin", "");
+	}
+	def indexOf(text: Array<byte>, needle: string) -> int {
+		for (i = 0; i + needle.length <= text.length; i++) {
+			if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+		}
+		return -1;
+	}
+	// Checks that {c}'s parentheses and arguments lie in {input} in order,
+	// and that its callee, if any, is before its opening parenthesis.
+	def checkCall(t: Tester, input: Array<byte>, c: AnalysisCall) {
+		t.assert(c.open >= 0 && c.close >= c.open + 2 && c.close <= input.length, "a call has an opening and closing parenthesis");
+		if (c.open < 0 || c.close > input.length) return;
+		t.assert(input[c.open] == '(', "a call opens with a parenthesis");
+		t.assert(input[c.close - 1] == ')', "a call closes with a parenthesis");
+		t.assert(c.callee < c.open, "a callee precedes its parenthesis");
+		t.assert(c.target == null || c.callee >= 0, "a target has a callee");
+		var end = c.open + 1;
+		for (i < c.argCount()) {
+			var begin = c.args[2 * i], finish = c.args[2 * i + 1];
+			t.assert(begin >= end && finish > begin && finish < c.close, "an argument lies in order inside its parentheses");
+			end = finish;
+		}
+	}
+	// The callee, signature, parameters, and argument texts of the fixture's
+	// calls, in the order of their opening parentheses.
+	def callWants() -> Array<(string, string, Array<string>, Array<string>)> {
+		var add = "def add(a: int, b: int) -> int", ab = ["a: int", "b: int"];
+		return [
+			// In class H, before component M.
+			("METHOD add", add, ab, ["19", "20"]),
+			// A closure: a parameter of function type.
+			("PARAMETER f", "int -> int", ["int"], ["f(x)"]),
+			("PARAMETER f", "int -> int", ["int"], ["x"]),
+			// A class's default constructor, an explicit one, and one without
+			// parameters.
+			("CLASS C", "class C(x: int)", ["x: int"], ["1"]),
+			("CONSTRUCTOR new", "new(v: int)", ["v: int"], ["2"]),
+			("CLASS E", "class E", [], []),
+			("METHOD add", add, ab, ["1", "2"]),
+			("METHOD none", "def none()", [], []),
+			("METHOD m", "def m(a: int, b: int) -> int", ab, ["3", "4"]),
+			// Through the class, the receiver is the first parameter.
+			("METHOD m", "def m(C, a: int, b: int) -> int", ["C", "a: int", "b: int"], ["c", "5", "6"]),
+			("VARIANT_CASE B", "case B(f: int, s: Array<byte>)", ["f: int", "s: Array<byte>"], ["7", "\"x(y\""]),
+			("METHOD add", add, ab, ["1", "2"]),
+			("METHOD add", add, ab, ["++i", "i++"]),
+			// Generic calls have the use site's instantiation.
+			("METHOD id", "def id(p: int) -> int", ["p: int"], ["1"]),
+			("METHOD id", "def id(p: int) -> int", ["p: int"], ["gen"]),
+			("METHOD add", add, ab, ["add(1, 2)", "add(3, 4)"]),
+			("METHOD add", add, ab, ["1", "2"]),
+			("METHOD add", add, ab, ["3", "4"]),
+			("builtin", "int -> Array<int>", ["int"], ["4"]),
+			("METHOD twice", "def twice(f: int -> int, x: int) -> int", ["f: int -> int", "x: int"], ["fun (x: int) => x + 1", "5"]),
+			// A partial application has the whole signature.
+			("METHOD add", add, ab, ["_", "9"]),
+			// The call in void(...).
+			("METHOD add", add, ab, ["10", "11"]),
+			// A call of a call's result has no callee.
+			("METHOD adder", "def adder() -> (int, int) -> int", [], []),
+			("", "(int, int) -> int", ["int", "int"], ["12", "13"]),
+			("METHOD add", add, ab, ["14", "15"]),
+			("METHOD pair", "def pair(u: bool) -> (int, bool)", ["u: bool"], ["true"]),
+			// A tuple passed whole is one argument.
+			("METHOD add", add, ab, ["t"]),
+			// A function literal with an empty body, and the call in accept().
+			("METHOD accept", "def accept(f: void -> void)", ["f: void -> void"], ["fun ();"]),
+			("PARAMETER f", "void -> void", [], [])
+		];
 	}
 }

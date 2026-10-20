@@ -306,4 +306,8 @@ class AnalysisSourceMaps {
 		}
 		return AnalysisRange.new(token.fileName, line, column, line, column + image.length, begin, end);
 	}
+	// The source of {path}, or null if it has none.
+	def input(path: string) -> Array<byte> {
+		return if(path != null, inputs[path]);
+	}
 }

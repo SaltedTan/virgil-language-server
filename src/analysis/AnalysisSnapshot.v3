@@ -430,3 +430,112 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 		return low;
 	}
 }
+
+// The flags in a call's head, below its argument count; see
+// AnalysisWire.encodeCalls.
+component AnalysisCallFlags {
+	// The callee is the use that ends at the opening parenthesis.
+	def CALLEE_AT_PAREN = 1;
+	// The callee is the use that starts at an offset that follows.
+	def CALLEE_OFFSET = 2;
+	// Bytes between the last argument and the closing parenthesis follow.
+	def CLOSE_GAP = 4;
+}
+
+// Reads one file's calls in the encoding that the worker sends and the
+// snapshot keeps (see AnalysisWire.encodeCalls), checking each as it goes:
+// the decoder checks a result's calls with it, and the snapshot then reads
+// the calls it checked. A malformed call fails {r}. For each call, {next}
+// reads its opening parenthesis, callee, signature, and argument count;
+// {nextArg} reads each argument in turn, and {finish} its closing
+// parenthesis. Allocates nothing. The collector's records (see
+// OccurrenceCollector.calls) differ only in that each opening parenthesis is
+// its offset, not a difference, which {absolute} reads.
+class AnalysisCallCursor(r: DataReader, var remaining: int) {
+	var absolute: bool;
+	// Where the current call's record starts, and the opening parenthesis of
+	// the call before it, or -1, from which seek can read it again.
+	def var start: int;
+	def var startOpen: int;
+	def var open: int;
+	def var close: int;
+	def var flags: int;
+	// The callee's offset before {open} with CALLEE_OFFSET, or zero.
+	def var calleeDelta: int;
+	// A signature index plus one, or zero.
+	def var signature: int;
+	def var argCount: int;
+	// After nextArg, the argument's begin and exclusive end.
+	def var argBegin: int;
+	def var argEnd: int;
+	// The opening parenthesis of the last call read, or -1.
+	private var last = -1;
+	// Where the next argument may start.
+	private var position: int;
+
+	// Continues with the call whose record starts at {start}, after a call
+	// whose opening parenthesis is {last}.
+	def seek(start: int, last: int) -> this {
+		r.at(start);
+		this.last = last;
+		remaining = 1;
+	}
+	def calleeEndsAtParen() -> bool {
+		return (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0;
+	}
+	// Reads the next call's head. False after the last call or if it is malformed.
+	def next() -> bool {
+		if (remaining <= 0 || !r.ok) return false;
+		remaining--;
+		start = r.pos;
+		startOpen = last;
+		var delta = uleb();
+		// Opening parentheses strictly increase.
+		if (!absolute && last >= 0 && (delta < 1 || delta > int.max - last)) return fail("calls out of order");
+		open = last = if(absolute || last < 0, delta, last + delta);
+		var head = uleb(), both = AnalysisCallFlags.CALLEE_AT_PAREN | AnalysisCallFlags.CALLEE_OFFSET;
+		flags = head & 7;
+		argCount = head >> 3;
+		if ((flags & both) == both) return fail("invalid call flags");
+		var offset = (flags & AnalysisCallFlags.CALLEE_OFFSET) != 0;
+		calleeDelta = if(offset, uleb());
+		if (offset && (calleeDelta < 1 || calleeDelta > open)) return fail("invalid callee offset");
+		signature = uleb();
+		// Each argument takes at least a byte.
+		if (argCount > r.available() || open == int.max) return fail("invalid call");
+		position = open + 1;
+		return r.ok;
+	}
+	// Reads the next argument: a length and a gap after the previous one's end.
+	def nextArg() -> bool {
+		var v = uleb(), gap = v & 3, length = v >> 2;
+		if (gap == 3) gap = uleb();
+		if (!r.ok || length < 1 || gap > int.max - position || length > int.max - position - gap) return fail("invalid argument range");
+		argBegin = position + gap;
+		argEnd = position = argBegin + length;
+		return true;
+	}
+	def skipArgs() {
+		for (i < argCount) if (!nextArg()) return;
+		finish();
+	}
+	// Reads the closing parenthesis, after the last argument.
+	def finish() -> bool {
+		var gap = if((flags & AnalysisCallFlags.CLOSE_GAP) != 0, uleb());
+		if (!r.ok || gap > int.max - position - 1) return fail("invalid call range");
+		close = position + gap + 1;
+		return true;
+	}
+	private def uleb() -> int {
+		var v = r.read_uleb32();
+		if (v > u32.view(int.max)) {
+			r.fail("invalid call number");
+			return 0;
+		}
+		return int.view(v);
+	}
+	private def fail(msg: string) -> bool {
+		r.fail(msg);
+		return false;
+	}
+}
