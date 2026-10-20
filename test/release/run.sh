@@ -486,18 +486,19 @@ done
 rm "$TMP/lock/package-lock.json"
 expect_run "check-vsix.py: no lockfile" 1 - "cannot read .*/package-lock\.json" "$CHECK_VSIX" "$VSIX" "$TMP/lock"
 
-# Release assets as the build and vsix jobs produce them: a manifest and an
-# empty archive for each target, and the VSIX.
+# assets [<tag as JSON>]: release assets as the build and vsix jobs produce
+# them: a manifest and an empty archive for each target, and the VSIX. The
+# manifests' tag is null, as for a dry run, unless <tag> is given.
 ASSETS=$TMP/assets
 revision=0123456789abcdef0123456789abcdef01234567
 virgil=fedcba9876543210fedcba9876543210fedcba98
 assets() {
-    local target
+    local target tag=${1:-null}
     rm -rf "$ASSETS"
     mkdir "$ASSETS"
     for target in x86-64-linux x86-64-darwin; do
-        printf '{"version": "1.2.3-alpha.4", "tag": null, "target": "%s", "sourceRevision": "%s",
-            "dirty": false, "virgilRevision": "%s"}\n' "$target" "$revision" "$virgil" \
+        printf '{"version": "1.2.3-alpha.4", "tag": %s, "target": "%s", "sourceRevision": "%s",
+            "dirty": false, "virgilRevision": "%s"}\n' "$tag" "$target" "$revision" "$virgil" \
             > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.manifest.json"
         : > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.tar.gz"
     done
@@ -655,6 +656,76 @@ notes "an unreadable build manifest" 1 - "cannot read .*manifest\.json: "
 assets
 rm "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.tar.gz"
 notes "missing archive" 1 - "missing archive virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz"
+
+# CHANGELOG.md's links are relative to the repository root, which
+# release-notes.py finds from its own path, so these cases run a copy of it
+# from a temporary root with a fixture CHANGELOG.md and the files it links.
+REPO=$TMP/repo
+mkdir -p "$REPO/scripts" "$REPO/docs/sub"
+cp "$NOTES" "$REPO/scripts/"
+: > "$REPO/docs/a.md"
+: > "$REPO/docs/sub/b.png"
+base="https://example\.test/o/r/blob/$revision"
+# links <name> <expected-exit> <stdout-pattern|-> <stderr-pattern|-|""> <section>
+# Prints the notes for an Unreleased section holding <section>, with the
+# repository URL set as the release workflow sets it.
+links() {
+    printf '# Changelog\n\n## [Unreleased]\n\n%s\n\n## [0.1.0] - 2026-01-01\n\n- Old.\n' "$5" \
+        > "$REPO/CHANGELOG.md"
+    expect_run "release-notes.py: $1" "$2" "$3" "$4" \
+        env GITHUB_SERVER_URL=https://example.test GITHUB_REPOSITORY=o/r \
+        "$REPO/scripts/release-notes.py" Unreleased "$ASSETS"
+}
+assets
+notes "today's CHANGELOG.md Unreleased section" 0 '^## Downloads$' ""
+links "a repository link at the revision of a dry run, with its fragment" 0 \
+    "^- See \[A\]\($base/docs/a\.md#x\)\.$" "" '- See [A](docs/a.md#x).'
+links "a fragment alone links to CHANGELOG.md" 0 \
+    "^- \[Top\]\($base/CHANGELOG\.md#unreleased\)$" "" '- [Top](#unreleased)'
+links "an image" 0 "^- !\[B\]\($base/docs/sub/b\.png\)$" "" '- ![B](docs/sub/b.png)'
+links "./ and ../ are normalized" 0 \
+    "^- \[A\]\($base/docs/a\.md\) \[A\]\($base/docs/a\.md\)$" "" \
+    '- [A](./docs/a.md) [A](docs/sub/../a.md)'
+links "https and mailto links are kept" 0 \
+    '^- \[K\]\(https://example\.com/a\.md\) \[M\]\(mailto:a@example\.com\)$' "" \
+    '- [K](https://example.com/a.md) [M](mailto:a@example.com)'
+links "code spans are kept" 0 \
+    '^- `\[a\]\(docs/missing\.md\)` and ``x `\[b\]\(c "t"\)` y`` `\[x\]: y`$' "" \
+    '- `[a](docs/missing.md)` and ``x `[b](c "t")` y`` `[x]: y`'
+links "a stray backtick doesn't hide a later entry's link" 0 "^- \[A\]\($base/docs/a\.md\)$" "" \
+    '- A ` stray backtick.
+- [A](docs/a.md)
+- `code`'
+links "a link outside the repository" 1 - "links to \.\./a\.md, outside the repository$" \
+    '- [A](../a.md)'
+links "a link that leaves the repository after descending" 1 - \
+    "links to docs/\.\./\.\./a\.md, outside the repository$" '- [A](docs/../../a.md)'
+links "a root-relative link" 1 - \
+    "links to /docs/a\.md, which is not relative to the repository root$" '- [A](/docs/a.md)'
+links "a protocol-relative link" 1 - \
+    "links to //example\.com/a, which is not relative to the repository root$" \
+    '- [A](//example.com/a)'
+links "a link to a missing file" 1 - "links to docs/missing\.md#x, which does not exist$" \
+    '- [A](docs/missing.md#x)'
+# Each form is <section>|<pattern for the text that the error names>.
+for form in '[A](docs/a.md "Title")|\]\(docs/a\.md "Title"\)' \
+    '[A](<docs/a.md>)|\]\(<docs/a\.md>\)' \
+    '[A](https://example.com/a_(b))|\]\(https://example\.com/a_\(b\)' \
+    '[A][a]|\]\[a\]' \
+    '[A][]|\]\[\]' \
+    '<a href="docs/a.md">A</a>|href="docs/a\.md"' \
+    '<img src="docs/sub/b.png">|src="docs/sub/b\.png"' \
+    '[a]: docs/a.md|\[a\]: docs/a\.md' \
+    '[a]: https://example.com|\[a\]: https://example\.com'; do
+    links "a link that can't be rewritten: ${form%%|*}" 1 - \
+        "cannot rewrite the link at '${form#*|}': the release notes rewrite only inline links" \
+        "- Entry.
+
+${form%%|*}"
+done
+assets '"v1.2.3-alpha.4"'
+links "a repository link at the release's tag" 0 \
+    '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
 
 echo "release scripts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
