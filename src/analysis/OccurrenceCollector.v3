@@ -5,22 +5,62 @@
 // docs/architecture.md#compiler-adapter, and display data in
 // docs/architecture.md#display-text.
 // {packings} is the program's packings, or null if it was not verified.
+// {callEnds} and {names} are shared by the program's files.
 class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
-		packings: AnalysisPackings) extends VstVisitor<void, void> {
+		packings: AnalysisPackings, callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames) extends VstVisitor<void, void> {
 	private def result = Vector<AnalysisOccurrence>.new();
 	private def builtinUses = Vector<AnalysisBuiltinUse>.new();
 	// Declaration sites in the order the walk finds them, which breaks ties.
 	private def siteList = Vector<AnalysisDeclaration>.new();
+	// The calls in the order the walk finds them (see calls), and the
+	// argument spans of the call being recorded.
+	private def callRecords = DataWriter.new();
+	private def argSpans = Vector<int>.new();
+	// The last call's opening parenthesis, and whether every call so far
+	// opened after the one before it.
+	private var lastOpen = -1;
+	private var callsInOrder = true;
+	// While positive, endOf keeps no ends in {callEnds}: the walk has passed
+	// those calls.
+	private var suspended: int;
+	// The expressions that endOf has read, which grows in proportion to the
+	// file's syntax tree; OccurrenceCollector:nested_call_scaling checks it.
+	def var located: int;
+	// The calls whose arguments the walk is in.
+	private var depth: int;
+	// The last call that the walk finished, and its closing parenthesis, or
+	// -1, so that a call of its result finds its own parenthesis.
+	private var lastCall: Expr;
+	private var lastClose = -1;
 	private var fileName: string;
+	// The file's source and replay map, on first use.
+	private var input: Array<byte>;
+	private var coordinates: AnalysisCoordinates;
 	private var captures: List<(ParamDecl, VarBinding.Local)>;
 	private var thisParam: ParamDecl;
 	private var thisClass: VstClass;
-	// Uses skipped because they are not token spans (see record).
+	// The token of the last use recorded, and its byte offset and declaration
+	// (null for a builtin use), so that a call finds its callee's.
+	private var lastToken: Token;
+	private var lastOffset: int;
+	private var lastDeclaration: AnalysisDeclaration;
+	// Uses skipped because they are not token spans (see record), and calls
+	// skipped because their spans do not locate them (see call).
 	def var skipped: int;
 	// After collect: the uses that resolved to no source declaration but
-	// have a type, and the declarations named in the file, each in source order.
+	// have a type, and the declarations named in the file, each in source
+	// order, and the calls, {callCount} records in the order of their opening
+	// parentheses. A record has a call's wire encoding (see
+	// AnalysisWire.encodeCalls), except that its opening parenthesis is its
+	// offset, its callee is an offset before it (CALLEE_OFFSET) or none, and
+	// its signature is an index plus one from AnalysisDisplay.callSignature;
+	// AnalysisCallCursor reads them with {absolute}. A few bytes a call,
+	// rather than objects, keep the garbage of a large program's calls small
+	// enough that collection does not make the worker collect its heap.
 	def var builtins: Array<AnalysisBuiltinUse>;
 	def var sites: Array<AnalysisDeclaration>;
+	def var calls: Range<byte>;
+	def var callCount: int;
 
 	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
 		fileName = file.fileName;
@@ -42,7 +82,36 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		builtins = AnalysisTables.sort(builtinUses.extract(), builtinBefore);
 		sites = sortSites(siteList.extract());
+		calls = sortCalls();
 		return AnalysisTables.sort(result.extract(), before);
+	}
+	// The walk finds a file's components, classes, and other declarations in
+	// turn, not in source order, so the calls it records may need sorting:
+	// each record's opening parenthesis and start, as one long, then the
+	// records in that order.
+	private def sortCalls() -> Range<byte> {
+		var data = callRecords.alias();
+		if (callsInOrder) return data;
+		var keys = Array<long>.new(callCount), c = AnalysisCallCursor.new(DataReader.new(data), callCount);
+		c.absolute = true;
+		for (i = 0; c.next(); i++) {
+			keys[i] = (long.view(c.open) << 32) | c.start;
+			c.skipArgs();
+		}
+		keys = AnalysisTables.sort(keys, longBefore);
+		var sorted = DataWriter.new().grow(data.length), r = DataReader.new(data);
+		c = AnalysisCallCursor.new(r, callCount);
+		c.absolute = true;
+		for (key in keys) {
+			var start = int.view(key & 0xFFFFFFFF);
+			c.seek(start, -1).next();
+			c.skipArgs();
+			sorted.putr(data[start ... r.pos]);
+		}
+		return sorted.alias();
+	}
+	private def longBefore(a: long, b: long) -> bool {
+		return a < b;
 	}
 	// Source order is byte order. Compiler coordinates follow it, except that
 	// a retrospective token's context-free column can pass a later token's.
@@ -425,7 +494,13 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var o = AnalysisOccurrence.new(range, decl);
 		if (t != null) o.useType = display.useType(decl, t);
 		result.put(o);
+		last(token, range.beginOffset, decl);
 		return o;
+	}
+	private def last(token: Token, offset: int, decl: AnalysisDeclaration) {
+		lastToken = token;
+		lastOffset = offset;
+		lastDeclaration = decl;
 	}
 	// A resolved use with no source declaration, such as ".length" or
 	// "int.max", has only its type, which it keeps if that is known.
@@ -434,14 +509,358 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var text = display.typeText(t);
 		if (text == null) return;
 		var range = sources.range(token);
-		if (range.isTokenSpan()) builtinUses.put(AnalysisBuiltinUse.new(range, text));
-		else skipped++;
+		if (range.isTokenSpan()) {
+			builtinUses.put(AnalysisBuiltinUse.new(range, text));
+			last(token, range.beginOffset, null);
+		} else {
+			skipped++;
+		}
 	}
 	def visitLiteral(e: Literal, env: void) { }
 	def visitString(e: StringExpr, env: void) { }
 	def visitApp(e: AppExpr, env: void) {
 		expr(e.func);
+		var close = call(e);
+		depth++;
 		expr(e.args);
+		depth--;
+		lastCall = e;
+		lastClose = close;
+		// Every end kept in the arguments has been read, unless a call was
+		// missed; none is known.
+		if (depth == 0) callEnds.clear();
+	}
+	// Records the call {e}, after its callee, whose name is the last use
+	// recorded if it is a use at all. Its parentheses and arguments are found
+	// from the tokens around them, which the parser captured with their
+	// offsets: only whitespace, comments, and commas can separate a callee,
+	// its parenthesis, its arguments, and the closing parenthesis (see
+	// endOf). A call whose syntax is not where that puts it is skipped and
+	// counted; none is known. Each application in the syntax tree is a call,
+	// including one through a class (C.m(c, x)), a constructor, a variant
+	// case, a closure, a builtin, and a partial application, whose "_"
+	// arguments are arguments like any other, except "void(e)", which only
+	// discards its operands, and Pointer.atField, which needs a target, so
+	// verification never accepts it here. What the tree does not keep as an
+	// application has no call: a constructor's super(...) clause, an index
+	// operation, and an operator. See docs/architecture.md#call-sites.
+	// Returns the offset just past the call's closing parenthesis, or -1.
+	private def call(e: AppExpr) -> int {
+		// The end of the last argument, if endOf found it before, which is
+		// read first so that the next call finds its own.
+		var memo = callEnds.read(e);
+		match (e.appbind) {
+			Void => return -1;
+			// Pointer.atField replaces its argument with an empty list; see
+			// Verifier.visitPtrAtField.
+			PtrAtComponentField, PtrAtObjectField, PtrAtRefLayoutField,
+			PtrAtUnboxedObjectField, PtrAtUnboxedComponentField => return -1;
+			None => if (VarExpr.?(e.func)) {
+				var v = VarExpr.!(e.func);
+				match (v.varbind) {
+					PtrAtField => return -1;
+					None => {
+						// Each name could also be a declaration of the program's,
+						// called like any other, so it excludes a call only where
+						// the program declares nothing by that name.
+						if (v.expr == null && Strings.equal(v.ident.name.image, "void") && !names.declaresVoid()) return -1;
+						if (VarExpr.?(v.expr) && Strings.equal(v.ident.name.image, "atField")) {
+							var owner = VarExpr.!(v.expr);
+							if (owner.expr == null && Strings.equal(owner.ident.name.image, "Pointer") && !names.declaresPointer()) return -1;
+						}
+					}
+					_ => ;
+				}
+			}
+			_ => ;
+		}
+		var list = e.args.exprs;
+		if (list.src == null || list.src.beginLine <= 0 || !Strings.equal(list.src.fileName, fileName)) return -1;
+		var open = parenAfter(e.func, list.src, true), n = list.length(), end = open + 1;
+		var region = callEnds.length();
+		argSpans.length = 0;
+		for (l = if(open >= 0, list.list); l != null; l = l.tail) {
+			if (argSpans.length > 0) {
+				end = skipSpace(end);
+				if (byteAt(end) != ',') break;
+				end++;
+			}
+			var begin = skipSpace(end);
+			end = if(l.tail == null && memo >= 0, memo, endOf(l.head, begin));
+			if (end <= begin || !startsAt(l.head, begin)) break;
+			argSpans.put(begin).put(end);
+		}
+		callEnds.region(region);
+		var close = if(open >= 0 && argSpans.length == 2 * n, closeAfter(end, ')'), -1);
+		if (close < 0) {
+			skipped++;
+			return -1;
+		}
+		var callee = -1, target: AnalysisDeclaration, b: VarBinding;
+		if (VarExpr.?(e.func)) {
+			var v = VarExpr.!(e.func);
+			b = v.varbind;
+			if (lastToken == v.ident.name && lastOffset < open) {
+				callee = lastOffset;
+				target = lastDeclaration;
+			}
+		}
+		var signature = display.callSignature(target, b, e.func.exactType);
+		var flags = if(callee >= 0, AnalysisCallFlags.CALLEE_OFFSET) | if(close - 1 > end, AnalysisCallFlags.CLOSE_GAP);
+		if (open <= lastOpen) callsInOrder = false;
+		lastOpen = open;
+		callCount++;
+		var w = callRecords;
+		putU(w, open);
+		putU(w, n * 8 + flags);
+		if (callee >= 0) putU(w, open - callee);
+		putU(w, signature + 1);
+		// Each argument's length times four plus the bytes before it, or three
+		// and then those bytes.
+		end = open + 1;
+		for (i = 0; i < argSpans.length; i += 2) {
+			var gap = argSpans[i] - end, length = argSpans[i + 1] - argSpans[i];
+			putU(w, 4 * length + if(gap < 3, gap, 3));
+			if (gap >= 3) putU(w, gap);
+			end = argSpans[i + 1];
+		}
+		if (close - 1 > end) putU(w, close - 1 - end);
+		return close;
+	}
+	private def putU(w: DataWriter, value: int) {
+		w.put_uleb32(u32.view(value));
+	}
+	// The opening parenthesis of a call of {func} whose argument list has
+	// range {src}, or -1. If the walk has {visited} {func}, it has passed the
+	// calls there, so the ends that endOf finds there are not kept; if not,
+	// as when endOf locates a call with no arguments ahead of the walk, they
+	// are, as for any call it locates ahead.
+	private def parenAfter(func: Expr, src: FileRange, visited: bool) -> int {
+		if (visited) suspended++;
+		var end = endOf(func, -1);
+		if (visited) suspended--;
+		var open = skipSpace(end);
+		if (byteAt(open) != '(') open = point(src);
+		return if(byteAt(open) == '(', open, -1);
+	}
+	// The byte offset just past {e}, which starts at {begin} if that is
+	// known, or -1. It is the end of the token or the closing bracket at the
+	// end of {e}'s right spine. A bracket follows the last element of its
+	// list, past whitespace, comments, and perhaps a trailing comma, or the
+	// opening bracket of an empty list. Syntax ranges would mislocate some:
+	// the range of a prefix ++x ends at its operator, and that of a range,
+	// as in x[a ... b], ends before its closing bracket, which no syntax
+	// records. Where the tokens do not locate a bracket, as at the end of a
+	// block, the replay map does (see AnalysisSourceMaps). The last call that
+	// the walk finished ends at its closing parenthesis, so that a call of a
+	// result, as in f(a)(b) or a[f(i)](), finds its own without reading the
+	// walked calls again.
+	private def endOf(e: Expr, begin: int) -> int {
+		while (true) {
+			located++;
+			match (e) {
+				x: VarExpr => {
+					var params = x.ident.params;
+					return if(params == null, tokenEnd(x.ident.name), typeListEnd(params));
+				}
+				x: AppExpr => {
+					if (x == lastCall && lastClose >= 0) return lastClose;
+					var args = x.args.exprs;
+					if (args.list != null) {
+						// The call will need its last argument's end too.
+						var slot = if(suspended == 0, callEnds.reserve(x), -1), end = endOf(lastOf(args), -1);
+						if (slot >= 0) callEnds.fill(slot, end);
+						return closeAfter(end, ')');
+					}
+					var open = parenAfter(x.func, args.src, false);
+					return if(open >= 0, closeAfter(open + 1, ')'), -1);
+				}
+				x: BinOpExpr => {
+					if (x.right == null) return tokenEnd(x.op.token);
+					begin = skipSpace(tokenEnd(x.op.token));
+					e = x.right;
+				}
+				x: AutoExpr => {
+					if (x.post) return tokenEnd(x.token);
+					begin = skipSpace(tokenEnd(x.token));
+					e = x.expr;
+				}
+				x: AssignExpr => {
+					if (x.expr == null || !Token.?(x.assign)) return -1;
+					begin = skipSpace(tokenEnd(Token.!(x.assign)));
+					e = x.expr;
+				}
+				x: IndexExpr => {
+					if (x.exprs.list != null) return closeAfter(endOf(lastOf(x.exprs), -1), ']');
+					var open = skipSpace(endOf(x.expr, begin));
+					return if(byteAt(open) == '[', closeAfter(open + 1, ']'), rangeEnd(x.exprs.src));
+				}
+				x: RangeExpr => return closingBracket(endOf(if(x.end != null, x.end, x.start), -1), x.end == null && !x.plus);
+				x: Literal => return tokenEnd(x.token);
+				x: StringExpr => return tokenEnd(x.token);
+				x: ParamExpr => return tokenEnd(x.token);
+				x: TupleExpr => return listEnd(x.exprs, begin, ')');
+				x: ArrayExpr => return listEnd(x.exprs, begin, ']');
+				x: IfExpr => return listEnd(x.exprs, -1, ')');
+				// The operators "!", "-", and "~" take a byte.
+				x: NotExpr => {
+					begin = if(begin >= 0, skipSpace(begin + 1), -1);
+					e = x.expr;
+				}
+				x: NegExpr => {
+					begin = if(begin >= 0, skipSpace(begin + 1), -1);
+					e = x.expr;
+				}
+				x: BitwiseNegExpr => {
+					begin = if(begin >= 0, skipSpace(begin + 1), -1);
+					e = x.expr;
+				}
+				// A simple body, as in fun (x: int) => x + 1, is its
+				// expression, and an empty one, as in fun ();, its semicolon.
+				x: FunExpr => {
+					match (x.func.body) {
+						y: ReturnStmt => {
+							if (y.expr == null) return -1;
+							begin = -1;
+							e = y.expr;
+						}
+						y: BlockStmt => return rangeEnd(y.stmts.src);
+						y: EmptyStmt => {
+							var at = if(Token.?(y.point), tokenBegin(Token.!(y.point)), point(y.point));
+							return if(at >= 0 && byteAt(at) == ';', at + 1, -1);
+						}
+						_ => return -1;
+					}
+				}
+				_ => return -1;
+			}
+		}
+		return -1;
+	}
+	// The end of the bracketed {list}, closed by {close}, whose opening
+	// bracket is at {open} if that is known.
+	private def listEnd(list: VstList<Expr>, open: int, close: byte) -> int {
+		if (list.list != null) return closeAfter(endOf(lastOf(list), -1), close);
+		return if(open >= 0, closeAfter(open + 1, close), rangeEnd(list.src));
+	}
+	// The end of type arguments, as in f<A, B>.
+	private def typeListEnd(list: VstList<TypeRef>) -> int {
+		return if(list.list != null, closeAfter(typeRefEnd(lastOf(list)), '>'), rangeEnd(list.src));
+	}
+	private def typeRefEnd(t: TypeRef) -> int {
+		while (true) {
+			match (t) {
+				x: NamedTypeRef => return if(x.nested == null, tokenEnd(x.name), typeListEnd(x.nested));
+				x: FuncTypeRef => t = x.returnType;
+				x: TupleTypeRef => {
+					var list = x.nested;
+					return if(list.list != null, closeAfter(typeRefEnd(lastOf(list)), ')'), rangeEnd(list.src));
+				}
+				_ => return -1;
+			}
+		}
+		return -1;
+	}
+	private def lastOf<T>(list: VstList<T>) -> T {
+		var l = list.list;
+		while (l.tail != null) l = l.tail;
+		return l.head;
+	}
+	// The offset just past {close} after {offset}, past whitespace,
+	// comments, and perhaps a trailing comma, or -1.
+	private def closeAfter(offset: int, close: byte) -> int {
+		if (offset < 0) return -1;
+		offset = skipSpace(offset);
+		if (byteAt(offset) == ',') offset = skipSpace(offset + 1);
+		return if(byteAt(offset) == close, offset + 1, -1);
+	}
+	// Whether {e}'s first token or bracket is at {offset}.
+	private def startsAt(e: Expr, offset: int) -> bool {
+		while (true) {
+			match (e) {
+				x: VarExpr => if (x.expr != null) e = x.expr; else return tokenBegin(x.ident.name) == offset;
+				x: AppExpr => e = x.func;
+				x: BinOpExpr => if (x.left != null) e = x.left; else return false;
+				x: AutoExpr => if (x.post) e = x.expr; else return tokenBegin(x.token) == offset;
+				x: IndexExpr => e = x.expr;
+				x: RangeExpr => e = x.expr;
+				x: AssignExpr => if (x.target != null) e = x.target; else return false;
+				x: Literal => return tokenBegin(x.token) == offset;
+				x: StringExpr => return tokenBegin(x.token) == offset;
+				x: ParamExpr => return tokenBegin(x.token) == offset;
+				x: TupleExpr => return byteAt(offset) == '(';
+				x: ArrayExpr => return byteAt(offset) == '[';
+				x: NotExpr => return byteAt(offset) == '!';
+				x: NegExpr => return byteAt(offset) == '-';
+				x: BitwiseNegExpr => return byteAt(offset) == '~';
+				x: IfExpr => return byteAt(offset) == 'i';
+				x: FunExpr => return byteAt(offset) == 'f';
+				_ => return false;
+			}
+		}
+		return false;
+	}
+	// The offset past the closing bracket of a range whose last part ends at
+	// {offset}, after "..." too if {dots}; only whitespace and comments
+	// separate them. Otherwise -1.
+	private def closingBracket(offset: int, dots: bool) -> int {
+		if (offset < 0) return -1;
+		offset = skipSpace(offset);
+		if (dots) {
+			for (i < 3) if (byteAt(offset + i) != '.') return -1;
+			offset = skipSpace(offset + 3);
+		}
+		return if(byteAt(offset) == ']', offset + 1, -1);
+	}
+	// The offset of the first byte at or after {offset} that is not
+	// whitespace or in a comment.
+	private def skipSpace(offset: int) -> int {
+		while (true) {
+			var b = byteAt(offset), next = byteAt(offset + 1);
+			if (b == ' ' || b == '\t' || b == '\n' || b == '\r') {
+				offset++;
+			} else if (b == '/' && next == '/') {
+				offset += 2;
+				while ((b = byteAt(offset)) >= 0 && b != '\n') offset++;
+			} else if (b == '/' && next == '*') {
+				offset += 2;
+				while ((b = byteAt(offset)) >= 0 && !(b == '*' && byteAt(offset + 1) == '/')) offset++;
+				if (b >= 0) offset += 2;
+			} else {
+				return offset;
+			}
+		}
+		return offset;
+	}
+	// A token's byte offset, which the parser captured, or else the replayed
+	// offset of its live coordinates.
+	private def tokenBegin(t: Token) -> int {
+		if (AnalysisCapturedToken.?(t)) return AnalysisCapturedToken.!(t).offset;
+		return point(t.range());
+	}
+	private def tokenEnd(t: Token) -> int {
+		if (AnalysisCapturedToken.?(t)) return AnalysisCapturedToken.!(t).offset + t.image.length;
+		return rangeEnd(t.range());
+	}
+	private def point(p: FilePoint) -> int {
+		if (p == null || !Strings.equal(p.fileName, fileName)) return -1;
+		return offset(p.beginLine, p.beginColumn);
+	}
+	private def rangeEnd(r: FileRange) -> int {
+		if (r == null || !Strings.equal(r.fileName, fileName)) return -1;
+		return offset(r.endLine, r.endColumn);
+	}
+	// The byte offset of live parser coordinates in the file, which the
+	// parser's points and lists hold, as do the ranges of retrospective tokens
+	// (see AnalysisRetrospectiveToken); the replay map locates them.
+	private def offset(line: int, column: int) -> int {
+		if (coordinates == null) coordinates = sources.map(fileName);
+		return if(coordinates != null, coordinates.offset(line, column, false), -1);
+	}
+	// The file's byte at {offset}, or -1 if there is none.
+	private def byteAt(offset: int) -> int {
+		if (input == null) input = sources.input(fileName);
+		return if(input != null && u32.view(offset) < u32.view(input.length), input[offset], -1);
 	}
 	def visitIndex(e: IndexExpr, env: void) {
 		expr(e.expr);
@@ -599,6 +1018,62 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 }
 
+// The ends of last arguments that OccurrenceCollector.endOf found before the
+// walk reached their calls, each with its call, which reads it rather than
+// finding it again: in f(f(f(1))), each call would otherwise read the calls
+// inside it again, in time quadratic in the depth. Ends are kept in
+// regions: each call that finds ends in its arguments adds them as a
+// region, in the walk's order, and the walk reaches the rest of the region
+// below only after the calls of the region above. A call reads only the
+// next end of the top region, so that keeping and reading take constant
+// time, and finds its end itself if that is not its own. A program's files
+// share one, which each file's collection leaves empty.
+class AnalysisCallEnds {
+	private def calls = Vector<AppExpr>.new();
+	private def ends = Vector<int>.new();
+	// Two ints a region: its start and its next end to read.
+	private def regions = Vector<int>.new();
+
+	def length() -> int {
+		return calls.length;
+	}
+	// Keeps a slot for the end of {e}'s last argument and returns it.
+	def reserve(e: AppExpr) -> int {
+		calls.put(e);
+		ends.put(-1);
+		return ends.length - 1;
+	}
+	def fill(slot: int, end: int) {
+		ends[slot] = end;
+	}
+	// Makes the ends kept since {start} a region, if there are any.
+	def region(start: int) {
+		if (calls.length > start) regions.put(start).put(start);
+	}
+	// The end of {e}'s last argument, if it is the next one to read, or -1.
+	// Reading a region's last end removes the region.
+	def read(e: AppExpr) -> int {
+		var r = regions.length - 2;
+		if (r < 0) return -1;
+		var next = regions[r + 1];
+		if (calls[next] != e) return -1;
+		var end = ends[next];
+		if (next + 1 < calls.length) {
+			regions[r + 1] = next + 1;
+		} else {
+			calls.length = regions[r];
+			ends.length = regions[r];
+			regions.length = r;
+		}
+		return end;
+	}
+	def clear() {
+		calls.length = 0;
+		ends.length = 0;
+		regions.length = 0;
+	}
+}
+
 // A program's packings, as verification left them, for collecting their
 // uses. It keeps no binding in a packing expression; see
 // OccurrenceCollector.packingExpr. Retains no Program.
@@ -639,5 +1114,211 @@ class AnalysisPackings {
 					&& Strings.equal(r.fileName, t.fileName) && Strings.equal(l.head.error, "PackingDeclError")) return true;
 		}
 		return false;
+	}
+}
+
+// Whether a program declares anything named "void" or "Pointer", in any
+// file and of any kind, for OccurrenceCollector.call, which asks only of an
+// application that verification left unbound. The first question walks
+// every file's syntax tree once; the parser built it whole, including the
+// bodies and declarations that verification never reached.
+class AnalysisDeclaredNames(files: Array<VstFile>) extends VstVisitor<void, void> {
+	private var scanned: bool;
+	private var hasVoid: bool;
+	private var hasPointer: bool;
+	def var visited: int;
+
+	def declaresVoid() -> bool {
+		scan();
+		return hasVoid;
+	}
+	def declaresPointer() -> bool {
+		scan();
+		return hasPointer;
+	}
+	private def scan() {
+		if (scanned) return;
+		scanned = true;
+		if (files == null) return;
+		for (f in files) {
+			if (f == null) continue;
+			for (i < f.components.length) compound(f.components[i]);
+			for (i < f.classes.length) compound(f.classes[i]);
+			for (i < f.enums.length) compound(f.enums[i]);
+			for (i < f.layouts.length) compound(f.layouts[i]);
+			for (i < f.packings.length) compound(f.packings[i]);
+			for (i < f.exports.length) name(f.exports[i].token);
+		}
+	}
+	private def name(t: Token) {
+		if (t == null) return;
+		visited++;
+		if (Strings.equal(t.image, "void")) hasVoid = true;
+		else if (Strings.equal(t.image, "Pointer")) hasPointer = true;
+	}
+	private def compound(c: VstCompound) {
+		name(c.token);
+		if (!c.isSynthetic) typeParams(c.typeParams);
+		params(c.params);
+		if (c.superclause != null) expr(c.superclause.args);
+		if (VstPacking.?(c)) {
+			var pparams = VstPacking.!(c).pparams;
+			if (pparams != null) for (l = pparams.list; l != null; l = l.tail) name(l.head.token);
+		}
+		for (l = c.members; l != null; l = l.tail) {
+			name(l.head.token);
+			match (l.head) {
+				x: VstNew => {
+					if (x.superclause != null && x.superclause != c.superclause) expr(x.superclause.args);
+					if (!x.isSynthetic && x.func.params != c.params) params(x.func.params);
+					stmt(x.func.body);
+				}
+				x: VstMethod => {
+					if (x.isSynthetic) continue;
+					typeParams(x.typeParams);
+					func(x.func);
+				}
+				x: VstField => expr(x.init);
+				x: VstEnumCase => exprs(x.args);
+				_ => ;
+			}
+		}
+	}
+	private def typeParams(list: List<TypeParamType>) {
+		for (l = list; l != null; l = l.tail) name(l.head.token);
+	}
+	private def params(list: VstList<ParamDecl>) {
+		if (list != null) for (l = list.list; l != null; l = l.tail) name(l.head.token);
+	}
+	private def func(f: VstFunc) {
+		params(f.params);
+		stmt(f.body);
+	}
+	private def varDecl(v: VarDecl) {
+		if (v == null) return;
+		name(v.token);
+		expr(v.init);
+	}
+	private def stmt(s: Stmt) {
+		if (s != null) {
+			visited++;
+			s.accept(this, ());
+		}
+	}
+	private def expr(e: Expr) {
+		if (e != null) {
+			visited++;
+			e.accept(this, ());
+		}
+	}
+	private def exprs(list: VstList<Expr>) {
+		if (list != null) for (l = list.list; l != null; l = l.tail) expr(l.head);
+	}
+
+	def visitIf(s: IfStmt, env: void) {
+		expr(s.cond);
+		stmt(s.tbranch);
+		stmt(s.fbranch);
+	}
+	def visitBlock(s: BlockStmt, env: void) {
+		for (l = s.stmts.list; l != null; l = l.tail) stmt(l.head);
+	}
+	def visitWhile(s: WhileStmt, env: void) {
+		expr(s.cond);
+		stmt(s.body);
+	}
+	def visitFor(s: ForStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.cond);
+		expr(s.update);
+		stmt(s.body);
+	}
+	def visitForeach(s: ForeachStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitForLess(s: ForLessStmt, env: void) {
+		varDecl(s.varDecl);
+		expr(s.expr);
+		stmt(s.body);
+	}
+	def visitLocal(s: LocalStmt, env: void) {
+		for (l = s.vars; l != null; l = l.tail) varDecl(l.head);
+	}
+	def visitBreak(s: BreakStmt, env: void) { }
+	def visitContinue(s: ContinueStmt, env: void) { }
+	def visitExpr(s: ExprStmt, env: void) {
+		expr(s.expr);
+	}
+	def visitMatch(s: MatchStmt, env: void) {
+		expr(s.expr);
+		for (l = s.cases.list; l != null; l = l.tail) {
+			var c = l.head;
+			for (p = c.patterns.list; p != null; p = p.tail) {
+				var pat = p.head;
+				expr(pat.expr);
+				if (pat.params != null) for (v = pat.params.list; v != null; v = v.tail) varDecl(v.head);
+				varDecl(pat.vdecl);
+			}
+			stmt(c.stmt);
+		}
+	}
+	def visitEmpty(s: EmptyStmt, env: void) { }
+	def visitReturn(s: ReturnStmt, env: void) {
+		expr(s.expr);
+	}
+
+	def visitTuple(e: TupleExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitParamExpr(e: ParamExpr, env: void) { }
+	def visitAutoExpr(e: AutoExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitArray(e: ArrayExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitVar(e: VarExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitLiteral(e: Literal, env: void) { }
+	def visitString(e: StringExpr, env: void) { }
+	def visitApp(e: AppExpr, env: void) {
+		expr(e.func);
+		expr(e.args);
+	}
+	def visitIndex(e: IndexExpr, env: void) {
+		expr(e.expr);
+		exprs(e.exprs);
+	}
+	def visitRange(e: RangeExpr, env: void) {
+		expr(e.expr);
+		expr(e.start);
+		expr(e.end);
+	}
+	def visitNot(e: NotExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitNeg(e: NegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitBitwiseNeg(e: BitwiseNegExpr, env: void) {
+		expr(e.expr);
+	}
+	def visitAssign(e: AssignExpr, env: void) {
+		expr(e.target);
+		expr(e.expr);
+	}
+	def visitBinOp(e: BinOpExpr, env: void) {
+		expr(e.left);
+		expr(e.right);
+	}
+	def visitIfExpr(e: IfExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitFunExpr(e: FunExpr, env: void) {
+		name(e.name);
+		func(e.func);
 	}
 }

@@ -60,6 +60,16 @@ class Reader:
                 return value - (1 << shift) if byte & 64 else value
             assert shift < 70, "invalid LEB128"
 
+    def unsigned(self):
+        value = shift = 0
+        while True:
+            byte = self.take(1)[0]
+            value |= (byte & 127) << shift
+            shift += 7
+            if byte < 128:
+                return value
+            assert shift < 35, "invalid LEB128"
+
     def string(self):
         size = self.integer()
         return None if size == -1 else self.take(size).decode()
@@ -81,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 6, self.hello
+        assert self.hello["protocol"] == 7, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -125,7 +135,7 @@ class Worker:
                                                 "beginOffset", "endOffset"),
                                                [reader.integer() for _ in range(6)])),
                                     kind=reader.string(), message=reader.string()))
-        declarations, occurrences, builtins = [], [], []
+        declarations, occurrences, builtins, calls = [], [], [], []
         if flags & 4:
             # A path is an index into the request's distinct paths.
             paths = list(dict.fromkeys(path for path, _ in sources))
@@ -138,6 +148,15 @@ class Worker:
                 # A signature's string index plus one, or zero for none.
                 signature = reader.integer()
                 declarations[-1]["signature"] = strings[signature - 1] if signature else None
+            # Call signatures: their own text, then each a label, the offset
+            # of its first parameter, and parameters, each a string table
+            # index or, past the table, a text index.
+            text = strings + [reader.string() for _ in range(reader.integer())]
+            signatures = []
+            for _ in range(reader.integer()):
+                label, start = text[reader.integer()], reader.integer()
+                signatures.append(dict(label=label, start=start,
+                                       params=[text[reader.integer()] for _ in range(reader.integer())]))
             for _ in range(reader.integer()):
                 path, first, sites = paths[reader.integer()], reader.integer(), reader.integer()
                 assert all(d["path"] == path for d in declarations[first:first + sites])
@@ -159,9 +178,26 @@ class Worker:
                     builtins.append(dict(path=path, range=[line, column, line, column + length],
                                          offsets=[offset, offset + length],
                                          useType=strings[reader.integer()]))
+                # Calls, in unsigned LEB128; see AnalysisWire.encodeCall.
+                open_ = 0
+                for _ in range(reader.integer()):
+                    open_ += reader.unsigned()
+                    head = reader.unsigned()
+                    callee = open_ - reader.unsigned() if head & 2 else None
+                    signature = reader.unsigned()
+                    end, args = open_ + 1, []
+                    for _ in range(head >> 3):
+                        value = reader.unsigned()
+                        gap = reader.unsigned() if value & 3 == 3 else value & 3
+                        args.append([end + gap, end + gap + (value >> 2)])
+                        end = args[-1][1]
+                    close = end + (reader.unsigned() if head & 4 else 0) + 1
+                    calls.append(dict(path=path, open=open_, close=close, args=args, callee=callee,
+                                      calleeAtParen=bool(head & 1),
+                                      signature=signatures[signature - 1] if signature else None))
         reader.finish()
         return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1], skippedUses=stats[6],
-                    diagnostics=diagnostics, occurrences=occurrences, builtins=builtins)
+                    diagnostics=diagnostics, occurrences=occurrences, builtins=builtins, calls=calls)
 
     def close(self):
         self.proc.stdin.close()
@@ -289,6 +325,21 @@ def main():
             new = text.encode().index(b'.new(') + 1
             found = [b for b in result['builtins'] if b['useType'] == 'int -> Array<int>']
             assert len(found) == 1 and found[0]['offsets'] == [new, new + 3], result['builtins']
+            assert result['skippedUses'] == 0, result
+            # A call's parentheses and arguments are byte offsets, found past
+            # comments, tabs, and non-ASCII text, and its callee is the use
+            # that ends at its parenthesis.
+            text = ('component C {\n/*\t\u00e9*/ def add(a: int, b: int) -> int { return a + b; }\n'
+                    '\tdef f() -> int { return add(\t1, /* ) \u00e9 */ add(2,\n\t\t3)); }\n}\n')
+            result = check("call sites", text, [], flags=1, path='calls.v3')
+            data = text.encode()
+            outer, inner = data.index(b'add(\t1'), data.index(b'add(2')
+            assert [(c['open'], c['close']) for c in result['calls']] == [
+                (outer + 3, data.index(b'));') + 2), (inner + 3, data.index(b'));') + 1)], result['calls']
+            assert result['calls'][0]['args'] == [[outer + 5, outer + 6], [inner, data.index(b'));') + 1]], result['calls']
+            assert result['calls'][1]['args'] == [[inner + 4, inner + 5], [data.index(b'3)'), data.index(b'3)') + 1]]
+            assert all(c['calleeAtParen'] and c['signature']['label'] == 'def add(a: int, b: int) -> int'
+                       and c['signature']['params'] == ['a: int', 'b: int'] for c in result['calls']), result['calls']
             assert result['skippedUses'] == 0, result
 
             path = work / 'semantic.v3'

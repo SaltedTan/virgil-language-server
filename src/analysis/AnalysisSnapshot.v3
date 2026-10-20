@@ -40,6 +40,8 @@ class AnalysisSnapshot {
 	private var files: AnalysisSnapshotFiles;
 	// The result's string table, which holds the use-site types.
 	private var strings: Array<string> = [];
+	// The result's call signatures, or null without occurrences.
+	private var signatures: AnalysisSnapshotSignatures;
 
 	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) {
 		for (path in paths) retainedBytes += 128L + if(path != null, path.length, 0);
@@ -79,6 +81,10 @@ class AnalysisSnapshot {
 	// Records the string table that the files' type indexes refer to.
 	def setStrings(table: Array<string>) {
 		strings = table;
+	}
+	// Records the signatures that the files' calls refer to.
+	def setSignatures(s: AnalysisSnapshotSignatures) {
+		signatures = s;
 	}
 	// Source-declaration uses in {path}, as ProgramAnalysis.occurrences reports
 	// them. Each call returns a new array.
@@ -168,6 +174,64 @@ class AnalysisSnapshot {
 		if (file == null) return null;
 		var i = file.findBuiltin(offset);
 		return if(i >= 0, AnalysisBuiltinUse.new(file.builtinRange(path, i), strings[file.builtinType(i)]));
+	}
+	// Call sites for signature help; see docs/architecture.md#call-sites.
+
+	// The calls in {path}, in the order of their opening parentheses, as
+	// ProgramAnalysis.calls reports them. Each call returns new objects, and
+	// its calls that name one signature share it.
+	def calls(path: string) -> Array<AnalysisCall> {
+		var file = fileOf(path);
+		if (file == null) return [];
+		var cursor = file.callCursor(), result = Array<AnalysisCall>.new(file.callCount);
+		var reader = AnalysisSignatureReader.new(signatures);
+		for (i < result.length) {
+			cursor.next();
+			result[i] = call(file, cursor, reader);
+		}
+		return result;
+	}
+	// The innermost call in {path} whose argument list holds {offset}: one
+	// whose opening parenthesis is before it and whose closing parenthesis is
+	// at or after it, so that {offset} is between the two. Null if there is
+	// none. Reads the file's calls up to {offset} and allocates only the
+	// result, with its signature.
+	def callAt(path: string, offset: int) -> AnalysisCall {
+		var file = fileOf(path);
+		if (file == null) return null;
+		var cursor = file.callCursor(), found = -1, last = -1;
+		while (cursor.next() && cursor.open < offset) {
+			var start = cursor.start, startOpen = cursor.startOpen;
+			cursor.skipArgs();
+			// Argument lists nest, so the last that holds the offset is innermost.
+			if (offset < cursor.close) {
+				found = start;
+				last = startOpen;
+			}
+		}
+		if (found < 0) return null;
+		cursor = file.callCursor().seek(found, last);
+		cursor.next();
+		return call(file, cursor, AnalysisSignatureReader.new(signatures));
+	}
+	// The call that {cursor} has just started to read, which it reads to its
+	// end, with its signature from {reader}.
+	private def call(file: AnalysisSnapshotFile, cursor: AnalysisCallCursor, reader: AnalysisSignatureReader) -> AnalysisCall {
+		var args = Array<int>.new(2 * cursor.argCount);
+		for (i < cursor.argCount) {
+			cursor.nextArg();
+			args[2 * i] = cursor.argBegin;
+			args[2 * i + 1] = cursor.argEnd;
+		}
+		cursor.finish();
+		var callee = -1, target: AnalysisDeclaration, open = cursor.open;
+		var use = if(cursor.calleeEndsAtParen(), file.useEndingAt(open), if(cursor.calleeDelta > 0, file.useAt(open - cursor.calleeDelta), -1));
+		if (use >= 0) {
+			callee = file.useBegin(use);
+			if (use < file.targets.length) target = declarations[file.targets[use]];
+		}
+		var s = if(cursor.signature > 0, reader[cursor.signature - 1]);
+		return AnalysisCall.new(open, cursor.close, args, callee, target, s);
 	}
 	private def occurrence(path: string, file: AnalysisSnapshotFile, i: int) -> AnalysisOccurrence {
 		var o = AnalysisOccurrence.new(file.range(path, i), declarations[file.targets[i]]);
@@ -353,9 +417,20 @@ class AnalysisSnapshotFiles {
 // range as an occurrence's, and the string index of its type; builtin uses
 // are also token spans in source order. The file's declaration sites are
 // the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
-// source order.
+// source order. The file's {callCount} calls are kept in their wire
+// encoding, which the decoder checked, in {calls} (see AnalysisCallCursor).
+// A use index is an occurrence's index, or the number of occurrences plus a
+// builtin use's index.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
 		firstSite: int, siteCount: int) {
+	def var callCount: int;
+	def var calls: Array<byte> = [];
+
+	// Records the calls, which the decoder checked against this file's uses.
+	def setCalls(count: int, encoded: Array<byte>) {
+		callCount = count;
+		calls = encoded;
+	}
 	def range(path: string, i: int) -> AnalysisRange {
 		return span(path, ranges, 4 * i);
 	}
@@ -363,6 +438,26 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 	def spans(i: int, begin: int, end: int) -> bool {
 		var r = 4 * i;
 		return ranges[r + 2] == begin && ranges[r + 2] + ranges[r + 3] == end;
+	}
+	def callCursor() -> AnalysisCallCursor {
+		return AnalysisCallCursor.new(DataReader.new(calls), callCount);
+	}
+	// The use index of the use that starts at {offset}, or -1.
+	def useAt(offset: int) -> int {
+		var i = findOffset(offset);
+		if (i >= 0) return if(ranges[4 * i + 2] == offset, i, -1);
+		i = findBuiltin(offset);
+		return if(i >= 0 && builtins[5 * i + 2] == offset, targets.length + i, -1);
+	}
+	// The use index of the use that ends just before {offset}, or -1.
+	def useEndingAt(offset: int) -> int {
+		var i = findOffset(offset - 1);
+		if (i >= 0) return if(ranges[4 * i + 2] + ranges[4 * i + 3] == offset, i, -1);
+		i = findBuiltin(offset - 1);
+		return if(i >= 0 && builtins[5 * i + 2] + builtins[5 * i + 3] == offset, targets.length + i, -1);
+	}
+	def useBegin(use: int) -> int {
+		return if(use < targets.length, ranges[4 * use + 2], builtins[5 * (use - targets.length) + 2]);
 	}
 	def builtinCount() -> int {
 		return builtins.length / 5;
@@ -428,5 +523,184 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 		}
 		if (low >= count || offset < a[stride * low + 2]) return -1;
 		return low;
+	}
+}
+
+// The flags in a call's head, below its argument count; see
+// AnalysisWire.encodeCalls.
+component AnalysisCallFlags {
+	// The callee is the use that ends at the opening parenthesis.
+	def CALLEE_AT_PAREN = 1;
+	// The callee is the use that starts at an offset that follows.
+	def CALLEE_OFFSET = 2;
+	// Bytes between the last argument and the closing parenthesis follow.
+	def CLOSE_GAP = 4;
+}
+
+// Reads one file's calls in the encoding that the worker sends and the
+// snapshot keeps (see AnalysisWire.encodeCalls), checking each as it goes:
+// the decoder checks a result's calls with it, and the snapshot then reads
+// the calls it checked. A malformed call fails {r}. For each call, {next}
+// reads its opening parenthesis, callee, signature, and argument count;
+// {nextArg} reads each argument in turn, and {finish} its closing
+// parenthesis. Allocates nothing. The collector's records (see
+// OccurrenceCollector.calls) differ only in that each opening parenthesis is
+// its offset, not a difference, which {absolute} reads.
+class AnalysisCallCursor(r: DataReader, var remaining: int) {
+	var absolute: bool;
+	// Where the current call's record starts, and the opening parenthesis of
+	// the call before it, or -1, from which seek can read it again.
+	def var start: int;
+	def var startOpen: int;
+	def var open: int;
+	def var close: int;
+	def var flags: int;
+	// The callee's offset before {open} with CALLEE_OFFSET, or zero.
+	def var calleeDelta: int;
+	// A signature index plus one, or zero.
+	def var signature: int;
+	def var argCount: int;
+	// After nextArg, the argument's begin and exclusive end.
+	def var argBegin: int;
+	def var argEnd: int;
+	// The opening parenthesis of the last call read, or -1.
+	private var last = -1;
+	// Where the next argument may start.
+	private var position: int;
+
+	// Continues with the call whose record starts at {start}, after a call
+	// whose opening parenthesis is {last}.
+	def seek(start: int, last: int) -> this {
+		r.at(start);
+		this.last = last;
+		remaining = 1;
+	}
+	def calleeEndsAtParen() -> bool {
+		return (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0;
+	}
+	// Reads the next call's head. False after the last call or if it is malformed.
+	def next() -> bool {
+		if (remaining <= 0 || !r.ok) return false;
+		remaining--;
+		start = r.pos;
+		startOpen = last;
+		var delta = uleb();
+		// Opening parentheses strictly increase.
+		if (!absolute && last >= 0 && (delta < 1 || delta > int.max - last)) return fail("calls out of order");
+		open = last = if(absolute || last < 0, delta, last + delta);
+		var head = uleb(), both = AnalysisCallFlags.CALLEE_AT_PAREN | AnalysisCallFlags.CALLEE_OFFSET;
+		flags = head & 7;
+		argCount = head >> 3;
+		if ((flags & both) == both) return fail("invalid call flags");
+		var offset = (flags & AnalysisCallFlags.CALLEE_OFFSET) != 0;
+		calleeDelta = if(offset, uleb());
+		if (offset && (calleeDelta < 1 || calleeDelta > open)) return fail("invalid callee offset");
+		signature = uleb();
+		// Each argument takes at least a byte.
+		if (argCount > r.available() || open == int.max) return fail("invalid call");
+		position = open + 1;
+		return r.ok;
+	}
+	// Reads the next argument: a length and a gap after the previous one's end.
+	def nextArg() -> bool {
+		var v = uleb(), gap = v & 3, length = v >> 2;
+		if (gap == 3) gap = uleb();
+		if (!r.ok || length < 1 || gap > int.max - position || length > int.max - position - gap) return fail("invalid argument range");
+		argBegin = position + gap;
+		argEnd = position = argBegin + length;
+		return true;
+	}
+	def skipArgs() {
+		for (i < argCount) if (!nextArg()) return;
+		finish();
+	}
+	// Reads the closing parenthesis, after the last argument.
+	def finish() -> bool {
+		var gap = if((flags & AnalysisCallFlags.CLOSE_GAP) != 0, uleb());
+		if (!r.ok || gap > int.max - position - 1) return fail("invalid call range");
+		close = position + gap + 1;
+		return true;
+	}
+	private def uleb() -> int {
+		var v = r.read_uleb32();
+		if (v > u32.view(int.max)) {
+			r.fail("invalid call number");
+			return 0;
+		}
+		return int.view(v);
+	}
+	private def fail(msg: string) -> bool {
+		r.fail(msg);
+		return false;
+	}
+}
+
+// A result's call signatures, kept in their wire encoding (see
+// AnalysisWire.encodeResult): record i starts at byte {offsets[i]} of
+// {records}. A string reference is an index into the result's string
+// table, {strings}, or, past its end, into the signature text, the strings
+// that only signatures have, which are kept in one array: text i is bytes
+// {textOffsets[i]} to {textOffsets[i + 1]} of {text}. The decoder checked
+// every record and reference.
+class AnalysisSnapshotSignatures(strings: Array<string>, text: Array<byte>, textOffsets: Array<int>,
+		records: Array<byte>, offsets: Array<int>) {
+	def count() -> int {
+		return offsets.length;
+	}
+	// Whether {ref} names a string: a string table entry that is not null,
+	// or signature text.
+	def valid(ref: int) -> bool {
+		if (ref < 0) return false;
+		if (ref < strings.length) return strings[ref] != null;
+		return ref - strings.length < textOffsets.length - 1;
+	}
+	// The length of the string that {ref} names, which is valid.
+	def length(ref: int) -> int {
+		if (ref < strings.length) return strings[ref].length;
+		var i = ref - strings.length;
+		return textOffsets[i + 1] - textOffsets[i];
+	}
+	// Signature {i}, as new objects, with its signature text from {reader}.
+	def signature(i: int, reader: AnalysisSignatureReader) -> AnalysisSignature {
+		var r = DataReader.new(records).at(offsets[i]);
+		var label = string(r.read_sleb32(), reader), start = r.read_sleb32();
+		var params = Array<string>.new(r.read_sleb32());
+		for (k < params.length) params[k] = string(r.read_sleb32(), reader);
+		return AnalysisSignature.new(label, start, params);
+	}
+	// A copy of signature text {i}.
+	def copyText(i: int) -> string {
+		return Arrays.range(text, textOffsets[i], textOffsets[i + 1]);
+	}
+	private def string(ref: int, reader: AnalysisSignatureReader) -> string {
+		return if(ref < strings.length, strings[ref], reader.text(ref - strings.length));
+	}
+}
+
+// One query's signatures from {table}: each signature that it reads is
+// decoded once, however many of the query's calls name it, and each
+// signature text string copied once, however often they name it. What a
+// query allocates is thus bounded by the calls it returns and the sizes of
+// the distinct signatures they use. Each query makes its own; the snapshot
+// keeps none.
+class AnalysisSignatureReader(table: AnalysisSnapshotSignatures) {
+	private var signatures: AnalysisIndexMap<int>;
+	private def decoded = Vector<AnalysisSignature>.new();
+	private var texts: AnalysisIndexMap<int>;
+	private def copies = Vector<string>.new();
+
+	// Signature {i}.
+	def [i: int] -> AnalysisSignature {
+		if (signatures == null) signatures = AnalysisIndexMap<int>.new(int.!<int>, int.==);
+		var k = signatures.add(i);
+		if (k == decoded.length) decoded.put(table.signature(i, this));
+		return decoded[k];
+	}
+	// Signature text {i}.
+	def text(i: int) -> string {
+		if (texts == null) texts = AnalysisIndexMap<int>.new(int.!<int>, int.==);
+		var k = texts.add(i);
+		if (k == copies.length) copies.put(table.copyText(i));
+		return copies[k];
 	}
 }

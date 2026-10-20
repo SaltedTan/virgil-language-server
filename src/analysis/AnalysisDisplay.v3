@@ -43,6 +43,12 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	private def typeTexts = Vector<string>.new();
 	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
+	// Call signatures by content, each once, and the index there of each
+	// call's signature by callee declaration, type, and whether the call
+	// passes the receiver, so that each is rendered once.
+	private def signatures = AnalysisIndexMap<AnalysisSignature>.new(AnalysisSignatures.hash, AnalysisSignatures.equal);
+	private def calls = AnalysisIndexMap<(AnalysisDeclaration, Type, bool)>.new(hashCall, sameCall);
+	private def callList = Vector<int>.new();
 	private def buf = StringBuilder.new();
 	private var full: bool;
 	// While a member of an instantiated class renders, its class's type
@@ -126,6 +132,162 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		var text = strings.intern(buf);
 		typeTexts.put(text);
 		return text;
+	}
+
+	// The index of the signature that verification checked a call against,
+	// whose callee has binding {b} and type {t} and is a use of {target}, or
+	// -1; see
+	// docs/architecture.md#call-sites. A method, constructor, or variant case
+	// has its declaration's form and parameter names, and a class constructed
+	// by its default constructor has its own; any other function's signature
+	// is its type. Matching declared parameter and result types preserves
+	// declaration-style text, including a return of "this". Generic parameter
+	// declarations are omitted from call labels even when those types match.
+	// Otherwise the types are the call's, and so is the result. A method
+	// called through its class, as in C.m(c, x), has the receiver as its first
+	// parameter, a type without a name, and always the call's types.
+	def callSignature(target: AnalysisDeclaration, b: VarBinding, t: Type) -> int {
+		t = resolve(t, 0);
+		if (unknown(t) || !Function_TypeCon.?(t.typeCon) || t.nested == null || t.nested.tail == null) return -1;
+		var key = (target, t, VarBinding.ClassMethod.?(b)), index = calls.add(key);
+		if (index < callList.length) return callList[index];
+		var s = signatures.add(renderCall(target, b, t, key.2));
+		callList.put(s);
+		return s;
+	}
+	// The call signature with index {i}, from callSignature.
+	def callSignatureAt(i: int) -> AnalysisSignature {
+		return signatures[i];
+	}
+	def callSignatureCount() -> int {
+		return signatures.length();
+	}
+	private def renderCall(target: AnalysisDeclaration, b: VarBinding, t: Type, receiver: bool) -> AnalysisSignature {
+		var form: Decl, params: VstList<ParamDecl>, fields = false;
+		match (if(target != null, AnalysisWorkerDeclaration.!(target).syntax)) {
+			x: VstMethod => {
+				form = x;
+				params = x.func.params;
+			}
+			x: VstCaseMember => if (x.decl != null) {
+				form = x;
+				params = x.decl.params;
+				fields = !x.decl.isSynthetic;
+			}
+			// Its default constructor shares the class's parameters.
+			x: VstClass => if (VarBinding.ClassNew.?(b)) {
+				form = x;
+				params = x.params;
+				fields = true;
+			}
+		}
+		var list = if(params != null, params.list), first = if(receiver, 1);
+		var types = if(form != null, splitParams(t.nested.head, Lists.length(list) + first));
+		if (types == null) return function(t);
+		var ret = t.nested.tail.head, method = if(VstMethod.?(form) && !VstNew.?(form), VstMethod.!(form));
+		// A method that returns "this" keeps it when its parameters keep their types.
+		var declared = !receiver, i = first;
+		for (l = list; l != null; (l = l.tail, i++)) {
+			if (typeText(types[i]) != typeText(l.head.vtype)) declared = false;
+		}
+		if (method != null && !method.func.returnThis && typeText(ret) != typeText(returnType(method))) declared = false;
+		// A class constructed through its default constructor is instantiated
+		// at the call, as in Box<Foo>.new(), even without parameters to compare.
+		if (declared && VstClass.?(form) && typeText(ret) != typeText(compoundType(VstClass.!(form)))) declared = false;
+		var labels = Array<string>.new(types.length);
+		if (receiver) labels[0] = paramLabel(null, types[0], false);
+		i = first;
+		for (l = list; l != null; (l = l.tail, i++)) {
+			var p = l.head;
+			labels[i] = paramLabel(p.token.image, if(declared, p.vtype, types[i]),
+				fields && p.member != null && p.member.writability != Writability.READ_ONLY);
+		}
+		start();
+		if (method != null) {
+			put("def ").put(method.token.image);
+		}
+		match (form) {
+			x: VstNew => put("new");
+			x: VstCaseMember => {
+				put(if(fields, "type ", "case ")).put(x.token.image);
+			}
+			x: VstClass => {
+				put(if(x.kind == Kind.VARIANT, "type ", "class "));
+				putType(ret, 0);
+			}
+		}
+		var offset = if(params != null || receiver, paramList(labels), buf.length);
+		if (method != null) {
+			match (method.func.rettype) {
+				Void => ;
+				This => if (declared) put(" -> this"); else putReturn(ret);
+				_ => putReturn(if(declared, returnType(method), ret));
+			}
+		}
+		if (VstClass.?(form)) {
+			var c = VstClass.!(form);
+			if (c.superclass != null) {
+				// The superclass names the class's type parameters, which the
+				// call's class type instantiates.
+				if (!declared && c.typeParams != null) {
+					substParams = c.typeParams;
+					substArgs = resolve(ret, 0).nested;
+				}
+				put(" extends ");
+				putSuperclass(c.superclass);
+				substParams = null;
+				substArgs = null;
+			}
+		}
+		return signatureOf(strings.intern(buf), offset, labels);
+	}
+	// A function's signature from its type alone, as for a closure or a
+	// builtin: the type's text, as a use has it.
+	private def function(t: Type) -> AnalysisSignature {
+		var types = Tuple.toTypeArray(resolve(t.nested.head, 0));
+		var labels = Array<string>.new(types.length);
+		for (i < types.length) {
+			start();
+			putType(types[i], if(types.length > 1, 2, 1));
+			labels[i] = strings.intern(buf);
+		}
+		// As putType writes "&((a, b) -> c)" or "(a -> b) -> c".
+		var offset = if(Function_TypeCon.!(t.typeCon).kind == Kind.FUNCREF, 2);
+		if (types.length > 1 || (types.length == 1 && isFunction(types[0]))) offset++;
+		return signatureOf(typeText(t), offset, labels);
+	}
+	// The types of {n} parameters in {ptype}, a function type's parameter
+	// type, or null if it does not have that many.
+	private def splitParams(ptype: Type, n: int) -> Array<Type> {
+		if (n == 1) return [ptype];
+		var types = Tuple.toTypeArray(resolve(ptype, 0));
+		return if(types.length == n, types);
+	}
+	private def paramLabel(name: string, t: Type, writable: bool) -> string {
+		start();
+		if (writable) put("var ");
+		if (name != null) put(name).put(": ");
+		putType(t, 0);
+		return strings.intern(buf);
+	}
+	// Writes {labels} in parentheses, separated as putParams separates them,
+	// and returns where the first starts, or the text's end if it is full.
+	private def paramList(labels: Array<string>) -> int {
+		put("(");
+		var offset = buf.length;
+		for (i < labels.length) {
+			if (i > 0) put(", ");
+			put(labels[i]);
+		}
+		put(")");
+		return offset;
+	}
+	private def putReturn(t: Type) {
+		put(" -> ");
+		putType(t, 0);
+	}
+	private def signatureOf(label: string, offset: int, labels: Array<string>) -> AnalysisSignature {
+		return AnalysisSignature.new(label, Ints.min(offset, label.length), labels);
 	}
 
 	private def signature(kind: AnalysisDeclKind, token: Token, decl: Decl) -> string {
@@ -509,6 +671,28 @@ def hashType(t: Type) -> int {
 def identical<T>(a: T, b: T) -> bool {
 	return a == b;
 }
+// A call's signature key is its callee's declaration, which the display
+// makes once, its type, which is hash-consed, and whether it passes the receiver.
+def hashCall(key: (AnalysisDeclaration, Type, bool)) -> int {
+	var d = key.0, h = if(d != null, d.range.beginOffset * 31 + d.kind.tag);
+	return h * 1009 + key.1.hash * 7 + if(key.2, 1);
+}
+def sameCall(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type, bool)) -> bool {
+	return a.0 == b.0 && a.1 == b.1 && a.2 == b.2;
+}
+// Signatures are equal if their texts and parameter offsets are.
+component AnalysisSignatures {
+	def hash(s: AnalysisSignature) -> int {
+		var h = AnalysisTables.hashBytes(s.label, s.label.length) * 31 + s.start;
+		for (p in s.params) h = h * 31 + AnalysisTables.hashBytes(p, p.length);
+		return h;
+	}
+	def equal(a: AnalysisSignature, b: AnalysisSignature) -> bool {
+		if (a.start != b.start || a.params.length != b.params.length || !Strings.equal(a.label, b.label)) return false;
+		for (i < a.params.length) if (!Strings.equal(a.params[i], b.params[i])) return false;
+		return true;
+	}
+}
 // A declaration is its name token and kind: a class parameter's token names
 // both a parameter and a field.
 component AnalysisDeclarationKeys {
@@ -519,5 +703,65 @@ component AnalysisDeclarationKeys {
 	}
 	def equal(a: (Token, AnalysisDeclKind), b: (Token, AnalysisDeclKind)) -> bool {
 		return a.0 == b.0 && a.1 == b.1;
+	}
+}
+
+// Writes a call site's display text. A call is "path:@open-close call", then
+// its callee, as "METHOD add" for a declaration or "builtin", and ": " and
+// its signature, each parameter in brackets, and each argument's span.
+// Each piece is written to {out} as it is made, so that a line whose
+// parameters all name one long string is never held whole.
+component AnalysisCallDisplay {
+	def write(out: AnalysisReport, path: string, call: AnalysisCall) {
+		out.puts(path).put2(":@%d-%d call", call.open, call.close);
+		if (call.target != null) out.sp().puts(call.target.kind.name).sp().puts(call.target.name);
+		else if (call.callee >= 0) out.puts(" builtin");
+		var s = call.signature;
+		out.puts(": ").puts(if(s != null, s.label, AnalysisDisplayText.UNKNOWN));
+		if (s != null) {
+			out.puts("; parameters");
+			for (p in s.params) out.puts(" [").puts(p).puts("]");
+		}
+		out.puts("; arguments");
+		for (i < call.argCount()) {
+			if (i > 0) out.puts(",");
+			out.put2(" @%d-%d", call.args[2 * i], call.args[2 * i + 1]);
+		}
+		out.ln();
+	}
+}
+
+// Output of the analyze command. Prints only if asked, and hashes everything
+// written (64-bit FNV-1a) so that repeated runs can be compared cheaply.
+class AnalysisReport(print: bool) {
+	var hash = 0xcbf29ce484222325ul;
+	var occurrences: int;
+	var bytes: long;
+	// Holds the pieces that need formatting, never a whole line.
+	private def formatBuf = StringBuilder.new();
+
+	// Writes and clears {buf}.
+	def write(buf: StringBuilder) {
+		for (i < buf.length) hash = (hash ^ buf.buf[i]) * 0x100000001b3ul;
+		if (print && buf.length > 0) System.out.putr(buf.buf[0 ..+ buf.length]);
+		bytes += long.view(buf.length);
+		buf.reset();
+	}
+	// Writes {s} without copying it.
+	def puts(s: string) -> this {
+		for (i < s.length) hash = (hash ^ s[i]) * 0x100000001b3ul;
+		if (print && s.length > 0) System.out.puts(s);
+		bytes += long.view(s.length);
+	}
+	// Writes {fmt} rendered with {a} and {b}.
+	def put2<A, B>(fmt: string, a: A, b: B) -> this {
+		formatBuf.put2(fmt, a, b);
+		write(formatBuf);
+	}
+	def sp() -> this {
+		puts(" ");
+	}
+	def ln() -> this {
+		puts("\n");
 	}
 }

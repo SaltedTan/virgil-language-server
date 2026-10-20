@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 6;
+	def PROTOCOL_VERSION = 7;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -124,12 +124,18 @@ component AnalysisWire {
 	// begin column, begin offset, length, and declaration index; the
 	// occurrences whose use-site type differs from their declaration's, each
 	// as the difference from the previous one's occurrence index and the
-	// type's string index; and its builtin uses, each a range as an
-	// occurrence's and a string index.
+	// type's string index; its builtin uses, each a range as an
+	// occurrence's and a string index; and its calls (see encodeCalls). The
+	// call signatures come between the declarations and the files: the
+	// signature text, strings that the string table lacks, then each
+	// signature as its label, the byte in the label where its first parameter
+	// starts, and its parameters, each a string index or, past the table, a
+	// signature text index. See docs/architecture.md#call-sites.
 	// A use that is not a token span (see AnalysisRange.isTokenSpan), which
 	// the collector never records, is omitted rather than misstated. The
-	// skipped-uses statistic counts these omissions and the collector's own
-	// skips, or is -1 without occurrences. Call finishResult before sending.
+	// skipped-uses statistic counts these omissions, any call that is not
+	// sent (see AnalysisCallCheck), and the collector's own skips, or is -1
+	// without occurrences. Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);
@@ -139,13 +145,26 @@ component AnalysisWire {
 		var s = analysis.stats;
 		w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
 		w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
-		var skipped = -1;
+		// Each file's calls that are sent (see AnalysisCallCheck), and how many
+		// of them use each call signature.
+		var skipped = -1, calls: Array<int>, uses: Array<int>;
 		if (files != null) {
 			skipped = 0;
-			for (f in files) {
+			calls = Array<int>.new(files.length);
+			uses = Array<int>.new(analysis.callSignatureCount());
+			var check = AnalysisCallCheck.new(uses.length);
+			for (i < files.length) {
+				var f = files[i], records = analysis.callRecords(f.0);
 				skipped += analysis.skippedUses(f.0);
 				for (o in f.1) if (!o.range.isTokenSpan()) skipped++;
 				for (u in analysis.builtinUses(f.0)) if (!u.range.isTokenSpan()) skipped++;
+				var c = check.start(records);
+				while (c.next()) {
+					if (!check.sends()) continue;
+					calls[i]++;
+					if (c.signature > 0) uses[c.signature - 1]++;
+				}
+				skipped += records.1 - calls[i];
 			}
 		}
 		w.put_sleb32(skipped);
@@ -157,7 +176,7 @@ component AnalysisWire {
 			putString(w, d.kind);
 			putString(w, d.message);
 		}
-		if (files != null) encodeOccurrences(w, analysis, files);
+		if (files != null) encodeOccurrences(w, analysis, files, calls, uses);
 		return w;
 	}
 	// Fills in the live heap bytes of a result from {encodeResult} and returns its frame.
@@ -166,7 +185,8 @@ component AnalysisWire {
 		w.at(LIVE_BYTES_OFFSET).put_b64(liveBytes).at(end);
 		return WorkerFraming.finish(w);
 	}
-	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>) {
+	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>,
+			calls: Array<int>, uses: Array<int>) {
 		// A path is its file's index in {files}, the request's distinct paths
 		// in order, plus one.
 		var paths = Strings.newMap<int>();
@@ -198,6 +218,23 @@ component AnalysisWire {
 			strings.add(d.name);
 			if (d.signature != null) strings.add(d.signature);
 		}
+		// Each signature that a sent call uses, which the display makes once,
+		// the most used first, so that most calls name theirs in one byte;
+		// {rank} is a signature's index there plus one. A signature's strings
+		// that the table lacks are signature text.
+		var used = 0;
+		for (n in uses) if (n > 0) used++;
+		var order = Array<int>.new(used), rank = Array<int>.new(uses.length);
+		used = 0;
+		for (i < uses.length) if (uses[i] > 0) order[used++] = i;
+		order = AnalysisTables.sort(order, fun (a: int, b: int) => uses[a] > uses[b]);
+		for (i < order.length) rank[order[i]] = i + 1;
+		var text = AnalysisStringTable.new();
+		for (i in order) {
+			var sig = analysis.callSignature(i);
+			if (strings.find(sig.label) < 0) text.add(sig.label);
+			for (p in sig.params) if (strings.find(p) < 0) text.add(p);
+		}
 		w.put_sleb32(strings.length());
 		for (i < strings.length()) putString(w, strings[i]);
 		w.put_sleb32(decls.length());
@@ -211,7 +248,16 @@ component AnalysisWire {
 			putRange(w, d.range);
 			w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
 		}
+		w.put_sleb32(text.length());
+		for (i < text.length()) putString(w, text[i]);
+		w.put_sleb32(order.length);
+		for (i in order) {
+			var sig = analysis.callSignature(i);
+			w.put_sleb32(stringRef(strings, text, sig.label)).put_sleb32(sig.start).put_sleb32(sig.params.length);
+			for (p in sig.params) w.put_sleb32(stringRef(strings, text, p));
+		}
 		w.put_sleb32(files.length);
+		var check = AnalysisCallCheck.new(uses.length);
 		for (i < files.length) {
 			var f = files[i], count = 0, typed = 0;
 			w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
@@ -245,6 +291,38 @@ component AnalysisWire {
 				putSpan(w, u.range);
 				w.put_sleb32(strings.add(u.useType));
 			}
+			w.put_sleb32(calls[i]);
+			encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
+		}
+	}
+	// A call is unsigned LEB128 numbers: its opening parenthesis, as the
+	// difference from the previous call's (the first's from zero); its head,
+	// the argument count times eight plus AnalysisCallFlags; the callee's
+	// offset before the parenthesis, with CALLEE_OFFSET; its signature index
+	// plus one, or zero; for each argument, its length times four plus the
+	// bytes between it and the previous argument's end (the first's from just
+	// after the parenthesis), or three if they follow as another number; and,
+	// with CLOSE_GAP, the bytes between the last argument and the closing
+	// parenthesis. The collector's records (see OccurrenceCollector.calls)
+	// end the same way, so their arguments and closing gap are sent as they
+	// are. A callee is the use that ends at the parenthesis, if it does, and
+	// is sent only if its use is.
+	private def encodeCalls(w: DataWriter, c: AnalysisCallCursor, check: AnalysisCallCheck,
+			occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>, rank: Array<int>) {
+		var last = 0, data = c.r.data;
+		while (c.next()) {
+			var from = c.r.pos;
+			if (!check.sends()) continue;
+			var open = c.open, flags = c.flags & AnalysisCallFlags.CLOSE_GAP;
+			var calleeEnd = if(c.calleeDelta > 0, useEnd(occurrences, builtins, open - c.calleeDelta), -1);
+			if (calleeEnd == open) flags |= AnalysisCallFlags.CALLEE_AT_PAREN;
+			else if (calleeEnd >= 0) flags |= AnalysisCallFlags.CALLEE_OFFSET;
+			putU(w, open - last);
+			putU(w, c.argCount * 8 + flags);
+			if ((flags & AnalysisCallFlags.CALLEE_OFFSET) != 0) putU(w, c.calleeDelta);
+			putU(w, if(c.signature > 0, rank[c.signature - 1]));
+			w.putr(data[from ... c.r.pos]);
+			last = open;
 		}
 	}
 	// Decodes a RESULT into the worker's state and a snapshot with
@@ -274,7 +352,7 @@ component AnalysisWire {
 		}
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];
-		var strings: Array<string> = [], files: AnalysisSnapshotFiles;
+		var strings: Array<string> = [], files: AnalysisSnapshotFiles, signatures: AnalysisSnapshotSignatures;
 		if (hasOccurrences) {
 			// A path is an index into the request's distinct paths, which the
 			// server sent, so the result has no path table and no path is
@@ -293,11 +371,13 @@ component AnalysisWire {
 				d.signature = r.readOptionalString(strings);
 				declarations[i] = d;
 			}
+			signatures = r.readSignatures(strings);
 		}
 		var snapshot = AnalysisSnapshot.new(generation, paths, (flags & PARSED) != 0,
 			(flags & VERIFIED) != 0, diagnostics, stats, hasOccurrences, declarations);
 		if (hasOccurrences) {
 			snapshot.setStrings(strings);
+			snapshot.setSignatures(signatures);
 			snapshot.setFiles(files);
 			// Each file is one of the request's, at most once, and the site
 			// runs come in order, so that each declaration is checked as a
@@ -339,7 +419,9 @@ component AnalysisWire {
 				// A builtin use is never an occurrence, so a lookup by offset
 				// finds at most one of them.
 				r.checkDisjoint(ranges, builtins);
-				files.add(fileIndex, AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites));
+				var file = AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites);
+				r.readCalls(file, signatures);
+				files.add(fileIndex, file);
 			}
 		}
 		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
@@ -353,6 +435,42 @@ component AnalysisWire {
 		var kinds = Array<AnalysisDeclKind>.new(AnalysisDeclKind.count);
 		for (k in AnalysisDeclKind) kinds[k.tag] = k;
 		return kinds;
+	}
+	private def putU(w: DataWriter, value: int) {
+		w.put_uleb32(u32.view(value));
+	}
+	// A signature's string is an index into the string table or, past its
+	// end, into the signature text.
+	private def stringRef(strings: AnalysisStringTable, text: AnalysisStringTable, s: string) -> int {
+		var i = strings.find(s);
+		return if(i >= 0, i, strings.length() + text.find(s));
+	}
+	// The end offset of the use that starts at {offset} and is sent: an
+	// occurrence or a builtin use that is a token span. Otherwise -1.
+	private def useEnd(occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>, offset: int) -> int {
+		if (offset < 0) return -1;
+		var low = 0, high = occurrences.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (occurrences[mid].range.beginOffset < offset) low = mid + 1;
+			else high = mid;
+		}
+		for (i = low; i < occurrences.length && occurrences[i].range.beginOffset == offset; i++) {
+			var r = occurrences[i].range;
+			if (r.isTokenSpan()) return r.endOffset;
+		}
+		low = 0;
+		high = builtins.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (builtins[mid].range.beginOffset < offset) low = mid + 1;
+			else high = mid;
+		}
+		for (i = low; i < builtins.length && builtins[i].range.beginOffset == offset; i++) {
+			var r = builtins[i].range;
+			if (r.isTokenSpan()) return r.endOffset;
+		}
+		return -1;
 	}
 	private def putString(w: DataWriter, s: string) {
 		if (s == null) w.put_sleb32(-1);
@@ -572,6 +690,97 @@ class AnalysisWireReader {
 			else r.fail("builtin use overlaps an occurrence");
 		}
 	}
+	// Reads the signature text and the signatures, which the snapshot keeps
+	// in their encoding. A string reference is a string table index or, past
+	// the table, a signature text index. Signature text is charged as one
+	// array, plus an offset for each string; the records, as their bytes,
+	// plus an offset for each.
+	def readSignatures(strings: Array<string>) -> AnalysisSnapshotSignatures {
+		var count = readCount(1, 4), start = r.pos, total = 0;
+		for (i < count) {
+			var n = r.read_sleb32();
+			if (n < 0 || n > r.available()) {
+				r.fail("invalid string length");
+				break;
+			}
+			r.skipN(n);
+			total += n;
+		}
+		var text: Array<byte> = [], textOffsets = Array<int>.new(count + 1);
+		if (r.ok && reserve(64 + long.view(total))) {
+			text = Array<byte>.new(total);
+			var t = DataReader.new(r.data).at(start), end = 0;
+			for (i < count) {
+				var n = t.read_sleb32();
+				for (k < n) text[end + k] = t.data[t.pos + k];
+				t.skipN(n);
+				end += n;
+				textOffsets[i + 1] = end;
+			}
+		}
+		var table = AnalysisSnapshotSignatures.new(strings, text, textOffsets, [], []);
+		// Each record is a label reference, a parameter offset, and a count.
+		var records = readCount(3, 4), offsets = Array<int>.new(records);
+		start = r.pos;
+		for (i = 0; i < records && r.ok; i++) {
+			offsets[i] = r.pos - start;
+			var label = readStringRef(table), offset = r.read_sleb32();
+			if (r.ok && (offset < 0 || offset > table.length(label))) r.fail("invalid parameter offset");
+			var n = r.read_sleb32(), end = long.view(offset);
+			if (n < 0 || n > r.available()) r.fail("invalid parameter count");
+			// Laid out from the offset with separators, as the label lists
+			// them, the parameters end at an offset that an int holds.
+			for (k = 0; k < n && r.ok; k++) {
+				var p = readStringRef(table);
+				if (!r.ok) break;
+				end += table.length(p) + if(k > 0, 2);
+				if (end > int.max) r.fail("parameters past the last offset");
+			}
+		}
+		return AnalysisSnapshotSignatures.new(strings, text, textOffsets, copyFrom(start, 64), offsets);
+	}
+	private def readStringRef(table: AnalysisSnapshotSignatures) -> int {
+		var i = r.read_sleb32();
+		if (!table.valid(i)) {
+			r.fail("invalid string index");
+			return 0;
+		}
+		return i;
+	}
+	// Reads {file}'s calls, which the snapshot keeps in their encoding,
+	// charged as their bytes, and checks each: their opening parentheses
+	// strictly increase, their argument lists nest, a callee is one of the
+	// file's uses, and a signature is one of {signatures}.
+	def readCalls(file: AnalysisSnapshotFile, signatures: AnalysisSnapshotSignatures) {
+		// The open delta, head, and signature take a byte each.
+		var count = readCount(3, 0), start = r.pos;
+		var cursor = AnalysisCallCursor.new(r, count), closes = Array<int>.new(16), depth = 0;
+		while (cursor.next()) {
+			var open = cursor.open;
+			if (cursor.calleeEndsAtParen()) {
+				if (file.useEndingAt(open) < 0) r.fail("invalid callee");
+			} else if (cursor.calleeDelta > 0) {
+				if (file.useAt(open - cursor.calleeDelta) < 0) r.fail("invalid callee");
+			}
+			if (cursor.signature > signatures.count()) r.fail("invalid signature index");
+			for (i = 0; i < cursor.argCount && r.ok; i++) cursor.nextArg();
+			if (!r.ok || !cursor.finish()) break;
+			while (depth > 0 && closes[depth - 1] <= open) depth--;
+			if (depth > 0 && cursor.close > closes[depth - 1]) {
+				r.fail("argument lists that do not nest");
+				break;
+			}
+			if (depth == closes.length) closes = Arrays.grow(closes, 2 * depth);
+			closes[depth++] = cursor.close;
+		}
+		if (r.ok) file.setCalls(count, copyFrom(start, 0));
+	}
+	// The bytes read since {start}, charged with {header} more for their array.
+	private def copyFrom(start: int, header: int) -> Array<byte> {
+		var n = r.pos - start;
+		if (!r.ok || !reserve(long.view(header) + n)) return [];
+		return Ranges.dup(r.data[start ..+ n]);
+	}
 	def readKind() -> AnalysisDeclKind {
 		var tag = r.read1();
 		if (tag >= AnalysisWire.DECL_KINDS.length) {
@@ -583,5 +792,36 @@ class AnalysisWireReader {
 	def readRange(path: string) -> AnalysisRange {
 		return AnalysisRange.new(path, r.read_sleb32(), r.read_sleb32(), r.read_sleb32(), r.read_sleb32(),
 			r.read_sleb32(), r.read_sleb32());
+	}
+}
+
+// Reads a file's call records (see OccurrenceCollector.calls) and decides
+// which to send: those whose spans and signature are valid, in order, and
+// whose argument lists nest, as the decoder requires. The collector makes no
+// other kind. Allocates only to grow its stack of closing parentheses.
+class AnalysisCallCheck(signatures: int) {
+	private def closes = Vector<int>.new();
+	private var cursor: AnalysisCallCursor;
+	private var previous: int;
+
+	// Starts on {records}, and returns the cursor that reads each call.
+	def start(records: (Range<byte>, int)) -> AnalysisCallCursor {
+		cursor = AnalysisCallCursor.new(DataReader.new(records.0), records.1);
+		cursor.absolute = true;
+		closes.length = 0;
+		previous = -1;
+		return cursor;
+	}
+	// Reads the rest of the call whose head the cursor has read, and returns
+	// whether to send it.
+	def sends() -> bool {
+		var c = cursor;
+		for (i < c.argCount) if (!c.nextArg()) return false;
+		if (!c.finish() || c.open <= previous || c.signature > signatures) return false;
+		while (closes.length > 0 && closes[closes.length - 1] <= c.open) closes.length--;
+		if (closes.length > 0 && c.close > closes[closes.length - 1]) return false;
+		closes.put(c.close);
+		previous = c.open;
+		return true;
 	}
 }

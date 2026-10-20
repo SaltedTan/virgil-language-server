@@ -13,6 +13,14 @@ def X = [
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
 	T("AnalysisWire:display_round_trip", test_display_round_trip),
 	T("AnalysisWire:invalid_display_indexes", test_invalid_display_indexes),
+	T("AnalysisWire:call_sites_round_trip", test_call_sites_round_trip),
+	T("AnalysisWire:hand_built_calls", test_hand_built_calls),
+	T("AnalysisWire:invalid_calls", test_invalid_calls),
+	T("AnalysisWire:invalid_signatures", test_invalid_signatures),
+	T("AnalysisWire:signature_offsets", test_signature_offsets),
+	T("AnalysisWire:display_shared_signature", test_display_shared_signature),
+	T("AnalysisWire:shared_signatures", test_shared_signatures),
+	T("AnalysisWire:call_allocation", test_call_allocation),
 	T("AnalysisWire:repeated_files_and_site_runs", test_repeated_files_and_site_runs),
 	T("AnalysisWire:request_paths", test_request_paths),
 	T("AnalysisWire:invalid_use_spans", test_invalid_use_spans),
@@ -28,6 +36,7 @@ def MAIN = "test/fixtures/analysis/two-file/main.v3";
 def UNRESOLVED = "test/fixtures/analysis/unresolved/main.v3";
 def SYNTAX_ERROR = "test/fixtures/analysis/syntax-error/main.v3";
 def COVERAGE = "test/fixtures/analysis/occurrence-coverage/main.v3";
+def CALL_SITES = "test/fixtures/analysis/call-sites/main.v3";
 
 def load(t: Tester, paths: Array<string>) -> Array<AnalysisSource> {
 	var sources = Array<AnalysisSource>.new(paths.length);
@@ -328,7 +337,7 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	var strings = DataWriter.new().put_sleb32(n);
 	strings.putr(Array<byte>.new(n - 1));
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, strings), 1, REQUEST)), "string count");
-	var files = declaration(0, 0).put_sleb32(n);
+	var files = declaration(0, 0).puta(NO_SIGNATURES).put_sleb32(n);
 	files.putr(Array<byte>.new(6 * n - 1));
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, files), 1, REQUEST)), "file count");
 	n = 900000;
@@ -345,8 +354,11 @@ def test_invalid_counts_and_indexes(t: Tester) {
 // The line, column, byte offset, and length of a use of "x" at p.v3:1:1-1:2,
 // bytes 8 to 9.
 def OCCURRENCE = "\x01\x01\x08\x01";
-// A file's empty lists of use-site types and builtin uses.
-def NO_DISPLAY = "\x00\x00";
+// No signature text and no signatures.
+def NO_SIGNATURES = "\x00\x00";
+// A file's empty lists of use-site types and builtin uses, and its empty
+// list of calls.
+def NO_DISPLAY = "\x00\x00\x00";
 // A result with {diagnostics} as its diagnostic count and, if {occurrences}
 // is not null, those bytes as its occurrence section.
 def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
@@ -371,15 +383,16 @@ def DECLARATION_RANGE = "\x01\x01\x01\x02\x04\x05";
 // "p.v3" and 1 for "q.v3".
 def REQUEST = ["p.v3", "q.v3"];
 // Appends to {w} a file table of one file, "p.v3", which declares nothing,
-// and the count of its {occurrences}, which follow.
+// and the count of its {occurrences}, which follow. {w} must end after the
+// declarations, so that its empty signature section follows them.
 def file(w: DataWriter, occurrences: int) -> DataWriter {
-	return w.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(occurrences);
+	return w.puta(NO_SIGNATURES).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(occurrences);
 }
 
-// Signatures, use-site types, builtin uses, and declaration sites reach the
-// snapshot as the analysis reports them.
+// Signatures, use-site types, builtin uses, calls, and declaration sites
+// reach the snapshot as the analysis reports them.
 def test_display_round_trip(t: Tester) {
-	for (paths in [[SHAPES, MAIN], [COVERAGE], [SHAPES, UNRESOLVED]]) {
+	for (paths in [[SHAPES, MAIN], [COVERAGE], [CALL_SITES], [SHAPES, UNRESOLVED]]) {
 		var sources = load(t, paths);
 		if (sources == null) return;
 		var analysis = AeneasAdapter.analyzeProgram(sources, [], false);
@@ -410,6 +423,11 @@ def test_display_round_trip(t: Tester) {
 				t.assert_string(wantSites[i].signature, gotSites[i].signature);
 				t.assert(gotSites[i] == s.declarationAtOffset(p, gotSites[i].range.beginOffset), "a site at its offset");
 			}
+			var wantCalls = analysis.calls(p), gotCalls = s.calls(p);
+			t.asserti(wantCalls.length, gotCalls.length);
+			for (i < Ints.min(wantCalls.length, gotCalls.length)) {
+				t.assert_string(renderCall(wantCalls[i]), renderCall(gotCalls[i]));
+			}
 		}
 		if (paths.length == 1) t.assert(typed > 0, "generic uses have use-site types");
 	}
@@ -436,14 +454,15 @@ def test_invalid_display_indexes(t: Tester) {
 	// A use-site type is an occurrence index, as a difference from the
 	// previous one, and a string index.
 	var typed = file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
-	r = decodedResult(result(0, typed.put_sleb32(0)), 1, REQUEST);
+	r = decodedResult(result(0, typed.put_sleb32(0).put_sleb32(0)), 1, REQUEST);
 	if (r == null) return t.fail("a use-site type was rejected");
 	t.assert_string("int", r.snapshot.useTypeAtOffset("p.v3", 8));
 	t.assert(r.snapshot.useTypeAtOffset("p.v3", 9) == null, "no use past the end");
 	var o = r.snapshot.occurrenceAtOffset("p.v3", 8);
 	t.assert(o != null && Strings.equal("int", o.useType), "an occurrence's use-site type");
 	var two = file(declarations(1, 0, 0), 2).puta(OCCURRENCE).put_sleb32(0).puta("\x01\x03\x0A\x01").put_sleb32(0);
-	r = decodedResult(result(0, two.put_sleb32(2).put_sleb32(0).put_sleb32(0).put_sleb32(1).put_sleb32(1).put_sleb32(0)), 1, REQUEST);
+	r = decodedResult(result(0, two.put_sleb32(2).put_sleb32(0).put_sleb32(0).put_sleb32(1).put_sleb32(1)
+		.put_sleb32(0).put_sleb32(0)), 1, REQUEST);
 	if (r == null) return t.fail("two use-site types were rejected");
 	t.assert_string("x", r.snapshot.useTypeAtOffset("p.v3", 8));
 	t.assert_string("int", r.snapshot.useTypeAtOffset("p.v3", 10));
@@ -456,7 +475,7 @@ def test_invalid_display_indexes(t: Tester) {
 	for (b in bad) {
 		var w = file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0).put_sleb32(b.0).put_sleb32(b.1).put_sleb32(b.2);
 		if (b.3 >= 0) w.put_sleb32(b.3).put_sleb32(0);
-		assertMalformed(t, w.put_sleb32(0), b.4);
+		assertMalformed(t, w.put_sleb32(0).put_sleb32(0), b.4);
 	}
 	// A builtin use has a range and a string index, and no definition.
 	r = decodedResult(result(0, builtin(1)), 1, REQUEST);
@@ -535,7 +554,7 @@ def siteRuns(files: Array<(int, int, int)>) -> DataWriter {
 	w.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
 	w.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0);
 	w.putb(0).put_sleb32(0).put_sleb32(1).puta(DECLARATION_RANGE).put_sleb32(0);
-	w.put_sleb32(files.length);
+	w.puta(NO_SIGNATURES).put_sleb32(files.length);
 	for (f in files) w.put_sleb32(f.0).put_sleb32(f.1).put_sleb32(f.2).put_sleb32(0).puta(NO_DISPLAY);
 	return w;
 }
@@ -578,7 +597,7 @@ def uses(occurrences: Array<(int, int, int, int)>, builtins: Array<(int, int, in
 	for (o in occurrences) w.put_sleb32(o.0).put_sleb32(o.1).put_sleb32(o.2).put_sleb32(o.3).put_sleb32(0);
 	w.put_sleb32(0).put_sleb32(builtins.length);
 	for (b in builtins) w.put_sleb32(b.0).put_sleb32(b.1).put_sleb32(b.2).put_sleb32(b.3).put_sleb32(1);
-	return w;
+	return w.put_sleb32(0);
 }
 // A string table with "x" and "int", and {count}
 // declarations at p.v3:1:1-1:2, bytes 4 to 5, whose name and signature have
@@ -594,13 +613,14 @@ def declarations(count: int, name: int, signature: int) -> DataWriter {
 // whose sites are {count} declarations from {first}, with no uses.
 def site(w: DataWriter, path: int, first: int, count: int) -> DataWriter {
 	var c = DataWriter.new().puta(w.copy());
-	return c.put_sleb32(1).put_sleb32(path).put_sleb32(first).put_sleb32(count).put_sleb32(0).puta(NO_DISPLAY);
+	return c.puta(NO_SIGNATURES).put_sleb32(1).put_sleb32(path).put_sleb32(first).put_sleb32(count)
+		.put_sleb32(0).puta(NO_DISPLAY);
 }
 // One declaration and, in its file, one builtin use at 2:1-2:4, bytes 20 to
 // 23, whose type has string index {typeIndex}.
 def builtin(typeIndex: int) -> DataWriter {
 	var w = file(declarations(1, 0, 0), 0).put_sleb32(0).put_sleb32(1).puta("\x02\x01\x14\x03");
-	return w.put_sleb32(typeIndex);
+	return w.put_sleb32(typeIndex).put_sleb32(0);
 }
 def assertMalformed(t: Tester, occurrences: DataWriter, message: string) {
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, occurrences), 1, REQUEST)), message);
@@ -631,7 +651,7 @@ def test_result_allocation_budget(t: Tester) {
 	}
 	declarations.put_sleb32(0);
 	assertTooLarge(t, result(0, declarations), "compact declarations exceed allocation budget");
-	var files = declaration(0, 0).put_sleb32(100000);
+	var files = declaration(0, 0).puta(NO_SIGNATURES).put_sleb32(100000);
 	for (i < 100000) files.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0).puta(NO_DISPLAY);
 	assertTooLarge(t, result(0, files), "compact file table exceeds allocation budget");
 	var occurrences = DataWriter.new();
@@ -646,11 +666,13 @@ def test_result_allocation_budget(t: Tester) {
 	assertTooLarge(t, result(0, occurrences), "occurrence budget is aggregate across files");
 	// Each occurrence is charged 20 bytes for its four range ints and its
 	// declaration index. Besides the occurrences, this result is charged for
-	// its diagnostic, string, declaration, file, occurrence, use-site type,
-	// and builtin use counts (64 each, plus 8 per string, 128 per
-	// declaration, and 256 per file), and for its strings (64 each, plus
-	// their lengths). Its paths are the request's.
-	var fixed = 7 * 64 + 2 * 8 + 128 + 256 + (64 + 1) + (64 + 3);
+	// its diagnostic, string, declaration, signature text, signature, file,
+	// occurrence, use-site type, builtin use, and call counts (64 each), for
+	// the signature text and records as byte arrays (64 each, plus their
+	// lengths), and for 8 per string table entry, 128 per declaration, 256 per
+	// file, and each string's text (64 each, plus its length). Its paths are
+	// the request's.
+	var fixed = 10 * 64 + 2 * 64 + 2 * 8 + 128 + 256 + (64 + 1) + (64 + 3);
 	var most = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed) / 20;
 	for (n in [most, most + 1]) {
 		var single = file(declaration(0, 0), n);
@@ -674,12 +696,17 @@ def test_result_allocation_budget(t: Tester) {
 	var strings = DataWriter.new().put_sleb32(17);
 	for (i < 17) strings.put_sleb32(text.length).puta(text);
 	assertTooLarge(t, result(0, strings), "string table exceeds allocation budget");
-	// The builtin use count is charged after the use-site types.
-	var count = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed + 64) / 8 + 1;
+	// The remaining counts are charged as the reader reaches them. A use-site
+	// type is 8 bytes, an occurrence index difference and a string index; a
+	// builtin use is 20, four range ints and a string index. {fixed} holds the
+	// 64-byte base of each count, so the count that exceeds the budget is the
+	// budget less {fixed}, plus the bases not yet charged, over the per-item
+	// charge, so that the count is rejected before its items are read.
+	var count = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed + 3 * 64) / 8 + 1;
 	var typed = file(declaration(0, 0), 1).puta(OCCURRENCE).put_sleb32(0).put_sleb32(count);
 	for (i < count) typed.put_sleb32(0).put_sleb32(1);
 	assertTooLarge(t, result(0, typed), "use-site types exceed allocation budget");
-	count = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed) / 20 + 1;
+	count = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed + 2 * 64) / 20 + 1;
 	var builtins = file(declaration(0, 0), 0).put_sleb32(0).put_sleb32(count);
 	for (i < count) builtins.puta(OCCURRENCE).put_sleb32(1);
 	assertTooLarge(t, result(0, builtins), "builtin uses exceed allocation budget");
@@ -763,4 +790,280 @@ def test_wrong_kind(t: Tester) {
 	t.assert(AnalysisWire.decodeAnalyze(hello) == null, "hello is not a request");
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(hello, 1, REQUEST)), "hello is not a result");
 	t.assert(AnalysisWire.decodeHello([]) == null, "empty payload");
+}
+
+// A call's spans, callee, target, and signature, to compare calls.
+def renderCall(c: AnalysisCall) -> string {
+	if (c == null) return "null";
+	var buf = StringBuilder.new().put3("@%d-%d callee %d", c.open, c.close, c.callee);
+	for (i < c.argCount()) buf.put2(" @%d-%d", c.args[2 * i], c.args[2 * i + 1]);
+	buf.puts(" target ").puts(render(c.target));
+	var s = c.signature;
+	if (s == null) return buf.puts(" no signature").toString();
+	buf.puts(" signature ").puts(s.label).put1(" at %d:", s.start);
+	for (p in s.params) buf.puts(" [").puts(p).puts("]");
+	return buf.toString();
+}
+// The call-sites fixture's calls cross from a worker as the collector
+// reports them, and a snapshot finds the innermost call whose argument list
+// holds an offset.
+def test_call_sites_round_trip(t: Tester) {
+	var sources = load(t, [CALL_SITES]);
+	if (sources == null) return;
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var outcome = supervisor.analyze(sources, [], AnalysisWire.WANT_OCCURRENCES);
+	supervisor.close();
+	var s: AnalysisSnapshot;
+	match (outcome) {
+		Completed(snapshot) => s = snapshot;
+		_ => return t.fail("the call-sites fixture did not analyze");
+	}
+	t.asserti(0, s.stats.skippedUses);
+	var input = sources[0].input, calls = s.calls(CALL_SITES);
+	OccurrenceCollectorTest.checkCalls(t, input, calls);
+	// Just inside either parenthesis is in the call, and its own opening
+	// parenthesis is in the call around it, if any.
+	for (c in calls) {
+		var inside = s.callAt(CALL_SITES, c.open + 1);
+		t.assert(inside != null && inside.open == c.open, "just after the opening parenthesis");
+		inside = s.callAt(CALL_SITES, c.close - 1);
+		t.assert(inside != null && inside.open == c.open, "at the closing parenthesis");
+		var outside = s.callAt(CALL_SITES, c.open);
+		t.assert(outside == null || outside.open < c.open, "the opening parenthesis is outside");
+		t.assert(s.callAt(CALL_SITES, c.close) == null || s.callAt(CALL_SITES, c.close).open != c.open, "past the closing parenthesis");
+	}
+	// In add(add(1, 2), add(3, 4)), the comma between the inner calls is in
+	// the outer call, and each inner argument in its own call.
+	var nested = OccurrenceCollectorTest.indexOf(input, "add(add(1, 2), add(3, 4))");
+	t.assert(nested > 0, "the nested calls");
+	var outer = s.callAt(CALL_SITES, nested + 13), inner = s.callAt(CALL_SITES, nested + 8);
+	t.assert(outer != null && outer.open == nested + 3 && outer.argCount() == 2, "the outer call");
+	t.assert(inner != null && inner.open == nested + 7 && inner.argCount() == 2, "the first inner call");
+	inner = s.callAt(CALL_SITES, nested + 19);
+	t.assert(inner != null && inner.open == nested + 18, "the second inner call");
+	t.assert(s.callAt(CALL_SITES, 0) == null, "no call at the start");
+	t.assert(s.callAt("other.v3", nested + 8) == null, "no call in another file");
+	t.asserti(0, s.calls("other.v3").length);
+}
+
+// Signature text "f(a: int)" and "a: int", after the string table's "x" and
+// "int", and one signature: label 2 with its parameter at byte 2, and one
+// parameter, 3.
+def ONE_SIGNATURE = "\x02\x09f(a: int)\x06a: int\x01\x02\x02\x01\x03";
+// The string table's "x" and "int"; one declaration "x" at bytes 4 to 5, the
+// signature section {signatures}, and a file whose one use of "x" is at bytes
+// 8 to 9, followed by {count} and the calls {encoded}.
+def withCalls(signatures: string, count: int, encoded: string) -> DataWriter {
+	var w = declarations(1, 0, 0).puta(signatures);
+	w.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1).puta(OCCURRENCE).put_sleb32(0);
+	return w.put_sleb32(0).put_sleb32(0).put_sleb32(count).puta(encoded);
+}
+// A call is unsigned LEB128 numbers: its opening parenthesis, as a
+// difference; its argument count times eight, plus 1 if its callee's use
+// ends at the parenthesis, 2 if a callee offset follows, and 4 if a closing
+// gap follows; its signature index plus one; each argument's length times
+// four plus its gap, or three and then the gap; and the closing gap.
+def test_hand_built_calls(t: Tester) {
+	// x(y) at 8, with the use of x ending at its parenthesis and the
+	// signature; then, at 13, a call with the use as a callee five bytes
+	// before it, an argument five bytes in, another two after it, and eleven
+	// bytes before its closing parenthesis; and at 20, inside its first
+	// argument, a call with neither callee nor signature.
+	var encoded = "\x09\x09\x01\x04\x04\x16\x05\x00\x0B\x05\x06\x0B\x07\x00\x00";
+	var r = decodedResult(result(0, withCalls(ONE_SIGNATURE, 3, encoded)), 1, REQUEST);
+	if (r == null) return t.fail("calls were rejected");
+	var s = r.snapshot, calls = s.calls("p.v3");
+	t.asserti(3, calls.length);
+	if (calls.length != 3) return;
+	t.assert_string("@9-12 callee 8 @10-11 target LOCAL x @ p.v3:1:1-1:2 signature f(a: int) at 2: [a: int]", renderCall(calls[0]));
+	t.assert_string("@13-36 callee 8 @19-21 @23-24 target LOCAL x @ p.v3:1:1-1:2 no signature", renderCall(calls[1]));
+	t.assert_string("@20-22 callee -1 target null no signature", renderCall(calls[2]));
+	t.assert(calls[0].signature.holds(0), "the label holds its parameter");
+	t.assert(s.callAt("p.v3", 9) == null, "at an opening parenthesis");
+	t.assert_string(renderCall(calls[0]), renderCall(s.callAt("p.v3", 10)));
+	t.assert_string(renderCall(calls[0]), renderCall(s.callAt("p.v3", 11)));
+	t.assert(s.callAt("p.v3", 12) == null, "past a closing parenthesis");
+	t.assert_string(renderCall(calls[1]), renderCall(s.callAt("p.v3", 20)));
+	t.assert_string(renderCall(calls[2]), renderCall(s.callAt("p.v3", 21)));
+	t.assert_string(renderCall(calls[1]), renderCall(s.callAt("p.v3", 22)));
+	t.assert_string(renderCall(calls[1]), renderCall(s.callAt("p.v3", 35)));
+	t.assert(s.callAt("p.v3", 36) == null, "after the last call");
+	// A file without calls, and a result without signatures.
+	r = decodedResult(result(0, withCalls(NO_SIGNATURES, 1, "\x09\x01\x00")), 1, REQUEST);
+	if (r == null) return t.fail("a call without a signature was rejected");
+	t.assert_string("@9-11 callee 8 target LOCAL x @ p.v3:1:1-1:2 no signature", renderCall(r.snapshot.callAt("p.v3", 10)));
+}
+// Calls that are out of order, that do not nest, that name no use or
+// signature, or whose spans are empty or overflow are malformed, and so is
+// a count that the message cannot hold. Each check takes time in proportion
+// to the bytes it reads.
+def test_invalid_calls(t: Tester) {
+	// int.max, int.max - 1, and int.max - 2 are FF FF FF FF 07, FE FF FF FF
+	// 07, and FD FF FF FF 07.
+	var bad = [
+		(2, "\x0B\x00\x00\x00\x00\x00", "calls out of order"),
+		(1, "\x0B\x03\x00", "both callee flags"),
+		(1, "\x0B\x02\x00\x00", "a callee offset of zero"),
+		(1, "\x0B\x02\x0C\x00", "a callee offset before the file"),
+		(1, "\x0B\x02\x01\x00", "a callee offset that is not a use"),
+		(1, "\x0B\x01\x00", "no use that ends at the parenthesis"),
+		(1, "\x09\x01\x02", "a signature index past the signatures"),
+		(1, "\x09\x08\x00\x00", "an empty argument"),
+		(1, "\x09\xC0\x3E\x00\x04", "an argument count past the message"),
+		(1, "\x0B\x08\x00\x07", "the end of the message"),
+		(1, "\x0B\x00\x00\x0B\x00\x00", "a count below the calls"),
+		(3, "\x0B\x00\x00", "a count past the calls"),
+		(1, "\xFF\xFF\xFF\xFF\x07\x00\x00", "an opening parenthesis at the end of the offsets"),
+		(1, "\xFE\xFF\xFF\xFF\x07\x08\x00\x04", "an argument past the end of the offsets"),
+		(1, "\xFE\xFF\xFF\xFF\x07\x00\x00", "a closing parenthesis past the end of the offsets"),
+		(1, "\xFD\xFF\xFF\xFF\x07\x04\x00\x01", "a closing gap past the end of the offsets"),
+		(1, "\x80\x80\x80\x80\x08\x00\x00", "a number past int.max"),
+		(2, "\x0B\x0C\x00\x0D\x02\x02\x04\x00\x0A", "argument lists that do not nest")
+	];
+	for (b in bad) {
+		assertMalformed(t, withCalls(NO_SIGNATURES, b.0, b.1), b.2);
+		assertMalformed(t, withCalls(ONE_SIGNATURE, b.0, b.1), b.2);
+	}
+	// The last, with the second call's list inside the first's, is valid.
+	t.assert(decodedResult(result(0, withCalls(NO_SIGNATURES, 2, "\x0B\x0C\x00\x0D\x02\x02\x00\x00")), 1, REQUEST) != null, "nested lists");
+	// So is a call that ends at the last offset.
+	var r = decodedResult(result(0, withCalls(NO_SIGNATURES, 1, "\xFD\xFF\xFF\xFF\x07\x00\x00")), 1, REQUEST);
+	t.assert(r != null && r.snapshot.calls("p.v3").length == 1 && r.snapshot.calls("p.v3")[0].close == int.max, "a call that ends at int.max");
+	// The calls of one file do not carry over to the next: each starts from
+	// zero, and the second file has no use to be a callee.
+	var two = declarations(1, 0, 0).puta(NO_SIGNATURES).put_sleb32(2);
+	two.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1).puta(OCCURRENCE).put_sleb32(0);
+	two.put_sleb32(0).put_sleb32(0).put_sleb32(1).puta("\x09\x01\x00");
+	two.put_sleb32(1).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1);
+	assertMalformed(t, DataWriter.new().puta(two.copy()).puta("\x09\x01\x00"), "a callee in another file");
+	r = decodedResult(result(0, two.puta("\x03\x00\x00")), 1, REQUEST);
+	var second = if(r != null, r.snapshot.callAt("q.v3", 4));
+	t.assert(second != null && second.open == 3, "a second file's calls start from zero");
+}
+// Signature references are string table entries or signature text, and a
+// signature's parameters start within its label.
+def test_invalid_signatures(t: Tester) {
+	var call = "\x09\x01\x01";
+	t.assert(decodedResult(result(0, withCalls(ONE_SIGNATURE, 1, call)), 1, REQUEST) != null, "a valid signature");
+	// A label may be a string table entry, and parameters may start at its end.
+	t.assert(decodedResult(result(0, withCalls("\x00\x01\x01\x03\x00", 1, call)), 1, REQUEST) != null, "a label in the table");
+	var bad = [
+		("\x01\xFF\x00", "text past the message"),
+		("\x01\x7F", "a negative text length"),
+		("\x00\x01\x02\x00\x00", "a label past the strings"),
+		("\x00\x01\x7F\x00\x00", "a negative label"),
+		("\x00\x01\x01\x04\x00", "parameters past the label's end"),
+		("\x00\x01\x01\x7F\x00", "a negative parameter offset"),
+		("\x00\x01\x01\x00\x01\x02", "a parameter past the strings"),
+		("\x00\x01\x01\x00\x7F", "a negative parameter count"),
+		("\x00\x01\x01\x00\xC0\x00", "a parameter count past the message"),
+		("\x00\xC0\x00\x01\x00\x00", "a signature count past the message"),
+		("\x02\x09f(a: int)\x06a: int\x01\x04\x02\x01\x03", "a label past the text")
+	];
+	for (b in bad) assertMalformed(t, withCalls(b.0, 0, ""), b.1);
+}
+// A signature whose parameters, laid out from its offset with separators,
+// end past int.max is malformed, however few bytes it charges: here one
+// 3 MiB string is the label and every parameter. 682 of them end within
+// int.max, and 683 do not. A signature that the decoder did not check still
+// answers paramOffset and holds: parameter 716 of 1,000 would start past
+// int.max, and the label was cut short long before it.
+def test_signature_offsets(t: Tester) {
+	var label = Array<byte>.new(3 * 1024 * 1024);
+	for (i < label.length) label[i] = 'p';
+	for (n in [682, 683]) {
+		// The string table has "x" and "int", so the label is string 2.
+		var w = DataWriter.new().put_sleb32(1).put_sleb32(label.length).puta(label);
+		w.put_sleb32(1).put_sleb32(2).put_sleb32(0).put_sleb32(n);
+		for (i < n) w.put_sleb32(2);
+		var r = decodedResult(result(0, withCalls(w.extract(), 1, "\x09\x01\x01")), 1, REQUEST);
+		if (n == 683) {
+			t.assert(r == null, "parameters past int.max");
+			continue;
+		}
+		var calls = if(r != null, r.snapshot.calls("p.v3"));
+		if (calls == null || calls.length != 1) return t.fail("a long signature was rejected");
+		var s = calls[0].signature;
+		t.assert(s.holds(0), "the label holds its first parameter");
+		t.asserti(-1, s.paramOffset(1));
+		t.assert(!s.holds(n - 1), "the label does not hold its last parameter");
+	}
+	var params = Array<string>.new(1000);
+	for (i < params.length) params[i] = label;
+	var s = AnalysisSignature.new(label, 0, params);
+	t.asserti(0, s.paramOffset(0));
+	t.assert(s.holds(0), "the label holds its first parameter");
+	t.asserti(-1, s.paramOffset(716));
+	t.assert(!s.holds(716), "the label does not hold a parameter past int.max");
+	t.assert(!AnalysisSignature.new("f()", 4, ["int"]).holds(0), "a parameter past the label's end");
+}
+// A call whose 64 parameters all name one 3 MiB string, so its display line
+// is about 195 MiB even though the result is charged a little over 3 MiB.
+// The writer produces the line piece by piece rather than holding it whole.
+def test_display_shared_signature(t: Tester) {
+	var label = Array<byte>.new(3 * 1024 * 1024);
+	for (i < label.length) label[i] = 'p';
+	// The string table has "x" and "int", so the label is string 2.
+	var w = DataWriter.new().put_sleb32(1).put_sleb32(label.length).puta(label);
+	w.put_sleb32(1).put_sleb32(2).put_sleb32(0).put_sleb32(64);
+	for (i < 64) w.put_sleb32(2);
+	var r = decodedResult(result(0, withCalls(w.extract(), 1, "\x09\x01\x01")), 1, REQUEST);
+	if (r == null) return t.fail("a shared signature was rejected");
+	var calls = r.snapshot.calls("p.v3");
+	if (calls.length != 1) return t.fail("the call was not decoded");
+	var out = AnalysisReport.new(false);
+	AnalysisCallDisplay.write(out, "p.v3", calls[0]);
+	var expected = "p.v3".length + Strings.format2(":@%d-%d call", 9, 11).length + " LOCAL x".length
+		+ ": ".length + label.length + "; parameters".length
+		+ 64 * (" [".length + label.length + "]".length) + "; arguments\n".length;
+	t.assertl(long.view(expected), out.bytes);
+}
+// A query decodes each signature once, however many of its calls name it:
+// here 5,000 calls name one signature with 100,000 parameters, in a
+// 115,069-byte result, which one array per call would make 500 million
+// parameter slots.
+def test_shared_signatures(t: Tester) {
+	// The label is "x", and every parameter "int".
+	var w = DataWriter.new().put_sleb32(0).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(100000);
+	for (i < 100000) w.put_sleb32(1);
+	var calls = DataWriter.new();
+	for (i < 5000) calls.putb(3).putb(0).putb(1);
+	var payload = result(0, withCalls(w.extract(), 5000, calls.extract()));
+	t.asserti(115069, payload.length);
+	var r = decodedResult(payload, 1, REQUEST);
+	if (r == null) return t.fail("the calls were rejected");
+	var got = r.snapshot.calls("p.v3");
+	t.asserti(5000, got.length);
+	if (got.length != 5000) return;
+	var s = got[0].signature;
+	t.asserti(100000, s.params.length);
+	t.assert_string("x", s.label);
+	t.assert_string("int", s.params[99999]);
+	for (c in got) if (c.signature != s) return t.fail("calls do not share their signature");
+	var last = r.snapshot.callAt("p.v3", got[4999].open + 1);
+	t.assert(last != null && last.open == got[4999].open && last.signature.params.length == 100000, "the call at an offset");
+}
+// A file's calls are charged as their encoded bytes, which the snapshot
+// keeps, plus 64 for their count. Signature text is charged as its bytes and
+// four per string, plus 64; signatures as their encoded bytes and four
+// each, plus 64 for each of their count and their bytes.
+def test_call_allocation(t: Tester) {
+	var none = decodedResult(result(0, withCalls(NO_SIGNATURES, 0, "")), 1, REQUEST);
+	var one = decodedResult(result(0, withCalls(ONE_SIGNATURE, 1, "\x09\x09\x01\x04")), 1, REQUEST);
+	if (none == null || one == null) return t.fail("calls were rejected");
+	t.assertl(long.view(2 * 4 + 15 + 4 + 4 + 4), one.snapshot.resultAllocation - none.snapshot.resultAllocation);
+	// A result that fills the budget with occurrences, as in
+	// result_allocation_budget, has 16 bytes left for a call with 13
+	// one-byte arguments, but not for one with 14.
+	var fixed = 10 * 64 + 2 * 64 + 2 * 8 + 128 + 256 + (64 + 1) + (64 + 3);
+	var most = (AnalysisWire.MAX_RESULT_ALLOCATION - fixed) / 20;
+	t.asserti(16, AnalysisWire.MAX_RESULT_ALLOCATION - fixed - 20 * most);
+	for (n in [13, 14]) {
+		var w = file(declaration(0, 0), most);
+		for (i < most) w.put_sleb32(1).put_sleb32(1).put_sleb32(i).put_sleb32(1).put_sleb32(0);
+		w.put_sleb32(0).put_sleb32(0).put_sleb32(1).putb(0).putb(byte.view(8 * n)).putb(0);
+		for (i < n) w.putb(4);
+		if (n == 13) t.assert(decodedResult(result(0, w), 1, REQUEST) != null, "a call within the budget");
+		else assertTooLarge(t, result(0, w), "a call beyond the budget");
+	}
 }

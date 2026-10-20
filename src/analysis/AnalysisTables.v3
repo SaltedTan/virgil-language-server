@@ -83,13 +83,22 @@ class AnalysisStringTable {
 	}
 	// The index of {s}, adding it if it is new.
 	def add(s: string) -> int {
+		var i = slot(s);
+		return if(slots[i] != 0, slots[i] - 1, insert(i, s));
+	}
+	// The index of {s}, or -1.
+	def find(s: string) -> int {
+		return slots[slot(s)] - 1;
+	}
+	// The slot that holds {s}, or the empty slot where it would go.
+	private def slot(s: string) -> int {
 		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(s, s.length)) & mask;
 		while (slots[i] != 0) {
 			var t = strings[slots[i] - 1];
-			if (t == s || AnalysisTables.sameBytes(t, s, s.length)) return slots[i] - 1;
+			if (t == s || AnalysisTables.sameBytes(t, s, s.length)) return i;
 			i = (i + 1) & mask;
 		}
-		return insert(i, s);
+		return i;
 	}
 	private def insert(slot: int, s: string) -> int {
 		var index = strings.length;

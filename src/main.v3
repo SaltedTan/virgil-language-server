@@ -35,7 +35,7 @@ component VirgilLsp {
 		buf.puts("  analyze [options] <file.v3>...\n");
 		buf.puts("                     Parse and verify the files as one program and print diagnostics.\n");
 		buf.puts("    --bindings       Also print each bound use and the declaration it resolves to.\n");
-		buf.puts("    --display        Also print each declaration's signature and each use's type.\n");
+		buf.puts("    --display        Also print signatures, use types, and call sites.\n");
 		buf.puts("    --stats          Print timing and compiler global-state counters to stderr.\n");
 		buf.puts("    --repeat=<n>     Run the analysis n times and fail if any run differs.\n");
 		buf.puts("    --worker-timeout-ms=<n>\n");
@@ -246,31 +246,41 @@ component VirgilLsp {
 		for (i < paths.length) {
 			var occurrences = snapshot.occurrences(paths[i]);
 			if (bindings) for (o in occurrences) buf.puts(o.toString()).ln();
-			if (display) writeDisplay(buf, snapshot, paths[i], occurrences);
+			if (display) writeDisplay(out, buf, snapshot, paths[i], occurrences);
 			out.occurrences += occurrences.length;
 			out.write(buf);
 		}
 	}
 	// Writes the display text of {path}'s declaration sites, occurrences,
-	// and builtin uses, merged in source order.
-	def writeDisplay(buf: StringBuilder, snapshot: AnalysisSnapshot, path: string, occurrences: Array<AnalysisOccurrence>) {
+	// builtin uses, and call sites, merged in source order. A call is shown by
+	// byte offset, since its record keeps only offsets: its argument list's
+	// parenthesis to parenthesis, then each argument's span. Each call's line,
+	// which lists its signature's parameters, is written to {out} as it is
+	// built, so that no line is ever held whole, however many calls share a
+	// long signature.
+	def writeDisplay(out: AnalysisReport, buf: StringBuilder, snapshot: AnalysisSnapshot, path: string, occurrences: Array<AnalysisOccurrence>) {
 		var sites = snapshot.declarationSites(path), builtins = snapshot.builtinUses(path);
-		var i = 0, j = 0, k = 0, end = int.max;
-		while (i < sites.length || j < occurrences.length || k < builtins.length) {
+		var calls = snapshot.calls(path);
+		var i = 0, j = 0, k = 0, c = 0, end = int.max;
+		while (i < sites.length || j < occurrences.length || k < builtins.length || c < calls.length) {
 			var s = if(i < sites.length, sites[i].range.beginOffset, end);
 			var o = if(j < occurrences.length, occurrences[j].range.beginOffset, end);
 			var b = if(k < builtins.length, builtins[k].range.beginOffset, end);
-			if (s <= o && s <= b) {
+			var a = if(c < calls.length, calls[c].open, end);
+			if (s <= o && s <= b && s <= a) {
 				var d = sites[i++];
 				d.range.render(buf).puts(" declares ").puts(d.kind.name).puts(": ").puts(Strings.nonnull(d.signature)).ln();
-			} else if (o <= b) {
+			} else if (o <= b && o <= a) {
 				var u = occurrences[j++], d = u.declaration;
 				u.range.render(buf).puts(" uses ").puts(d.kind.name).puts(": ").puts(Strings.nonnull(d.signature));
 				if (u.useType != null) buf.puts("; type: ").puts(u.useType);
 				buf.ln();
-			} else {
+			} else if (b <= a) {
 				var u = builtins[k++];
 				u.range.render(buf).puts(" builtin: ").puts(u.useType).ln();
+			} else {
+				out.write(buf);
+				AnalysisCallDisplay.write(out, path, calls[c++]);
 			}
 		}
 	}
@@ -283,19 +293,5 @@ component VirgilLsp {
 		buf.put2("global types +%d (total %d), ", s.globalTypesAdded, s.globalTypeTotal);
 		buf.put1("result allocation %d bytes\n", snapshot.resultAllocation);
 		Log.raw(buf.toString());
-	}
-}
-
-// Output of the analyze command. Prints only if asked, and hashes everything
-// written (64-bit FNV-1a) so that repeated runs can be compared cheaply.
-class AnalysisReport(print: bool) {
-	var hash = 0xcbf29ce484222325ul;
-	var occurrences: int;
-
-	// Writes and clears {buf}.
-	def write(buf: StringBuilder) {
-		for (i < buf.length) hash = (hash ^ buf.buf[i]) * 0x100000001b3ul;
-		if (print && buf.length > 0) System.out.putr(buf.buf[0 ..+ buf.length]);
-		buf.reset();
 	}
 }

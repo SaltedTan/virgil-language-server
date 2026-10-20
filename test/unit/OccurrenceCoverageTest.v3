@@ -205,6 +205,46 @@ def displayError(s: AnalysisSnapshot, source: AnalysisSource) -> string {
 		}
 		if (s.definitionAtOffset(path, b) != null) return Strings.format1("builtin use %s has a definition", u.toString());
 	}
+	return callError(s, source);
+}
+// A failure message unless each of a file's calls is in order, has its
+// parentheses where its source has them and nonempty arguments between
+// them, nests in the argument list of any call it starts in, has a callee
+// that is a use of its target before its parenthesis, and has a signature
+// whose label holds each parameter, unless the label was cut short.
+def callError(s: AnalysisSnapshot, source: AnalysisSource) -> string {
+	var path = source.path, input = source.input, closes = Vector<int>.new(), previous = -1;
+	for (c in s.calls(path)) {
+		var at = Strings.format2("%s:@%d", path, c.open);
+		if (c.open <= previous || c.close > input.length || input[c.open] != '(' || input[c.close - 1] != ')') {
+			return Strings.format1("call %s is not in order between its parentheses", at);
+		}
+		previous = c.open;
+		var end = c.open + 1;
+		for (i < c.argCount()) {
+			if (c.args[2 * i] < end || c.args[2 * i + 1] <= c.args[2 * i] || c.args[2 * i + 1] >= c.close) {
+				return Strings.format1("call %s has an argument out of order", at);
+			}
+			end = c.args[2 * i + 1];
+		}
+		while (closes.length > 0 && closes[closes.length - 1] <= c.open) closes.length--;
+		if (closes.length > 0 && c.close > closes[closes.length - 1]) return Strings.format1("call %s does not nest", at);
+		closes.put(c.close);
+		if (c.callee >= c.open) return Strings.format1("call %s has a callee after its parenthesis", at);
+		if (c.target != null && s.definitionAtOffset(path, c.callee) != c.target) {
+			return Strings.format1("call %s has a callee that does not use its target", at);
+		}
+		if (c.callee >= 0 && c.target == null && s.builtinUseAtOffset(path, c.callee) == null) {
+			return Strings.format1("call %s has a callee that is no use", at);
+		}
+		var sig = c.signature;
+		if (sig == null) continue;
+		for (i < sig.params.length) {
+			if (!sig.holds(i) && !Strings.endsWith(sig.label, AnalysisDisplayText.ELISION)) {
+				return Strings.format2("call %s: %s does not hold its parameters", at, sig.label);
+			}
+		}
+	}
 	return null;
 }
 // Asserts that the snapshot's references of the declarations that uses name,
@@ -1053,6 +1093,9 @@ def test_aeneas_sources(t: Tester) {
 			t.assertz(true, snapshot.verified);
 			assertSound(t, snapshot, sources);
 			assertReferences(t, snapshot, sources, 100);
+			var calls = 0;
+			for (source in sources) calls += snapshot.calls(source.path).length;
+			t.assert(calls > 40000, "the Aeneas sources' call sites");
 			// ADR-0004 records this program's share of the result budget.
 			t.assert(snapshot.resultAllocation <= long.view(AnalysisWire.MAX_RESULT_ALLOCATION) * 4 / 5,
 				"the Aeneas sources use at most 80% of the result budget");

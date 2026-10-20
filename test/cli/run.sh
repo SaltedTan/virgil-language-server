@@ -229,12 +229,20 @@ awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }
 [ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
 finish "analyze reports type, type parameter, index operator, layout, and packing uses" $(( $? == 0 ))
 # Declaration signatures, use-site types where they differ from the
-# declaration's, and builtin uses, in byte order, pinned in the same way.
+# declaration's, builtin uses, and call sites, in byte order, pinned in the
+# same way.
 awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \
     "$ROOT/test/cli/analysis-display.txt" > "$TMP/analysis-want"
 "$EXE" analyze --display "$A/occurrence-coverage/main.v3" > "$TMP/out" 2> "$TMP/err"
 [ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
-finish "analyze reports signatures, use-site types, and builtin uses" $(( $? == 0 ))
+finish "analyze reports signatures, use-site types, builtin uses, and calls" $(( $? == 0 ))
+# Each kind of call site, with its callee, signature, parameters, and
+# argument spans; see docs/architecture.md#call-sites.
+awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }' \
+    "$ROOT/test/cli/analysis-calls.txt" > "$TMP/analysis-want"
+"$EXE" analyze --display "$A/call-sites/main.v3" > "$TMP/out" 2> "$TMP/err"
+[ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
+finish "analyze reports call sites" $(( $? == 0 ))
 
 # frame <payload>: prints the payload with a Content-Length header, in bytes.
 frame() {

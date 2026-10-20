@@ -100,6 +100,49 @@ class AnalysisBuiltinUse(range: AnalysisRange, useType: string) {
 	}
 }
 
+// The parameters of a function as a call was checked against them, for
+// signature help; see docs/architecture.md#call-sites. {label} is display
+// text such as "def get(i: int) -> T" or "(int, int) -> bool", in which the
+// first parameter starts at byte {start}. {params} are the parameter labels,
+// such as "i: int", or only a type where a parameter has no name. The label
+// lists them in order, separated by ", ", so parameter i starts at
+// {paramOffset(i)}, unless the label was cut short before it. A decoded
+// signature's parameters, so laid out, end within int.max.
+class AnalysisSignature(label: string, start: int, params: Array<string>) {
+	// The byte in {label} where parameter {i} starts, or -1 if that is past
+	// the label's end, so that the label was cut short before it.
+	def paramOffset(i: int) -> int {
+		var offset = long.view(start);
+		for (j < i) {
+			if (offset > label.length) return -1;
+			offset += params[j].length + 2;
+		}
+		return if(offset <= label.length, int.view(offset), -1);
+	}
+	// Whether {label} holds all of parameter {i}, at {paramOffset(i)}.
+	def holds(i: int) -> bool {
+		var offset = paramOffset(i), p = params[i];
+		if (offset < 0 || p.length > label.length - offset) return false;
+		for (k < p.length) if (label[offset + k] != p[k]) return false;
+		return true;
+	}
+}
+
+// A call in the source, as verification checked it. Offsets are UTF-8 byte
+// offsets in its file. {open} is its opening parenthesis and {close} the
+// byte just past its closing one. {args} holds each argument's begin and
+// exclusive end offsets, two ints per argument, in order. {callee} is the
+// offset of the callee's name, as in "f" in "a.f<int>(x)", where the name is
+// an occurrence or a builtin use, or -1; {target} is that occurrence's
+// declaration, or null. {signature} is null if the callee's type is not a
+// known function type.
+class AnalysisCall(open: int, close: int, args: Array<int>, callee: int, target: AnalysisDeclaration,
+		signature: AnalysisSignature) {
+	def argCount() -> int {
+		return args.length / 2;
+	}
+}
+
 // Measurements of one whole-program analysis. {globalTypesAdded} counts retained
 // global types after cleanup, or is -1 when statistics were not requested.
 class AnalysisStats(parseUs: int, verifyUs: int, uidsUsed: int, globalTypesAdded: int) { }
@@ -119,14 +162,19 @@ class ProgramAnalysis {
 	private def display = AnalysisDisplay.new(sources);
 	// The program's packings, for their uses; null if it was not verified.
 	private var packings: AnalysisPackings;
+	// For each file's collector in turn.
+	private def callEnds = AnalysisCallEnds.new();
+	// The names that the program's files declare, for each file's collector.
+	private var names: AnalysisDeclaredNames;
 
 	new(diagnostics, stats, parsed, verified, prog: Program) {
 		if (parsed) {
 			packings = AnalysisPackings.new(prog);
+			names = AnalysisDeclaredNames.new(prog.vst.files);
 			for (i < prog.files.length) sources.add(prog.files[i], prog.inputs[i]);
 			for (f in prog.vst.files) {
 				// Preserve the first file's bindings if an input path is repeated.
-				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings);
+				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings, callEnds, names);
 			}
 		}
 	}
@@ -155,13 +203,72 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.sites;
 	}
+	// The calls in {path}, in the order of their opening parentheses; see
+	// docs/architecture.md#call-sites. Collects the file if needed. Each call
+	// returns new objects; the encoder reads {callRecords} instead.
+	def calls(path: string) -> Array<AnalysisCall> {
+		var file = files[path];
+		if (file == null) return [];
+		var uses = file.occurrences(), c = AnalysisCallCursor.new(DataReader.new(file.calls), file.callCount);
+		var result = Array<AnalysisCall>.new(file.callCount);
+		c.absolute = true;
+		for (i = 0; c.next(); i++) {
+			var args = Array<int>.new(2 * c.argCount);
+			for (k < c.argCount) {
+				c.nextArg();
+				args[2 * k] = c.argBegin;
+				args[2 * k + 1] = c.argEnd;
+			}
+			c.finish();
+			var callee = if(c.calleeDelta > 0, c.open - c.calleeDelta, -1);
+			result[i] = AnalysisCall.new(c.open, c.close, args, callee, declarationAt(uses, callee),
+				if(c.signature > 0, display.callSignatureAt(c.signature - 1)));
+		}
+		return result;
+	}
+	// The records of the calls in {path} and their count; see
+	// OccurrenceCollector.calls. Collects the file if needed.
+	def callRecords(path: string) -> (Range<byte>, int) {
+		var file = files[path];
+		if (file == null) return (Array<byte>.new(0), 0);
+		file.occurrences();
+		return (file.calls, file.callCount);
+	}
+	// The call signature that a call record names with {i} plus one.
+	def callSignature(i: int) -> AnalysisSignature {
+		return display.callSignatureAt(i);
+	}
+	def callSignatureCount() -> int {
+		return display.callSignatureCount();
+	}
 	// The uses in {path} that {occurrences} skipped because they are not
-	// token spans (see AnalysisRange.isTokenSpan). Collects the file if needed.
+	// token spans (see AnalysisRange.isTokenSpan), and the calls that {calls}
+	// skipped because their spans do not locate their parentheses and
+	// arguments. Collects the file if needed.
 	def skippedUses(path: string) -> int {
 		var file = files[path];
 		if (file == null) return 0;
 		file.occurrences();
 		return file.skipped;
+	}
+	// The expressions that collecting {path} read to locate its calls'
+	// parentheses and arguments (see OccurrenceCollector.endOf), for tests.
+	// Collects the file if needed.
+	def locatedExprs(path: string) -> int {
+		var file = files[path];
+		if (file == null) return 0;
+		file.occurrences();
+		return file.located;
+	}
+	// The declaration of the occurrence in {uses} that starts at {offset}, or null.
+	private def declarationAt(uses: Array<AnalysisOccurrence>, offset: int) -> AnalysisDeclaration {
+		var low = 0, high = uses.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (uses[mid].range.beginOffset < offset) low = mid + 1;
+			else high = mid;
+		}
+		return if(low < uses.length && uses[low].range.beginOffset == offset, uses[low].declaration);
 	}
 	// The declaration that the indexed use at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
@@ -182,19 +289,26 @@ class ProgramAnalysis {
 
 // Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
 // repeated walk, allocation, or sort for subsequent binding queries.
-class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: AnalysisPackings) {
+class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: AnalysisPackings,
+		callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames) {
 	private var uses: Array<AnalysisOccurrence>;
 	def var skipped: int;
+	def var located: int;
 	def var builtins: Array<AnalysisBuiltinUse>;
 	def var sites: Array<AnalysisDeclaration>;
+	def var calls: Range<byte>;
+	def var callCount: int;
 
 	def occurrences() -> Array<AnalysisOccurrence> {
 		if (uses == null) {
-			var collector = OccurrenceCollector.new(sources, display, packings);
+			var collector = OccurrenceCollector.new(sources, display, packings, callEnds, names);
 			uses = collector.collect(file);
 			skipped = collector.skipped;
+			located = collector.located;
 			builtins = collector.builtins;
 			sites = collector.sites;
+			calls = collector.calls;
+			callCount = collector.callCount;
 		}
 		return uses;
 	}
