@@ -127,8 +127,8 @@ component LspRenameEligibility {
 			}
 		}
 		// Snapshots carry no class hierarchy, so any other method with the name
-		// may override or be overridden. This refuses a superset of those; the
-		// re-analysis preflight of the rename itself (#125) can refine it.
+		// may override or be overridden. The rename's preflight cannot detect
+		// changes to dispatch; see LspRename.plan for the new-name check.
 		if (decl.kind == AnalysisDeclKind.METHOD) {
 			for (i < s.declarations.length) {
 				var d = s.declarations[i];
