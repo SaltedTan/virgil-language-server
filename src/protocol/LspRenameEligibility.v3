@@ -81,9 +81,9 @@ component LspRenameEligibility {
 		}
 		var ctx = projects.forDocument(s.documentVersions[at.index].uri).active;
 		if (ctx == null) return "the document is not in a loaded project";
-		// File events, not requests, expand a project's patterns again, so a
-		// source created or deleted without one is missing from ctx.sources,
-		// which the snapshot matches, and so are its uses and errors.
+		// A file created or deleted without a file event can leave ctx.sources
+		// unchanged, hiding its uses and errors from the snapshot. Re-expand
+		// without updating the context to check the analyzed membership.
 		var now = projects.expandNow(ctx);
 		if (now == null || !sameSources(now, ctx.sources)) {
 			return "the project's files changed since the last analysis; an analysis starts on the next open, edit, save, close, or file event";

@@ -86,20 +86,20 @@ class LspSnapshotWaiters(owner: LspSnapshotRequests) {
 // textDocument/hover, and textDocument/references, answered from the retained
 // snapshot of the document's active project context. Every reply goes through
 // {send}: a request against a missing or stale snapshot waits for the
-// context's pending analysis. Each method supplies only its answer function,
-// and how to prepare it from a request's other parameters if it has any. See
+// context's pending analysis. Each method supplies its answer function,
+// how to prepare it from other parameters, and an optional failure reply. See
 // docs/architecture.md#definition, docs/architecture.md#hover, and
 // docs/architecture.md#references.
 class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	// Bounds the requests of every method that wait at once. A client rarely
 	// has more than a few outstanding; past this many, the oldest, the one most
-	// likely superseded, is answered with null.
+	// likely superseded, is answered through its method's failure policy.
 	def MAX_WAITING = 256;
 	private def NULL = JsonRpcReply.Result(JsonValue.Null);
 	// Returns the listener of a context's pending analysis, registering the
 	// candidate if it has none, or null if none is pending
 	// (LspSemanticDiagnostics.whenAnalyzed). Without it, a missing or stale
-	// snapshot is answered with null at once.
+	// snapshot is answered through the method's failure policy at once.
 	var whenAnalyzed: (ProjectContext, LspSnapshotWaiters) -> LspSnapshotWaiters;
 	// Every waiting request in arrival order, after some answered ones, which
 	// {compact} removes.

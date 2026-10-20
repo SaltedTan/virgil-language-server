@@ -218,8 +218,7 @@ for index in range(127):
 # beside a program in active/. Every directory and file name is a string of
 # "Aa" and "BB" blocks of one length, which hash alike under a polynomial
 # string hash, so a map keyed by the 4,096 paths would chain them all in one
-# bucket. Each program's expansion maps its own paths, so 128 apiece keeps
-# loading them quick.
+# bucket. Expansion uses OrderedStringSet; see src/workspace/ProjectExpansion.v3.
 def blocks(count, index):
     return "".join("BB" if index >> bit & 1 else "Aa" for bit in range(count))
 
