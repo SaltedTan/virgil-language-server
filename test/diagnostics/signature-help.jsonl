@@ -1,0 +1,40 @@
+# Signature help in the two-file project's unsaved files, for a client with labelOffsetSupport:
+# each parameter is labelled by its UTF-16 offsets in the signature's label.
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@ROOT@/two-file","capabilities":{"textDocument":{"signatureHelp":{"signatureInformation":{"parameterInformation":{"labelOffsetSupport":true}}}}}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+# Unsaved main.v3 calls Shapes.scaled, which only unsaved shapes.v3 declares. Both open in one
+# read, so the first analysis, which read shapes.v3 from disk, is discarded. The request in the
+# same read, at the second argument, has no snapshot yet, so it waits for the second analysis.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","languageId":"virgil","version":1,"text":"// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, 4);\n\t\treturn r.area();\n\t}\n}\n"}}},{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3","languageId":"virgil","version":1,"text":"// Declarations used from main.v3.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\tdef scaled(side: int, factor: int) -> Rect {\n\t\treturn Rect.new(side * factor, side);\n\t}\n}\n"}}},{"jsonrpc":"2.0","id":2,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":3,"character":27}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/shapes.v3","version":1}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"activeParameter":1,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
+# The snapshot is current, so the replies are immediate: a default constructor just after its (,
+# and, with a SignatureHelpContext that the server ignores, the position just after the comma.
+{"send":{"jsonrpc":"2.0","id":3,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/shapes.v3"},"position":{"line":8,"character":18}}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"activeParameter":0,"activeSignature":0,"signatures":[{"label":"class Rect(width: int, height: int)","parameters":[{"label":[11,21]},{"label":[23,34]}]}]}}}
+{"send":{"jsonrpc":"2.0","id":4,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":3,"character":26},"context":{"triggerKind":2,"triggerCharacter":",","isRetrigger":false}}}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":{"activeParameter":1,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
+# An unsaved edit inserts a line above the call. The request in the same read finds the snapshot
+# stale, so it starts the waiting analysis without the debounce interval and answers from it.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":2},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, 4);\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":5,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":27}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":2}}}
+{"recv":{"jsonrpc":"2.0","id":5,"result":{"activeParameter":1,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
+# An edit that leaves the call unclosed fails to parse, so the snapshot of the exact text has no
+# calls: the request that waits for it gets null, never an answer from the older snapshot.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":3},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, ;\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":6,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":26}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":27,"line":4},"start":{"character":27,"line":4}},"severity":1,"source":"aeneas"}],"uri":"@ROOT@/two-file/main.v3","version":3}}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":null}}
+# Once the call is closed again, the request that waits for that analysis is answered, just after
+# the (; just past the ), the position is outside the call.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":4},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, 4);\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":7,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":24}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":4}}}
+{"recv":{"jsonrpc":"2.0","id":7,"result":{"activeParameter":0,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
+{"send":{"jsonrpc":"2.0","id":8,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":29}}}}
+{"recv":{"jsonrpc":"2.0","id":8,"result":null}}
+{"send":{"jsonrpc":"2.0","id":9,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":9,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}
+{"stderr": "discarded analysis 1 of project shapes: file://.*/two-file/shapes\\.v3 changed after its sources were captured"}

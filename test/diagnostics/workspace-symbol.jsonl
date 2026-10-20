@@ -7,7 +7,7 @@
 {"write":["tool/Tool.v3","component Tool {\n\tdef main() -> int { return Shared.count; }\n}\n"]}
 {"write":["shared/Shared.v3","component Shared {\n\tdef count = 1;\n}\n"]}
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{}}}}
-{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
 {"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
 # Before a document opens, no project is loaded, so nothing matches.
 {"send":{"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"main"}}}

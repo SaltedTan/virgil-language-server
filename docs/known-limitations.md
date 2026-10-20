@@ -4,16 +4,17 @@ This page lists what the v0.1 alpha doesn't do, or does only in part. Each item 
 
 ## Features not yet implemented
 
-- Completion, rename, and signature help aren't implemented. The server doesn't advertise them ([protocol invariants](architecture.md#protocol-invariants)), and [M5](../ROADMAP.md#m5--references-rename-signature-help-and-completion-48-weeks) plans them.
+- Completion and rename aren't implemented. The server doesn't advertise them ([protocol invariants](architecture.md#protocol-invariants)), and [M5](../ROADMAP.md#m5--references-rename-signature-help-and-completion-48-weeks) plans them.
 - Formatting and debugging are out of scope, and incremental analysis comes after v0.1 ([v0.1 scope](../README.md#v01-scope)).
 
 ## Semantic features need a project file
 
-Without a `.virgil-lsp.json` that selects it, a document gets syntax diagnostics and a document outline, but no type errors, definition, hover, or references, and it contributes no workspace symbols ([Without a project file](configuration.md#without-a-project-file)). A project that lists `virgilDependencies` also needs the editor to send a Virgil root; without one, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
+Without a `.virgil-lsp.json` that selects it, a document gets syntax diagnostics and a document outline, but no type errors, definition, hover, references, or signature help, and it contributes no workspace symbols ([Without a project file](configuration.md#without-a-project-file)). A project that lists `virgilDependencies` also needs the editor to send a Virgil root; without one, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
 
 ## No error-tolerant parsing
 
-- While any file of a project has a syntax error, Aeneas doesn't type-check the program. The project's type errors disappear, and definition, hover, and references return nothing, until every file parses again ([Semantic diagnostics](architecture.md#semantic-diagnostics), [Definition](architecture.md#definition)). The server doesn't fall back to an earlier analysis, which described other text: that needs an edit-mapping policy, and error tolerance belongs to [M6](../ROADMAP.md#m6--error-tolerance-and-incrementality-48-weeks-evidence-driven).
+- While any file of a project has a syntax error, Aeneas doesn't type-check the program. The project's type errors disappear, and definition, hover, references, and signature help return nothing, until every file parses again ([Semantic diagnostics](architecture.md#semantic-diagnostics), [Definition](architecture.md#definition)). The server doesn't fall back to an earlier analysis, which described other text: that needs an edit-mapping policy, and error tolerance belongs to [M6](../ROADMAP.md#m6--error-tolerance-and-incrementality-48-weeks-evidence-driven).
+- Signature help therefore shows nothing for a call that is still being typed, such as `f(a,` or an unclosed `f(`: it doesn't parse. A complete call with a semantic error, such as the `f()` that an editor leaves when it closes `(` at once, does parse, and gets its signature. Repairing incomplete calls is [#128](https://github.com/SaltedTan/virgil-language-server/issues/128)'s work ([Signature help](architecture.md#signature-help)).
 - If document-symbol parsing fails, the outline is empty, never stale or truncated. That parse normalizes carriage returns, so a CRLF file can have syntax diagnostics and still an outline ([Document symbols](architecture.md#document-symbols)).
 - An analysis stops at 15 errors, and an Information diagnostic (`ErrorLimit`) then says that errors elsewhere may be missing. Aeneas rejects carriage returns, as `v3c` does, with one error per CRLF line, so a single CRLF file reaches the limit. Convert CRLF files to LF, which WSL users' checkouts may need ([error limit](architecture.md#semantic-diagnostics)).
 
@@ -22,7 +23,7 @@ Without a `.virgil-lsp.json` that selects it, a document gets syntax diagnostics
 Semantic results come from the newest analysis of the document's project. An analysis starts 200 ms after the last edit, or at once on open, save, or close ([scheduling](architecture.md#semantic-diagnostics)).
 
 - **Diagnostics.** After an edit, a file's type errors disappear until the next analysis completes; its syntax errors follow the edit at once. An analysis that a later edit made stale is discarded, not published.
-- **Definition, hover, and references.** A request against a stale or missing snapshot waits for the pending analysis, then answers from it. The answer is empty if that analysis is stale too, or if the document changed while the request waited. Without a pending analysis, for example after a failed one, the answer is empty at once ([Definition](architecture.md#definition), whose rules [Hover](architecture.md#hover) and [References](architecture.md#references) share).
+- **Definition, hover, references, and signature help.** A request against a stale or missing snapshot waits for the pending analysis, then answers from it. The answer is empty if that analysis is stale too, or if the document changed while the request waited. Without a pending analysis, for example after a failed one, the answer is empty at once ([Definition](architecture.md#definition), whose rules [Hover](architecture.md#hover), [References](architecture.md#references), and [Signature help](architecture.md#signature-help) share).
 - **Failed analyses.** When an analysis fails, for example because the worker crashed, ran past 10 seconds, or returned a result over the size budget, the published diagnostics stay as they were, and the server logs a warning. The first failure also shows a warning message; later ones are only logged until an analysis succeeds again. The server doesn't retry: the next open, edit, save, close, or file event starts a new analysis, in a new worker after a worker failure ([failures](architecture.md#semantic-diagnostics), [restart policy](decisions/0004-analysis-worker-process.md#restart-policy)).
 - **Changes outside the editor.** The server learns about them only from the client's file events. Clients without file events, such as Neovim 0.11.6 on Linux and in WSL 2 with the shipped configurations, see them when a project is next used; restart the server after a checkout that adds or removes files ([Changes on disk](configuration.md#changes-on-disk)).
 
@@ -56,6 +57,17 @@ Only the uses that the [occurrence index](architecture.md#compiler-adapter) reco
 - Builtin types, such as `int`, `Array` in `Array<Foo>`, `set` in `E.set`, and `Ref` in `Ref<L>`, have no definition. Hover shows the type of a builtin used in an expression, such as `.length`, but nothing for a builtin type in a type position ([Hover](architecture.md#hover)).
 - The letters of a bit pattern, such as `0b_aabb`, and the names in a `#packing` hint on a variant case aren't indexed ([#111](https://github.com/SaltedTan/virgil-language-server/issues/111)).
 - Hover shows nothing at a keyword, a literal, or an unresolved name, and doesn't show the type of a larger expression.
+
+## Signature help
+
+[Signature help](architecture.md#signature-help) shows the signature that the analysis recorded for the call around the cursor, and owns the details. In particular:
+
+- A signature's label is cut at 256 bytes and then ends with `…`. Only the parameters that the cut label holds are listed, and a later active parameter is reported as its index past the list.
+- A call with more arguments than its function has parameters, which is a type error, reports the parameter index past the last, as does a cursor after a trailing comma that follows as many arguments as there are parameters, as in `add(1, 2,)`.
+- How a client shows an active parameter past the list varies: LSP 3.17 specifies that it defaults to parameter 0, VS Code highlights no parameter, and Neovim 0.11.6 highlights the last.
+- A client without `labelOffsetSupport` gets each parameter's label as a string, and finds it in the signature's label itself: in `(int, int) -> int`, both parameters are `int`, and such a client may highlight the first for either. VS Code and Neovim both support label offsets, which are exact.
+- A call without a known signature gets nothing: an unresolved callee, and the calls in its arguments, which verification doesn't check either.
+- There is no documentation, since the analysis doesn't keep doc comments.
 
 ## Crashes in the compiler front end
 

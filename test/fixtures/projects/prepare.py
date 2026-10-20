@@ -68,6 +68,13 @@ hover.mkdir(exist_ok=True)
     '{"version":1,"projects":[{"name":"h","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# LspSignatureHelpTest writes and changes the sources itself.
+signature_help = root / "signature-help"
+signature_help.mkdir(exist_ok=True)
+(signature_help / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"g","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
 # LspDocumentSymbolsTest writes and changes the sources itself.
 symbols = root / "document-symbols"
 symbols.mkdir(exist_ok=True)

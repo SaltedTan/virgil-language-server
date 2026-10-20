@@ -6,7 +6,7 @@
 {"write":["sub/Use.v3","component Use { def get() -> int { return Thing.value; } }\n"]}
 {"write":["sub/New.v3","\ncomponent Thing {\n\tdef value = 2;\n\tdef wide: bool = value;\n}\n"]}
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{}}}}
-{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
 {"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
 # Opening sub/Use.v3 starts the outer project's first analysis, which the request waits for.
 # The unsaved sub/.virgil-lsp.json in the same read makes the sub project active for it.

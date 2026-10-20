@@ -79,6 +79,19 @@ async function hovers(editor, line, character) {
   ]);
 }
 
+// The active signature and parameter of the signature help at line:character,
+// and each signature's label and parameter labels.
+async function signatureHelp(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeSignatureHelpProvider', editor.document.uri, new vscode.Position(line, character),
+  );
+  return result && {
+    activeSignature: result.activeSignature,
+    activeParameter: result.activeParameter,
+    signatures: result.signatures.map((s) => [s.label, s.parameters.map((p) => p.label)]),
+  };
+}
+
 // The name, kind, file, and range of each symbol that a workspace symbol query returns.
 async function workspaceSymbols(query) {
   const result = await vscode.commands.executeCommand('vscode.executeWorkspaceSymbolProvider', query);
@@ -210,6 +223,13 @@ async function workspace(extension) {
   assert.deepEqual(await hovers(words, use, column), [
     [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
   ]);
+  // Signature help just after the ( of .puts(a) on the same line shows the
+  // method's label with its one parameter as label offsets, which the client
+  // supports. The fixture's type error leaves the program parsed and analyzed.
+  const puts = words.document.lineAt(use).text.indexOf('.puts(') + '.puts('.length;
+  assert.deepEqual(await signatureHelp(words, use, puts), {
+    activeSignature: 0, activeParameter: 0, signatures: [['def puts(s: Array<byte>) -> this', [[9, 23]]]],
+  });
   // Workspace symbols come from the same analysis: join, which nothing uses,
   // is a method in the project's own words/Words.v3.
   assert.deepEqual((await workspaceSymbols('join')).slice(0, 1), [
@@ -252,7 +272,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, references, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, signature help, references, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {
