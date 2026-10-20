@@ -562,6 +562,12 @@ notes "VSIX without a version" 1 - "lacks a name, publisher, or version"
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "${package/7.8.9/7.9.0}"
 notes "VSIX named for another version" 1 - \
     "virgil-lsp-vscode-7\.8\.9\.vsix holds version 7\.9\.0 of virgil-lsp-vscode"
+# A lone surrogate decodes to a string that print() can't encode as UTF-8, so
+# the extension's fields are refused as if one were missing.
+vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" \
+    '{"name": "virgil-lsp-vscode", "publisher": "\ud800", "version": "7.8.9"}'
+notes "VSIX with a lone surrogate in publisher" 1 - \
+    "extension/package\.json lacks a name, publisher, or version$"
 assets
 # A build manifest is read with the same parser, so an Infinity or NaN there
 # is reported rather than accepted.
@@ -570,6 +576,80 @@ printf '%s\n' '{"version": NaN, "tag": null, "target": "x86-64-linux",
     > "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.manifest.json"
 notes "a build manifest with a non-JSON constant" 1 - \
     "manifest\.json is not valid JSON: it holds the non-JSON constant NaN$"
+# The fields that main() reads are checked together, so an incomplete or
+# badly typed manifest is reported rather than raising a KeyError or TypeError.
+manifest=$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.manifest.json
+printf '%s\n' '{}' > "$manifest"
+notes "a build manifest with no fields" 1 - \
+    "manifest\.json: lacks required fields: version, tag, target, sourceRevision, dirty, virgilRevision$"
+printf '%s\n' '[]' > "$manifest"
+notes "a build manifest that is a JSON array" 1 - "manifest\.json is not a JSON object$"
+printf '%s\n' '{"version": "1.2.3-alpha.4", "tag": null, "target": "x86-64-linux",
+    "sourceRevision": "x", "dirty": false}' > "$manifest"
+notes "a build manifest without virgilRevision" 1 - \
+    "manifest\.json: lacks required fields: virgilRevision$"
+printf '%s\n' '{"version": "1.2.3-alpha.4", "tag": null}' > "$manifest"
+notes "a build manifest with several missing fields" 1 - \
+    "manifest\.json: lacks required fields: target, sourceRevision, dirty, virgilRevision$"
+printf '%s\n' '{"version": "1.2.3-alpha.4", "tag": null, "target": "x86-64-linux",
+    "sourceRevision": "x", "dirty": "false", "virgilRevision": "y"}' > "$manifest"
+notes "a build manifest with dirty as a string" 1 - \
+    "manifest\.json: dirty is a string, not a boolean$"
+printf '%s\n' '{"version": "1.2.3-alpha.4", "tag": null, "target": "x86-64-linux",
+    "sourceRevision": "x", "dirty": 0, "virgilRevision": "y"}' > "$manifest"
+notes "a build manifest with dirty as a number" 1 - \
+    "manifest\.json: dirty is a number, not a boolean$"
+printf '%s\n' '{"version": "1.2.3-alpha.4", "tag": 123, "target": "x86-64-linux",
+    "sourceRevision": "x", "dirty": false, "virgilRevision": "y"}' > "$manifest"
+notes "a build manifest with a tag that isn't a string" 1 - \
+    "manifest\.json: tag is a number, not a non-empty string or null$"
+# manifest_field <field> <JSON value>: writes a good build manifest to
+# $manifest with <field> holding the JSON text <value>.
+manifest_field() {
+    local version='"1.2.3-alpha.4"' tag=null target='"x86-64-linux"'
+    local sourceRevision='"x"' dirty=false virgilRevision='"y"'
+    case $1 in
+        version) version=$2 ;;
+        tag) tag=$2 ;;
+        target) target=$2 ;;
+        sourceRevision) sourceRevision=$2 ;;
+        dirty) dirty=$2 ;;
+        virgilRevision) virgilRevision=$2 ;;
+    esac
+    printf '{"version": %s, "tag": %s, "target": %s, "sourceRevision": %s, "dirty": %s, "virgilRevision": %s}\n' \
+        "$version" "$tag" "$target" "$sourceRevision" "$dirty" "$virgilRevision" > "$manifest"
+}
+# A string field must be a non-empty string that encodes as UTF-8, so that the
+# notes can print it: a number, null, and an empty string are each refused with
+# the JSON type rather than the value.
+for field in version target sourceRevision virgilRevision; do
+    for bad in 'a number:1' 'null:null' 'an empty string:""'; do
+        want=${bad%%:*}
+        manifest_field "$field" "${bad#*:}"
+        notes "a build manifest with $field as $want" 1 - \
+            "manifest\.json: $field is $want, not a non-empty string$"
+    done
+done
+manifest_field tag '""'
+notes "a build manifest with an empty tag" 1 - \
+    "manifest\.json: tag is an empty string, not a non-empty string or null$"
+# A lone surrogate decodes to a string that print() can't encode as UTF-8.
+manifest_field sourceRevision '"\ud800"'
+notes "a build manifest with a lone surrogate" 1 - \
+    "manifest\.json: sourceRevision is not valid Unicode$"
+# A missing field and a wrongly typed field are reported in one message.
+printf '%s\n' '{"version": "1.2.3-alpha.4", "tag": null, "sourceRevision": "x",
+    "dirty": "false", "virgilRevision": "y"}' > "$manifest"
+notes "a build manifest with a missing and a wrongly typed field" 1 - \
+    '^release-notes\.py: error: .*manifest\.json: lacks required fields: target; dirty is a string, not a boolean$'
+printf '\377\n' > "$manifest"
+notes "a build manifest that isn't UTF-8" 1 - \
+    "cannot read .*manifest\.json: 'utf-8' codec can't decode byte 0xff"
+printf '%s\n' '{"version": "1.2.3-alpha.4",' > "$manifest"
+notes "a build manifest with truncated JSON" 1 - "manifest\.json is not valid JSON: "
+rm "$manifest"
+mkdir "$manifest"
+notes "an unreadable build manifest" 1 - "cannot read .*manifest\.json: "
 assets
 rm "$ASSETS/virgil-lsp-1.2.3-alpha.4-x86-64-linux.tar.gz"
 notes "missing archive" 1 - "missing archive virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz"
