@@ -32,6 +32,7 @@ def X = [
 	T("AnalysisMembers:unreached", test_unreached),
 	T("AnalysisMembers:unvisited_arguments", test_unvisited_arguments),
 	T("AnalysisMembers:cap", test_cap),
+	T("AnalysisMembers:deferred_details", test_deferred_details),
 	T("AnalysisMembers:kinds_and_details", test_kinds_and_details),
 	T("AnalysisMembers:scaling", test_scaling),
 	()
@@ -646,6 +647,54 @@ def test_cap(t: Tester) {
 	t.assert_string("g", some.names[0]);
 	var f1 = a.0.membersAt(MAIN, a.1, "f1");
 	t.asserti(1 + 10 + 100 + 200, f1.names.length);
+}
+def countedMembers(t: Tester, marked: string, prefix: string, expected: int, signatures: int, types: int) {
+	var a = analyze([(MAIN, marked)]);
+	if (!a.0.verified) {
+		for (d in a.0.diagnostics) t.fail1("render fixture does not verify: %s", d.toString());
+		return;
+	}
+	AnalysisMemberSubst.signatureRenders = 0;
+	AnalysisMemberSubst.typeRenders = 0;
+	AnalysisMemberSubst.countRenders = true;
+	var m = a.0.membersAt(MAIN, a.1, prefix);
+	AnalysisMemberSubst.countRenders = false;
+	t.assert(m != null, "render fixture has an answer");
+	if (m == null) return;
+	t.asserti(expected, m.names.length);
+	t.asserti(signatures, AnalysisMemberSubst.signatureRenders);
+	t.asserti(types, AnalysisMemberSubst.typeRenders);
+}
+def test_deferred_details(t: Tester) {
+	for (generic in [false, true]) {
+		var b = StringBuilder.new().puts(if(generic, "class C<T> {\n", "class C {\n"));
+		for (i < 1200) b.put1("var f%d: ", i).puts(if(generic, "T;\n", "int;\n"));
+		b.puts("var g: ").puts(if(generic, "T;\n}\ndef f(c: C<int>)", "int;\n}\ndef f(c: C)"));
+		var text = b.puts(" { var x = c.$g; }\n").toString();
+		countedMembers(t, text, "", 1000, if(generic, 2000, 1000), 0);
+		countedMembers(t, text, "g", 1, if(generic, 2, 1), 0);
+		countedMembers(t, text, "missing", 0, 0, 0);
+	}
+	var e = StringBuilder.new().puts("enum E { ");
+	for (i < 1200) e.put1("%sF", if(i > 0, ", ", "")).putd(i);
+	var decl = e.puts("}\n").toString();
+	var enumType = Arrays.concat(decl, "def f() { var x = E.$F0; }\n");
+	countedMembers(t, enumType, "missing", 0, 0, 0);
+	countedMembers(t, enumType, "tag", 1, 1, 1);
+	countedMembers(t, enumType, "name", 1, 1, 1);
+	countedMembers(t, enumType, "count", 1, 0, 1);
+	countedMembers(t, enumType, "set", 1, 0, 1);
+	for (onType in [false, true]) {
+		var text = Arrays.concat("enum E { F0, F1, F2 }\n", if(onType,
+			"def f() { var x = E.set.$F0; }\n", "def f(s: E.set) { var x = s.$F0; }\n"));
+		countedMembers(t, text, "", if(onType, 5, 3), 3, if(onType, 5, 0));
+	}
+	var tuple = StringBuilder.new().puts("def f(t: (");
+	for (i < 1200) tuple.puts(if(i > 0, ", int", "int"));
+	var text = tuple.puts(")) { var x = t.$last; }\n").toString();
+	countedMembers(t, text, "missing", 0, 0, 0);
+	countedMembers(t, text, "last", 1, 0, 1);
+	countedMembers(t, text, "", 1000, 0, 1000);
 }
 // Kinds and details: each member's declaration kind, and its signature.
 def test_kinds_and_details(t: Tester) {

@@ -120,8 +120,6 @@ component AnalysisMemberModes {
 	def ENUM = 5;
 	// lookupComponentMember: fields and methods.
 	def COMPONENT = 6;
-	// lookupEnumSetTypeMember and lookupEnumSetExprMember: the enum's cases.
-	def ENUM_SET = 7;
 	// lookupLayoutMember, lookupRefTypeMember, and lookupRefExprMember: the
 	// layout's fields.
 	def LAYOUT = 8;
@@ -204,6 +202,14 @@ class AnalysisTypeSubst(params: List<TypeParamType>, args: List<Type>, outer: An
 	}
 }
 
+type AnalysisMemberDetail {
+	case Own;
+	case Typed(t: Type);
+	case EnumSet(t: EnumSetType, onType: bool);
+	case Builtin(template: string, t: Type);
+	case System(call: SystemCall);
+}
+
 // The members that the verifier resolves after "." in member expression {e}
 // of the file {fileName}, given its receiver as verification bound and typed
 // it (TypeChecker.lookupBinding): a type's members, as in "C.new", "V.A", or
@@ -221,13 +227,11 @@ class AnalysisTypeSubst(params: List<TypeParamType>, args: List<Type>, outer: An
 class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: HashMap<string, VstLayout>) {
 	// The names offered or hidden so far, nearest first.
 	private def names = OrderedStringSet.new();
-	private def found = Vector<AnalysisDeclaration>.new();
 	private def labels = Vector<string>.new();
 	private def kinds = Vector<AnalysisDeclKind>.new();
-	private def details = Vector<string>.new();
+	private def details = Vector<AnalysisMemberDetail>.new();
 	private def levels = Vector<int>.new();
-	// The declaration and substitution that a detail left null renders with,
-	// once the candidate is kept.
+	// The declaration and substitution used once the candidate is kept.
 	private def syntax = Vector<Decl>.new();
 	private def substs = Vector<AnalysisTypeSubst>.new();
 	private var steps: int;
@@ -415,7 +419,7 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		var info = root.descriptorInfo;
 		if (info == null || info.descriptorField == null) return;
 		if (!names.add(info.descriptorField.token.image)) return;
-		member(AnalysisDeclKind.FIELD, info.descriptorField, null, null, level);
+		member(AnalysisDeclKind.FIELD, info.descriptorField, null, AnalysisMemberDetail.Own, level);
 	}
 	// A class type's "new": its own constructor, not a superclass's, if it
 	// can access it (lookupClassTypeMember). A default constructor's
@@ -427,7 +431,7 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		names.add("new");
 		if (c.isPrivate && !sameFile(decl)) return;
 		var subst = if(decl.typeParams != null && t.nested != null, AnalysisTypeSubst.new(decl.typeParams, t.nested, null));
-		member(AnalysisDeclKind.CONSTRUCTOR, c, subst, null, 0);
+		member(AnalysisDeclKind.CONSTRUCTOR, c, subst, AnalysisMemberDetail.Own, 0);
 	}
 	// The members of {c} that its member map binds: the first of each name,
 	// other than its constructor and the methods that verification adds for
@@ -446,20 +450,20 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 			if (m.isPrivate && !sameFile(c)) continue;
 			if (!names.add(name) || !identifier(name)) continue;
 			match (m) {
-				x: VstField => if (mode != AnalysisMemberModes.ENUM_SET && mode != AnalysisMemberModes.LAYOUT) {
-					member(AnalysisDeclKind.FIELD, x, subst, null, level);
+				x: VstField => if (mode != AnalysisMemberModes.LAYOUT) {
+					member(AnalysisDeclKind.FIELD, x, subst, AnalysisMemberDetail.Own, level);
 				}
 				x: VstMethod => if (mode == AnalysisMemberModes.CLASS || mode == AnalysisMemberModes.VARIANT_TYPE
 						|| mode == AnalysisMemberModes.VARIANT || mode == AnalysisMemberModes.COMPONENT) {
-					member(AnalysisDeclKind.METHOD, x, subst, null, level);
+					member(AnalysisDeclKind.METHOD, x, subst, AnalysisMemberDetail.Own, level);
 				}
 				x: VstVariantTagMember => if (implicit(mode)) {
-					member(AnalysisDeclKind.FIELD, x, null, typed("def tag: ", x.getType()), level);
+					member(AnalysisDeclKind.FIELD, x, null, AnalysisMemberDetail.Typed(x.getType()), level);
 				}
-				x: VstVariantNameMember => if (implicit(mode)) member(AnalysisDeclKind.FIELD, x, null, typed("def name: ", x.getType()), level);
-				x: VstCaseMember => if (mode == AnalysisMemberModes.VARIANT_TYPE) member(AnalysisDeclKind.VARIANT_CASE, x, subst, null, level);
-				x: VstEnumCase => if (mode == AnalysisMemberModes.ENUM_TYPE) member(AnalysisDeclKind.ENUM_CASE, x, null, null, level);
-				x: VstLayoutField => if (mode == AnalysisMemberModes.LAYOUT) member(AnalysisDeclKind.LAYOUT_FIELD, x, null, null, level);
+				x: VstVariantNameMember => if (implicit(mode)) member(AnalysisDeclKind.FIELD, x, null, AnalysisMemberDetail.Typed(x.getType()), level);
+				x: VstCaseMember => if (mode == AnalysisMemberModes.VARIANT_TYPE) member(AnalysisDeclKind.VARIANT_CASE, x, subst, AnalysisMemberDetail.Own, level);
+				x: VstEnumCase => if (mode == AnalysisMemberModes.ENUM_TYPE) member(AnalysisDeclKind.ENUM_CASE, x, null, AnalysisMemberDetail.Own, level);
+				x: VstLayoutField => if (mode == AnalysisMemberModes.LAYOUT) member(AnalysisDeclKind.LAYOUT_FIELD, x, null, AnalysisMemberDetail.Own, level);
 				_ => ;
 			}
 		}
@@ -476,14 +480,13 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 	private def enumSet(t: EnumSetType, onType: bool) {
 		var decl = t.enumDecl;
 		if (decl == null) return;
-		var text = display.typeText(t);
-		var detail = if(onType && text != null, Strings.format1("(set: %s) -> bool", text), ": bool");
+		var detail = AnalysisMemberDetail.EnumSet(t, onType);
 		var own = OrderedStringSet.new();
 		for (l = decl.members; l != null; l = l.tail) {
 			steps++;
 			var m = l.head;
 			if (!VstEnumCase.?(m) || !own.add(m.token.image) || !names.add(m.token.image)) continue;
-			member(AnalysisDeclKind.ENUM_CASE, m, null, Strings.format2("def %s%s", m.token.image, detail), 0);
+			member(AnalysisDeclKind.ENUM_CASE, m, null, detail, 0);
 		}
 		compares += own.compares;
 	}
@@ -492,38 +495,38 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		var i = 0;
 		for (l = t.nested; l != null; l = l.tail) {
 			steps++;
-			builtin(Strings.format1("%d", i++), AnalysisDeclKind.FIELD, typed(Strings.format1("def %d: ", i - 1), l.head));
+			builtin(Strings.format1("%d", i++), AnalysisDeclKind.FIELD, AnalysisMemberDetail.Typed(l.head));
 		}
 		var last: Type;
 		for (l = t.nested; l != null; l = l.tail) last = l.head;
-		if (i > 0) builtin("last", AnalysisDeclKind.FIELD, typed("def last: ", last));
+		if (i > 0) builtin("last", AnalysisDeclKind.FIELD, AnalysisMemberDetail.Typed(last));
 	}
 	// System's calls (System_TypeCon.lookupMember).
 	private def system() {
-		var buf = StringBuilder.new();
 		for (call in SystemCall) {
 			steps++;
-			buf.reset();
-			buf.puts("def ").puts(call.name).putc('(');
-			for (i < call.paramTypes.length) {
-				if (i > 0) buf.puts(", ");
-				var text = display.typeText(call.paramTypes[i]);
-				buf.puts(if(text != null, text, AnalysisDisplayText.UNKNOWN));
-			}
-			buf.putc(')');
-			if (call.returnType != Void.TYPE) buf.puts(" -> ").puts(display.typeText(call.returnType));
-			builtin(call.name, AnalysisDeclKind.METHOD, buf.toString());
+			builtin(call.name, AnalysisDeclKind.METHOD, AnalysisMemberDetail.System(call));
 		}
+	}
+	private def systemDetail(call: SystemCall) -> string {
+		var buf = StringBuilder.new().puts("def ").puts(call.name).putc('(');
+		for (i < call.paramTypes.length) {
+			if (i > 0) buf.puts(", ");
+			var text = display.typeText(call.paramTypes[i]);
+			buf.puts(if(text != null, text, AnalysisDisplayText.UNKNOWN));
+		}
+		buf.putc(')');
+		if (call.returnType != Void.TYPE) buf.puts(" -> ").puts(display.typeText(call.returnType));
+		return buf.toString();
 	}
 	// The builtin members of {receiver}, for a receiver type {t}.
 	private def builtins(receiver: AnalysisMemberReceiver, t: Type) {
-		var text = if(t != null, display.typeText(t));
 		for (b in AnalysisBuiltinMembers.LIST) {
 			steps++;
 			if (b.receiver != receiver) continue;
 			// A double has no "roundd" (lookupFloatTypeMember).
 			if (Strings.equal(b.name, "roundd") && FloatType.?(t) && FloatType.!(t).is64) continue;
-			builtin(b.name, b.kind, detail(b.detail, text, ownType(b.name, t)));
+			builtin(b.name, b.kind, AnalysisMemberDetail.Builtin(b.detail, t));
 		}
 	}
 	// The type text of builtin member {name} of {t} where it depends on {t}.
@@ -554,9 +557,8 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		var text = display.typeText(t);
 		return Strings.format2("%s%s", prefix, if(text != null, text, AnalysisDisplayText.UNKNOWN));
 	}
-	private def builtin(name: string, kind: AnalysisDeclKind, detail: string) {
+	private def builtin(name: string, kind: AnalysisDeclKind, detail: AnalysisMemberDetail) {
 		if (!names.add(name)) return;
-		found.put(null);
 		labels.put(name);
 		kinds.put(kind);
 		details.put(detail);
@@ -564,19 +566,27 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		syntax.put(null);
 		substs.put(null);
 	}
-	// Declaration {decl} of {kind} at {level}, with {detail}, or, if that is
-	// null, its signature with {subst}'s type arguments where those change it,
-	// which answer renders if it keeps the candidate.
-	private def member(kind: AnalysisDeclKind, decl: Decl, subst: AnalysisTypeSubst, detail: string, level: int) {
-		var d = display.declaration(kind, decl.token, decl, null);
-		if (d == null) return;
-		found.put(d);
-		labels.put(d.name);
+	private def member(kind: AnalysisDeclKind, decl: Decl, subst: AnalysisTypeSubst, detail: AnalysisMemberDetail, level: int) {
+		if (decl.token == null || decl.token.beginLine <= 0) return;
+		labels.put(decl.token.image);
 		kinds.put(kind);
 		details.put(detail);
 		levels.put(level);
 		syntax.put(decl);
-		substs.put(if(detail == null, subst));
+		substs.put(subst);
+	}
+	private def renderDetail(k: int, d: AnalysisDeclaration) -> string {
+		match (details[k]) {
+			Own => return display.memberSignature(d, syntax[k], substs[k]);
+			Typed(t) => return typed(Strings.format1("def %s: ", labels[k]), t);
+			EnumSet(t, onType) => {
+				var text = if(onType, display.typeText(t));
+				var suffix = if(onType && text != null, Strings.format1("(set: %s) -> bool", text), ": bool");
+				return Strings.format2("def %s%s", labels[k], suffix);
+			}
+			Builtin(template, t) => return detail(template, if(t != null, display.typeText(t)), ownType(labels[k], t));
+			System(call) => return systemDetail(call);
+		}
 	}
 	// Sorts the candidates, and caps them as AnalysisScopeFinder does: past
 	// the cap, only those that start with {prefix} are kept, up to it.
@@ -597,10 +607,11 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 			Array<AnalysisDeclKind>.new(n), Array<string>.new(n), Array<int>.new(n), truncated);
 		for (i < n) {
 			var k = kept[i];
-			a.declarations[i] = found[k];
+			var decl = syntax[k];
+			a.declarations[i] = if(decl != null, display.declaration(kinds[k], decl.token, decl, null));
 			a.names[i] = labels[k];
 			a.kinds[i] = kinds[k];
-			a.details[i] = if(substs[k] != null, display.memberSignature(found[k], syntax[k], substs[k]), details[k]);
+			a.details[i] = renderDetail(k, a.declarations[i]);
 			a.levels[i] = levels[k];
 		}
 		a.steps = steps + AnalysisMemberSubst.steps;

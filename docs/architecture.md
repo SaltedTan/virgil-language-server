@@ -602,6 +602,8 @@ After `.`, completion offers the members of the receiver's type alone: no keywor
 
 **Member query.** A member query is a [scope query](#names) whose kinds are `MEMBERS` alone; `AnalysisScopeKinds.valid` refuses `MEMBERS` combined with other kinds. Everything else is shared with completion of names: the analysis as typed or repaired, the job, the queue, the generation-guarded reuse of the last reply, cancellation, and the time-limit, crash, and shutdown handling. Only the answer differs. The query's offset is the start of the identifier at the cursor, as for names. So `a.fo|`, which parses, is queried as typed at `fo`. `a.|`, which doesn't parse, is repaired to `a.virgilLspCursor`, with the closers and `;` that the [repair](#names) adds for its context, and is queried at the sentinel. Either way the member name doesn't resolve, but verification has typed the receiver. Where the repaired text doesn't parse, the reply is an empty list.
 
+The lookup collects declarations, types, and builtin detail templates without rendering them. After sorting and applying the 1,000-candidate cap and its prefix filter, it creates declarations and renders details only for the retained candidates, including implicit members, enum-set cases, tuple elements, builtins, and System calls.
+
 **Receiver.** `AnalysisScopeFinder.findMembers` locates the receiver in the verified tree, not in the text. It walks to the member and the statements that hold the offset, with the same extents as a scope query. It stops at the member expression (`VarExpr`) whose `.` (`VarExpr.dot`) comes before the offset and whose name begins at or after it. So the receiver can be any expression, as in these examples:
 
 - a name or `this`;
@@ -621,7 +623,6 @@ Its binding and type are the ones verification gave it (`TypeChecker.lookupBindi
   - A type parameter is found by its index, as `TypeArgs.substituteTypeParam` finds it, not by a search of its class's parameters.
   - A superclass's argument that is its subclass's parameter, as in `class C1<T> extends C0<T>`, is replaced by the subclass's argument in turn. Each argument is resolved through the chain once, when a member first needs it.
   - Such a replacement renders nothing of its own, so it doesn't count toward the [display depth](#display-text): `C0`'s `var x: T` reads `var x: int` for a `C20<int>` twenty classes below it. Types that the text really nests still stop at 12 levels and 256 bytes.
-  - Details are rendered only for the members kept under the cap.
 - **A component, `K.`, and `this` in a component.** Its fields and methods (`lookupComponentMember`).
 - **Variants.**
   - A variant value: its fields, methods, `tag`, and `name` (`lookupVariantExprMember`).

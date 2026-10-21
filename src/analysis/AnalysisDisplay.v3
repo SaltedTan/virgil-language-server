@@ -137,6 +137,7 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	}
 	// The interned text of {t}, or null if it is unknown.
 	def typeText(t: Type) -> string {
+		if (AnalysisMemberSubst.countRenders) AnalysisMemberSubst.typeRenders++;
 		t = resolve(t, 0);
 		if (unknown(t)) return null;
 		var index = types.add(t);
@@ -305,6 +306,7 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	}
 
 	private def signature(kind: AnalysisDeclKind, token: Token, decl: Decl) -> string {
+		if (AnalysisMemberSubst.countRenders) AnalysisMemberSubst.signatureRenders++;
 		start();
 		match (decl) {
 			x: VstNew => {
@@ -708,6 +710,9 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 component AnalysisMemberSubst {
 	var current: AnalysisTypeSubst;
 	var steps: int;
+	var countRenders: bool;
+	var signatureRenders: int;
+	var typeRenders: int;
 }
 
 def hashType(t: Type) -> int {
