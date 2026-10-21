@@ -8,6 +8,8 @@ def X = [
 	T("AnalysisCoordinates:token_end_before_comment", test_token_end_before_comment),
 	T("AnalysisCoordinates:parser_coordinate_ambiguities", test_parser_coordinate_ambiguities),
 	T("AnalysisCoordinates:retrospective_tokens", test_retrospective_tokens),
+	T("AnalysisCoordinates:retrospective_coordinates", test_retrospective_coordinates),
+	T("AnalysisCoordinates:retrospective_coordinates_work", test_retrospective_coordinates_work),
 	T("AnalysisCoordinates:binding_compiler_coordinates", test_binding_compiler_coordinates),
 	T("AnalysisCoordinates:binding_offsets", test_binding_offsets),
 	T("AnalysisCoordinates:cross_file_binding_offsets", test_cross_file_binding_offsets),
@@ -25,12 +27,41 @@ def X = [
 	()
 ];
 
+// Compares each retrospective token's coordinates with ParserState.line and
+// ParserState.column, which tokenAt replayed, at the moment it extracts it.
+class RetrospectiveChecker(t: Tester, label: string) {
+	var checked: int;
+	def verify(p: ParserState, start: int, line: int, column: int) {
+		checked++;
+		var l = p.line(start), c = p.column(start);
+		if (l != line || c != column) {
+			t.fail(StringBuilder.new().puts(label).put3(": token at %d is %d:%d", start, l, c)
+				.put2(", not %d:%d", line, column).toString());
+		}
+	}
+}
+
 // Coordinate comparisons require a successfully decoded snapshot.
 def decodedResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisWorkerResult {
 	match (AnalysisWire.decodeResult(payload, generation, paths)) {
 		Decoded(result) => return result;
 		_ => return null;
 	}
+}
+
+// Parses {text} with both parser entry points, checking every retrospective
+// token, and returns how many one parse extracts. None replays its line.
+def checkRetrospective(t: Tester, label: string, text: string) -> int {
+	var checker = RetrospectiveChecker.new(t, label);
+	AnalysisRetrospectiveWork.verify = checker.verify;
+	AnalysisRetrospectiveWork.replays = 0;
+	AeneasAdapter.parseFile("retrospective.v3", text, []);
+	var single = checker.checked;
+	AeneasAdapter.analyzeProgram([AnalysisSource.new("retrospective.v3", text)], [], false);
+	AnalysisRetrospectiveWork.verify = null;
+	t.asserti(2 * single, checker.checked);
+	t.asserti(0, AnalysisRetrospectiveWork.replays);
+	return single;
 }
 
 // Assert both worker-side and decoded offsets, and the resulting UTF-16 LSP
@@ -385,6 +416,67 @@ def test_malformed_literal_bound(t: Tester) {
 	}
 }
 
+
+// Retrospective tokens keep the coordinates that ParserState.line and
+// ParserState.column gave them: tabs expand everywhere, even in block
+// comments and literals, where live columns count them as one byte, and
+// every other byte, a UTF-8 continuation or CR included, is one column.
+def test_retrospective_coordinates(t: Tester) {
+	var long = StringBuilder.new().puts("component C {");
+	for (i < 300) long.put1("def f%d() => 0;", i);
+	t.asserti(300, checkRetrospective(t, "long line", long.puts("def m() { var x = 0; } }\n").toString()));
+	var lines = StringBuilder.new().puts("component C {\n");
+	for (i < 200) lines.put1("\tdef g%d() =>\n\t\t0;\n", i);
+	t.asserti(200, checkRetrospective(t, "many lines", lines.puts("}\n").toString()));
+	var cases = [
+		"component C {\n\t/*\t\t*/ def f() => 0; /*\t*/\tdef g()\t=>\t1;\n}\n",
+		"component C {\n\tdef s() -> string => \"\\t\xC3\xA9\"; def f() => 0;\n}\n",
+		"component C {\n\tdef s() -> string => \"\\t\"; /* \xC3\xA9\xC3\xA9 \xF0\x9F\x98\x80 */ def f() => 0;\n}\n",
+		"component C {\n\tdef c() -> byte => '\\t'; def f() => 0;\n}\n",
+		"component C {\n\tdef s() -> string => \"\t\"; def f() => 0; def c() -> byte => '\t'; def g() => 0;\n}\n",
+		"component C {\r\n\tdef f() => 0;\r\n\tdef g() => 1;\r\n}\r\n",
+		"component C {\n\tdef f() -> int\n=> 0;\n\tdef g() -> int =>\n0;\n}\n",
+		"component C { def f() => 0;}",
+		"component C {\n\tdef m() {\n\t\tvar f = fun () =>\n\t\t\tfun () => /*\t*/ fun () =>\n\t\t\t\tfun () => 0;\n\t}\n}\n",
+		"class A {\n\tdef [i: int] -> int { return i; }\n\tdef [i: int] = v: int { }\n}\ncomponent C {\n\t/*\t*/ def f(a: A) => a.[]; /*\t*/ def g(a: A) => a.[]=;\n}\n",
+		"component C {\n\tdef f() => \"unterminated\n\tdef g() => 0;\n}\n",
+		"component C {\n\tdef f() -> int => ;\n\tdef g() => C.[](in);\n}\n"
+	];
+	// Case 4's literals hold raw tabs, which are errors.
+	var counts = [2, 2, 2, 2, -1, 2, 2, 1, 4, 4, -1, 3];
+	for (i < cases.length) {
+		var n = checkRetrospective(t, Strings.format1("case %d", i), cases[i]);
+		if (counts[i] >= 0 && counts[i] != n) t.fail(Strings.format3("case %d extracts %d tokens, not %d", i, n, counts[i]));
+	}
+}
+
+// Recording each token as the parser consumes it costs one pass over its
+// line. Replaying from the line start cost the line's length for each token:
+// quadratic on one line, about n * n * 8 bytes for these n methods.
+def test_retrospective_coordinates_work(t: Tester) {
+	for (n in [2000, 8000]) {
+		var buf = StringBuilder.new().puts("component C { ");
+		for (i < n) buf.put1("def f%d() => 0;", i);
+		var text = buf.puts("def m() { var x = 0; } }\n").toString();
+		AnalysisRetrospectiveWork.records = 0;
+		AnalysisRetrospectiveWork.scanned = 0;
+		AnalysisRetrospectiveWork.replays = 0;
+		var a = AeneasAdapter.parseFile("methods.v3", text, []);
+		t.asserti(0, a.diagnostics.length);
+		t.asserti(n, AnalysisRetrospectiveWork.records);
+		t.asserti(0, AnalysisRetrospectiveWork.replays);
+		t.assert(AnalysisRetrospectiveWork.scanned < text.length, "one pass over the line");
+	}
+	// Nested lambdas on one line extract their "=>" in reverse order.
+	var nested = StringBuilder.new().puts("component C { def m() { var f = ");
+	for (i < 1200) nested.puts("fun() => ");
+	var text = nested.puts("0; } }\n").toString();
+	AnalysisRetrospectiveWork.scanned = 0;
+	AnalysisRetrospectiveWork.replays = 0;
+	AeneasAdapter.parseFile("nested.v3", text, []);
+	t.asserti(0, AnalysisRetrospectiveWork.replays);
+	t.assert(AnalysisRetrospectiveWork.scanned < text.length, "one pass over the nested lambdas");
+}
 
 def test_binding_compiler_coordinates(t: Tester) {
 	var cases = [

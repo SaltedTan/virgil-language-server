@@ -7,12 +7,14 @@
 class AnalysisParseErrors extends ErrorGen {
 	var parser: ParserState;
 	def offsets = Vector<(int, int)>.new();
+	def retrospective = AnalysisRetrospectiveStarts.new();
 	private def positions = AnalysisPositionIndex<int>.new();
 
 	def startFile() {
 		parser = null;
 		stopped = false;
 		positions.clear();
+		retrospective.clear();
 	}
 	// Set once the parser has been stopped early. Later errors describe the
 	// cut, not the source, and are dropped.
@@ -226,6 +228,98 @@ class AnalysisChainCounter {
 }
 def FUN_BODY: byte = 'f';
 
+// The work of locating retrospective tokens, so that tests can pin its
+// scaling: {records} counts the tokens recorded as optN consumes them,
+// {scanned} the bytes the column cursor passes, and {replays} the tokens
+// that tokenAt locates by replaying their line. {verify}, if set, receives
+// the parser state and each extracted token's start, line, and column. No
+// reply carries them.
+component AnalysisRetrospectiveWork {
+	var records: int;
+	var scanned: int;
+	var replays: int;
+	var verify: (ParserState, int, int, int) -> void;
+}
+
+// The compiler coordinates of the tokens that the parser extracts after
+// moving past them (ParserState.tokenAt): a simple body's "=>", once the
+// body is parsed, and a member's "[]" or "[]=". ParserState.line searches
+// back through the line ends, and ParserState.column replays the line from
+// its start, so each token cost the length of its line. Instead, optN
+// records each such token as it consumes it. Its line is one more than the
+// number of line ends so far, which all come before it, and every later one
+// comes after it. Its column comes from a cursor that moves forward along
+// the line, expanding tabs as ParserState.column does. The parser extracts
+// these tokens in the reverse order of their records, so the records form a
+// stack. The parser clears and reuses one instance for each file.
+class AnalysisRetrospectiveStarts {
+	// Each record's offset, line, and column, innermost last. Column 0 marks
+	// a token after a newline that the parser did not record as a line end,
+	// which ParserState.column reports, so tokenAt replays its line.
+	private var records: Array<int>;
+	private var length: int;
+	// Where the cursor's line starts, and its offset and column there.
+	private var lineStart = -1;
+	private var pos: int;
+	private var column: int;
+
+	def clear() {
+		length = 0;
+		lineStart = -1;
+	}
+	// Records the token that {p} is about to consume.
+	def push(p: ParserState) {
+		var start = p.curPos, ends = p.lineEnds, count = ends.length, c = 0;
+		if (count == 0 || ends[count - 1] <= start) {
+			c = columnAt(p.input, if(count > 0, 1 + ends[count - 1], 0), start);
+		}
+		var n = length;
+		if (records == null) records = Array<int>.new(48);
+		else if (n + 3 > records.length) records = Arrays.grow(records, 2 * records.length);
+		records[n] = start;
+		records[n + 1] = count + 1;
+		records[n + 2] = c;
+		length = n + 3;
+		AnalysisRetrospectiveWork.records++;
+	}
+	// The line and column recorded for the token at {start}, or a column of
+	// 0 if there is none. Removes it and any record after it.
+	def pop(start: int) -> (int, int) {
+		var n = length;
+		while (n > 0 && records[n - 3] > start) n -= 3;
+		if (n == 0 || records[n - 3] != start) {
+			length = n;
+			return (0, 0);
+		}
+		length = n - 3;
+		return (records[n - 2], records[n - 1]);
+	}
+	// The column of {start} on the line starting at {lineStart}.
+	private def columnAt(input: Array<byte>, lineStart: int, start: int) -> int {
+		if (this.lineStart != lineStart || pos > start) {
+			this.lineStart = lineStart;
+			pos = lineStart;
+			column = 1;
+		}
+		var i = pos, c = column;
+		while (i < start) {
+			var ch = input[i];
+			if (ch == '\t') c = 1 + ((c + 8) / 8) * 8;
+			else if (ch == '\n') break;
+			else c++;
+			i++;
+		}
+		AnalysisRetrospectiveWork.scanned += i - pos;
+		if (i < start) {
+			this.lineStart = -1;
+			return 0;
+		}
+		pos = i;
+		column = c;
+		return c;
+	}
+}
+
 class AnalysisParserState extends ParserState {
 	// Set by a malformed number until the parser has skipped past it.
 	private var numberFailed: bool;
@@ -234,8 +328,16 @@ class AnalysisParserState extends ParserState {
 	new(file: VstFile, errors: AnalysisParseErrors, syntax: SymbolSyntaxIndex, typeCache: TypeCache, coordinates)
 		super(file, errors, AnalysisParseSkipper.new(errors, syntax, coordinates).skip, typeCache) { }
 
+	// Locates the token from its record, as ParserState.line and column would.
 	def tokenAt(start: int, end: int) -> Token {
-		var t: Token = AnalysisCapturedToken.new(fileName, Arrays.range(input, start, end), line(start), column(start), start);
+		var at = AnalysisParseErrors.!(ERROR).retrospective.pop(start);
+		if (start == curPos || at.1 == 0) {
+			if (start != curPos) AnalysisRetrospectiveWork.replays++;
+			at = (line(start), column(start));
+		}
+		var verify = AnalysisRetrospectiveWork.verify;
+		if (verify != null) verify(this, start, at.0, at.1);
+		var t: Token = AnalysisCapturedToken.new(fileName, Arrays.range(input, start, end), at.0, at.1, start);
 		if (coordinates != null) {
 			t = coordinates.token(t, start, end);
 			AnalysisParseErrors.!(ERROR).recordToken(t, start, end);
@@ -252,10 +354,23 @@ class AnalysisParserState extends ParserState {
 		return t;
 	}
 	// The overrides below restate ParserState's methods, as Virgil cannot call
-	// an overridden method, and add range recovery. A term that fails to parse
+	// an overridden method. Parser calls optN for "->", and for the "=>",
+	// "[]", and "[]=" that it later extracts with tokenAt, so optN records
+	// those. The others add range recovery. A term that fails to parse
 	// leaves an expression without a start, and Parser.parseIndexSuffix then
 	// accepts a range operator. Parser.parseExprStmt traps on the range of a
 	// RangeExpr that has neither bound.
+	def optN(s: string) -> int {
+		if (curPos + s.length < input.length) {
+			var p = curPos, d = input, max = s.length;
+			for (i < max) {
+				if (s[i] != d[i + p]) return -1;
+			}
+			if (s[0] == '=' || s[0] == '[') AnalysisParseErrors.!(ERROR).retrospective.push(this);
+			return advance(s.length);
+		}
+		return -1;
+	}
 	def advance(len: int) -> int {
 		var p = setPos(curPos + len, curLine, curCol + len);
 		skipFunc(this);
