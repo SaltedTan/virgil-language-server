@@ -18,6 +18,7 @@ def X = [
 	T("LspCompletion:linear_scan", test_linear_scan),
 	T("LspCompletion:context_positions", test_context_positions),
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
+	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
 	T("LspCompletion:if_expressions", test_if_expressions),
 	T("LspCompletion:nested_else", test_nested_else),
@@ -270,6 +271,19 @@ def test_linear_scan(t: Tester) {
 	for (i < 20000) buf.puts("/* c */ x;");
 	ctx = at(buf.puts("$").toString());
 	t.asserti(LspCursorSyntax.TOP_LEVEL, ctx.syntax);
+	// Lambdas nested in hints' arguments, each with its header pending.
+	buf = StringBuilder.new();
+	buf.puts("def f() { ");
+	for (i < 20000) buf.puts("g(fun () #hint(");
+	var nested = buf.puts("fun ();").toString();
+	ctx = at(Strings.format1("%s, $", nested));
+	t.asserti(20000, ctx.calls().length);
+	t.asserti(LspCursorSyntax.EXPRESSION, ctx.syntax);
+	buf.puts(nested);
+	for (i < 20000) buf.puts(") ;)");
+	ctx = at(buf.puts("; $").toString());
+	t.asserti(1, ctx.opens.length);
+	t.asserti(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, ctx.syntax);
 }
 
 def test_context_positions(t: Tester) {
@@ -414,6 +428,45 @@ def test_lambda_bodies(t: Tester) {
 	checkSyntax(t, "def f() { g(fun 1 { $", STMT);
 }
 
+// Representation hints may follow a lambda's parameters or return type, and
+// a lambda in a hint's arguments has a header of its own.
+def test_lambda_hints(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	var EXPR = LspCursorSyntax.EXPRESSION;
+	var cases = [
+		"def f() { g(fun () #no-inline ;, $); }",
+		"def f() { g(fun () #hint<int,int> ;, $); }",
+		"def f() { g(fun () #hint(fun ();) ;, $); }",
+		"def f() { g(fun () #hint(fun ();, h(fun () #no-inline ;)) ;, $); }",
+		"def f() { g(fun () #inline #hint<Array<int>> { }, $); }",
+		"def f() { g(fun () -> int #inline => 1, $); }",
+		"def f() { g(fun () -> int #no-inline { return 1; }, $); }",
+		"def f() { g(fun () -> Array<int> #hint<(int, bool)> => null, $); }",
+		"def f() { g(fun (x: int) -> int #hint:x-y => x, $); }"
+	];
+	for (marked in cases) {
+		checkOffered(t, marked, "false fun if null true");
+		checkCalls(t, marked, [11]);
+	}
+	// In a hint.
+	checkOffered(t, "def f() { g(fun () #no-in$", "");
+	checkPrefix(t, "def f() { g(fun () #no-in$", "no-in");
+	checkSyntax(t, "def f() { g(fun () #hint($", EXPR);
+	checkSyntax(t, "def f() { g(fun () #hint<$", LspCursorSyntax.TYPE);
+	checkSyntax(t, "def f() { g(fun () #hint<int, $", LspCursorSyntax.TYPE);
+	checkSyntax(t, "def f() { g(fun () #hint(fun () { $", STMT);
+	checkCalls(t, "def f() { g(fun () #hint(h($", [11, 26]);
+	var ctx = at("def f() { g(fun () #hint($");
+	t.asserta("roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL, LspOpenRole.HINT_ARGS], ctx.roles, putRole);
+	// After a hint, the body begins, and after it, an operator or a separator.
+	checkSyntax(t, "def f() { g(fun () #inline { $", STMT);
+	checkSyntax(t, "def f() { g(fun () -> int #inline => $", EXPR);
+	checkSyntax(t, "def f() { g(fun () #no-inline ; $", 0);
+	checkSyntax(t, "def f() { var h = fun () #no-inline ; $ }", 0);
+	// A hint does not make a header of what is no lambda's.
+	checkCalls(t, "def f() { g(fun () #inline + h(); $", []);
+}
+
 // Tuple types, type arguments, and function types stay type positions.
 def test_type_positions(t: Tester) {
 	var TYPE = LspCursorSyntax.TYPE;
@@ -427,6 +480,10 @@ def test_type_positions(t: Tester) {
 	checkSyntax(t, "def f(x: HashMap<int, $", TYPE);
 	checkSyntax(t, "def f(x: Array<Array<$", TYPE);
 	checkSyntax(t, "def f(x: A.B<$", TYPE);
+	checkOffered(t, "def f(x: V<int>.A<$>) {}", "");
+	checkSyntax(t, "def f(x: V<int>.A<$", TYPE);
+	checkSyntax(t, "def f(x: V<int>.A<int>.B<$", TYPE);
+	checkSyntax(t, "def f(x: V<int>.$", LspCursorSyntax.MEMBER);
 	checkSyntax(t, "def f(x: (int -> $", TYPE);
 	checkSyntax(t, "def f() -> ($", TYPE);
 	checkSyntax(t, "def f() -> Array<$", TYPE);

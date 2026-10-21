@@ -74,6 +74,7 @@ enum LspOpenRole {
 	PARAMS_VAR,	// "(": parameters that can be "var"
 	GROUP,		// "(": a tuple or a parenthesized expression
 	TYPES,		// "(": a tuple type's elements
+	HINT_ARGS,	// "(": the expressions after "#" and a label, as a hint's
 	INDEX,		// "[": an index or an array literal
 	TYPE_ARGS	// "<": a type's type arguments
 }
@@ -163,13 +164,15 @@ class LspCursorScanner(text: Array<byte>) {
 	private var prevClosed: LspOpenRole;	// what a ")", "]", or "}" closed
 	private var newline: bool;		// a line ends after the token
 	private var prevIfStatement: bool;	// the "if" before is a statement's
-	// True while the previous tokens are a type's name, as in "A.B", that
-	// began at a position where only a type can start.
+	private var prevHint: bool;		// the name before is a hint's label
+	// True while the previous tokens are a type's name, as in "A.B" or
+	// "A<int>.B", that began at a position where only a type can start.
 	private var typeName: bool;
-	// The number of open delimiters at a "fun" whose body has not begun, or
-	// -1: at that depth, a "{" begins a block body, "=>" an expression body,
-	// and a ";" is an empty body.
-	private var lambdaDepth = -1;
+	// For each "fun" whose body has not begun, innermost last, the number of
+	// open delimiters at it: at that depth, a "{" begins a block body, "=>"
+	// an expression body, and a ";" is an empty body. A lambda in a header's
+	// parameters or hints is deeper than the header's own.
+	private def lambdas = Vector<int>.new();
 	// A declaration's header: 0 outside one, HEADER_NAME before its name,
 	// HEADER_AFTER_NAME after it, and HEADER_TYPE_PARAMS in its "<...>".
 	private var header: int;
@@ -276,6 +279,20 @@ class LspCursorScanner(text: Array<byte>) {
 					while (j < end && text[j] == '.') j++;
 					punct(LspCursorPunct.DOTS, i);
 					i = j;
+				} else if (c == '#' && i + 1 < n && isIdentStart(text[i + 1])) {
+					// A representation hint's label, which Parser.parseRepHints
+					// reads past "-" and ":" too, as in "#no-inline".
+					punct(c, i);
+					var j = i + 2;
+					while (j < n && (isIdentMiddle(text[j]) || text[j] == '-' || text[j] == ':')) j++;
+					if (end <= j) {
+						ctx.prefixStart = i + 1;
+						return LspCursorPlace.CODE;
+					}
+					var kw = LspKeywords.find(text, i + 1, j);
+					if (kw.0) keyword(kw.1, i + 1);
+					else hint(i + 1);
+					i = j;
 				} else {
 					punct(c, i);
 					i++;
@@ -355,10 +372,22 @@ class LspCursorScanner(text: Array<byte>) {
 		if (h == HEADER_NAME) header = HEADER_AFTER_NAME;
 		else if (h == HEADER_TYPE_PARAMS) header = h;
 	}
+	// The label of a representation hint, which "(" or "<" may follow with
+	// the hint's arguments.
+	private def hint(start: int) {
+		token(LspCursorToken.NAME, start);
+		typeName = false;
+		prevHint = true;
+	}
+	// True if the innermost lambda whose body has not begun has its header at
+	// the current depth.
+	private def inLambdaHeader() -> bool {
+		return lambdas.length > 0 && lambdas[lambdas.length - 1] == opens.length;
+	}
 	// A token in a lambda's header, before its body: {ok} if one can be
 	// there. Any other token means the header is not one.
 	private def lambdaToken(ok: bool) {
-		if (!ok && lambdaDepth == opens.length) lambdaDepth = -1;
+		if (!ok && inLambdaHeader()) lambdas.length--;
 	}
 	// A token other than "else" at a brace level: if a statement just ended,
 	// so does the chain of if and match statements it closed.
@@ -388,7 +417,7 @@ class LspCursorScanner(text: Array<byte>) {
 			if (kw != LspKeyword.ELSE && (decl == NO_DECL || isModifier(decl))) levelDecls[l] = kw.tag;
 		}
 		lambdaToken(false);
-		if (kw == LspKeyword.FUN) lambdaDepth = opens.length;
+		if (kw == LspKeyword.FUN) lambdas.put(opens.length);
 		match (kw) {
 			CLASS, COMPONENT, TYPE, ENUM, CASE, DEF, PACKING, FUN => {
 				header = HEADER_NAME;
@@ -411,8 +440,8 @@ class LspCursorScanner(text: Array<byte>) {
 		var h = header;
 		header = 0;
 		// A lambda's body begins at the depth of its "fun".
-		var body = lambdaDepth == opens.length && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
-		if (body) lambdaDepth = -1;
+		var body = inLambdaHeader() && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
+		if (body) lambdas.length--;
 		if (c == ';' && body) c = LspCursorPunct.EMPTY_BODY;
 		if (inBraces()) {
 			if (c != '}') endIfs();
@@ -446,7 +475,9 @@ class LspCursorScanner(text: Array<byte>) {
 					boundary();
 				}
 			}
-			'<' => if (h == HEADER_AFTER_NAME) {
+			'<' => if (prevHint) {
+				push(start, LspOpenRole.TYPE_ARGS, 3);
+			} else if (h == HEADER_AFTER_NAME) {
 				header = HEADER_TYPE_PARAMS;
 				angles = 1;
 			} else if (h == HEADER_TYPE_PARAMS) {
@@ -480,10 +511,12 @@ class LspCursorScanner(text: Array<byte>) {
 		setPrev(LspCursorToken.PUNCT, start);
 		prevByte = c;
 		prevClosed = closed;
-		typeName = typeName && c == '.';
+		// A type's type arguments end its name, which a "." can qualify.
+		typeName = (typeName && c == '.') || closed == LspOpenRole.TYPE_ARGS;
 	}
 	private def setPrev(kind: LspCursorToken, start: int) {
 		prevAfterDot = prevKind == LspCursorToken.PUNCT && prevByte == '.';
+		prevHint = false;
 		prevKind = kind;
 		prevStart = start;
 		newline = false;
@@ -516,7 +549,7 @@ class LspCursorScanner(text: Array<byte>) {
 			opens.length--;
 			roles.length--;
 			counts[k]--;
-			if (lambdaDepth > opens.length) lambdaDepth = -1;
+			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) lambdas.length--;
 			if (k == 2) {
 				levelRoles.length--;
 				levelDecls.length--;
@@ -529,6 +562,7 @@ class LspCursorScanner(text: Array<byte>) {
 	}
 	// The role of a "(" after the previous token; {h} was the header state.
 	private def parenRole(h: int) -> LspOpenRole {
+		if (prevHint) return LspOpenRole.HINT_ARGS;
 		if (typeOnly(position())) return LspOpenRole.TYPES;
 		if (prevKind == LspCursorToken.KEYWORD) {
 			match (prevKeyword) {
