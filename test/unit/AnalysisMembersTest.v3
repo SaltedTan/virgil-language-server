@@ -16,6 +16,7 @@ def X = [
 	T("AnalysisMembers:variants", test_variants),
 	T("AnalysisMembers:enums", test_enums),
 	T("AnalysisMembers:enum_sets", test_enum_sets),
+	T("AnalysisMembers:enum_set_name_precedence", test_enum_set_name_precedence),
 	T("AnalysisMembers:layouts", test_layouts),
 	T("AnalysisMembers:tuples", test_tuples),
 	T("AnalysisMembers:arrays", test_arrays),
@@ -330,6 +331,15 @@ def test_enum_sets(t: Tester) {
 		"B ENUM_CASE def B: bool",
 		"C ENUM_CASE def C: bool"
 	]));
+}
+def test_enum_set_name_precedence(t: Tester) {
+	var e = "enum E(A: int) { A(1), B(2) }\n";
+	var onValue = Arrays.concat(e, "def f(s: E.set) { var x = s.$B; }\n");
+	t.assert_string("B/0", render(membersAny(onValue)));
+	agree(t, onValue, ["A", "all", "view"]);
+	var onType = Arrays.concat(e, "def f() { var x = E.set.$B; }\n");
+	t.assert_string("all/0 view/0 B/0", render(membersAny(onType)));
+	agree(t, onType, ["A"]);
 }
 def LAYOUT = "layout Header {\n\t+0 kind: u8;\n\t+4 size: u32;\n\t=8;\n}\n";
 def test_layouts(t: Tester) {

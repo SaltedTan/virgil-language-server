@@ -485,7 +485,8 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		for (l = decl.members; l != null; l = l.tail) {
 			steps++;
 			var m = l.head;
-			if (!VstEnumCase.?(m) || !own.add(m.token.image) || !names.add(m.token.image)) continue;
+			if (VstNew.?(m) || !own.add(m.token.image)) continue;
+			if (!VstEnumCase.?(m) || !names.add(m.token.image)) continue;
 			member(AnalysisDeclKind.ENUM_CASE, m, null, detail, 0);
 		}
 		compares += own.compares;
