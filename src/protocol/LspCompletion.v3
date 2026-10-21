@@ -103,7 +103,6 @@ component LspKeywords {
 // cursor's context rather than tried in turn. See
 // docs/architecture.md#completion.
 component LspCompletionRepair {
-	// An identifier that no program declares.
 	def SENTINEL = "virgilLspCursor";
 
 	// The AnalysisScopeKinds of the names that can be at {ctx}, or 0 where
@@ -388,13 +387,10 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		}
 		finish(r, keywordList(r));
 	}
-	// The list of {r}'s candidates from {snapshot}'s scope answer, or Null if
-	// the program did not parse. Each declaration is an item whose kind is its
-	// symbol kind's (LspSymbolKind.completion) and whose detail is its
-	// signature; "this" where a method's receiver is in scope; and the builtin
-	// types that no candidate's name hides. They are ordered as the worker
-	// orders declarations (AnalysisScopeOrder), the builtin types last, and
-	// sortText is that rank, so that they sort before the keywords.
+	// A parsed program can lack a scope answer when verification did not reach
+	// the cursor; the caller then returns keywords alone. Bindings excluded from
+	// the candidates still hide builtin types through hiddenBuiltins. See
+	// docs/architecture.md#names for candidate and reply rules.
 	private def declarations(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> JsonValue {
 		var scope = snapshot.scope;
 		if (!snapshot.parsed || scope == null) return JsonValue.Null;
