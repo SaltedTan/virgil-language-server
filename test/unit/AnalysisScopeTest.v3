@@ -21,6 +21,7 @@ def X = [
 	T("AnalysisScope:components", test_components),
 	T("AnalysisScope:field_initializers", test_field_initializers),
 	T("AnalysisScope:variants_and_enums", test_variants_and_enums),
+	T("AnalysisScope:variant_case_headers", test_variant_case_headers),
 	T("AnalysisScope:file_scope", test_file_scope),
 	T("AnalysisScope:type_positions", test_type_positions),
 	T("AnalysisScope:headers_and_top_level", test_headers_and_top_level),
@@ -384,6 +385,27 @@ def test_excluded_shadowing(t: Tester) {
 		"component C { def K = 1; def m() { var K = 2; match (K) { $K => ; _ => ; } } }"]) {
 		agree(t, text, P, ["K"]);
 	}
+	// #151: a parameter or local hides a component's constant in a pattern,
+	// as TypeChecker.visitMatchPattern resolves the head through
+	// MethodEnv.lookupVar; a control has nothing to hide it.
+	var issue = "component K {\n\tdef ONE = 1;\n\tdef f(v: int, ONE: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n";
+	agree(t, issue, P, ["ONE"]);
+	t.assert_string("this=1", render(scopeAny(issue, P)));
+	var control = "component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n";
+	check(t, control, P, "this=1 ONE/2");
+	agree(t, control, P, ["ONE"]);
+	for (text in [
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tvar ONE = 2;\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n",
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\t{ var ONE = 2; match (v) { $ONE => {} } else {} }\n\t}\n}\n",
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tvar g = fun (ONE: int) { match (v) { $ONE => {} } else {} };\n\t}\n}\n",
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tfor (ONE < 3) { match (v) { $ONE => {} } else {} }\n\t}\n}\n",
+		"def ONE = 1;\ncomponent K {\n\tdef f(v: int, ONE: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n"]) {
+		agree(t, text, P, ["ONE"]);
+	}
+	// A local after the pattern does not hide it.
+	var later = "component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t\tvar ONE = 2;\n\t}\n}\n";
+	check(t, later, P, "this=1 ONE/2");
+	agree(t, later, P, ["ONE"]);
 	var builtin = "class C { var first = $int; var int = 2; }";
 	var values = scopeAny(builtin, V), types = scopeAny(builtin, TY), both = scopeAny(builtin, V | TY);
 	t.assert(values != null && types != null && both != null, "scope answers");
@@ -435,9 +457,23 @@ def test_lambdas(t: Tester) {
 		"apply(fun (x: int) => apply(fun (y: int) => y, $x), p);", "apply(fun (x: int) => -$x, p);",
 		"apply(fun (x: int) => if(true, p, $x), p);", "var r = fun (x: int) => a[0 ... $x];",
 		"var f = fun (x: int) => fun (y: int) => y + $x;", "apply(fun (x: int) => x, $p);",
-		"var f = fun (x: int) => p + x; var g = $p;", "var f = fun (x: int) => fun (y: int) => y + x; var g = $p;"]) {
+		"var f = fun (x: int) => p + x; var g = $p;", "var f = fun (x: int) => fun (y: int) => y + x; var g = $p;",
+		// #154: a prefix "++" or "--" ends at its operand, and a postfix one
+		// at its operator, in a lambda's body and in the statement around it.
+		"apply(fun (x: int) => ++$x, p);", "apply(fun (x: int) => $x++, p);",
+		"if (true) var f = fun (x: int) => ++$x;",
+		"for (i < 3) var f = fun (x: int) => ++$x;",
+		"var f = fun (x: int) => ++$x; var g = p;",
+		"var f = fun (x: int) => $x++; var g = p;"]) {
 		agree(t, Strings.format1(apply, body), V, ["x", "y"]);
 	}
+	// A prefix increment ends the inner lambda's extent at its operand, so the
+	// outer lambda's parameter is not in scope after the statement.
+	agree(t, Strings.format1(apply, "var f = fun (x: int) => fun (y: int) => ++y; var g = $p;"), V, ["x", "p"]);
+	check(t, "component C {\n\tdef m() {\n\t\tvar f = fun (x: int) => ++$x;\n\t}\n}\n", V, "this=2 x/0 m/3 C/7");
+	check(t, "component C {\n\tdef m() {\n\t\tvar f = fun (x: int) => $x++;\n\t}\n}\n", V, "this=2 x/0 m/3 C/7");
+	check(t, "component C {\n\tdef m() {\n\t\tvar f = fun (x: int) { var y = ++$x; };\n\t}\n}\n", V, "this=3 x/1 m/4 C/8");
+	check(t, "component C {\n\tdef m() {\n\t\tfor (i < 3) var f = fun (x: int) => ++$x;\n\t}\n}\n", V, "this=3 x/0 i/1 m/4 C/8");
 }
 
 def test_type_parameters(t: Tester) {
@@ -480,6 +516,11 @@ def test_field_initializers(t: Tester) {
 	check(t, "component K {\n\tvar a = 1;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() -> int { return 1; }\n}\n", V, "this=0 a/1 c/1 m/1 K/5");
 	// An enum case's arguments see no receiver.
 	check(t, "enum E(v: int) {\n\tA($Z),\n\tB(2)\n}\ndef Z = 1;\n", V, "Z/0 E/4");
+	// A field's initializer is a lambda whose body ends in a prefix
+	// increment: the field's extent reaches its operand.
+	check(t, "component C {\n\tvar f = fun (x: int) => ++$x;\n}\n", V, "this=1 x/0 C/6");
+	agree(t, "component C {\n\tvar f = fun (x: int) => ++$x;\n}\n", V, ["x"]);
+	check(t, "component C {\n\tvar f = fun (x: int) => $x++;\n}\n", V, "this=1 x/0 C/6");
 }
 
 def test_variants_and_enums(t: Tester) {
@@ -490,6 +531,26 @@ def test_variants_and_enums(t: Tester) {
 	t.assert_string("x:FIELD get:METHOD name:FIELD tag:FIELD describe:METHOD V:CLASS", kindsAt(t, variant, V));
 	// A variant's own method, its parameters' fields.
 	check(t, "type W(id: int) {\n\tdef twice() -> int { return $id * 2; }\n}\n", V, "this=1 id/2 twice/2 W/6");
+}
+
+// A variant case's header is the synthetic class that the parser lifts to
+// file scope: its parameter types and representation hints are within the
+// case's source extent, and its type parameters are the variant's. The
+// other synthetic declarations, such as its parameter fields and the
+// variant's tag and name, stay out of the scope query's member walk.
+def test_variant_case_headers(t: Tester) {
+	check(t, "type V<T> {\n\tcase Some(value: $T);\n}\n", TY, "T/1 V/3");
+	check(t, "type V<T> {\n\tcase Some(value: Array<$T>);\n}\n", TY, "T/1 V/3");
+	check(t, "type V<T> {\n\tcase Some(value: T) {\n\t\tdef m(x: $T) { }\n\t}\n}\n", TY, "T/1 V/3");
+	var nested = "type V<T> {\n\tcase Some(value: List<$T>);\n}\n";
+	t.assert_string("T/1 List/3 V/3", scopeIn(t, [(MAIN, nested), (OTHER, "class List<U> { }\n")], TY, ""));
+	var hint = "type V<T> {\n\tcase Some(value: T) #hint<Pair<$T>>;\n}\n";
+	t.assert_string("T/1 Pair/3 V/3", scopeIn(t, [(MAIN, hint), (OTHER, "class Pair<A> { }\n")], TY, ""));
+	check(t, "class Other { }\ntype V {\n\tcase Some(value: $Other);\n}\n", TY, "Other/3 V/3");
+	// V is a candidate, but not bare: a generic type needs arguments, so only
+	// the type parameter is a name that verifies as written.
+	agree(t, "type V<T> {\n\tcase Some(value: $T);\n}\n", TY, ["T"]);
+	agree(t, "class Other { }\ntype V {\n\tcase Some(value: $Other);\n}\n", TY, ["Other", "V"]);
 }
 
 def test_file_scope(t: Tester) {

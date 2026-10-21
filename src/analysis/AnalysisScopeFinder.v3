@@ -346,7 +346,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			else if (i < file.components.length + file.classes.length + file.enums.length) c = file.enums[i - file.components.length - file.classes.length];
 			else c = file.layouts[i - file.components.length - file.classes.length - file.enums.length];
 			// A class's own super clause is its constructor's.
-			if (c.superclause != null && c.superclause.args != null && inside(range(c.superclause.args)) && c.constructor != null) {
+			if (c.superclause != null && c.superclause.args != null && insideExpr(c.superclause.args) && c.constructor != null) {
 				enterConstructor(c, c.constructor, c.superclause.args);
 				return;
 			}
@@ -365,8 +365,10 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 					size = e.1 - e.0;
 				}
 			}
-			// A type in a declaration's header, before its members.
-			var begin = if(!c.isSynthetic, tokenBegin(c.token), -1);
+			// A type in a declaration's header, before its members. A variant
+			// case's synthetic class is its header: its parameters and type
+			// hints name the variant's type parameters, which it shares.
+			var begin = if(!c.isSynthetic || c.isVariantCase(), tokenBegin(c.token), -1);
 			if (begin >= 0 && begin <= offset && offset < first && begin > headerBegin && offset < boundaries.compoundEnd(c)) {
 				header = c;
 				headerBegin = begin;
@@ -380,7 +382,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		match (best) {
 			x: VstNew => {
 				var sc = x.superclause;
-				if (sc != null && sc.args != null && inside(range(sc.args))) enterConstructor(compound, x, sc.args);
+				if (sc != null && sc.args != null && insideExpr(sc.args)) enterConstructor(compound, x, sc.args);
 				else enterMethod(x);
 			}
 			x: VstMethod => enterMethod(x);
@@ -489,13 +491,13 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// A statement's last branch or body ends where the statement does.
 	def visitIf(s: IfStmt, env: void) {
 		var e = end;
-		if (inside(range(s.cond))) walk(s.cond);
+		if (insideExpr(s.cond)) walk(s.cond);
 		else if (holds(s.tbranch, if(s.fbranch == null, e, -1))) branch(s.tbranch);
 		else if (holds(s.fbranch, e)) branch(s.fbranch);
 	}
 	def visitWhile(s: WhileStmt, env: void) {
 		var e = end;
-		if (inside(range(s.cond))) walk(s.cond);
+		if (insideExpr(s.cond)) walk(s.cond);
 		else if (holds(s.body, e)) branch(s.body);
 	}
 	// The variable is bound after its initializer, and the condition, update,
@@ -505,12 +507,12 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		enterScope(false);
 		var v = s.varDecl;
 		if (v != null) {
-			if (v.init != null && inside(range(v.init))) return walk(v.init);
+			if (v.init != null && insideExpr(v.init)) return walk(v.init);
 			if (offset < varEnd(v)) return;
 			bind(v);
 		}
-		if (inside(range(s.cond))) walk(s.cond);
-		else if (inside(range(s.update))) walk(s.update);
+		if (insideExpr(s.cond)) walk(s.cond);
+		else if (insideExpr(s.update)) walk(s.update);
 		else if (holds(s.body, e)) branch(s.body);
 	}
 	// The variable is bound before the expression is checked, so the
@@ -519,7 +521,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var e = end;
 		enterScope(false);
 		bind(s.varDecl);
-		if (inside(range(s.expr))) walk(s.expr);
+		if (insideExpr(s.expr)) walk(s.expr);
 		else if (holds(s.body, e)) branch(s.body);
 	}
 	// The variable is bound after the limit is checked, and the body is
@@ -528,7 +530,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitForLess(s: ForLessStmt, env: void) {
 		var e = end;
 		enterScope(false);
-		if (s.expr != null && offset < rangeEnd(range(s.expr))) return walk(s.expr);
+		if (s.expr != null && offset < exprEnd(s.expr, false)) return walk(s.expr);
 		bind(s.varDecl);
 		if (holds(s.body, e)) walkStmt(s.body);
 	}
@@ -536,7 +538,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitLocal(s: LocalStmt, env: void) {
 		for (l = s.vars; l != null; l = l.tail) {
 			var v = l.head;
-			if (v.init != null && inside(range(v.init))) return walk(v.init);
+			if (v.init != null && insideExpr(v.init)) return walk(v.init);
 			if (offset < varEnd(v)) return;
 			bind(v);
 		}
@@ -554,7 +556,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// A statement after "else" and the braces ends where the match does.
 	def visitMatch(s: MatchStmt, env: void) {
 		var e = end;
-		if (s.expr != null && offset < rangeEnd(range(s.expr))) return walk(s.expr);
+		if (s.expr != null && offset < exprEnd(s.expr, false)) return walk(s.expr);
 		var last = elseStmt(s);
 		for (l = if(s.cases != null, s.cases.list); l != null; l = l.tail) {
 			var c = l.head;
@@ -680,7 +682,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			x: VstMethod => if (x.func.body != null) e = Ints.max(e, stmtEnd(x.func.body));
 			x: VstField => {
 				if (x.tref != null) e = Ints.max(e, rangeEnd(typeRange(x.tref)));
-				if (x.init != null) e = Ints.max(e, rangeEnd(range(x.init)));
+				if (x.init != null) e = Ints.max(e, exprEnd(x.init, false));
 			}
 			x: VstEnumCase => if (x.args != null) e = Ints.max(e, rangeEnd(x.args.range()));
 			_ => ;
@@ -728,6 +730,9 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 					if (next == null) return e;
 				}
 				x: LocalStmt => for (v = x.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
+				// ReturnStmt.range() ends at its expression's range(), which
+				// a prefix "++" or "--" ends before its operand.
+				x: ReturnStmt => if (x.expr != null) e = Ints.max(e, exprEnd(x.expr, false));
 				_ => ;
 			}
 			if (next == null) return Ints.max(e, rangeEnd(stmtRange(s)));
@@ -761,8 +766,9 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		end = e;
 		return true;
 	}
-	// Where {e} ends: where the last expression that it ends with does, as
-	// each Expr.range() finds it, without reading what comes before that.
+	// Where {e} ends: where the last expression that it ends with does,
+	// including a prefix increment's or decrement's operand, which
+	// AutoExpr.range() omits, without reading what comes before that.
 	// If {record}, the lambdas among those, after {e}, are put in {edge}.
 	private def exprEnd(e: Expr, record: bool) -> int {
 		var first = e;
@@ -788,7 +794,13 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 					e = ReturnStmt.!(body).expr;
 				}
 				x: VarExpr => return rangeEnd(x.ident.range());
-				x: AutoExpr => return rangeEnd(x.token.range());
+				// A prefix "++" or "--" begins at its operand, so AutoExpr.
+				// range() ends at the operator, before the operand: walk to
+				// the operand. A postfix one ends at its operator.
+				x: AutoExpr => {
+					if (x.post || x.expr == null) return rangeEnd(x.token.range());
+					e = x.expr;
+				}
 				x: AppExpr => if (x.args != null) return rangeEnd(range(x.args)); else e = x.func;
 				x: IndexExpr => if (x.exprs != null) return rangeEnd(x.exprs.range()); else e = x.expr;
 				// Tuples, arrays, if(...), literals, and strings end with
@@ -801,7 +813,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def varEnd(v: VarDecl) -> int {
 		var e = tokenEnd(v.token);
 		if (v.tref != null) e = Ints.max(e, rangeEnd(typeRange(v.tref)));
-		if (v.init != null) e = Ints.max(e, rangeEnd(range(v.init)));
+		if (v.init != null) e = Ints.max(e, exprEnd(v.init, false));
 		return e;
 	}
 	// Aeneas's range() for an expression, a statement, or a type reads each
@@ -858,6 +870,15 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			x: FuncTypeRef => return 1 + typeReads(x.paramType) + typeReads(x.returnType);
 		}
 		return 1;
+	}
+	// Whether the offset is in expression {e}: from where it begins to where
+	// exprEnd finds its end. A prefix "++" or "--" begins at its operand in
+	// AutoExpr.range(), but the operand's end is the expression's end, so
+	// only the end needs exprEnd.
+	private def insideExpr(e: Expr) -> bool {
+		if (e == null) return false;
+		var b = point(range(e));
+		return b >= 0 && b <= offset && offset < exprEnd(e, false);
 	}
 	private def inside(r: FileRange) -> bool {
 		var b = point(r);
