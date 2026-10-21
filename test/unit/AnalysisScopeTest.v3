@@ -457,9 +457,23 @@ def test_lambdas(t: Tester) {
 		"apply(fun (x: int) => apply(fun (y: int) => y, $x), p);", "apply(fun (x: int) => -$x, p);",
 		"apply(fun (x: int) => if(true, p, $x), p);", "var r = fun (x: int) => a[0 ... $x];",
 		"var f = fun (x: int) => fun (y: int) => y + $x;", "apply(fun (x: int) => x, $p);",
-		"var f = fun (x: int) => p + x; var g = $p;", "var f = fun (x: int) => fun (y: int) => y + x; var g = $p;"]) {
+		"var f = fun (x: int) => p + x; var g = $p;", "var f = fun (x: int) => fun (y: int) => y + x; var g = $p;",
+		// #154: a prefix "++" or "--" ends at its operand, and a postfix one
+		// at its operator, in a lambda's body and in the statement around it.
+		"apply(fun (x: int) => ++$x, p);", "apply(fun (x: int) => $x++, p);",
+		"if (true) var f = fun (x: int) => ++$x;",
+		"for (i < 3) var f = fun (x: int) => ++$x;",
+		"var f = fun (x: int) => ++$x; var g = p;",
+		"var f = fun (x: int) => $x++; var g = p;"]) {
 		agree(t, Strings.format1(apply, body), V, ["x", "y"]);
 	}
+	// A prefix increment ends the inner lambda's extent at its operand, so the
+	// outer lambda's parameter is not in scope after the statement.
+	agree(t, Strings.format1(apply, "var f = fun (x: int) => fun (y: int) => ++y; var g = $p;"), V, ["x", "p"]);
+	check(t, "component C {\n\tdef m() {\n\t\tvar f = fun (x: int) => ++$x;\n\t}\n}\n", V, "this=2 x/0 m/3 C/7");
+	check(t, "component C {\n\tdef m() {\n\t\tvar f = fun (x: int) => $x++;\n\t}\n}\n", V, "this=2 x/0 m/3 C/7");
+	check(t, "component C {\n\tdef m() {\n\t\tvar f = fun (x: int) { var y = ++$x; };\n\t}\n}\n", V, "this=3 x/1 m/4 C/8");
+	check(t, "component C {\n\tdef m() {\n\t\tfor (i < 3) var f = fun (x: int) => ++$x;\n\t}\n}\n", V, "this=3 x/0 i/1 m/4 C/8");
 }
 
 def test_type_parameters(t: Tester) {
@@ -502,6 +516,11 @@ def test_field_initializers(t: Tester) {
 	check(t, "component K {\n\tvar a = 1;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() -> int { return 1; }\n}\n", V, "this=0 a/1 c/1 m/1 K/5");
 	// An enum case's arguments see no receiver.
 	check(t, "enum E(v: int) {\n\tA($Z),\n\tB(2)\n}\ndef Z = 1;\n", V, "Z/0 E/4");
+	// A field's initializer is a lambda whose body ends in a prefix
+	// increment: the field's extent reaches its operand.
+	check(t, "component C {\n\tvar f = fun (x: int) => ++$x;\n}\n", V, "this=1 x/0 C/6");
+	agree(t, "component C {\n\tvar f = fun (x: int) => ++$x;\n}\n", V, ["x"]);
+	check(t, "component C {\n\tvar f = fun (x: int) => $x++;\n}\n", V, "this=1 x/0 C/6");
 }
 
 def test_variants_and_enums(t: Tester) {
