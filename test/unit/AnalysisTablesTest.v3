@@ -3,7 +3,8 @@
 
 // The analysis tables' hash (AnalysisTables.hashBytes, issue #155). Names
 // and paths built from "Aa" and "BB" blocks of one length all had one
-// polynomial hash, so each table put them in one probe sequence. Each
+// polynomial hash, so each table put them in one probe sequence, and so did
+// distinct types that share the compiler's type hash. Each
 // scaling test checks its result and that the slots probed past a key's
 // first (AnalysisTables.probes) grow about linearly from n keys to 2n, as
 // they would not if the keys collided. The key stays the fixed one that
@@ -12,10 +13,12 @@ def T = UnitTests.register;
 def X = [
 	T("AnalysisTables:siphash_vectors", test_siphash_vectors),
 	T("AnalysisTables:colliding_strings", test_colliding_strings),
+	T("AnalysisTables:colliding_signatures", test_colliding_signatures),
 	T("AnalysisTables:colliding_declaration_keys", test_colliding_declaration_keys),
 	T("AnalysisTables:colliding_files", test_colliding_files),
 	T("AnalysisTables:encoder_declarations", test_encoder_declarations),
 	T("AnalysisTables:cold_scope_query", test_cold_scope_query),
+	T("AnalysisTables:colliding_types", test_colliding_types),
 	T("AnalysisTables:seeds", test_seeds),
 	T("AnalysisTables:random_words", test_random_words),
 	()
@@ -42,8 +45,8 @@ def collidingPaths(n: int) -> Array<string> {
 def scales(t: Tester, label: string, n: int, f: int -> void) {
 	var small = probes(f, n), large = probes(f, 2 * n);
 	if (small <= 0 || large > 3 * small) {
-		t.fail3("%s probed %d slots at %d keys, ", label, large, 2 * n);
-		t.fail2("against %d at %d", small, n);
+		t.fail(StringBuilder.new().put3("%s probed %d slots at %d keys, ", label, large, 2 * n)
+			.put2("against %d at %d", small, n).extract());
 	}
 }
 def probes(f: int -> void, n: int) -> long {
@@ -92,6 +95,30 @@ def internStrings(t: Tester, n: int) {
 		t.asserti(-1, table.find(names[i]));
 	}
 	t.asserti(n, table.length());
+}
+
+def test_colliding_signatures(t: Tester) {
+	scales(t, "the signature table", 1024, signatures(t, _));
+}
+// Adds {n} signatures whose labels collided, and {n} whose parameters did,
+// then finds each.
+def signatures(t: Tester, n: int) {
+	var map = AnalysisIndexMap<AnalysisSignature>.new(AnalysisSignatures.hash, AnalysisSignatures.equal);
+	for (i < n) {
+		t.asserti(2 * i, map.add(labelled(i)));
+		t.asserti(2 * i + 1, map.add(parameterized(i)));
+	}
+	for (i < n) {
+		t.asserti(2 * i, map.find(labelled(i)));
+		t.asserti(2 * i + 1, map.find(parameterized(i)));
+	}
+	t.asserti(2 * n, map.length());
+}
+def labelled(i: int) -> AnalysisSignature {
+	return AnalysisSignature.new(Strings.format1("def %s()", blocks(11, i)), 0, []);
+}
+def parameterized(i: int) -> AnalysisSignature {
+	return AnalysisSignature.new("def m(x: int)", 6, [Strings.format1("%s: int", blocks(11, i))]);
 }
 
 def test_colliding_declaration_keys(t: Tester) {
@@ -214,6 +241,54 @@ def scopeQuery(t: Tester, n: int) {
 		}
 	}
 	t.asserti(n, params);
+}
+
+// Types that share a compiler hash (Type.hash), from #155's review. Call i
+// instantiates a class K of 26 type parameters with thirteen pairs, each
+// T0, T33 or T1, T0 as bit k of i selects. The classes' consecutive uids,
+// u for T0, u + 1 for T1, and u + 33 for T33, give 33u + (u + 33) =
+// 33(u + 1) + u, so every pair adds the same to the compiler's polynomial,
+// and all the instances of K,
+// and the types of their calls of id, hash alike. The display's type table
+// and call keys had them all in one probe sequence.
+def test_colliding_types(t: Tester) {
+	scales(t, "the display's types and calls", 2048, analyzeTypes(t, _));
+}
+def analyzeTypes(t: Tester, n: int) {
+	var text = StringBuilder.new();
+	for (i < 34) text.put1("class T%d { }\n", i);
+	text.puts("class K<");
+	for (i < 26) text.put1(if(i > 0, ", A%d", "A%d"), i);
+	text.puts("> { }\ncomponent Main {\n\tdef id<T>(x: T) -> T { return x; }\n\tdef m() {\n");
+	for (i < n) text.puts("\t\tid<").puts(instance(i)).puts(">(null);\n");
+	text.puts("\t}\n}\n");
+	var path = "/tables/types.v3";
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(path, text.extract())], [], false);
+	t.assertz(true, a.verified);
+	var uses = 0;
+	for (o in a.occurrences(path)) {
+		var d = o.declaration;
+		if (d.kind != AnalysisDeclKind.CLASS || !Strings.equal("K", d.name)) continue;
+		if (uses < n) t.assert_string(instance(uses), o.useType);
+		uses++;
+	}
+	t.asserti(n, uses);
+	var calls = a.calls(path);
+	t.asserti(n, calls.length);
+	for (i < calls.length) {
+		var s = calls[i].signature;
+		t.assert(s != null && s.params.length == 1, "a call's signature");
+		t.assert_string(Strings.format1("x: %s", instance(i)), s.params[0]);
+	}
+}
+// The instance of K that call {i} makes.
+def instance(i: int) -> string {
+	var b = StringBuilder.new().puts("K<");
+	for (k < 13) {
+		if (k > 0) b.puts(", ");
+		b.puts(if((i >> byte.view(k)) % 2 == 1, "T0, T33", "T1, T0"));
+	}
+	return b.puts(">").extract();
 }
 
 // Two keys give the same program the same result bytes, with and without a

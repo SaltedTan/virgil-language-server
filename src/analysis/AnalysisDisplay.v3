@@ -38,8 +38,10 @@ class AnalysisWorkerDeclaration extends AnalysisDeclaration {
 // so it is linear in its output even for types whose trees share subtrees.
 class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	private def strings = AnalysisStringTable.new();
-	// Types are hash-consed, so the text of each is rendered once.
-	private def types = AnalysisIndexMap<Type>.new(hashType, identical<Type>);
+	// Types are hash-consed, so the text of each is rendered once. Many
+	// distinct types share a compiler hash, so the table orders those by
+	// their structure; see AnalysisTypeKeyMap.
+	private def types = AnalysisTypeKeyMap<Type>.new(hashType, sameTypeHash, compareTypes);
 	private def typeTexts = Vector<string>.new();
 	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
@@ -47,7 +49,7 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// call's signature by callee declaration, type, and whether the call
 	// passes the receiver, so that each is rendered once.
 	private def signatures = AnalysisIndexMap<AnalysisSignature>.new(AnalysisSignatures.hash, AnalysisSignatures.equal);
-	private def calls = AnalysisIndexMap<(AnalysisDeclaration, Type, bool)>.new(hashCall, sameCall);
+	private def calls = AnalysisTypeKeyMap<(AnalysisDeclaration, Type, bool)>.new(hashCall, sameCallHash, compareCalls);
 	private def callList = Vector<int>.new();
 	private def buf = StringBuilder.new();
 	private var full: bool;
@@ -715,24 +717,57 @@ component AnalysisMemberSubst {
 	var typeRenders: int;
 }
 
+// A type's slot hash: its compiler hash, tabulated with the worker's key,
+// which spreads distinct compiler hashes but not the types that share one
+// (see AnalysisTypeKeyMap).
 def hashType(t: Type) -> int {
-	return t.hash;
+	return AnalysisTables.hashInt(t.hash);
 }
-// Identity, for maps of objects that are already unique, such as types.
-def identical<T>(a: T, b: T) -> bool {
-	return a == b;
+def sameTypeHash(a: Type, b: Type) -> bool {
+	return a.hash == b.hash;
+}
+// Orders types by their constructors' uids, and then by their first nested
+// types that differ, in order. The compiler hash-conses types: a constructor
+// makes one type for each list of nested types (TypeCon.create), so this is
+// zero only for the same type. Pointer_TypeCon.create1, which makes a new
+// type each time, is the exception: its twins compare as zero, and they
+// render alike, so either's text and call signature serve for both. Pairs
+// of nested types that are the same object are skipped, and only the first
+// pair that differs is compared, so this takes time proportional to the
+// types' depth times their arity, not to the size of their trees.
+def compareTypes(a: Type, b: Type) -> int {
+	while (a != b) {
+		if (a.typeCon != b.typeCon) return if(a.typeCon.uid < b.typeCon.uid, -1, 1);
+		var x = a.nested, y = b.nested;
+		while (x != null && y != null && x.head == y.head) {
+			x = x.tail;
+			y = y.tail;
+		}
+		if (x == null || y == null) return if(y != null, -1, if(x != null, 1));
+		a = x.head;
+		b = y.head;
+	}
+	return 0;
 }
 // A call's signature key is its callee's declaration, which the display
 // makes once, its type, which is hash-consed, and whether it passes the
 // receiver. The declaration hashes by its path as well as its position, as
-// declaration keys do, so that callees at one position in many files spread.
+// declaration keys do, so that callees at one position in many files spread,
+// and the type's compiler hash is tabulated, as the type table's is, so that
+// the types of one callee spread too. The compiler's type hashes leave their
+// top bit clear (TypeConst), which holds the receiver flag. Calls of one
+// callee whose types share a compiler hash share a slot (see
+// AnalysisTypeKeyMap).
 def hashCall(key: (AnalysisDeclaration, Type, bool)) -> int {
-	var d = key.0, h = 0;
-	if (d != null) h = int.view(AnalysisTables.hashPosition(d.range.path, d.range.beginLine, d.range.beginColumn, d.kind.tag));
-	return h * 1009 + key.1.hash * 7 + if(key.2, 1);
+	var d = key.0, h = AnalysisTables.hashInt(key.1.hash | if(key.2, int.min));
+	if (d != null) h ^= int.view(AnalysisTables.hashPosition(d.range.path, d.range.beginLine, d.range.beginColumn, d.kind.tag));
+	return h;
 }
-def sameCall(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type, bool)) -> bool {
-	return a.0 == b.0 && a.1 == b.1 && a.2 == b.2;
+def sameCallHash(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type, bool)) -> bool {
+	return a.0 == b.0 && a.2 == b.2 && a.1.hash == b.1.hash;
+}
+def compareCalls(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type, bool)) -> int {
+	return compareTypes(a.1, b.1);
 }
 // Signatures are equal if their texts and parameter offsets are.
 component AnalysisSignatures {

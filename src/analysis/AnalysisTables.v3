@@ -56,6 +56,137 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 	}
 }
 
+// Maps each distinct key to a dense index, in insertion order, as
+// AnalysisIndexMap does, for keys that hold a compiler type. The compiler's
+// type hash (Type.hash) is a polynomial in its constructors' uids, which
+// many distinct types share: for consecutive uids u, 33u + (u + 33) is
+// 33(u + 1) + u, so K<T0, T33> and K<T1, T0> hash alike, and so do the 2^13
+// types that choose one of the two pairs thirteen times. No mixing of the
+// hash can tell them apart, and in an AnalysisIndexMap they all probed one
+// slot sequence. A structural hash cannot replace it: a type's tree can be
+// exponentially larger than its DAG, a type has no identity hash because it
+// moves under the collector, and memoizing a type's hash in a table keyed
+// by its own hash is circular.
+//
+// Instead, the keys of one {sameHash} class share one slot: the first alone,
+// and from the second on, all of them in an AA tree ordered by {compare},
+// which must be a total order that is zero only for keys that may share an
+// index, such as the same key.
+// Keys of one class equal in {hash}, which must be keyed as hashInt is, so
+// that it spreads the classes: a lookup probes O(1) expected slots of other
+// classes, whatever the types, and then compares O(log n) keys of its own,
+// each in time bounded by the types' depth times their arity (AnalysisDisplay's
+// compareTypes). No set of types can share a probe sequence but by sharing a
+// class, and a class costs its keys a tree, not a cluster. An ordinary
+// program has few such classes: in the Aeneas sources, the display's type
+// table has 49 of two types and its call keys one, and their trees and the
+// two tables' added fields take 4,320 bytes of a fresh worker's heap.
+class AnalysisTypeKeyMap<K>(hash: K -> int, sameHash: (K, K) -> bool, compare: (K, K) -> int) {
+	private def keys = Vector<K>.new();
+	// Each slot holds a key's index plus one if the key is alone in its
+	// class, or minus one minus the index in {trees} of its class's tree,
+	// or zero if it is empty. The table is a power of two and at most half
+	// full of classes.
+	private var slots = Array<int>.new(64);
+	private var classes: int;
+	private var trees: Vector<AnalysisKeyNode>;
+	// The index of the key that the last insert() found or added.
+	private var found: int;
+
+	def length() -> int {
+		return keys.length;
+	}
+	def [index: int] -> K {
+		return keys[index];
+	}
+	// The index of {key}, adding it if it is new.
+	def add(key: K) -> int {
+		var mask = slots.length - 1, i = hash(key) & mask;
+		for (v = slots[i]; v != 0; v = slots[i]) {
+			AnalysisTables.probes++;
+			if (v > 0) {
+				var k = keys[v - 1];
+				if (k == key) return v - 1;
+				if (sameHash(k, key)) {
+					if (trees == null) trees = Vector<AnalysisKeyNode>.new();
+					slots[i] = -1 - trees.length;
+					trees.put(insert(AnalysisKeyNode.new(v - 1), key));
+					return found;
+				}
+			} else {
+				var root = trees[-1 - v];
+				if (sameHash(keys[root.index], key)) {
+					trees[-1 - v] = insert(root, key);
+					return found;
+				}
+			}
+			i = (i + 1) & mask;
+		}
+		var index = keys.length;
+		keys.put(key);
+		slots[i] = index + 1;
+		classes++;
+		if (2 * classes > slots.length) grow();
+		return index;
+	}
+	private def grow() {
+		var old = slots;
+		slots = Array<int>.new(2 * old.length);
+		var mask = slots.length - 1;
+		for (v in old) {
+			if (v == 0) continue;
+			var i = hash(keys[if(v > 0, v - 1, trees[-1 - v].index)]) & mask;
+			while (slots[i] != 0) {
+				AnalysisTables.probes++;
+				i = (i + 1) & mask;
+			}
+			slots[i] = v;
+		}
+	}
+	// Adds {key} to the tree at {n}, of keys of its class, unless it holds
+	// it, and sets {found} to its index.
+	private def insert(n: AnalysisKeyNode, key: K) -> AnalysisKeyNode {
+		if (n == null) {
+			found = keys.length;
+			keys.put(key);
+			return AnalysisKeyNode.new(found);
+		}
+		AnalysisTables.probes++;
+		var order = compare(key, keys[n.index]);
+		if (order == 0) {
+			found = n.index;
+			return n;
+		}
+		if (order < 0) n.left = insert(n.left, key);
+		else n.right = insert(n.right, key);
+		return split(skew(n));
+	}
+	// Rotates right when {n}'s left child is on its level.
+	private def skew(n: AnalysisKeyNode) -> AnalysisKeyNode {
+		var l = n.left;
+		if (l == null || l.level != n.level) return n;
+		n.left = l.right;
+		l.right = n;
+		return l;
+	}
+	// Rotates left and raises the new parent when {n} has two right children
+	// on its level.
+	private def split(n: AnalysisKeyNode) -> AnalysisKeyNode {
+		var r = n.right;
+		if (r == null || r.right == null || r.right.level != n.level) return n;
+		n.right = r.left;
+		r.left = n;
+		r.level++;
+		return r;
+	}
+}
+// A key of an AnalysisTypeKeyMap tree, by its index.
+class AnalysisKeyNode(index: int) {
+	var level = 1;
+	var left: AnalysisKeyNode;
+	var right: AnalysisKeyNode;
+}
+
 // Interns strings by content, so that equal text is one object with one
 // index. {intern} looks up the text in a builder without allocating unless
 // the text is new. Strings are slotted by AnalysisTables.hashString, which
@@ -153,8 +284,9 @@ component AnalysisTables {
 		return src;
 	}
 	// Spreads a hash's bits into the low bits that select a slot, for keys
-	// that are already numbers, such as indexes and the compiler's type
-	// hashes. A SipHash keeps its spread, and the string table skips this.
+	// that are already numbers, such as the indexes that a snapshot's
+	// signature reader keys. A SipHash keeps its spread, and the string table
+	// skips this.
 	def mix(h: int) -> int {
 		var x = u32.view(h) * 0x9E3779B1u;
 		return int.view(x ^ (x >> 15));
@@ -168,6 +300,7 @@ component AnalysisTables {
 	def seed(k0: u64, k1: u64) {
 		key0 = k0;
 		key1 = k1;
+		fill(tables);
 	}
 	// SipHash-1-3 (Aumasson and Bernstein, 2012) of the eight little-endian
 	// bytes of {prefix} followed by the first {length} bytes of {bytes}, keyed
@@ -179,6 +312,21 @@ component AnalysisTables {
 	// such names in one probe sequence.
 	def hashBytes(bytes: Array<byte>, length: int, prefix: u64) -> u64 {
 		return sipHash(bytes, length, prefix, -8);
+	}
+	// Simple tabulation hashing (Zobrist, 1970) of {x}, for keys that are
+	// numbers a program can choose, such as the compiler's type hashes: the
+	// xor of one word for each of its four bytes, from four tables of 256
+	// that {seed} fills with SipHash from the key. With it, linear probing in
+	// a table at most half full takes O(1) expected probes per operation for
+	// any set of keys chosen without the tables (Patrascu and Thorup, 2012),
+	// as with SipHash, and so it does when the hash is xored with a SipHash
+	// of the rest of a key, which acts as a fifth character (AnalysisDisplay's
+	// hashCall). It costs four loads, against about 15 ns for a SipHash, which
+	// made collecting the Aeneas sources 2.5% slower: the display's type
+	// table hashes a type for each one it renders.
+	def hashInt(x: int) -> int {
+		var t = tables;
+		return int.view(t[x & 0xFF] ^ t[256 + ((x >> 8) & 0xFF)] ^ t[512 + ((x >> 16) & 0xFF)] ^ t[768 + ((x >> 24) & 0xFF)]);
 	}
 	// A string's slot hash: SipHash-1-3 of its first {length} bytes.
 	def hashString(bytes: Array<byte>, length: int) -> int {
@@ -211,6 +359,13 @@ component AnalysisTables {
 	var probes: long;
 	private var key0 = 0x0706050403020100ul;
 	private var key1 = 0x0F0E0D0C0B0A0908ul;
+	// hashInt's tables, filled from the key. The program is built with them
+	// filled from the fixed key, so they take no heap.
+	private def tables = fill(Array<u32>.new(1024));
+	private def fill(t: Array<u32>) -> Array<u32> {
+		for (i < t.length) t[i] = u32.view(hashBytes(null, 0, u64.view(i)));
+		return t;
+	}
 	private def sipHash(bytes: Array<byte>, length: int, prefix: u64, start: int) -> u64 {
 		var v0 = key0 ^ 0x736f6d6570736575ul, v1 = key1 ^ 0x646f72616e646f6dul;
 		var v2 = key0 ^ 0x6c7967656e657261ul, v3 = key1 ^ 0x7465646279746573ul;
