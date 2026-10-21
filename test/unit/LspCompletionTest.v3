@@ -442,7 +442,36 @@ def test_lambda_hints(t: Tester) {
 		"def f() { g(fun () -> int #inline => 1, $); }",
 		"def f() { g(fun () -> int #no-inline { return 1; }, $); }",
 		"def f() { g(fun () -> Array<int> #hint<(int, bool)> => null, $); }",
-		"def f() { g(fun (x: int) -> int #hint:x-y => x, $); }"
+		"def f() { g(fun (x: int) -> int #hint:x-y => x, $); }",
+		"def f() { g(fun () #boxed ;, $); }",
+		"def f() { g(fun () #unboxed ;, $); }",
+		"def f() { g(fun () #packed ;, $); }",
+		"def f() { g(fun () #big-endian ;, $); }",
+		"def f() { g(fun () #custom ;, $); }",
+		"def f() { g(fun #inline ;, $); }",
+		// "#packing", whose label is a keyword, and its packing expressions.
+		"def f() { g(fun () #packing(0) ;, $); }",
+		"def f() { g(fun () #packing(0b1?x, f(y)) ;, $); }",
+		"def f() { g(fun () #packing 0 ;, $); }",
+		"def f() { g(fun () #packing -1 ;, $); }",
+		"def f() { g(fun () #packing 0x0F ;, $); }",
+		"def f() { g(fun () #packing 0.5 ;, $); }",
+		"def f() { g(fun () #packing 1u8 ;, $); }",
+		"def f() { g(fun () #packing 0b1?x ;, $); }",
+		"def f() { g(fun () #packing 0b??_01xy ;, $); }",
+		"def f() { g(fun () #packing #concat(a, 0b01) ;, $); }",
+		"def f() { g(fun () #packing #solve(a, b) ;, $); }",
+		"def f() { g(fun () #packing f ;, $); }",
+		"def f() { g(fun () #packing f(0, x) ;, $); }",
+		"def f() { g(fun () #packing f<int>(x) ;, $); }",
+		"def f() { g(fun () #packing f<int, bool> ;, $); }",
+		"def f() { g(fun () #packing 0 { }, $); }",
+		"def f() { g(fun () #packing 0 #inline ;, $); }",
+		"def f() { g(fun () #inline #packing 0 ;, $); }",
+		"def f() { g(fun #packing 0 ;, $); }",
+		"def f() { g(fun () -> int #packing 0 => 1, $); }",
+		"def f() { g(fun () -> int #packing(0) { return 1; }, $); }",
+		"def f() { g(fun () -> int #packing 0b1?x #no-inline => 1, $); }"
 	];
 	for (marked in cases) {
 		checkOffered(t, marked, "false fun if null true");
@@ -458,6 +487,10 @@ def test_lambda_hints(t: Tester) {
 	checkCalls(t, "def f() { g(fun () #hint(h($", [11, 26]);
 	var ctx = at("def f() { g(fun () #hint($");
 	t.asserta("roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL, LspOpenRole.HINT_ARGS], ctx.roles, putRole);
+	ctx = at("def f() { g(fun () #packing($");
+	t.asserta("roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL, LspOpenRole.HINT_ARGS], ctx.roles, putRole);
+	checkSyntax(t, "def f() { g(fun () #packing f<$", LspCursorSyntax.TYPE);
+	checkCalls(t, "def f() { g(fun () #packing f($", [11, 29]);
 	// After a hint, the body begins, and after it, an operator or a separator.
 	checkSyntax(t, "def f() { g(fun () #inline { $", STMT);
 	checkSyntax(t, "def f() { g(fun () -> int #inline => $", EXPR);
@@ -465,6 +498,14 @@ def test_lambda_hints(t: Tester) {
 	checkSyntax(t, "def f() { var h = fun () #no-inline ; $ }", 0);
 	// A hint does not make a header of what is no lambda's.
 	checkCalls(t, "def f() { g(fun () #inline + h(); $", []);
+	checkCalls(t, "def f() { g(fun () #packing 0 + h(); $", []);
+	checkCalls(t, "def f() { g(fun () #inline 0; $", []);
+	checkCalls(t, "def f() { g(fun () #inline -1; $", []);
+	checkCalls(t, "def f() { g(fun () #packing 0 #hint(fun () 1;) ; $", []);
+	// Outside a lambda's header, "#packing" is still read as the keyword.
+	checkSyntax(t, "type T(a: u8) #packing P($", 0);
+	ctx = at("type T(a: u8) #packing P($");
+	t.asserta("roles", [LspOpenRole.PARAMS], ctx.roles, putRole);
 }
 
 // Tuple types, type arguments, and function types stay type positions.

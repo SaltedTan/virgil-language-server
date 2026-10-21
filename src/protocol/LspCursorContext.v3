@@ -173,6 +173,12 @@ class LspCursorScanner(text: Array<byte>) {
 	// an expression body, and a ";" is an empty body. A lambda in a header's
 	// parameters or hints is deeper than the header's own.
 	private def lambdas = Vector<int>.new();
+	// True after a "#packing" hint in the innermost such lambda's header,
+	// whose packing expression, as Parser.parsePackingExpr reads it, may
+	// follow without parentheses: a number such as -1, a bit pattern such as
+	// 0b1?x, a "#solve(...)" or "#concat(...)", or a name with optional type
+	// arguments and arguments.
+	private var packingExpr: bool;
 	// A declaration's header: 0 outside one, HEADER_NAME before its name,
 	// HEADER_AFTER_NAME after it, and HEADER_TYPE_PARAMS in its "<...>".
 	private var header: int;
@@ -290,8 +296,11 @@ class LspCursorScanner(text: Array<byte>) {
 						return LspCursorPlace.CODE;
 					}
 					var kw = LspKeywords.find(text, i + 1, j);
-					if (kw.0) keyword(kw.1, i + 1);
+					// "packing" is the one keyword a hint's label can be.
+					var packingHint = kw.0 && kw.1 == LspKeyword.PACKING && inLambdaHeader();
+					if (kw.0 && !packingHint) keyword(kw.1, i + 1);
 					else hint(i + 1);
+					if (packingHint) packingExpr = true;
 					i = j;
 				} else {
 					punct(c, i);
@@ -361,7 +370,7 @@ class LspCursorScanner(text: Array<byte>) {
 			if (levelDecls[level()] == NO_DECL) levelDecls[level()] = STARTED;
 		}
 		if (header != HEADER_TYPE_PARAMS) header = 0;
-		lambdaToken(kind == LspCursorToken.NAME);
+		lambdaToken(kind == LspCursorToken.NAME || (packingExpr && kind == LspCursorToken.LITERAL));
 		setPrev(kind, start);
 	}
 	private def name(start: int) {
@@ -387,7 +396,12 @@ class LspCursorScanner(text: Array<byte>) {
 	// A token in a lambda's header, before its body: {ok} if one can be
 	// there. Any other token means the header is not one.
 	private def lambdaToken(ok: bool) {
-		if (!ok && inLambdaHeader()) lambdas.length--;
+		if (!ok && inLambdaHeader()) popLambda();
+	}
+	// The innermost lambda's header ends.
+	private def popLambda() {
+		lambdas.length--;
+		packingExpr = false;
 	}
 	// A token other than "else" at a brace level: if a statement just ended,
 	// so does the chain of if and match statements it closed.
@@ -417,7 +431,10 @@ class LspCursorScanner(text: Array<byte>) {
 			if (kw != LspKeyword.ELSE && (decl == NO_DECL || isModifier(decl))) levelDecls[l] = kw.tag;
 		}
 		lambdaToken(false);
-		if (kw == LspKeyword.FUN) lambdas.put(opens.length);
+		if (kw == LspKeyword.FUN) {
+			lambdas.put(opens.length);
+			packingExpr = false;
+		}
 		match (kw) {
 			CLASS, COMPONENT, TYPE, ENUM, CASE, DEF, PACKING, FUN => {
 				header = HEADER_NAME;
@@ -441,7 +458,7 @@ class LspCursorScanner(text: Array<byte>) {
 		header = 0;
 		// A lambda's body begins at the depth of its "fun".
 		var body = inLambdaHeader() && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
-		if (body) lambdas.length--;
+		if (body) popLambda();
 		if (c == ';' && body) c = LspCursorPunct.EMPTY_BODY;
 		if (inBraces()) {
 			if (c != '}') endIfs();
@@ -475,7 +492,7 @@ class LspCursorScanner(text: Array<byte>) {
 					boundary();
 				}
 			}
-			'<' => if (prevHint) {
+			'<' => if (prevHint || (packingExpr && prevKind == LspCursorToken.NAME && inLambdaHeader())) {
 				push(start, LspOpenRole.TYPE_ARGS, 3);
 			} else if (h == HEADER_AFTER_NAME) {
 				header = HEADER_TYPE_PARAMS;
@@ -502,6 +519,7 @@ class LspCursorScanner(text: Array<byte>) {
 		// What can be in a lambda's header besides names and its parameters.
 		match (c) {
 			'(', ')', ':', '.', '<', '>', '#', LspCursorPunct.ARROW => ;
+			'-', '?' => lambdaToken(packingExpr);
 			_ => lambdaToken(false);
 		}
 		// The statement after an if's, while's, or for's header is nested.
@@ -549,7 +567,7 @@ class LspCursorScanner(text: Array<byte>) {
 			opens.length--;
 			roles.length--;
 			counts[k]--;
-			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) lambdas.length--;
+			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) popLambda();
 			if (k == 2) {
 				levelRoles.length--;
 				levelDecls.length--;
