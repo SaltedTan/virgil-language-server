@@ -38,6 +38,10 @@ class AnalysisScopeAnswer(declarations: Array<AnalysisDeclaration>, levels: Arra
 	// The statements and expressions read to find the offset's extents
 	// (AnalysisScopeFinder.steps), for tests; no reply carries it.
 	var steps: int;
+	// The name comparisons that the query's OrderedStringSets made to
+	// deduplicate candidates (AnalysisScopeFinder.nameComparisons), for
+	// tests; no reply carries it.
+	var nameComparisons: long;
 }
 
 // A decoded scope answer, as indices into its snapshot's declarations.

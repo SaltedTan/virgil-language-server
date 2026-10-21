@@ -230,6 +230,12 @@ def test_unbraced_bodies(t: Tester) {
 // nested lambdas that capture the same variables reads only its own
 // parameters, rather than every capture again.
 //
+// Many names in one method must not make the query scan a HashMap's bucket
+// chain for each: the names are kept in AA trees, whose comparisons are
+// counted. Names built from "Aa" and "BB" blocks have equal length and one
+// polynomial hash, so a HashMap would keep them all in one bucket; ordinary
+// p%d names, which spread over buckets, must scale too.
+//
 // The steps count only what the query reads through its own helpers, so the
 // bytes that it allocates are checked too: a range() asked for directly,
 // which the steps miss, allocates a FileRange for each node that it reads.
@@ -248,12 +254,17 @@ def test_deep_nesting(t: Tester) {
 	}
 	scales(t, "a lambda's captures", 1000, captureCost(t, 1000, 1), captureCost(t, 2000, 1));
 	scales(t, "nested lambdas' captures", 200, captureCost(t, 200, 200), captureCost(t, 400, 400));
+	scales(t, "parameter names", 16000, parameterCost(t, 16000, false), parameterCost(t, 32000, false));
+	scales(t, "colliding parameter names", 500, parameterCost(t, 500, true), parameterCost(t, 1000, true));
 }
 // Fails unless the {large} cost, of a fixture twice the size {n} of the
 // {small}'s, reads at most about twice the steps and allocates at most about
 // three times the bytes: a Vector that doubles its storage can take a step
-// more there. A quadratic cost is four times.
-def scales(t: Tester, label: string, n: int, small: (int, long), large: (int, long)) {
+// more there. A quadratic cost is four times. Its name comparisons may add a
+// bounded number per name beyond twice the small count, because a tree
+// descends about one more level for twice the names; a scan of a bucket chain
+// adds a number that grows with the names themselves.
+def scales(t: Tester, label: string, n: int, small: (int, long, long), large: (int, long, long)) {
 	if (small.0 <= 0 || large.0 > 2 * small.0 + 100) {
 		t.fail3("%s read %d steps at %d, ", label, large.0, 2 * n);
 		t.fail2("against %d at %d", small.0, n);
@@ -262,18 +273,24 @@ def scales(t: Tester, label: string, n: int, small: (int, long), large: (int, lo
 		t.fail3("%s allocate %d bytes at %d, ", label, large.1, 2 * n);
 		t.fail2("against %d at %d", small.1, n);
 	}
+	// At least one comparison, so that the names are checked at all: a map
+	// that the counter does not cover reports none.
+	if (small.2 <= 0 || large.2 > 2 * small.2 + 32 * n) {
+		t.fail3("%s compare %d names at %d, ", label, large.2, 2 * n);
+		t.fail2("against %d at %d", small.2, n);
+	}
 }
 // The cost of finding the scope under {n} links of {chain}: a head, a link
 // with "%d" for its index, and a tail with the offset, where the parameter
 // must be offered.
-def deepCost(t: Tester, chain: (string, string, string, int), n: int) -> (int, long) {
+def deepCost(t: Tester, chain: (string, string, string, int), n: int) -> (int, long, long) {
 	var b = StringBuilder.new().puts("component C { def m(p: int) { ").puts(chain.0);
 	for (i < n) b.put1(chain.1, i);
 	return scopeCost(t, b.puts(chain.2).puts(" } }").toString(), "p", Strings.format2("\"%s\" x %d", chain.1, n));
 }
 // The cost of finding the scope in the innermost of {lambdas} nested lambdas,
 // which captures each of {n} parameters, the first of which must be offered.
-def captureCost(t: Tester, n: int, lambdas: int) -> (int, long) {
+def captureCost(t: Tester, n: int, lambdas: int) -> (int, long, long) {
 	var params = StringBuilder.new(), uses = StringBuilder.new();
 	for (i < n) {
 		if (i > 0) {
@@ -288,24 +305,49 @@ def captureCost(t: Tester, n: int, lambdas: int) -> (int, long) {
 	var text = b.put1("[$%s]; } }", uses.toString()).toString();
 	return scopeCost(t, text, "p0", Strings.format2("%d captures in %d lambdas", n, lambdas));
 }
-// The steps read and the bytes allocated to find the scope at the "$" in
-// {marked}, where {name} must be offered. A first query fills the caches
-// that later ones share, and a collection empties the heap of all but what
-// is live, so that the second allocates each of its bytes there. The unit
-// tests build for x86-64-linux and x86-64-darwin, where scripts/v3c.sh links
-// the semispace collector of rt/gc on both, as LspFrameReaderTest relies on
-// too. The query collects again only if it allocates the rest of the half of
-// the heap, which is far from linear, so that fails too.
-def scopeCost(t: Tester, marked: string, name: string, label: string) -> (int, long) {
+// The cost of finding the scope in a method of {n} parameters, at a local's
+// initializer, where the first parameter must be offered: the shape of the
+// issue's name deduplication report. {colliding} names each parameter as
+// thirteen "Aa" or "BB" blocks, whose equal length and polynomial hash make
+// a Strings.newMap keep them all in one bucket.
+def parameterCost(t: Tester, n: int, colliding: bool) -> (int, long, long) {
+	var params = StringBuilder.new();
+	for (i < n) {
+		if (i > 0) params.puts(", ");
+		params.puts(if(colliding, blockName(i), Strings.format1("p%d", i))).puts(": int");
+	}
+	var text = Strings.format1("component C { def m(%s) { var x = $0; } }", params.toString());
+	return scopeCost(t, text, if(colliding, blockName(0), "p0"),
+		Strings.format1("%d parameters", n));
+}
+// {i} as thirteen "Aa" or "BB" blocks.
+def blockName(i: int) -> string {
+	var b = StringBuilder.new(), mask = 1;
+	for (bit = 0; bit < 13; bit++) {
+		b.puts(if((i & mask) != 0, "Aa", "BB"));
+		mask = mask * 2;
+	}
+	return b.toString();
+}
+// The steps read, the bytes allocated, and the name comparisons made to find
+// the scope at the "$" in {marked}, where {name} must be offered. A first
+// query fills the caches that later ones share, and a collection empties the
+// heap of all but what is live, so that the second allocates each of its
+// bytes there. The unit tests build for x86-64-linux and x86-64-darwin, where
+// scripts/v3c.sh links the semispace collector of rt/gc on both, as
+// LspFrameReaderTest relies on too. The query collects again only if it
+// allocates the rest of the half of the heap, which is far from linear, so
+// that fails too.
+def scopeCost(t: Tester, marked: string, name: string, label: string) -> (int, long, long) {
 	var m = unmark(marked);
 	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
 	if (!a.verified) {
 		t.fail1("%s does not verify", label);
-		return (-1, -1);
+		return (-1, -1, -1);
 	}
 	if (a.scopeAt(MAIN, m.1, V, "") == null) {
 		t.fail1("no scope under %s", label);
-		return (-1, -1);
+		return (-1, -1, -1);
 	}
 	RiGc.forceGC();
 	var before = Semispace.fromSpaceUsed(), collections = GcStats.gc_count;
@@ -313,12 +355,12 @@ def scopeCost(t: Tester, marked: string, name: string, label: string) -> (int, l
 	var bytes = Semispace.fromSpaceUsed() - before;
 	if (GcStats.gc_count != collections) {
 		t.fail1("finding the scope under %s collected the heap", label);
-		return (-1, -1);
+		return (-1, -1, -1);
 	}
 	var offered = false;
 	for (d in s.declarations) offered = offered || Strings.equal(d.name, name);
 	t.assert(offered, Strings.format2("%s offered under %s", name, label));
-	return (s.steps, bytes);
+	return (s.steps, bytes, s.nameComparisons);
 }
 
 def test_excluded_shadowing(t: Tester) {
