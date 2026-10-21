@@ -17,6 +17,7 @@ def X = [
 	T("LspCompletion:open_calls", test_open_calls),
 	T("LspCompletion:linear_scan", test_linear_scan),
 	T("LspCompletion:context_positions", test_context_positions),
+	T("LspCompletion:parameter_delimiters", test_parameter_delimiters),
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
 	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
@@ -284,6 +285,64 @@ def test_linear_scan(t: Tester) {
 	ctx = at(buf.puts("; $").toString());
 	t.asserti(1, ctx.opens.length);
 	t.asserti(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, ctx.syntax);
+}
+
+def test_parameter_delimiters(t: Tester) {
+	var indexed = [
+		"class C { def [va$ }",
+		"class C { def [$ }",
+		"class C { def [a: int, $ }",
+		"class C { def [a: Array<(int, bool)>, $ }",
+		"class C { def [a: (int, Array<bool>), va$] = value: int {} }",
+		"class C { private def [a: int, $] -> int; }"
+	];
+	for (marked in indexed) {
+		checkOffered(t, marked, "var");
+		checkSyntax(t, marked, LspCursorSyntax.PARAMETER);
+		checkCalls(t, marked, []);
+		t.asserta("indexed roles", [LspOpenRole.MEMBERS, LspOpenRole.INDEX_PARAMS], at(marked).roles, putRole);
+	}
+	var variant = "type V { case C { def [$ } }";
+	checkOffered(t, variant, "var");
+	checkSyntax(t, variant, LspCursorSyntax.PARAMETER);
+	t.asserta("variant index", [LspOpenRole.VARIANT, LspOpenRole.MEMBERS, LspOpenRole.INDEX_PARAMS], at(variant).roles, putRole);
+	var typed = "class C { def [a: Array<(int, $";
+	checkOffered(t, typed, "");
+	checkSyntax(t, typed, LspCursorSyntax.TYPE);
+	t.asserta("nested types", [LspOpenRole.MEMBERS, LspOpenRole.INDEX_PARAMS, LspOpenRole.TYPE_ARGS, LspOpenRole.TYPES], at(typed).roles, putRole);
+	checkOffered(t, "class C { def [var $", "");
+	checkSyntax(t, "class C { def [a: int) , $", LspCursorSyntax.PARAMETER);
+	t.asserta("closed index", [LspOpenRole.MEMBERS], at("class C { def [a: (int, bool)] $").roles, putRole);
+	t.asserta("index recovery", [LspOpenRole.MEMBERS], at("class C { def [a: int; $").roles, putRole);
+	checkOffered(t, "class C { def [a: int] -> int { $", "break continue def false for fun if match null return true var while");
+	checkOffered(t, "class C { def [a: int] = value: int { $", "break continue def false for fun if match null return true var while");
+	checkOffered(t, "def f() { a[$", "false fun if null true");
+
+	var patterns = [
+		"match (x) { Some($ }",
+		"match (x) { V.Some(a, $ }",
+		"match (x) { V.Some($ }",
+		"match (x) { V.N.Some(a, _, $ }",
+		"match (x) { V<int>.Some(a, $ }",
+		"match (x) { V<Array<(int, bool)>>.Some<int>($ }",
+		"match (x) { None, V.Some($ }",
+		"match (x) { Some(a) => g(); V.Some($ }",
+		"match (x) { Some(a) => { g(); } V.Some($ }"
+	];
+	for (marked in patterns) {
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, 0);
+		checkCalls(t, marked, []);
+		t.asserta("pattern roles", [LspOpenRole.MATCH, LspOpenRole.PATTERN_PARAMS], at(marked).roles, putRole);
+	}
+	t.asserta("nested patterns", [LspOpenRole.MATCH, LspOpenRole.MATCH, LspOpenRole.PATTERN_PARAMS],
+		at("match (x) { Some(a) => match (a) { V.Some(_, $ }").roles, putRole);
+	var body = "match (x) { Some(a) => g($ }";
+	checkOffered(t, body, "false fun if null true");
+	t.asserta("arm call", [LspOpenRole.MATCH, LspOpenRole.CALL], at(body).roles, putRole);
+	t.asserti(1, at(body).calls().length);
+	checkSyntax(t, "match (x) { V.Some(a), $ }", LspCursorSyntax.PATTERN);
+	checkOffered(t, "match (x) { V.Some(a) => $ }", "break continue def false for fun if match null return true var while");
 }
 
 def test_context_positions(t: Tester) {

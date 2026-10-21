@@ -72,6 +72,8 @@ enum LspOpenRole {
 	FOR_CLAUSES,	// "(": a for loop's header, after its first ";"
 	PARAMS,		// "(": parameters that cannot be "var"
 	PARAMS_VAR,	// "(": parameters that can be "var"
+	INDEX_PARAMS,
+	PATTERN_PARAMS,
 	GROUP,		// "(": a tuple or a parenthesized expression
 	TYPES,		// "(": a tuple type's elements
 	HINT_ARGS,	// "(": the expressions after "#" and a label, as a hint's
@@ -139,6 +141,7 @@ enum LspCursorToken {
 class LspCursorScanner(text: Array<byte>) {
 	def NO_DECL = -1;
 	def STARTED = -2;		// the declaration or statement starts with no keyword
+	def PATTERN_HEAD = -3;
 
 	// The open delimiters and their roles.
 	private def opens = Vector<int>.new();
@@ -350,7 +353,7 @@ class LspCursorScanner(text: Array<byte>) {
 	// and 3 for "<".
 	private def kindOf(r: LspOpenRole) -> int {
 		if (isBrace(r)) return 2;
-		if (r == LspOpenRole.INDEX) return 1;
+		if (r == LspOpenRole.INDEX || r == LspOpenRole.INDEX_PARAMS) return 1;
 		if (r == LspOpenRole.TYPE_ARGS) return 3;
 		return 0;
 	}
@@ -375,8 +378,10 @@ class LspCursorScanner(text: Array<byte>) {
 	}
 	private def name(start: int) {
 		var h = header;
-		var t = typeOnly(position()) || (typeName && prevKind == LspCursorToken.PUNCT && prevByte == '.');
+		var at = position(), pattern = (at & LspCursorSyntax.PATTERN) != 0;
+		var t = pattern || typeOnly(at) || (typeName && prevKind == LspCursorToken.PUNCT && prevByte == '.');
 		token(LspCursorToken.NAME, start);
+		if (pattern) levelDecls[level()] = PATTERN_HEAD;
 		typeName = t;
 		if (h == HEADER_NAME) header = HEADER_AFTER_NAME;
 		else if (h == HEADER_TYPE_PARAMS) header = h;
@@ -466,7 +471,8 @@ class LspCursorScanner(text: Array<byte>) {
 		}
 		match (c) {
 			'(' => push(start, parenRole(h), 0);
-			'[' => push(start, LspOpenRole.INDEX, 1);
+			'[' => push(start, if(h == HEADER_NAME && headerKeyword == LspKeyword.DEF,
+				LspOpenRole.INDEX_PARAMS, LspOpenRole.INDEX), 1);
 			'{' => {
 				var role = if(body, LspOpenRole.LAMBDA, braceRole());
 				push(start, role, 2);
@@ -582,6 +588,7 @@ class LspCursorScanner(text: Array<byte>) {
 	private def parenRole(h: int) -> LspOpenRole {
 		if (prevHint) return LspOpenRole.HINT_ARGS;
 		if (typeOnly(position())) return LspOpenRole.TYPES;
+		if (innermost() == LspOpenRole.MATCH && levelDecls[level()] == PATTERN_HEAD) return LspOpenRole.PATTERN_PARAMS;
 		if (prevKind == LspCursorToken.KEYWORD) {
 			match (prevKeyword) {
 				IF => return if(prevIfStatement, LspOpenRole.CONTROL, LspOpenRole.IF_ARGS);
@@ -641,6 +648,7 @@ class LspCursorScanner(text: Array<byte>) {
 	}
 	// Inside "(" or "[".
 	private def parenPosition(r: LspOpenRole) -> int {
+		if (r == LspOpenRole.PATTERN_PARAMS) return 0;
 		if (prevKind == LspCursorToken.KEYWORD) {
 			var f = keywordFollow(levelRoles[level()]);
 			if (f >= 0) return f;
@@ -648,7 +656,7 @@ class LspCursorScanner(text: Array<byte>) {
 			match (prevByte) {
 				'(', '[', ',' => match (r) {
 					PARAMS => return 0;
-					PARAMS_VAR => return LspCursorSyntax.PARAMETER;
+					PARAMS_VAR, INDEX_PARAMS => return LspCursorSyntax.PARAMETER;
 					FOR => return if(prevByte == '(', 0, LspCursorSyntax.EXPRESSION);
 					TYPES, TYPE_ARGS => return LspCursorSyntax.TYPE;
 					_ => return LspCursorSyntax.EXPRESSION;
