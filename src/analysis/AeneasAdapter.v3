@@ -262,8 +262,9 @@ class ProgramAnalysis {
 	}
 	// The declarations of {kinds} (AnalysisScopeKinds) visible at byte
 	// {offset} of {path}, or null if the program did not parse or has no such
-	// file, or this analysis keeps no program: only an AnalysisScopedProgram
-	// does. See AnalysisScopeFinder and docs/architecture.md#completion.
+	// file, if verification did not reach the offset, or if this analysis
+	// keeps no program: only an AnalysisScopedProgram does. See
+	// AnalysisScopeFinder and docs/architecture.md#completion.
 	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
 		return null;
 	}
@@ -272,7 +273,7 @@ class ProgramAnalysis {
 		for (f in program.vst.files) {
 			if (f == null || !Strings.equal(f.fileName, path)) continue;
 			var answer = AnalysisScopeFinder.new(sources, display, program, f).find(offset, kinds, prefix);
-			answer.paths = program.files;
+			if (answer != null) answer.paths = program.files;
 			return answer;
 		}
 		return null;
@@ -424,24 +425,44 @@ component AeneasAdapter {
 	}
 	private var sortedKeywords: Array<string>;
 	// The builtin types a name can name, which have no declaration, in byte
-	// order: those of {BUILTIN_TYPES} that the verifier's top-level type lookup
-	// (V3.lookupToplevelType) resolves with language options {options} (see
-	// setLanguageOptions), such as "array" with read-only arrays, and the
-	// System component that analyses install (SystemCalls.install). Aeneas
-	// also accepts iN and uN for every N from 1 to 64; only the byte widths
-	// are listed.
+	// order: those of {BUILTIN_TYPES} and of the integer types that the
+	// verifier's top-level type lookup (V3.lookupToplevelType) resolves with
+	// language options {options} (see setLanguageOptions), such as "array"
+	// with read-only arrays, and the System component that analyses install
+	// (SystemCalls.install). The integer types are iN and uN for each width
+	// N up to Aeneas's Int.MAX_WIDTH in decimal, as Int.lookupFsi reads them.
 	def builtinTypes(options: Array<string>) -> Array<string> {
+		// Every completion with names asks, mostly with the same options.
+		if (builtinOptions != null && sameOptions(builtinOptions, options)) return builtinNames;
+		builtinOptions = options;
+		return builtinNames = listBuiltinTypes(options);
+	}
+	private var builtinOptions: Array<string>;
+	private var builtinNames: Array<string>;
+	private def sameOptions(a: Array<string>, b: Array<string>) -> bool {
+		if (a == b) return true;
+		if (a == null || b == null || a.length != b.length) return false;
+		for (i < a.length) if (!Strings.equal(a[i], b[i])) return false;
+		return true;
+	}
+	private def listBuiltinTypes(options: Array<string>) -> Array<string> {
 		setLanguageOptions(options);
 		var v = Vector<string>.new();
 		for (name in BUILTIN_TYPES) {
 			if (V3.lookupToplevelType(name) != null || Strings.equal(name, SystemCalls.TYPECON.name)) v.put(name);
 		}
+		for (width = 1; width <= Int.MAX_WIDTH; width++) {
+			for (sign in ["i", "u"]) {
+				var name = Strings.format2("%s%d", sign, width);
+				if (V3.lookupToplevelType(name) != null) v.put(name);
+			}
+		}
 		resetLanguageOptions();
 		return AnalysisTables.sort(v.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
 	}
+	// The builtin type names other than the integer types iN and uN.
 	def BUILTIN_TYPES = ["Array", "Range", "Ref", "System", "array", "bool", "byte", "double", "float",
-		"i8", "i16", "i32", "i64", "int", "long", "range", "ref", "short", "string",
-		"u8", "u16", "u32", "u64", "void"];
+		"int", "long", "range", "ref", "short", "string", "void"];
 	// The AnalysisKeywordForms that the parser accepts with language options
 	// {options} (see setLanguageOptions), read as Parser.parseFile reads them.
 	def keywordForms(options: Array<string>) -> int {

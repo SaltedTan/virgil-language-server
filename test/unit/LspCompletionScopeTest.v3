@@ -26,6 +26,11 @@ def X = [
 	T("LspCompletionScope:admission", test_admission),
 	T("LspCompletionScope:takes_turns", test_takes_turns),
 	T("LspCompletionScope:no_project", test_no_project),
+	T("LspCompletionScope:invalidated_while_running", test_invalidated_while_running),
+	T("LspCompletionScope:stale_reruns_once", test_stale_reruns_once),
+	T("LspCompletionScope:stale_document_or_superseded", test_stale_document_or_superseded),
+	T("LspCompletionScope:ref_layouts", test_ref_layouts),
+	T("LspCompletionScope:unreached", test_unreached),
 	()
 ];
 
@@ -142,8 +147,17 @@ def spaced(words: Array<string>) -> string {
 	}
 	return buf.toString();
 }
-// The builtin types with the default language options.
-def BUILTINS = "Array Range Ref System bool byte double float i16 i32 i64 i8 int long ref short string u16 u32 u64 u8 void";
+// The builtin types with the default language options, which
+// AnalysisScopeTest checks against the verifier.
+def builtins() -> string {
+	return spaced(AeneasAdapter.builtinTypes([]));
+}
+// {names} without the integer types iN and uN.
+def nonIntegers(names: Array<string>) -> string {
+	var v = Vector<string>.new();
+	for (n in names) if (!(n.length >= 2 && (n[0] == 'i' || n[0] == 'u') && n[1] >= '0' && n[1] <= '9')) v.put(n);
+	return spaced(v.extract());
+}
 
 // In a dirty buffer that parses as typed: the declarations nearest first,
 // then the keywords. The analysis is the completion's own: never the
@@ -158,7 +172,7 @@ def test_as_typed(t: Tester) {
 	s.settle();
 	var snapshot = ctx.snapshot, latest = s.supervisor.snapshot, published = s.notifications.length;
 	var analyses = s.server.completion.analyses;
-	t.assert_string(Strings.format1("total unsaved factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 13", BUILTINS),
+	t.assert_string(Strings.format1("total unsaved factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, marked));
 	t.asserti(analyses + 1, s.server.completion.analyses);
 	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
@@ -202,7 +216,7 @@ def test_items(t: Tester) {
 // delimiters or ";" that the context lacks.
 def test_repairs(t: Tester) {
 	var s = session(t);
-	var values = Strings.format1("total factor this area sides scale mainShared Color Other Registry Shape Square Token %s", BUILTINS);
+	var values = Strings.format1("total factor this area sides scale mainShared Color Other Registry Shape Square Token %s", builtins());
 	// A missing identifier, and a missing identifier and delimiters.
 	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\ttotal = $")));
 	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tscale(total, $")));
@@ -227,18 +241,19 @@ def test_repairs(t: Tester) {
 // callables, with "this" in a method.
 def test_positions(t: Tester) {
 	var s = session(t);
-	t.assert_string(Strings.format1("Color Other Registry Shape Square Token %s | 0", BUILTINS), complete(t, s, inScale("\t\tvar v: $")));
+	t.assert_string(Strings.format1("Color Other Registry Shape Square Token %s | 0", builtins()), complete(t, s, inScale("\t\tvar v: $")));
 	// The builtin types follow the project's language options.
 	var readOnly = AeneasAdapter.builtinTypes(["-lang:read-only-arrays"]);
-	t.assert_string("Array Range Ref System array bool byte double float i16 i32 i64 i8 int long range ref short string u16 u32 u64 u8 void",
-		spaced(readOnly));
+	t.assert_string("Array Range Ref System array bool byte double float int long range ref short string void", nonIntegers(readOnly));
+	t.assert_string("Array Range Ref System bool byte double float int long ref short string void", nonIntegers(AeneasAdapter.builtinTypes([])));
+	t.asserti(AeneasAdapter.builtinTypes([]).length + 2, readOnly.length);
 	var paint = "\tdef paint(c: Color, t: Token) -> int { return 0; }";
 	t.assert_string("End Word | 3", complete(t, s, before(MAIN, paint, "\tdef cases(t: Token) {\n\t\tmatch (t) {\n\t\t\t$\n\t\t}\n\t}")));
 	t.assert_string("GREEN RED | 3", complete(t, s, before(MAIN, paint, "\tdef cases(c: Color) {\n\t\tmatch (c) {\n\t\t\t$\n\t\t}\n\t}")));
 	// In a component's method, its members; in a subclass's, the inherited ones.
-	t.assert_string(Strings.format1("this count paint run mainShared Color Other Registry Shape Square Token %s | 13", BUILTINS),
+	t.assert_string(Strings.format1("this count paint run mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, before(MAIN, paint, "\tdef run() {\n\t\t$\n\t}")));
-	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", BUILTINS),
+	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, before(MAIN, "\tdef grow() { }", "\tdef run() {\n\t\t$\n\t}")));
 	// After "." no names come yet, and no analysis starts.
 	var analyses = s.server.completion.analyses;
@@ -490,5 +505,124 @@ def test_no_project(t: Tester) {
 	var id = s.send(t, "textDocument/completion", params);
 	t.assert(keywordsOnly(t, s, id), "keywords at once for an untitled document");
 	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+
+// Other.v3, edited: its component becomes a class.
+def FRESH = "class Fresh { }\ndef otherShared = 2;\n";
+// Polls {s} until {done} or nothing runs or waits.
+def pollUntil(s: RenameTestSession, done: void -> bool) {
+	var fds = Array<int>.new(4);
+	while (!done() && s.server.analyzing()) {
+		var count = s.supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.server.pollTimeout());
+		s.server.onPoll();
+	}
+}
+
+// A project file that changes while a completion's analysis runs makes that
+// analysis stale: it runs again, and the reply and the cached reply have the
+// new declarations.
+def test_invalidated_while_running(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	var marked = inScale("\t\tto$"), analyses = s.server.completion.analyses;
+	var id = request(t, s, marked);
+	t.assert(s.reply(id) == null, "the completion runs");
+	s.change("Other.v3", 2, FRESH);
+	s.settle();
+	var result = s.result(t, id);
+	t.assert(itemOf(result, "Fresh") != JsonValue.Null, "the new class");
+	t.assert(itemOf(result, "Other") == JsonValue.Null, "not the old component");
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	// The same cursor again: the cached reply, which is the new one.
+	var again = request(t, s, marked);
+	t.assert(s.reply(again) != null, "answered at once");
+	t.assert_string(render(t, result), render(t, s.result(t, again)));
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	s.server.close();
+}
+
+// A completion runs again only once: stale again, its reply is the keywords,
+// and nothing is cached.
+def test_stale_reruns_once(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	var marked = inScale("\t\tto$"), analyses = s.server.completion.analyses;
+	var id = request(t, s, marked);
+	s.change("Other.v3", 2, FRESH);
+	pollUntil(s, fun => s.server.completion.analyses == analyses + 2);
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	t.assert(s.reply(id) == null, "the completion runs again");
+	s.change("Other.v3", 3, OTHER);
+	s.settle();
+	t.assert(keywordsOnly(t, s, id), "keywords when stale again");
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	// Nothing was cached: the next request analyzes.
+	t.assert(itemOf(s.result(t, complete0(t, s, marked)), "Other") != JsonValue.Null, "the current declarations");
+	t.asserti(analyses + 3, s.server.completion.analyses);
+	s.server.close();
+}
+// Requests a completion at {marked} and returns its id once answered.
+def complete0(t: Tester, s: RenameTestSession, marked: string) -> int {
+	var id = request(t, s, marked);
+	s.settle();
+	return id;
+}
+
+// A stale completion whose document changed, or that a newer one waits
+// behind, gets the keywords and does not run again.
+def test_stale_document_or_superseded(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	var marked = inScale("\t\tto$"), analyses = s.server.completion.analyses;
+	var id = request(t, s, marked);
+	var u = unmark(marked);
+	s.change("Main.v3", s.file("Main.v3").version + 1, Arrays.concat(u.0, "\n"));
+	s.settle();
+	t.assert(keywordsOnly(t, s, id), "keywords for an edited document");
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	// Superseded: a newer completion waits when the stale one ends.
+	var stale = request(t, s, marked);
+	s.change("Other.v3", 2, FRESH);
+	var p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var newer = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	s.settle();
+	t.assert(keywordsOnly(t, s, stale), "keywords for the superseded one");
+	t.assert(itemOf(s.result(t, newer), "Fresh") != JsonValue.Null, "the newer one has the new class");
+	t.asserti(analyses + 3, s.server.completion.analyses);
+	s.server.close();
+}
+
+// The type argument of Ref<...> offers the layouts, and only them, as typed
+// and repaired.
+def test_ref_layouts(t: Tester) {
+	var s = session(t);
+	var pixel = "layout Pixel {\n\t+0 v: u32;\n\t=4;\n}\n";
+	t.assert_string("Pixel | 0", complete(t, s, Arrays.concat(inScale("\t\tvar r: Ref<$Pixel>;"), pixel)));
+	t.assert_string("Pixel | 0", complete(t, s, Arrays.concat(inScale("\t\tvar r: Ref<$"), pixel)));
+	t.assert_string("Pixel | 0", complete(t, s, Arrays.concat(inScale("\t\tvar r: ref< /* layout */ $"), pixel)));
+	// Elsewhere in a type, a layout is no type.
+	t.assert(!Strings.startsWith(complete(t, s, Arrays.concat(inScale("\t\tvar r: Array<$"), pixel)), "Pixel"), "types in Array<...>");
+	s.server.close();
+}
+
+// Where verification stopped at the error limit before the cursor's member,
+// the reply is the keywords.
+def test_unreached(t: Tester) {
+	var s = session(t);
+	var errors = StringBuilder.new().puts("component Errors {\n\tdef f() {\n");
+	for (i < 16) errors.put1("\t\tunresolved%d;\n", i);
+	var bad = errors.puts("\t}\n}\n").toString();
+	t.assert_string("| 13", complete(t, s, Arrays.concat(inScale("\t\tto$"), bad)));
+	// Errors in a class after Shape: classes are type-checked in order, so
+	// Shape's methods are reached.
+	var classErrors = StringBuilder.new().puts("class Errors {\n\tdef f() {\n");
+	for (i < 16) classErrors.put1("\t\tunresolved%d;\n", i);
+	t.assert(!Strings.startsWith(complete(t, s, Arrays.concat(inScale("\t\tto$"), classErrors.puts("\t}\n}\n").toString())), "|"),
+		"declarations where verification reached");
 	s.server.close();
 }

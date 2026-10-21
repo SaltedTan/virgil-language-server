@@ -23,12 +23,21 @@ def X = [
 	T("AnalysisScope:headers_and_top_level", test_headers_and_top_level),
 	T("AnalysisScope:cap", test_cap),
 	T("AnalysisScope:unparsed", test_unparsed),
+	T("AnalysisScope:initialization", test_initialization),
+	T("AnalysisScope:space_before_syntax", test_space_before_syntax),
+	T("AnalysisScope:pattern_types", test_pattern_types),
+	T("AnalysisScope:unreached", test_unreached),
+	T("AnalysisScope:operators", test_operators),
+	T("AnalysisScope:ref_layouts", test_ref_layouts),
+	T("AnalysisScope:implicit_members", test_implicit_members),
+	T("AnalysisScope:builtin_types", test_builtin_types),
 	()
 ];
 
 def V = AnalysisScopeKinds.VALUES;
 def TY = AnalysisScopeKinds.TYPES;
 def P = AnalysisScopeKinds.PATTERN;
+def L = AnalysisScopeKinds.LAYOUTS;
 def MAIN = "main.v3";
 
 // {marked} without its "$", and the offset of the "$".
@@ -76,6 +85,38 @@ def lines(list: Array<string>) -> string {
 	var buf = StringBuilder.new();
 	for (line in list) buf.puts(line).ln();
 	return buf.toString();
+}
+// The scope at the "$" in {marked}, whether or not the program verifies.
+def scopeAny(marked: string, kinds: int) -> AnalysisScopeAnswer {
+	var m = unmark(marked);
+	return AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false).scopeAt(MAIN, m.1, kinds, "");
+}
+// Whether the program verifies with {name} in place of the identifier at the
+// "$" in {marked}, or inserted there if there is none.
+def verifiesWith(marked: string, name: string) -> bool {
+	var m = unmark(marked), end = m.1;
+	while (end < m.0.length && identByte(m.0[end])) end++;
+	var text = Strings.format3("%s%s%s", Arrays.range(m.0, 0, m.1), name, Arrays.range(m.0, end, m.0.length));
+	return AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, text)], [], false).verified;
+}
+def identByte(c: byte) -> bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+// Checks that the verifier and the scope agree on each of {names} at the "$"
+// in {marked}: a name is a candidate (or, for "this", the receiver is in
+// scope) exactly if the program verifies with it there.
+def agree(t: Tester, marked: string, kinds: int, names: Array<string>) {
+	var s = scopeAny(marked, kinds);
+	if (s == null) return t.fail1("no scope: %s", marked);
+	for (name in names) {
+		var offered = false;
+		if (Strings.equal(name, "this")) offered = s.thisLevel >= 0;
+		for (d in s.declarations) offered = offered || Strings.equal(d.name, name);
+		var verifies = verifiesWith(marked, name);
+		if (offered != verifies) {
+			t.fail3("%s\n  %s: %s", marked, name, if(verifies, "verifies but is not offered", "is offered but does not verify"));
+		}
+	}
 }
 // The declaration kinds of the candidates, in order.
 def kindsAt(t: Tester, marked: string, kinds: int) -> string {
@@ -169,9 +210,11 @@ def test_matches(t: Tester) {
 		"this=1 Circle/0 Empty/0 Square/0");
 	check(t, "enum Color { RED, GREEN }\ncomponent M {\n\tdef f(c: Color) -> int {\n\t\tmatch (c) {\n\t\t\tRED => return 1;\n\t\t\t$GREEN => return 2;\n\t\t}\n\t}\n}\n", P,
 		"this=1 GREEN/0 RED/0");
-	// Matching another type, the values a constant can be.
-	check(t, "component M {\n\tdef K = 3;\n\tdef f(i: int) -> int {\n\t\tmatch (i) {\n\t\t\t$K => return 1;\n\t\t\t_ => return 2;\n\t\t}\n\t}\n}\n", P,
-		"this=1 i/1 K/2 f/2 M/6");
+	// Matching another type, the constants that a pattern can compare:
+	// read-only component fields whose initializers are literals.
+	var ints = "component M {\n\tdef K = 3;\n\tvar W = 4;\n\tdef f(i: int) -> int {\n\t\tmatch (i) {\n\t\t\t$K => return 1;\n\t\t\t_ => return 2;\n\t\t}\n\t}\n}\n";
+	check(t, ints, P, "this=1 K/2");
+	agree(t, ints, P, ["K", "W", "i", "f", "M"]);
 }
 
 def test_lambdas(t: Tester) {
@@ -226,7 +269,7 @@ def test_components(t: Tester) {
 // an enum, no method, and no "this" (MethodEnv.checkMemberInit).
 def test_field_initializers(t: Tester) {
 	check(t, "class C(p: int) {\n\tvar a = p;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() { }\n}\n", V, "a/0 p/0 C/4");
-	check(t, "component K {\n\tvar a = 1;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() -> int { return 1; }\n}\n", V, "this=0 a/1 m/1 K/5");
+	check(t, "component K {\n\tvar a = 1;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() -> int { return 1; }\n}\n", V, "this=0 a/1 c/1 m/1 K/5");
 	// An enum case's arguments see no receiver.
 	check(t, "enum E(v: int) {\n\tA($Z),\n\tB(2)\n}\ndef Z = 1;\n", V, "Z/0 E/4");
 }
@@ -235,8 +278,8 @@ def test_variants_and_enums(t: Tester) {
 	// A case's method sees the case's fields and methods, then the
 	// variant's methods, but no case, which only a type names (V.B).
 	var variant = "type V {\n\tcase A(x: int) {\n\t\tdef get() -> int { return $x; }\n\t}\n\tcase B;\n\tdef describe() -> int { return 1; }\n}\n";
-	check(t, variant, V, "this=1 x/2 get/2 describe/3 V/7");
-	t.assert_string("x:FIELD get:METHOD describe:METHOD V:CLASS", kindsAt(t, variant, V));
+	check(t, variant, V, "this=1 x/2 get/2 name/3 tag/3 describe/3 V/7");
+	t.assert_string("x:FIELD get:METHOD name:FIELD tag:FIELD describe:METHOD V:CLASS", kindsAt(t, variant, V));
 	// A variant's own method, its parameters' fields.
 	check(t, "type W(id: int) {\n\tdef twice() -> int { return $id * 2; }\n}\n", V, "this=1 id/2 twice/2 W/6");
 }
@@ -273,8 +316,8 @@ def test_headers_and_top_level(t: Tester) {
 	// have no use for it.
 	check(t, "class A { }\ndef top: $A;\n", TY, "A/4");
 	// A class's super clause sees its parameters, as its constructor does,
-	// which hide its fields, and the superclass's fields.
-	check(t, "class A(x: int) { }\nclass B(y: int) extends A($y) { }\n", V, "this=0 y/0 x/2 A/6 B/6");
+	// which hide its fields; not the superclass's fields, nor "this".
+	check(t, "class A(x: int) { }\nclass B(y: int) extends A($y) { }\n", V, "y/0 A/6 B/6");
 }
 
 // Past the cap, only the candidates that start with the prefix are kept, up
@@ -309,4 +352,167 @@ def test_unparsed(t: Tester) {
 	var plain = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, "class C { }")], [], false);
 	t.assert(plain.verified && plain.scopeAt(MAIN, 0, V, "") == null, "no scope from an ordinary analysis");
 	t.assert(b.scopeAt(MAIN, 0, V, "") != null, "a scoped analysis answers");
+}
+
+// What an initializer and a super clause see, as TypeChecker.typeCheckNew and
+// MethodEnv.checkMemberInit check it; each set is checked against the
+// verifier, name by name.
+def test_initialization(t: Tester) {
+	// A component's and the file scope's initializers see every member,
+	// later ones too; not a field whose type is inferred from itself.
+	var comp = "component K {\n\tvar a = $b;\n\tvar b = 2;\n\tdef m() -> int { return 1; }\n}\n";
+	check(t, comp, V, "this=0 b/1 m/1 K/5");
+	agree(t, comp, V, ["a", "b", "m", "this"]);
+	var top = "def a = $b;\ndef b = 2;\ndef m() -> int { return 1; }\n";
+	check(t, top, V, "b/0 m/0");
+	agree(t, top, V, ["a", "b", "m", "this"]);
+	// A class's field initializer sees its earlier fields and its
+	// parameters' fields; not a later field, an inherited field, a method,
+	// or "this".
+	var subclass = "class A {\n\tvar f = 1;\n\tdef am() -> int { return 1; }\n}\nclass B(p: int) extends A {\n\tvar g = 2;\n\tvar h = $g;\n\tvar k = 3;\n\tdef bm() -> int { return 1; }\n}\n";
+	check(t, subclass, V, "g/0 p/0 A/5 B/5");
+	agree(t, subclass, V, ["f", "g", "h", "k", "p", "am", "bm", "this"]);
+	// So does a lambda there.
+	var lambda = "class A {\n\tvar f = 1;\n}\nclass B extends A {\n\tvar g = 2;\n\tvar h = fun (x: int) => x + $g;\n}\n";
+	check(t, lambda, V, "x/0 g/1 A/6 B/6");
+	agree(t, lambda, V, ["g", "f", "x", "this"]);
+	// A super clause sees the constructor's parameters and the class's own
+	// fields; not "this", an inherited field, or a method.
+	var superCall = "class A(x: int) {\n\tvar af = 1;\n\tdef am() -> int { return x; }\n}\nclass B(y: int) extends A($y) {\n\tvar own = 2;\n\tdef bm() -> int { return 1; }\n}\n";
+	check(t, superCall, V, "y/0 own/1 A/6 B/6");
+	agree(t, superCall, V, ["y", "own", "x", "af", "am", "bm", "this"]);
+	var declared = "class A(x: int) { }\nclass B extends A {\n\tvar own = 2;\n\tnew(z: int) super($z) { }\n\tdef bm() -> int { return 1; }\n}\n";
+	check(t, declared, V, "z/0 own/1 A/6 B/6");
+	agree(t, declared, V, ["z", "own", "x", "bm", "this"]);
+	// The constructor's body sees everything.
+	agree(t, "class A(x: int) { }\nclass B extends A {\n\tvar own = 2;\n\tnew() super(1) { var v = $own; }\n\tdef bm() -> int { return 1; }\n}\n", V,
+		["own", "x", "bm", "this"]);
+}
+
+// The space and comments before an expression or a statement see the
+// bindings there, as the expression or statement does.
+def test_space_before_syntax(t: Tester) {
+	var field = "class C {\n\tvar a = 1;\n\tvar b = $ a;\n}\n";
+	check(t, field, V, "a/0 C/4");
+	check(t, "class C {\n\tvar a = 1;\n\tvar b = /* first */ $ // then\n\t\ta;\n}\n", V, "a/0 C/4");
+	var variant = "type V {\n\tcase A(x: int);\n\tcase B;\n}\n";
+	var inCase = Arrays.concat(variant, "component M {\n\tdef f(v: V) -> int {\n\t\tmatch (v) {\n\t\t\tA(x) => $ return x;\n\t\t\tB => return 0;\n\t\t}\n\t}\n}\n");
+	check(t, inCase, V, "this=2 x/0 v/2 f/3 M/7 V/7");
+	check(t, Arrays.concat(variant, "component M {\n\tdef f(v: V) -> int {\n\t\tmatch (v) {\n\t\t\tA(x) => /* note */$\n\t\t\t\treturn x;\n\t\t\tB => return 0;\n\t\t}\n\t}\n}\n"), V,
+		"this=2 x/0 v/2 f/3 M/7 V/7");
+	// The default case's statement, after "else".
+	check(t, Arrays.concat(variant, "component M {\n\tdef f(v: V) -> int {\n\t\tvar w = 1;\n\t\tmatch (v) {\n\t\t\tA(x) => return x;\n\t\t} else $ return w;\n\t}\n}\n"), V,
+		"this=1 w/0 v/1 f/2 M/6 V/6");
+	// Before the matched expression, its scope, not the patterns'.
+	check(t, Arrays.concat(variant, "component M {\n\tdef f(v: V) -> int {\n\t\tmatch ( $ v) {\n\t\t\tA(x) => return x;\n\t\t\tB => return 0;\n\t\t}\n\t}\n}\n"), V,
+		"this=1 v/1 f/2 M/6 V/6");
+	// Before a for loop's limit, without its variable.
+	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i < /* limit */ $ n) { }\n\t}\n}\n", V, "this=2 n/2 m/3 C/7");
+}
+
+// A pattern's head offers what the matched type's case lookup accepts.
+def test_pattern_types(t: Tester) {
+	var variant = "type V {\n\tcase A(x: int);\n\tcase B;\n}\n";
+	// A case's type has no cases to name.
+	var caseType = Arrays.concat(variant, "component M {\n\tdef f(a: V.A) {\n\t\tmatch (a) {\n\t\t\t$A => ;\n\t\t\t_ => ;\n\t\t}\n\t}\n}\n");
+	t.assert_string("this=1", render(scopeAny(caseType, P)));
+	agree(t, caseType, P, ["A", "B"]);
+	// Neither has a variant without cases.
+	var box = "type Box(x: int);\ncomponent M {\n\tdef f(b: Box) {\n\t\tmatch (b) {\n\t\t\t$Box(y) => ;\n\t\t\t_ => ;\n\t\t}\n\t}\n}\n";
+	t.assert_string("this=1", render(scopeAny(box, P)));
+	agree(t, box, P, ["Box"]);
+	// The variant itself has both.
+	var root = Arrays.concat(variant, "component M {\n\tdef f(v: V) {\n\t\tmatch (v) {\n\t\t\t$B => ;\n\t\t\t_ => ;\n\t\t}\n\t}\n}\n");
+	check(t, root, P, "this=1 A/0 B/0");
+	agree(t, root, P, ["A", "B", "V", "v"]);
+	// A type that verification left unknown offers nothing.
+	t.assert_string("this=1", render(scopeAny("component M {\n\tdef K = 1;\n\tdef f() {\n\t\tmatch (missing) {\n\t\t\t$K => ;\n\t\t}\n\t}\n}\n", P)));
+}
+
+// Verification stops between compounds at the error limit: past it, a
+// compound that it did not reach has no scope, and one that it did has.
+def test_unreached(t: Tester) {
+	var errors = StringBuilder.new().puts("component Errors {\n\tdef f() {\n");
+	for (i < 16) errors.put1("\t\tunresolved%d;\n", i);
+	var bad = errors.puts("\t}\n}\n").toString();
+	var query = "class C(p: int) {\n\tvar field = 1;\n\tdef m() {\n\t\tvar x = 1;\n\t\t$x = p;\n\t}\n}\n";
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, unmark(Arrays.concat(bad, query)).0)], [], false);
+	t.assert(a.parsed && a.diagnostics.length >= 15, "the error limit is reached");
+	t.assert(scopeAny(Arrays.concat(bad, query), V) == null, "no scope where verification did not reach");
+	t.assert(scopeAny(Arrays.concat(bad, "class C {\n\tvar field = $1;\n}\n"), V) == null, "nor in an initializer there");
+	// Errors after the offset's compound, in a class, which is checked after
+	// every component.
+	var classErrors = StringBuilder.new().puts("class Errors {\n\tdef f() {\n");
+	for (i < 16) classErrors.put1("\t\tunresolved%d;\n", i);
+	var later = classErrors.puts("\t}\n}\n").toString();
+	t.assert_string("this=1 x/0 count/2 m/2 Errors/6 K/6", render(scopeAny(Arrays.concat("component K {\n\tvar count = 1;\n\tdef m() {\n\t\tvar x = 1;\n\t\t$x = count;\n\t}\n}\n", later), V)));
+	// And after the offset's member, in the same compound.
+	var same = StringBuilder.new().puts("component K {\n\tdef m(p: int) {\n\t\t$p = 1;\n\t}\n\tdef broken() {\n");
+	for (i < 16) same.put1("\t\tunresolved%d;\n", i);
+	t.assert_string("this=1 p/1 broken/2 m/2 K/6", render(scopeAny(same.puts("\t}\n}\n").toString(), V)));
+}
+
+// An index method is named by an operator, which no identifier spells.
+def test_operators(t: Tester) {
+	check(t, "class C {\n\tdef [i: int] -> int { return i; }\n\tdef [i: int] = v: int { }\n\tdef m() { $m(); }\n}\n", V, "this=1 m/2 C/6");
+}
+
+// Ref<...> and ref<...> take a layout, and nothing else.
+def test_ref_layouts(t: Tester) {
+	var text = "layout L {\n\t+0 f: u32;\n\t=4;\n}\ncomponent K {\n\tdef r: Ref<$L>;\n}\n";
+	check(t, text, L, "L/4");
+	agree(t, text, L, ["L", "K", "int"]);
+	agree(t, "layout L {\n\t+0 f: u32;\n\t=4;\n}\ncomponent K {\n\tdef r: ref<$L>;\n}\n", L, ["L", "K"]);
+}
+
+// A variant's and an enum's receiver has "tag" and "name", inherited by a
+// variant's cases, which name no member else.
+def test_implicit_members(t: Tester) {
+	var variant = "type V {\n\tcase A {\n\t\tdef g() { var t = $tag; }\n\t}\n\tcase B;\n\tdef f() { var t = tag; }\n}\n";
+	check(t, variant, V, "this=1 g/2 name/3 tag/3 f/3 V/7");
+	agree(t, variant, V, ["tag", "name"]);
+	var own = "type V {\n\tcase A;\n\tcase B;\n\tdef f() -> int { var t = $tag; return 0; }\n}\n";
+	check(t, own, V, "this=1 name/2 tag/2 f/2 V/6");
+	agree(t, own, V, ["tag", "name"]);
+	// A variant with parameters has neither.
+	var params = "type W(id: int) {\n\tdef f() { var t = $id; }\n}\n";
+	check(t, params, V, "this=1 id/2 f/2 W/6");
+	agree(t, params, V, ["tag", "name", "id"]);
+}
+
+// The builtin integer types are those that Aeneas's type lookup accepts: iN
+// and uN for each width from 1 to 64, checked here against the verifier.
+def test_builtin_types(t: Tester) {
+	var names = AeneasAdapter.builtinTypes([]);
+	var count = 0;
+	for (name in names) {
+		if (name.length < 2 || (name[0] != 'i' && name[0] != 'u') || name[1] < '0' || name[1] > '9') continue;
+		count++;
+		if (!AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, Strings.format1("var x: %s;\n", name))], [], false).verified) {
+			t.fail1("%s does not verify as a type", name);
+		}
+	}
+	t.asserti(128, count);
+	for (width = 1; width <= 64; width++) {
+		for (sign in ["i", "u"]) {
+			var name = Strings.format2("%s%d", sign, width), found = false;
+			for (n in names) found = found || Strings.equal(n, name);
+			t.assert(found, name);
+		}
+	}
+	for (name in ["i0", "u0", "i65", "u65", "i01", "u128"]) {
+		for (n in names) t.assert(!Strings.equal(n, name), name);
+		t.assert(!AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, Strings.format1("var x: %s;\n", name))], [], false).verified, name);
+	}
+	// The other builtin types, in byte order with them.
+	t.assert_string("Array Range Ref System bool byte double float", spacedNames(names, 8));
+}
+// The first {n} of {names}, separated by spaces.
+def spacedNames(names: Array<string>, n: int) -> string {
+	var buf = StringBuilder.new();
+	for (i = 0; i < n && i < names.length; i++) {
+		if (i > 0) buf.putc(' ');
+		buf.puts(names[i]);
+	}
+	return buf.toString();
 }

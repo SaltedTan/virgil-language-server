@@ -112,9 +112,27 @@ component LspCompletionRepair {
 	def kinds(ctx: LspCursorContext) -> int {
 		if (ctx.place != LspCursorPlace.CODE || ctx.member()) return 0;
 		var s = ctx.syntax;
+		if ((s & LspCursorSyntax.TYPE) != 0 && refArgument(ctx)) return AnalysisScopeKinds.LAYOUTS;
 		return if((s & (LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION)) != 0, AnalysisScopeKinds.VALUES)
 			| if((s & LspCursorSyntax.TYPE) != 0, AnalysisScopeKinds.TYPES)
 			| if((s & LspCursorSyntax.PATTERN) != 0, AnalysisScopeKinds.PATTERN);
+	}
+	// Whether {ctx}'s identifier is the first type argument of "Ref" or "ref",
+	// which the verifier resolves as a layout's name, and only so
+	// (VstCompoundVerifier.resolveRefType): the innermost open delimiter is
+	// the "<" of type arguments right after one of those names, and only
+	// space and comments come between it and the identifier.
+	def refArgument(ctx: LspCursorContext) -> bool {
+		var n = ctx.roles.length;
+		if (n == 0 || ctx.roles[n - 1] != LspOpenRole.TYPE_ARGS) return false;
+		var text = ctx.text, open = ctx.opens[n - 1];
+		if (space(text, open + 1) < ctx.prefixStart) return false;
+		var end = open;
+		while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\n' || text[end - 1] == '\r')) end--;
+		var begin = end;
+		while (begin > 0 && isIdentMiddle(text[begin - 1])) begin--;
+		if (end - begin != 3 || (text[begin] != 'R' && text[begin] != 'r') || text[begin + 1] != 'e' || text[begin + 2] != 'f') return false;
+		return begin == 0 || text[begin - 1] != '.';
 	}
 	// {ctx}'s text, repaired: the sentinel at the cursor, where it joins the
 	// identifier there, and after that identifier's rest, the text that
@@ -163,8 +181,12 @@ component LspCompletionRepair {
 	// The first byte at or after {i} that is not part of the identifier
 	// there, whitespace, or a comment.
 	private def next(text: Array<byte>, i: int) -> int {
+		while (i < text.length && isIdentMiddle(text[i])) i++;
+		return space(text, i);
+	}
+	// The first byte at or after {i} that is not whitespace or a comment.
+	private def space(text: Array<byte>, i: int) -> int {
 		var n = text.length;
-		while (i < n && isIdentMiddle(text[i])) i++;
 		while (i < n) {
 			var c = text[i];
 			if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -204,6 +226,10 @@ class LspCompletionRequest(owner: LspCompletion, id: JsonRpcId, keywords: Array<
 	var offset: int;
 	var kinds: int;
 	var prefix: string;
+	// LspCompletion's invalidation generation when its analysis began, and
+	// whether it has run again because the sources changed while it ran.
+	var generation: int;
+	var rerun: bool;
 
 	def begin(supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		return owner.begin(this, supervisor);
@@ -231,6 +257,9 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 	// The request whose job waits for the worker, and the one whose job runs.
 	private var waiting: LspCompletionRequest;
 	private var running: LspCompletionRequest;
+	// Counts the events that can change a completion's sources or project
+	// (invalidate): an analysis that began in an older generation is stale.
+	private var generation: int;
 	// The last reply with declarations, for its document version and cursor.
 	private var cachedUri: string;
 	private var cachedIdentity: DocumentVersionIdentity;
@@ -289,6 +318,10 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		r.prefix = if(prefix.length > AnalysisScopeOrder.MAX_PREFIX, Arrays.range(prefix, 0, AnalysisScopeOrder.MAX_PREFIX), prefix);
 		// A newer request replaces one that waits, which gets its keywords.
 		if (waiting != null) finish(waiting, keywordList(waiting));
+		submit(r);
+	}
+	// Queues {r}'s analysis, as the waiting request.
+	private def submit(r: LspCompletionRequest) {
 		waiting = r;
 		r.job = LspAnalysisJob.new(r.begin, r.complete);
 		if (!scheduler.submit(r.job)) finish(r, keywordList(r));
@@ -300,10 +333,10 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		if (waiting == r) waiting = null;
 		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the completion was answered");
 		running = r;
-		var overlay = store.overlay(r.uri), ctx = projects.forDocument(r.uri).active;
-		if (overlay == null || overlay.identity != r.identity || ctx != r.context || !ctx.config.current) {
-			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document changed");
-		}
+		if (!current(r)) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document changed");
+		var ctx = r.context;
+		// The sources are captured now, in this generation.
+		r.generation = generation;
 		var keys = Array<string>.new(ctx.sources.length), index = -1;
 		for (i < keys.length) {
 			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
@@ -323,11 +356,28 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		// No occurrences: the result holds only the candidates' declarations.
 		return supervisor.beginTemporary(inputs.sources, ctx.definition.compilerArgs, 0, scope);
 	}
+	// Whether {r}'s document is open at the version it was requested at, in
+	// the same current project.
+	private def current(r: LspCompletionRequest) -> bool {
+		var overlay = store.overlay(r.uri), ctx = projects.forDocument(r.uri).active;
+		return overlay != null && overlay.identity == r.identity && ctx == r.context && ctx.config.current;
+	}
 	// Replies to {r} once its analysis ends: the declarations in scope and the
-	// keywords, or, if it failed or did not parse, the keywords alone.
+	// keywords, or, if it failed or did not parse, the keywords alone. An
+	// analysis whose sources an event invalidated while it ran is stale: it
+	// runs again, once, if its document is unchanged and no newer completion
+	// waits; otherwise the reply is the keywords. A stale result is neither
+	// sent nor kept.
 	def complete(r: LspCompletionRequest, outcome: AnalysisOutcome) {
 		if (running == r) running = null;
 		if (r.answered) return;
+		if (AnalysisOutcome.Completed.?(outcome) && r.generation != generation) {
+			if (!r.rerun && waiting == null && current(r)) {
+				r.rerun = true;
+				return submit(r);
+			}
+			return finish(r, keywordList(r));
+		}
 		if (AnalysisOutcome.Completed.?(outcome)) {
 			var result = declarations(r, AnalysisOutcome.Completed.!(outcome).snapshot);
 			if (result != JsonValue.Null) {
@@ -414,8 +464,12 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 	def close() {
 		for (r in [waiting, running]) if (r != null) finish(r, keywordList(r));
 	}
-	// Forgets the last reply: the sources or the configuration may have changed.
+	// Forgets the last reply, and makes the running analysis stale: the
+	// sources or the configuration may have changed. Called for document
+	// changes, saves, and closes, configuration changes, which replace
+	// contexts, and file and folder events.
 	def invalidate() {
+		generation++;
 		cachedResult = JsonValue.Null;
 		cachedIdentity = null;
 		cachedUri = null;

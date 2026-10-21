@@ -12,9 +12,11 @@ component AnalysisScopeKinds {
 	// A name in a type: type parameters and types (TypeEnv.lookup).
 	def TYPES = 2;
 	// A match pattern's head: the cases of the matched enum or variant, or,
-	// for any other type, VALUES.
+	// for another type, the constants that a pattern can compare.
 	def PATTERN = 4;
-	def ALL = VALUES | TYPES | PATTERN;
+	// The type argument of Ref<...> or ref<...>: layouts.
+	def LAYOUTS = 8;
+	def ALL = VALUES | TYPES | PATTERN | LAYOUTS;
 }
 
 // A scope query, sent with an ANALYZE request (AnalysisWire.WANT_SCOPE): the

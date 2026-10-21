@@ -29,8 +29,19 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private var receiver: bool;
 	// The field whose initializer holds the offset, or null.
 	private var initField: VstField;
+	// MethodEnv.initOrder at the offset, which TypeChecker.typeCheckNew sets:
+	// in a class's field initializer, the field's initOrder, and 0 elsewhere,
+	// as in a component's, whose fields have none. Where it is above 0, the
+	// receiver's members are checked (MethodEnv.checkMemberInit).
+	private var initOrder: int;
+	// The offset is in a class's super clause, which typeCheckNew checks
+	// with initOrder at the class's superInitOrder (see members).
+	private var superCall: bool;
 	// The match whose patterns, rather than a case's statement, hold the offset.
 	private var patterns: MatchStmt;
+	// A pattern's head that compares a value: only the constants that
+	// TypeChecker.visitMatchPattern accepts are offered (see members).
+	private var constants: bool;
 	// The answer: candidates, their levels, and the names each kind of name
 	// has bound so far, nearest first, which hide later ones.
 	private def found = Vector<AnalysisDeclaration>.new();
@@ -40,28 +51,35 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
+	// Null if verification did not reach the offset (see reached).
 	def find(offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
 		this.offset = offset;
 		locate();
+		if (!reached()) return null;
 		var values = (kinds & AnalysisScopeKinds.VALUES) != 0, types = (kinds & AnalysisScopeKinds.TYPES) != 0;
-		if ((kinds & AnalysisScopeKinds.PATTERN) != 0 && !cases()) values = true;
+		var layouts = values || (kinds & AnalysisScopeKinds.LAYOUTS) != 0;
+		// A pattern's head names a case of the matched type, or, for a type
+		// without cases, a constant; for a type that verification left
+		// unknown, nothing.
+		if ((kinds & AnalysisScopeKinds.PATTERN) != 0) constants = cases() == 0;
+		var locals = values, memberValues = values || constants;
 		var level = 0, thisLevel = -1;
 		for (i = scopes.length - 1; i >= 0; i--) {
 			if (i == thisScope) thisLevel = level;
 			var s = scopes[i];
-			if (values) for (j < s.length) local(s[j], level);
+			if (locals) for (j < s.length) local(s[j], level);
 			level++;
 		}
 		if (receiver && compound != null && !compound.isFileScope) {
 			var c = compound;
 			for (depth = 0; c != null && depth < MAX_HIERARCHY; depth++) {
-				if (values) members(c, level);
+				if (memberValues) members(c, level, true);
 				level++;
 				c = superclass(c);
 			}
 		}
 		if (file.synthetic != null) {
-			if (values) members(file.synthetic, level);
+			if (memberValues) members(file.synthetic, level, false);
 			level++;
 		}
 		if (method != null) typeParams(method.typeParams, values, types, level);
@@ -72,11 +90,29 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		level++;
 		typeCons(prog.typeEnv, values, types, level);
 		level++;
-		if (values && prog.layouts != null) {
+		// Layouts are values (MethodEnv.lookupVar), and the one argument that
+		// Ref<...> takes (VstCompoundVerifier.resolveRefType).
+		if (layouts && prog.layouts != null) {
 			var l = level;
 			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l));
 		}
 		return answer(thisLevel, prefix);
+	}
+	// Whether verification reached the offset. Verifier.verify type-checks
+	// compound after compound, and stops between two (Verifier.forAll) once
+	// the error limit is reached (ErrorGen.notTooMany); it then has bound no
+	// name in the compounds it skipped. So the offset is reached if the limit
+	// never was, or if the code around it was type-checked: TypeChecker.
+	// enterMethod sets a method's func.thisParam, and nothing else does
+	// before code generation; and typeCheckNew enters a compound's
+	// constructor, which every compound but a layout has, so a constructor
+	// with it means that its compound's fields were type-checked, and, as
+	// typeCheckVstCompound does not stop, all its members. Outside a
+	// compound, only a verification that never stopped reaches the offset.
+	private def reached() -> bool {
+		if (prog.ERROR.notTooMany) return true;
+		var f = if(method != null, method.func, if(compound != null && compound.constructor != null, compound.constructor.func));
+		return f != null && f.thisParam != null;
 	}
 	// Sorts the candidates, and caps them: past the cap, only those that
 	// start with {prefix} are kept, up to it.
@@ -114,28 +150,59 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		add(valueNames, make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v), level);
 	}
 	// The fields and methods of {c} that a name resolves to through the
-	// receiver (MethodEnv.resolveCompoundMember): those that are not private
-	// to another file (VstCompoundVerifier.canAccessMember). An enum's methods
-	// are not (MethodEnv.lookupEnumExprMember). In a field's initializer, a
-	// later field of the same compound, and a method of a class or an enum, is
-	// an error (MethodEnv.checkMemberInit), so neither is offered.
-	private def members(c: VstCompound, level: int) {
-		var methods = !VstEnum.?(c) && (initField == null || VstComponent.?(c));
-		var later = false, own = initField != null && c == initField.receiver;
+	// receiver if {receiver} (MethodEnv.lookupExprMember), or as a member of
+	// the file's synthetic component: those that are not private to another
+	// file (VstCompoundVerifier.canAccessMember), and that an identifier can
+	// name, unlike an index or operator method such as "[]" or "==". An
+	// enum's methods are not (MethodEnv.lookupEnumExprMember). A variant's
+	// or an enum's "tag" and "name" are, through the receiver
+	// (lookupVariantExprMember, lookupEnumExprMember), and the cases of a
+	// variant are not: only a type names them, as in V.B.
+	private def members(c: VstCompound, level: int, receiver: bool) {
+		var checked = receiver && (initOrder > 0 || superCall);
+		// MethodEnv.checkMemberInit: no method while checked.
+		var methods = !VstEnum.?(c) && !checked && !constants;
 		for (l = c.members; l != null; l = l.tail) {
 			var m = l.head;
-			if (m == initField) later = true;
 			if (m.isPrivate && !sameFile(c)) continue;
+			if (!identifier(m.token.image)) continue;
 			match (m) {
 				x: VstNew => ;
 				x: VstMethod => if (methods && !x.isSynthetic) add(valueNames, make(AnalysisDeclKind.METHOD, x), level);
-				x: VstField => if (!(own && later)) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
+				x: VstField => if (field(x, c, checked)) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
+				x: VstVariantTagMember => if (receiver && !constants) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
+				x: VstVariantNameMember => if (receiver && !constants) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
 				_ => ;
 			}
 		}
 	}
+	// Whether field {f} of {c} is offered.
+	// - A pattern's head compares only a read-only component field whose
+	//   initializer is a literal (TypeChecker.visitMatchPattern).
+	// - A field whose type is inferred from its own initializer is a cycle
+	//   there (MethodEnv.cyclicMemberTypeInference).
+	// - While {checked}, MethodEnv.checkMemberInit rejects a field whose
+	//   initOrder is at most MethodEnv.initOrder. VstCompoundVerifier.verify
+	//   numbers a class's fields above its superclass's superInitOrder, and
+	//   in reverse order of declaration, with the constructor's parameters'
+	//   fields above all: so a field initializer sees the earlier fields and
+	//   those of the parameters, and no inherited field; and the super
+	//   clause, checked at superInitOrder, sees the class's own fields and
+	//   no inherited one.
+	private def field(f: VstField, c: VstCompound, checked: bool) -> bool {
+		if (constants) return VstComponent.?(c) && f.writability == Writability.READ_ONLY && Literal.?(f.init);
+		if (f == initField && f.tref == null) return false;
+		if (!checked) return true;
+		if (superCall) return c == compound;
+		return f.initOrder > initOrder;
+	}
 	private def sameFile(c: VstCompound) -> bool {
 		return c.token != null && Strings.equal(c.token.fileName, file.fileName);
+	}
+	private def identifier(name: string) -> bool {
+		if (name.length == 0) return false;
+		var c = name[0];
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 	}
 	// The class that {c} extends, as verification resolved it, or null.
 	private def superclass(c: VstCompound) -> VstCompound {
@@ -167,20 +234,33 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (tc.kind == Kind.ENUM && EnumType.?(tc.singleton)) return make(AnalysisDeclKind.ENUM, EnumType.!(tc.singleton).enumDecl);
 		return null;
 	}
-	// The cases of the enum or variant that the match of {patterns} matches,
-	// which verification has typed, at level 0. False if there is none.
-	private def cases() -> bool {
+	// Adds, at level 0, the cases that an unqualified pattern's head can name
+	// in the match of {patterns}, as TypeChecker.visitMatchPattern looks them
+	// up in the type that verification inferred for its expression
+	// (MatchStmtVerifier): an enum's cases (checkEnumPattern); for a variant,
+	// a case member of the type's own declaration (checkVariantPattern,
+	// ClassType.lookupCase), so none for a case's type, such as V.A, or a
+	// variant without cases, such as "type Box(x: int);". Returns 1 then, 0
+	// for another type, whose patterns compare values, and -1 if there is no
+	// match or verification left its type unknown: ErrorGen's types for
+	// errors are of kind VOID.
+	private def cases() -> int {
 		var t = if(patterns != null && patterns.expr != null, patterns.expr.exactType);
-		if (t == null) return false;
+		if (t == null || t.typeCon == null || t.typeCon.kind == Kind.VOID) return -1;
 		if (EnumType.?(t)) {
 			for (c in EnumType.!(t).enumDecl.cases) add(valueNames, make(AnalysisDeclKind.ENUM_CASE, c), 0);
-			return true;
+			return 1;
 		}
-		if (!V3.isVariant(t)) return false;
-		var decl = V3.classDecl(V3.getRootType(t));
-		if (decl == null || decl.cases == null) return false;
-		for (c in decl.cases) if (!c.isDefaultCase()) add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0);
-		return true;
+		if (!V3.isVariant(t) || !ClassType.?(t)) return 0;
+		var decl = ClassType.!(t).classDecl;
+		for (l = decl.members; l != null; l = l.tail) {
+			if (!VstCaseMember.?(l.head)) continue;
+			var c = VstCaseMember.!(l.head);
+			if (!c.isDefaultCase() && decl.memberMap != null && decl.memberMap[c.name()] == c) {
+				add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0);
+			}
+		}
+		return 1;
 	}
 	private def make(kind: AnalysisDeclKind, decl: Decl) -> AnalysisDeclaration {
 		return if(decl != null, display.declaration(kind, decl.token, decl, null));
@@ -234,11 +314,14 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				else enterMethod(x);
 			}
 			x: VstMethod => enterMethod(x);
-			x: VstField => if (x.init != null && inside(x.init.range())) {
+			// In the initializer, or in the space or comments before it,
+			// after the field's name and type.
+			x: VstField => if (x.init != null && offset >= fieldHeaderEnd(x)) {
 				// A component's initializers bind "this" (typeCheckNew calls
 				// enterMethod); a class's and an enum's do not (enterCompound).
 				receiver = true;
 				initField = x;
+				initOrder = x.initOrder;
 				if (VstComponent.?(compound) && !compound.isFileScope) enterScope(true);
 				walk(x.init);
 			}
@@ -258,12 +341,17 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		params(m.func.params, null);
 		body.accept(this, ());
 	}
-	// A super clause, checked with the constructor's receiver and parameters.
+	// A super clause, checked with the constructor's receiver and parameters,
+	// after the field initializers (typeCheckNew), but with initOrder at the
+	// class's superInitOrder, above 0: "this" is an error there
+	// (MethodEnv.lookupVar: InvalidThisUse), and so are the members that
+	// checkMemberInit rejects.
 	private def enterConstructor(c: VstCompound, ctor: VstNew, args: TupleExpr) {
 		compound = c;
 		method = ctor;
 		receiver = true;
-		enterScope(!c.isFileScope);
+		superCall = true;
+		enterScope(false);
 		params(ctor.func.params, null);
 		walk(args);
 	}
@@ -341,10 +429,11 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		else if (within(s.body)) branch(s.body);
 	}
 	// The variable is bound after the limit is checked, and the body is
-	// checked in the loop's scope (TypeChecker.visitForLess).
+	// checked in the loop's scope (TypeChecker.visitForLess). The space
+	// before the limit is the limit's.
 	def visitForLess(s: ForLessStmt, env: void) {
 		enterScope(false);
-		if (inside(range(s.expr))) return walk(s.expr);
+		if (s.expr != null && offset < rangeEnd(s.expr.range())) return walk(s.expr);
 		bind(s.varDecl);
 		if (within(s.body)) s.body.accept(this, ());
 	}
@@ -364,14 +453,21 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// A case with one pattern binds its variable or its parameters for its
 	// statement (TypeChecker.visitMatch); otherwise the offset is in the
-	// patterns.
+	// patterns. The space before the matched expression is the expression's,
+	// and a case's statement begins where its patterns end, after "=>" or
+	// "else" (Parser.parseMatchCase), so the space before it is the case's.
 	def visitMatch(s: MatchStmt, env: void) {
-		if (inside(range(s.expr))) return walk(s.expr);
+		if (s.expr != null && offset < rangeEnd(s.expr.range())) return walk(s.expr);
 		for (l = if(s.cases != null, s.cases.list); l != null; l = l.tail) {
 			var c = l.head;
-			if (!within(c.stmt)) continue;
+			if (c.stmt == null || c.patterns == null) continue;
+			var begin = rangeEnd(c.patterns.range()), e = stmtExtent(c.stmt);
+			if (begin < 0 || offset < begin || offset >= e.1) continue;
 			var pats = if(c.patterns != null, c.patterns.list);
 			var pat = if(pats != null && pats.tail == null, pats.head);
+			// The default case's pattern binds a variable named by the
+			// keyword "else" (Parser.parseMatchStmt), which no name can use.
+			if (pat != null && pat.vdecl != null && Strings.equal(pat.vdecl.token.image, "else")) pat = null;
 			if (pat != null && (pat.vdecl != null || pat.params != null)) {
 				enterScope(false);
 				if (pat.vdecl != null) bind(pat.vdecl);
@@ -463,6 +559,13 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			_ => ;
 		}
 		return (b, e);
+	}
+	// Where a field's name, or its type if it has one, ends: only "=" and
+	// space come between that and its initializer.
+	private def fieldHeaderEnd(f: VstField) -> int {
+		var e = tokenEnd(f.token);
+		if (f.tref != null) e = Ints.max(e, rangeEnd(f.tref.range()));
+		return if(e < 0, int.max, e);
 	}
 	private def stmtExtent(s: Stmt) -> (int, int) {
 		if (!LocalStmt.?(s)) return (point(s.range()), rangeEnd(s.range()));
