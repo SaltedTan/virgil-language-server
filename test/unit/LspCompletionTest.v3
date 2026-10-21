@@ -202,6 +202,7 @@ def test_numbers(t: Tester) {
 			// Fractional underscores, leading, trailing, and repeated, and an
 			// empty fraction before an exponent or a suffix.
 			"1._5e+3", "1._5", "1._e+3", "1._", "1.5_", "1.__5", "1.5__2",
+			"1.f", "1._f", "0.f",
 			// An underscore before an exponent.
 			"1_e3", "1_e+3", "1__e-3",
 			// The zero path takes the same fraction, exponent, and suffixes.
