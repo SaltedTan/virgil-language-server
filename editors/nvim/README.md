@@ -50,20 +50,23 @@ The server notices changes made outside the editor, such as a checkout, only fro
 
 ## Completion
 
-The server offers [keyword completion](../../docs/architecture.md#completion) in open buffers, even while they fail to parse. Neovim 0.11 sets `omnifunc` to `vim.lsp.omnifunc()` when the server attaches, so `<C-x><C-o>` in Insert mode completes the word before the cursor. To see the items as you type instead, enable Neovim's built-in completion in an `LspAttach` autocommand:
+The server offers [keyword completion](../../docs/architecture.md#completion) in open buffers, even while they fail to parse. In plain Neovim, ask for it: Neovim 0.11 sets `omnifunc` to `vim.lsp.omnifunc()` when the server attaches, so `<C-x><C-o>` in Insert mode completes the word before the cursor, with no setup. Neovim's built-in LSP completion also has `vim.lsp.completion.get()`, which asks only the servers that `vim.lsp.completion.enable()` enabled for the buffer, so enable it in an `LspAttach` autocommand and map a key to it, as `:help vim.lsp.completion.get()` suggests:
 
 ```lua
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
     local client = vim.lsp.get_client_by_id(args.data.client_id)
     if client and client.name == "virgil_lsp" then
-      vim.lsp.completion.enable(true, client.id, args.buf, { autotrigger = true })
+      vim.lsp.completion.enable(true, client.id, args.buf)
+      vim.keymap.set("i", "<C-Space>", vim.lsp.completion.get, { buffer = args.buf })
     end
   end,
 })
 ```
 
-LazyVim needs no setup: its default completion plugin, blink.cmp, asks attached servers through its `lsp` source, as LazyVim 16.0.1's `coding.blink` extra configures it. That is read from LazyVim's source; it hasn't been tried in a LazyVim session with this server.
+In either case, `<C-y>` accepts the selected item. Neovim 0.11.6's `autotrigger = true` doesn't show the items as you type with this server: it asks only after one of the server's `completionProvider.triggerCharacters`, and the server declares none yet. They arrive with member completion, which adds `.` ([#130](https://github.com/SaltedTan/virgil-language-server/issues/130)).
+
+LazyVim needs no setup, and shows the items as you type. Its default completion plugin, blink.cmp, asks every attached server that declares `completionProvider` through its `lsp` source (`sources.default` in LazyVim 16.0.1's `coding.blink` extra), and blink.cmp 1.10.2 asks its sources whenever you type a keyword character (`completion.trigger.show_on_keyword`, on by default, which LazyVim leaves unchanged), with or without trigger characters. That is read from LazyVim's and blink.cmp's source; it hasn't been tried in a LazyVim session with this server.
 
 ## Headless smoke test
 

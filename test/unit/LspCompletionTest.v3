@@ -17,6 +17,10 @@ def X = [
 	T("LspCompletion:open_calls", test_open_calls),
 	T("LspCompletion:linear_scan", test_linear_scan),
 	T("LspCompletion:context_positions", test_context_positions),
+	T("LspCompletion:lambda_bodies", test_lambda_bodies),
+	T("LspCompletion:type_positions", test_type_positions),
+	T("LspCompletion:if_expressions", test_if_expressions),
+	T("LspCompletion:nested_else", test_nested_else),
 	T("LspCompletion:keyword_sets", test_keyword_sets),
 	T("LspCompletion:language_options", test_language_options),
 	T("LspCompletion:pinned_keywords", test_pinned_keywords),
@@ -376,6 +380,139 @@ def test_context_positions(t: Tester) {
 	checkSyntax(t, "type V #$", 0);
 	checkSyntax(t, "def f() { x.$ }", LspCursorSyntax.MEMBER);
 	checkSyntax(t, "def f() { C.new.$ }", LspCursorSyntax.MEMBER);
+}
+
+// A lambda's body may be a block or an empty ";" inside parentheses or
+// brackets, and neither ends the enclosing statement or call.
+def test_lambda_bodies(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	var EXPR = LspCursorSyntax.EXPRESSION;
+	checkOffered(t, "def f() { g(fun ();, $); }", "false fun if null true");
+	checkCalls(t, "def f() { g(fun ();, $); }", [11]);
+	checkCalls(t, "def f() { g(a, h(fun x;, $", [11, 16]);
+	checkCalls(t, "def f() { g(fun () -> int;, $", [11]);
+	checkCalls(t, "def f() { g(fun () -> Array<int>;, $", [11]);
+	checkCalls(t, "def f() { g(fun () { x(); y(); }, $", [11]);
+	checkCalls(t, "def f() { g(fun () => x;, $", []);
+	checkCalls(t, "def f() { a[fun ();, $", []);
+	checkSyntax(t, "def f() { a[fun ();, $", EXPR);
+	checkSyntax(t, "def f() { g(fun () { x(); $", STMT);
+	checkSyntax(t, "def f() { g(fun () { if (x) y(); $", STMT | LspCursorSyntax.ELSE);
+	// After a lambda, an operator or a separator follows.
+	checkSyntax(t, "def f() { g(fun (); $", 0);
+	checkSyntax(t, "def f() { g(fun () { } $", 0);
+	checkSyntax(t, "def f() { var h = fun () { } $ }", 0);
+	checkSyntax(t, "def f() { var h = fun ();$ }", 0);
+	checkSyntax(t, "def f() { var h = fun ();; $ }", STMT);
+	checkSyntax(t, "def f() { var h = fun () { }; $ }", STMT);
+	checkSyntax(t, "def f() { var h = fun () { }\n\t$ }", STMT);
+	// In a match case, a lambda's "=>" begins its body, not a case.
+	checkSyntax(t, "def f() { match (x) { A => g(fun () => $", EXPR);
+	checkSyntax(t, "def f() { match (x) { A => var h = fun () => y; $", LspCursorSyntax.PATTERN);
+	// A header that goes wrong is no lambda's.
+	checkCalls(t, "def f() { g(fun, h(); $", []);
+	checkSyntax(t, "def f() { g(fun 1 { $", STMT);
+}
+
+// Tuple types, type arguments, and function types stay type positions.
+def test_type_positions(t: Tester) {
+	var TYPE = LspCursorSyntax.TYPE;
+	checkOffered(t, "def f(x: ($)) {}", "");
+	checkOffered(t, "def f(x: Array<$>) {}", "");
+	checkSyntax(t, "def f(x: ($)) {}", TYPE);
+	checkSyntax(t, "def f(x: Array<$>) {}", TYPE);
+	checkSyntax(t, "def f(x: (int, $", TYPE);
+	checkSyntax(t, "def f(x: ((int, $", TYPE);
+	checkSyntax(t, "def f(x: Array<(int, $", TYPE);
+	checkSyntax(t, "def f(x: HashMap<int, $", TYPE);
+	checkSyntax(t, "def f(x: Array<Array<$", TYPE);
+	checkSyntax(t, "def f(x: A.B<$", TYPE);
+	checkSyntax(t, "def f(x: (int -> $", TYPE);
+	checkSyntax(t, "def f() -> ($", TYPE);
+	checkSyntax(t, "def f() -> Array<$", TYPE);
+	checkSyntax(t, "var x: ($", TYPE);
+	checkSyntax(t, "var x: Array<$", TYPE);
+	checkSyntax(t, "def f() { var x: (int, $ }", TYPE);
+	checkSyntax(t, "def f() { var x: Array<$ }", TYPE);
+	checkSyntax(t, "class A extends B<$", TYPE);
+	checkSyntax(t, "def f() { var g = fun (x: Array<$", TYPE);
+	checkSyntax(t, "def f() { var g = fun () -> ($", TYPE);
+	// After a type, its declaration goes on.
+	checkSyntax(t, "def f(x: (int, int) $", 0);
+	checkSyntax(t, "def f(x: Array<int> $", 0);
+	checkSyntax(t, "def f(x: Array<Array<int>>, $", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "def f(x: Array<Array<int>>) -> Array<int> $", 0);
+	checkSyntax(t, "class A extends B<int> $", LspCursorSyntax.CLASS_HEADER);
+	checkSyntax(t, "def f() { var x: Array<int> = $ }", LspCursorSyntax.EXPRESSION);
+	checkSyntax(t, "def f() { var x: Array<int>; $ }", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+	checkCalls(t, "def f(x: Array<int>) { g($", [24]);
+	// In an expression, "<" may compare or begin type arguments.
+	checkSyntax(t, "def f() { x = a < $ }", LspCursorSyntax.EXPRESSION | TYPE);
+	checkSyntax(t, "def f() { x = g<$ }", LspCursorSyntax.EXPRESSION | TYPE);
+	checkSyntax(t, "def f() { x = (a < $ }", LspCursorSyntax.EXPRESSION | TYPE);
+	checkSyntax(t, "def f() { x = ($ }", LspCursorSyntax.EXPRESSION);
+}
+
+// An if in an expression is an operand, not a statement.
+def test_if_expressions(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	var EXPR = LspCursorSyntax.EXPRESSION;
+	checkOffered(t, "def f() { var x = if(true, 1, 2) $; }", "");
+	checkSyntax(t, "def f() { var x = if(true, 1, 2) $; }", 0);
+	checkSyntax(t, "def f() { var x = if($", EXPR);
+	checkSyntax(t, "def f() { var x = if(a, $", EXPR);
+	checkSyntax(t, "def f() { return if(a, b, c) $", 0);
+	checkSyntax(t, "def f() { g(if(a, b, c) $", 0);
+	checkSyntax(t, "def f() { g(if(a, b, c), $", EXPR);
+	checkSyntax(t, "def f() => if(a, b, c) $", 0);
+	checkSyntax(t, "def f() { var x = if(a, b, c)\n\t$ }", STMT);
+	checkSyntax(t, "def f() { var x = if(a, b, c); $ }", STMT);
+	// Statements.
+	checkSyntax(t, "def f() { if (a) $", STMT);
+	checkSyntax(t, "def f() { if (a) if (b) $", STMT);
+	checkSyntax(t, "def f() { while (a) if (b) $", STMT);
+	checkSyntax(t, "def f() { if (a) x(); else if (b) $", STMT);
+	checkSyntax(t, "def f() { match (x) { A => if (b) $", STMT);
+	checkCalls(t, "def f() { var x = if(g($", [22]);
+	var ctx = at("def f() { x = if(a, $");
+	t.asserta("roles", [LspOpenRole.STATEMENTS, LspOpenRole.IF_ARGS], ctx.roles, putRole);
+}
+def putRole(buf: StringBuilder, r: LspOpenRole) -> StringBuilder {
+	return buf.puts(r.name);
+}
+
+// An else attaches to the innermost if or match without one, and the outer
+// ones can take theirs after it.
+def test_nested_else(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	var ELSE = LspCursorSyntax.ELSE;
+	checkOffered(t, "def f() { if (true) if (false) f(); else f(); el$ }",
+		"break continue def else false for fun if match null return true var while");
+	checkSyntax(t, "def f() { if (a) if (b) x(); $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) if (b) x(); else y(); $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) if (b) x(); else y(); else z(); $ }", STMT);
+	checkSyntax(t, "def f() { if (a) if (b) if (c) x(); else y(); else z(); $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) while (b) if (c) x(); else y(); $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) while (b) x(); $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) match (x) { } $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) match (x) { } else y(); $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) { if (b) x(); } $ }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) { if (b) x(); $ } }", STMT | ELSE);
+	checkSyntax(t, "def f() { if (a) x(); else if (b) y(); else z(); $ }", STMT);
+	// Another statement ends the chain.
+	checkSyntax(t, "def f() { if (a) if (b) x(); y(); $ }", STMT);
+	checkSyntax(t, "def f() { if (a) if (b) x(); ; $ }", STMT);
+	checkSyntax(t, "def f() { if (a) if (b) x(); { } $ }", STMT);
+	checkSyntax(t, "def f() { if (a) if (b) x(); if (c) y(); else z(); $ }", STMT);
+	// Deep chains stay a count.
+	var buf = StringBuilder.new();
+	buf.puts("def f() { ");
+	for (i < 1000) buf.puts("if (a) ");
+	buf.puts("x(); ");
+	for (i < 999) buf.puts("else y(); ");
+	var chain = buf.toString();
+	t.asserti(STMT | ELSE, at(Strings.format1("%s$", chain)).syntax);
+	t.asserti(STMT, at(Strings.format1("%selse y(); $", chain)).syntax);
 }
 
 def test_keyword_sets(t: Tester) {

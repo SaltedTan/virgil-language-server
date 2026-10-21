@@ -61,17 +61,21 @@ enum LspOpenRole {
 	MEMBERS,	// "{": a class's, component's, or variant case's members
 	VARIANT,	// "{": a variant's cases and methods
 	NAMES,		// "{": an enum's cases or a layout's fields
-	STATEMENTS,	// "{": a method body, block, or lambda body
+	STATEMENTS,	// "{": a method body or block
+	LAMBDA,		// "{": a lambda's body, which is an operand
 	MATCH,		// "{": a match's cases
 	CALL,		// "(": a call's arguments
-	CONTROL,	// "(": an if's or while's condition
+	CONTROL,	// "(": an if statement's or a while's condition
+	IF_ARGS,	// "(": an if expression's condition and values
 	MATCH_CONTROL,	// "(": a match's value
 	FOR,		// "(": a for loop's header, before its first ";"
 	FOR_CLAUSES,	// "(": a for loop's header, after its first ";"
 	PARAMS,		// "(": parameters that cannot be "var"
 	PARAMS_VAR,	// "(": parameters that can be "var"
 	GROUP,		// "(": a tuple or a parenthesized expression
-	INDEX		// "[": an index or an array literal
+	TYPES,		// "(": a tuple type's elements
+	INDEX,		// "[": an index or an array literal
+	TYPE_ARGS	// "<": a type's type arguments
 }
 
 // The completion context at a cursor in a document's text, as a token-level
@@ -114,6 +118,7 @@ component LspCursorPunct {
 	def ARROW: byte = 'A';		// "->"
 	def FAT_ARROW: byte = 'F';	// "=>"
 	def DOTS: byte = 'R';		// "..", "...", or more dots
+	def EMPTY_BODY: byte = 'E';	// the ";" that is a lambda's empty body
 }
 
 // What a token before the cursor was, as the look-back needs it.
@@ -131,23 +136,24 @@ enum LspCursorToken {
 // each declaration and statement to classify the cursor's position. It is
 // linear in the text before the cursor and allocates only as delimiters nest.
 class LspCursorScanner(text: Array<byte>) {
-	// Level bits.
-	def STATEMENT_IF = 1;	// the current statement started with if or match
-	def ELSE_OK = 2;		// the statement that just ended started so
 	def NO_DECL = -1;
 	def STARTED = -2;		// the declaration or statement starts with no keyword
 
 	// The open delimiters and their roles.
 	private def opens = Vector<int>.new();
 	private def roles = Vector<LspOpenRole>.new();
-	// Open "(" and "[" and "{" counts, so that a stray closer is skipped at once.
-	private def counts = Array<int>.new(3);
-	// For the top level and each open "{": its role, the keyword that began
+	// Open "(", "[", "{", and type argument "<" counts, by kind (kindOf), so
+	// that a stray closer is skipped at once.
+	private def counts = Array<int>.new(4);
+	// For the top level and each open "{": its role; the keyword that began
 	// its current declaration or statement (an LspKeyword's tag, NO_DECL, or
-	// STARTED), and STATEMENT_IF and ELSE_OK bits.
+	// STARTED); how many if and match statements the current statement
+	// nests that have no else yet; and whether a statement just ended, so an
+	// else can attach to the innermost of them.
 	private def levelRoles = Vector<LspOpenRole>.new();
 	private def levelDecls = Vector<int>.new();
-	private def levelBits = Vector<int>.new();
+	private def levelIfs = Vector<int>.new();
+	private def levelElse = Vector<bool>.new();
 	// The token before the current position.
 	private var prevKind: LspCursorToken;
 	private var prevByte: byte;
@@ -156,6 +162,14 @@ class LspCursorScanner(text: Array<byte>) {
 	private var prevAfterDot: bool;
 	private var prevClosed: LspOpenRole;	// what a ")", "]", or "}" closed
 	private var newline: bool;		// a line ends after the token
+	private var prevIfStatement: bool;	// the "if" before is a statement's
+	// True while the previous tokens are a type's name, as in "A.B", that
+	// began at a position where only a type can start.
+	private var typeName: bool;
+	// The number of open delimiters at a "fun" whose body has not begun, or
+	// -1: at that depth, a "{" begins a block body, "=>" an expression body,
+	// and a ";" is an empty body.
+	private var lambdaDepth = -1;
 	// A declaration's header: 0 outside one, HEADER_NAME before its name,
 	// HEADER_AFTER_NAME after it, and HEADER_TYPE_PARAMS in its "<...>".
 	private var header: int;
@@ -180,9 +194,7 @@ class LspCursorScanner(text: Array<byte>) {
 		return ctx;
 	}
 	private def scanTo(ctx: LspCursorContext, end: int) -> LspCursorPlace {
-		levelRoles.put(LspOpenRole.TOP);
-		levelDecls.put(NO_DECL);
-		levelBits.put(0);
+		pushLevel(LspOpenRole.TOP);
 		ctx.prefixStart = end;
 		var i = 0, n = text.length;
 		while (i < end) {
@@ -304,9 +316,21 @@ class LspCursorScanner(text: Array<byte>) {
 	}
 	private def isBrace(r: LspOpenRole) -> bool {
 		match (r) {
-			MEMBERS, VARIANT, NAMES, STATEMENTS, MATCH => return true;
+			MEMBERS, VARIANT, NAMES, STATEMENTS, LAMBDA, MATCH => return true;
 			_ => return false;
 		}
+	}
+	// The kind of delimiter that opens {r}: 0 for "(", 1 for "[", 2 for "{",
+	// and 3 for "<".
+	private def kindOf(r: LspOpenRole) -> int {
+		if (isBrace(r)) return 2;
+		if (r == LspOpenRole.INDEX) return 1;
+		if (r == LspOpenRole.TYPE_ARGS) return 3;
+		return 0;
+	}
+	// True if only a type can start at the positions {at}.
+	private def typeOnly(at: int) -> bool {
+		return (at & LspCursorSyntax.TYPE) != 0 && (at & LspCursorSyntax.EXPRESSION) == 0;
 	}
 	private def level() -> int {
 		return levelRoles.length - 1;
@@ -315,32 +339,56 @@ class LspCursorScanner(text: Array<byte>) {
 	// A token that is not a keyword or punctuation starts a declaration or
 	// statement that no keyword begins.
 	private def token(kind: LspCursorToken, start: int) {
-		if (inBraces() && levelDecls[level()] == NO_DECL) levelDecls[level()] = STARTED;
+		if (inBraces()) {
+			endIfs();
+			if (levelDecls[level()] == NO_DECL) levelDecls[level()] = STARTED;
+		}
 		if (header != HEADER_TYPE_PARAMS) header = 0;
+		lambdaToken(kind == LspCursorToken.NAME);
 		setPrev(kind, start);
 	}
 	private def name(start: int) {
 		var h = header;
+		var t = typeOnly(position()) || (typeName && prevKind == LspCursorToken.PUNCT && prevByte == '.');
 		token(LspCursorToken.NAME, start);
+		typeName = t;
 		if (h == HEADER_NAME) header = HEADER_AFTER_NAME;
 		else if (h == HEADER_TYPE_PARAMS) header = h;
 	}
+	// A token in a lambda's header, before its body: {ok} if one can be
+	// there. Any other token means the header is not one.
+	private def lambdaToken(ok: bool) {
+		if (!ok && lambdaDepth == opens.length) lambdaDepth = -1;
+	}
+	// A token other than "else" at a brace level: if a statement just ended,
+	// so does the chain of if and match statements it closed.
+	private def endIfs() {
+		var l = level();
+		if (levelElse[l]) {
+			levelElse[l] = false;
+			levelIfs[l] = 0;
+		}
+	}
 	private def keyword(kw: LspKeyword, start: int) {
 		var braces = inBraces(), l = level();
+		var statement = false;
 		if (braces) {
-			var at = position();
-			match (kw) {
-				ELSE => {
-					// The else branch is a statement of its own.
-					levelDecls[l] = NO_DECL;
-					levelBits[l] = 0;
-				}
-				IF, MATCH => if ((at & LspCursorSyntax.STATEMENT) != 0) levelBits[l] = STATEMENT_IF;
-				_ => ;
+			statement = (position() & LspCursorSyntax.STATEMENT) != 0;
+			if (kw == LspKeyword.ELSE) {
+				// The else branch is a statement of its own, nested in any
+				// outer if that has no else yet.
+				if (levelElse[l] && levelIfs[l] > 0) levelIfs[l]--;
+				levelElse[l] = false;
+				levelDecls[l] = NO_DECL;
+			} else {
+				endIfs();
+				if (statement && (kw == LspKeyword.IF || kw == LspKeyword.MATCH)) levelIfs[l]++;
 			}
 			var decl = levelDecls[l];
 			if (kw != LspKeyword.ELSE && (decl == NO_DECL || isModifier(decl))) levelDecls[l] = kw.tag;
 		}
+		lambdaToken(false);
+		if (kw == LspKeyword.FUN) lambdaDepth = opens.length;
 		match (kw) {
 			CLASS, COMPONENT, TYPE, ENUM, CASE, DEF, PACKING, FUN => {
 				header = HEADER_NAME;
@@ -351,6 +399,8 @@ class LspCursorScanner(text: Array<byte>) {
 		}
 		setPrev(LspCursorToken.KEYWORD, start);
 		prevKeyword = kw;
+		prevIfStatement = statement;
+		typeName = false;
 	}
 	private def isModifier(decl: int) -> bool {
 		return decl == LspKeyword.PRIVATE.tag || decl == LspKeyword.THREAD.tag
@@ -360,31 +410,39 @@ class LspCursorScanner(text: Array<byte>) {
 		var closed = LspOpenRole.TOP;
 		var h = header;
 		header = 0;
-		if (inBraces() && levelDecls[level()] == NO_DECL && c != ';' && c != '{' && c != '}') levelDecls[level()] = STARTED;
+		// A lambda's body begins at the depth of its "fun".
+		var body = lambdaDepth == opens.length && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
+		if (body) lambdaDepth = -1;
+		if (c == ';' && body) c = LspCursorPunct.EMPTY_BODY;
+		if (inBraces()) {
+			if (c != '}') endIfs();
+			if (levelDecls[level()] == NO_DECL && c != ';' && c != '{' && c != '}') levelDecls[level()] = STARTED;
+		}
 		match (c) {
 			'(' => push(start, parenRole(h), 0);
 			'[' => push(start, LspOpenRole.INDEX, 1);
 			'{' => {
-				var role = braceRole();
+				var role = if(body, LspOpenRole.LAMBDA, braceRole());
 				push(start, role, 2);
-				levelRoles.put(role);
-				levelDecls.put(NO_DECL);
-				levelBits.put(0);
+				pushLevel(role);
 			}
 			')' => closed = pop(0);
 			']' => closed = pop(1);
 			'}' => {
 				closed = pop(2);
-				if (closed != LspOpenRole.TOP && inBraces()) boundary();
+				// A lambda's body ends no statement.
+				if (closed != LspOpenRole.TOP && closed != LspOpenRole.LAMBDA && inBraces()) boundary();
 			}
 			';' => {
 				var r = innermost();
 				if (r == LspOpenRole.FOR) {
 					roles[roles.length - 1] = LspOpenRole.FOR_CLAUSES;
 				} else if (r != LspOpenRole.FOR_CLAUSES) {
-					// Only a for loop's header holds a ";" in parentheses, so
-					// any others are unclosed: the ";" ends their statement.
-					while (!inBraces()) pop(if(innermost() == LspOpenRole.INDEX, 1, 0));
+					// In parentheses, brackets, and type arguments, only a for
+					// loop's header and a lambda's empty body (EMPTY_BODY) hold
+					// a ";", so any others are unclosed: the ";" ends their
+					// statement.
+					while (!inBraces()) pop(kindOf(innermost()));
 					boundary();
 				}
 			}
@@ -394,16 +452,26 @@ class LspCursorScanner(text: Array<byte>) {
 			} else if (h == HEADER_TYPE_PARAMS) {
 				header = h;
 				angles++;
+			} else if (typeName && prevKind == LspCursorToken.NAME) {
+				push(start, LspOpenRole.TYPE_ARGS, 3);
 			}
 			'>' => if (h == HEADER_TYPE_PARAMS) {
 				header = if(--angles == 0, HEADER_AFTER_NAME, h);
+			} else if (counts[3] > 0) {
+				closed = pop(3);
 			}
-			LspCursorPunct.FAT_ARROW => if (innermost() == LspOpenRole.MATCH) {
+			LspCursorPunct.FAT_ARROW => if (!body && innermost() == LspOpenRole.MATCH) {
 				// A match case's statement.
 				levelDecls[level()] = NO_DECL;
-				levelBits[level()] = 0;
+				levelIfs[level()] = 0;
+				levelElse[level()] = false;
 			}
 			_ => if (h == HEADER_TYPE_PARAMS) header = h;
+		}
+		// What can be in a lambda's header besides names and its parameters.
+		match (c) {
+			'(', ')', ':', '.', '<', '>', '#', LspCursorPunct.ARROW => ;
+			_ => lambdaToken(false);
 		}
 		// The statement after an if's, while's, or for's header is nested.
 		if ((closed == LspOpenRole.CONTROL || closed == LspOpenRole.FOR || closed == LspOpenRole.FOR_CLAUSES) && inBraces()) {
@@ -412,6 +480,7 @@ class LspCursorScanner(text: Array<byte>) {
 		setPrev(LspCursorToken.PUNCT, start);
 		prevByte = c;
 		prevClosed = closed;
+		typeName = typeName && c == '.';
 	}
 	private def setPrev(kind: LspCursorToken, start: int) {
 		prevAfterDot = prevKind == LspCursorToken.PUNCT && prevByte == '.';
@@ -422,8 +491,14 @@ class LspCursorScanner(text: Array<byte>) {
 	// A declaration or statement ended at the current level.
 	private def boundary() {
 		var l = level();
-		levelBits[l] = if((levelBits[l] & STATEMENT_IF) != 0, ELSE_OK, 0);
+		levelElse[l] = levelIfs[l] > 0;
 		levelDecls[l] = NO_DECL;
+	}
+	private def pushLevel(role: LspOpenRole) {
+		levelRoles.put(role);
+		levelDecls.put(NO_DECL);
+		levelIfs.put(0);
+		levelElse.put(false);
 	}
 	private def push(offset: int, role: LspOpenRole, kind: int) {
 		opens.put(offset);
@@ -437,14 +512,16 @@ class LspCursorScanner(text: Array<byte>) {
 		if (counts[kind] == 0) return LspOpenRole.TOP;
 		while (true) {
 			var role = roles[roles.length - 1];
-			var k = if(isBrace(role), 2, if(role == LspOpenRole.INDEX, 1, 0));
+			var k = kindOf(role);
 			opens.length--;
 			roles.length--;
 			counts[k]--;
+			if (lambdaDepth > opens.length) lambdaDepth = -1;
 			if (k == 2) {
 				levelRoles.length--;
 				levelDecls.length--;
-				levelBits.length--;
+				levelIfs.length--;
+				levelElse.length--;
 			}
 			if (k == kind) return role;
 		}
@@ -452,9 +529,11 @@ class LspCursorScanner(text: Array<byte>) {
 	}
 	// The role of a "(" after the previous token; {h} was the header state.
 	private def parenRole(h: int) -> LspOpenRole {
+		if (typeOnly(position())) return LspOpenRole.TYPES;
 		if (prevKind == LspCursorToken.KEYWORD) {
 			match (prevKeyword) {
-				IF, WHILE => return LspOpenRole.CONTROL;
+				IF => return if(prevIfStatement, LspOpenRole.CONTROL, LspOpenRole.IF_ARGS);
+				WHILE => return LspOpenRole.CONTROL;
 				MATCH => return LspOpenRole.MATCH_CONTROL;
 				FOR => return LspOpenRole.FOR;
 				FUN => return LspOpenRole.PARAMS_VAR;
@@ -484,8 +563,8 @@ class LspCursorScanner(text: Array<byte>) {
 		if (decl == LspKeyword.MATCH.tag && prevKind == LspCursorToken.PUNCT && prevByte == ')') return LspOpenRole.MATCH;
 		return LspOpenRole.STATEMENTS;
 	}
-	// True if the previous token ends an operand: a name, a literal, or a
-	// closing ")", "]", or ">".
+	// True if the previous token ends an operand: a name, a literal, a
+	// closing ")", "]", "}", or ">", or a lambda's empty body.
 	private def operand() -> bool {
 		match (prevKind) {
 			NAME, LITERAL => return true;
@@ -494,7 +573,7 @@ class LspCursorScanner(text: Array<byte>) {
 				_ => return false;
 			}
 			PUNCT => match (prevByte) {
-				')', ']', '>', '}' => return true;
+				')', ']', '>', '}', LspCursorPunct.EMPTY_BODY => return true;
 				_ => return false;
 			}
 			NONE => return false;
@@ -519,13 +598,15 @@ class LspCursorScanner(text: Array<byte>) {
 					PARAMS => return 0;
 					PARAMS_VAR => return LspCursorSyntax.PARAMETER;
 					FOR => return if(prevByte == '(', 0, LspCursorSyntax.EXPRESSION);
+					TYPES, TYPE_ARGS => return LspCursorSyntax.TYPE;
 					_ => return LspCursorSyntax.EXPRESSION;
 				}
 				':', LspCursorPunct.ARROW => return LspCursorSyntax.TYPE;
-				'<' => return LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE;
+				'<' => return if(r == LspOpenRole.TYPE_ARGS, LspCursorSyntax.TYPE,
+					LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
 				'#' => return 0;
-				'>' => return LspCursorSyntax.EXPRESSION | forIn(r);
-				')', ']', '}' => ;
+				'>' => if (prevClosed != LspOpenRole.TYPE_ARGS) return LspCursorSyntax.EXPRESSION | forIn(r);
+				')', ']', '}', LspCursorPunct.EMPTY_BODY => ;
 				_ => return LspCursorSyntax.EXPRESSION;
 			}
 		}
@@ -537,7 +618,7 @@ class LspCursorScanner(text: Array<byte>) {
 	}
 	// At a brace level, or at the top level.
 	private def bracePosition(l: int) -> int {
-		var role = levelRoles[l], decl = levelDecls[l], bits = levelBits[l];
+		var role = levelRoles[l], decl = levelDecls[l], elseOk = levelElse[l];
 		var start = levelStart(role);
 		match (prevKind) {
 			NONE => return start;
@@ -547,8 +628,8 @@ class LspCursorScanner(text: Array<byte>) {
 			}
 			PUNCT => match (prevByte) {
 				'{' => return start;
-				';' => return start | elseAfter(bits);
-				'}' => if (prevClosed != LspOpenRole.TOP) return start | elseAfter(bits);
+				';' => return start | elseAfter(elseOk);
+				'}' => if (prevClosed != LspOpenRole.TOP && prevClosed != LspOpenRole.LAMBDA) return start | elseAfter(elseOk);
 				')' => match (prevClosed) {
 					CONTROL, FOR, FOR_CLAUSES => return LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
 					MATCH_CONTROL => return 0;
@@ -563,8 +644,10 @@ class LspCursorScanner(text: Array<byte>) {
 				'#' => return 0;
 				'<' => return LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE;
 				// After a declaration's type parameters, its header goes on.
-				'>' => return if(header == HEADER_AFTER_NAME, 0, LspCursorSyntax.EXPRESSION) | afterOperand(role, decl);
-				']' => ;
+				'>' => if (prevClosed != LspOpenRole.TYPE_ARGS) {
+					return if(header == HEADER_AFTER_NAME, 0, LspCursorSyntax.EXPRESSION) | afterOperand(role, decl);
+				}
+				']', LspCursorPunct.EMPTY_BODY => ;
 				_ => return LspCursorSyntax.EXPRESSION;
 			}
 			_ => ;
@@ -590,8 +673,8 @@ class LspCursorScanner(text: Array<byte>) {
 		if (decl == LspKeyword.NEW.tag && params) return LspCursorSyntax.CONSTRUCTOR_HEADER;
 		return 0;
 	}
-	private def elseAfter(bits: int) -> int {
-		return if((bits & ELSE_OK) != 0, LspCursorSyntax.ELSE);
+	private def elseAfter(ok: bool) -> int {
+		return if(ok, LspCursorSyntax.ELSE);
 	}
 	// The positions where a level's declarations or statements start.
 	private def levelStart(role: LspOpenRole) -> int {
@@ -599,7 +682,7 @@ class LspCursorScanner(text: Array<byte>) {
 			TOP => return LspCursorSyntax.TOP_LEVEL;
 			MEMBERS => return LspCursorSyntax.MEMBER_DECL;
 			VARIANT => return LspCursorSyntax.CASE_DECL;
-			STATEMENTS => return LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+			STATEMENTS, LAMBDA => return LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
 			MATCH => return LspCursorSyntax.PATTERN;
 			_ => return 0;
 		}

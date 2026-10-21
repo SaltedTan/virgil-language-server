@@ -46,8 +46,8 @@ class LspRepairSpike(supervisor: AnalysisSupervisor, sources: Array<AnalysisSour
 	def ctx = LspCursorScanner.new(sources[index].input).scan(cursor);
 
 	// The repairs to try, in order, without repeats: none ("unchanged"); a sentinel
-	// identifier; the closers of the parentheses and brackets open in the
-	// innermost block; both; each with a ";"; and then a "}" for the
+	// identifier; the closers of the parentheses, brackets, and type
+	// arguments open in the innermost block; both; each with a ";"; and then a "}" for the
 	// innermost block, or one for every open block. Each is named by what it
 	// inserts.
 	def attempts() -> Array<LspRepairAttempt> {
@@ -59,7 +59,7 @@ class LspRepairSpike(supervisor: AnalysisSupervisor, sources: Array<AnalysisSour
 				inBlock = false;
 				braces.putc('}');
 			} else if (inBlock) {
-				close.putc(if(c == '(', ')', ']'));
+				close.putc(if(c == '(', ')', if(c == '<', '>', ']')));
 			}
 		}
 		var C = close.toString(), B = braces.toString();
