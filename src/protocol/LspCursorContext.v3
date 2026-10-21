@@ -135,11 +135,11 @@ enum LspCursorToken {
 	PUNCT		// punctuation; LspCursorScanner.prevByte says which
 }
 
-// Scans text from its start to a cursor once, lexing it as Aeneas does
-// (Parser.skipToNextToken, Strings.parseLiteral, Chars.parseLiteral, and
-// Char's identifier classes), and follows open delimiters and the start of
-// each declaration and statement to classify the cursor's position. It is
-// linear in the text before the cursor and allocates only as delimiters nest.
+// Scans text from its start to a cursor once, using Aeneas's comment,
+// string, byte-literal, and identifier rules, and follows open delimiters
+// and the start of each declaration and statement to classify the cursor's
+// position. See docs/architecture.md#completion for tokenization limitations.
+// It is linear in the text before the cursor and allocates only as delimiters nest.
 class LspCursorScanner(text: Array<byte>) {
 	def NO_DECL = -1;
 	def STARTED = -2;		// the declaration or statement starts with no keyword

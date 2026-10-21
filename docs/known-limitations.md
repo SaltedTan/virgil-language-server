@@ -1,6 +1,6 @@
 # Known limitations
 
-This page lists what the v0.1 alpha doesn't do, or does only in part, as of `main`. Rename came after `0.1.0-alpha.1`, which doesn't have it, so [What rename refuses](#what-rename-refuses) applies to `main` only. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
+This page lists what the v0.1 alpha doesn't do, or does only in part, as of `main`. Rename and keyword completion came after `0.1.0-alpha.1`, which has neither, so [What rename refuses](#what-rename-refuses) applies to `main` only. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
 
 ## Features not yet implemented
 
@@ -9,7 +9,7 @@ This page lists what the v0.1 alpha doesn't do, or does only in part, as of `mai
 
 ## Semantic features need a project file
 
-Without a `.virgil-lsp.json` that selects it, a document gets syntax diagnostics and a document outline, but no type errors, definition, hover, references, signature help, or rename, and it contributes no workspace symbols ([Without a project file](configuration.md#without-a-project-file)). A project that lists `virgilDependencies` also needs the editor to send a Virgil root; without one, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
+Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, hover, references, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs the editor to send a Virgil root; without one, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
 
 ## No error-tolerant parsing
 
