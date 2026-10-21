@@ -1,0 +1,236 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The incomplete-code repair spike (#128; docs/decisions/0006): a development
+// command that repairs a program at a cursor, analyzes each repair in the
+// worker, and reports whether the repaired program parsed and verified and
+// whether the cursor's position resolved to a context that completion could
+// use. Nothing on the LSP surface reaches it. See docs/development.md#running.
+
+// One repair: {insert}, put at the cursor.
+class LspRepairAttempt(kind: string, insert: string) { }
+
+// The offsets of a repaired text, which has {length} bytes inserted at {at},
+// and of the original text: an offset inside the insertion maps to {at}.
+class LspRepairMapping(at: int, length: int) {
+	def toRepaired(offset: int) -> int {
+		return if(offset < at, offset, offset + length);
+	}
+	def toOriginal(offset: int) -> int {
+		if (offset < at) return offset;
+		if (offset < at + length) return at;
+		return offset - length;
+	}
+}
+
+// What the analysis of one repair showed.
+class LspRepairOutcome(attempt: LspRepairAttempt) {
+	var failed: string;		// why there was no analysis, or null
+	var parsed: bool;
+	// The diagnostics outside the probe, and the first of them, in original
+	// offsets.
+	var others: int;
+	var first: string;
+	// The probe's diagnostic kind, "resolved" if a use there resolved, or
+	// null; and the context it shows: a receiver's type or a scope.
+	var probe: string;
+	var context: string;
+	def usable() -> bool { return failed == null && parsed && context != null; }
+	def clean() -> bool { return failed == null && parsed && others == 0; }
+}
+
+class LspRepairSpike(supervisor: AnalysisSupervisor, sources: Array<AnalysisSource>, index: int,
+		cursor: int, options: Array<string>) {
+	// An identifier that no program declares.
+	def SENTINEL = "virgilLspCursor";
+	def ctx = LspCursorScanner.new(sources[index].input).scan(cursor);
+
+	// The repairs to try, in order, without repeats: none ("unchanged"); a sentinel
+	// identifier; the closers of the parentheses, brackets, and type
+	// arguments open in the innermost block; both; each with a ";"; and then a "}" for the
+	// innermost block, or one for every open block. Each is named by what it
+	// inserts.
+	def attempts() -> Array<LspRepairAttempt> {
+		var close = StringBuilder.new(), braces = StringBuilder.new();
+		var inBlock = true;
+		for (i = ctx.roles.length - 1; i >= 0; i--) {
+			var c = sources[index].input[ctx.opens[i]];
+			if (c == '{') {
+				inBlock = false;
+				braces.putc('}');
+			} else if (inBlock) {
+				close.putc(if(c == '(', ')', if(c == '<', '>', ']')));
+			}
+		}
+		var C = close.toString(), B = braces.toString();
+		var list = Vector<LspRepairAttempt>.new();
+		// (sentinel, close, semicolon, braces: 0, 1, or all)
+		for (t in [(false, false, false, 0), (true, false, false, 0), (false, true, false, 0), (true, true, false, 0),
+				(false, true, true, 0), (true, true, true, 0), (false, true, false, 1), (true, true, true, 1),
+				(true, true, true, 2)]) {
+			if (t.3 > 0 && B.length == 0) continue;
+			var insert = StringBuilder.new(), name = StringBuilder.new();
+			if (t.0) part(insert.puts(SENTINEL), name, "sentinel");
+			if (t.1 && C.length > 0) part(insert.puts(C), name, "close");
+			if (t.2) part(insert.putc(';'), name, "semicolon");
+			if (t.3 == 1) part(insert.putc('}'), name, "brace");
+			if (t.3 == 2 && B.length > 1) part(insert.puts(B), name, "all-braces");
+			else if (t.3 == 2) part(insert.putc('}'), name, "brace");
+			add(list, if(name.length > 0, name.toString(), "unchanged"), insert.toString());
+		}
+		return list.extract();
+	}
+	private def part(insert: StringBuilder, name: StringBuilder, kind: string) {
+		if (name.length > 0) name.putc('+');
+		name.puts(kind);
+	}
+	private def add(list: Vector<LspRepairAttempt>, kind: string, insert: string) {
+		for (i < list.length) if (Strings.equal(list[i].insert, insert)) return;
+		list.put(LspRepairAttempt.new(kind, insert));
+	}
+	// The sources with {a} applied to the cursor's file.
+	def repaired(a: LspRepairAttempt) -> Array<AnalysisSource> {
+		var copy = Arrays.dup(sources), text = sources[index].input;
+		var bytes = Array<byte>.new(text.length + a.insert.length);
+		for (i < cursor) bytes[i] = text[i];
+		for (i < a.insert.length) bytes[cursor + i] = a.insert[i];
+		for (i = cursor; i < text.length; i++) bytes[i + a.insert.length] = text[i];
+		copy[index] = AnalysisSource.new(sources[index].path, bytes);
+		return copy;
+	}
+	// Analyzes {a} and evaluates it.
+	def analyze(a: LspRepairAttempt) -> LspRepairOutcome {
+		var outcome = LspRepairOutcome.new(a);
+		var snapshot: AnalysisSnapshot;
+		match (supervisor.analyze(repaired(a), options, AnalysisWire.WANT_OCCURRENCES)) {
+			Completed(s) => snapshot = s;
+			Failed(failure, reason) => outcome.failed = reason;
+			Pending => outcome.failed = "the analysis did not complete";
+		}
+		if (snapshot == null) return outcome;
+		outcome.parsed = snapshot.parsed;
+		var map = LspRepairMapping.new(cursor, a.insert.length);
+		// The probe is the identifier at the cursor in the repaired text: the
+		// prefix and the sentinel, if it was inserted, and any identifier
+		// bytes after them.
+		var path = sources[index].path, text = repaired(a)[index].input;
+		var probeStart = ctx.prefixStart, probeEnd = cursor;
+		if (Strings.startsWith(a.insert, SENTINEL)) {
+			probeEnd = cursor + SENTINEL.length;
+			while (probeEnd < text.length && isIdentMiddle(text[probeEnd])) probeEnd++;
+		}
+		var hasProbe = probeEnd > probeStart;
+		for (d in snapshot.diagnostics) {
+			if (hasProbe && Strings.equal(d.path, path) && d.beginOffset >= probeStart && d.endOffset <= probeEnd) {
+				if (outcome.probe == null) outcome.probe = d.kind;
+				if (outcome.context == null) outcome.context = contextOf(d);
+				continue;
+			}
+			if (outcome.others++ == 0) {
+				var at = if(Strings.equal(d.path, path) && d.beginOffset >= 0, map.toOriginal(d.beginOffset), d.beginOffset);
+				outcome.first = Strings.format3("%s@%d %s", Strings.nonnull(d.path), at,
+					Strings.format2("%s: %s", Strings.nonnull(d.kind), Strings.nonnull(d.message)));
+			}
+		}
+		if (hasProbe && outcome.probe == null && snapshot.occurrenceAtOffset(path, probeStart) != null) {
+			outcome.probe = "resolved";
+			outcome.context = "resolved";
+		}
+		return outcome;
+	}
+	// The context that an unresolved name at the probe shows: the
+	// receiver's type after ".", where verification looked the member up;
+	// otherwise the scope where it looked the name up.
+	private def contextOf(d: AnalysisDiagnostic) -> string {
+		if (d.kind == null || d.message == null) return null;
+		if (ctx.member()) {
+			if (!Strings.equal(d.kind, "UnresolvedMember")) return null;
+			var m = d.message, start = -1, end = -1;
+			var marker = "type ", tail = " has no such member";
+			for (i = 0; start < 0 && i + marker.length <= m.length; i++) {
+				if (Strings.equal(Arrays.range(m, i, i + marker.length), marker)) start = i + marker.length;
+			}
+			for (i = start; start >= 0 && end < 0 && i + tail.length <= m.length; i++) {
+				if (Strings.equal(Arrays.range(m, i, i + tail.length), tail)) end = i;
+			}
+			if (start < 0 || end < 0) return null;
+			return Strings.format1("receiver type %s", Arrays.range(m, start, end));
+		}
+		if (Strings.equal(d.kind, "UnresolvedIdentifier")) return "scope";
+		if (Strings.equal(d.kind, "UnresolvedType")) return "type scope";
+		return null;
+	}
+	private def isIdentMiddle(c: byte) -> bool {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+	}
+
+	// Runs every attempt and writes the report to {out}. With {runs} > 0,
+	// then times {runs} analyses of the first usable repair and of
+	// {original}, the inputs before any cut, alternately.
+	def report(out: StringBuilder -> void, original: Array<AnalysisSource>, runs: int) -> bool {
+		var buf = StringBuilder.new();
+		buf.put2("case: %s@%d", sources[index].path, cursor);
+		buf.put1(" member=%s", if(ctx.member(), "yes", "no"));
+		buf.put1(" syntax=[%s]", LspCursorSyntax.render(ctx.syntax));
+		buf.puts(" open=[");
+		for (i < ctx.opens.length) buf.putc(sources[index].input[ctx.opens[i]]);
+		buf.puts("]\n");
+		out(buf);
+		var usable: LspRepairOutcome, parsed: LspRepairOutcome, clean: LspRepairOutcome;
+		var usableKinds = StringBuilder.new();
+		for (a in attempts()) {
+			var o = analyze(a);
+			buf.put1("attempt: %s", a.kind);
+			if (o.failed != null) {
+				buf.put1(" failed=%s\n", o.failed);
+				out(buf);
+				continue;
+			}
+			buf.put1(" parsed=%s", if(o.parsed, "yes", "no"));
+			buf.put1(" others=%d", o.others);
+			buf.put1(" probe=%s", if(o.probe != null, o.probe, "-"));
+			buf.put1(" context=%s", if(o.context != null, o.context, "-"));
+			if (o.first != null) buf.put1(" first=%s", o.first);
+			buf.ln();
+			out(buf);
+			if (o.parsed && parsed == null) parsed = o;
+			if (o.clean() && clean == null) clean = o;
+			if (o.usable()) {
+				if (usable == null) usable = o;
+				if (usableKinds.length > 0) usableKinds.putc(',');
+				usableKinds.puts(a.kind);
+			}
+		}
+		buf.put1("result: parsed=%s", if(parsed != null, parsed.attempt.kind, "-"));
+		buf.put1(" verified=%s", if(clean != null, clean.attempt.kind, "-"));
+		buf.put1(" usable=%s", if(usable != null, usable.attempt.kind, "-"));
+		buf.put1(" context=%s", if(usable != null, usable.context, "-"));
+		buf.put1(" all-usable=%s\n", if(usableKinds.length > 0, usableKinds.toString(), "-"));
+		out(buf);
+		if (runs > 0) {
+			var timed = if(usable != null, usable.attempt, LspRepairAttempt.new("unchanged", ""));
+			var inputs = repaired(timed);
+			var a = Array<int>.new(runs), b = Array<int>.new(runs);
+			for (i < runs) {
+				a[i] = time(inputs);
+				b[i] = time(original);
+			}
+			buf.put2("time: repaired=%s %s", timed.kind, percentiles(a));
+			buf.put2(" original %s runs=%d\n", percentiles(b), runs);
+			out(buf);
+		}
+		return usable != null;
+	}
+	// The wall-clock microseconds of one analysis of {inputs} with occurrences.
+	private def time(inputs: Array<AnalysisSource>) -> int {
+		var start = System.ticksUs();
+		supervisor.analyze(inputs, options, AnalysisWire.WANT_OCCURRENCES);
+		return System.ticksUs() - start;
+	}
+	private def percentiles(us: Array<int>) -> string {
+		var sorted = AnalysisTables.sort(Arrays.dup(us), fun (a: int, b: int) => a < b);
+		var median = sorted[(sorted.length - 1) / 2];
+		var p90 = sorted[(sorted.length * 9 + 9) / 10 - 1];
+		return Strings.format2("median=%dus p90=%dus", median, p90);
+	}
+}

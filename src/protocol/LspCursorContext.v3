@@ -1,0 +1,796 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Where a cursor is, lexically. Completion offers nothing except in CODE.
+enum LspCursorPlace {
+	CODE,
+	LINE_COMMENT,	// after "//", up to the end of its line
+	BLOCK_COMMENT,	// after "/*", up to "*/", which does not nest
+	STRING,		// after the opening quote, up to the closing one
+	CHARACTER,	// after the opening quote of a byte literal
+	NUMBER		// in or just past a number literal, or "_"
+}
+
+// The syntactic positions a cursor may be at, as flags. A token-level
+// look-back can't always tell them apart, so a context is a set of them: the
+// union of the positions that the text before the cursor allows.
+component LspCursorSyntax {
+	def TOP_LEVEL = 1 << 0;		// a top-level declaration starts
+	def MEMBER_DECL = 1 << 1;	// a class or component member starts
+	def CASE_DECL = 1 << 2;		// a variant's case or method starts
+	def STATEMENT = 1 << 3;		// a statement starts
+	def EXPRESSION = 1 << 4;	// an expression starts
+	def TYPE = 1 << 5;		// a type starts
+	def MEMBER = 1 << 6;		// after ".": a member of the receiver
+	def PATTERN = 1 << 7;		// a match case's pattern starts
+	def PARAMETER = 1 << 8;		// a parameter that may be "var" starts
+	def ELSE = 1 << 9;		// after an if statement's or a match's end
+	def FOR_IN = 1 << 10;		// after a for loop's variable
+	def CLASS_HEADER = 1 << 11;	// after a class's name, parameters, or parent
+	def VARIANT_HEADER = 1 << 12;	// after a variant's name or parameters
+	def CONSTRUCTOR_HEADER = 1 << 13;	// after a constructor's parameters
+	def AFTER_PRIVATE = 1 << 14;	// after a top-level "private"
+	def AFTER_PRIVATE_MEMBER = 1 << 15;	// after a member's "private"
+	def AFTER_DEF_MEMBER = 1 << 16;	// after a member's "def"
+	def AFTER_THREAD = 1 << 17;	// after "thread"
+	def AFTER_IMPORT = 1 << 18;	// after "import" and its optional name
+	def AFTER_EXPORT = 1 << 19;	// after "export" and its optional name
+
+	def NAMES = [
+		"top-level", "member-declaration", "case-declaration", "statement", "expression", "type",
+		"member", "pattern", "parameter", "else", "for-in", "class-header", "variant-header",
+		"constructor-header", "after-private", "after-private-member", "after-def-member",
+		"after-thread", "after-import", "after-export"
+	];
+	// The names of the flags in {syntax}, separated by spaces, for tests and
+	// the repair spike's report.
+	def render(syntax: int) -> string {
+		var buf = StringBuilder.new();
+		for (i < NAMES.length) {
+			if ((syntax & (1 << byte.view(i))) == 0) continue;
+			if (buf.length > 0) buf.putc(' ');
+			buf.puts(NAMES[i]);
+		}
+		return buf.toString();
+	}
+}
+
+// What an open delimiter before the cursor encloses.
+enum LspOpenRole {
+	TOP,		// the file; never on the stack
+	MEMBERS,	// "{": a class's, component's, or variant case's members
+	VARIANT,	// "{": a variant's cases and methods
+	NAMES,		// "{": an enum's cases or a layout's fields
+	STATEMENTS,	// "{": a method body or block
+	LAMBDA,		// "{": a lambda's body, which is an operand
+	MATCH,		// "{": a match's cases
+	CALL,		// "(": a call's arguments
+	CONTROL,	// "(": an if statement's or a while's condition
+	IF_ARGS,	// "(": an if expression's condition and values
+	MATCH_CONTROL,	// "(": a match's value
+	FOR,		// "(": a for loop's header, before its first ";"
+	FOR_CLAUSES,	// "(": a for loop's header, after its first ";"
+	PARAMS,		// "(": parameters that cannot be "var"
+	PARAMS_VAR,	// "(": parameters that can be "var"
+	INDEX_PARAMS,
+	PATTERN_PARAMS,
+	GROUP,		// "(": a tuple or a parenthesized expression
+	TYPES,		// "(": a tuple type's elements
+	HINT_ARGS,	// "(": the expressions after "#" and a label, as a hint's
+	INDEX,		// "[": an index or an array literal
+	TYPE_ARGS	// "<": a type's type arguments
+}
+
+// The completion context at a cursor in a document's text, as a token-level
+// scan of the text before the cursor finds it (LspCursorScanner). See
+// docs/architecture.md#completion.
+class LspCursorContext(text: Array<byte>, cursor: int) {
+	def var place: LspCursorPlace;
+	// The start of the identifier that the cursor is in or just past, or
+	// {cursor} if there is none. A completion replaces the bytes from here to
+	// the cursor, and none after it.
+	def var prefixStart: int;
+	// The offset of the "." before the prefix, with only whitespace and
+	// comments between, or -1.
+	def var dot = -1;
+	// The LspCursorSyntax flags of the position; 0 outside CODE.
+	def var syntax: int;
+	// The delimiters open at the cursor, outermost first: their offsets and
+	// what each encloses.
+	def var opens: Array<int>;
+	def var roles: Array<LspOpenRole>;
+
+	// The identifier before the cursor, which may be empty.
+	def prefix() -> string {
+		return Arrays.range(text, prefixStart, cursor);
+	}
+	// True after ".", where only the receiver's members can follow.
+	def member() -> bool {
+		return dot >= 0;
+	}
+	// The offsets of the open parentheses of calls, outermost first.
+	def calls() -> Array<int> {
+		var v = Vector<int>.new();
+		for (i < opens.length) if (roles[i] == LspOpenRole.CALL) v.put(opens[i]);
+		return v.extract();
+	}
+}
+
+// Punctuation of two or more bytes, by the byte that stands for it.
+component LspCursorPunct {
+	def ARROW: byte = 'A';		// "->"
+	def FAT_ARROW: byte = 'F';	// "=>"
+	def DOTS: byte = 'R';		// "..", "...", or more dots
+	def EMPTY_BODY: byte = 'E';	// the ";" that is a lambda's empty body
+	def PREFIX_AUTO: byte = 'P';
+	def POSTFIX_AUTO: byte = 'S';
+}
+
+// What a token before the cursor was, as the look-back needs it.
+enum LspCursorToken {
+	NONE,		// the start of the text
+	NAME,		// an identifier that is not a keyword
+	KEYWORD,	// a keyword
+	LITERAL,	// a number, string, byte literal, or "_"
+	PUNCT		// punctuation; LspCursorScanner.prevByte says which
+}
+
+// Scans text from its start to a cursor once, using Aeneas's comment,
+// string, byte-literal, and identifier rules, and follows open delimiters
+// and the start of each declaration and statement to classify the cursor's
+// position. See docs/architecture.md#completion for tokenization limitations.
+// It is linear in the text before the cursor and allocates only as delimiters nest.
+class LspCursorScanner(text: Array<byte>) {
+	def NO_DECL = -1;
+	def STARTED = -2;		// the declaration or statement starts with no keyword
+	def PATTERN_HEAD = -3;
+
+	// The open delimiters and their roles.
+	private def opens = Vector<int>.new();
+	private def roles = Vector<LspOpenRole>.new();
+	// Open "(", "[", "{", and type argument "<" counts, by kind (kindOf), so
+	// that a stray closer is skipped at once.
+	private def counts = Array<int>.new(4);
+	// For the top level and each open "{": its role; the keyword that began
+	// its current declaration or statement (an LspKeyword's tag, NO_DECL, or
+	// STARTED); how many if and match statements the current statement
+	// nests that have no else yet; and whether a statement just ended, so an
+	// else can attach to the innermost of them.
+	private def levelRoles = Vector<LspOpenRole>.new();
+	private def levelDecls = Vector<int>.new();
+	private def levelIfs = Vector<int>.new();
+	private def levelElse = Vector<bool>.new();
+	// The token before the current position.
+	private var prevKind: LspCursorToken;
+	private var prevByte: byte;
+	private var prevKeyword: LspKeyword;
+	private var prevStart: int;
+	private var prevAfterDot: bool;
+	private var prevClosed: LspOpenRole;	// what a ")", "]", or "}" closed
+	private var newline: bool;		// a line ends after the token
+	private var prevIfStatement: bool;	// the "if" before is a statement's
+	private var prevHint: bool;		// the name before is a hint's label
+	// True while the previous tokens are a type's name, as in "A.B" or
+	// "A<int>.B", that began at a position where only a type can start.
+	private var typeName: bool;
+	// For each "fun" whose body has not begun, innermost last, the number of
+	// open delimiters at it: at that depth, a "{" begins a block body, "=>"
+	// an expression body, and a ";" is an empty body. A lambda in a header's
+	// parameters or hints is deeper than the header's own.
+	private def lambdas = Vector<int>.new();
+	// True after a "#packing" hint in the innermost such lambda's header,
+	// whose packing expression, as Parser.parsePackingExpr reads it, may
+	// follow without parentheses: a number such as -1, a bit pattern such as
+	// 0b1?x, a "#solve(...)" or "#concat(...)", or a name with optional type
+	// arguments and arguments.
+	private var packingExpr: bool;
+	// A declaration's header: 0 outside one, HEADER_NAME before its name,
+	// HEADER_AFTER_NAME after it, and HEADER_TYPE_PARAMS in its "<...>".
+	private var header: int;
+	private var headerKeyword: LspKeyword;
+	private var angles: int;
+	def HEADER_NAME = 1;
+	def HEADER_AFTER_NAME = 2;
+	def HEADER_TYPE_PARAMS = 3;
+	def HEADER_PARAMETER = 4;
+
+	// The context at {cursor}, which is clamped to the text.
+	def scan(cursor: int) -> LspCursorContext {
+		if (cursor < 0) cursor = 0;
+		if (cursor > text.length) cursor = text.length;
+		var ctx = LspCursorContext.new(text, cursor);
+		ctx.place = scanTo(ctx, cursor);
+		if (ctx.place == LspCursorPlace.CODE) {
+			if (prevKind == LspCursorToken.PUNCT && prevByte == '.') ctx.dot = prevStart;
+			ctx.syntax = position();
+		}
+		ctx.opens = opens.copy();
+		ctx.roles = roles.copy();
+		return ctx;
+	}
+	private def scanTo(ctx: LspCursorContext, end: int) -> LspCursorPlace {
+		pushLevel(LspOpenRole.TOP);
+		ctx.prefixStart = end;
+		var i = 0, n = text.length;
+		while (i < end) {
+			var c = text[i];
+			if (c == '\n' || c == '\r') {
+				newline = true;
+				i++;
+			} else if (c == '/' && i + 1 < n && text[i + 1] == '/') {
+				var j = i + 2;
+				while (j < n && text[j] != '\n') j++;
+				if (end <= j) return LspCursorPlace.LINE_COMMENT;
+				i = j;
+			} else if (c == '/' && i + 1 < n && text[i + 1] == '*') {
+				var j = i + 2, closed = false;
+				while (j < n) {
+					if (text[j] == '*' && j + 1 < n && text[j + 1] == '/') {
+						closed = true;
+						j += 2;
+						break;
+					}
+					if (text[j] == '\n') newline = true;
+					j++;
+				}
+				if (end < j || (end == j && !closed)) return LspCursorPlace.BLOCK_COMMENT;
+				i = j;
+			} else if (c == '\"') {
+				var j = i + 1, closed = false;
+				while (j < n) {
+					var b = text[j];
+					if (b == '\"') {
+						closed = true;
+						j++;
+						break;
+					}
+					// A string ends with an error at a control character,
+					// including a newline.
+					if (b < ' ') break;
+					j += if(b == '\\' && j + 1 < n && text[j + 1] >= ' ', 2, 1);
+				}
+				if (end < j || (end == j && !closed)) return LspCursorPlace.STRING;
+				token(LspCursorToken.LITERAL, i);
+				i = j;
+			} else if (c == '\'') {
+				var r = byteLiteral(i), j = r.0;
+				if (end < j || (end == j && !r.1)) return LspCursorPlace.CHARACTER;
+				token(LspCursorToken.LITERAL, i);
+				i = j;
+			} else if (isIdentStart(c)) {
+				var j = i + 1;
+				while (j < n && isIdentMiddle(text[j])) j++;
+				if (end <= j) {
+					// The cursor is in or just past this identifier.
+					ctx.prefixStart = i;
+					return LspCursorPlace.CODE;
+				}
+				var kw = LspKeywords.find(text, i, j);
+				if (kw.0) keyword(kw.1, i);
+				else name(i);
+				i = j;
+			} else if (isDecimal(c) || c == '_') {
+				var j = i + 1;
+				while (j < n && (isIdentMiddle(text[j]) || (text[j] == '.' && j + 1 < n && isDecimal(text[j + 1])))) j++;
+				if (end <= j) return LspCursorPlace.NUMBER;
+				token(LspCursorToken.LITERAL, i);
+				i = j;
+			} else if (c <= ' ' || c > '~') {
+				// Whitespace, and bytes that Aeneas skips with an error.
+				i++;
+			} else {
+				var next = if(i + 1 < end, text[i + 1]);
+				if (c == '-' && next == '>') {
+					punct(LspCursorPunct.ARROW, i);
+					i += 2;
+				} else if (c == '=' && next == '>') {
+					punct(LspCursorPunct.FAT_ARROW, i);
+					i += 2;
+				} else if ((c == '+' || c == '-') && next == c) {
+					var postfix = operand() && !(prevKind == LspCursorToken.PUNCT && prevByte == '>' && prevClosed != LspOpenRole.TYPE_ARGS);
+					punct(if(postfix, LspCursorPunct.POSTFIX_AUTO, LspCursorPunct.PREFIX_AUTO), i);
+					i += 2;
+				} else if (c == '.' && next == '.') {
+					var j = i + 2;
+					while (j < end && text[j] == '.') j++;
+					punct(LspCursorPunct.DOTS, i);
+					i = j;
+				} else if (c == '#' && i + 1 < n && isIdentStart(text[i + 1])) {
+					// A representation hint's label, which Parser.parseRepHints
+					// reads past "-" and ":" too, as in "#no-inline".
+					punct(c, i);
+					var j = i + 2;
+					while (j < n && (isIdentMiddle(text[j]) || text[j] == '-' || text[j] == ':')) j++;
+					if (end <= j) {
+						ctx.prefixStart = i + 1;
+						return LspCursorPlace.CODE;
+					}
+					var kw = LspKeywords.find(text, i + 1, j);
+					// "packing" is the one keyword a hint's label can be.
+					var packingHint = kw.0 && kw.1 == LspKeyword.PACKING && inLambdaHeader();
+					if (kw.0 && !packingHint) keyword(kw.1, i + 1);
+					else hint(i + 1);
+					if (packingHint) packingExpr = true;
+					i = j;
+				} else {
+					punct(c, i);
+					i++;
+				}
+			}
+		}
+		return LspCursorPlace.CODE;
+	}
+	// The end of the byte literal at {i}, read as Chars.parseLiteral reads
+	// it: a quote, one printable byte or an escape, and a closing quote; and
+	// whether it was closed. A malformed literal ends where Aeneas stops.
+	private def byteLiteral(i: int) -> (int, bool) {
+		var j = i + 1, n = text.length;
+		if (j >= n || text[j] < ' ') return (j, false);
+		if (text[j] == '\'') return (j + 1, true);
+		if (text[j] == '\\') {
+			j++;
+			if (j < n && text[j] == 'x') {
+				j++;
+				for (k < 2) if (j < n && isHex(text[j])) j++;
+			} else if (j < n && text[j] >= ' ') {
+				j++;
+			}
+		} else {
+			j++;
+		}
+		if (j < n && text[j] == '\'') return (j + 1, true);
+		return (j, false);
+	}
+
+	// The innermost open delimiter's role, or TOP.
+	private def innermost() -> LspOpenRole {
+		return if(roles.length > 0, roles[roles.length - 1], LspOpenRole.TOP);
+	}
+	private def inBraces() -> bool {
+		var r = innermost();
+		return r == LspOpenRole.TOP || isBrace(r);
+	}
+	private def isBrace(r: LspOpenRole) -> bool {
+		match (r) {
+			MEMBERS, VARIANT, NAMES, STATEMENTS, LAMBDA, MATCH => return true;
+			_ => return false;
+		}
+	}
+	// The kind of delimiter that opens {r}: 0 for "(", 1 for "[", 2 for "{",
+	// and 3 for "<".
+	private def kindOf(r: LspOpenRole) -> int {
+		if (isBrace(r)) return 2;
+		if (r == LspOpenRole.INDEX || r == LspOpenRole.INDEX_PARAMS) return 1;
+		if (r == LspOpenRole.TYPE_ARGS) return 3;
+		return 0;
+	}
+	// True if only a type can start at the positions {at}.
+	private def typeOnly(at: int) -> bool {
+		return (at & LspCursorSyntax.TYPE) != 0 && (at & LspCursorSyntax.EXPRESSION) == 0;
+	}
+	private def level() -> int {
+		return levelRoles.length - 1;
+	}
+
+	// A token that is not a keyword or punctuation starts a declaration or
+	// statement that no keyword begins.
+	private def token(kind: LspCursorToken, start: int) {
+		if (inBraces()) {
+			endIfs();
+			if (levelDecls[level()] == NO_DECL) levelDecls[level()] = STARTED;
+		}
+		if (header != HEADER_TYPE_PARAMS) header = 0;
+		lambdaToken(kind == LspCursorToken.NAME || (packingExpr && kind == LspCursorToken.LITERAL));
+		setPrev(kind, start);
+	}
+	private def name(start: int) {
+		var h = header;
+		var at = position(), pattern = (at & LspCursorSyntax.PATTERN) != 0;
+		var t = pattern || typeOnly(at) || (typeName && prevKind == LspCursorToken.PUNCT && prevByte == '.');
+		token(LspCursorToken.NAME, start);
+		if (pattern) levelDecls[level()] = PATTERN_HEAD;
+		typeName = t;
+		if (h == HEADER_NAME) header = HEADER_AFTER_NAME;
+		else if (h == HEADER_TYPE_PARAMS) header = h;
+	}
+	// The label of a representation hint, which "(" or "<" may follow with
+	// the hint's arguments.
+	private def hint(start: int) {
+		token(LspCursorToken.NAME, start);
+		typeName = false;
+		prevHint = true;
+	}
+	// True if the innermost lambda whose body has not begun has its header at
+	// the current depth.
+	private def inLambdaHeader() -> bool {
+		return lambdas.length > 0 && lambdas[lambdas.length - 1] == opens.length;
+	}
+	// A token in a lambda's header, before its body: {ok} if one can be
+	// there. Any other token means the header is not one.
+	private def lambdaToken(ok: bool) {
+		if (!ok && inLambdaHeader()) popLambda();
+	}
+	// The innermost lambda's header ends.
+	private def popLambda() {
+		lambdas.length--;
+		packingExpr = false;
+	}
+	// A token other than "else" at a brace level: if a statement just ended,
+	// so does the chain of if and match statements it closed.
+	private def endIfs() {
+		var l = level();
+		if (levelElse[l]) {
+			levelElse[l] = false;
+			levelIfs[l] = 0;
+		}
+	}
+	private def keyword(kw: LspKeyword, start: int) {
+		var braces = inBraces(), l = level();
+		var statement = false;
+		if (braces) {
+			statement = (position() & LspCursorSyntax.STATEMENT) != 0;
+			if (kw == LspKeyword.ELSE) {
+				// The else branch is a statement of its own, nested in any
+				// outer if that has no else yet.
+				if (levelElse[l] && levelIfs[l] > 0) levelIfs[l]--;
+				levelElse[l] = false;
+				levelDecls[l] = NO_DECL;
+			} else {
+				endIfs();
+				if (statement && (kw == LspKeyword.IF || kw == LspKeyword.MATCH)) levelIfs[l]++;
+			}
+			var decl = levelDecls[l];
+			if (kw != LspKeyword.ELSE && (decl == NO_DECL || isModifier(decl))) levelDecls[l] = kw.tag;
+		}
+		lambdaToken(false);
+		if (kw == LspKeyword.FUN) {
+			lambdas.put(opens.length);
+			packingExpr = false;
+		}
+		match (kw) {
+			CLASS, COMPONENT, TYPE, ENUM, CASE, DEF, PACKING, FUN => {
+				header = HEADER_NAME;
+				headerKeyword = kw;
+			}
+			VAR => if (header != HEADER_NAME) header = 0;
+			_ => header = 0;
+		}
+		setPrev(LspCursorToken.KEYWORD, start);
+		prevKeyword = kw;
+		prevIfStatement = statement;
+		typeName = false;
+	}
+	private def isModifier(decl: int) -> bool {
+		return decl == LspKeyword.PRIVATE.tag || decl == LspKeyword.THREAD.tag
+			|| decl == LspKeyword.IMPORT.tag || decl == LspKeyword.EXPORT.tag;
+	}
+	private def punct(c: byte, start: int) {
+		var closed = LspOpenRole.TOP;
+		var h = header;
+		header = 0;
+		// A lambda's body begins at the depth of its "fun".
+		var body = inLambdaHeader() && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
+		if (body) popLambda();
+		if (c == ';' && body) c = LspCursorPunct.EMPTY_BODY;
+		if (inBraces()) {
+			if (c != '}') endIfs();
+			if (levelDecls[level()] == NO_DECL && c != ';' && c != '{' && c != '}') levelDecls[level()] = STARTED;
+		}
+		match (c) {
+			'(' => push(start, parenRole(h), 0);
+			'[' => push(start, if(h == HEADER_NAME && headerKeyword == LspKeyword.DEF,
+				LspOpenRole.INDEX_PARAMS, LspOpenRole.INDEX), 1);
+			'{' => {
+				var role = if(body, LspOpenRole.LAMBDA, braceRole());
+				push(start, role, 2);
+				pushLevel(role);
+			}
+			')' => closed = pop(0);
+			']' => closed = pop(1);
+			'}' => {
+				closed = pop(2);
+				// A lambda's body ends no statement.
+				if (closed != LspOpenRole.TOP && closed != LspOpenRole.LAMBDA && inBraces()) boundary();
+			}
+			';' => {
+				var r = innermost();
+				if (r == LspOpenRole.FOR) {
+					roles[roles.length - 1] = LspOpenRole.FOR_CLAUSES;
+				} else if (r != LspOpenRole.FOR_CLAUSES) {
+					// In parentheses, brackets, and type arguments, only a for
+					// loop's header and a lambda's empty body (EMPTY_BODY) hold
+					// a ";", so any others are unclosed: the ";" ends their
+					// statement.
+					while (!inBraces()) pop(kindOf(innermost()));
+					boundary();
+				}
+			}
+			'<' => if (prevHint || (packingExpr && prevKind == LspCursorToken.NAME && inLambdaHeader())) {
+				push(start, LspOpenRole.TYPE_ARGS, 3);
+			} else if (h == HEADER_AFTER_NAME) {
+				header = HEADER_TYPE_PARAMS;
+				angles = 1;
+			} else if (h == HEADER_TYPE_PARAMS) {
+				header = h;
+				angles++;
+			} else if (typeName && prevKind == LspCursorToken.NAME) {
+				push(start, LspOpenRole.TYPE_ARGS, 3);
+			}
+			'>' => if (h == HEADER_TYPE_PARAMS) {
+				header = if(--angles == 0, HEADER_AFTER_NAME, h);
+			} else if (counts[3] > 0) {
+				closed = pop(3);
+			}
+			LspCursorPunct.FAT_ARROW => if (!body && innermost() == LspOpenRole.MATCH) {
+				// A match case's statement.
+				levelDecls[level()] = NO_DECL;
+				levelIfs[level()] = 0;
+				levelElse[level()] = false;
+			}
+			_ => if (h == HEADER_TYPE_PARAMS) header = h;
+		}
+		// What can be in a lambda's header besides names and its parameters.
+		match (c) {
+			'(', ')', ':', '.', '<', '>', '#', LspCursorPunct.ARROW => ;
+			'-', '?' => lambdaToken(packingExpr);
+			_ => lambdaToken(false);
+		}
+		// The statement after an if's, while's, or for's header is nested.
+		if ((closed == LspOpenRole.CONTROL || closed == LspOpenRole.FOR || closed == LspOpenRole.FOR_CLAUSES) && inBraces()) {
+			levelDecls[level()] = NO_DECL;
+		}
+		if (c == '=' && prevKind == LspCursorToken.PUNCT && prevByte == ']' && prevClosed == LspOpenRole.INDEX_PARAMS) {
+			header = HEADER_PARAMETER;
+		}
+		setPrev(LspCursorToken.PUNCT, start);
+		prevByte = c;
+		prevClosed = closed;
+		// A type's type arguments end its name, which a "." can qualify.
+		typeName = (typeName && c == '.') || closed == LspOpenRole.TYPE_ARGS;
+	}
+	private def setPrev(kind: LspCursorToken, start: int) {
+		prevAfterDot = prevKind == LspCursorToken.PUNCT && prevByte == '.';
+		prevHint = false;
+		prevKind = kind;
+		prevStart = start;
+		newline = false;
+	}
+	// A declaration or statement ended at the current level.
+	private def boundary() {
+		var l = level();
+		levelElse[l] = levelIfs[l] > 0;
+		levelDecls[l] = NO_DECL;
+	}
+	private def pushLevel(role: LspOpenRole) {
+		levelRoles.put(role);
+		levelDecls.put(NO_DECL);
+		levelIfs.put(0);
+		levelElse.put(false);
+	}
+	private def push(offset: int, role: LspOpenRole, kind: int) {
+		opens.put(offset);
+		roles.put(role);
+		counts[kind]++;
+	}
+	// Pops the innermost open delimiter of {kind} and every one inside it,
+	// and returns its role; or skips a closer that nothing opened and returns
+	// TOP. Every pop removes a push, so popping is linear overall.
+	private def pop(kind: int) -> LspOpenRole {
+		if (counts[kind] == 0) return LspOpenRole.TOP;
+		while (true) {
+			var role = roles[roles.length - 1];
+			var k = kindOf(role);
+			opens.length--;
+			roles.length--;
+			counts[k]--;
+			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) popLambda();
+			if (k == 2) {
+				levelRoles.length--;
+				levelDecls.length--;
+				levelIfs.length--;
+				levelElse.length--;
+			}
+			if (k == kind) return role;
+		}
+		return LspOpenRole.TOP;
+	}
+	// The role of a "(" after the previous token; {h} was the header state.
+	private def parenRole(h: int) -> LspOpenRole {
+		if (prevHint) return LspOpenRole.HINT_ARGS;
+		if (typeOnly(position())) return LspOpenRole.TYPES;
+		if (innermost() == LspOpenRole.MATCH && levelDecls[level()] == PATTERN_HEAD) return LspOpenRole.PATTERN_PARAMS;
+		if (prevKind == LspCursorToken.KEYWORD) {
+			match (prevKeyword) {
+				IF => return if(prevIfStatement, LspOpenRole.CONTROL, LspOpenRole.IF_ARGS);
+				WHILE => return LspOpenRole.CONTROL;
+				MATCH => return LspOpenRole.MATCH_CONTROL;
+				FOR => return LspOpenRole.FOR;
+				FUN => return LspOpenRole.PARAMS_VAR;
+				NEW => return if(prevAfterDot, LspOpenRole.CALL, LspOpenRole.PARAMS_VAR);
+				SUPER => return LspOpenRole.CALL;
+				_ => return LspOpenRole.GROUP;
+			}
+		}
+		if (h == HEADER_AFTER_NAME) {
+			match (headerKeyword) {
+				ENUM, CASE, PACKING => return LspOpenRole.PARAMS;
+				COMPONENT => return LspOpenRole.GROUP;
+				_ => return LspOpenRole.PARAMS_VAR;
+			}
+		}
+		if (operand()) return LspOpenRole.CALL;
+		return LspOpenRole.GROUP;
+	}
+	// The role of a "{" after the previous token.
+	private def braceRole() -> LspOpenRole {
+		// A lambda's body in an argument list or an array.
+		if (!inBraces()) return LspOpenRole.STATEMENTS;
+		var l = level(), decl = levelDecls[l];
+		if (decl == LspKeyword.CLASS.tag || decl == LspKeyword.COMPONENT.tag || decl == LspKeyword.CASE.tag) return LspOpenRole.MEMBERS;
+		if (decl == LspKeyword.TYPE.tag) return LspOpenRole.VARIANT;
+		if (decl == LspKeyword.ENUM.tag || decl == LspKeyword.LAYOUT.tag) return LspOpenRole.NAMES;
+		if (decl == LspKeyword.MATCH.tag && prevKind == LspCursorToken.PUNCT && prevByte == ')') return LspOpenRole.MATCH;
+		return LspOpenRole.STATEMENTS;
+	}
+	// True if the previous token ends an operand: a name, a literal, a
+	// closing ")", "]", "}", or ">", or a lambda's empty body.
+	private def operand() -> bool {
+		match (prevKind) {
+			NAME, LITERAL => return true;
+			KEYWORD => match (prevKeyword) {
+				TRUE, FALSE, NULL => return true;
+				_ => return false;
+			}
+			PUNCT => match (prevByte) {
+				')' => return prevClosed != LspOpenRole.CONTROL && prevClosed != LspOpenRole.MATCH_CONTROL
+					&& prevClosed != LspOpenRole.FOR && prevClosed != LspOpenRole.FOR_CLAUSES
+					&& prevClosed != LspOpenRole.PARAMS && prevClosed != LspOpenRole.PARAMS_VAR;
+				']' => return prevClosed != LspOpenRole.INDEX_PARAMS;
+				'}' => return prevClosed == LspOpenRole.LAMBDA;
+				'>', LspCursorPunct.EMPTY_BODY, LspCursorPunct.POSTFIX_AUTO => return true;
+				_ => return false;
+			}
+			NONE => return false;
+		}
+	}
+
+	// The LspCursorSyntax flags of the current position.
+	private def position() -> int {
+		if (header == HEADER_PARAMETER) return LspCursorSyntax.PARAMETER;
+		if (prevKind == LspCursorToken.PUNCT && prevByte == '.') return LspCursorSyntax.MEMBER;
+		var r = innermost();
+		if (r != LspOpenRole.TOP && !isBrace(r)) return parenPosition(r);
+		return bracePosition(level());
+	}
+	// Inside "(" or "[".
+	private def parenPosition(r: LspOpenRole) -> int {
+		if (r == LspOpenRole.PATTERN_PARAMS) return 0;
+		if (prevKind == LspCursorToken.KEYWORD) {
+			var f = keywordFollow(levelRoles[level()]);
+			if (f >= 0) return f;
+		} else if (prevKind == LspCursorToken.PUNCT) {
+			match (prevByte) {
+				'(', '[', ',' => match (r) {
+					PARAMS => return 0;
+					PARAMS_VAR, INDEX_PARAMS => return LspCursorSyntax.PARAMETER;
+					FOR => return if(prevByte == '(', 0, LspCursorSyntax.EXPRESSION);
+					TYPES, TYPE_ARGS => return LspCursorSyntax.TYPE;
+					_ => return LspCursorSyntax.EXPRESSION;
+				}
+				':', LspCursorPunct.ARROW => return LspCursorSyntax.TYPE;
+				'<' => return if(r == LspOpenRole.TYPE_ARGS, LspCursorSyntax.TYPE,
+					LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+				'#' => return 0;
+				'>' => if (prevClosed != LspOpenRole.TYPE_ARGS) return LspCursorSyntax.EXPRESSION | forIn(r);
+				')', ']', '}', LspCursorPunct.EMPTY_BODY, LspCursorPunct.POSTFIX_AUTO => ;
+				_ => return LspCursorSyntax.EXPRESSION;
+			}
+		}
+		if (operand()) return forIn(r);
+		return 0;
+	}
+	private def forIn(r: LspOpenRole) -> int {
+		return if(r == LspOpenRole.FOR, LspCursorSyntax.FOR_IN);
+	}
+	// At a brace level, or at the top level.
+	private def bracePosition(l: int) -> int {
+		var role = levelRoles[l], decl = levelDecls[l], elseOk = levelElse[l];
+		var start = levelStart(role);
+		match (prevKind) {
+			NONE => return start;
+			KEYWORD => {
+				var f = keywordFollow(role);
+				if (f >= 0) return f;
+			}
+			PUNCT => match (prevByte) {
+				'{' => return start;
+				';' => return start | elseAfter(elseOk);
+				'}' => if (prevClosed != LspOpenRole.TOP && prevClosed != LspOpenRole.LAMBDA) return start | elseAfter(elseOk);
+				')' => match (prevClosed) {
+					CONTROL, FOR, FOR_CLAUSES => return LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+					MATCH_CONTROL => return 0;
+					PARAMS, PARAMS_VAR => return headerFlags(decl, true);
+					_ => ;
+				}
+				LspCursorPunct.FAT_ARROW => return if(role == LspOpenRole.MATCH,
+					LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, LspCursorSyntax.EXPRESSION);
+				':' => return LspCursorSyntax.TYPE | if(decl == LspKeyword.NEW.tag, LspCursorSyntax.CONSTRUCTOR_HEADER);
+				LspCursorPunct.ARROW => return LspCursorSyntax.TYPE;
+				',' => return if(role == LspOpenRole.MATCH, LspCursorSyntax.PATTERN);
+				'#' => return 0;
+				'<' => return LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE;
+				// After a declaration's type parameters, its header goes on.
+				'>' => if (prevClosed != LspOpenRole.TYPE_ARGS) {
+					return if(header == HEADER_AFTER_NAME, 0, LspCursorSyntax.EXPRESSION) | afterOperand(role, decl);
+				}
+				']', LspCursorPunct.EMPTY_BODY, LspCursorPunct.POSTFIX_AUTO => ;
+				_ => return LspCursorSyntax.EXPRESSION;
+			}
+			_ => ;
+		}
+		if (operand()) return afterOperand(role, decl);
+		return 0;
+	}
+	// After an operand at a brace level: a declaration's header can go on,
+	// and after a line break, so can a new declaration or statement that a
+	// missing ";" would separate.
+	private def afterOperand(role: LspOpenRole, decl: int) -> int {
+		var f = headerFlags(decl, false);
+		if (decl == LspKeyword.IMPORT.tag && prevKind == LspCursorToken.LITERAL) f |= LspCursorSyntax.AFTER_IMPORT;
+		if (decl == LspKeyword.EXPORT.tag) f |= LspCursorSyntax.AFTER_EXPORT;
+		if (newline) f |= levelStart(role);
+		return f;
+	}
+	// The header positions after a class's, variant's, or constructor's name
+	// or parameters, if {decl} began one.
+	private def headerFlags(decl: int, params: bool) -> int {
+		if (decl == LspKeyword.CLASS.tag) return LspCursorSyntax.CLASS_HEADER;
+		if (decl == LspKeyword.TYPE.tag) return LspCursorSyntax.VARIANT_HEADER;
+		if (decl == LspKeyword.NEW.tag && params) return LspCursorSyntax.CONSTRUCTOR_HEADER;
+		return 0;
+	}
+	private def elseAfter(ok: bool) -> int {
+		return if(ok, LspCursorSyntax.ELSE);
+	}
+	// The positions where a level's declarations or statements start.
+	private def levelStart(role: LspOpenRole) -> int {
+		match (role) {
+			TOP => return LspCursorSyntax.TOP_LEVEL;
+			MEMBERS => return LspCursorSyntax.MEMBER_DECL;
+			VARIANT => return LspCursorSyntax.CASE_DECL;
+			STATEMENTS, LAMBDA => return LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+			MATCH => return LspCursorSyntax.PATTERN;
+			_ => return 0;
+		}
+	}
+	// The positions after the previous token, a keyword, at a level with
+	// {role}; or -1 if it ends an operand.
+	private def keywordFollow(role: LspOpenRole) -> int {
+		match (prevKeyword) {
+			PRIVATE => return if(role == LspOpenRole.TOP, LspCursorSyntax.AFTER_PRIVATE,
+				if(role == LspOpenRole.MEMBERS, LspCursorSyntax.AFTER_PRIVATE_MEMBER));
+			THREAD => return LspCursorSyntax.AFTER_THREAD;
+			IMPORT => return LspCursorSyntax.AFTER_IMPORT;
+			EXPORT => return LspCursorSyntax.AFTER_EXPORT;
+			DEF => return if(role == LspOpenRole.MEMBERS, LspCursorSyntax.AFTER_DEF_MEMBER);
+			RETURN, IN => return LspCursorSyntax.EXPRESSION;
+			EXTENDS, DESCRIPTOR, DESCRIBES => return LspCursorSyntax.TYPE;
+			ELSE => return LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+			TRUE, FALSE, NULL => return -1;
+			_ => return 0;
+		}
+	}
+
+	private def isIdentStart(c: byte) -> bool {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+	}
+	private def isIdentMiddle(c: byte) -> bool {
+		return isIdentStart(c) || isDecimal(c) || c == '_';
+	}
+	private def isDecimal(c: byte) -> bool {
+		return c >= '0' && c <= '9';
+	}
+	private def isHex(c: byte) -> bool {
+		return isDecimal(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+	}
+}

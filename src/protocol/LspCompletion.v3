@@ -1,0 +1,160 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The keywords of the pinned Aeneas parser (Keywords in
+// vendor/virgil/aeneas/src/vst/Parser.v3), each with the LspCursorSyntax
+// positions where the parser accepts it: {always}, and {gated} when the
+// language option of the AnalysisKeywordForms flag {form} is on. A keyword
+// is offered only if Aeneas's own list has it (AeneasAdapter.keywords), and
+// a test requires the two lists to be equal.
+enum LspKeyword(always: int, gated: int, form: int) {
+	BREAK(LspCursorSyntax.STATEMENT, 0, 0),
+	CASE(LspCursorSyntax.CASE_DECL, 0, 0),
+	CLASS(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.AFTER_PRIVATE, 0, 0),
+	COMPONENT(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.AFTER_PRIVATE | LspCursorSyntax.AFTER_THREAD
+		| LspCursorSyntax.AFTER_IMPORT, 0, 0),
+	CONTINUE(LspCursorSyntax.STATEMENT, 0, 0),
+	DEF(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.MEMBER_DECL | LspCursorSyntax.CASE_DECL
+		| LspCursorSyntax.STATEMENT | LspCursorSyntax.AFTER_PRIVATE_MEMBER | LspCursorSyntax.AFTER_EXPORT, 0, 0),
+	DESCRIBES(0, LspCursorSyntax.CLASS_HEADER, AnalysisKeywordForms.DESCRIPTORS),
+	DESCRIPTOR(0, LspCursorSyntax.CLASS_HEADER, AnalysisKeywordForms.DESCRIPTORS),
+	ELSE(LspCursorSyntax.ELSE, 0, 0),
+	ENUM(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.AFTER_PRIVATE, 0, 0),
+	EXPORT(LspCursorSyntax.TOP_LEVEL, 0, 0),
+	EXTENDS(LspCursorSyntax.CLASS_HEADER, LspCursorSyntax.VARIANT_HEADER, AnalysisKeywordForms.OPEN_TYPES),
+	FALSE(LspCursorSyntax.EXPRESSION | LspCursorSyntax.PATTERN, 0, 0),
+	FOR(LspCursorSyntax.STATEMENT, 0, 0),
+	FUN(0, LspCursorSyntax.EXPRESSION, AnalysisKeywordForms.FUN_EXPRS),
+	IF(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, 0, 0),
+	IMPORT(LspCursorSyntax.TOP_LEVEL, 0, 0),
+	IN(LspCursorSyntax.FOR_IN, 0, 0),
+	LAYOUT(LspCursorSyntax.TOP_LEVEL, 0, 0),
+	MATCH(LspCursorSyntax.STATEMENT, 0, 0),
+	NEW(LspCursorSyntax.MEMBER_DECL | LspCursorSyntax.AFTER_PRIVATE_MEMBER, 0, 0),
+	NULL(LspCursorSyntax.EXPRESSION | LspCursorSyntax.PATTERN, 0, 0),
+	PACKING(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.AFTER_PRIVATE, 0, 0),
+	PRIVATE(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.MEMBER_DECL, 0, 0),
+	RETURN(LspCursorSyntax.STATEMENT, 0, 0),
+	// Reserved, but no declaration, statement, or expression starts with it.
+	STRUCT(0, 0, 0),
+	SUPER(LspCursorSyntax.CONSTRUCTOR_HEADER, 0, 0),
+	THREAD(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.AFTER_PRIVATE, 0, 0),
+	TRUE(LspCursorSyntax.EXPRESSION | LspCursorSyntax.PATTERN, 0, 0),
+	TYPE(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.AFTER_PRIVATE, 0, 0),
+	VAR(LspCursorSyntax.TOP_LEVEL | LspCursorSyntax.MEMBER_DECL | LspCursorSyntax.STATEMENT
+		| LspCursorSyntax.PARAMETER | LspCursorSyntax.AFTER_PRIVATE_MEMBER | LspCursorSyntax.AFTER_DEF_MEMBER, 0, 0),
+	WHILE(LspCursorSyntax.STATEMENT, 0, 0)
+}
+
+// Keyword spellings, lookup, and the candidates at a cursor.
+component LspKeywords {
+	// Each LspKeyword's spelling, by tag: its name in lower case.
+	def SPELLINGS = spell();
+
+	private def spell() -> Array<string> {
+		var a = Array<string>.new(LspKeyword.count);
+		for (kw in LspKeyword.set.all) {
+			var s = Array<byte>.new(kw.name.length);
+			for (i < s.length) s[i] = kw.name[i] | '\x20';
+			a[kw.tag] = s;
+		}
+		return a;
+	}
+	// The keyword that the bytes of {text} from {begin} to {end} spell, if
+	// any. Aeneas checks only identifiers of two or more bytes.
+	def find(text: Array<byte>, begin: int, end: int) -> (bool, LspKeyword) {
+		var len = end - begin;
+		if (len < 2 || len > 10) return (false, LspKeyword.BREAK);
+		for (kw in LspKeyword.set.all) {
+			var s = SPELLINGS[kw.tag];
+			if (s.length != len || s[0] != text[begin]) continue;
+			var same = true;
+			for (i = 1; same && i < len; i++) same = s[i] == text[begin + i];
+			if (same) return (true, kw);
+		}
+		return (false, LspKeyword.BREAK);
+	}
+	// The keyword spelled {s}, if any.
+	def named(s: string) -> (bool, LspKeyword) {
+		return find(s, 0, s.length);
+	}
+	// The keywords to offer at {ctx} with the AnalysisKeywordForms {forms},
+	// in alphabetical order: none in a comment, a literal, or after ".";
+	// otherwise each of Aeneas's {keywords} that the table accepts at one of
+	// the context's positions.
+	def candidates(ctx: LspCursorContext, keywords: Array<string>, forms: int) -> Array<string> {
+		if (ctx.place != LspCursorPlace.CODE || ctx.member()) return [];
+		var result = Vector<string>.new();
+		for (word in keywords) {
+			var kw = named(word);
+			if (!kw.0) continue;
+			var positions = kw.1.always | if((forms & kw.1.form) != 0, kw.1.gated);
+			if ((positions & ctx.syntax) != 0) result.put(word);
+		}
+		return result.extract();
+	}
+}
+
+// textDocument/completion: the keywords that can start at the cursor, from
+// the open document's current text alone. It never starts or waits for an
+// analysis, so it answers in a file that fails to parse. See
+// docs/architecture.md#completion.
+class LspCompletion(store: DocumentStore, projects: WorkspaceProjects) {
+	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onRequest("textDocument/completion", completion);
+	}
+	private def completion(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = objectMember(params, "textDocument"), position = objectMember(params, "position");
+		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
+		var line = intMember(position, "line"), character = intMember(position, "character");
+		if (uri == null || DocumentUri.normalize(uri) == null || line < 0 || character < 0) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
+				"completion params require a valid textDocument.uri and position"));
+		}
+		var overlay = store.overlay(uri);
+		if (overlay == null) return JsonRpcReply.Result(list([]));
+		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
+		var ctx = LspCursorScanner.new(overlay.text).scan(map.positionToOffset(line, character));
+		var forms = AeneasAdapter.keywordForms(projects.forDocument(overlay.uri).compilerArgs());
+		var words = LspKeywords.candidates(ctx, AeneasAdapter.keywords(), forms);
+		var range = Strings.newMap<JsonValue>();
+		range["start"] = encodePosition(map.offsetToPosition(ctx.prefixStart));
+		range["end"] = encodePosition(map.offsetToPosition(ctx.cursor));
+		var items = Array<JsonValue>.new(words.length);
+		for (i < words.length) {
+			var edit = Strings.newMap<JsonValue>(), item = Strings.newMap<JsonValue>();
+			edit["range"] = JsonValue.JObject(range);
+			edit["newText"] = JsonValue.String(words[i]);
+			item["label"] = JsonValue.String(words[i]);
+			item["kind"] = JsonValue.Int(KEYWORD_KIND);
+			item["textEdit"] = JsonValue.JObject(edit);
+			items[i] = JsonValue.JObject(item);
+		}
+		return JsonRpcReply.Result(list(items));
+	}
+	// A complete CompletionList: the client filters it by the prefix, and
+	// asks again only once the prefix no longer matches.
+	private def list(items: Array<JsonValue>) -> JsonValue {
+		var result = Strings.newMap<JsonValue>();
+		result["isIncomplete"] = JsonValue.Bool(false);
+		result["items"] = JsonValue.JArray(items);
+		return JsonValue.JObject(result);
+	}
+	private def encodePosition(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def intMember(obj: HashMap<string, JsonValue>, key: string) -> int {
+		if (obj == null || !obj.has(key) || !JsonValue.Int.?(obj[key])) return -1;
+		return JsonValue.Int.!(obj[key]).v;
+	}
+}

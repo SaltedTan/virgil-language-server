@@ -35,6 +35,7 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 build/virgil-lsp --version
 build/virgil-lsp parse path/to/file.v3    # development command: syntax diagnostics
 build/virgil-lsp analyze a.v3 b.v3        # development command: parse and verify as one program
+build/virgil-lsp repair --cursor=a.v3:120 a.v3 b.v3  # development command: the completion repair spike
 build/virgil-lsp --stdio                  # LSP over stdio
 ```
 
@@ -52,6 +53,15 @@ parse/verify timings on stderr. Otherwise it reports the input set and run numbe
 the exit status for a failed command, and the command's stderr, then exits non-zero
 without printing a summary for that input set. Temporary files are cleaned up on
 exit, including failure or interruption.
+
+`repair` runs the completion [repair spike](architecture.md#repair-spike) of [ADR-0006](decisions/0006-incomplete-code-repair.md). `--cursor=<file.v3>:<offset>` names one of the files, spelled as on the command line, and a byte offset in it. The command tries each repair at that cursor in order, analyzes the repaired files as one program in a worker, and prints one line for the cursor (`case:`, with its member access, syntactic positions, and open delimiters), one per repair (`attempt:`, whether it parsed, how many diagnostics are outside the probe and the first of them at its original byte offset, the probe's diagnostic, and the context it shows), and a `result:` line with the first repair that parsed, verified, and was usable, the usable context, and every usable repair. `--cut=line` or `--cut=file` first deletes the rest of the cursor's line or file, as when typing at the end of it. `--runs=<n>` then times n analyses of the first usable repair, alternating with n of the files as given, before any cut, and prints their medians and 90th percentiles (`time:`). `--worker-timeout-ms=<n>` applies as for `analyze`. It exits with 0 if a repair was usable, 1 if none was, and 2 for invalid arguments. It never runs from the server, and nothing it analyzes is published.
+
+The corpus of typing states for it is in `test/fixtures/repair/`: whole programs with `<|>` at the cursor in `cases/`, and real call and member sites of the Aeneas sources in `aeneas-sites.txt`. `scripts/repair-corpus.py` runs them all and prints each one's first usable repair and context, the success rate overall and by repair, and, with `--runs=<n>`, the latency of the Aeneas cases; `--only=<text>` selects cases by name and `--verbose` adds each report. A run without `--runs` takes about 15 seconds, and with `--runs=10` a few minutes, so `make test` runs only the `test/cli/run.sh` checks of a few cases:
+
+```sh
+python3 scripts/repair-corpus.py build/virgil-lsp
+python3 scripts/repair-corpus.py --runs=10 --only=aeneas build/virgil-lsp
+```
 
 ### Development stdio requests
 
@@ -92,7 +102,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/analysis/TypeDepthProbe.v3` | Analysis and subsequent tiny analysis of 100,000 inferred array and tuple levels, including lazy snapshot bindings | `build/type-depth-probe` (1 GB heap, default stack) |
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory for compiler crash and hang cases; the crash traces on stderr are expected. Result-budget and malformed-result cases use the unit-test executable as a synthetic worker on the same pipes. | `build/unit-tests [glob]` |
 | `test/fixtures/projects/test_cleanup.py` | Fixture permission restoration and removal through `make clean`, independent of the build directory | `python3 test/fixtures/projects/test_cleanup.py` |
-| `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
+| `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, the `repair` command's report on a few corpus cases, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses using the default time limit with an elapsed-time summary, separate short-limit hang sessions, lifecycle cleanup, and large JSON alongside analysis allocations and snapshot replacement | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/coordinates.py` | Exact worker diagnostic, declaration, and occurrence byte ranges, compiler-coordinate binding exports, CLI and stdio compatibility, allocation rejection/recovery, and bounded malformed-string replay | `python3 test/protocol/coordinates.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/fingerprints.py` | Snapshot freshness against disk changes made while the worker is paused mid-analysis: same-length, shorter, longer, and deleted files, file and directory symlinks, an unrelated source edited, recovery, and overlay identity | `python3 test/protocol/fingerprints.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |

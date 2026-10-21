@@ -8,7 +8,7 @@ Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in cli
 
 Copy [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to `~/.config/nvim/lua/plugins/virgil.lua`, and make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Set `VIRGIL_LOC` as described under [The Virgil root](#the-virgil-root).
 
-LazyVim's keys reach the server: `gd`, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help.
+LazyVim's keys reach the server: `gd`, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more.
 
 LazyVim's noice.nvim drops `window/showMessage` notifications from every language server ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)), so warnings such as "Invalid project file …" don't appear, although the project file's diagnostics do. To see them, turn off noice's LSP message handler in a plugin spec, so that Neovim's own handler shows them:
 
@@ -48,6 +48,26 @@ The server notices changes made outside the editor, such as a checkout, only fro
 
 `vim.lsp.buf.rename()` (`grn`) asks the server first whether the name under the cursor can be renamed, and then for the edit, which it applies to the open buffers and the closed files it names ([Rename](../../docs/architecture.md#rename)). The server sends versioned `documentChanges`, and refuses to rename for a client that does not declare them. Neovim 0.11 applies them but does not declare `workspace.workspaceEdit.documentChanges`, so both configurations add it to `capabilities`; `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].capabilities.workspace.workspaceEdit` shows it. Neovim checks the version of only the first document of an edit. A refused rename shows the server's reason, such as "rename needs a program that verifies" while the project has errors.
 
+## Completion
+
+The server offers [keyword completion](../../docs/architecture.md#completion) in open buffers, even while they fail to parse. In plain Neovim, ask for it: Neovim 0.11 sets `omnifunc` to `vim.lsp.omnifunc()` when the server attaches, so `<C-x><C-o>` in Insert mode completes the word before the cursor, with no setup. Neovim's built-in LSP completion also has `vim.lsp.completion.get()`, which asks only the servers that `vim.lsp.completion.enable()` enabled for the buffer, so enable it in an `LspAttach` autocommand and map a key to it, as `:help vim.lsp.completion.get()` suggests:
+
+```lua
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(args)
+    local client = vim.lsp.get_client_by_id(args.data.client_id)
+    if client and client.name == "virgil_lsp" then
+      vim.lsp.completion.enable(true, client.id, args.buf)
+      vim.keymap.set("i", "<C-Space>", vim.lsp.completion.get, { buffer = args.buf })
+    end
+  end,
+})
+```
+
+In either case, `<C-y>` accepts the selected item. Neovim 0.11.6's `autotrigger = true` doesn't show the items as you type with this server: it asks only after one of the server's `completionProvider.triggerCharacters`, and the server declares none yet. They arrive with member completion, which adds `.` ([#130](https://github.com/SaltedTan/virgil-language-server/issues/130)).
+
+LazyVim needs no setup, and shows the items as you type. Its default completion plugin, blink.cmp, asks every attached server that declares `completionProvider` through its `lsp` source (`sources.default` in LazyVim 16.0.1's `coding.blink` extra), and blink.cmp 1.10.2 asks its sources whenever you type a keyword character (`completion.trigger.show_on_keyword`, on by default, which LazyVim leaves unchanged), with or without trigger characters. That is read from LazyVim's and blink.cmp's source; it hasn't been tried in a LazyVim session with this server.
+
 ## Headless smoke test
 
 From the repository root, run `make test-nvim` (also included in `make test`).
@@ -60,7 +80,8 @@ project, which uses `lib/util` from the Virgil root, a definition in that
 closed library file, a hover over the same use, signature help in a call on the
 same line, its references in that file and other closed library files, a rename
 of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
-error, and its undo, a workspace symbol that nothing uses, configuration
+error, and its undo, keyword completion of `whi` to `while` in the unsaved,
+unparsable buffer, applied with Neovim's own edit and undone, a workspace symbol that nothing uses, configuration
 diagnostics after an unsaved edit to the project file, that other JSON buffers
 stay detached, and a graceful server shutdown with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the

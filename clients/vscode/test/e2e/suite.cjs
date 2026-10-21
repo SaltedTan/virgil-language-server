@@ -272,6 +272,33 @@ async function workspace(extension) {
   await waitFor('the undo of the rename', () => words.document.getText() === fixed);
   await undo(words, unedited);
 
+  // Completion answers from the unsaved text alone, which no longer parses:
+  // "whi" starts a statement, so the keywords of a statement are offered, and
+  // "while" replaces just the prefix. VS Code applies the item, and one undo
+  // restores the line.
+  await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), '\t\twhi\n'));
+  const typed = words.document.getText();
+  const completions = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(use + 1, 5),
+  );
+  const keyword = completions.items.find((i) => i.label === 'while');
+  assert.ok(keyword, 'while is not offered');
+  assert.deepEqual(completions.items.map((i) => i.label), [
+    'break', 'continue', 'def', 'false', 'for', 'fun', 'if', 'match', 'null', 'return', 'true', 'var', 'while',
+  ]);
+  assert.equal(keyword.kind, vscode.CompletionItemKind.Keyword);
+  const replaced = keyword.range instanceof vscode.Range ? keyword.range : keyword.range.replacing;
+  assert.deepEqual(range({ range: replaced }), [use + 1, 2, use + 1, 5]);
+  const insertText = typeof keyword.insertText === 'string' ? keyword.insertText : keyword.insertText.value;
+  assert.equal(insertText, 'while');
+  await edit(words, (builder) => builder.replace(replaced, insertText));
+  assert.equal(words.document.lineAt(use + 1).text, '\t\twhile');
+  await vscode.window.showTextDocument(words.document);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the completion', () => words.document.getText() === typed);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the prefix', () => words.document.getText() === unedited && !words.document.isDirty);
+
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -294,7 +321,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, signature help, references, rename and undo, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, signature help, references, rename and undo, keyword completion, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

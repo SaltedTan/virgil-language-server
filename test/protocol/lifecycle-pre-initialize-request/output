@@ -4,8 +4,8 @@ Content-Length: 90
 
 {"jsonrpc":"2.0","id":"s","error":{"code":-32002,"message":"the server is not initialized"}}Content-Length: 90
 
-{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"the server is not initialized"}}Content-Length: 506
+{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"the server is not initialized"}}Content-Length: 530
 
-{"jsonrpc":"2.0","id":3,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
+{"jsonrpc":"2.0","id":3,"result":{"capabilities":{"completionProvider":{},"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 38
 
 {"jsonrpc":"2.0","id":4,"result":null}

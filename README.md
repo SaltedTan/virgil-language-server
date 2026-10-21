@@ -6,7 +6,7 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 > **Unofficial project.** This is an independent community tool. It is not affiliated with or endorsed by the Virgil maintainers.
 
-> **Status: alpha.** `0.1.0-alpha.1` is the first [prerelease](docs/releasing.md). With it, the diagnostics and navigation milestones (M2–M4) are complete, and work on rename and completion (M5) is under way; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, plus type errors, [go-to-definition](docs/architecture.md#definition), [hover](docs/architecture.md#hover), [references](docs/architecture.md#references), [rename](docs/architecture.md#rename) (on `main`), [workspace symbols](docs/architecture.md#workspace-symbols), and [signature help](docs/architecture.md#signature-help) across the files of a [configured project](docs/configuration.md). The [occurrence index](docs/architecture.md#compiler-adapter) defines which names resolve, and the [architecture guide](docs/architecture.md) describes how each part works.
+> **Status: alpha.** `0.1.0-alpha.1` is the first [prerelease](docs/releasing.md). With it, the diagnostics and navigation milestones (M2–M4) are complete, and work on rename and completion (M5) is under way; see [ROADMAP.md](ROADMAP.md). The server reports syntax errors and a document outline for open files, including unsaved edits, plus type errors, [go-to-definition](docs/architecture.md#definition), [hover](docs/architecture.md#hover), [references](docs/architecture.md#references), [rename](docs/architecture.md#rename) (on `main`), [workspace symbols](docs/architecture.md#workspace-symbols), and [signature help](docs/architecture.md#signature-help) across the files of a [configured project](docs/configuration.md). On `main`, [keyword completion](docs/architecture.md#completion) works in any open file, even one that doesn't parse; completion of names comes next. The [occurrence index](docs/architecture.md#compiler-adapter) defines which names resolve, and the [architecture guide](docs/architecture.md) describes how each part works.
 
 ## Why
 
@@ -23,7 +23,7 @@ One server, used by both LazyVim/Neovim and VS Code, providing:
 - hover with declaration signatures and inferred types
 - a [`.virgil-lsp.json` project file](docs/configuration.md) describing which sources form a program
 
-Completion and incremental analysis come after v0.1; [references](docs/architecture.md#references), [signature help](docs/architecture.md#signature-help), and [rename](docs/architecture.md#rename) are already available. Formatting and debugging are out of scope. [Known limitations](docs/known-limitations.md) lists what else the alpha doesn't do yet.
+Completion of names and incremental analysis come after v0.1; [references](docs/architecture.md#references), [signature help](docs/architecture.md#signature-help), [rename](docs/architecture.md#rename), and [keyword completion](docs/architecture.md#completion) are already available. Formatting and debugging are out of scope. [Known limitations](docs/known-limitations.md) lists what else the alpha doesn't do yet.
 
 ## Architecture
 
