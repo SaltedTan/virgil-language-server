@@ -384,6 +384,27 @@ def test_excluded_shadowing(t: Tester) {
 		"component C { def K = 1; def m() { var K = 2; match (K) { $K => ; _ => ; } } }"]) {
 		agree(t, text, P, ["K"]);
 	}
+	// #151: a parameter or local hides a component's constant in a pattern,
+	// as TypeChecker.visitMatchPattern resolves the head through
+	// MethodEnv.lookupVar; a control has nothing to hide it.
+	var issue = "component K {\n\tdef ONE = 1;\n\tdef f(v: int, ONE: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n";
+	agree(t, issue, P, ["ONE"]);
+	t.assert_string("this=1", render(scopeAny(issue, P)));
+	var control = "component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n";
+	check(t, control, P, "this=1 ONE/2");
+	agree(t, control, P, ["ONE"]);
+	for (text in [
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tvar ONE = 2;\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n",
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\t{ var ONE = 2; match (v) { $ONE => {} } else {} }\n\t}\n}\n",
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tvar g = fun (ONE: int) { match (v) { $ONE => {} } else {} };\n\t}\n}\n",
+		"component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tfor (ONE < 3) { match (v) { $ONE => {} } else {} }\n\t}\n}\n",
+		"def ONE = 1;\ncomponent K {\n\tdef f(v: int, ONE: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t}\n}\n"]) {
+		agree(t, text, P, ["ONE"]);
+	}
+	// A local after the pattern does not hide it.
+	var later = "component K {\n\tdef ONE = 1;\n\tdef f(v: int) {\n\t\tmatch (v) { $ONE => {} } else {}\n\t\tvar ONE = 2;\n\t}\n}\n";
+	check(t, later, P, "this=1 ONE/2");
+	agree(t, later, P, ["ONE"]);
 	var builtin = "class C { var first = $int; var int = 2; }";
 	var values = scopeAny(builtin, V), types = scopeAny(builtin, TY), both = scopeAny(builtin, V | TY);
 	t.assert(values != null && types != null && both != null, "scope answers");
