@@ -365,8 +365,10 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 					size = e.1 - e.0;
 				}
 			}
-			// A type in a declaration's header, before its members.
-			var begin = if(!c.isSynthetic, tokenBegin(c.token), -1);
+			// A type in a declaration's header, before its members. A variant
+			// case's synthetic class is its header: its parameters and type
+			// hints name the variant's type parameters, which it shares.
+			var begin = if(!c.isSynthetic || c.isVariantCase(), tokenBegin(c.token), -1);
 			if (begin >= 0 && begin <= offset && offset < first && begin > headerBegin && offset < boundaries.compoundEnd(c)) {
 				header = c;
 				headerBegin = begin;

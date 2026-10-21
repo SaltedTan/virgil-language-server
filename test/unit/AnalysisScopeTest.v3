@@ -21,6 +21,7 @@ def X = [
 	T("AnalysisScope:components", test_components),
 	T("AnalysisScope:field_initializers", test_field_initializers),
 	T("AnalysisScope:variants_and_enums", test_variants_and_enums),
+	T("AnalysisScope:variant_case_headers", test_variant_case_headers),
 	T("AnalysisScope:file_scope", test_file_scope),
 	T("AnalysisScope:type_positions", test_type_positions),
 	T("AnalysisScope:headers_and_top_level", test_headers_and_top_level),
@@ -511,6 +512,26 @@ def test_variants_and_enums(t: Tester) {
 	t.assert_string("x:FIELD get:METHOD name:FIELD tag:FIELD describe:METHOD V:CLASS", kindsAt(t, variant, V));
 	// A variant's own method, its parameters' fields.
 	check(t, "type W(id: int) {\n\tdef twice() -> int { return $id * 2; }\n}\n", V, "this=1 id/2 twice/2 W/6");
+}
+
+// A variant case's header is the synthetic class that the parser lifts to
+// file scope: its parameter types and representation hints are within the
+// case's source extent, and its type parameters are the variant's. The
+// other synthetic declarations, such as its parameter fields and the
+// variant's tag and name, stay out of the scope query's member walk.
+def test_variant_case_headers(t: Tester) {
+	check(t, "type V<T> {\n\tcase Some(value: $T);\n}\n", TY, "T/1 V/3");
+	check(t, "type V<T> {\n\tcase Some(value: Array<$T>);\n}\n", TY, "T/1 V/3");
+	check(t, "type V<T> {\n\tcase Some(value: T) {\n\t\tdef m(x: $T) { }\n\t}\n}\n", TY, "T/1 V/3");
+	var nested = "type V<T> {\n\tcase Some(value: List<$T>);\n}\n";
+	t.assert_string("T/1 List/3 V/3", scopeIn(t, [(MAIN, nested), (OTHER, "class List<U> { }\n")], TY, ""));
+	var hint = "type V<T> {\n\tcase Some(value: T) #hint<Pair<$T>>;\n}\n";
+	t.assert_string("T/1 Pair/3 V/3", scopeIn(t, [(MAIN, hint), (OTHER, "class Pair<A> { }\n")], TY, ""));
+	check(t, "class Other { }\ntype V {\n\tcase Some(value: $Other);\n}\n", TY, "Other/3 V/3");
+	// V is a candidate, but not bare: a generic type needs arguments, so only
+	// the type parameter is a name that verifies as written.
+	agree(t, "type V<T> {\n\tcase Some(value: $T);\n}\n", TY, ["T"]);
+	agree(t, "class Other { }\ntype V {\n\tcase Some(value: $Other);\n}\n", TY, ["Other", "V"]);
 }
 
 def test_file_scope(t: Tester) {
