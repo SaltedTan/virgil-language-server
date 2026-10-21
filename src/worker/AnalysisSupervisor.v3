@@ -52,6 +52,8 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private var pending: bool;
 	// The pending analysis's snapshot is not kept as {snapshot}.
 	private var temporary: bool;
+	// The pending analysis has a scope query.
+	private var scoped: bool;
 
 	def busy() -> bool { return pending; }
 
@@ -60,9 +62,13 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// {options} are the program's language options, which apply only to this
 	// analysis: the worker restores the defaults after each one.
 	def begin(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
+		return start(sources, options, flags, null);
+	}
+	private def start(sources: Array<AnalysisSource>, options: Array<string>, flags: int, scope: AnalysisScopeRequest) -> AnalysisOutcome {
 		if (pending) return AnalysisOutcome.Failed(AnalysisFailure.BUSY, "an analysis is already running");
+		if (scope != null) flags |= AnalysisWire.WANT_SCOPE;
 		var id = nextId++;
-		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, options, sources) - WorkerFraming.HEADER_BYTES;
+		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, options, sources, scope) - WorkerFraming.HEADER_BYTES;
 		if (size > WorkerFraming.MAX_PAYLOAD) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE,
 				Strings.format2("the request takes %d bytes, more than the limit of %d bytes", size, WorkerFraming.MAX_PAYLOAD));
@@ -86,17 +92,23 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		activeId = id;
 		paths = Array<string>.new(sources.length);
 		for (i < paths.length) paths[i] = sources[i].path;
-		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources);
+		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources, scope);
 		pending = true;
+		scoped = scope != null;
 		if (!starting) sendRequest();
 		return AnalysisOutcome.Pending;
 	}
 	// Begins an analysis as {begin} does, whose completed snapshot goes only
 	// to the caller: {snapshot} keeps the last analysis that was not
 	// temporary. A rename's preflight (LspRename) analyzes edited sources
-	// that no project has, so its result must not replace the latest.
-	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, flags: int) -> AnalysisOutcome {
-		var outcome = begin(sources, options, flags);
+	// that no project has, and a completion (LspCompletion) sources that may
+	// be repaired, so their results must not replace the latest. With
+	// {scope}, the analysis answers the scope query (AnalysisSnapshot.scope);
+	// without WANT_OCCURRENCES too, its snapshot has only the candidates'
+	// declarations, and no files.
+	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, flags: int,
+			scope: AnalysisScopeRequest) -> AnalysisOutcome {
+		var outcome = start(sources, options, flags, scope);
 		if (AnalysisOutcome.Pending.?(outcome)) temporary = true;
 		return outcome;
 	}
@@ -131,7 +143,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 					return AnalysisOutcome.Pending;
 				}
 				var result: AnalysisWorkerResult;
-				match (AnalysisWire.decodeResult(payload, generation + 1, paths)) {
+				match (AnalysisWire.decodeResultWithScope(payload, generation + 1, paths, scoped)) {
 					Decoded(decoded) => result = decoded;
 					TooLarge(id) => {
 						if (id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
@@ -184,6 +196,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private def clearPending() {
 		pending = false;
 		temporary = false;
+		scoped = false;
 		request = null;
 		paths = null;
 	}

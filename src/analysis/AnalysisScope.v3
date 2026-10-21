@@ -1,0 +1,71 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The kinds of name a scope query asks for, as flags: each selects the
+// declarations that the verifier would resolve a name to at that kind of
+// position. See docs/architecture.md#completion.
+component AnalysisScopeKinds {
+	// A name in an expression or a statement: locals, members, file-scope
+	// declarations, types, and layouts, in the order MethodEnv.lookupVar
+	// tries them.
+	def VALUES = 1;
+	// A name in a type: type parameters and types (TypeEnv.lookup).
+	def TYPES = 2;
+	// A match pattern's head: the cases of the matched enum or variant, or,
+	// for any other type, VALUES.
+	def PATTERN = 4;
+	def ALL = VALUES | TYPES | PATTERN;
+}
+
+// A scope query, sent with an ANALYZE request (AnalysisWire.WANT_SCOPE): the
+// names visible in the request's source {file} at byte {offset} of the kinds
+// {kinds}. {prefix}, at most MAX_PREFIX bytes, selects candidates only when
+// there are more than AnalysisScopeOrder.MAX_DECLARATIONS.
+class AnalysisScopeRequest(file: int, offset: int, kinds: int, prefix: string) { }
+
+// The worker's answer to a scope query: the visible declarations, each with
+// its level, sorted by AnalysisScopeOrder, and the level of "this" or -1 where
+// no method's receiver is in scope. {truncated} is true if there were more
+// candidates than the cap, so that only those starting with the prefix were
+// kept, up to the cap.
+class AnalysisScopeAnswer(declarations: Array<AnalysisDeclaration>, levels: Array<int>, thisLevel: int, truncated: bool) {
+	// The analyzed program's paths, in the request's order, which name the
+	// declarations' files in a result without occurrences.
+	var paths: Array<string>;
+}
+
+// A decoded scope answer, as indices into its snapshot's declarations.
+class AnalysisSnapshotScope(declarations: Array<int>, levels: Array<int>, thisLevel: int, truncated: bool) { }
+
+// The order of scope candidates: nearest binding first, then by kind group,
+// then by the bytes of the name. A level is a binding's distance from the
+// position: each block, loop, match case, lambda, and method scope counts one,
+// innermost first, then each class of the receiver's hierarchy, the file
+// scope, the type parameters of the method and of its compound, the file's
+// private types, the program's types, and its layouts.
+component AnalysisScopeOrder {
+	// The most candidates an answer holds.
+	def MAX_DECLARATIONS = 1000;
+	// The most bytes of a query's prefix; no identifier needs more.
+	def MAX_PREFIX = 255;
+
+	// Locals and parameters first, then fields, methods, cases, type
+	// parameters, and types; builtin types, which have no declaration, last.
+	def group(kind: AnalysisDeclKind) -> int {
+		match (kind) {
+			LOCAL, PARAMETER => return 0;
+			FIELD, LAYOUT_FIELD => return 1;
+			METHOD, CONSTRUCTOR => return 2;
+			ENUM_CASE, VARIANT_CASE => return 3;
+			TYPE_PARAM => return 4;
+			CLASS, COMPONENT, ENUM, LAYOUT, PACKING => return 5;
+		}
+	}
+	def BUILTIN_GROUP = 6;
+	// Whether the candidate ({level}, {group}, {name}) comes before another.
+	def before(level: int, group: int, name: string, otherLevel: int, otherGroup: int, other: string) -> bool {
+		if (level != otherLevel) return level < otherLevel;
+		if (group != otherGroup) return group < otherGroup;
+		return AnalysisTables.compareBytes(name, other) < 0;
+	}
+}

@@ -137,6 +137,8 @@ rename_shared.mkdir(exist_ok=True)
     '{"name":"two","sources":["SharedUse.v3","SharedDecl.v3"]}]}',
     encoding="utf-8",
 )
+# LspCompletionScopeTest writes each test's project file and sources itself.
+(root / "completion").mkdir(exist_ok=True)
 # LspRenameTest writes each test's project file and sources itself. The
 # Virgil root of rename-root holds a library that its project depends on.
 (root / "rename-edits").mkdir(exist_ok=True)

@@ -1,0 +1,513 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The declarations visible at a byte offset of one file of a parsed program,
+// as the verifier binds names there: MethodEnv.lookupVar for a name in an
+// expression, which tries the locals of the method and of the methods around
+// a lambda, the members of the receiver's type, the file's own top-level
+// declarations, the types, and the layouts, in that order; and TypeEnv.lookup
+// for a name in a type. It walks only the member and the statements that
+// contain the offset, binding locals in the order TypeChecker binds them, so
+// that no local leaks from a sibling scope or from later in its block, and
+// allocates only its answer. See docs/architecture.md#completion.
+class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay, prog: Program, file: VstFile)
+		extends VstVisitor<void, void> {
+	// A cycle of superclasses is an error; stop following one.
+	def MAX_HIERARCHY = 256;
+	private var offset: int;
+	private var coordinates: AnalysisCoordinates;
+	// The local scopes that contain the offset, outermost first, each with
+	// the variables bound in it before the offset (VarEnvironment).
+	private def scopes = Vector<Vector<VarDecl>>.new();
+	// The scope that binds the receiver, "this", or -1.
+	private var thisScope = -1;
+	// The compound and the method whose member holds the offset, or null.
+	private var compound: VstCompound;
+	private var method: VstMethod;
+	// Names resolve through the members of the receiver's type: in a method,
+	// a constructor, or a field's initializer (MethodEnv.thisParam).
+	private var receiver: bool;
+	// The field whose initializer holds the offset, or null.
+	private var initField: VstField;
+	// The match whose patterns, rather than a case's statement, hold the offset.
+	private var patterns: MatchStmt;
+	// The answer: candidates, their levels, and the names each kind of name
+	// has bound so far, nearest first, which hide later ones.
+	private def found = Vector<AnalysisDeclaration>.new();
+	private def levels = Vector<int>.new();
+	private def valueNames = Strings.newMap<bool>();
+	private def typeNames = Strings.newMap<bool>();
+
+	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
+	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
+	def find(offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		this.offset = offset;
+		locate();
+		var values = (kinds & AnalysisScopeKinds.VALUES) != 0, types = (kinds & AnalysisScopeKinds.TYPES) != 0;
+		if ((kinds & AnalysisScopeKinds.PATTERN) != 0 && !cases()) values = true;
+		var level = 0, thisLevel = -1;
+		for (i = scopes.length - 1; i >= 0; i--) {
+			if (i == thisScope) thisLevel = level;
+			var s = scopes[i];
+			if (values) for (j < s.length) local(s[j], level);
+			level++;
+		}
+		if (receiver && compound != null && !compound.isFileScope) {
+			var c = compound;
+			for (depth = 0; c != null && depth < MAX_HIERARCHY; depth++) {
+				if (values) members(c, level);
+				level++;
+				c = superclass(c);
+			}
+		}
+		if (file.synthetic != null) {
+			if (values) members(file.synthetic, level);
+			level++;
+		}
+		if (method != null) typeParams(method.typeParams, values, types, level);
+		level++;
+		if (compound != null) typeParams(compound.typeParams, values, types, level);
+		level++;
+		if (file.typeEnv != null) typeCons(file.typeEnv, values, types, level);
+		level++;
+		typeCons(prog.typeEnv, values, types, level);
+		level++;
+		if (values && prog.layouts != null) {
+			var l = level;
+			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l));
+		}
+		return answer(thisLevel, prefix);
+	}
+	// Sorts the candidates, and caps them: past the cap, only those that
+	// start with {prefix} are kept, up to it.
+	private def answer(thisLevel: int, prefix: string) -> AnalysisScopeAnswer {
+		var order = Array<int>.new(found.length);
+		for (i < order.length) order[i] = i;
+		order = AnalysisTables.sort(order, fun (a: int, b: int) => AnalysisScopeOrder.before(
+			levels[a], AnalysisScopeOrder.group(found[a].kind), found[a].name,
+			levels[b], AnalysisScopeOrder.group(found[b].kind), found[b].name));
+		var truncated = order.length > AnalysisScopeOrder.MAX_DECLARATIONS;
+		var kept = Vector<int>.new();
+		for (i in order) {
+			if (kept.length == AnalysisScopeOrder.MAX_DECLARATIONS) break;
+			if (!truncated || Strings.startsWith(found[i].name, prefix)) kept.put(i);
+		}
+		var decls = Array<AnalysisDeclaration>.new(kept.length), result = Array<int>.new(kept.length);
+		for (i < kept.length) {
+			decls[i] = found[kept[i]];
+			result[i] = levels[kept[i]];
+		}
+		return AnalysisScopeAnswer.new(decls, result, thisLevel, truncated);
+	}
+	// Adds {d} at {level} unless an earlier candidate has its name in the
+	// namespace of {names}, or it is a candidate already: a type is added for
+	// both namespaces in turn, so only the last candidate can be it.
+	private def add(names: HashMap<string, bool>, d: AnalysisDeclaration, level: int) {
+		if (d == null || names.has(d.name)) return;
+		names[d.name] = true;
+		if (found.length > 0 && found[found.length - 1] == d) return;
+		found.put(d);
+		levels.put(level);
+	}
+	private def local(v: VarDecl, level: int) {
+		if (v.isUnderscore()) return;
+		add(valueNames, make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v), level);
+	}
+	// The fields and methods of {c} that a name resolves to through the
+	// receiver (MethodEnv.resolveCompoundMember): those that are not private
+	// to another file (VstCompoundVerifier.canAccessMember). An enum's methods
+	// are not (MethodEnv.lookupEnumExprMember). In a field's initializer, a
+	// later field of the same compound, and a method of a class or an enum, is
+	// an error (MethodEnv.checkMemberInit), so neither is offered.
+	private def members(c: VstCompound, level: int) {
+		var methods = !VstEnum.?(c) && (initField == null || VstComponent.?(c));
+		var later = false, own = initField != null && c == initField.receiver;
+		for (l = c.members; l != null; l = l.tail) {
+			var m = l.head;
+			if (m == initField) later = true;
+			if (m.isPrivate && !sameFile(c)) continue;
+			match (m) {
+				x: VstNew => ;
+				x: VstMethod => if (methods && !x.isSynthetic) add(valueNames, make(AnalysisDeclKind.METHOD, x), level);
+				x: VstField => if (!(own && later)) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
+				_ => ;
+			}
+		}
+	}
+	private def sameFile(c: VstCompound) -> bool {
+		return c.token != null && Strings.equal(c.token.fileName, file.fileName);
+	}
+	// The class that {c} extends, as verification resolved it, or null.
+	private def superclass(c: VstCompound) -> VstCompound {
+		if (!VstClass.?(c)) return null;
+		var t = VstClass.!(c).superclass;
+		return if(t != null && ClassType.?(t.binding), ClassType.!(t.binding).classDecl);
+	}
+	private def typeParams(list: List<TypeParamType>, values: bool, types: bool, level: int) {
+		for (l = list; l != null; l = l.tail) {
+			var d = display.declaration(AnalysisDeclKind.TYPE_PARAM, l.head.token, null, l.head);
+			if (values) add(valueNames, d, level);
+			if (types) add(typeNames, d, level);
+		}
+	}
+	// The types that {env} itself binds, other than the builtin types, which
+	// have no declaration.
+	private def typeCons(env: TypeEnv, values: bool, types: bool, level: int) {
+		env.typecons.apply(fun (name: string, tc: TypeCon) {
+			var d = typeDeclaration(tc);
+			if (values) add(valueNames, d, level);
+			if (types) add(typeNames, d, level);
+		});
+	}
+	private def typeDeclaration(tc: TypeCon) -> AnalysisDeclaration {
+		match (tc) {
+			x: V3Class_TypeCon => return if(!x.classDecl.isSynthetic, make(AnalysisDeclKind.CLASS, x.classDecl));
+			x: V3Component_TypeCon => return make(AnalysisDeclKind.COMPONENT, x.componentDecl);
+		}
+		if (tc.kind == Kind.ENUM && EnumType.?(tc.singleton)) return make(AnalysisDeclKind.ENUM, EnumType.!(tc.singleton).enumDecl);
+		return null;
+	}
+	// The cases of the enum or variant that the match of {patterns} matches,
+	// which verification has typed, at level 0. False if there is none.
+	private def cases() -> bool {
+		var t = if(patterns != null && patterns.expr != null, patterns.expr.exactType);
+		if (t == null) return false;
+		if (EnumType.?(t)) {
+			for (c in EnumType.!(t).enumDecl.cases) add(valueNames, make(AnalysisDeclKind.ENUM_CASE, c), 0);
+			return true;
+		}
+		if (!V3.isVariant(t)) return false;
+		var decl = V3.classDecl(V3.getRootType(t));
+		if (decl == null || decl.cases == null) return false;
+		for (c in decl.cases) if (!c.isDefaultCase()) add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0);
+		return true;
+	}
+	private def make(kind: AnalysisDeclKind, decl: Decl) -> AnalysisDeclaration {
+		return if(decl != null, display.declaration(kind, decl.token, decl, null));
+	}
+
+	// Finds the member that holds the offset and enters it as the verifier
+	// does (TypeChecker.enterMethod, enterCompound, and typeCheckNew).
+	private def locate() {
+		var best: VstMember, bestCompound: VstCompound, size = int.max;
+		var header: VstCompound, headerBegin = -1;
+		for (i < file.components.length + file.classes.length + file.enums.length) {
+			var c: VstCompound;
+			if (i < file.components.length) c = file.components[i];
+			else if (i < file.components.length + file.classes.length) c = file.classes[i - file.components.length];
+			else c = file.enums[i - file.components.length - file.classes.length];
+			// A class's own super clause is its constructor's.
+			if (c.superclause != null && c.superclause.args != null && inside(c.superclause.args.range()) && c.constructor != null) {
+				enterConstructor(c, c.constructor, c.superclause.args);
+				return;
+			}
+			var first = int.max;
+			for (l = c.members; l != null; l = l.tail) {
+				var m = l.head;
+				// A parameter's field, a default constructor, or a lambda's method.
+				if (m.isSynthetic) continue;
+				var e = extent(m);
+				if (e.0 < 0) continue;
+				if (e.0 < first) first = e.0;
+				if (e.0 <= offset && offset < e.1 && e.1 - e.0 < size) {
+					best = m;
+					bestCompound = c;
+					size = e.1 - e.0;
+				}
+			}
+			// A type in a declaration's header, before its members.
+			var begin = if(!c.isSynthetic, tokenBegin(c.token), -1);
+			if (begin >= 0 && begin <= offset && offset < first && begin > headerBegin) {
+				header = c;
+				headerBegin = begin;
+			}
+		}
+		if (best == null) {
+			compound = header;
+			return;
+		}
+		compound = bestCompound;
+		match (best) {
+			x: VstNew => {
+				var sc = x.superclause;
+				if (sc != null && sc.args != null && inside(sc.args.range())) enterConstructor(compound, x, sc.args);
+				else enterMethod(x);
+			}
+			x: VstMethod => enterMethod(x);
+			x: VstField => if (x.init != null && inside(x.init.range())) {
+				// A component's initializers bind "this" (typeCheckNew calls
+				// enterMethod); a class's and an enum's do not (enterCompound).
+				receiver = true;
+				initField = x;
+				if (VstComponent.?(compound) && !compound.isFileScope) enterScope(true);
+				walk(x.init);
+			}
+			x: VstEnumCase => if (x.args != null) {
+				for (l = x.args.list; l != null; l = l.tail) walk(l.head);
+			}
+			_ => ;
+		}
+	}
+	// The method's body, or its header, where only types are named.
+	private def enterMethod(m: VstMethod) {
+		method = m;
+		var body = m.func.body;
+		if (body == null || offset < point(body.range())) return;
+		receiver = true;
+		enterScope(!compound.isFileScope);
+		params(m.func.params, null);
+		body.accept(this, ());
+	}
+	// A super clause, checked with the constructor's receiver and parameters.
+	private def enterConstructor(c: VstCompound, ctor: VstNew, args: TupleExpr) {
+		compound = c;
+		method = ctor;
+		receiver = true;
+		enterScope(!c.isFileScope);
+		params(ctor.func.params, null);
+		walk(args);
+	}
+	private def enterScope(binds: bool) {
+		if (binds) thisScope = scopes.length;
+		scopes.put(Vector<VarDecl>.new());
+	}
+	private def bind(v: VarDecl) {
+		if (v != null) scopes[scopes.length - 1].put(v);
+	}
+	// Binds {list}, less the parameters that verification appended to a
+	// lambda's for the variables it {captures}.
+	private def params(list: VstList<ParamDecl>, captures: List<(ParamDecl, VarBinding.Local)>) {
+		if (list == null) return;
+		for (l = list.list; l != null; l = l.tail) {
+			var captured = false;
+			for (c = captures; c != null; c = c.tail) captured = captured || c.head.0 == l.head;
+			if (!captured) bind(l.head);
+		}
+	}
+	// Enters a branch, which has a scope of its own (typeCheckStmtWithNewScope).
+	private def branch(s: Stmt) {
+		if (s == null) return;
+		if (!BlockStmt.?(s)) enterScope(false);
+		s.accept(this, ());
+	}
+	private def walk(e: Expr) {
+		if (e != null) e.accept(this, ());
+	}
+
+	// Statements that hold the offset.
+	def visitBlock(s: BlockStmt, env: void) {
+		enterScope(false);
+		for (l = if(s.stmts != null, s.stmts.list); l != null; l = l.tail) {
+			var st = l.head, e = stmtExtent(st);
+			if (e.0 > offset) return;
+			if (e.1 <= offset) {
+				// A statement before the offset binds only its own locals.
+				if (LocalStmt.?(st)) for (v = LocalStmt.!(st).vars; v != null; v = v.tail) bind(v.head);
+				continue;
+			}
+			st.accept(this, ());
+			return;
+		}
+	}
+	def visitIf(s: IfStmt, env: void) {
+		if (inside(range(s.cond))) walk(s.cond);
+		else if (within(s.tbranch)) branch(s.tbranch);
+		else if (within(s.fbranch)) branch(s.fbranch);
+	}
+	def visitWhile(s: WhileStmt, env: void) {
+		if (inside(range(s.cond))) walk(s.cond);
+		else if (within(s.body)) branch(s.body);
+	}
+	// The variable is bound after its initializer, and the condition, update,
+	// and body see it (TypeChecker.visitFor).
+	def visitFor(s: ForStmt, env: void) {
+		enterScope(false);
+		var v = s.varDecl;
+		if (v != null) {
+			if (v.init != null && inside(v.init.range())) return walk(v.init);
+			if (offset < varEnd(v)) return;
+			bind(v);
+		}
+		if (inside(range(s.cond))) walk(s.cond);
+		else if (inside(range(s.update))) walk(s.update);
+		else if (within(s.body)) branch(s.body);
+	}
+	// The variable is bound before the expression is checked, so the
+	// expression sees it (TypeChecker.visitForeach).
+	def visitForeach(s: ForeachStmt, env: void) {
+		enterScope(false);
+		bind(s.varDecl);
+		if (inside(range(s.expr))) walk(s.expr);
+		else if (within(s.body)) branch(s.body);
+	}
+	// The variable is bound after the limit is checked, and the body is
+	// checked in the loop's scope (TypeChecker.visitForLess).
+	def visitForLess(s: ForLessStmt, env: void) {
+		enterScope(false);
+		if (inside(range(s.expr))) return walk(s.expr);
+		bind(s.varDecl);
+		if (within(s.body)) s.body.accept(this, ());
+	}
+	// Each variable is bound after its initializer (TypeChecker.checkVarDecl).
+	def visitLocal(s: LocalStmt, env: void) {
+		for (l = s.vars; l != null; l = l.tail) {
+			var v = l.head;
+			if (v.init != null && inside(v.init.range())) return walk(v.init);
+			if (offset < varEnd(v)) return;
+			bind(v);
+		}
+	}
+	def visitBreak(s: BreakStmt, env: void) { }
+	def visitContinue(s: ContinueStmt, env: void) { }
+	def visitExpr(s: ExprStmt, env: void) {
+		walk(s.expr);
+	}
+	// A case with one pattern binds its variable or its parameters for its
+	// statement (TypeChecker.visitMatch); otherwise the offset is in the
+	// patterns.
+	def visitMatch(s: MatchStmt, env: void) {
+		if (inside(range(s.expr))) return walk(s.expr);
+		for (l = if(s.cases != null, s.cases.list); l != null; l = l.tail) {
+			var c = l.head;
+			if (!within(c.stmt)) continue;
+			var pats = if(c.patterns != null, c.patterns.list);
+			var pat = if(pats != null && pats.tail == null, pats.head);
+			if (pat != null && (pat.vdecl != null || pat.params != null)) {
+				enterScope(false);
+				if (pat.vdecl != null) bind(pat.vdecl);
+				else for (p = pat.params.list; p != null; p = p.tail) bind(p.head);
+			}
+			c.stmt.accept(this, ());
+			return;
+		}
+		patterns = s;
+	}
+	def visitEmpty(s: EmptyStmt, env: void) { }
+	def visitReturn(s: ReturnStmt, env: void) {
+		walk(s.expr);
+	}
+
+	// Expressions, searched for the lambda that holds the offset.
+	def visitTuple(e: TupleExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitParamExpr(e: ParamExpr, env: void) { }
+	def visitAutoExpr(e: AutoExpr, env: void) {
+		walk(e.expr);
+	}
+	def visitArray(e: ArrayExpr, env: void) {
+		exprs(e.exprs);
+	}
+	def visitVar(e: VarExpr, env: void) {
+		walk(e.expr);
+	}
+	def visitLiteral(e: Literal, env: void) { }
+	def visitString(e: StringExpr, env: void) { }
+	def visitApp(e: AppExpr, env: void) {
+		walk(e.func);
+		walk(e.args);
+	}
+	def visitIndex(e: IndexExpr, env: void) {
+		walk(e.expr);
+		exprs(e.exprs);
+	}
+	def visitRange(e: RangeExpr, env: void) {
+		walk(e.expr);
+		walk(e.start);
+		walk(e.end);
+	}
+	def visitNot(e: NotExpr, env: void) {
+		walk(e.expr);
+	}
+	def visitNeg(e: NegExpr, env: void) {
+		walk(e.expr);
+	}
+	def visitBitwiseNeg(e: BitwiseNegExpr, env: void) {
+		walk(e.expr);
+	}
+	def visitAssign(e: AssignExpr, env: void) {
+		walk(e.target);
+		walk(e.expr);
+	}
+	def visitBinOp(e: BinOpExpr, env: void) {
+		walk(e.left);
+		walk(e.right);
+	}
+	def visitIfExpr(e: IfExpr, env: void) {
+		exprs(e.exprs);
+	}
+	// A lambda's body sees its parameters, then the locals of the methods
+	// around it, which it captures, and their receiver (TypeChecker.enterFunc,
+	// MethodEnv.lookupVar).
+	def visitFunExpr(e: FunExpr, env: void) {
+		if (!inside(e.range())) return;
+		enterScope(false);
+		params(e.func.params, e.captures);
+		if (e.func.body != null) e.func.body.accept(this, ());
+	}
+	private def exprs(list: VstList<Expr>) {
+		if (list != null) for (l = list.list; l != null; l = l.tail) walk(l.head);
+	}
+
+	// Byte extents. A statement's or a member's ends where its last part does;
+	// a local statement's range covers only its keyword.
+	private def extent(m: VstMember) -> (int, int) {
+		var b = tokenBegin(m.token), e = tokenEnd(m.token);
+		match (m) {
+			x: VstMethod => if (x.func.body != null) e = Ints.max(e, rangeEnd(x.func.body.range()));
+			x: VstField => {
+				if (x.tref != null) e = Ints.max(e, rangeEnd(x.tref.range()));
+				if (x.init != null) e = Ints.max(e, rangeEnd(x.init.range()));
+			}
+			x: VstEnumCase => if (x.args != null) e = Ints.max(e, rangeEnd(x.args.range()));
+			_ => ;
+		}
+		return (b, e);
+	}
+	private def stmtExtent(s: Stmt) -> (int, int) {
+		if (!LocalStmt.?(s)) return (point(s.range()), rangeEnd(s.range()));
+		var l = LocalStmt.!(s), b = point(l.start), e = b;
+		for (v = l.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
+		return (b, e);
+	}
+	private def varEnd(v: VarDecl) -> int {
+		var e = tokenEnd(v.token);
+		if (v.tref != null) e = Ints.max(e, rangeEnd(v.tref.range()));
+		if (v.init != null) e = Ints.max(e, rangeEnd(v.init.range()));
+		return e;
+	}
+	private def within(s: Stmt) -> bool {
+		if (s == null) return false;
+		var e = stmtExtent(s);
+		return e.0 >= 0 && e.0 <= offset && offset < e.1;
+	}
+	private def range(e: Expr) -> FileRange {
+		return if(e != null, e.range());
+	}
+	private def inside(r: FileRange) -> bool {
+		var b = point(r);
+		return b >= 0 && b <= offset && offset < rangeEnd(r);
+	}
+	private def tokenBegin(t: Token) -> int {
+		if (AnalysisCapturedToken.?(t)) return if(Strings.equal(t.fileName, file.fileName), AnalysisCapturedToken.!(t).offset, -1);
+		return point(t.range());
+	}
+	private def tokenEnd(t: Token) -> int {
+		var b = tokenBegin(t);
+		return if(b < 0, -1, b + t.image.length);
+	}
+	private def point(p: FilePoint) -> int {
+		if (p == null || !Strings.equal(p.fileName, file.fileName)) return -1;
+		return offsetOf(p.beginLine, p.beginColumn);
+	}
+	private def rangeEnd(r: FileRange) -> int {
+		if (r == null || !Strings.equal(r.fileName, file.fileName)) return -1;
+		return offsetOf(r.endLine, r.endColumn);
+	}
+	// The byte offset of live parser coordinates, which ranges hold; the
+	// replay map locates them, as OccurrenceCollector.offset does.
+	private def offsetOf(line: int, column: int) -> int {
+		if (coordinates == null) coordinates = sources.map(file.fileName);
+		return if(coordinates != null, coordinates.offset(line, column, false), -1);
+	}
+}

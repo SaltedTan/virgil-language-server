@@ -251,10 +251,10 @@ local function check()
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
     "undo did not restore the type error")
 
-  -- Completion answers from the unsaved text alone, which no longer parses:
-  -- "whi" starts a statement, so the keywords of a statement are offered, and
-  -- "while" replaces just the prefix. Neovim applies the item's edit, and one
-  -- undo restores the line.
+  -- Completion takes its keywords from the unsaved text alone, which no
+  -- longer parses: "whi" starts a statement, so the keywords of a statement
+  -- are offered, and "while" replaces just the prefix. Neovim applies the
+  -- item's edit, and one undo restores the line.
   vim.api.nvim_buf_set_lines(words_buf, 7, 7, true, { "\t\twhi" })
   local typed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
   vim.o.undolevels = vim.o.undolevels
@@ -274,6 +274,38 @@ local function check()
   vim.lsp.util.apply_text_edits({ item.textEdit }, words_buf, client.offset_encoding)
   assert(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)[1] == "\t\twhile",
     "the completion was not applied: " .. vim.inspect(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)))
+  vim.o.undolevels = vim.o.undolevels
+  vim.cmd("silent undo")
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), typed),
+    "undo did not restore the typed prefix")
+  vim.api.nvim_buf_set_lines(words_buf, 7, 8, true, {})
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
+    "the buffer was not restored")
+
+  -- It also offers the declarations in scope, from an analysis of the
+  -- project with the unsaved text, repaired at the cursor: the local "line"
+  -- is nearest, so it is ranked first, then the parameters, "this", and the
+  -- component's method. Its detail is its signature. Neovim applies the
+  -- item's edit, and one undo restores the line.
+  vim.api.nvim_buf_set_lines(words_buf, 7, 7, true, { "\t\tli" })
+  typed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
+  vim.o.undolevels = vim.o.undolevels
+  response, err = client:request_sync("textDocument/completion", {
+    textDocument = { uri = words_uri }, position = { line = 7, character = 4 },
+  }, 20000, words_buf)
+  assert(response and not response.err, "completion failed: " .. vim.inspect(err or response.err))
+  list = response.result
+  local labels = {}
+  for k = 1, 5 do labels[k] = list and list.items[k] and list.items[k].label end
+  item = list and list.items[1]
+  assert(vim.deep_equal(labels, { "line", "a", "b", "this", "join" }) and list.isIncomplete == false
+    and item.kind == vim.lsp.protocol.CompletionItemKind.Variable and item.detail == "var line: int"
+    and item.sortText == "0000" and vim.deep_equal(item.textEdit, {
+      newText = "line", range = { start = { line = 7, character = 2 }, ["end"] = { line = 7, character = 4 } },
+    }), "unexpected declaration completion: " .. vim.inspect(list and { labels, item }))
+  vim.lsp.util.apply_text_edits({ item.textEdit }, words_buf, client.offset_encoding)
+  assert(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)[1] == "\t\tline",
+    "the declaration completion was not applied: " .. vim.inspect(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)))
   vim.o.undolevels = vim.o.undolevels
   vim.cmd("silent undo")
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), typed),
@@ -308,7 +340,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, rename and undo, keyword completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, rename and undo, keyword and declaration completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

@@ -63,8 +63,9 @@ class LspServer {
 	var rename: LspRename;
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
-	// Keyword completion, from the open document's text alone.
-	private def completion = LspCompletion.new(documents, projects);
+	// Keywords from the open document's text, and declarations in scope from
+	// a completion analysis; tests read its count of analyses.
+	var completion: LspCompletion;
 	// Watched-file and workspace-folder notifications, and the watcher registration.
 	def workspaceEvents = LspWorkspaceEvents.new(documents, projects);
 	// Completes a server request whose deadline has passed.
@@ -86,6 +87,7 @@ class LspServer {
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
 		workspaceSymbols.register(dispatcher);
+		completion = LspCompletion.new(documents, projects, publishNotification);
 		completion.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
 		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
@@ -97,6 +99,8 @@ class LspServer {
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
 		rename.register(dispatcher);
+		// Both rename and completion requests can be cancelled while they wait.
+		dispatcher.onNotification("$/cancelRequest", cancel);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
 		workspaceEvents.warn = projectWarning;
@@ -122,6 +126,7 @@ class LspServer {
 		semanticDiagnostics.info = analysisInfo;
 		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
 		rename.scheduler = semanticDiagnostics;
+		completion.scheduler = semanticDiagnostics;
 	}
 	// Called after every poll, including a timeout. Completes analyses and
 	// expires server requests the client hasn't answered in time.
@@ -143,6 +148,7 @@ class LspServer {
 	}
 	private def configChanged(c: WorkspaceConfig) {
 		rename.configChanged();
+		completion.invalidate();
 		projectDiagnostics.update(c);
 		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
 		configurationChanged = true;
@@ -161,17 +167,20 @@ class LspServer {
 		documentUpdated(doc, true);
 	}
 	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
+		completion.invalidate();
 		if (reloadProjectFile(doc)) return;
 		var mapping = projects.forDocument(doc.uri);
 		parserDiagnostics.update(doc, mapping.compilerArgs());
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(mapping.contexts, debounce);
 	}
 	private def documentSaved(doc: DocumentOverlay) {
+		completion.invalidate();
 		if (semanticDiagnostics != null && !isProjectFile(doc)) {
 			semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
 		}
 	}
 	private def documentClosed(doc: DocumentOverlay) {
+		completion.invalidate();
 		if (reloadProjectFile(doc)) return;
 		parserDiagnostics.close(doc);
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
@@ -191,6 +200,7 @@ class LspServer {
 	// Disk changes are debounced like edits, so that a burst of file events
 	// (a checkout, say) analyzes each project once.
 	private def scheduleWatched(contexts: Array<ProjectContext>) {
+		completion.invalidate();
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(contexts, true);
 	}
 	private def isProjectFile(doc: DocumentOverlay) -> bool {
@@ -363,6 +373,10 @@ class LspServer {
 		}
 		return false;
 	}
+	private def cancel(n: JsonRpcMessage.Notification) {
+		rename.cancel(n);
+		completion.cancel(n);
+	}
 	// The client's first notification after initialize.
 	private def initialized(n: JsonRpcMessage.Notification) {
 		var request = workspaceEvents.initialized(dispatcher.pending);
@@ -391,6 +405,7 @@ class LspServer {
 		if (developmentAnalysis != null) developmentAnalysis.close(msg);
 		snapshotRequests.close(msg);
 		rename.close(msg);
+		completion.close();
 		dispatcher.pending.failAll(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, msg));
 	}
 }

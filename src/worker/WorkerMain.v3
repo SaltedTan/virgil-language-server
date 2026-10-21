@@ -58,7 +58,10 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		var alarm = 2L * request.timeoutMs + 1000;
 		HostOs.setAlarm(if(request.timeoutMs <= 0, 0, if(alarm > int.max, int.max, int.view(alarm))));
 		var stats = (request.flags & AnalysisWire.WANT_STATS) != 0;
-		var analysis = AeneasAdapter.analyzeProgram(request.sources, request.options, stats);
+		// Only a completion's analysis keeps its program, for the scope query.
+		var analysis = if(request.scope() != null,
+			AeneasAdapter.analyzeForScope(request.sources, request.options, stats),
+			AeneasAdapter.analyzeProgram(request.sources, request.options, stats));
 		var files: Array<(string, Array<AnalysisOccurrence>)>, collectUs = -1;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
 			// Each distinct path once; a repeated path keeps the first file's
@@ -72,11 +75,18 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			}
 			collectUs = System.ticksUs() - start;
 			files = list.extract();
+		} else if (request.scope() != null) {
+			// The candidates' declarations need the occurrence section, with
+			// no files.
+			files = [];
 		}
+		// Only a completion asks for the scope at its cursor; see
+		// docs/architecture.md#completion.
+		var scope = if(files != null, request.scopeAnswer(analysis));
 		HostOs.setAlarm(0);
 		var globalTypes = if(stats, AeneasAdapter.globalTypeCount(), -1);
-		return AnalysisWire.encodeResult(request.id, analyses, AeneasAdapter.uidCounter(),
-			analysis, collectUs, globalTypes, files);
+		return AnalysisWire.encodeResultWithScope(request.id, analyses, AeneasAdapter.uidCounter(),
+			analysis, collectUs, globalTypes, files, scope);
 	}
 	// Reads the next request payload. Returns null at the end of the input,
 	// on a read error, or if the frame was invalid.

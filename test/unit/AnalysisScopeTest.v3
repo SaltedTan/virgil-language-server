@@ -1,0 +1,312 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The worker's scope query (ProgramAnalysis.scopeAt, AnalysisScopeFinder):
+// exact candidate sets and their order, analyzed in process. In the texts
+// below, "$" marks the query's offset and is removed. A candidate renders as
+// its name and level, and "this=N" leads where the receiver is at level N.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisScope:locals_and_order", test_locals_and_order),
+	T("AnalysisScope:shadowing", test_shadowing),
+	T("AnalysisScope:sibling_scopes", test_sibling_scopes),
+	T("AnalysisScope:loops", test_loops),
+	T("AnalysisScope:matches", test_matches),
+	T("AnalysisScope:lambdas", test_lambdas),
+	T("AnalysisScope:type_parameters", test_type_parameters),
+	T("AnalysisScope:inheritance_and_privacy", test_inheritance_and_privacy),
+	T("AnalysisScope:components", test_components),
+	T("AnalysisScope:field_initializers", test_field_initializers),
+	T("AnalysisScope:variants_and_enums", test_variants_and_enums),
+	T("AnalysisScope:file_scope", test_file_scope),
+	T("AnalysisScope:type_positions", test_type_positions),
+	T("AnalysisScope:headers_and_top_level", test_headers_and_top_level),
+	T("AnalysisScope:cap", test_cap),
+	T("AnalysisScope:unparsed", test_unparsed),
+	()
+];
+
+def V = AnalysisScopeKinds.VALUES;
+def TY = AnalysisScopeKinds.TYPES;
+def P = AnalysisScopeKinds.PATTERN;
+def MAIN = "main.v3";
+
+// {marked} without its "$", and the offset of the "$".
+def unmark(marked: string) -> (string, int) {
+	var cursor = -1, text = Vector<byte>.new();
+	for (c in marked) {
+		if (c == '$' && cursor < 0) cursor = text.length;
+		else text.put(c);
+	}
+	return (text.extract(), cursor);
+}
+// The scope of {kinds} at the "$" in {marked}, the first of {files}, which
+// are pairs of a path and a text, analyzed as one program.
+def scopeIn(t: Tester, files: Array<(string, string)>, kinds: int, prefix: string) -> string {
+	var m = unmark(files[0].1);
+	var sources = Array<AnalysisSource>.new(files.length);
+	sources[0] = AnalysisSource.new(files[0].0, m.0);
+	for (i = 1; i < files.length; i++) sources[i] = AnalysisSource.new(files[i].0, files[i].1);
+	var a = AeneasAdapter.analyzeForScope(sources, [], false);
+	if (!a.verified) {
+		for (d in a.diagnostics) t.fail1("the fixture does not verify: %s", d.toString());
+		return null;
+	}
+	return render(a.scopeAt(files[0].0, m.1, kinds, prefix));
+}
+def render(s: AnalysisScopeAnswer) -> string {
+	if (s == null) return null;
+	var buf = StringBuilder.new();
+	if (s.thisLevel >= 0) buf.put1("this=%d", s.thisLevel);
+	for (i < s.declarations.length) {
+		if (buf.length > 0) buf.putc(' ');
+		buf.put2("%s/%d", s.declarations[i].name, s.levels[i]);
+	}
+	if (s.truncated) buf.puts(" (truncated)");
+	return buf.toString();
+}
+def scope(t: Tester, marked: string, kinds: int) -> string {
+	return scopeIn(t, [(MAIN, marked)], kinds, "");
+}
+def check(t: Tester, marked: string, kinds: int, expected: string) {
+	var got = scope(t, marked, kinds);
+	if (got != null && !Strings.equal(expected, got)) t.fail3("%s\n  expected: %s\n  got:      %s", marked, expected, got);
+}
+def lines(list: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (line in list) buf.puts(line).ln();
+	return buf.toString();
+}
+// The declaration kinds of the candidates, in order.
+def kindsAt(t: Tester, marked: string, kinds: int) -> string {
+	var m = unmark(marked);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var s = a.scopeAt(MAIN, m.1, kinds, "");
+	var buf = StringBuilder.new();
+	for (d in s.declarations) {
+		if (buf.length > 0) buf.putc(' ');
+		buf.put2("%s:%s", d.name, d.kind.name);
+	}
+	return buf.toString();
+}
+
+// Locals are visible after their declaration, in declaration order: not in
+// their own initializer, and not later ones. Parameters and the receiver are
+// a method's outermost scope.
+def test_locals_and_order(t: Tester) {
+	var text = "class C {\n\tvar f: int;\n\tdef m(p: int) {\n\t\tvar a = 1;\n\t\tvar b = $a;\n\t\tvar c = 3;\n\t}\n}\n";
+	// The method body is level 0, the parameters 1, the class 2; the
+	// program's types follow, after the empty levels of the file scope's,
+	// the method's and the class's type parameters, and private types.
+	check(t, text, V, "this=1 a/0 p/1 f/2 m/2 C/6");
+	// A later variable of the same statement sees an earlier one, not itself.
+	check(t, "class C {\n\tdef m() {\n\t\tvar a = 1, b = $a, c = 2;\n\t}\n}\n", V, "this=1 a/0 m/2 C/6");
+	// After the statement, both.
+	check(t, "class C {\n\tdef m() {\n\t\tvar a = 1, b = 2;\n\t\t$a = b;\n\t}\n}\n", V, "this=1 a/0 b/0 m/2 C/6");
+	// The kinds of each.
+	t.assert_string("a:LOCAL p:PARAMETER f:FIELD m:METHOD C:CLASS", kindsAt(t, text, V));
+}
+
+// The nearest binding of a name hides the others, in any namespace a value
+// is looked up in: an inner local, a parameter over a field, a lambda's
+// parameter over a captured local, and a local over a type.
+def test_shadowing(t: Tester) {
+	check(t, "class C {\n\tvar x: int;\n\tvar y: int;\n\tdef m(x: int) {\n\t\tvar y = 1;\n\t\tvar z = $y;\n\t}\n}\n", V,
+		"this=1 y/0 x/1 m/2 C/6");
+	check(t, "class C {\n\tdef m() {\n\t\tvar x = 1;\n\t\tif (x > 0) {\n\t\t\tvar x2 = 2;\n\t\t\tvar f = fun (x: int) => $x + x2;\n\t\t}\n\t}\n}\n", V,
+		"this=3 x/0 x2/1 m/4 C/8");
+	check(t, "class C { }\nclass D {\n\tdef m() {\n\t\tvar C = 1;\n\t\tvar d = $C;\n\t}\n}\n", V, "this=1 C/0 m/2 D/6");
+	// A subclass's member hides the superclass's of the same name.
+	check(t, "class B {\n\tdef g() { }\n\tdef h() { }\n}\nclass C extends B {\n\tdef g() { }\n\tdef m() {\n\t\t$g();\n\t}\n}\n", V,
+		"this=1 g/2 m/2 h/3 B/7 C/7");
+}
+
+// Nothing leaks from a block, a branch, a loop, a match case, or a lambda
+// before the offset, or from another method.
+def test_sibling_scopes(t: Tester) {
+	var text = lines(["class C {", "\tdef other(o: int) {", "\t\tvar q = 0;", "\t}", "\tdef m(p: int) {",
+		"\t\t{ var inBlock = 1; }",
+		"\t\tif (p > 0) { var inThen = 1; } else { var inElse = 2; }",
+		"\t\twhile (p > 0) { var inWhile = 1; }",
+		"\t\tfor (i < 3) { var inFor = i; }",
+		"\t\tvar f = fun (lp: int) { var inLambda = lp; };",
+		"\t\tvar after = $p;", "\t}", "}"]);
+	check(t, text, V, "this=1 f/0 p/1 m/2 other/2 C/6");
+}
+
+def test_loops(t: Tester) {
+	// A for loop's variable is visible in its condition, update, and body,
+	// not in its initializer.
+	var loop = "class C {\n\tdef m(n: int) {\n\t\tfor (i = $n; i < n; i++) { var x = i; }\n\t}\n}\n";
+	check(t, loop, V, "this=2 n/2 m/3 C/7");
+	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i = 0; $i < n; i++) { var x = i; }\n\t}\n}\n", V, "this=2 i/0 n/2 m/3 C/7");
+	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i = 0; i < n; $i++) { var x = i; }\n\t}\n}\n", V, "this=2 i/0 n/2 m/3 C/7");
+	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i = 0; i < n; i++) { var x = $i; }\n\t}\n}\n", V, "this=3 i/1 n/3 m/4 C/8");
+	// A foreach variable is bound before its expression is checked, so the
+	// expression sees it (TypeChecker.visitForeach).
+	check(t, "class C {\n\tdef m(a: Array<int>) {\n\t\tfor (e in $a) { var x = e; }\n\t}\n}\n", V, "this=2 e/0 a/2 m/3 C/7");
+	check(t, "class C {\n\tdef m(a: Array<int>) {\n\t\tfor (e in a) { var x = $e; }\n\t}\n}\n", V, "this=3 e/1 a/3 m/4 C/8");
+	// A for-less variable is bound after its limit.
+	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i < $n) { var x = i; }\n\t}\n}\n", V, "this=2 n/2 m/3 C/7");
+	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i < n) { var x = $i; }\n\t}\n}\n", V, "this=3 i/1 n/3 m/4 C/8");
+	// A while loop's body is a scope of its own.
+	check(t, "class C {\n\tdef m(n: int) {\n\t\twhile (n > 0) { var w = 1; n = $w; }\n\t}\n}\n", V, "this=2 w/0 n/2 m/3 C/7");
+}
+
+def test_matches(t: Tester) {
+	var variant = "type Shape {\n\tcase Circle(r: int);\n\tcase Square(side: int);\n\tcase Empty;\n}\n";
+	// A case with one pattern sees its parameters; a sibling case does not.
+	check(t, Arrays.concat(variant, "component M {\n\tdef area(s: Shape) -> int {\n\t\tmatch (s) {\n\t\t\tCircle(radius) => return $radius;\n\t\t\tSquare(side) => return side;\n\t\t\tEmpty => return 0;\n\t\t}\n\t}\n}\n"), V,
+		"this=2 radius/0 s/2 area/3 M/7 Shape/7");
+	check(t, Arrays.concat(variant, "component M {\n\tdef area(s: Shape) -> int {\n\t\tmatch (s) {\n\t\t\tCircle(radius) => return radius;\n\t\t\tSquare(side) => return $side;\n\t\t\tEmpty => return 0;\n\t\t}\n\t}\n}\n"), V,
+		"this=2 side/0 s/2 area/3 M/7 Shape/7");
+	// A type pattern binds its variable.
+	check(t, "class A { }\nclass B extends A { }\ncomponent M {\n\tdef f(a: A) {\n\t\tmatch (a) {\n\t\t\tb: B => f($b);\n\t\t\t_ => ;\n\t\t}\n\t}\n}\n", V,
+		"this=2 b/0 a/2 f/3 A/7 B/7 M/7");
+	// In a pattern, the cases of the matched variant or enum, and the
+	// receiver's level, which only a value uses.
+	check(t, Arrays.concat(variant, "component M {\n\tdef area(s: Shape) -> int {\n\t\tmatch (s) {\n\t\t\tCircle(radius) => return radius;\n\t\t\t$Square(side) => return side;\n\t\t\tEmpty => return 0;\n\t\t}\n\t}\n}\n"), P,
+		"this=1 Circle/0 Empty/0 Square/0");
+	check(t, "enum Color { RED, GREEN }\ncomponent M {\n\tdef f(c: Color) -> int {\n\t\tmatch (c) {\n\t\t\tRED => return 1;\n\t\t\t$GREEN => return 2;\n\t\t}\n\t}\n}\n", P,
+		"this=1 GREEN/0 RED/0");
+	// Matching another type, the values a constant can be.
+	check(t, "component M {\n\tdef K = 3;\n\tdef f(i: int) -> int {\n\t\tmatch (i) {\n\t\t\t$K => return 1;\n\t\t\t_ => return 2;\n\t\t}\n\t}\n}\n", P,
+		"this=1 i/1 K/2 f/2 M/6");
+}
+
+def test_lambdas(t: Tester) {
+	// A lambda sees its parameters and its own locals, then the locals bound
+	// before it, which it captures, and the receiver; not a local declared
+	// after it, nor the variable it initializes.
+	var text = "class C {\n\tvar field: int;\n\tdef m(p: int) {\n\t\tvar before = 1;\n\t\tvar f = fun (x: int) -> int {\n\t\t\tvar y = 2;\n\t\t\treturn $x + y + before + p;\n\t\t};\n\t\tvar after = 3;\n\t}\n}\n";
+	check(t, text, V, "this=3 y/0 x/1 before/2 p/3 field/4 m/4 C/8");
+	// An expression body.
+	check(t, "class C {\n\tdef m(p: int) {\n\t\tvar g = fun (x: int) => $x + p;\n\t}\n}\n", V, "this=2 x/0 p/2 m/3 C/7");
+	// Nested lambdas, inside a call's arguments.
+	check(t, "component K {\n\tdef apply(f: int -> int, v: int) -> int { return f(v); }\n\tdef m(p: int) {\n\t\tapply(fun (a: int) => apply(fun (b: int) => $a + b, a), p);\n\t}\n}\n", V,
+		"this=3 b/0 a/1 p/3 apply/4 m/4 K/8");
+	// A lambda in a field's initializer sees the members, without "this".
+	check(t, "component K {\n\tvar base = 1;\n\tdef add = fun (x: int) => $x + base;\n}\n", V, "this=1 x/0 base/2 K/6");
+}
+
+def test_type_parameters(t: Tester) {
+	// A method's type parameters, then its class's, in a type and in an
+	// expression, where they are values too.
+	var text = "class Box<T> {\n\tvar item: T;\n\tdef map<R>(f: T -> R) -> Box<R> {\n\t\tvar r: $R;\n\t\treturn null;\n\t}\n}\n";
+	// The receiver's level is reported in a type too; only a value uses it.
+	check(t, text, TY, "this=1 R/3 T/4 Box/6");
+	check(t, "class Box<T> {\n\tdef map<R>(f: T -> R) -> R {\n\t\treturn $f(T.default);\n\t}\n}\n", V,
+		"this=1 f/1 map/2 R/3 T/4 Box/6");
+	t.assert_string("R:TYPE_PARAM T:TYPE_PARAM Box:CLASS", kindsAt(t, text, TY));
+	// In a generic method's header, its type parameters and the class's.
+	check(t, "class Box<T> {\n\tdef map<R>(f: T -> $R) -> R { return f(T.default); }\n}\n", TY, "R/0 T/1 Box/3");
+}
+
+def OTHER = "other.v3";
+def BASE = "class Base {\n\tvar shown: int;\n\tprivate var hidden: int;\n\tdef visible() { }\n\tprivate def secret() { }\n}\n";
+def test_inheritance_and_privacy(t: Tester) {
+	// A superclass in another file: its private members are not accessible.
+	var child = "class Child extends Base {\n\tvar own: int;\n\tdef m() {\n\t\t$own = 1;\n\t}\n}\n";
+	var got = scopeIn(t, [(MAIN, child), (OTHER, BASE)], V, "");
+	t.assert_string("this=1 own/2 m/2 shown/3 visible/3 Base/7 Child/7", got);
+	// In the same file, they are.
+	check(t, Arrays.concat(BASE, child), V, "this=1 own/2 m/2 hidden/3 shown/3 secret/3 visible/3 Base/7 Child/7");
+	// Two levels up, through a generic class.
+	check(t, "class A<T> {\n\tvar a: T;\n}\nclass B extends A<int> {\n\tvar b: int;\n}\nclass C extends B {\n\tdef m() { $b = a; }\n}\n", V,
+		"this=1 m/2 b/3 a/4 A/8 B/8 C/8");
+}
+
+def test_components(t: Tester) {
+	var text = "component K {\n\tvar count: int;\n\tdef helper() { }\n\tdef m(p: int) {\n\t\t$helper();\n\t}\n}\nclass Other { }\n";
+	check(t, text, V, "this=1 p/1 count/2 helper/2 m/2 K/6 Other/6");
+	t.assert_string("p:PARAMETER count:FIELD helper:METHOD m:METHOD K:COMPONENT Other:CLASS", kindsAt(t, text, V));
+}
+
+// A field's initializer sees the earlier fields of its compound; in a class or
+// an enum, no method, and no "this" (MethodEnv.checkMemberInit).
+def test_field_initializers(t: Tester) {
+	check(t, "class C(p: int) {\n\tvar a = p;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() { }\n}\n", V, "a/0 p/0 C/4");
+	check(t, "component K {\n\tvar a = 1;\n\tvar b = $a;\n\tvar c = 3;\n\tdef m() -> int { return 1; }\n}\n", V, "this=0 a/1 m/1 K/5");
+	// An enum case's arguments see no receiver.
+	check(t, "enum E(v: int) {\n\tA($Z),\n\tB(2)\n}\ndef Z = 1;\n", V, "Z/0 E/4");
+}
+
+def test_variants_and_enums(t: Tester) {
+	// A case's method sees the case's fields and methods, then the
+	// variant's methods, but no case, which only a type names (V.B).
+	var variant = "type V {\n\tcase A(x: int) {\n\t\tdef get() -> int { return $x; }\n\t}\n\tcase B;\n\tdef describe() -> int { return 1; }\n}\n";
+	check(t, variant, V, "this=1 x/2 get/2 describe/3 V/7");
+	t.assert_string("x:FIELD get:METHOD describe:METHOD V:CLASS", kindsAt(t, variant, V));
+	// A variant's own method, its parameters' fields.
+	check(t, "type W(id: int) {\n\tdef twice() -> int { return $id * 2; }\n}\n", V, "this=1 id/2 twice/2 W/6");
+}
+
+def test_file_scope(t: Tester) {
+	// The file's own top-level declarations, after the members; another
+	// file's are file-local and not visible, and neither are its private types.
+	var main = "def top = 1;\ndef helper() -> int { return top; }\nclass C {\n\tdef m() { $helper(); }\n}\nprivate class Mine { }\n";
+	var other = "def elsewhere = 2;\nprivate class Hidden { }\nclass Shared { }\n";
+	t.assert_string("this=1 m/2 top/3 helper/3 Mine/6 C/7 Shared/7", scopeIn(t, [(MAIN, main), (OTHER, other)], V, ""));
+	// In a top-level method, no receiver: the file scope directly.
+	t.assert_string("top/2 helper/2 Mine/5 C/6 Shared/6", scopeIn(t, [(MAIN, "def top = 1;\ndef helper() -> int { return $top; }\nclass C { }\nprivate class Mine { }\n"), (OTHER, other)], V, ""));
+	// Layouts, last; a field is not in scope in its own initializer.
+	check(t, "layout L {\n\t+0 f: u32;\n\t=4;\n}\ncomponent K {\n\tdef s = $L.size;\n}\n", V, "this=0 K/5 L/6");
+}
+
+def test_type_positions(t: Tester) {
+	// A type position gets type parameters and types, which locals and
+	// members do not hide; an expression position gets everything.
+	var text = "class Thing { }\nclass C<T> {\n\tvar Thing: int;\n\tdef m(local: int) {\n\t\tvar x: $Thing;\n\t}\n}\n";
+	check(t, text, TY, "this=1 T/4 C/6 Thing/6");
+	check(t, text, V, "this=1 local/1 Thing/2 m/2 T/4 C/6");
+	// Both, at a "<" that may be a comparison or type arguments: the type
+	// that the field hides as a value is a candidate for the type.
+	check(t, text, V | TY, "this=1 local/1 Thing/2 m/2 T/4 C/6 Thing/6");
+}
+
+// Positions outside a member body: a member's type, a class's header, and a
+// method's header.
+def test_headers_and_top_level(t: Tester) {
+	check(t, "class A { }\nclass B<T> extends $A { }\n", TY, "T/1 A/3 B/3");
+	check(t, "class A { }\nclass C {\n\tvar f: $A;\n}\n", TY, "A/3 C/3");
+	// A file-scope field's type: the file scope is a level, though types
+	// have no use for it.
+	check(t, "class A { }\ndef top: $A;\n", TY, "A/4");
+	// A class's super clause sees its parameters, as its constructor does,
+	// which hide its fields, and the superclass's fields.
+	check(t, "class A(x: int) { }\nclass B(y: int) extends A($y) { }\n", V, "this=0 y/0 x/2 A/6 B/6");
+}
+
+// Past the cap, only the candidates that start with the prefix are kept, up
+// to it, and the answer says so.
+def test_cap(t: Tester) {
+	var buf = StringBuilder.new().puts("component K {\n");
+	for (i < AnalysisScopeOrder.MAX_DECLARATIONS + 5) buf.put1("\tvar field%d: int;\n", i);
+	buf.puts("\tdef m() { $field1 = 0; }\n}\n");
+	var m = unmark(buf.toString());
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var all = a.scopeAt(MAIN, m.1, V, "");
+	t.assert(all.truncated, "truncated");
+	t.asserti(AnalysisScopeOrder.MAX_DECLARATIONS, all.declarations.length);
+	var some = a.scopeAt(MAIN, m.1, V, "field10");
+	t.assert(some.truncated, "filtered by the prefix");
+	// field10 and field100 to field109, and field1000 to field1004.
+	t.asserti(16, some.declarations.length);
+	for (d in some.declarations) t.assert(Strings.startsWith(d.name, "field10"), d.name);
+	t.assert_string("field10", some.declarations[0].name);
+	// At most the cap, without truncation, when it fits.
+	var exact = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, "component K {\n\tdef m() { }\n}\n")], [], false);
+	t.assertz(false, exact.scopeAt(MAIN, 25, V, "").truncated);
+}
+
+// A program that did not parse has no scope.
+def test_unparsed(t: Tester) {
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, "class C { def m() { var x = ; } }")], [], false);
+	t.assert(a.scopeAt(MAIN, 20, V, "") == null, "no scope without a parse");
+	var b = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, "class C { }")], [], false);
+	t.assert(b.scopeAt("missing.v3", 0, V, "") == null, "no scope in a file the program lacks");
+	// An ordinary analysis keeps no program, and answers no query.
+	var plain = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, "class C { }")], [], false);
+	t.assert(plain.verified && plain.scopeAt(MAIN, 0, V, "") == null, "no scope from an ordinary analysis");
+	t.assert(b.scopeAt(MAIN, 0, V, "") != null, "a scoped analysis answers");
+}

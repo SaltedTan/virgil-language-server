@@ -260,6 +260,23 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.located;
 	}
+	// The declarations of {kinds} (AnalysisScopeKinds) visible at byte
+	// {offset} of {path}, or null if the program did not parse or has no such
+	// file, or this analysis keeps no program: only an AnalysisScopedProgram
+	// does. See AnalysisScopeFinder and docs/architecture.md#completion.
+	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		return null;
+	}
+	private def scopeIn(program: Program, path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		if (program == null) return null;
+		for (f in program.vst.files) {
+			if (f == null || !Strings.equal(f.fileName, path)) continue;
+			var answer = AnalysisScopeFinder.new(sources, display, program, f).find(offset, kinds, prefix);
+			answer.paths = program.files;
+			return answer;
+		}
+		return null;
+	}
 	// The declaration of the occurrence in {uses} that starts at {offset}, or null.
 	private def declarationAt(uses: Array<AnalysisOccurrence>, offset: int) -> AnalysisDeclaration {
 		var low = 0, high = uses.length;
@@ -284,6 +301,21 @@ class ProgramAnalysis {
 		}
 		if (low < uses.length && uses[low].range.contains(line, column)) return uses[low].declaration;
 		return null;
+	}
+}
+
+// A ProgramAnalysis that answers scope queries: it keeps the parsed program,
+// which an ordinary analysis does not, so that one carries nothing for them.
+// Only a completion's analysis is one (AeneasAdapter.analyzeForScope).
+class AnalysisScopedProgram extends ProgramAnalysis {
+	// Null if the program did not parse.
+	private var program: Program;
+
+	new(d: Array<AnalysisDiagnostic>, s: AnalysisStats, p: bool, v: bool, prog: Program) super(d, s, p, v, prog) {
+		if (p) program = prog;
+	}
+	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		return scopeIn(program, path, offset, kinds, prefix);
 	}
 }
 
@@ -391,6 +423,25 @@ component AeneasAdapter {
 		return sortedKeywords;
 	}
 	private var sortedKeywords: Array<string>;
+	// The builtin types a name can name, which have no declaration, in byte
+	// order: those of {BUILTIN_TYPES} that the verifier's top-level type lookup
+	// (V3.lookupToplevelType) resolves with language options {options} (see
+	// setLanguageOptions), such as "array" with read-only arrays, and the
+	// System component that analyses install (SystemCalls.install). Aeneas
+	// also accepts iN and uN for every N from 1 to 64; only the byte widths
+	// are listed.
+	def builtinTypes(options: Array<string>) -> Array<string> {
+		setLanguageOptions(options);
+		var v = Vector<string>.new();
+		for (name in BUILTIN_TYPES) {
+			if (V3.lookupToplevelType(name) != null || Strings.equal(name, SystemCalls.TYPECON.name)) v.put(name);
+		}
+		resetLanguageOptions();
+		return AnalysisTables.sort(v.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+	}
+	def BUILTIN_TYPES = ["Array", "Range", "Ref", "System", "array", "bool", "byte", "double", "float",
+		"i8", "i16", "i32", "i64", "int", "long", "range", "ref", "short", "string",
+		"u8", "u16", "u32", "u64", "void"];
 	// The AnalysisKeywordForms that the parser accepts with language options
 	// {options} (see setLanguageOptions), read as Parser.parseFile reads them.
 	def keywordForms(options: Array<string>) -> int {
@@ -433,6 +484,14 @@ component AeneasAdapter {
 	// Never initializes, runs reachability, or generates code.
 	// {collectStats} enables the expensive process-wide type-cache counts.
 	def analyzeProgram(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
+		return analyze(sources, options, collectStats, false);
+	}
+	// Analyzes a program as {analyzeProgram} does, keeping it for scope
+	// queries (AnalysisScopedProgram).
+	def analyzeForScope(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
+		return analyze(sources, options, collectStats, true);
+	}
+	private def analyze(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool, scoped: bool) -> ProgramAnalysis {
 		AnalysisTypeCache.prepare();
 		setLanguageOptions(options);
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
@@ -474,6 +533,7 @@ component AeneasAdapter {
 		}
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
+		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog);
 		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
 	}
 	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates) -> AnalysisParseErrors {

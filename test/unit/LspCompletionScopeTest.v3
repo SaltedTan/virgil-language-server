@@ -1,0 +1,494 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/completion with the declarations in scope, from a completion
+// analysis on the real worker, or on the unit-test executable where a worker
+// must fail. Each session writes its project file and sources into the build's
+// project-fixtures/completion directory, and edits Main.v3 in the editor
+// without saving it: "$" marks the cursor in the texts below, and is removed
+// before they are sent. AnalysisScopeTest covers the scope query in full.
+def T = UnitTests.register;
+def X = [
+	T("LspCompletionScope:as_typed", test_as_typed),
+	T("LspCompletionScope:items", test_items),
+	T("LspCompletionScope:repairs", test_repairs),
+	T("LspCompletionScope:positions", test_positions),
+	T("LspCompletionScope:unrepaired", test_unrepaired),
+	T("LspCompletionScope:cap", test_cap),
+	T("LspCompletionScope:reuse", test_reuse),
+	T("LspCompletionScope:replacement", test_replacement),
+	T("LspCompletionScope:cancel", test_cancel),
+	T("LspCompletionScope:time_limit", test_time_limit),
+	T("LspCompletionScope:worker_crash", test_worker_crash),
+	T("LspCompletionScope:malformed_scope", test_malformed_scope),
+	T("LspCompletionScope:shutdown", test_shutdown),
+	T("LspCompletionScope:closed_while_waiting", test_closed_while_waiting),
+	T("LspCompletionScope:admission", test_admission),
+	T("LspCompletionScope:takes_turns", test_takes_turns),
+	T("LspCompletionScope:no_project", test_no_project),
+	()
+];
+
+def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"c\",\"sources\":[\"Main.v3\",\"Other.v3\"]}]}";
+// Main.v3 on disk; the editor's text adds {MARK}'s line, in Shape.scale.
+def MAIN = "class Shape(sides: int) {\n\tvar area: int;\n\tdef scale(factor: int) -> int {\n\t\tvar total = area * factor;\n\t\treturn total;\n\t}\n}\nclass Square extends Shape {\n\tnew() super(4) { }\n\tdef grow() { }\n}\ncomponent Registry {\n\tdef count = 3;\n\tdef paint(c: Color, t: Token) -> int { return 0; }\n}\nenum Color { RED, GREEN }\ntype Token {\n\tcase Word(text: string);\n\tcase End;\n}\ndef mainShared = 1;\n";
+def MARK = "\t\treturn total;";
+def OTHER = "component Other {\n\tdef helper() -> int { return hidden(); }\n\tprivate def hidden() -> int { return 1; }\n}\ndef otherShared = 2;\n";
+
+def session(t: Tester) -> RenameTestSession {
+	return sessionOn(null, t);
+}
+// A session on the worker at {worker}, with Main.v3 open as it is on disk.
+def sessionOn(worker: string, t: Tester) -> RenameTestSession {
+	var s = RenameTestSession.new("completion", [(".virgil-lsp.json", CONFIG), ("Main.v3", MAIN), ("Other.v3", OTHER)], true, worker, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	return s;
+}
+// {text} with {insert} and a newline before the first {needle}.
+def before(text: string, needle: string, insert: string) -> string {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) {
+			return Strings.format3("%s%s\n%s", Arrays.range(text, 0, i), insert, Arrays.range(text, i, text.length));
+		}
+	}
+	return null;
+}
+// Main.v3 with the marked {line} in Shape.scale.
+def inScale(line: string) -> string {
+	return before(MAIN, MARK, line);
+}
+// The text and the cursor's offset of {marked}.
+def unmark(marked: string) -> (string, int) {
+	var cursor = 0;
+	while (marked[cursor] != '$') cursor++;
+	return (Arrays.concat(Arrays.range(marked, 0, cursor), Arrays.range(marked, cursor + 1, marked.length)), cursor);
+}
+// Requests a completion at the "$" in {marked}, which becomes Main.v3's next
+// version unless it is the current text, and returns its id.
+def request(t: Tester, s: RenameTestSession, marked: string) -> int {
+	var u = unmark(marked), f = s.file("Main.v3");
+	if (!Strings.equal(f.text, u.0)) s.change("Main.v3", f.version + 1, u.0);
+	var p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	return s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character));
+}
+// The rendered list of the completion at the "$" in {marked}, once answered.
+def complete(t: Tester, s: RenameTestSession, marked: string) -> string {
+	var id = request(t, s, marked);
+	s.settle();
+	t.asserti(1, s.count(id));
+	return render(t, s.result(t, id));
+}
+// The labels of {result}'s items with a sortText, the declarations, in order,
+// then "|" and the number of keywords after them, and "+" if the list is
+// incomplete. Each declaration's sortText must be its rank.
+def render(t: Tester, result: JsonValue) -> string {
+	var buf = StringBuilder.new(), keywords = 0, items = array(member(result, "items"));
+	for (i < items.length) {
+		var item = items[i];
+		if (!JsonValue.JObject.!(item).v.has("sortText")) {
+			t.asserti(KEYWORD_KIND, intAt(item, "kind"));
+			keywords++;
+			continue;
+		}
+		t.asserti(0, keywords);
+		t.assert_string(Arrays.range(Strings.format1("%d", i + 10000), 1, 5), stringAt(item, "sortText"));
+		if (buf.length > 0) buf.putc(' ');
+		buf.puts(stringAt(item, "label"));
+	}
+	if (buf.length > 0) buf.putc(' ');
+	buf.put1("| %d", keywords);
+	if (member(result, "isIncomplete") == JsonValue.Bool(true)) buf.puts(" +");
+	return buf.toString();
+}
+// The item labelled {label} in {result}, or Null.
+def itemOf(result: JsonValue, label: string) -> JsonValue {
+	for (item in array(member(result, "items"))) if (Strings.equal(label, stringAt(item, "label"))) return item;
+	return JsonValue.Null;
+}
+// Whether the reply to {id} is the keywords alone: answered, with no
+// declarations, and complete.
+def keywordsOnly(t: Tester, s: RenameTestSession, id: int) -> bool {
+	var r = s.reply(id);
+	if (r == null || r.has("error")) return false;
+	var items = array(member(r["result"], "items"));
+	for (item in items) if (JsonValue.JObject.!(item).v.has("sortText")) return false;
+	return items.length > 0 && member(r["result"], "isIncomplete") == JsonValue.Bool(false);
+}
+def has(v: JsonValue, key: string) -> bool {
+	return JsonValue.JObject.?(v) && JsonValue.JObject.!(v).v.has(key);
+}
+def array(v: JsonValue) -> Array<JsonValue> {
+	return if(JsonValue.JArray.?(v), JsonValue.JArray.!(v).v, []);
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = member(v, key);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = member(v, key);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+def KEYWORD_KIND = 14;
+// {words}, separated by spaces.
+def spaced(words: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (i < words.length) {
+		if (i > 0) buf.putc(' ');
+		buf.puts(words[i]);
+	}
+	return buf.toString();
+}
+// The builtin types with the default language options.
+def BUILTINS = "Array Range Ref System bool byte double float i16 i32 i64 i8 int long ref short string u16 u32 u64 u8 void";
+
+// In a dirty buffer that parses as typed: the declarations nearest first,
+// then the keywords. The analysis is the completion's own: never the
+// project's or the supervisor's snapshot, and nothing is published.
+def test_as_typed(t: Tester) {
+	var s = session(t);
+	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	t.assert(ctx.snapshot != null && ctx.snapshot.verified, "the project was analyzed");
+	var marked = inScale("\t\tvar unsaved = 1;\n\t\tre$turn total;");
+	var u = unmark(marked);
+	s.change("Main.v3", 2, u.0);
+	s.settle();
+	var snapshot = ctx.snapshot, latest = s.supervisor.snapshot, published = s.notifications.length;
+	var analyses = s.server.completion.analyses;
+	t.assert_string(Strings.format1("total unsaved factor this area sides scale mainShared Color Other Registry Shape Square Token %s | 13", BUILTINS),
+		complete(t, s, marked));
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(s.supervisor.snapshot == latest, "the supervisor keeps its latest snapshot");
+	t.asserti(published, s.notifications.length);
+	s.server.close();
+}
+
+// Each declaration's kind is its symbol kind's, its detail its signature, and
+// its edit replaces the prefix, as a keyword's does.
+def test_items(t: Tester) {
+	var s = session(t);
+	var marked = inScale("\t\tsc$");
+	var id = request(t, s, marked);
+	s.settle();
+	var result = s.result(t, id);
+	for (expected in [("total", 6, "var total: int"), ("factor", 6, "factor: int"), ("area", 5, "var area: int"),
+			("scale", 2, "def scale(factor: int) -> int"), ("Shape", 7, "class Shape(sides: int)"),
+			("Registry", 9, "component Registry"), ("Color", 13, "enum Color"), ("this", 6, null), ("System", 9, null), ("int", 7, null)]) {
+		var item = itemOf(result, expected.0);
+		t.assert(item != JsonValue.Null, expected.0);
+		t.asserti(expected.1, intAt(item, "kind"));
+		if (expected.2 != null) t.assert_string(expected.2, stringAt(item, "detail"));
+		else t.assert(!has(item, "detail"), "no detail");
+		var edit = member(item, "textEdit"), range = member(edit, "range");
+		t.assert_string(expected.0, stringAt(edit, "newText"));
+		t.asserti(4, intAt(member(range, "start"), "line"));
+		t.asserti(2, intAt(member(range, "start"), "character"));
+		t.asserti(4, intAt(member(range, "end"), "line"));
+		t.asserti(4, intAt(member(range, "end"), "character"));
+	}
+	// The keyword items are as they were without declarations.
+	var keyword = itemOf(result, "while");
+	t.asserti(KEYWORD_KIND, intAt(keyword, "kind"));
+	t.assert(!has(keyword, "detail"), "a keyword has no detail");
+	t.assert(!has(keyword, "sortText"), "a keyword has no sortText");
+	s.server.close();
+}
+
+// A text that does not parse is repaired at the cursor: an identifier and the
+// delimiters or ";" that the context lacks.
+def test_repairs(t: Tester) {
+	var s = session(t);
+	var values = Strings.format1("total factor this area sides scale mainShared Color Other Registry Shape Square Token %s", BUILTINS);
+	// A missing identifier, and a missing identifier and delimiters.
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\ttotal = $")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tscale(total, $")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tif ($")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tvar n = (total + $")));
+	// Inside a lambda, its parameter first.
+	t.assert_string(Strings.format1("y %s | 5", values), complete(t, s, inScale("\t\tvar f = fun (y: int) => $")));
+	t.assert_string(Strings.format1("y %s | 13", values), complete(t, s, inScale("\t\tvar f = fun (y: int) {\n\t\t\tto$\n\t\t};")));
+	// The repair closes no block: a lambda's body that lacks its "}" gets
+	// the keywords alone.
+	t.assert_string("| 13", complete(t, s, inScale("\t\tvar f = fun (y: int) {\n\t\t\t$")));
+	// With the identifier's start typed, and in the middle of an identifier,
+	// which the sentinel joins.
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\ttotal = fa$")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\ttotal = f$a")));
+	t.assert_string(Strings.format1("%s | 13", values), complete(t, s, inScale("\t\tto$tal")));
+	t.assert(AeneasAdapter.parseFile("Main.v3", unmark(inScale("\t\ttotal = $")).0, []).diagnostics.length > 0, "the text does not parse");
+	s.server.close();
+}
+
+// A type position offers types; a pattern, the cases; a value, values and
+// callables, with "this" in a method.
+def test_positions(t: Tester) {
+	var s = session(t);
+	t.assert_string(Strings.format1("Color Other Registry Shape Square Token %s | 0", BUILTINS), complete(t, s, inScale("\t\tvar v: $")));
+	// The builtin types follow the project's language options.
+	var readOnly = AeneasAdapter.builtinTypes(["-lang:read-only-arrays"]);
+	t.assert_string("Array Range Ref System array bool byte double float i16 i32 i64 i8 int long range ref short string u16 u32 u64 u8 void",
+		spaced(readOnly));
+	var paint = "\tdef paint(c: Color, t: Token) -> int { return 0; }";
+	t.assert_string("End Word | 3", complete(t, s, before(MAIN, paint, "\tdef cases(t: Token) {\n\t\tmatch (t) {\n\t\t\t$\n\t\t}\n\t}")));
+	t.assert_string("GREEN RED | 3", complete(t, s, before(MAIN, paint, "\tdef cases(c: Color) {\n\t\tmatch (c) {\n\t\t\t$\n\t\t}\n\t}")));
+	// In a component's method, its members; in a subclass's, the inherited ones.
+	t.assert_string(Strings.format1("this count paint run mainShared Color Other Registry Shape Square Token %s | 13", BUILTINS),
+		complete(t, s, before(MAIN, paint, "\tdef run() {\n\t\t$\n\t}")));
+	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", BUILTINS),
+		complete(t, s, before(MAIN, "\tdef grow() { }", "\tdef run() {\n\t\t$\n\t}")));
+	// After "." no names come yet, and no analysis starts.
+	var analyses = s.server.completion.analyses;
+	t.assert_string("| 0", complete(t, s, inScale("\t\ttotal.$")));
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+
+// A text that the repair does not mend gets the keywords alone, without an
+// analysis: here the parse error is elsewhere.
+def test_unrepaired(t: Tester) {
+	var s = session(t);
+	var analyses = s.server.completion.analyses;
+	var marked = Strings.format1("%sdef broken( {\n", inScale("\t\t$"));
+	var id = request(t, s, marked);
+	t.assert(keywordsOnly(t, s, id), "keywords at once");
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+
+// Past the cap, only names that start with the prefix are kept, up to it,
+// and the list is incomplete, so that the client asks again.
+def test_cap(t: Tester) {
+	var s = session(t);
+	var buf = StringBuilder.new().puts("component Many {\n");
+	for (i < 1200) buf.put1("\tdef m%d = 0;\n", i);
+	buf.puts("\tdef run() {\n\t\tm11$\n\t}\n}\n");
+	var got = complete(t, s, Arrays.concat(MAIN, buf.toString()));
+	// The names of the fields that start with "m11", in byte order, all
+	// at the component's level, and the statement's keywords.
+	var names = Vector<string>.new();
+	for (i < 1200) {
+		var name = Strings.format1("m%d", i);
+		if (Strings.startsWith(name, "m11")) names.put(name);
+	}
+	var sorted = AnalysisTables.sort(names.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+	t.asserti(111, sorted.length);
+	t.assert_string(Strings.format1("%s | 13 +", spaced(sorted)), got);
+	s.server.close();
+}
+
+// The same version and cursor reuse the last reply; an edit does not.
+def test_reuse(t: Tester) {
+	var s = session(t);
+	var marked = inScale("\t\tto$");
+	var first = complete(t, s, marked), analyses = s.server.completion.analyses;
+	var id = request(t, s, marked);
+	t.assert(s.reply(id) != null, "answered at once");
+	t.assert_string(first, render(t, s.result(t, id)));
+	t.asserti(analyses, s.server.completion.analyses);
+	// Another cursor, or the same after an edit, needs an analysis.
+	complete(t, s, inScale("\t\tt$o"));
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	var u = unmark(marked);
+	s.change("Main.v3", s.file("Main.v3").version + 1, u.0);
+	t.assert_string(first, complete(t, s, marked));
+	t.asserti(analyses + 2, s.server.completion.analyses);
+	s.server.close();
+}
+
+// A completion that waits is replaced by a newer one, and answered at once
+// with its keywords; the one that runs is answered in full.
+def test_replacement(t: Tester) {
+	var s = session(t);
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text);
+	t.assert(s.reply(running) == null, "the first runs");
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 2));
+	t.assert(s.reply(waiting) == null, "the second waits");
+	var newer = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	t.assert(keywordsOnly(t, s, waiting), "the replaced one gets its keywords at once");
+	t.assert(s.reply(newer) == null, "the newest waits");
+	s.settle();
+	for (id in [running, waiting, newer]) t.asserti(1, s.count(id));
+	t.assert(!keywordsOnly(t, s, running), "the first has declarations");
+	t.assert(!keywordsOnly(t, s, newer), "the newest has declarations");
+	t.asserti(0, s.server.rename.scheduler.jobCount());
+	s.server.close();
+}
+
+// $/cancelRequest answers a waiting or a running completion with
+// RequestCancelled at once; a waiting one's job is withdrawn.
+def test_cancel(t: Tester) {
+	var s = session(t);
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text);
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	t.asserti(1, s.server.rename.scheduler.jobCount());
+	s.cancel(waiting + 1000);
+	t.assert(s.reply(waiting) == null && s.reply(running) == null, "another id cancels nothing");
+	s.cancel(waiting);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(waiting)["error"], "code"));
+	t.asserti(0, s.server.rename.scheduler.jobCount());
+	s.cancel(running);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(running)["error"], "code"));
+	t.assert_string("the completion was cancelled", stringAt(s.reply(running)["error"], "message"));
+	var analyses = s.server.completion.analyses;
+	s.settle();
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	t.asserti(analyses, s.server.completion.analyses);
+	// The next completion is answered in full.
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations after the cancellations");
+	s.server.close();
+}
+
+// An analysis past the time limit leaves the keywords alone.
+def test_time_limit(t: Tester) {
+	var s = session(t);
+	s.limits.timeoutMs = 0;
+	var id = request(t, s, inScale("\t\tfa$"));
+	s.settle();
+	t.assert(keywordsOnly(t, s, id), "keywords after a timeout");
+	t.asserti(1, s.count(id));
+	s.limits.timeoutMs = 10000;
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tf$a")), "|"), "declarations once the worker answers");
+	s.server.close();
+}
+
+// A worker that ends during the completion's analysis leaves the keywords
+// alone, and the project's snapshot; the replaced worker answers the next.
+def test_worker_crash(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	var marked = inScale(Strings.format1("\t\t// %s\n\t\tfa$ctor = 1;", SyntheticAnalysisWorker.SCOPE_CRASH));
+	var u = unmark(marked);
+	s.change("Main.v3", 2, u.0);
+	s.settle();
+	var snapshot = ctx.snapshot, started = s.supervisor.workersStarted;
+	t.assert(snapshot != null && snapshot.verified, "the project's analysis does not crash");
+	var id = request(t, s, marked);
+	s.settle();
+	t.assert(keywordsOnly(t, s, id), "keywords after a crash");
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from the next worker");
+	t.assert(s.supervisor.workersStarted > started, "a new worker started");
+	s.server.close();
+}
+
+// A scope answer that names a declaration twice is rejected, and the reply
+// has the keywords alone.
+def test_malformed_scope(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var id = request(t, s, inScale(Strings.format1("\t\t// %s\n\t\tfa$", SyntheticAnalysisWorker.SCOPE_MALFORMED)));
+	s.settle();
+	t.assert(keywordsOnly(t, s, id), "keywords after a malformed answer");
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from a well-formed answer");
+	s.server.close();
+}
+
+// Shutdown answers the running and the waiting completion with their
+// keywords; later requests are refused.
+def test_shutdown(t: Tester) {
+	var s = session(t);
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text);
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	var shutdown = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.ByName(Strings.newMap<JsonValue>())).encode());
+	t.assert(shutdown != null, "shutdown answered");
+	t.assert(keywordsOnly(t, s, running), "the running completion gets its keywords");
+	t.assert(keywordsOnly(t, s, waiting), "the waiting completion gets its keywords");
+	var later = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(2), "textDocument/completion",
+		JsonRpcParams.ByName(s.params("Main.v3", p.line, p.character))).encode());
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32600,\"message\":\"the server is shutting down\"}}", later);
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	s.server.close();
+}
+
+// A completion whose document closes or changes before its analysis starts
+// gets its keywords, without an analysis.
+def test_closed_while_waiting(t: Tester) {
+	var s = session(t);
+	var text = inScale("\t\ttotal$ = factor;");
+	var running = request(t, s, text);
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	var analyses = s.server.completion.analyses;
+	s.closeDocument("Main.v3");
+	s.settle();
+	t.assert(keywordsOnly(t, s, waiting), "keywords for the closed document");
+	t.asserti(1, s.count(running));
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+
+// The completion's result is admitted within the workspace's snapshot budget,
+// as a rename's preflight is; when it does not fit, the keywords are the
+// reply and no analysis starts.
+def test_admission(t: Tester) {
+	var s = session(t);
+	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
+	latest.retainedBytes = s.server.projects.MAX_SNAPSHOT_BYTES;
+	var analyses = s.server.completion.analyses;
+	var id = request(t, s, inScale("\t\tfa$"));
+	s.settle();
+	t.assert(keywordsOnly(t, s, id), "keywords when the snapshot does not fit");
+	t.asserti(analyses, s.server.completion.analyses);
+	latest.retainedBytes = bytes;
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tf$a")), "|"), "declarations once it fits");
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	s.server.close();
+}
+
+// Completions, renames, and the project's analyses share the worker, and all
+// are answered: a completion queued behind a rename's preflight and a due
+// project waits for neither to starve it.
+def test_takes_turns(t: Tester) {
+	var s = session(t);
+	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	var marked = inScale("\t\tvar unsaved = 1;\n\t\tfa$ctor = 1;");
+	var u = unmark(marked);
+	s.change("Main.v3", 2, u.0);
+	var generation = s.supervisor.snapshot.generation;
+	var p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var rename = s.rename(t, "Main.v3", 1, 6, "surface");
+	var completion = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character));
+	t.assert(s.reply(rename) == null && s.reply(completion) == null, "both wait");
+	s.settle();
+	t.assert(has(s.result(t, rename), "documentChanges"), "the rename is answered");
+	t.assert(!keywordsOnly(t, s, completion), "the completion has declarations");
+	t.assert(itemOf(s.result(t, completion), "unsaved") != JsonValue.Null, "from the edited text");
+	t.assert(ctx.snapshot.generation > generation, "the project was analyzed");
+	t.assert(ctx.snapshot.matchesDocument(s.server.documents, s.uri("Main.v3")), "the project's snapshot is current");
+	s.server.close();
+}
+
+// Without a project, or with an untitled document, the keywords are the
+// reply, at once.
+def test_no_project(t: Tester) {
+	var s = session(t);
+	var analyses = s.server.completion.analyses;
+	var doc = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String("untitled:Loose.v3");
+	doc["languageId"] = JsonValue.String("virgil");
+	doc["version"] = JsonValue.Int(1);
+	doc["text"] = JsonValue.String("def f(x: int) {\n\t\n}\n");
+	params["textDocument"] = JsonValue.JObject(doc);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	doc.remove("languageId");
+	doc.remove("version");
+	doc.remove("text");
+	position["line"] = JsonValue.Int(1);
+	position["character"] = JsonValue.Int(1);
+	params["position"] = JsonValue.JObject(position);
+	var id = s.send(t, "textDocument/completion", params);
+	t.assert(keywordsOnly(t, s, id), "keywords at once for an untitled document");
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}

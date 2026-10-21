@@ -17,10 +17,11 @@ class LspSemanticWait(context: ProjectContext) {
 }
 
 // An analysis that one request needs and no project has, such as a rename's
-// preflight (LspRename). {begin} starts it on the supervisor and returns
-// Pending or the failure; {complete} receives the outcome of one that started,
-// once, unless it was withdrawn. Its snapshot is never published, never a
-// context's, and never the supervisor's latest.
+// preflight (LspRename) or a completion's (LspCompletion). {begin} starts it
+// on the supervisor and returns Pending or the failure; {complete} receives
+// the outcome, once, unless it was withdrawn: a failure that {begin} returns
+// too. Its snapshot is never published, never a context's, and never the
+// supervisor's latest.
 class LspAnalysisJob(begin: AnalysisSupervisor -> AnalysisOutcome, complete: AnalysisOutcome -> void) {
 	var withdrawn: bool;
 }
@@ -37,8 +38,10 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	var development: LspDevelopmentAnalysis;
 	private var running: LspSemanticRun;
 	private var waiting = Vector<LspSemanticWait>.new();
-	// A job waiting for the supervisor, and the one it runs.
-	private var job: LspAnalysisJob;
+	// The jobs waiting for the supervisor, first come first, and the one it
+	// runs. Each owner keeps at most one waiting: a rename has one pending
+	// at a time, and a completion replaces its waiting job.
+	private var jobs = Vector<LspAnalysisJob>.new();
 	private var runningJob: LspAnalysisJob;
 	// The last analysis started was a job's, so a due context starts next.
 	private var jobLast: bool;
@@ -70,15 +73,16 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	}
 	// True while the supervisor runs an analysis, or a context or a job waits.
 	def busy() -> bool {
-		return supervisor.busy() || waitingCount() > 0 || job != null;
+		return supervisor.busy() || waitingCount() > 0 || jobs.length > 0;
 	}
-	// Queues {j} to start once the supervisor is free, which may be before
-	// this returns. Jobs and due contexts take turns, so that neither starves
-	// the other. Returns false, without queueing it, after close or while
-	// another job waits.
+	// Queues {j} after the waiting jobs, to start once the supervisor is
+	// free, which may be before this returns. Jobs and due contexts take
+	// turns, so that neither starves the other, and jobs start in the order
+	// they were queued, so that none starves another. Returns false, without
+	// queueing it, after close.
 	def submit(j: LspAnalysisJob) -> bool {
-		if (closed || job != null) return false;
-		job = j;
+		if (closed) return false;
+		jobs.put(j);
 		update();
 		return true;
 	}
@@ -86,7 +90,16 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	// discarded when the supervisor completes it.
 	def withdraw(j: LspAnalysisJob) {
 		j.withdrawn = true;
-		if (job == j) job = null;
+		removeJob(j);
+	}
+	// The number of jobs waiting for the supervisor, for tests.
+	def jobCount() -> int {
+		return jobs.length;
+	}
+	private def removeJob(j: LspAnalysisJob) {
+		var k = 0;
+		for (i < jobs.length) if (jobs[i] != j) jobs[k++] = jobs[i];
+		jobs.length = k;
 	}
 	def waitingCount() -> int {
 		return waiting.length;
@@ -145,7 +158,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	def close() {
 		closed = true;
 		running = null;
-		job = runningJob = null;
+		runningJob = null;
+		jobs.clear();
 		waiting.clear();
 		configurationChanged = false;
 	}
@@ -189,7 +203,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				var w = waiting[i];
 				if (w.due - now <= 0 && (next == null || (w.urgent && !next.urgent))) next = w;
 			}
-			if (job != null && (next == null || !jobLast)) {
+			if (jobs.length > 0 && (next == null || !jobLast)) {
 				startJob();
 				continue;
 			}
@@ -225,8 +239,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		}
 	}
 	private def startJob() {
-		var j = job;
-		job = null;
+		var j = jobs[0];
+		removeJob(j);
 		jobLast = true;
 		var outcome = j.begin(supervisor);
 		if (AnalysisOutcome.Pending.?(outcome)) runningJob = j;

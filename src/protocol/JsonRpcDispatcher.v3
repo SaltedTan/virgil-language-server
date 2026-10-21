@@ -28,11 +28,15 @@ class JsonRpcDispatcher {
 	// {pending.send}, so that their responses are matched.
 	def pending = JsonRpcPendingRequests.new();
 
+	// A method has one request handler, immediate or deferred: the last
+	// registered.
 	def onRequest(method: string, handler: JsonRpcMessage.Request -> JsonRpcReply) -> this {
 		requestHandlers[method] = handler;
+		deferredHandlers.remove(method);
 	}
 	def onDeferredRequest(method: string, handler: JsonRpcMessage.Request -> void) -> this {
 		deferredHandlers[method] = handler;
+		requestHandlers.remove(method);
 	}
 	def onNotification(method: string, handler: JsonRpcMessage.Notification -> void) -> this {
 		notificationHandlers[method] = handler;
