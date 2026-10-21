@@ -64,17 +64,9 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			AeneasAdapter.analyzeProgram(request.sources, request.options, stats));
 		var files: Array<(string, Array<AnalysisOccurrence>)>, collectUs = -1;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
-			// Each distinct path once; a repeated path keeps the first file's
-			// bindings, as ProgramAnalysis does.
-			var seen = Strings.newMap<bool>(), list = Vector<(string, Array<AnalysisOccurrence>)>.new();
 			var start = System.ticksUs();
-			for (s in request.sources) {
-				if (seen.has(s.path)) continue;
-				seen[s.path] = true;
-				list.put((s.path, analysis.occurrences(s.path)));
-			}
+			files = request.occurrences(analysis);
 			collectUs = System.ticksUs() - start;
-			files = list.extract();
 		} else if (request.scope() != null) {
 			// The candidates' declarations need the occurrence section, with
 			// no files.

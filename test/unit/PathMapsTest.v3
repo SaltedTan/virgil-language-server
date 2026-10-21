@@ -1,0 +1,385 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The maps keyed by path or URI (issue #139), at paths whose names are
+// strings of "Aa" and "BB" blocks of one length below a long prefix: they
+// all hash alike under Strings.newMap, which would keep them in one bucket.
+// Each test checks its result, that each of the maps it exercises holds the
+// paths in an OrderedStringMap, and that the comparisons those make grow as
+// n log n from n paths to 2n.
+def T = UnitTests.register;
+def X = [
+	T("PathMaps:open_documents", test_open_documents),
+	T("PathMaps:disk_stamps", test_disk_stamps),
+	T("PathMaps:capture_and_freshness", test_capture_and_freshness),
+	T("PathMaps:diagnostic_lists", test_diagnostic_lists),
+	T("PathMaps:parser_diagnostics", test_parser_diagnostics),
+	T("PathMaps:workspace_owners", test_workspace_owners),
+	T("PathMaps:development_request", test_development_request),
+	T("PathMaps:semantic_publication", test_semantic_publication),
+	T("PathMaps:worker_occurrences", test_worker_occurrences),
+	T("PathMaps:worker_scope", test_worker_scope),
+	()
+];
+// {count} blocks of "Aa" or "BB", as bit k of {index} selects for block k.
+def blocks(count: int, index: int) -> string {
+	var b = StringBuilder.new();
+	for (k < count) b.puts(if((index >> byte.view(k)) % 2 == 1, "BB", "Aa"));
+	return b.extract();
+}
+// {n} file paths below a 600-byte directory whose names all hash alike.
+def collidingPaths(n: int) -> Array<string> {
+	var d = Array<byte>.new(600);
+	for (i < d.length) d[i] = 'd';
+	var paths = Array<string>.new(n);
+	for (i < n) paths[i] = Strings.format2("/path-maps/%s/%s.v3", d, blocks(11, i));
+	return paths;
+}
+def collidingUris(n: int) -> Array<string> {
+	return Arrays.map(collidingPaths(n), ProjectFiles.uri);
+}
+// The keys that ordered maps compare and the entries they add while {f}
+// runs on {n} paths.
+def cost(f: int -> void, n: int) -> (long, long) {
+	var compares = OrderedStringMaps.compares, added = OrderedStringMaps.added;
+	f(n);
+	return (OrderedStringMaps.compares - compares, OrderedStringMaps.added - added);
+}
+// Fails unless {f} adds about {maps} times the paths to ordered maps, so that
+// each of the {maps} maps it exercises holds them in one, and compares at
+// most about twice as many keys at 2n paths as at n: a tree descends about
+// one level more for twice the keys, so each of at most {operations}
+// operations per path may add two comparisons. A map that keeps the paths in
+// one bucket would compare four times as many.
+def scales(t: Tester, label: string, n: int, maps: int, operations: int, f: int -> void) {
+	var small = cost(f, n), large = cost(f, 2 * n);
+	added(t, label, n, maps, small.1);
+	added(t, label, 2 * n, maps, large.1);
+	if (small.0 <= 0 || large.0 > 2 * small.0 + 2L * operations * 2 * n) {
+		t.fail3("%s compared %d keys at %d, ", label, large.0, 2 * n);
+		t.fail2("against %d at %d", small.0, n);
+	}
+}
+def added(t: Tester, label: string, n: int, maps: int, entries: long) {
+	if (entries < long.view(maps) * n) t.fail3("%s added %d entries to ordered maps at %d, ", label, entries, n);
+}
+
+def test_open_documents(t: Tester) {
+	scales(t, "open documents", 512, 1, 12, openDocuments(t, _));
+}
+// Opens {n} documents in a scattered order, then checks, changes, and closes
+// each.
+def openDocuments(t: Tester, n: int) {
+	var uris = collidingUris(n), store = DocumentStore.new(null, 64 * 1024 * 1024);
+	var text: Array<byte> = "def x = 0;";
+	for (i < n) {
+		var k = (i * 7) % n;
+		t.assert(store.open(uris[k], "virgil", k, text) == null, "opened");
+	}
+	for (i < n) {
+		var doc = store.overlay(uris[i]);
+		if (doc == null || doc.version != i || !Strings.equal(doc.uri, uris[i])) return t.fail1("document %d has the wrong overlay", i);
+		t.assert(store.change(uris[i], n + i, text) == null, "changed");
+		t.asserti(n + i, store.overlay(uris[i]).version);
+		t.assert(store.open(uris[i], "virgil", 0, text) != null, "opened twice");
+	}
+	for (i < n) if (i % 2 == 0) t.assert(store.close(uris[i]) == null, "closed");
+	for (i < n) t.assertz(i % 2 == 1, store.overlay(uris[i]) != null);
+	t.assert(store.close(uris[0]) != null, "closed twice");
+}
+
+def test_disk_stamps(t: Tester) {
+	scales(t, "disk stamps", 512, 1, 8, diskStamps(t, _));
+}
+// Records a disk change to each of {n} files in a scattered order, then
+// checks each file's stamp.
+def diskStamps(t: Tester, n: int) {
+	var uris = collidingUris(n), store = DocumentStore.new(null, 1024);
+	var unchanged = store.diskStamp(uris[0]);
+	for (i < n) store.diskChanged(uris[(i * 7) % n]);
+	var stamps = Array<DocumentVersionIdentity>.new(n);
+	for (i < n) stamps[i] = store.diskStamp(uris[i]);
+	for (i < n) {
+		if (stamps[i] == unchanged || (i > 0 && stamps[i] == stamps[i - 1])) return t.fail1("file %d shares a stamp", i);
+		if (store.diskStamp(uris[i]) != stamps[i]) return t.fail1("file %d lost its stamp", i);
+	}
+	store.diskChanged(uris[0]);
+	t.assert(store.diskStamp(uris[0]) != stamps[0], "a disk change replaces the stamp");
+	t.assert(store.diskStamp(uris[1]) == stamps[1], "and only its own");
+}
+
+def test_capture_and_freshness(t: Tester) {
+	scales(t, "capture and the freshness check", 512, 1, 10, captureAndCheck(t, _));
+}
+def emptyFile(path: string, budget: int) -> Array<byte> {
+	return "def x = 0;";
+}
+// Captures {n} files, every other one open and every one with a disk stamp,
+// as LspAnalysisCapture does for an analysis, then checks each stamp as
+// LspSnapshotRequests.current does before a request uses the snapshot.
+def captureAndCheck(t: Tester, n: int) {
+	var uris = collidingUris(n), store = DocumentStore.new(null, 64 * 1024 * 1024).withBoundedReader(emptyFile);
+	for (i < n) if (i % 2 == 0) store.open(uris[i], "virgil", 7, "def y = 0;");
+	for (i < n) store.diskChanged(uris[i]);
+	var captured = LspAnalysisCapture.capture(store, uris, false);
+	if (captured.1 != null) return t.fail(captured.1);
+	var versions = captured.0.versions;
+	for (i < n) {
+		var v = versions[i];
+		if (Strings.equal(v.uri, uris[i]) && v.version == if(i % 2 == 0, 7, 0) && (v.identity != null) == (i % 2 == 0) &&
+			v.matchesDocument(store)) continue;
+		return t.fail1("source %d was not captured as it is", i);
+	}
+	store.diskChanged(uris[n - 1]);
+	for (i < n) t.assertz(i != n - 1, versions[i].matchesDocument(store));
+}
+
+class PublishedUris {
+	def uris = Vector<string>.new();
+	def lengths = Vector<int>.new();
+	def send(bytes: Array<byte>) {
+		var params = JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v["params"]).v;
+		uris.put(JsonValue.String.!(params["uri"]).v);
+		lengths.put(JsonValue.JArray.!(params["diagnostics"]).v.length);
+	}
+}
+def test_diagnostic_lists(t: Tester) {
+	scales(t, "diagnostic lists", 512, 1, 8, diagnosticLists(t, _));
+}
+// Publishes a semantic diagnostic for each of {n} closed files in a
+// scattered order, then clears them.
+def diagnosticLists(t: Tester, n: int) {
+	var uris = collidingUris(n), store = DocumentStore.new(null, 64 * 1024 * 1024);
+	var sent = PublishedUris.new(), lists = LspDiagnosticLists.new(store, sent.send);
+	var d = [LspDiagnostic.new("0:1::x", JsonValue.Int(0))];
+	for (i < n) lists.semantic(uris[(i * 7) % n], null, d);
+	for (i < n) lists.semantic(uris[(i * 7) % n], null, d);
+	lists.clearOwned(null, null);
+	t.asserti(n, sent.uris.length);
+	for (i < n) {
+		if (Strings.equal(uris[(i * 7) % n], sent.uris[i]) && sent.lengths[i] == 1) continue;
+		return t.fail1("publication %d is wrong", i);
+	}
+	sent.uris.resize(0);
+	sent.lengths.resize(0);
+	for (i < n) lists.semantic(uris[i], null, []);
+	for (i < n) lists.semantic(uris[i], null, []);
+	t.asserti(n, sent.uris.length);
+	for (i < sent.lengths.length) t.asserti(0, sent.lengths[i]);
+}
+
+def test_parser_diagnostics(t: Tester) {
+	scales(t, "parser diagnostics", 256, 3, 16, parserDiagnostics(t, _));
+}
+// Parses {n} open documents with a language option, in a scattered order,
+// then parses them again without one, as for a configuration change, which
+// republishes them in URI order. The documents' overlays, their parser
+// options, and their diagnostic lists each hold the URIs.
+def parserDiagnostics(t: Tester, n: int) {
+	var uris = collidingUris(n), store = DocumentStore.new(null, 64 * 1024 * 1024);
+	var sent = PublishedUris.new(), parser = LspParserDiagnostics.new(LspDiagnosticLists.new(store, sent.send));
+	var option = Strings.format1("-lang:%s", AeneasAdapter.languageOptions()[0].0);
+	for (i < n) {
+		var uri = uris[(i * 7) % n];
+		store.open(uri, "virgil", 1, "def x = ;");
+		parser.update(store.overlay(uri), [option]);
+	}
+	t.asserti(n, sent.uris.length);
+	sent.uris.resize(0);
+	parser.reparse(store, WorkspaceProjects.new(store));
+	t.asserti(n, sent.uris.length);
+	var sorted = Arrays.sort(uris, 0, n, ProjectFiles.before);
+	for (i < sent.uris.length) {
+		if (Strings.equal(sorted[i], sent.uris[i]) && sent.lengths[i] == 1) continue;
+		return t.fail1("republication %d is out of order", i);
+	}
+	sent.uris.resize(0);
+	parser.reparse(store, WorkspaceProjects.new(store));
+	t.asserti(0, sent.uris.length);
+	for (uri in uris) parser.close(store.overlay(uri));
+	t.asserti(n, sent.uris.length);
+}
+
+// Loading a project file also checks whether each of the at most 128 loaded
+// ones is still open, once per directory here.
+def test_workspace_owners(t: Tester) {
+	scales(t, "project ownership", 256, 3, 160, workspaceOwners(t, _));
+}
+// The owners of a file in each of {n} directories whose names all hash
+// alike, each with an open project file that is not valid, so that each
+// directory has its own nearest project file and none has an owner. The
+// project files' overlays, the directories, and the project files each key
+// a map.
+def workspaceOwners(t: Tester, n: int) {
+	var store = DocumentStore.new(null, 64 * 1024 * 1024), projects = WorkspaceProjects.new(store);
+	var dirs = collidingPaths(n), paths = Array<string>.new(2 * n);
+	for (i < n) {
+		store.open(ProjectFiles.uri(ProjectFiles.join(dirs[i], projects.FILE)), "json", 1, "{}");
+		paths[2 * i] = ProjectFiles.join(dirs[i], "a.v3");
+		paths[2 * i + 1] = ProjectFiles.join(dirs[i], "b.v3");
+	}
+	var owners = projects.owners(paths);
+	for (o in owners) if (o != null) return t.fail("a file has an owner");
+	t.assert_string(ProjectFiles.join(dirs[n - 1], projects.FILE), projects.nearest(paths[2 * n - 1]));
+}
+
+def test_development_request(t: Tester) {
+	scales(t, "a development request", 512, 1, 4, developmentRequest(t, _));
+}
+// A development request for {n} distinct URIs and then the first again,
+// which it rejects before it reads any file.
+def developmentRequest(t: Tester, n: int) {
+	var uris = collidingUris(n), store = DocumentStore.new(null, 1024);
+	var sent = Vector<Array<byte>>.new(), dispatcher = JsonRpcDispatcher.new();
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	LspDevelopmentAnalysis.new(store, supervisor, fun (b: Array<byte>) { sent.put(b); }).register(dispatcher);
+	var list = Array<JsonValue>.new(n + 1);
+	for (i < n) list[i] = JsonValue.String(uris[i]);
+	list[n] = JsonValue.String(uris[0]);
+	var params = Strings.newMap<JsonValue>();
+	params["uris"] = JsonValue.JArray(list);
+	t.assert(dispatcher.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode()) == null, "deferred");
+	t.asserti(1, sent.length);
+	if (sent.length == 1) t.assert(indexOf(sent[0], "distinct after normalization") > 0, sent[0]);
+}
+
+// A server with automatic analysis of the colliding-diagnostics fixture of
+// {n} files.
+class CollidingProgramSession(n: int) {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), Strings.format1("project-fixtures/colliding-diagnostics/%d", n));
+	def messages = Vector<HashMap<string, JsonValue>>.new();
+	new() {
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		var initialize = Strings.newMap<JsonValue>();
+		initialize["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(initialize)).encode());
+	}
+	def receive(bytes: Array<byte>) {
+		messages.put(JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v);
+	}
+	def settle() {
+		var fds = Array<int>.new(4);
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+}
+// The fixture's sizes are fixed, so this test does not use scales().
+def test_semantic_publication(t: Tester) {
+	var small = cost(semanticPublication(t, _), 256), large = cost(semanticPublication(t, _), 512);
+	added(t, "a semantic publication", 256, 2, small.1);
+	added(t, "a semantic publication", 512, 2, large.1);
+	if (small.0 <= 0 || large.0 > 2 * small.0 + 2L * 32 * 512) {
+		t.fail3("a semantic publication compared %d keys at 512, against %d at %d", large.0, small.0, 256);
+	}
+}
+// Opens the main file of the fixture of {n} files, whose analysis reports an
+// error there and in the last file in byte order, which is closed. The
+// publication indexes the paths and the URIs that the project keeps.
+def semanticPublication(t: Tester, n: int) {
+	var s = CollidingProgramSession.new(n), d = Array<byte>.new(200);
+	for (i < d.length) d[i] = 'd';
+	var dir = ProjectFiles.join(ProjectFiles.join(s.base, d), d);
+	var main = ProjectFiles.uri(ProjectFiles.join(dir, "main.v3"));
+	var last = ProjectFiles.uri(ProjectFiles.join(dir, Strings.format1("%s.v3", blocks(9, n - 1))));
+	var doc = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(main);
+	doc["languageId"] = JsonValue.String("virgil");
+	doc["version"] = JsonValue.Int(1);
+	doc["text"] = JsonValue.String(System.fileLoad(DocumentUri.filePath(main)));
+	var params = Strings.newMap<JsonValue>();
+	params["textDocument"] = JsonValue.JObject(doc);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	s.settle();
+	var semantic = Vector<string>.new();
+	for (i < s.messages.length) {
+		var m = s.messages[i];
+		if (!Strings.equal("textDocument/publishDiagnostics", JsonValue.String.!(m["method"]).v)) continue;
+		var p = JsonValue.JObject.!(m["params"]).v, uri = JsonValue.String.!(p["uri"]).v;
+		var count = JsonValue.JArray.!(p["diagnostics"]).v.length;
+		if (count > 0) semantic.put(Strings.format2("%s %d", uri, count));
+	}
+	// The analysis's two lists, in path order.
+	var published = semantic.extract();
+	t.asserti(2, published.length);
+	if (published.length == 2) {
+		t.assert_string(Strings.format1("%s 1", last), published[0]);
+		t.assert_string(Strings.format1("%s 1", main), published[1]);
+	}
+}
+
+def test_worker_occurrences(t: Tester) {
+	scales(t, "a worker's occurrences", 512, 7, 24, workerRequest(t, _, false));
+}
+def test_worker_scope(t: Tester) {
+	scales(t, "a worker's scope answer", 512, 6, 16, workerRequest(t, _, true));
+}
+// A worker's analysis of the shape of issue #155's report: {n} files whose
+// names hash alike, each declaring one type at the same coordinates, and a
+// main file, with a scope query in the main file if {scoped} and the files'
+// occurrences otherwise. The last file has an error. The server decodes the
+// result. The paths key six maps: the tokens and the sources that convert
+// diagnostics, the program's sources and files, the scope query's syntax
+// indexes or the occurrences' distinct paths, and the result's path table.
+// For occurrences, each type is a class with an index method, whose name
+// "[]" the compiler makes, so the program's replay map of each file, a
+// seventh, locates it.
+def workerRequest(t: Tester, n: int, scoped: bool) {
+	var paths = collidingPaths(n), sources = Array<AnalysisSource>.new(n + 1);
+	var main = "component Main { def m() { var x = 0; } }";
+	sources[0] = AnalysisSource.new("/path-maps/main.v3", main);
+	var kind = if(scoped, "component", "class"), body = if(scoped, " ", " def [i: int] -> int { return i; } ");
+	for (i < n) sources[i + 1] = AnalysisSource.new(paths[i], Strings.format3("%s C%d {%s}", kind, i, if(i == n - 1, " var y: Absent; ", body)));
+	var flags = if(scoped, AnalysisWire.WANT_SCOPE, AnalysisWire.WANT_OCCURRENCES);
+	var query = if(scoped, AnalysisScopeRequest.new(0, 35, AnalysisScopeKinds.VALUES, ""));
+	var frame = AnalysisWire.encodeAnalyze(1, flags, 10000, [], sources, query);
+	var request = AnalysisWire.decodeAnalyze(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ...]));
+	if (request == null) return t.fail("the request did not decode");
+	var analysis = if(scoped, AeneasAdapter.analyzeForScope(request.sources, request.options, false),
+		AeneasAdapter.analyzeProgram(request.sources, request.options, false));
+	var files = if(scoped, Array<(string, Array<AnalysisOccurrence>)>.new(0), request.occurrences(analysis));
+	var scope = request.scopeAnswer(analysis);
+	var result = AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 0, analysis, -1, -1, files, scope, null), 0);
+	var requestPaths = Arrays.map(sources, pathOf);
+	var snapshot: AnalysisSnapshot;
+	match (AnalysisWire.decodeResultWithQuery(Ranges.dup(result[WorkerFraming.HEADER_BYTES ...]), 1, requestPaths, if(scoped, AnalysisScopeKinds.VALUES))) {
+		Decoded(r) => snapshot = r.snapshot;
+		_ => return t.fail("the result did not decode");
+	}
+	// The error is in the last file, with its byte offsets there.
+	t.asserti(1, snapshot.diagnostics.length);
+	if (snapshot.diagnostics.length == 1) {
+		var e = snapshot.diagnostics[0];
+		t.assert_string(paths[n - 1], e.path);
+		t.asserti(indexOf(sources[n].input, "Absent"), e.beginOffset);
+	}
+	if (scoped) {
+		t.assert(snapshot.scope != null, "a scope answer");
+		return;
+	}
+	// Each class is declared in its own file.
+	var found = 0;
+	for (d in snapshot.declarations) {
+		if (d.kind != AnalysisDeclKind.CLASS || d.name.length < 2 || d.name[0] != 'C') continue;
+		var i = Ints.parseDecimal(d.name, 1).1;
+		if (i < 0 || i >= n || !Strings.equal(paths[i], d.range.path)) return t.fail1("component %s is in the wrong file", d.name);
+		found++;
+	}
+	t.asserti(n, found);
+}
+def pathOf(s: AnalysisSource) -> string {
+	return s.path;
+}
+def indexOf(text: Array<byte>, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		var k = 0;
+		while (k < needle.length && text[i + k] == needle[k]) k++;
+		if (k == needle.length) return i;
+	}
+	return -1;
+}

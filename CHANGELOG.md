@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- Correct in-scope completion in variant case headers and lambda bodies ending with prefix `++` or `--` ([scope rules](docs/architecture.md#names)).
-
 ### Added
 
 - Member completion after `.` (`textDocument/completion`), in open documents of configured projects, including unsaved buffers and code that doesn't parse yet. It offers the members that the type checker accepts for the receiver's type, and only those: fields and methods through the class hierarchy, with type arguments substituted and private members only in their file, constructors, a component's members, variant and enum cases, `tag` and `name`, enum sets, layouts, tuple elements, and the builtin members of arrays, ranges, and number types. The receiver can be any expression or a type's name. The server now declares `.` as a completion trigger character, and a `.` in a comment, a literal, or after a number gets an empty list at once. See [Member completion](docs/architecture.md#member-completion) for the lookup rules, the builtin list, the reply, and measurements, and [Known limitations](docs/known-limitations.md#member-completion).
@@ -17,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Keyword completion (`textDocument/completion`) in open documents, from their current text alone, so it works while a file fails to parse and needs no project. A cursor scanner that lexes comments, strings, and byte literals as Aeneas does finds the identifier being typed, member access after `.`, the open delimiters, and the syntactic position, and the server offers the keywords of the pinned compiler that can start there, with the project's language options. See [Completion](docs/architecture.md#completion) for the positions, the reply, and editor setup, and [Known limitations](docs/known-limitations.md) for what it doesn't offer yet.
 - A development `repair` command and a corpus of 45 typing states that measure repairing incomplete code at the cursor for semantic completion. [ADR-0006](docs/decisions/0006-incomplete-code-repair.md) records the results and the decision: semantic completion will use the narrow repair at the cursor, and error-tolerant parsing stays in M6.
 - Rename (`textDocument/rename`) and prepare rename (`textDocument/prepareRename`) from open documents in configured projects, including unsaved buffers, with versioned edits across open and closed files and a preflight that checks bindings. The Neovim configurations now declare support for versioned edits. See [Rename](docs/architecture.md#rename) for the rules, refusals, and measurements, and [Prepare rename](docs/architecture.md#prepare-rename) for what can be renamed.
+
+### Fixed
+
+- Speed up analyses, diagnostics, and requests when a workspace's file names hash alike by using ordered maps for path and URI lookups, with ordinary workspaces as fast as before. See [Maps keyed by path or URI](docs/architecture.md#maps-keyed-by-path-or-uri) for measurements and remaining hash maps.
+- Correct in-scope completion in variant case headers and lambda bodies ending with prefix `++` or `--` ([scope rules](docs/architecture.md#names)).
 
 ## [0.1.0-alpha.1] - 2026-10-20
 

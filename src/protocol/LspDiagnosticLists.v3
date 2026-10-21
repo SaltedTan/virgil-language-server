@@ -18,7 +18,8 @@ class LspUriDiagnostics(uri: string) {
 // semantic updates publish only when the list changes. Open documents carry
 // their overlay version; closed project files carry none.
 class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
-	private def lists = Strings.newMap<LspUriDiagnostics>();
+	// By canonical URI, in byte order; see OrderedStringMap.
+	private def lists = OrderedStringMap<LspUriDiagnostics>.new();
 
 	// An accepted open or change. Earlier semantic results described other
 	// text, so they no longer apply until a new analysis completes.
@@ -53,18 +54,18 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// Clears semantic diagnostics owned by {owner} for URIs not in {keep}, or
 	// by any context whose configuration revision is no longer current when
 	// {owner} is null.
-	def clearOwned(owner: ProjectContext, keep: HashMap<string, bool>) {
+	def clearOwned(owner: ProjectContext, keep: OrderedStringMap<bool>) {
 		for (uri in uris()) {
 			var list = lists[uri], o = list.owner;
 			if (o == null || (keep != null && keep.has(uri))) continue;
 			if (if(owner != null, o == owner, !o.config.current)) semantic(uri, null, []);
 		}
 	}
+	// The URIs in ProjectFiles.before order, the map's own.
 	private def uris() -> Array<string> {
 		var result = Vector<string>.new();
 		lists.apply(collect(result, _, _));
-		var keys = result.extract();
-		return Arrays.sort(keys, 0, keys.length, ProjectFiles.before);
+		return result.extract();
 	}
 	private def collect(result: Vector<string>, uri: string, list: LspUriDiagnostics) {
 		result.put(uri);

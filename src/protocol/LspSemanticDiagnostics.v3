@@ -275,8 +275,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		for (v in inputs.versions) {
 			if (!v.matchesDocument(store)) return discard(ctx, snapshot, Strings.format1("%s changed after its sources were captured", v.uri));
 		}
-		var paths = snapshot.paths, owners = projects.owners(paths), index = Strings.newMap<int>();
-		for (i < paths.length) { if(!index.has(paths[i])) index[paths[i]] = i; }
+		var paths = snapshot.paths, owners = projects.owners(paths), index = OrderedStringMap<int>.new();
+		for (i < paths.length) index.add(paths[i], i);
 		var found = Array<Vector<LspDiagnostic>>.new(paths.length);
 		var maps = Array<PositionMap>.new(paths.length);
 		var last = -1, lastDiagnostic: AnalysisDiagnostic;
@@ -303,10 +303,9 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			found[last].put(LspDiagnostics.make(maps[last], lastDiagnostic.beginOffset, lastDiagnostic.endOffset, 3, "virgil-lsp", "ErrorLimit",
 				Strings.format1("Aeneas stops checking after %d errors, so errors elsewhere in this program may be missing.", AeneasAdapter.PROGRAM_MAX_ERRORS)));
 		}
-		var keep = Strings.newMap<bool>();
+		var keep = OrderedStringMap<bool>.new();
 		for (i < paths.length) {
-			if (owners[i] != ctx || keep.has(run.keys[i])) continue;
-			keep[run.keys[i]] = true;
+			if (owners[i] != ctx || !keep.add(run.keys[i], true)) continue;
 			lists.semantic(run.keys[i], ctx, if(found[i] != null, found[i].extract(), []));
 		}
 		lists.clearOwned(ctx, keep);

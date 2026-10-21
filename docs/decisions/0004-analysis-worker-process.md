@@ -166,6 +166,12 @@ Protocol version 9 changes no ordinary analysis either. The measurements used th
 
 An ordinary request still carries no query, and the member query's state lives only in a member request's analysis. The display's substitution chain for a superclass's type arguments is a component's variable (`AnalysisMemberSubst`), not a field of every display: a field there added 8 bytes to the heap of every analysis. A member completion's result holds only its candidates, at most 1,000, with their declarations, names, and details.
 
+Keying the worker's per-source maps by ordered maps rather than `Strings.newMap` ([#139](https://github.com/SaltedTan/virgil-language-server/issues/139); see [Maps keyed by path or URI](../architecture.md#maps-keyed-by-path-or-uri)) changes no ordinary analysis either. The measurements used the same method, comparing `c206b15` with that change, with the same `BuildInfo` revision string in both builds:
+
+- The Aeneas sources' charged result allocation is 13,250,205 bytes before and after.
+- A fresh worker's heap is 200,767,776 bytes before and 200,735,432 after, with no collection, over 3 runs of each build. That leaves 591,160 bytes of the semispace, 32,344 more than before: an ordered map allocates one entry for each key and no table.
+- The normalized `RESULT` payloads are identical, at 3,936,035 bytes, and so are the `--bindings` outputs.
+
 Users can check total source bytes with `wc -c` over the files supplied to analysis (using current overlay contents for unsaved files). Source bytes alone must be below the [development stdio request's admission limit](../development.md#development-stdio-requests), which also includes paths and metadata. The CLI uses the [encoded-request admission rule](#restart-policy). Neither source limit guarantees a result will fit: declarations, occurrences, and especially diagnostics have different allocation charges. For a program that fits, `analyze --stats --bindings` reports its binding counts and the result allocation charged against the budget.
 
 With similar binding, call, and diagnostic density, about **1.25 times the Aeneas sources** would exhaust the result budget, before the development request's source limit rejects about **1.4 times** that source set. These are sizing guides, not guaranteed capacities for arbitrary programs. If the decoded result exceeds its budget, reduce the files analyzed together to a smaller valid program/project; retrying the unchanged program or increasing `WORKER_HEAP` does not increase the server's result budget.

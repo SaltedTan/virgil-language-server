@@ -240,15 +240,16 @@ component AnalysisWire {
 	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>,
 			calls: Array<int>, uses: Array<int>, scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer) {
 		// A path is its file's index in {files}, the request's distinct paths
-		// in order, plus one.
-		var paths = Strings.newMap<int>();
-		for (i < files.length) if (paths[files[i].0] == 0) paths[files[i].0] = i + 1;
+		// in order, plus one. The paths key an ordered map, which takes
+		// O(log n) whatever they are; see OrderedStringMap.
+		var paths = OrderedStringMap<int>.new();
+		for (i < files.length) paths.add(files[i].0, i + 1);
 		// A scope or member answer without occurrences has no files; its
 		// program has the request's paths.
 		var queried = if(scope != null, scope.paths, if(members != null, members.paths));
 		if (files.length == 0 && queried != null) {
 			var n = 0;
-			for (p in queried) if (p != null && paths[p] == 0) paths[p] = ++n;
+			for (p in queried) if (p != null && paths.add(p, n + 1)) n++;
 		}
 		var decls = AnalysisIndexMap<AnalysisDeclaration>.new(hashDeclaration, sameDeclaration);
 		var strings = AnalysisStringTable.new();
@@ -626,6 +627,17 @@ class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<
 		var q = scope();
 		if (q == null || q.kinds != AnalysisScopeKinds.MEMBERS) return null;
 		return analysis.membersAt(sources[q.file].path, q.offset, q.prefix);
+	}
+	// The occurrences in each distinct path of the request, in order; a
+	// repeated path keeps the first file's bindings, as ProgramAnalysis does.
+	// The paths key an ordered map; see OrderedStringMap.
+	def occurrences(analysis: ProgramAnalysis) -> Array<(string, Array<AnalysisOccurrence>)> {
+		var seen = OrderedStringMap<bool>.new(), list = Vector<(string, Array<AnalysisOccurrence>)>.new();
+		for (s in sources) {
+			if (!seen.add(s.path, true)) continue;
+			list.put((s.path, analysis.occurrences(s.path)));
+		}
+		return list.extract();
 	}
 }
 class AnalysisScopedRequest extends AnalysisWorkerRequest {

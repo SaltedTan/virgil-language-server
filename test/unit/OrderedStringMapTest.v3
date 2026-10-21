@@ -1,0 +1,203 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("OrderedStringMap:entries", test_entries),
+	T("OrderedStringMap:order", test_order),
+	T("OrderedStringMap:against_a_scan", test_against_a_scan),
+	T("OrderedStringMap:shared_prefixes", test_shared_prefixes),
+	T("OrderedStringMap:colliding_keys", test_colliding_keys),
+	()
+];
+def test_entries(t: Tester) {
+	var map = OrderedStringMap<int>.new();
+	t.asserti(0, map[""]);
+	t.assertz(false, map.has(""));
+	t.assertz(false, map.remove("a"));
+	map["b"] = 1;
+	map[""] = 2;
+	map["ba"] = 3;
+	map["a"] = 4;
+	map["\xFF"] = 5;
+	t.asserti(5, map.length);
+	map["ba"] = 6;
+	t.asserti(5, map.length);
+	t.asserti(6, map["ba"]);
+	t.asserti(2, map[""]);
+	t.asserti(0, map["\x00"]);
+	t.assertz(false, map.has("bb"));
+	// A key equal to, but not the same object as, a stored key.
+	t.asserti(6, map[Strings.format1("%sa", "b")]);
+	t.assertz(true, map.remove(Strings.format1("%sa", "b")));
+	t.assertz(false, map.has("ba"));
+	t.asserti(0, map["ba"]);
+	t.assertz(false, map.remove("ba"));
+	t.asserti(4, map.length);
+	map["ba"] = 7;
+	t.asserti(7, map["ba"]);
+	// The same key object updates the entry last found.
+	var key = "c";
+	map[key] = 8;
+	map[key] = 9;
+	t.asserti(9, map["c"]);
+	t.asserti(6, map.length);
+	// Adding keeps a present value, with the same key object or another.
+	t.assertz(false, map.add(key, 10));
+	t.assertz(false, map.add(Strings.format1("%s", "c"), 11));
+	t.asserti(9, map["c"]);
+	t.assertz(true, map.add("d", 12));
+	t.assertz(false, map.add("d", 13));
+	t.asserti(12, map["d"]);
+	t.asserti(7, map.length);
+	// A null key comes first.
+	var none: string;
+	t.assertz(false, map.has(none));
+	map[none] = 14;
+	t.asserti(14, map[none]);
+	t.assertz(false, map.add(none, 15));
+	t.asserti(8, map.length);
+	var keys = Vector<string>.new(), values = Vector<int>.new();
+	map.apply(collect(keys, values, _, _));
+	t.assert(keys[0] == null, "null first");
+	t.asserti(2, map[""]);
+	t.assertz(true, map.remove(none));
+	t.assertz(false, map.has(none));
+	t.asserti(7, map.length);
+	var only = OrderedStringMap<int>.new();
+	only[none] = 1;
+	only["x"] = 2;
+	t.asserti(1, only[none]);
+	t.asserti(2, only["x"]);
+}
+def collect(keys: Vector<string>, values: Vector<int>, key: string, value: int) {
+	keys.put(key);
+	values.put(value);
+}
+// Keys come out in ProjectFiles.before order, whatever order they went in.
+def test_order(t: Tester) {
+	var keys = ["", "\x00", "a", "a\x00", "ab", "b", "\x7F", "\x80", "\xFF", "\xFF\xFF"];
+	var n = keys.length, map = OrderedStringMap<int>.new();
+	for (i < n) {
+		var j = (i * 7) % n;
+		map[keys[j]] = j;
+	}
+	var found = Vector<string>.new(), values = Vector<int>.new();
+	map.apply(collect(found, values, _, _));
+	t.asserti(n, found.length);
+	for (i < n) {
+		t.assert_string(keys[i], found[i]);
+		t.asserti(i, values[i]);
+		if (i > 0) t.assertz(true, ProjectFiles.before(keys[i - 1], keys[i]));
+	}
+}
+// Every string of "a" and "b" up to six bytes long, so that many keys are
+// prefixes of others, added and removed in scattered orders. The map agrees
+// with an array of flags after every operation, and stays balanced: no
+// operation compares more than 2 log2(n + 1) + 1 keys.
+def test_against_a_scan(t: Tester) {
+	var all = Vector<string>.new().put("");
+	for (i = 0; i < all.length && all[i].length < 6; i++) {
+		all.put(Strings.format1("%sa", all[i])).put(Strings.format1("%sb", all[i]));
+	}
+	var keys = all.extract(), n = keys.length, map = OrderedStringMap<int>.new();
+	var present = Array<bool>.new(n), count = 0;
+	for (round < 6) {
+		for (i < n) {
+			var j = (i * (37 + 2 * round) + round) % n;
+			var add = (j + round) % 3 != 0;
+			var before = OrderedStringMaps.compares;
+			if (add) {
+				map[keys[j]] = j + 1;
+				if (!present[j]) count++;
+				present[j] = true;
+			} else {
+				t.assertz(present[j], map.remove(keys[j]));
+				if (present[j]) count--;
+				present[j] = false;
+			}
+			t.assert(OrderedStringMaps.compares - before <= 15, "each operation compares O(log n) keys");
+			t.asserti(count, map.length);
+		}
+		for (j < n) {
+			t.assertz(present[j], map.has(keys[j]));
+			t.asserti(if(present[j], j + 1), map[keys[j]]);
+		}
+		var found = Vector<string>.new(), values = Vector<int>.new(), k = 0;
+		map.apply(collect(found, values, _, _));
+		t.asserti(count, found.length);
+		for (i < found.length) if (i > 0 && !ProjectFiles.before(found[i - 1], found[i])) t.fail("keys out of order");
+		for (i < values.length) if (!Strings.equal(keys[values[i] - 1], found[i])) t.fail("a key lost its value");
+	}
+}
+// Keys below a long shared directory, then keys that share less and less of
+// it, which lower the bound on the bytes that all keys share, then all
+// removed and other keys added. Lookups of each key, present or not, agree
+// with a scan after each step.
+def test_shared_prefixes(t: Tester) {
+	var dir = "/a/very/long/directory/that/every/key/shares/";
+	var keys = Vector<string>.new();
+	for (i < 64) keys.put(Strings.format2("%sf%d.v3", dir, 1000 + (i * 37) % 64));
+	for (k = dir.length; k >= 0; k -= 7) {
+		keys.put(Strings.format1("%sz", Arrays.range(dir, 0, k)));
+		keys.put(Arrays.range(dir, 0, k));
+	}
+	for (i < 16) keys.put(Strings.format1("/other/g%d.v3", i));
+	var all = keys.extract(), map = OrderedStringMap<int>.new();
+	for (i < all.length) {
+		t.assertz(true, map.add(all[i], i));
+		for (j < all.length) {
+			var copy = Arrays.dup(all[j]);
+			t.asserti(if(j <= i, j), map[copy]);
+			if (map.has(copy) != (j <= i)) return t.fail2("after adding %d keys, key %d is wrong", i + 1, j);
+		}
+	}
+	for (i < all.length) t.assertz(true, map.remove(Arrays.dup(all[i])));
+	t.asserti(0, map.length);
+	for (i < 32) map[Strings.format1("/x/%d", i)] = i;
+	for (i < 32) t.asserti(i, map[Strings.format1("/x/%d", i)]);
+	for (key in all) t.assertz(false, map.has(key));
+	map["/"] = 99;
+	for (i < 32) t.asserti(i, map[Strings.format1("/x/%d", i)]);
+	t.asserti(99, map["/"]);
+}
+// {count} blocks of "Aa" or "BB", as bit k of {index} selects for block k.
+def blocks(count: int, index: int) -> string {
+	var b = StringBuilder.new();
+	for (k < count) b.puts(if((index >> byte.view(k)) % 2 == 1, "BB", "Aa"));
+	return b.extract();
+}
+// Keys that Strings.newMap hashes alike, below a 600-byte directory, cost the
+// map what as many ordinary keys do, in any order of insertion and removal.
+def test_colliding_keys(t: Tester) {
+	var d = Array<byte>.new(600);
+	for (i < d.length) d[i] = 'd';
+	var n = 1024, colliding = Array<string>.new(n), ordinary = Array<string>.new(n);
+	for (i < n) {
+		colliding[i] = Strings.format2("/%s/%s.v3", d, blocks(10, i));
+		ordinary[i] = Strings.format2("/%s/N%dxxxxxxxxxxxxxx.v3", d, 10000 + i);
+	}
+	var hash = Strings.hash(colliding[0]);
+	for (key in colliding) t.asserti(hash, Strings.hash(key));
+	var costs = Array<long>.new(2);
+	for (k < 2) {
+		var keys = if(k == 0, colliding, ordinary);
+		keys = Arrays.sort(keys, 0, n, ProjectFiles.before);
+		var orders = [keys, Arrays.dup(keys), Array<string>.new(n)];
+		for (i < n) orders[1][i] = keys[n - 1 - i];
+		for (i < n) orders[2][i] = keys[if(i % 2 == 0, i / 2, n - 1 - i / 2)];
+		for (order in orders) {
+			var map = OrderedStringMap<int>.new(), before = OrderedStringMaps.compares;
+			for (i < n) map[order[i]] = i;
+			for (i < n) t.asserti(i, map[order[i]]);
+			for (i < n) if (i % 2 == 0) t.assertz(true, map.remove(order[i]));
+			for (i < n) t.assertz(i % 2 == 1, map.has(order[i]));
+			t.asserti(n / 2, map.length);
+			var cost = OrderedStringMaps.compares - before;
+			// 4n operations, each within 2 log2(n + 1) + 1 comparisons.
+			t.assert(cost <= 4 * n * 21, "each operation compares O(log n) keys");
+			costs[k] += cost;
+		}
+	}
+	t.assertl(costs[1], costs[0]);
+}

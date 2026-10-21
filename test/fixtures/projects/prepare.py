@@ -295,6 +295,22 @@ for index in range(1000):
             f"component U{index:04d} {{ def get(g: Gadget) -> Widget {{ return Widget.new(); }} }}\n",
             encoding="utf-8",
         )
+# PathMapsTest analyzes programs of a main file and 256 or 512 sources whose
+# names are strings of "Aa" and "BB" blocks of one length, which all hash
+# alike, below a 400-byte prefix, and publishes their diagnostics. The last
+# source in byte order has an error.
+for count in [256, 512]:
+    program = root / "colliding-diagnostics" / str(count) / ("d" * 200) / ("d" * 200)
+    program.mkdir(parents=True, exist_ok=True)
+    (program / ".virgil-lsp.json").write_text(
+        '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}', encoding="utf-8",
+    )
+    (program / "main.v3").write_text("component Main { def m() { var x: Missing; } }\n", encoding="utf-8")
+    for index in range(count):
+        body = " var y: Absent;" if index == count - 1 else ""
+        (program / f"{blocks(9, index)}.v3").write_text(
+            f"component C{index} {{{body} }}\n", encoding="utf-8",
+        )
 (root / "rename-no-project").mkdir(exist_ok=True)
 (root / "safe").mkdir(parents=True, exist_ok=True)
 (root / "repository-root").write_text(str(Path(__file__).absolute().parents[3]), encoding="utf-8")

@@ -154,7 +154,8 @@ class ProgramAnalysis {
 	def stats: AnalysisStats;
 	def parsed: bool;	// parsing reported no errors, so verification ran
 	def verified: bool;	// parsing and verification both reported no errors
-	private def files = Strings.newMap<AnalysisFileIndex>();
+	// By path, in an ordered map; see OrderedStringMap.
+	private def files = OrderedStringMap<AnalysisFileIndex>.new();
 	// Every file's source, for the byte offsets of uses and of their
 	// declarations, which can be in other files.
 	private def sources = AnalysisSourceMaps.new();
@@ -326,7 +327,7 @@ class ProgramAnalysis {
 // which an ordinary analysis does not, so that one carries nothing for them.
 // Only a completion's analysis is one (AeneasAdapter.analyzeForScope).
 class AnalysisScopedProgram extends ProgramAnalysis {
-	private def syntax: HashMap<string, SymbolSyntaxIndex>;
+	private def syntax: OrderedStringMap<SymbolSyntaxIndex>;
 	// Null if the program did not parse.
 	private var program: Program;
 
@@ -552,7 +553,7 @@ component AeneasAdapter {
 		var compilation = Compilation.new(compiler, prog);
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
-		var syntax = if(scoped, Strings.newMap<SymbolSyntaxIndex>());
+		var syntax = if(scoped, OrderedStringMap<SymbolSyntaxIndex>.new());
 		var parseErrors = parseProgram(prog, coordinates, syntax);
 		var parsed = prog.ERROR.noErrors;
 		var t1 = System.ticksUs();
@@ -579,13 +580,13 @@ component AeneasAdapter {
 		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax);
 		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
 	}
-	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates, syntax: HashMap<string, SymbolSyntaxIndex>) -> AnalysisParseErrors {
+	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates, syntax: OrderedStringMap<SymbolSyntaxIndex>) -> AnalysisParseErrors {
 		var errors = AnalysisParseErrors.new(prog.ERROR.maxErrors);
 		prog.vst = VstModule.new();
 		var files = Vector<VstFile>.new().grow(prog.files.length);
 		for (i = 0; i < prog.files.length && errors.notTooMany; i++) {
 			var index = if(syntax != null, SymbolSyntaxIndex.new());
-			if (syntax != null && !syntax.has(prog.files[i])) syntax[prog.files[i]] = index;
+			if (syntax != null) syntax.add(prog.files[i], index);
 			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, index,
 				prog.typeCache, coordinates.capture(prog.files[i])));
 		}
