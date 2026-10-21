@@ -116,18 +116,15 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// The signature of member {decl}, whose declaration is {d}, in a class
 	// that {subst} instantiates, or null if it is {d}'s own signature or
 	// {subst} is null. A superclass's type arguments can name its subclass's
-	// type parameters, which {subst}'s outer substitution replaces in turn;
-	// each such step renders one level deeper, so that the text stays
-	// bounded by AnalysisDisplayText.MAX_DEPTH however deep the hierarchy.
+	// type parameters, which {subst}'s outer substitution replaces in turn
+	// (AnalysisTypeSubst.argument). A parameter replaced by a parameter
+	// renders nothing of its own, so only the types that the text nests count
+	// toward AnalysisDisplayText.MAX_DEPTH, however deep the hierarchy.
 	def memberSignature(d: AnalysisDeclaration, decl: Decl, subst: AnalysisTypeSubst) -> string {
 		if (subst == null) return null;
-		substParams = subst.params;
-		substArgs = subst.args;
-		AnalysisOuterSubst.current = subst.outer;
+		AnalysisMemberSubst.current = subst;
 		var text = signature(d.kind, decl.token, decl);
-		substParams = null;
-		substArgs = null;
-		AnalysisOuterSubst.current = null;
+		AnalysisMemberSubst.current = null;
 		return if(text != d.signature, text);
 	}
 	// {text}, or null if it is the text of {d}'s own type.
@@ -552,11 +549,23 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 			put(AnalysisDisplayText.UNKNOWN);
 			return;
 		}
-		if (substParams != null && TypeParamType.?(t)) {
-			var arg = substitute(TypeParamType.!(t));
-			if (arg != null) {
-				putUnsubstituted(arg, depth);
-				return;
+		if (TypeParamType.?(t)) {
+			var member = AnalysisMemberSubst.current;
+			if (member != null) {
+				// The argument renders in its place, at the same depth.
+				var arg = member.argument(TypeParamType.!(t));
+				if (arg.0 != null) {
+					AnalysisMemberSubst.current = arg.1;
+					putType(arg.0, depth);
+					AnalysisMemberSubst.current = member;
+					return;
+				}
+			} else if (substParams != null) {
+				var arg = substitute(TypeParamType.!(t));
+				if (arg != null) {
+					putUnsubstituted(arg, depth);
+					return;
+				}
 			}
 		}
 		var nested = t.nested;
@@ -615,17 +624,14 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	}
 	// Renders {t}, an argument that replaced a type parameter, without that
 	// substitution: an argument can name the parameters it replaces, as in
-	// Box<T> for T. With an outer substitution, the argument renders with
-	// that one instead, a level deeper.
+	// Box<T> for T.
 	private def putUnsubstituted(t: Type, depth: int) {
-		var params = substParams, args = substArgs, outer = AnalysisOuterSubst.current;
-		substParams = if(outer != null, outer.params);
-		substArgs = if(outer != null, outer.args);
-		AnalysisOuterSubst.current = if(outer != null, outer.outer);
-		putType(t, if(outer != null, depth + 1, depth));
+		var params = substParams, args = substArgs;
+		substParams = null;
+		substArgs = null;
+		putType(t, depth);
 		substParams = params;
 		substArgs = args;
-		AnalysisOuterSubst.current = outer;
 	}
 	private def substitute(p: TypeParamType) -> Type {
 		return argumentOf(substParams, substArgs, p);
@@ -663,14 +669,16 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// parameter. A substituted type parameter renders as its argument.
 	private def isFunction(t: Type) -> bool {
 		t = resolve(t, 0);
-		var params = substParams, args = substArgs, outer = AnalysisOuterSubst.current;
-		for (i = 0; i < AnalysisDisplayText.MAX_DEPTH && params != null && TypeParamType.?(t); i++) {
-			var arg = argumentOf(params, args, TypeParamType.!(t));
-			if (arg == null) break;
-			t = resolve(arg, 0);
-			params = if(outer != null, outer.params);
-			args = if(outer != null, outer.args);
-			outer = if(outer != null, outer.outer);
+		var member = AnalysisMemberSubst.current;
+		for (i = 0; i < AnalysisDisplayText.MAX_DEPTH && member != null && TypeParamType.?(t); i++) {
+			var arg = member.argument(TypeParamType.!(t));
+			if (arg.0 == null) break;
+			t = resolve(arg.0, 0);
+			member = arg.1;
+		}
+		if (substParams != null && TypeParamType.?(t)) {
+			var arg = argumentOf(substParams, substArgs, TypeParamType.!(t));
+			if (arg != null) t = resolve(arg, 0);
 		}
 		return t != null && Function_TypeCon.?(t.typeCon);
 	}
@@ -692,12 +700,14 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	}
 }
 
-// The substitution that a substituted type argument renders with, for a
-// member of a superclass (AnalysisDisplay.memberSignature), or null. It is
-// kept here, not in the display, which every analysis makes, so that an
-// ordinary analysis's display is no larger; only one member renders at a time.
-component AnalysisOuterSubst {
+// The substitution that a member of an instantiated class renders with
+// (AnalysisDisplay.memberSignature), or null, and the steps that its lookups
+// took, for tests. It is kept here, not in the display, which every analysis
+// makes, so that an ordinary analysis's display is no larger; only one member
+// renders at a time.
+component AnalysisMemberSubst {
 	var current: AnalysisTypeSubst;
+	var steps: int;
 }
 
 def hashType(t: Type) -> int {

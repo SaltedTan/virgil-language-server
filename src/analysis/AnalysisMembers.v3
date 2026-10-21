@@ -131,7 +131,78 @@ component AnalysisMemberModes {
 // its type parameters {params}, {args}, which may name the type parameters of
 // {outer}'s class, which instantiates them in turn, as a superclass's
 // arguments name its subclass's parameters (see AnalysisDisplay.memberSignature).
-class AnalysisTypeSubst(params: List<TypeParamType>, args: List<Type>, outer: AnalysisTypeSubst) { }
+// A parameter is found by its index, as TypeArgs.substituteTypeParam finds
+// it: a TypeEnv numbers its compound's type parameters in order. Each
+// argument is resolved through the outer substitutions once, when a member
+// first needs it, so that each class of a hierarchy adds its parameters once
+// to the work of the members' details, however many members name them.
+class AnalysisTypeSubst(params: List<TypeParamType>, args: List<Type>, outer: AnalysisTypeSubst) {
+	private var paramArray: Array<TypeParamType>;
+	private var argArray: Array<Type>;
+	// By index, whether the argument is resolved, and if it is, the type that
+	// it resolved to and the substitution that type renders with.
+	private var done: Array<bool>;
+	private var resolved: Array<Type>;
+	private var contexts: Array<AnalysisTypeSubst>;
+
+	// The argument that replaces {p}, and the substitution that it renders
+	// with, or (null, null) if {p} is not one of {params}. An argument that
+	// is a parameter of {outer}'s class is replaced by its argument there, in
+	// turn, so that a type parameter passed up a hierarchy unchanged renders
+	// as the argument that instantiates it, at no depth of its own.
+	def argument(p: TypeParamType) -> (Type, AnalysisTypeSubst) {
+		var i = indexOf(p);
+		if (i < 0) return (null, null);
+		if (!done[i]) resolveAt(i);
+		return (resolved[i], contexts[i]);
+	}
+	private def indexOf(p: TypeParamType) -> int {
+		AnalysisMemberSubst.steps++;
+		if (paramArray == null) {
+			var n = Ints.min(Lists.length(params), Lists.length(args));
+			paramArray = Array<TypeParamType>.new(n);
+			argArray = Array<Type>.new(n);
+			done = Array<bool>.new(n);
+			resolved = Array<Type>.new(n);
+			contexts = Array<AnalysisTypeSubst>.new(n);
+			var a = args, k = 0;
+			for (l = params; l != null && a != null; (l = l.tail, a = a.tail, k++)) {
+				AnalysisMemberSubst.steps++;
+				paramArray[k] = l.head;
+				argArray[k] = a.head;
+			}
+		}
+		var i = p.index;
+		return if(i >= 0 && i < paramArray.length && paramArray[i] == p, i, -1);
+	}
+	// Follows the argument at {i} out through the substitutions while it is
+	// a parameter of the next one, then records where it ends at each step.
+	private def resolveAt(i: int) {
+		var path: List<(AnalysisTypeSubst, int)>, s = this, j = i;
+		var t: Type, context: AnalysisTypeSubst;
+		while (true) {
+			if (s.done[j]) {
+				t = s.resolved[j];
+				context = s.contexts[j];
+				break;
+			}
+			path = List.new((s, j), path);
+			t = s.argArray[j];
+			context = s.outer;
+			var k = if(context != null && TypeParamType.?(t), context.indexOf(TypeParamType.!(t)), -1);
+			if (k < 0) break;
+			s = context;
+			j = k;
+		}
+		for (l = path; l != null; l = l.tail) {
+			AnalysisMemberSubst.steps++;
+			var at = l.head.0, k = l.head.1;
+			at.done[k] = true;
+			at.resolved[k] = t;
+			at.contexts[k] = context;
+		}
+	}
+}
 
 // The members that the verifier resolves after "." in member expression {e}
 // of the file {fileName}, given its receiver as verification bound and typed
@@ -139,12 +210,14 @@ class AnalysisTypeSubst(params: List<TypeParamType>, args: List<Type>, outer: An
 // "int.max", where the receiver names a type, a variant's case, an enum's
 // case, a layout, or a layout's field, and otherwise the members of a value
 // of the receiver's type (MethodEnv.lookupExprMember). An unknown or
-// erroneous receiver type has none. Each class of a hierarchy is read once,
-// nearest first, and a member hides those of its name further up, as
-// MethodEnv.resolveClassMember stops at the first that it can access. Names
-// are deduplicated in AA trees (OrderedStringSet), not in a compound's member
-// map: a map with colliding names scans their chain for each lookup. See
-// docs/architecture.md#member-completion.
+// erroneous receiver type has none, and so has a receiver that verification
+// did not reach, as in the arguments of a call whose callee does not
+// resolve, which TypeChecker.visitApp skips: it is unbound and untyped. Each
+// class of a hierarchy is read once, nearest first, and a member hides those
+// of its name further up, as MethodEnv.resolveClassMember stops at the first
+// that it can access. Names are deduplicated in AA trees (OrderedStringSet),
+// not in a compound's member map: a map with colliding names scans their
+// chain for each lookup. See docs/architecture.md#member-completion.
 class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: HashMap<string, VstLayout>) {
 	// The names offered or hidden so far, nearest first.
 	private def names = OrderedStringSet.new();
@@ -153,17 +226,24 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 	private def kinds = Vector<AnalysisDeclKind>.new();
 	private def details = Vector<string>.new();
 	private def levels = Vector<int>.new();
+	// The declaration and substitution that a detail left null renders with,
+	// once the candidate is kept.
+	private def syntax = Vector<Decl>.new();
+	private def substs = Vector<AnalysisTypeSubst>.new();
 	private var steps: int;
 	private var compares: long;
 
-	def find(e: VarExpr, prefix: string) -> AnalysisMemberAnswer {
+	// {use} is the member expression whose receiver {e} is, if any.
+	def find(e: VarExpr, use: VarExpr, prefix: string) -> AnalysisMemberAnswer {
+		AnalysisMemberSubst.steps = 0;
 		var r = e.expr;
 		if (VarExpr.?(r)) {
 			var v = VarExpr.!(r);
 			match (v.varbind) {
-				// An unresolved name, or a layout or its field (see layoutOf);
-				// and "void", which has only operators.
-				None => {
+				// An unresolved name, or a layout or its field (see layoutOf),
+				// where verification looked {e} up; and "void", which has
+				// only operators.
+				None => if (lookedUp(e) || lookedUp(use)) {
 					var l = layoutOf(v);
 					if (l.0 != null) {
 						builtins(AnalysisMemberReceiver.LAYOUT, null);
@@ -184,6 +264,17 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		return answer(prefix);
 	}
 
+	// Whether verification looked up {v}, a member expression: it bound it,
+	// as lookupLayoutMember binds "L.size", or typed it, as typeCheckExpr
+	// types each expression that it checks, an unresolved member included.
+	// Looking up a member looks up its receiver first, so the receiver of a
+	// member that verification looked up was looked up too; a receiver that it
+	// left unbound then is a layout, a layout's field, or an unresolved name.
+	// Where it did not, nothing shows which: a layout's name could name a
+	// local there.
+	private def lookedUp(v: VarExpr) -> bool {
+		return v != null && (v.varbind.ok() || v.exactType != null);
+	}
 	// The layout that {v} names, as in "L.", or its field, as in "L.f.":
 	// MethodEnv.lookupVar returns a layout, and lookupLayoutMember a layout's
 	// field, without binding the expression, so verification leaves it
@@ -470,17 +561,22 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		kinds.put(kind);
 		details.put(detail);
 		levels.put(0);
+		syntax.put(null);
+		substs.put(null);
 	}
 	// Declaration {decl} of {kind} at {level}, with {detail}, or, if that is
-	// null, its signature with {subst}'s type arguments where those change it.
+	// null, its signature with {subst}'s type arguments where those change it,
+	// which answer renders if it keeps the candidate.
 	private def member(kind: AnalysisDeclKind, decl: Decl, subst: AnalysisTypeSubst, detail: string, level: int) {
 		var d = display.declaration(kind, decl.token, decl, null);
 		if (d == null) return;
 		found.put(d);
 		labels.put(d.name);
 		kinds.put(kind);
-		details.put(if(detail != null, detail, display.memberSignature(d, decl, subst)));
+		details.put(detail);
 		levels.put(level);
+		syntax.put(decl);
+		substs.put(if(detail == null, subst));
 	}
 	// Sorts the candidates, and caps them as AnalysisScopeFinder does: past
 	// the cap, only those that start with {prefix} are kept, up to it.
@@ -504,10 +600,10 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 			a.declarations[i] = found[k];
 			a.names[i] = labels[k];
 			a.kinds[i] = kinds[k];
-			a.details[i] = details[k];
+			a.details[i] = if(substs[k] != null, display.memberSignature(found[k], syntax[k], substs[k]), details[k]);
 			a.levels[i] = levels[k];
 		}
-		a.steps = steps;
+		a.steps = steps + AnalysisMemberSubst.steps;
 		a.nameComparisons = compares + names.compares;
 		return a;
 	}

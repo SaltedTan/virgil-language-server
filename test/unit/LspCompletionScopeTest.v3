@@ -38,6 +38,7 @@ def X = [
 	T("LspCompletionMembers:repairs", test_members_repairs),
 	T("LspCompletionMembers:no_analysis", test_members_no_analysis),
 	T("LspCompletionMembers:receivers", test_members_receivers),
+	T("LspCompletionMembers:unvisited_arguments", test_members_unvisited_arguments),
 	T("LspCompletionMembers:malformed", test_members_malformed),
 	()
 ];
@@ -757,6 +758,27 @@ def test_members_receivers(t: Tester) {
 	var analyses = s.server.completion.analyses;
 	t.assert_string("| 0", render(t, s.result(t, request(t, s, inScale(Arrays.concat(pair, "\t\tvar x = p.0.$"))))));
 	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+// In the arguments of a call whose callee does not resolve, which
+// verification skips, a layout's name gets nothing, repaired or as typed:
+// a local there could shadow it. The same in a call that resolves gets the
+// layout's members, or none where a local shadows it.
+def test_members_unvisited_arguments(t: Tester) {
+	var s = session(t);
+	var pixel = "layout Pixel {\n\t+0 v: u32;\n\t=4;\n}\n";
+	var local = "\t\tvar Pixel = 1;\n";
+	for (c in [
+		("missing(Pixel.$", "| 0"),
+		("missing(Pixel.$size);", "| 0"),
+		("missing(Pixel.v.$offset);", "| 0"),
+		("scale(Pixel.$", "size v | 0"),
+		("scale(Pixel.$size);", "size v | 0"),
+		("scale(Pixel.v.$offset);", "offset | 0")
+	]) {
+		t.assert_string(c.1, complete(t, s, Arrays.concat(inScale(Arrays.concat("\t\t", c.0)), pixel)));
+		t.assert_string("| 0", complete(t, s, Arrays.concat(inScale(Strings.format2("%s\t\t%s", local, c.0)), pixel)));
+	}
 	s.server.close();
 }
 // A malformed member answer is rejected, and the completion gets nothing.

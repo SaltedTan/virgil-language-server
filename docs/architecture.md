@@ -617,7 +617,11 @@ Its binding and type are the ones verification gave it (`TypeChecker.lookupBindi
   - A member private to another file is not offered, and doesn't hide one further up (`canAccessMember`).
   - With `-lang:descriptors`, a class that has a descriptor also offers its root's `descriptor` field (`VstDescriptorField`).
   - A class type, `C.`, also offers its own constructor `new`, if accessible (`lookupClassTypeMember`), never a superclass's.
-- **Generic receivers.** A member's detail is its signature with the receiver's type arguments substituted, through each superclass's arguments. For a `List<int>`, the field reads `head: int`. `AnalysisDisplay.memberSignature` renders it with a chain of display substitutions, and creates no types after the analysis's type cache is released.
+- **Generic receivers.** A member's detail is its signature with the receiver's type arguments substituted, through each superclass's arguments. For a `List<int>`, the field reads `head: int`. `AnalysisDisplay.memberSignature` renders it with a chain of substitutions (`AnalysisTypeSubst`), one per class, and creates no types after the analysis's type cache is released.
+  - A type parameter is found by its index, as `TypeArgs.substituteTypeParam` finds it, not by a search of its class's parameters.
+  - A superclass's argument that is its subclass's parameter, as in `class C1<T> extends C0<T>`, is replaced by the subclass's argument in turn. Each argument is resolved through the chain once, when a member first needs it.
+  - Such a replacement renders nothing of its own, so it doesn't count toward the [display depth](#display-text): `C0`'s `var x: T` reads `var x: int` for a `C20<int>` twenty classes below it. Types that the text really nests still stop at 12 levels and 256 bytes.
+  - Details are rendered only for the members kept under the cap.
 - **A component, `K.`, and `this` in a component.** Its fields and methods (`lookupComponentMember`).
 - **Variants.**
   - A variant value: its fields, methods, `tag`, and `name` (`lookupVariantExprMember`).
@@ -633,7 +637,8 @@ Its binding and type are the ones verification gave it (`TypeChecker.lookupBindi
   - A `Ref<L>` value: the layout's fields (`lookupRefExprMember`). The type `Ref<L>.` adds `at` and `of` (`lookupRefTypeMember`).
   - A layout, `L.`: `size` and its fields (`lookupLayoutMember`). The builtin `size` hides a field of that name.
   - A layout's field, `L.f.`: `offset` (`lookupLayoutFieldMember`).
-  - Verification leaves `L` and `L.f` unbound (`lookupVar` and `lookupLayoutMember` return without binding them). So the query resolves such a receiver to the program's layout of that name, and the layout's field of that name.
+  - Verification leaves `L` and `L.f` unbound (`lookupVar` and `lookupLayoutMember` return without binding them), as it leaves a name that it never looked up, such as one in the arguments of a call whose callee doesn't resolve (`TypeChecker.visitApp` skips them). So the query first requires evidence that verification looked up the member expression after the receiver, which looks up the receiver first: a binding, as `lookupLayoutMember` binds `L.size`, or a type, as `typeCheckExpr` types each expression it checks, unresolved members included. The member that uses it, as `L.f.offset` uses `L.f`, counts too. Only then does the query resolve the receiver to the program's layout of that name, and the layout's field of that name. Without that evidence there are no members, since a local there could shadow the layout's name.
+  - The other receivers need a binding or a type that verification recorded, so a receiver that verification skipped has none.
 - **Tuples.** The elements `0` to `n-1`, each with its type, and `last` (`lookupTupleExprMember`).
 - **Arrays and ranges.** A value offers `length`. The type `Array<T>.` offers `length` and `new`, and `Range<T>.` offers `length` (`lookupArrayTypeMember`, `lookupRangeTypeMember`, and their value counterparts).
 - **Builtin types.** The integer, float, and type-parameter types' members, from the list below. `System.` offers its calls (`System_TypeCon`, `SystemCalls`).
@@ -678,6 +683,7 @@ There are at most 1,000 members (`AnalysisScopeOrder.MAX_DECLARATIONS`). Past th
 **Performance checks.** The member query's work is linear in the code that it walks and the members that it emits, or n log n in the names that it keeps:
 
 - each class of a hierarchy is read once, nearest first, and the walk stops if a class repeats;
+- a type parameter is substituted by its index, and each argument is resolved through the superclasses once;
 - names are deduplicated in AA trees (`OrderedStringSet`), never in a compound's member map or a `Strings.newMap`;
 - the walk to the receiver uses the finder's own extents, never an Aeneas `range()` per node.
 
@@ -686,6 +692,7 @@ There are at most 1,000 members (`AnalysisScopeOrder.MAX_DECLARATIONS`). Past th
 - a class's members;
 - members whose names collide in `Strings.newMap`'s hash;
 - an inheritance chain, and a generic one;
+- a class with many type parameters, whose fields' details each substitute one, where the steps include each substitution's lookups;
 - a receiver chain `n.next.next...`, queried after its last link and after its first;
 - same-named members of many unrelated classes.
 
@@ -694,6 +701,8 @@ Each of these mutations fails it:
 | Mutation | Result |
 | --- | --- |
 | A rescan of the lower levels at each level | 544,514 steps at 600 classes, against 137,264 at 300 |
+| A search of the class's type parameters for each substitution | 644,020 steps at 800 type parameters, against 162,020 at 400 |
+| A walk up the superclasses' arguments for each substitution | 164,414 steps at 400 generic classes, against 42,214 at 200 |
 | A rescan of the earlier members for each member | 8,016,016 against 2,008,016 |
 | A `range()` per member expression | 183,325 against 46,675 for the first link |
 | Hash maps in place of the name sets | no comparisons |
@@ -713,18 +722,20 @@ These were measured on an Intel Core i7-14700KF with the default heaps and a thr
 - A member's `detail` shows types as verification resolved them, so a `string` is `Array<byte>`.
 - Members come only from code that verification typed. A receiver after a syntax error elsewhere, or after the error limit, gets an empty list, as do the [repair's limits](#names).
 - An integer value, such as `x.` for an `x: int`, has no members: the integer members belong to the type.
+- A receiver in the arguments of a call whose callee doesn't resolve, such as a function still to be written, gets an empty list: verification skips them.
+- A layout's field used as a value, as in `L.f` with the cursor before `f`, gets an empty list: verification leaves no trace of looking it up, and refuses it. `L.` itself, `L.size`, and `L.f.offset` get the layout's members.
 
 [AnalysisMembersTest](../test/unit/AnalysisMembersTest.v3) checks the member query's exact candidates, order, levels, and details in process. It covers:
 
 - classes, with inheritance, overrides, and privacy across two files;
-- generic classes and methods, and components;
+- generic classes and methods, generic hierarchies 1 to 20 classes deep, and components;
 - variants on the type, on values, and on cases, and data types;
 - enums and enum sets, layouts through `Ref`, tuples, arrays, and ranges;
 - every builtin member, and `System`;
 - `this.` and descriptors;
 - type-name receivers, and calls, indexes, parentheses, and chains as receivers;
 - unknown and erroneous receivers, cursor positions, and incomplete code;
-- a cursor that verification didn't reach, the cap, kinds and details, and scaling.
+- a cursor that verification didn't reach, receivers in the arguments of a call whose callee doesn't resolve, the cap, kinds and details, and scaling.
 
 For each candidate set, it substitutes every offered member and a sample of others at the cursor, and requires the program to verify exactly when the member is offered. Other tests cover the server and the wire:
 
@@ -733,6 +744,7 @@ For each candidate set, it substitutes every offered member and a sample of othe
   - a repair that doesn't parse;
   - a `.` in a comment, a string, or after a decimal or hexadecimal number, which is answered at once with no analysis;
   - an `int` value, an unknown name, a string literal, and `this` as receivers;
+  - a layout's name in the arguments of a call whose callee doesn't resolve, and of one that does, with and without a local of its name;
   - a malformed member answer from the unit-test executable as worker.
 - [AnalysisWireTest](../test/unit/AnalysisWireTest.v3) checks the member query and answer on the wire, each malformed answer, and their charge.
 - The [member completion transcript](../test/diagnostics/member-completion.jsonl) runs member requests in an unsaved file of a project: as typed, on a component's name, repaired after the `.` and after a partial name, and in a comment.

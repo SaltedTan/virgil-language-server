@@ -70,6 +70,9 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// offset follows, once the walk has found it; the walk then stops.
 	private var memberQuery: bool;
 	private var memberExpr: VarExpr;
+	// The member expression whose receiver memberExpr is, as "L.f.offset" is
+	// for "L.f", if any.
+	private var memberUse: VarExpr;
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
@@ -135,7 +138,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		memberQuery = true;
 		locate();
 		if (!reached() || memberExpr == null) return null;
-		var answer = AnalysisMemberLookup.new(display, file.fileName, prog.layouts).find(memberExpr, prefix);
+		var answer = AnalysisMemberLookup.new(display, file.fileName, prog.layouts).find(memberExpr, memberUse, prefix);
 		answer.steps += steps;
 		return answer;
 	}
@@ -606,6 +609,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			}
 		}
 		walk(e.expr);
+		if (memberExpr != null && memberExpr == e.expr && memberUse == null) memberUse = e;
 	}
 	def visitLiteral(e: Literal, env: void) { }
 	def visitString(e: StringExpr, env: void) { }

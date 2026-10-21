@@ -27,7 +27,8 @@ After a `.`, completion suggests the members that the type checker would accept 
 
 - **After a number.** A `.` after a number, as in `1.` or a tuple element's `t.0.`, gets nothing, because the server can't tell it from a number such as `1.5` being typed. Write `(t.0).` to get the element's members.
 - **Unknown receivers.** A receiver whose type the type checker couldn't work out, such as a misspelled name or a call to a method that doesn't exist, gets nothing.
-- **Unreached code.** Code that the type checker didn't reach before its error limit gets nothing, as with names.
+- **Unreached code.** Code that the type checker didn't reach before its error limit gets nothing, as with names. Neither do the arguments of a call to a function that doesn't exist yet, as in `missing(a.`: the type checker skips them.
+- **Layout fields as values.** With the cursor before an existing layout field's name, as in `L.f` used as a value, nothing is suggested, because the type checker records nothing there that shows it looked up the layout. `L.`, `L.size`, and `L.f.offset` suggest the layout's members.
 - **Integer values.** A value of an integer type, such as `x.` for an `x: int`, has no members to suggest. `int.max`, `int.view`, and the other integer members belong to the type, so `int.` suggests them.
 - **Type positions.** Where a type goes, as in `var s: Flag.` before `set`, nothing is suggested; members are suggested only in expressions.
 - **Operators.** Casts, queries, comparisons, and index methods, such as `int.!`, `int.?`, `==`, and `[]`, are written with symbols, not names, so they aren't suggested.

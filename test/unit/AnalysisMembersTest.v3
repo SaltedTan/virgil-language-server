@@ -11,6 +11,7 @@ def X = [
 	T("AnalysisMembers:classes", test_classes),
 	T("AnalysisMembers:inheritance_and_privacy", test_inheritance_and_privacy),
 	T("AnalysisMembers:generics", test_generics),
+	T("AnalysisMembers:deep_generics", test_deep_generics),
 	T("AnalysisMembers:components", test_components),
 	T("AnalysisMembers:variants", test_variants),
 	T("AnalysisMembers:enums", test_enums),
@@ -29,6 +30,7 @@ def X = [
 	T("AnalysisMembers:positions", test_positions),
 	T("AnalysisMembers:incomplete", test_incomplete),
 	T("AnalysisMembers:unreached", test_unreached),
+	T("AnalysisMembers:unvisited_arguments", test_unvisited_arguments),
 	T("AnalysisMembers:cap", test_cap),
 	T("AnalysisMembers:kinds_and_details", test_kinds_and_details),
 	T("AnalysisMembers:scaling", test_scaling),
@@ -230,6 +232,39 @@ def test_generics(t: Tester) {
 }
 // A component's fields and methods, through its name; private ones only in
 // its file.
+// A chain of {edges} superclasses above C{edges}, which passes {arg} for T
+// in turn, where "T" stands for each class's own parameter; C0 declares x: T.
+def genericChain(edges: int, arg: string) -> string {
+	var b = StringBuilder.new().puts("class B<T> { }\nclass C0<T> { var x: T; }\n");
+	for (i = 1; i <= edges; i++) b.put3("class C%d<T> extends C%d<%s> { }\n", i, i - 1, arg);
+	return b.put1("def f(c: C%d<int>) { var y = c.$x; }\n", edges).toString();
+}
+// A type parameter passed up a hierarchy unchanged renders as its argument
+// however many classes it passes through; a type that each class nests
+// further still renders to AnalysisDisplayText.MAX_DEPTH, and to MAX_BYTES.
+def test_deep_generics(t: Tester) {
+	for (edges in [1, 11, 12, 13, 20]) {
+		var text = genericChain(edges, "T");
+		check(t, text, Strings.format1("x/%d", edges));
+		checkDescribed(t, text, "x FIELD var x: int\n");
+	}
+	var b = StringBuilder.new();
+	for (i < 11) b.puts("B<");
+	b.puts("int");
+	for (i < 11) b.puts(">");
+	checkDescribed(t, genericChain(11, "B<T>"), Strings.format1("x FIELD var x: %s\n", b.toString()));
+	// Twelve levels of B, where the twelfth argument is elided.
+	b.reset();
+	for (i < 12) b.puts("B<");
+	b.puts(AnalysisDisplayText.ELISION);
+	for (i < 12) b.puts(">");
+	var nested = Strings.format1("x FIELD var x: %s\n", b.toString());
+	checkDescribed(t, genericChain(12, "B<T>"), nested);
+	checkDescribed(t, genericChain(20, "B<T>"), nested);
+	var wide = described(genericChain(6, "(T, T, T, T)"));
+	t.assert(wide != null && wide.length <= "x FIELD ".length + AnalysisDisplayText.MAX_BYTES + 1, wide);
+	t.assert(Strings.endsWith(wide, Arrays.concat(AnalysisDisplayText.ELISION, "\n")), wide);
+}
 def test_components(t: Tester) {
 	var other = "component K {\n\tdef count = 1;\n\tvar items: Array<int>;\n\tprivate def secret() { }\n\tdef add(i: int) { }\n}\n";
 	checkIn(t, [(MAIN, "def f() { K.$add(1); }\n"), ("other.v3", other)], "count/0 items/0 add/0");
@@ -563,6 +598,40 @@ def test_unreached(t: Tester) {
 	var plain = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, "def f(s: string) { s.length; }")], [], false);
 	t.assert(plain.membersAt(MAIN, 21, "") == null, "no members from an ordinary analysis");
 }
+// Verification skips the arguments of a call whose callee does not resolve
+// (TypeChecker.visitApp), and binds and types nothing there, so a receiver
+// there has no members: not a layout's of its name, which a local there can
+// shadow, nor those of a type it names. The same receivers in a call that
+// resolves have theirs.
+def test_unvisited_arguments(t: Tester) {
+	var head = Strings.format3("%s%s%s", LAYOUT, CLASSES, VARIANT);
+	head = Strings.format2("%senum Color { RED }\ncomponent K { def x = 1; }\n%s", head, "def g<A>(a: A) { }\n");
+	for (c in [
+		("Header.$virgilLspCursor", "kind/0 size/0", "Header"),
+		("Header.$size", "kind/0 size/0", "Header"),
+		("Header.kind.$virgilLspCursor", "offset/0", "Header"),
+		("Header.kind.$offset", "offset/0", "Header"),
+		("Color.$RED", "count/0 name/0 tag/0 RED/0 set/0", "Color"),
+		("Expr.$Zero", "name/0 tag/0 eval/0 Neg/0 Num/0 Zero/0", "Expr"),
+		("Square.$new", "edge/0 area/0 new/0 name/1 sides/1 describe/1", "Square"),
+		("K.$x", "x/0", "K"),
+		("int.$max", "max/0 min/0 pack/0 truncd/0 truncf/0 unpack/0 view/0", null)
+	]) {
+		var shadow = if(c.2 != null, Strings.format1("var %s = 1; ", c.2), "");
+		// A local named as the layout shadows it where verification looks.
+		var resolved = Strings.format2("%sdef f() { g(%s); }\n", head, c.0);
+		t.assert_string(c.1, render(membersAny(resolved)));
+		t.assert_string("", render(membersAny(Strings.format2("%sdef f() { missing(%s); }\n", head, c.0))));
+		t.assert_string("", render(membersAny(Strings.format3("%sdef f() { %smissing(%s); }\n", head, shadow, c.0))));
+		if (c.2 != null) t.assert_string("", render(membersAny(Strings.format3("%sdef f() { %sg(%s); }\n", head, shadow, c.0))));
+	}
+	// The member that uses a layout's field shows that it was looked up. A
+	// field used as a value, which verification refuses, shows nothing, and
+	// gets nothing.
+	check(t, Arrays.concat(LAYOUT, "def f() { var x = Header.$kind.offset; }\n"), "kind/0 size/0");
+	t.assert_string("", render(membersAny(Arrays.concat(LAYOUT, "def h(i: int) { }\ndef f() { h(Header.$kind); }\n"))));
+	t.assert_string("", render(membersAny(Arrays.concat(LAYOUT, "def f() { missing(Header.$kind.offset); }\n"))));
+}
 // Past the cap, only the members that start with the prefix, up to it.
 def test_cap(t: Tester) {
 	var b = StringBuilder.new().puts("class C {\n");
@@ -617,6 +686,7 @@ def test_scaling(t: Tester) {
 	scales(t, "colliding member names", 500, classCost(t, 500, true), classCost(t, 1000, true));
 	scales(t, "an inheritance chain", 300, chainCost(t, 300, false), chainCost(t, 600, false));
 	scales(t, "a generic inheritance chain", 200, chainCost(t, 200, true), chainCost(t, 400, true));
+	scales(t, "a wide generic class", 400, wideCost(t, 400), wideCost(t, 800));
 	scales(t, "a receiver chain", 300, receiverCost(t, 300, false), receiverCost(t, 600, false));
 	scales(t, "a chain's first link", 300, receiverCost(t, 300, true), receiverCost(t, 600, true));
 	scales(t, "same-named members of unrelated types", 1000, unrelatedCost(t, 1000), unrelatedCost(t, 2000));
@@ -669,6 +739,19 @@ def chainCost(t: Tester, n: int, generic: bool) -> (int, long, long) {
 	}
 	b.put1("def f(c: C%d", n - 1).puts(if(generic, "<int>", "")).puts(") { c.$f0 = c.f0; }\n");
 	return cost(t, b.toString(), "f0", Strings.format1("%d classes", n));
+}
+// A class of {n} type parameters and {n} fields, each typed by the last
+// parameter, instantiated with {n} arguments: each field's detail
+// substitutes it.
+def wideCost(t: Tester, n: int) -> (int, long, long) {
+	var b = StringBuilder.new().puts("class C<");
+	for (i < n) b.put1("%sT", if(i > 0, ", ", "")).putd(i);
+	b.puts("> {\n");
+	for (i < n) b.put2("\tvar f%d: T%d;\n", i, n - 1);
+	b.puts("}\ndef f(c: C<");
+	for (i < n) b.puts(if(i > 0, ", int", "int"));
+	b.puts(">) { var x = c.$f0; }\n");
+	return cost(t, b.toString(), "f0", Strings.format1("%d type parameters", n));
 }
 // A receiver chain of {n} links, n.next.next..., queried after its last
 // link, or, if {first}, after its first, which the walk reaches through all
