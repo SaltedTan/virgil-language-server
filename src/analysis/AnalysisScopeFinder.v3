@@ -398,21 +398,18 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// lambda's for the variables it {captures}. Those are the last: MethodEnv.
 	// lookupVar numbers each capture's parameter after the declared ones,
 	// which TypeChecker.enterFunc numbers from 1, and TypeChecker.
-	// visitFunExpr rebuilds the list in that order.
+	// visitFunExpr rebuilds the list in that order. lookupVar names each
+	// with the token of a use in the lambda's body, after the header that
+	// holds the declared ones, so the walk stops at the first and reads no
+	// other capture: nested lambdas that capture the same variables read
+	// only their own parameters.
 	private def params(list: VstList<ParamDecl>, captures: List<(ParamDecl, VarBinding.Local)>) {
 		if (list == null) return;
-		var declared = 0;
+		var header = rangeEnd(list.src);
 		for (l = list.list; l != null; l = l.tail) {
 			steps++;
-			declared++;
-		}
-		for (c = captures; c != null; c = c.tail) {
-			steps++;
-			declared--;
-		}
-		for (l = list.list; l != null && declared > 0; l = l.tail) {
+			if (captures != null && tokenBegin(l.head.token) > header) return;
 			bind(l.head);
-			declared--;
 		}
 	}
 	// Enters a branch, which has a scope of its own (typeCheckStmtWithNewScope).
