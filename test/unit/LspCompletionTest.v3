@@ -256,11 +256,13 @@ def test_member_after_dot(t: Tester) {
 
 def test_operator_members(t: Tester) {
 	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
-	// Every operator member name that Parser.addMemberSuffix accepts is one
-	// complete operand, so no expression keyword is offered after it.
+	// Every operator member name that Parser.addMemberSuffix reads is one
+	// complete operand, so no expression keyword is offered after it. An
+	// operator and its "=" are one token even where the compound is illegal,
+	// as Parser.parseInfix reads "===".
 	var ops = ["!", "?", "~", "==", "!=", "||", "|", "&&", "&", "<=", "<<", "<<=", "<",
 		">=", ">>", ">>=", ">>>", ">>>=", ">", "+", "+=", "-", "-=", "*", "*=", "/", "/=",
-		"%", "%=", "^", "^=", "[]", "[]="];
+		"%", "%=", "^", "^=", "[]", "[]=", "===", "!==", "<==", ">=="];
 	for (op in ops) {
 		var after = Strings.format1("def f() { g(int.%s $) }", op);
 		checkOffered(t, after, "");
@@ -270,7 +272,33 @@ def test_operator_members(t: Tester) {
 	// operand that a missing ";" leaves unseparated.
 	checkSyntax(t, "def f() { int.==\n\t$ }", STMT);
 	checkOffered(t, "def f() { int.==\n\t$ }", "break continue def false for fun if match null return true var while");
-	// "!" and "?" may take adjacent type arguments, which stay in the member.
+	// "||" and "&&" end before "=", as Parser.parseInfix returns them at
+	// once; the "=" is the assignment, after which an expression starts.
+	for (op in ["||", "&&"]) {
+		var marked = Strings.format1("def f() { bool.%s= $; }", op);
+		checkOffered(t, marked, "false fun if null true");
+		checkSyntax(t, marked, LspCursorSyntax.EXPRESSION);
+		var c = at(marked);
+		t.asserta("logical assignment", [LspOpenRole.STATEMENTS], c.roles, putRole);
+	}
+	checkSyntax(t, "def f() { bool.||=$ }", LspCursorSyntax.EXPRESSION);
+	checkSyntax(t, "def f() { bool.&&=$ }", LspCursorSyntax.EXPRESSION);
+	// "!" and "?" may take adjacent type arguments, which open a TYPE_ARGS
+	// delimiter of their own as after a type's name: the member is just the
+	// one-byte name, and the type arguments are an ordinary type position.
+	checkPrefix(t, "def f() { var y = Child.!<It$em>(x); }", "It");
+	checkSyntax(t, "def f() { var y = Child.!<It$em>(x); }", LspCursorSyntax.TYPE);
+	var ctx = at("def f() { var y = Child.!<It$em>(x); }");
+	t.asserta("operator type arguments", [LspOpenRole.STATEMENTS, LspOpenRole.TYPE_ARGS], ctx.roles, putRole);
+	checkSyntax(t, "def f() { var y = Child.!<$", LspCursorSyntax.TYPE);
+	checkPlace(t, "def f() { var y = Child.!</* $ */ int>(x); }", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "def f() { var y = Child.?</* $ */ int>(x); }", LspCursorPlace.BLOCK_COMMENT);
+	var repaired = LspCompletionRepair.repair(at("def f() { var x = int.!<$ }"));
+	t.asserti(0, AeneasAdapter.parseFile("Repair.v3", repaired, []).diagnostics.length);
+	// Only a one-byte "!" or "?" takes type arguments, and only when "<" is
+	// adjacent, as Parser.addMemberSuffix checks with peek(1).
+	checkSyntax(t, "def f() { x = int.! < $; }", LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+	checkSyntax(t, "def f() { x = int.!=<$", LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
 	checkOffered(t, "def f() { g(V.Case.!<int> $) }", "");
 	checkSyntax(t, "def f() { g(V.Case.!<int> $) }", 0);
 	checkCalls(t, "def f() { V.Case.!<int>( $) }", [23]);

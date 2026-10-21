@@ -15,6 +15,7 @@ def X = [
 	T("LspCompletionScope:shadowed_this", test_shadowed_this),
 	T("LspCompletionScope:repairs", test_repairs),
 	T("LspCompletionScope:positions", test_positions),
+	T("LspCompletionScope:operator_type_arguments", test_operator_type_arguments),
 	T("LspCompletionScope:unrepaired", test_unrepaired),
 	T("LspCompletionScope:cap", test_cap),
 	T("LspCompletionScope:reuse", test_reuse),
@@ -299,6 +300,18 @@ def test_positions(t: Tester) {
 		complete(t, s, before(MAIN, paint, "\tdef run() {\n\t\t$\n\t}")));
 	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, before(MAIN, "\tdef grow() { }", "\tdef run() {\n\t\t$\n\t}")));
+	s.server.close();
+}
+
+// An operator member's adjacent type arguments are an ordinary type
+// position, so the cursor in them offers the types in scope.
+def test_operator_type_arguments(t: Tester) {
+	var s = session(t);
+	var marked = "class Item { }\nclass Child extends Item { }\ndef f(x: Item) {\n\tvar y = Child.!<It$em>(x);\n}\n";
+	var id = complete0(t, s, marked), result = s.result(t, id);
+	t.assert_string(Strings.format1("Child Item Other %s | 0", builtins()), render(t, result));
+	t.asserti(7, intAt(itemOf(result, "Item"), "kind"));
+	t.asserti(7, intAt(itemOf(result, "Child"), "kind"));
 	s.server.close();
 }
 

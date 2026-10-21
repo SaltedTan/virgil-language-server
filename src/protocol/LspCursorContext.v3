@@ -485,14 +485,20 @@ class LspCursorScanner(text: Array<byte>) {
 		return j;
 	}
 	// The end of the operator-named member at {i}, which follows a "." that
-	// Parser.addMemberSuffix reads: "!" or "?" (with optional adjacent type
-	// arguments), an infix or compound operator, "~", or "[]" or "[]=". A
-	// name or a decimal member is read as an identifier or a number instead.
+	// Parser.addMemberSuffix reads: "!" or "?" alone (its adjacent type
+	// arguments open a "<" delimiter of their own), an infix or compound
+	// operator, "~", or "[]" or "[]=". Parser.parseInfix takes one token for
+	// an operator and a "=" after it even where the compound is illegal, as
+	// in "===", but "||" and "&&" end at themselves, as it returns them
+	// before an "=", which is an assignment. A name or a decimal member is
+	// read as an identifier or a number instead.
 	private def memberEnd(i: int) -> int {
 		var n = text.length, c = text[i];
 		if (c == '!' || c == '?') {
-			if (i + 1 < n && text[i + 1] == '=') return if(c == '!', i + 2, i);
-			if (i + 1 < n && text[i + 1] == '<') return typeArgsEnd(i + 1);
+			if (i + 1 < n && text[i + 1] == '=') {
+				if (c == '?') return i;
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
 			return i + 1;
 		}
 		if (c == '~') return i + 1;
@@ -502,22 +508,29 @@ class LspCursorScanner(text: Array<byte>) {
 			}
 			return i;
 		}
-		if (c == '=') return if(i + 1 < n && text[i + 1] == '=', i + 2, i);
+		if (c == '=') {
+			if (i + 1 < n && text[i + 1] == '=') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
+			return i;
+		}
 		if (c == '|' || c == '&') {
-			var j = i + 1;
-			if (j < n && text[j] == c) j++;
-			if (j < n && text[j] == '=') j++;
-			return j;
+			if (i + 1 < n && text[i + 1] == c) return i + 2;
+			return if(i + 1 < n && text[i + 1] == '=', i + 2, i + 1);
 		}
 		if (c == '<') {
-			if (i + 1 < n && text[i + 1] == '=') return i + 2;
+			if (i + 1 < n && text[i + 1] == '=') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
 			var j = i + 1;
 			if (j < n && text[j] == '<') j++;
 			if (j < n && text[j] == '=') j++;
 			return j;
 		}
 		if (c == '>') {
-			if (i + 1 < n && text[i + 1] == '=') return i + 2;
+			if (i + 1 < n && text[i + 1] == '=') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
 			var j = i + 1;
 			if (j < n && text[j] == '>') {
 				j++;
@@ -530,35 +543,6 @@ class LspCursorScanner(text: Array<byte>) {
 			return if(i + 1 < n && text[i + 1] == '=', i + 2, i + 1);
 		}
 		return i;
-	}
-	// The end of the type arguments at {i}, whose "<" is there: the matching
-	// ">", with nested arguments, comments, and "->" read as the parser reads
-	// them, or the end of the text if they do not close.
-	private def typeArgsEnd(i: int) -> int {
-		var n = text.length, depth = 0, j = i;
-		while (j < n) {
-			var c = text[j];
-			if (c == '<') {
-				depth++;
-				j++;
-			} else if (c == '>') {
-				j++;
-				depth--;
-				if (depth == 0) return j;
-			} else if (c == '-' && j + 1 < n && text[j + 1] == '>') {
-				j += 2;
-			} else if (c == '/' && j + 1 < n && text[j + 1] == '/') {
-				j += 2;
-				while (j < n && text[j] != '\n') j++;
-			} else if (c == '/' && j + 1 < n && text[j + 1] == '*') {
-				j += 2;
-				while (j + 1 < n && !(text[j] == '*' && text[j + 1] == '/')) j++;
-				j = if(j + 1 < n, j + 2, n);
-			} else {
-				j++;
-			}
-		}
-		return n;
 	}
 	// The end of the byte literal at {i}, read as Chars.parseLiteral reads
 	// it: a quote, one printable byte or an escape, and a closing quote; and
@@ -758,6 +742,12 @@ class LspCursorScanner(text: Array<byte>) {
 				header = h;
 				angles++;
 			} else if (typeName && prevKind == LspCursorToken.NAME) {
+				push(start, LspOpenRole.TYPE_ARGS, 3);
+			} else if (prevKind == LspCursorToken.MEMBER && prevStart + 1 == start
+					&& (text[prevStart] == '!' || text[prevStart] == '?')) {
+				// The adjacent type arguments of "!" or "?", as in
+				// "V.Case.!<int>", which Parser.addMemberSuffix reads as a
+				// "<" list after the member rather than as a comparison.
 				push(start, LspOpenRole.TYPE_ARGS, 3);
 			} else if (innermost() == LspOpenRole.FOR) {
 				// A comparison, so the loop variable's position is over.
