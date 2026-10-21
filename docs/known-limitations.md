@@ -4,7 +4,7 @@ This page lists what the v0.1 alpha doesn't do, or does only in part, as of `mai
 
 ## Features not yet implemented
 
-- Completion isn't implemented. The server doesn't advertise it ([protocol invariants](architecture.md#protocol-invariants)), and [M5](../ROADMAP.md#m5--references-rename-signature-help-and-completion-48-weeks) plans it.
+- Completion offers only keywords so far. It suggests the keywords that can start where the cursor is, from the open document's text, even while the file has syntax errors, and nothing in comments, strings, or after a `.`. It doesn't suggest names yet: the declarations in scope come with [#129](https://github.com/SaltedTan/virgil-language-server/issues/129), and a value's members after `.` with [#130](https://github.com/SaltedTan/virgil-language-server/issues/130), which also adds `.` as a trigger character. A file that isn't open gets no suggestions ([Completion](architecture.md#completion)).
 - Formatting and debugging are out of scope, and incremental analysis comes after v0.1 ([v0.1 scope](../README.md#v01-scope)).
 
 ## Semantic features need a project file
@@ -14,7 +14,7 @@ Without a `.virgil-lsp.json` that selects it, a document gets syntax diagnostics
 ## No error-tolerant parsing
 
 - While any file of a project has a syntax error, Aeneas doesn't type-check the program. The project's type errors disappear, definition, hover, references, and signature help return nothing, and rename is refused, until every file parses again ([Semantic diagnostics](architecture.md#semantic-diagnostics), [Definition](architecture.md#definition)). The server doesn't fall back to an earlier analysis, which described other text: that needs an edit-mapping policy, and error tolerance belongs to [M6](../ROADMAP.md#m6--error-tolerance-and-incrementality-48-weeks-evidence-driven).
-- Signature help therefore shows nothing for a call that is still being typed, such as `f(a,` or an unclosed `f(`: it doesn't parse. A complete call with a semantic error, such as the `f()` that an editor leaves when it closes `(` at once, does parse, and gets its signature. Repairing incomplete calls is [#128](https://github.com/SaltedTan/virgil-language-server/issues/128)'s work ([Signature help](architecture.md#signature-help)).
+- Signature help therefore shows nothing for a call that is still being typed, such as `f(a,` or an unclosed `f(`: it doesn't parse. A complete call with a semantic error, such as the `f()` that an editor leaves when it closes `(` at once, does parse, and gets its signature. [#128](https://github.com/SaltedTan/virgil-language-server/issues/128) measured a repair of incomplete code at the cursor, and whether signature help and completion use it waits for the decision on [ADR-0006](decisions/0006-incomplete-code-repair.md) ([Signature help](architecture.md#signature-help), [Repair spike](architecture.md#repair-spike)).
 - If document-symbol parsing fails, the outline is empty, never stale or truncated. That parse normalizes carriage returns, so a CRLF file can have syntax diagnostics and still an outline ([Document symbols](architecture.md#document-symbols)).
 - An analysis stops at 15 errors, and an Information diagnostic (`ErrorLimit`) then says that errors elsewhere may be missing. Aeneas rejects carriage returns, as `v3c` does, with one error per CRLF line, so a single CRLF file reaches the limit. Convert CRLF files to LF, which WSL users' checkouts may need ([error limit](architecture.md#semantic-diagnostics)).
 

@@ -63,6 +63,8 @@ class LspServer {
 	var rename: LspRename;
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
+	// Keyword completion, from the open document's text alone.
+	private def completion = LspCompletion.new(documents, projects);
 	// Watched-file and workspace-folder notifications, and the watcher registration.
 	def workspaceEvents = LspWorkspaceEvents.new(documents, projects);
 	// Completes a server request whose deadline has passed.
@@ -84,6 +86,7 @@ class LspServer {
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
 		workspaceSymbols.register(dispatcher);
+		completion.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
 		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
@@ -315,6 +318,8 @@ class LspServer {
 		sync["save"] = JsonValue.JObject(save);
 		var capabilities = Strings.newMap<JsonValue>();
 		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
+		// No trigger characters yet: "." comes with member completion (#130).
+		capabilities["completionProvider"] = JsonValue.JObject(Strings.newMap<JsonValue>());
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["hoverProvider"] = JsonValue.Bool(true);

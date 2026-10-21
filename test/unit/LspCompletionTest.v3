@@ -1,0 +1,677 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The cursor scanner, its context classification, the keyword table, and
+// textDocument/completion. In the texts below, "$" marks the cursor and is
+// removed before scanning.
+def T = UnitTests.register;
+def X = [
+	T("LspCompletion:comments", test_comments),
+	T("LspCompletion:strings", test_strings),
+	T("LspCompletion:byte_literals", test_byte_literals),
+	T("LspCompletion:prefix_range", test_prefix_range),
+	T("LspCompletion:numbers", test_numbers),
+	T("LspCompletion:member_after_dot", test_member_after_dot),
+	T("LspCompletion:text_bounds", test_text_bounds),
+	T("LspCompletion:crlf", test_crlf),
+	T("LspCompletion:open_calls", test_open_calls),
+	T("LspCompletion:linear_scan", test_linear_scan),
+	T("LspCompletion:context_positions", test_context_positions),
+	T("LspCompletion:keyword_sets", test_keyword_sets),
+	T("LspCompletion:language_options", test_language_options),
+	T("LspCompletion:pinned_keywords", test_pinned_keywords),
+	T("LspCompletion:capability", test_capability),
+	T("LspCompletion:parse_failure", test_parse_failure),
+	T("LspCompletion:nothing_offered", test_nothing_offered),
+	T("LspCompletion:text_edits", test_text_edits),
+	T("LspCompletion:utf16_ranges", test_utf16_ranges),
+	T("LspCompletion:positions_out_of_range", test_positions_out_of_range),
+	T("LspCompletion:closed_document", test_closed_document),
+	T("LspCompletion:project_options", test_project_options),
+	T("LspCompletion:no_analysis", test_no_analysis),
+	T("LspCompletion:cancellation_and_shutdown", test_cancellation_and_shutdown),
+	T("LspCompletion:params", test_params),
+	()
+];
+
+def S = LspCursorSyntax.render;
+// The context at the "$" in {marked}.
+def at(marked: string) -> LspCursorContext {
+	var cursor = -1;
+	var text = Vector<byte>.new();
+	for (c in marked) {
+		if (c == '$' && cursor < 0) cursor = text.length;
+		else text.put(c);
+	}
+	return LspCursorScanner.new(text.extract()).scan(cursor);
+}
+// Checks that the cursor in {marked} is in {place}.
+def checkPlace(t: Tester, marked: string, place: LspCursorPlace) {
+	var ctx = at(marked);
+	if (ctx.place != place) t.fail3("%s: expected %s, got %s", marked, place.name, ctx.place.name);
+	if (place != LspCursorPlace.CODE && ctx.syntax != 0) t.fail1("%s: expected no syntax outside code", marked);
+}
+// Checks the positions of the cursor in {marked}.
+def checkSyntax(t: Tester, marked: string, expected: int) {
+	var ctx = at(marked);
+	if (ctx.place != LspCursorPlace.CODE) t.fail2("%s: expected CODE, got %s", marked, ctx.place.name);
+	var e = S(expected), got = S(ctx.syntax);
+	if (!Strings.equal(e, got)) t.fail3("%s: expected [%s], got [%s]", marked, e, got);
+}
+// The keywords offered at the cursor in {marked}, with the default forms,
+// separated by spaces.
+def offered(marked: string, forms: int) -> string {
+	var words = LspKeywords.candidates(at(marked), AeneasAdapter.keywords(), forms);
+	var buf = StringBuilder.new();
+	for (i < words.length) {
+		if (i > 0) buf.putc(' ');
+		buf.puts(words[i]);
+	}
+	return buf.toString();
+}
+def DEFAULT_FORMS = AnalysisKeywordForms.FUN_EXPRS;
+def checkOffered(t: Tester, marked: string, expected: string) {
+	var got = offered(marked, DEFAULT_FORMS);
+	if (!Strings.equal(expected, got)) t.fail3("%s: expected [%s], got [%s]", marked, expected, got);
+}
+
+def test_comments(t: Tester) {
+	checkPlace(t, "// a $comment", LspCursorPlace.LINE_COMMENT);
+	checkPlace(t, "/$/ between the slashes", LspCursorPlace.LINE_COMMENT);
+	checkPlace(t, "$// before it", LspCursorPlace.CODE);
+	checkPlace(t, "x // up to the end of the line$\n", LspCursorPlace.LINE_COMMENT);
+	checkPlace(t, "x // a line comment\n$", LspCursorPlace.CODE);
+	checkPlace(t, "x // at the end of the text$", LspCursorPlace.LINE_COMMENT);
+	checkPlace(t, "/* a $block */", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "/* a block *$/", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "/* a block */$", LspCursorPlace.CODE);
+	checkPlace(t, "/* over\nlines\n$ */", LspCursorPlace.BLOCK_COMMENT);
+	// Block comments don't nest: the first "*/" ends both.
+	checkPlace(t, "/* outer /* inner */ $ */", LspCursorPlace.CODE);
+	checkPlace(t, "/*/ $ is not closed */", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "/* unterminated $", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "/* unterminated$", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "/* // a line comment inside */ $", LspCursorPlace.CODE);
+	checkPlace(t, "// /* a block comment inside\n$", LspCursorPlace.CODE);
+	// Comment markers in literals start no comment.
+	checkPlace(t, "var s = \"// not a comment\"; $", LspCursorPlace.CODE);
+	checkPlace(t, "var s = \"/* not a comment\"; $", LspCursorPlace.CODE);
+	checkPlace(t, "var c = '/'; /$/", LspCursorPlace.LINE_COMMENT);
+}
+
+def test_strings(t: Tester) {
+	checkPlace(t, "\"$\"", LspCursorPlace.STRING);
+	checkPlace(t, "\"abc$\"", LspCursorPlace.STRING);
+	checkPlace(t, "\"abc\"$", LspCursorPlace.CODE);
+	checkPlace(t, "$\"abc\"", LspCursorPlace.CODE);
+	checkPlace(t, "\"a\\\"b$\"", LspCursorPlace.STRING);	// "a\"b
+	checkPlace(t, "\"a\\\\\"$", LspCursorPlace.CODE);	// "a\\" is closed
+	checkPlace(t, "\"\\x41$\"", LspCursorPlace.STRING);
+	checkPlace(t, "\"unterminated $", LspCursorPlace.STRING);
+	checkPlace(t, "\"unterminated$", LspCursorPlace.STRING);
+	// A string ends at a line break, where Aeneas reports it.
+	checkPlace(t, "\"unterminated$\nx", LspCursorPlace.STRING);
+	checkPlace(t, "\"unterminated\n$", LspCursorPlace.CODE);
+	checkPlace(t, "\"tab\tends it\" $", LspCursorPlace.STRING);
+	checkPlace(t, "\"\xC3\xA9 $\"", LspCursorPlace.STRING);
+	checkPlace(t, "\"'\" $", LspCursorPlace.CODE);
+}
+
+def test_byte_literals(t: Tester) {
+	checkPlace(t, "'$a'", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'a$'", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'a'$", LspCursorPlace.CODE);
+	checkPlace(t, "$'a'", LspCursorPlace.CODE);
+	checkPlace(t, "'\\''$", LspCursorPlace.CODE);
+	checkPlace(t, "'\\'$'", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'\\x4$1'", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'\\x41'$", LspCursorPlace.CODE);
+	checkPlace(t, "'\\\"' $", LspCursorPlace.CODE);
+	checkPlace(t, "'\"'$", LspCursorPlace.CODE);
+	checkPlace(t, "'$", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'a$", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'a$\n", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'a\n$", LspCursorPlace.CODE);
+	// A malformed literal ends where Aeneas stops reading it.
+	checkPlace(t, "'ab' $", LspCursorPlace.CHARACTER);
+	checkPlace(t, "'ab'; x$", LspCursorPlace.CODE);
+	checkPlace(t, "'' $", LspCursorPlace.CODE);
+}
+
+def checkPrefix(t: Tester, marked: string, prefix: string) {
+	var ctx = at(marked);
+	t.assert_string(prefix, ctx.prefix());
+	t.asserti(ctx.cursor - prefix.length, ctx.prefixStart);
+}
+def test_prefix_range(t: Tester) {
+	checkPrefix(t, "def f() { $whi }", "");
+	checkPrefix(t, "def f() { w$hi }", "w");
+	checkPrefix(t, "def f() { wh$i }", "wh");
+	checkPrefix(t, "def f() { whi$ }", "whi");
+	checkPrefix(t, "def f() { whi$", "whi");
+	checkPrefix(t, "def f() { a_1$ }", "a_1");
+	checkPrefix(t, "def f() { X9$ }", "X9");
+	checkPrefix(t, "def f() { return$ }", "return");
+	checkPrefix(t, "def f() { x = y$+1 }", "y");
+	checkPrefix(t, "def f() { x = y+$1 }", "");
+	// The look-back skips the prefix: it is in a statement either way.
+	checkSyntax(t, "def f() { wh$ }", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+	checkSyntax(t, "def f() { $ }", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+}
+
+def test_numbers(t: Tester) {
+	checkPlace(t, "var x = 12$", LspCursorPlace.NUMBER);
+	checkPlace(t, "var x = 1$2", LspCursorPlace.NUMBER);
+	checkPlace(t, "var x = 0x1f$", LspCursorPlace.NUMBER);
+	checkPlace(t, "var x = 1.5e3$", LspCursorPlace.NUMBER);
+	checkPlace(t, "var x = 10u$", LspCursorPlace.NUMBER);
+	checkPlace(t, "var x = f(_$", LspCursorPlace.NUMBER);
+	checkPlace(t, "var x = 12 $", LspCursorPlace.CODE);
+	t.assert_string("", at("var x = 0x1f$").prefix());
+}
+
+def test_member_after_dot(t: Tester) {
+	var ctx = at("def f() { x.$ }");
+	t.assertz(true, ctx.member());
+	t.asserti(11, ctx.dot);
+	t.asserti(LspCursorSyntax.MEMBER, ctx.syntax);
+	ctx = at("def f() { x.fo$ }");
+	t.assertz(true, ctx.member());
+	t.assert_string("fo", ctx.prefix());
+	t.asserti(11, ctx.dot);
+	ctx = at("def f() { x . /* a\ncomment */ // and another\n\t$ }");
+	t.assertz(true, ctx.member());
+	t.asserti(12, ctx.dot);
+	ctx = at("def f() { x.y$ }");
+	t.assertz(true, ctx.member());
+	ctx = at("def f() { x.y $ }");
+	t.assertz(false, ctx.member());
+	t.asserti(-1, ctx.dot);
+	// A float's "." is part of the number, and ".." is no member access.
+	t.assertz(false, at("var x = 1.5 $").member());
+	t.assertz(false, at("x ... $").member());
+	t.assertz(true, at("var t = (1, 2).$").member());
+	t.assertz(true, at("var b = 3.$").member());
+}
+
+def test_text_bounds(t: Tester) {
+	var ctx = at("$class C { }");
+	t.asserti(0, ctx.cursor);
+	t.asserti(0, ctx.prefixStart);
+	t.asserti(LspCursorSyntax.TOP_LEVEL, ctx.syntax);
+	ctx = at("$");
+	t.asserti(LspCursorSyntax.TOP_LEVEL, ctx.syntax);
+	t.asserti(0, ctx.opens.length);
+	ctx = at("class C { def f() { va$");
+	t.assert_string("va", ctx.prefix());
+	t.asserti(2, ctx.opens.length);
+	// Offsets are clamped to the text.
+	var text = "def f() { }";
+	t.asserti(0, LspCursorScanner.new(text).scan(-5).cursor);
+	t.asserti(text.length, LspCursorScanner.new(text).scan(text.length + 5).cursor);
+}
+
+def test_crlf(t: Tester) {
+	checkSyntax(t, "class C {\r\n\tdef f() {\r\n\t\t$", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+	checkPlace(t, "// a comment\r\n$", LspCursorPlace.CODE);
+	checkPlace(t, "// a comment\r$\n", LspCursorPlace.LINE_COMMENT);
+	checkPlace(t, "\"a string\r\n$", LspCursorPlace.CODE);
+	// A line break before the cursor lets a new statement start.
+	checkSyntax(t, "def f() {\r\n\tx = y\r\n\t$", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+}
+
+def checkCalls(t: Tester, marked: string, expected: Array<int>) {
+	var got = at(marked).calls();
+	t.asserta("calls", expected, got, StringBuilder.putd<int>);
+}
+def test_open_calls(t: Tester) {
+	checkCalls(t, "def f() { g($", [11]);
+	checkCalls(t, "def f() { g(a, h(b, $", [11, 16]);
+	checkCalls(t, "def f() { g(a, h(b), $", [11]);
+	checkCalls(t, "def f() { g(a, \"(\", '(', /* ( */ $", [11]);
+	checkCalls(t, "def f() { x.m<int>(a, $", [18]);
+	checkCalls(t, "def f() { C.new($", [15]);
+	checkCalls(t, "def f() { g(a)($", [14]);
+	checkCalls(t, "def f() { a[g($", [13]);
+	// Not calls: control, grouping, tuples, and parameter lists.
+	checkCalls(t, "def f() { if ($", []);
+	checkCalls(t, "def f() { while (g($", [18]);
+	checkCalls(t, "def f() { x = ($", []);
+	checkCalls(t, "def f($", []);
+	checkCalls(t, "class C($", []);
+	checkCalls(t, "def f() { var g = fun ($", []);
+	checkCalls(t, "class C { new($", []);
+	var ctx = at("class C { def f() { if (g(a[$");
+	t.asserta("opens", [8, 18, 23, 25, 27], ctx.opens, StringBuilder.putd<int>);
+	var roles = [LspOpenRole.MEMBERS, LspOpenRole.STATEMENTS, LspOpenRole.CONTROL, LspOpenRole.CALL, LspOpenRole.INDEX];
+	t.asserti(5, ctx.roles.length);
+	for (i < roles.length) if (i < ctx.roles.length && ctx.roles[i] != roles[i]) t.fail2("role %d: %s", i, ctx.roles[i].name);
+}
+
+// Deep nesting, long lines, and many comments scan in one pass; stray
+// closers are skipped at once.
+def test_linear_scan(t: Tester) {
+	var buf = StringBuilder.new();
+	buf.puts("def f() { ");
+	for (i < 20000) buf.puts("g(");
+	buf.puts("a, ");
+	var ctx = at(buf.puts("$").toString());
+	t.asserti(20000, ctx.calls().length);
+	t.asserti(LspCursorSyntax.EXPRESSION, ctx.syntax);
+	buf.puts("def f() { ");
+	for (i < 20000) buf.puts("{");
+	for (i < 20000) buf.puts(")]");
+	ctx = at(buf.puts("$").toString());
+	t.asserti(20001, ctx.opens.length);
+	for (i < 20000) buf.puts("/* c */ x;");
+	ctx = at(buf.puts("$").toString());
+	t.asserti(LspCursorSyntax.TOP_LEVEL, ctx.syntax);
+}
+
+def test_context_positions(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	var EXPR = LspCursorSyntax.EXPRESSION;
+	var TYPE = LspCursorSyntax.TYPE;
+	checkSyntax(t, "$", LspCursorSyntax.TOP_LEVEL);
+	checkSyntax(t, "class A { }\n$", LspCursorSyntax.TOP_LEVEL);
+	checkSyntax(t, "var x = 1;\n$", LspCursorSyntax.TOP_LEVEL);
+	checkSyntax(t, "def f() { }\n$", LspCursorSyntax.TOP_LEVEL);
+	checkSyntax(t, "class A { $ }", LspCursorSyntax.MEMBER_DECL);
+	checkSyntax(t, "component A { def f() { } $ }", LspCursorSyntax.MEMBER_DECL);
+	checkSyntax(t, "class A { var x: int; $ }", LspCursorSyntax.MEMBER_DECL);
+	checkSyntax(t, "type V { $ }", LspCursorSyntax.CASE_DECL);
+	checkSyntax(t, "type V { case A; $ }", LspCursorSyntax.CASE_DECL);
+	checkSyntax(t, "type V { case A { $ } }", LspCursorSyntax.MEMBER_DECL);
+	checkSyntax(t, "enum E { A, $ }", 0);
+	checkSyntax(t, "layout L { $ }", 0);
+	checkSyntax(t, "def f() { $ }", STMT);
+	checkSyntax(t, "def f() { x = 1; $ }", STMT);
+	checkSyntax(t, "def f() { { } $ }", STMT);
+	checkSyntax(t, "def f() { while (x) $ }", STMT);
+	checkSyntax(t, "def f() { for (i < n) $ }", STMT);
+	checkSyntax(t, "def f() { for (i = 0; i < n; i++) $ }", STMT);
+	checkSyntax(t, "def f() { if (x) y(); else $ }", STMT);
+	checkSyntax(t, "def f() { if (x) y(); $ }", STMT | LspCursorSyntax.ELSE);
+	checkSyntax(t, "def f() { if (x) { y(); } $ }", STMT | LspCursorSyntax.ELSE);
+	checkSyntax(t, "def f() { while (x) if (y) z(); $ }", STMT | LspCursorSyntax.ELSE);
+	checkSyntax(t, "def f() { if (x) y(); else z(); $ }", STMT);
+	checkSyntax(t, "def f() { if (x) y(); else if (z) w(); $ }", STMT | LspCursorSyntax.ELSE);
+	checkSyntax(t, "def f() { while (x) { } $ }", STMT);
+	checkSyntax(t, "def f() { match (x) { } $ }", STMT | LspCursorSyntax.ELSE);
+	checkSyntax(t, "def f() { var y = if(a, b, c); $ }", STMT);
+	checkSyntax(t, "def f() { match (x) $ }", 0);
+	checkSyntax(t, "def f() { match (x) { $ } }", LspCursorSyntax.PATTERN);
+	checkSyntax(t, "def f() { match (x) { A, $ } }", LspCursorSyntax.PATTERN);
+	checkSyntax(t, "def f() { match (x) { A => $ } }", STMT);
+	checkSyntax(t, "def f() { match (x) { A => y(); $ } }", LspCursorSyntax.PATTERN);
+	checkSyntax(t, "def f() { match (x) { A => { } $ } }", LspCursorSyntax.PATTERN);
+	checkSyntax(t, "def f() { match (x) { A => { $ } } }", STMT);
+	checkSyntax(t, "def f() { if (x) match (y) { $ } }", LspCursorSyntax.PATTERN);
+	checkSyntax(t, "def f() { var y = $ }", EXPR);
+	checkSyntax(t, "def f() { return $ }", EXPR);
+	checkSyntax(t, "def f() { x = a + $ }", EXPR);
+	checkSyntax(t, "def f() { x = !$ }", EXPR);
+	checkSyntax(t, "def f() { g($ }", EXPR);
+	checkSyntax(t, "def f() { g(a, $ }", EXPR);
+	checkSyntax(t, "def f() { a[$ }", EXPR);
+	checkSyntax(t, "def f() { if ($ }", EXPR);
+	checkSyntax(t, "def f() { x = a < $ }", EXPR | TYPE);
+	checkSyntax(t, "def f() => $", EXPR);
+	checkSyntax(t, "def x = $", EXPR);
+	checkSyntax(t, "class A { def f() -> int => $ }", EXPR);
+	checkSyntax(t, "def f() { var g = fun (x: int) => $ }", EXPR);
+	checkSyntax(t, "def f() { g(fun () { $ }) }", STMT);
+	// After an operand, an operator follows; or after a line break, a new
+	// statement that a missing ";" leaves unseparated.
+	checkSyntax(t, "def f() { x = y $ }", 0);
+	checkSyntax(t, "def f() { x = g(y) $ }", 0);
+	checkSyntax(t, "def f() { x = y\n\t$ }", STMT);
+	checkSyntax(t, "def f() { g(y $ }", 0);
+	checkSyntax(t, "def f() { g(y\n\t$ }", 0);
+	checkSyntax(t, "def f() { x = true $ }", 0);
+	// Types and names.
+	checkSyntax(t, "def f(x: $", TYPE);
+	checkSyntax(t, "def f() -> $", TYPE);
+	checkSyntax(t, "var x: $", TYPE);
+	checkSyntax(t, "class A extends $", TYPE);
+	checkSyntax(t, "def f() { var x: $ }", TYPE);
+	checkSyntax(t, "def f() { match (x) { y: $ } }", TYPE);
+	checkSyntax(t, "def f($", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "def f<T>(a: T, $", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "class A($", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "class A { new($", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "def f() { var g = fun ($", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "type V(x: int, $", LspCursorSyntax.PARAMETER);
+	checkSyntax(t, "enum E($", 0);
+	checkSyntax(t, "type V { case A($", 0);
+	checkSyntax(t, "packing P($", 0);
+	checkSyntax(t, "def $", 0);
+	checkSyntax(t, "class $", 0);
+	checkSyntax(t, "def f() { var $", 0);
+	checkSyntax(t, "def f() { for ($", 0);
+	checkSyntax(t, "def f() { for (x $", LspCursorSyntax.FOR_IN);
+	checkSyntax(t, "def f() { for (x: int $", LspCursorSyntax.FOR_IN);
+	checkSyntax(t, "def f() { for (x = 0; x $", 0);
+	checkSyntax(t, "def f() { for (x in $", EXPR);
+	// Headers.
+	checkSyntax(t, "class A $", LspCursorSyntax.CLASS_HEADER);
+	checkSyntax(t, "class A<T> $", LspCursorSyntax.CLASS_HEADER);
+	checkSyntax(t, "class A(x: int) $", LspCursorSyntax.CLASS_HEADER);
+	checkSyntax(t, "class A extends B $", LspCursorSyntax.CLASS_HEADER);
+	checkSyntax(t, "type V $", LspCursorSyntax.VARIANT_HEADER);
+	checkSyntax(t, "type V(x: int) $", LspCursorSyntax.VARIANT_HEADER);
+	checkSyntax(t, "class A { new(x: int) $", LspCursorSyntax.CONSTRUCTOR_HEADER);
+	checkSyntax(t, "class A { new(x: int) : $", TYPE | LspCursorSyntax.CONSTRUCTOR_HEADER);
+	checkSyntax(t, "class A { def f(x: int) $", 0);
+	// Modifiers.
+	checkSyntax(t, "private $", LspCursorSyntax.AFTER_PRIVATE);
+	checkSyntax(t, "class A { private $", LspCursorSyntax.AFTER_PRIVATE_MEMBER);
+	checkSyntax(t, "class A { def $", LspCursorSyntax.AFTER_DEF_MEMBER);
+	checkSyntax(t, "thread $", LspCursorSyntax.AFTER_THREAD);
+	checkSyntax(t, "import $", LspCursorSyntax.AFTER_IMPORT);
+	checkSyntax(t, "import \"name\" $", LspCursorSyntax.AFTER_IMPORT);
+	checkSyntax(t, "export $", LspCursorSyntax.AFTER_EXPORT);
+	checkSyntax(t, "export \"name\" $", LspCursorSyntax.AFTER_EXPORT);
+	// Hints and members.
+	checkSyntax(t, "type V #$", 0);
+	checkSyntax(t, "def f() { x.$ }", LspCursorSyntax.MEMBER);
+	checkSyntax(t, "def f() { C.new.$ }", LspCursorSyntax.MEMBER);
+}
+
+def test_keyword_sets(t: Tester) {
+	checkOffered(t, "$", "class component def enum export import layout packing private thread type var");
+	checkOffered(t, "class A { $ }", "def new private var");
+	checkOffered(t, "type V { $ }", "case def");
+	checkOffered(t, "def f() { $ }", "break continue def false for fun if match null return true var while");
+	checkOffered(t, "def f() { if (x) y(); $ }", "break continue def else false for fun if match null return true var while");
+	checkOffered(t, "def f() { var y = $ }", "false fun if null true");
+	checkOffered(t, "def f() { match (x) { $ } }", "false null true");
+	checkOffered(t, "def f(x: $", "");
+	checkOffered(t, "def f($", "var");
+	checkOffered(t, "enum E($", "");
+	checkOffered(t, "def f() { for (x $", "in");
+	checkOffered(t, "class A $", "extends");
+	checkOffered(t, "type V $", "");
+	checkOffered(t, "class A { new() $", "super");
+	checkOffered(t, "private $", "class component enum packing thread type");
+	checkOffered(t, "class A { private $", "def new var");
+	checkOffered(t, "class A { def $", "var");
+	checkOffered(t, "thread $", "component");
+	checkOffered(t, "import \"x\" $", "component");
+	checkOffered(t, "export $", "def");
+	checkOffered(t, "def f() { x.$ }", "");
+	checkOffered(t, "def f() { x.wh$ }", "");
+	checkOffered(t, "def f() { // $\n }", "");
+	checkOffered(t, "def f() { \"$\" }", "");
+	checkOffered(t, "def f() { 'a$' }", "");
+	checkOffered(t, "def f() { x = 1$ }", "");
+	// Every keyword is offered somewhere, except the reserved "struct".
+	var all = Vector<string>.new();
+	for (marked in ["$", "class A { $ }", "type V { $ }", "def f() { if (x) y(); $ }", "def f() { for (x $",
+			"class A $", "class A { new() $", "def f($"]) {
+		var words = LspKeywords.candidates(at(marked), AeneasAdapter.keywords(), -1);
+		for (w in words) all.put(w);
+	}
+	for (w in AeneasAdapter.keywords()) {
+		var found = false;
+		for (i < all.length) found = found || Strings.equal(all[i], w);
+		if (found == Strings.equal(w, "struct")) t.fail1("keyword %s", w);
+	}
+}
+
+def test_language_options(t: Tester) {
+	// The forms follow the language options, as the parser reads them.
+	var DESC = AnalysisKeywordForms.DESCRIPTORS, OPEN = AnalysisKeywordForms.OPEN_TYPES, FUN = AnalysisKeywordForms.FUN_EXPRS;
+	t.asserti(FUN, AeneasAdapter.keywordForms([]));
+	t.asserti(FUN | DESC, AeneasAdapter.keywordForms(["-lang:descriptors"]));
+	t.asserti(FUN | OPEN, AeneasAdapter.keywordForms(["-lang:open-types=true"]));
+	t.asserti(0, AeneasAdapter.keywordForms(["-lang:fun-exprs=false"]));
+	t.asserti(FUN, AeneasAdapter.keywordForms(["-lang:descriptors", "-lang:descriptors=false"]));
+	// Each call restores the defaults.
+	t.asserti(FUN, AeneasAdapter.keywordForms([]));
+	var after = "class A $", expr = "def f() { var y = $ }", variant = "type V(x: int) $";
+	t.assert_string("extends", offered(after, FUN));
+	t.assert_string("describes descriptor extends", offered(after, FUN | DESC));
+	t.assert_string("false fun if null true", offered(expr, FUN));
+	t.assert_string("false if null true", offered(expr, 0));
+	t.assert_string("", offered(variant, FUN));
+	t.assert_string("extends", offered(variant, FUN | OPEN));
+}
+
+// The table and Aeneas's list of keywords are the same, so a keyword that
+// the pinned compiler adds or drops fails here rather than drifting.
+def test_pinned_keywords(t: Tester) {
+	var pinned = AeneasAdapter.keywords();
+	t.asserti(LspKeyword.count, pinned.length);
+	for (word in pinned) {
+		var kw = LspKeywords.named(word);
+		if (!kw.0) t.fail1("the table lacks Aeneas's keyword %s", word);
+	}
+	for (kw in LspKeyword.set.all) {
+		var found = false;
+		for (word in pinned) found = found || Strings.equal(word, LspKeywords.SPELLINGS[kw.tag]);
+		if (!found) t.fail1("Aeneas has no keyword %s", LspKeywords.SPELLINGS[kw.tag]);
+	}
+	for (i = 1; i < pinned.length; i++) t.assert(AnalysisTables.compareBytes(pinned[i - 1], pinned[i]) < 0, "keywords in byte order");
+}
+
+// A server whose open documents are given by {texts}, as pairs of URI and text.
+def URI = "untitled:complete.v3";
+def server(t: Tester) -> LspServer {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}") != null, "initialize reply");
+	return s;
+}
+def request(uri: string, line: int, character: int) -> string {
+	return Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":%d,\"character\":%d}}}",
+		uri, line, character);
+}
+// The result of a completion at {line} and {character} of {uri}.
+def complete(t: Tester, s: LspServer, uri: string, line: int, character: int) -> HashMap<string, JsonValue> {
+	var reply = s.handle(request(uri, line, character));
+	t.assert(reply != null, "completion is answered at once");
+	if (reply == null) return null;
+	var obj = JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v;
+	t.assert(obj.has("result"), "completion succeeds");
+	return JsonValue.JObject.!(obj["result"]).v;
+}
+// The labels offered at the "$" in {marked}, opened as {URI}.
+def labels(t: Tester, marked: string) -> string {
+	var s = server(t);
+	var cursor = 0;
+	while (marked[cursor] != '$') cursor++;
+	var text = Arrays.concat(Arrays.range(marked, 0, cursor), Arrays.range(marked, cursor + 1, marked.length));
+	s.documents.open(URI, "virgil", 1, text);
+	var map = PositionMap.new(text, PositionEncoding.UTF16), p = map.offsetToPosition(cursor);
+	var result = complete(t, s, URI, p.line, p.character);
+	return render(result);
+}
+def render(result: HashMap<string, JsonValue>) -> string {
+	if (result == null) return null;
+	var buf = StringBuilder.new();
+	for (item in JsonValue.JArray.!(result["items"]).v) {
+		if (buf.length > 0) buf.putc(' ');
+		buf.puts(JsonValue.String.!(JsonValue.JObject.!(item).v["label"]).v);
+	}
+	return buf.toString();
+}
+
+def test_capability(t: Tester) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	var reply = s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}");
+	var caps = JsonValue.JObject.!(JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v["result"]).v["capabilities"]).v;
+	t.assert(caps.has("completionProvider"), "completionProvider advertised");
+	// No trigger characters and no resolve: the options object is empty.
+	t.assert_string("{}", JsonRpcJson.render(StringBuilder.new(), caps["completionProvider"]).toString());
+}
+
+def test_parse_failure(t: Tester) {
+	// The file fails to parse, here and in the rest of the method, but the
+	// statement position is plain from the text.
+	var marked = "class A {\n\tdef f() {\n\t\tvar x = g(1,;\n\t\twh$\n\t}\n\tdef g( {\n}\n";
+	t.assert_string("break continue def false for fun if match null return true var while", labels(t, marked));
+	t.assert(AeneasAdapter.parseFile("a.v3", "class A {\n\tdef f() {\n\t\tvar x = g(1,;\n\t\twh\n\t}\n\tdef g( {\n}\n", []).diagnostics.length > 0, "fails to parse");
+	t.assert_string("def new private var", labels(t, "class A { def f() { x.; } $"));
+}
+
+def test_nothing_offered(t: Tester) {
+	for (marked in ["def f() { // wh$\n}", "def f() { /* wh$ */ }", "def f() { /* wh$", "var s = \"wh$\";",
+			"var s = \"wh$", "var c = 'w$';", "def f() { x.$ }", "def f() { x.wh$ }", "def f() { x. /* c */ $ }",
+			"var x = 12$", "def f() { x = y $ }"]) {
+		var got = labels(t, marked);
+		if (got == null || got.length != 0) t.fail2("%s: expected nothing, got [%s]", marked, got);
+	}
+}
+
+def checkRange(t: Tester, item: JsonValue, line: int, start: int, end: int, label: string) {
+	var obj = JsonValue.JObject.!(item).v;
+	t.assert_string(label, JsonValue.String.!(obj["label"]).v);
+	t.asserti(14, JsonValue.Int.!(obj["kind"]).v);
+	t.assert(!obj.has("insertText") && !obj.has("sortText") && !obj.has("filterText"), "only a label, kind, and edit");
+	var edit = JsonValue.JObject.!(obj["textEdit"]).v;
+	t.assert_string(label, JsonValue.String.!(edit["newText"]).v);
+	var range = JsonValue.JObject.!(edit["range"]).v;
+	var s = JsonValue.JObject.!(range["start"]).v, e = JsonValue.JObject.!(range["end"]).v;
+	t.asserti(line, JsonValue.Int.!(s["line"]).v);
+	t.asserti(start, JsonValue.Int.!(s["character"]).v);
+	t.asserti(line, JsonValue.Int.!(e["line"]).v);
+	t.asserti(end, JsonValue.Int.!(e["character"]).v);
+}
+def test_text_edits(t: Tester) {
+	var s = server(t);
+	s.documents.open(URI, "virgil", 1, "class A {\n\tdef f() {\n\t\twhile (x) re\n\t}\n}\n");
+	// Just past "re": the prefix is replaced, and every keyword of the
+	// position is offered, for the client to filter, in alphabetical order.
+	var result = complete(t, s, URI, 2, 14);
+	t.assertz(false, JsonValue.Bool.!(result["isIncomplete"]).v);
+	var items = JsonValue.JArray.!(result["items"]).v;
+	t.assert_string("break continue def false for fun if match null return true var while", render(result));
+	for (item in items) checkRange(t, item, 2, 12, 14, JsonValue.String.!(JsonValue.JObject.!(item).v["label"]).v);
+	// In the middle of "re", only the bytes before the cursor are replaced.
+	items = JsonValue.JArray.!(complete(t, s, URI, 2, 13)["items"]).v;
+	checkRange(t, items[9], 2, 12, 13, "return");
+	// Before it, nothing is replaced.
+	items = JsonValue.JArray.!(complete(t, s, URI, 2, 12)["items"]).v;
+	checkRange(t, items[9], 2, 12, 12, "return");
+	// After a keyword spelled in full, it is offered for itself.
+	s.documents.change(URI, 2, "class A {\n\tdef f() {\n\t\treturn\n\t}\n}\n");
+	items = JsonValue.JArray.!(complete(t, s, URI, 2, 8)["items"]).v;
+	checkRange(t, items[9], 2, 2, 8, "return");
+}
+
+def test_utf16_ranges(t: Tester) {
+	var s = server(t);
+	// U+00E9 is two UTF-8 bytes and one UTF-16 unit; U+1D11E is four bytes
+	// and two units.
+	s.documents.open(URI, "virgil", 1, "def f() { /*\xC3\xA9\xF0\x9D\x84\x9E*/ wh }");
+	var items = JsonValue.JArray.!(complete(t, s, URI, 0, 20)["items"]).v;
+	t.asserti(13, items.length);
+	checkRange(t, items[12], 0, 18, 20, "while");
+	// A cursor inside the surrogate pair maps to the character's start, in
+	// the comment.
+	t.asserti(0, JsonValue.JArray.!(complete(t, s, URI, 0, 14)["items"]).v.length);
+}
+
+def test_positions_out_of_range(t: Tester) {
+	var s = server(t);
+	s.documents.open(URI, "virgil", 1, "class A {\n\tdef f() {\n\t\tre");
+	// A character past the line's end is its end, and a line past the last
+	// is the end of the text, as for other requests.
+	var items = JsonValue.JArray.!(complete(t, s, URI, 2, 99)["items"]).v;
+	checkRange(t, items[9], 2, 2, 4, "return");
+	items = JsonValue.JArray.!(complete(t, s, URI, 50, 0)["items"]).v;
+	checkRange(t, items[9], 2, 2, 4, "return");
+	t.assert_string("def new private var", render(complete(t, s, URI, 0, 99)));
+}
+
+def test_closed_document(t: Tester) {
+	var s = server(t);
+	// No overlay, and no disk fallback: completion needs an open document.
+	var result = complete(t, s, URI, 0, 0);
+	t.assertz(false, JsonValue.Bool.!(result["isIncomplete"]).v);
+	t.asserti(0, JsonValue.JArray.!(result["items"]).v.length);
+	s.documents.open(URI, "virgil", 1, "");
+	t.asserti(12, JsonValue.JArray.!(complete(t, s, URI, 0, 0)["items"]).v.length);
+	s.documents.close(URI);
+	t.asserti(0, JsonValue.JArray.!(complete(t, s, URI, 0, 0)["items"]).v.length);
+	// A file on disk that is not open is not read.
+	var path = ProjectTestFiles.repository("test/fixtures/projects/two-file/main.v3");
+	t.asserti(0, JsonValue.JArray.!(complete(t, s, ProjectFiles.uri(path), 0, 0)["items"]).v.length);
+}
+
+// The project's compilerArgs decide the keyword forms.
+def test_project_options(t: Tester) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	var root = ProjectTestFiles.repository("test/fixtures/projects/compiler-flags");
+	s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"%s\",\"capabilities\":{}}}", ProjectFiles.uri(root)));
+	var described = ProjectFiles.uri(ProjectFiles.join(root, "descriptors/Described.v3"));
+	var plain = ProjectFiles.uri(ProjectFiles.join(root, "defaults/Main.v3"));
+	var text = "class Shape \n";
+	s.documents.open(described, "virgil", 1, text);
+	s.documents.open(plain, "virgil", 1, text);
+	t.assert_string("describes descriptor extends", render(complete(t, s, described, 0, 12)));
+	t.assert_string("extends", render(complete(t, s, plain, 0, 12)));
+}
+
+// Completion answers from the text even while an analysis is pending, and
+// starts none.
+def test_no_analysis(t: Tester) {
+	HostOs.ignoreSigpipe();
+	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	var s = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	var sent = Vector<Array<byte>>.new();
+	s.sendNotification = fun (b: Array<byte>) { sent.put(b); };
+	var root = ProjectTestFiles.repository("test/fixtures/projects/two-file");
+	s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"%s\",\"capabilities\":{}}}", ProjectFiles.uri(root)));
+	var uri = ProjectFiles.uri(ProjectFiles.join(root, "main.v3"));
+	var doc = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(uri);
+	doc["languageId"] = JsonValue.String("virgil");
+	doc["version"] = JsonValue.Int(1);
+	doc["text"] = JsonValue.String("component Main {\n\tdef main() {\n\t\tvar s = Shapes.;\n\t\t\n\t}\n}\n");
+	params["textDocument"] = JsonValue.JObject(doc);
+	s.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	t.assert(s.analyzing(), "the open schedules an analysis");
+	var started = supervisor.workersStarted, busy = supervisor.busy(), notifications = sent.length;
+	t.assert(s.projects.forDocument(uri).active != null, "the document is in a project");
+	t.assert(s.projects.forDocument(uri).active.snapshot == null, "no analysis has completed");
+	t.asserti(0, JsonValue.JArray.!(complete(t, s, uri, 2, 17)["items"]).v.length);
+	t.asserti(13, JsonValue.JArray.!(complete(t, s, uri, 3, 2)["items"]).v.length);
+	t.asserti(started, supervisor.workersStarted);
+	t.assertz(busy, supervisor.busy());
+	t.asserti(notifications, sent.length);
+	t.assert(s.analyzing(), "the analysis is still pending");
+	s.close();
+	supervisor.close();
+}
+
+def test_cancellation_and_shutdown(t: Tester) {
+	var s = server(t);
+	s.documents.open(URI, "virgil", 1, "");
+	t.assert(s.handle(request(URI, 0, 0)) != null, "answered at once");
+	// Cancellation arrives after the reply, and is never answered.
+	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":7}}") == null, "no reply to a cancellation");
+	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}") != null, "shutdown");
+	var reply = s.handle(request(URI, 0, 0));
+	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32600,\"message\":\"the server is shutting down\"}}", reply);
+}
+
+def test_params(t: Tester) {
+	var s = server(t);
+	var error = "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32602,\"message\":\"completion params require a valid textDocument.uri and position\"}}";
+	for (params in ["{}", "null", "[]", "{\"textDocument\":{\"uri\":\"untitled:a\"}}",
+			"{\"textDocument\":{\"uri\":\"\"},\"position\":{\"line\":0,\"character\":0}}",
+			"{\"textDocument\":{\"uri\":3},\"position\":{\"line\":0,\"character\":0}}",
+			"{\"textDocument\":{\"uri\":\"file:relative\"},\"position\":{\"line\":0,\"character\":0}}",
+			"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":-1,\"character\":0}}",
+			"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0}}",
+			"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0,\"character\":\"1\"}}"]) {
+		var reply = s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":%s}", params));
+		t.assert_string(error, reply);
+	}
+	// A completion context is accepted and changes nothing.
+	s.documents.open(URI, "virgil", 1, "");
+	var reply = s.handle("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"untitled:complete.v3\"},\"position\":{\"line\":0,\"character\":0},\"context\":{\"triggerKind\":1}}}");
+	var result = JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v["result"]).v;
+	t.assert_string("class component def enum export import layout packing private thread type var", render(result));
+}

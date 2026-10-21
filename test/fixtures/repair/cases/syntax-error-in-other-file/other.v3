@@ -1,0 +1,6 @@
+// An unrelated file that fails to parse.
+component Other {
+	def f() {
+		var x = ;
+	}
+}

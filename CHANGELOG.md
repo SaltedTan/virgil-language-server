@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Keyword completion (`textDocument/completion`) in open documents, from their current text alone, so it works while a file fails to parse and needs no project. A cursor scanner that lexes comments, strings, and byte literals as Aeneas does finds the identifier being typed, member access after `.`, the open delimiters, and the syntactic position, and the server offers the keywords of the pinned compiler that can start there, with the project's language options; nothing in comments, literals, or after `.`. See [Completion](docs/architecture.md#completion) for the positions, the reply, and editor setup, and [Known limitations](docs/known-limitations.md) for what it doesn't offer yet.
+- A development `repair` command and a corpus of 45 typing states that measure repairing incomplete code at the cursor for semantic completion. [ADR-0006](docs/decisions/0006-incomplete-code-repair.md), still Proposed, records the results and a recommendation for the maintainer's decision.
+
 - Rename (`textDocument/rename`) and prepare rename (`textDocument/prepareRename`) from open documents in configured projects, including unsaved buffers, with versioned edits across open and closed files and a preflight that checks bindings. The Neovim configurations now declare support for versioned edits. See [Rename](docs/architecture.md#rename) for the rules, refusals, and measurements, and [Prepare rename](docs/architecture.md#prepare-rename) for what can be renamed.
 
 ## [0.1.0-alpha.1] - 2026-10-20

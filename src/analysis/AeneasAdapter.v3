@@ -314,6 +314,14 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 	}
 }
 
+// Keyword forms that a language option enables in the parser
+// (AeneasAdapter.keywordForms), as flags.
+component AnalysisKeywordForms {
+	def FUN_EXPRS = 1;	// fun expressions (-lang:fun-exprs)
+	def DESCRIPTORS = 2;	// descriptor and describes clauses (-lang:descriptors)
+	def OPEN_TYPES = 4;	// a variant that extends another (-lang:open-types)
+}
+
 component AeneasAdapter {
 	def MAX_ERRORS = 100;
 	// Program.ERROR's limit, which the adapter cannot replace. Once a program
@@ -371,6 +379,30 @@ component AeneasAdapter {
 			options.put((name, Option<bool>.?(opt) && Option<bool>.!(opt).init));
 		}
 		return options.extract();
+	}
+	// The parser's keywords (Keywords.kwKeys), which no identifier may spell,
+	// in byte order.
+	def keywords() -> Array<string> {
+		if (sortedKeywords == null) {
+			var v = Vector<string>.new();
+			for (kw in Keywords.kwKeys) if (kw != null) v.put(kw);
+			sortedKeywords = AnalysisTables.sort(v.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+		}
+		return sortedKeywords;
+	}
+	private var sortedKeywords: Array<string>;
+	// The AnalysisKeywordForms that the parser accepts with language options
+	// {options} (see setLanguageOptions), read as Parser.parseFile reads them.
+	def keywordForms(options: Array<string>) -> int {
+		setLanguageOptions(options);
+		var forms = if(enabled(CLOptions.FUN_EXPRS), AnalysisKeywordForms.FUN_EXPRS)
+			| if(enabled(CLOptions.DESCRIPTORS), AnalysisKeywordForms.DESCRIPTORS)
+			| if(enabled(CLOptions.OPEN_TYPES), AnalysisKeywordForms.OPEN_TYPES);
+		resetLanguageOptions();
+		return forms;
+	}
+	private def enabled(opt: Option<bool>) -> bool {
+		return opt != null && opt.get();
 	}
 	// Sets Aeneas's process-wide language options to their defaults, then
 	// applies {args} in order, as v3c does. Each is a flag that

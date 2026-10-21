@@ -60,6 +60,8 @@ To run the extension from source instead of installing a VSIX, you need a [suppo
 
 The extension runs only in [trusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust), because the server analyzes the workspace's files.
 
+The server's features need no further settings. [Keyword completion](../../docs/architecture.md#completion), for example, appears in VS Code's suggestion list as you type, like other completion providers' items.
+
 ## Settings
 
 | Setting | Default | Meaning |
@@ -120,6 +122,7 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 - an unsaved edit clears the diagnostic, and `vscode.executeDocumentSymbolProvider` then returns the component `C` and the variant `V`, with its case `A` as its child; undoing the edit brings the diagnostic back;
 - `words/Words.v3` has the single semantic diagnostic that needs `lib/util` from the Virgil root, and `vscode.executeDefinitionProvider` on its `StringBuilder` returns the name of `class StringBuilder` in the closed `lib/util/StringBuilder.v3`, `vscode.executeHoverProvider` there returns its signature in a `virgil` code block, `vscode.executeSignatureHelpProvider` just after the `(` of `.puts(a)` on the same line returns `def puts(s: Array<byte>) -> this` with its one parameter at label offsets 9 to 23, `vscode.executeReferenceProvider` there returns the use, the class's name, and uses in other closed `lib/util` files, each spelling `StringBuilder`, and `vscode.executeWorkspaceSymbolProvider` for `join`, which nothing uses, returns that method in `words/Words.v3` first;
 - once an unsaved edit fixes that type error, `vscode.executeDocumentRenameProvider` on the local `line` returns exactly its two uses, renamed to `text`; `vscode.workspace.applyEdit` applies the server's versioned edit to the open document, one undo restores both uses, and another restores the type error;
+- in `words/Words.v3`, after an unsaved line `whi` that the file doesn't parse with, `vscode.executeCompletionItemProvider` at its end returns the keywords that start a statement, in order, among them `while` as a `Keyword` that replaces `whi`; applying it gives `while`, and two undos restore the file;
 - an unsaved edit to `.virgil-lsp.json` produces an `UnknownField` diagnostic, and undoing it clears the diagnostic;
 - **Virgil: Restart Language Server** makes the server exit with status 0 (`Server process exited successfully`), and a new server starts and answers document symbol requests.
 

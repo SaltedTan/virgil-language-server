@@ -244,6 +244,55 @@ awk -v root="$ROOT/" '{ gsub(/test\/fixtures\//, root "test/fixtures/"); print }
 [ $? -eq 0 ] && cmp -s "$TMP/analysis-want" "$TMP/out" && [ ! -s "$TMP/err" ]
 finish "analyze reports call sites" $(( $? == 0 ))
 
+# The completion repair spike (docs/decisions/0006-incomplete-code-repair.md)
+# on a few corpus cases; scripts/repair-corpus.py runs them all. A case's
+# "<|>" marks the cursor: copy the files without it and note its byte offset.
+R=$FIXTURES/repair/cases
+repair_case() {  # repair_case <file>...: sets CURSOR and FILES
+    mkdir -p "$TMP/repair"
+    FILES=()
+    for f in "$@"; do
+        local out
+        out=$TMP/repair/$(basename "$f")
+        if grep -q '<|>' "$f"; then
+            CURSOR="--cursor=$out:$(grep -bo '<|>' "$f" | head -n 1 | cut -d: -f1)"
+        fi
+        sed 's/<|>//' "$f" > "$out"
+        FILES+=("$out")
+    done
+}
+repair_case "$R/member-end-of-statement.v3"
+expect "repair reports the cursor's context" 0 '^case: .*/member-end-of-statement\.v3@[0-9]+ member=yes syntax=\[member\] open=\[\{\{\]$' "" -- \
+    repair "$CURSOR" "${FILES[@]}"
+check_stream stdout "$TMP/out" '^attempt: unchanged parsed=no others=1 probe=- context=- first=.*@[0-9]+ ParseError: ' && \
+    check_stream stdout "$TMP/out" '^attempt: sentinel\+semicolon parsed=yes others=1 probe=UnresolvedMember context=receiver type Point first=.*StatementError: not a statement$' && \
+    check_stream stdout "$TMP/out" '^result: parsed=sentinel\+semicolon verified=- usable=sentinel\+semicolon context=receiver type Point all-usable=sentinel\+semicolon$' && \
+    [ "$(grep -c '^attempt: ' "$TMP/out")" -eq 7 ] && [ "$(wc -l < "$TMP/out")" -eq 9 ]
+finish "repair tries each repair in order and reports the first usable" $(( $? == 0 ))
+repair_case "$R/call-open-arguments.v3"
+expect "repair closes an open call" 0 '^result: parsed=close\+semicolon verified=sentinel\+close\+semicolon usable=sentinel\+close\+semicolon context=scope ' "" -- \
+    repair "$CURSOR" "${FILES[@]}"
+repair_case "$R/syntax-error-in-other-file/main.v3" "$R/syntax-error-in-other-file/other.v3"
+expect "repair cannot get past a syntax error in another file" 1 '^result: parsed=- verified=- usable=- context=- all-usable=-$' "" -- \
+    repair "$CURSOR" "${FILES[@]}"
+repair_case "$R/member-mid-expression.v3"
+expect "repair times the first usable repair and the original" 0 \
+    '^time: repaired=sentinel median=[0-9]+us p90=[0-9]+us original median=[0-9]+us p90=[0-9]+us runs=2$' "" -- \
+    repair --runs=2 "$CURSOR" "${FILES[@]}"
+# --cut deletes the rest of the cursor's line before repairing.
+printf 'component M {\n\tdef f(s: string) -> int {\n\t\treturn s.length;\n\t}\n}\n' > "$TMP/repair/cut.v3"
+expect "repair cuts the rest of the line" 0 '^result: .* usable=sentinel\+semicolon context=receiver type Array<byte> ' "" -- \
+    repair --cut=line "--cursor=$TMP/repair/cut.v3:52" "$TMP/repair/cut.v3"
+expect "repair cuts the rest of the file" 0 '^result: .* usable=sentinel\+semicolon\+all-braces context=receiver type Array<byte> ' "" -- \
+    repair --cut=file "--cursor=$TMP/repair/cut.v3:52" "$TMP/repair/cut.v3"
+expect "repair needs a cursor" 2 "" 'Usage: virgil-lsp' -- repair "$TMP/repair/cut.v3"
+expect "repair needs the cursor in one of the files" 2 "" "the cursor must be an offset within one of the files" -- \
+    repair "--cursor=$TMP/other.v3:1" "$TMP/repair/cut.v3"
+expect "repair needs the cursor within its file" 2 "" "the cursor must be an offset within one of the files" -- \
+    repair "--cursor=$TMP/repair/cut.v3:9999" "$TMP/repair/cut.v3"
+expect "repair rejects a bad cursor" 2 "" "invalid option" -- repair "--cursor=$TMP/repair/cut.v3:x" "$TMP/repair/cut.v3"
+expect "repair rejects unknown options" 2 "" "unknown option" -- repair --cut=word "--cursor=$TMP/repair/cut.v3:1" "$TMP/repair/cut.v3"
+
 # frame <payload>: prints the payload with a Content-Length header, in bytes.
 frame() {
     printf 'Content-Length: %d\r\n\r\n%s' $(( $(printf %s "$1" | wc -c) )) "$1"
@@ -258,7 +307,7 @@ not_found() {  # not_found <id> <method>
 VERSION=$("$EXE" --version | head -n 1)
 VERSION=${VERSION#* }
 INITIALIZE=$(request 1 initialize '{"processId":null,"rootUri":null,"capabilities":{}}')
-INIT_RESULT=$(printf '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"%s"}}}' "$VERSION")
+INIT_RESULT=$(printf '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"completionProvider":{},"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"%s"}}}' "$VERSION")
 EXIT='{"jsonrpc":"2.0","method":"exit"}'
 
 # Golden transcripts in test/protocol/ cover the protocol over --stdio. The

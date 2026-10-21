@@ -1,0 +1,6 @@
+// An unrelated file with a type error.
+component Other {
+	def f() -> int {
+		return "no";
+	}
+}

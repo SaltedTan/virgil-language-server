@@ -1,0 +1,20 @@
+// Completion repair corpus: member of type.
+class Point(x: int, y: int) {
+	def norm() -> int { return x * x + y * y; }
+	def scaled(k: int) -> Point { return Point.new(x * k, y * k); }
+}
+type Shape {
+	case Circle(r: int);
+	case Square(w: int);
+}
+enum Color { RED, GREEN }
+component Util {
+	def add(a: int, b: int) -> int { return a + b; }
+	def id<T>(v: T) -> T { return v; }
+	def log(s: string, n: int) { }
+}
+component Main {
+	def run() -> Color {
+		return Color.<|>
+	}
+}

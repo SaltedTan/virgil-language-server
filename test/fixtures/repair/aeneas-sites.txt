@@ -1,0 +1,19 @@
+# Typing states taken from the Aeneas sources: each line is a case name, a
+# file under vendor/virgil/aeneas/src, how much of the text after the cursor
+# to delete (line: the rest of its line; file: the rest of the file), and a
+# needle whose first occurrence in the file locates the cursor at its "|".
+# scripts/repair-corpus.py analyzes each with the whole Aeneas program.
+aeneas-member-of-component	vst/Parser.v3	line	p.enableFunExprs = CLOptions.|FUN_EXPRS.get();
+aeneas-member-of-class	vst/Parser.v3	line	return VarExpr.|new(null, null, id);
+aeneas-member-of-field	vst/Verifier.v3	line	var receiver = member.receiver.|getDeclaredType();
+aeneas-member-of-parameter	types/Type.v3	line	buffer.|puts(name);
+aeneas-member-chain	ssa/SsaBuilder.v3	line	if (context.prog.state.|initState[constructor.initIndex] == InitState.Done)
+aeneas-call-second-argument	vst/Parser.v3	line	var file = VstFile.new(fileName, |input);
+aeneas-call-later-argument	vst/Verifier.v3	line	ERROR.addError(r.ident.range(), |tc.file.input, "field not found", r.ident.name.image);
+aeneas-call-empty-arguments	main/Error.v3	line	var msg = Strings.format1(|"unexpected type %q", t.render);
+aeneas-call-nested	vst/Verifier.v3	line	paramTypes = Lists.reverse(|paramTypes);
+aeneas-condition	vst/Parser.v3	line	} else if (Char.isIdentStart(|p.curByte)) {
+aeneas-for-header	vst/Verifier.v3	line	for (list = Lists.reverse(decl.|getParams()); list != null; list = list.tail) {
+aeneas-statement-start	vst/Verifier.v3	line	|paramTypes = Lists.reverse(paramTypes);
+aeneas-truncated-member	vst/Parser.v3	file	p.enableSimpleBodies = CLOptions.|SIMPLE_BODIES.get();
+aeneas-truncated-call	vst/Verifier.v3	file	ERROR.addError(r.ident.range(), |tc.file.input, "field not found", r.ident.name.image);

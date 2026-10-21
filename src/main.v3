@@ -16,6 +16,7 @@ component VirgilLsp {
 		if (Strings.equal(cmd, "--stdio")) return stdio(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "parse")) return parse(Arrays.range(args, 1, args.length));
 		if (Strings.equal(cmd, "analyze")) return analyze(Arrays.range(args, 1, args.length));
+		if (Strings.equal(cmd, "repair")) return repair(Arrays.range(args, 1, args.length));
 		Log.error2("unknown argument '%s'; run '%s --help'", cmd, BuildInfo.NAME);
 		return 2;
 	}
@@ -42,6 +43,14 @@ component VirgilLsp {
 		buf.put1("                     Kill an analysis worker after n ms (default %d).\n", AnalysisWorkerLimits.new().timeoutMs);
 		buf.puts("    --worker-max-analyses=<n>\n");
 		buf.put1("                     Replace the analysis worker after n analyses (default %d).\n", AnalysisWorkerLimits.new().maxAnalyses);
+		buf.puts("  repair [options] --cursor=<file.v3>:<offset> <file.v3>...\n");
+		buf.puts("                     Repair incomplete code at a byte offset of one of the files in\n");
+		buf.puts("                     each way the completion spike tries, analyze each, and report.\n");
+		buf.puts("    --cut=line|file  First delete the rest of the cursor's line, or of its file.\n");
+		buf.puts("    --runs=<n>       Also time n analyses of the first usable repair and of the\n");
+		buf.puts("                     files as given.\n");
+		buf.puts("    --worker-timeout-ms=<n>\n");
+		buf.puts("                     As for analyze.\n");
 		// Usage goes to stderr when invoked incorrectly so that stdout stays clean.
 		if (code == 0) System.puts(buf.toString());
 		else Log.raw(buf.toString());
@@ -224,6 +233,72 @@ component VirgilLsp {
 		}
 		supervisor.close();
 		return status;
+	}
+	// The completion repair spike (LspRepairSpike). Exits with 0 if a repair
+	// was usable, 1 if none was, and 2 for invalid arguments.
+	def repair(args: Array<string>) -> int {
+		var limits = AnalysisWorkerLimits.new();
+		var paths = Vector<string>.new();
+		var cursorPath: string, cursor = -1, cut: string, runs = 0;
+		for (arg in args) {
+			if (Strings.startsWith(arg, "--cursor=")) {
+				var spec = Arrays.range(arg, "--cursor=".length, arg.length), colon = spec.length - 1;
+				while (colon >= 0 && spec[colon] != ':') colon--;
+				var p = Ints.parseDecimal(spec, colon + 1);
+				if (colon <= 0 || p.0 != spec.length - colon - 1 || p.0 == 0 || p.0 > 9) {
+					Log.error1("invalid option '%s'", arg);
+					return 2;
+				}
+				cursorPath = Arrays.range(spec, 0, colon);
+				cursor = p.1;
+			} else if (Strings.equal(arg, "--cut=line") || Strings.equal(arg, "--cut=file")) {
+				cut = Arrays.range(arg, "--cut=".length, arg.length);
+			} else if (Strings.startsWith(arg, "--runs=")) {
+				if ((runs = positiveOption(arg, "--runs=")) < 0) return 2;
+			} else if (Strings.startsWith(arg, "--worker-timeout-ms=")) {
+				if ((limits.timeoutMs = positiveOption(arg, "--worker-timeout-ms=")) < 0) return 2;
+			} else if (Strings.startsWith(arg, "-")) {
+				Log.error2("unknown option '%s'; run '%s --help'", arg, BuildInfo.NAME);
+				return 2;
+			} else {
+				paths.put(arg);
+			}
+		}
+		if (paths.length == 0 || cursorPath == null) return usage(2);
+		var original = Array<AnalysisSource>.new(paths.length), index = -1;
+		for (i < paths.length) {
+			var input = System.fileLoad(paths[i]);
+			if (input == null) {
+				Log.error1("cannot read file '%s'", paths[i]);
+				return 1;
+			}
+			original[i] = AnalysisSource.new(paths[i], input);
+			if (index < 0 && Strings.equal(paths[i], cursorPath)) index = i;
+		}
+		if (index < 0 || cursor > original[index].input.length) {
+			Log.error1("the cursor must be an offset within one of the files: '%s'", cursorPath);
+			return 2;
+		}
+		var sources = Arrays.dup(original);
+		if (cut != null) {
+			var text = original[index].input, end = text.length;
+			if (Strings.equal(cut, "line")) {
+				end = cursor;
+				while (end < text.length && text[end] != '\n') end++;
+			}
+			sources[index] = AnalysisSource.new(paths[index], Arrays.concat(Arrays.range(text, 0, cursor), Arrays.range(text, end, text.length)));
+		}
+		HostOs.ignoreSigpipe();
+		var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), limits);
+		supervisor.warn = Log.warn;
+		supervisor.info = Log.info;
+		var spike = LspRepairSpike.new(supervisor, sources, index, cursor, []);
+		var usable = spike.report(writeLine, original, runs);
+		supervisor.close();
+		return if(usable, 0, 1);
+	}
+	private def writeLine(buf: StringBuilder) {
+		System.puts(buf.toString());
 	}
 	// Parses the positive decimal value of {arg} after {prefix}. Logs and
 	// returns -1 if it is not one.
