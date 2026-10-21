@@ -52,8 +52,6 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def levels = Vector<int>.new();
 	private def valueNames = OrderedStringSet.new();
 	private def typeNames = OrderedStringSet.new();
-	// The comparisons that the matched type's case names took (see cases).
-	private var caseNames: long;
 	// Where the statement that the walk enters ends, as the statement or
 	// block around it found (see holds).
 	private var end: int;
@@ -166,7 +164,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			for (sign in ["i", "u"]) hide(Strings.format2("%s%d", sign, width));
 		}
 		answer.hiddenBuiltins = hidden.extract();
-		answer.nameComparisons = valueNames.compares + typeNames.compares + caseNames;
+		answer.nameComparisons = valueNames.compares + typeNames.compares;
 		return answer;
 	}
 	// Adds {d} at {level} unless an earlier candidate has its name in the
@@ -279,12 +277,15 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// match or verification left its type unknown: ErrorGen's types for
 	// errors are of kind VOID.
 	//
-	// ClassType.lookupCase checks that the declaration's member map binds the
-	// case's name to the case itself. Verifier.buildMembers fills that map in
-	// member order, with the first member of a name, so a case is reachable
-	// exactly if no earlier member has its name. Reading it for each case
-	// would scan the map's bucket chain once per case, so the walk keeps the
-	// names it has seen in an OrderedStringSet instead, in that same order.
+	// ClassType.lookupCase returns the declaration's member map's binding for
+	// the case's name, if that binding is a case member itself: Verifier.
+	// buildMembers filled the map in member order with the first member of
+	// each name. A synthetic member that verification adds afterwards, such
+	// as the method of a lambda's name (TypeChecker.visitFunExpr), is not in
+	// the map and so hides nothing. The query asks the same map, as the
+	// verifier does itself while checking the match, so it does no more of
+	// that work than the analysis that produced it; the map's 1,024-bucket
+	// cap is tracked in #155.
 	private def cases() -> int {
 		var t = if(patterns != null && patterns.expr != null, patterns.expr.exactType);
 		if (t == null || t.typeCon == null || t.typeCon.kind == Kind.VOID) return -1;
@@ -294,18 +295,14 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		if (!V3.isVariant(t) || !ClassType.?(t)) return 0;
 		var decl = ClassType.!(t).classDecl;
-		if (decl.memberMap == null) return 1;
-		var names = OrderedStringSet.new();
 		for (l = decl.members; l != null; l = l.tail) {
 			steps++;
-			var m = l.head;
-			// The constructor is not in the map.
-			var first = !VstNew.?(m) && names.add(m.token.image);
-			if (!first || !VstCaseMember.?(m)) continue;
-			var c = VstCaseMember.!(m);
-			if (!c.isDefaultCase()) add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0, true);
+			if (!VstCaseMember.?(l.head)) continue;
+			var c = VstCaseMember.!(l.head);
+			if (!c.isDefaultCase() && decl.memberMap != null && decl.memberMap[c.name()] == c) {
+				add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0, true);
+			}
 		}
-		caseNames = names.compares;
 		return 1;
 	}
 	private def make(kind: AnalysisDeclKind, decl: Decl) -> AnalysisDeclaration {

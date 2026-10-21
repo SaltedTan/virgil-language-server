@@ -645,6 +645,12 @@ def test_pattern_types(t: Tester) {
 	var root = Arrays.concat(variant, "component M {\n\tdef f(v: V) {\n\t\tmatch (v) {\n\t\t\t$B => ;\n\t\t\t_ => ;\n\t\t}\n\t}\n}\n");
 	check(t, root, P, "this=1 A/0 B/0");
 	agree(t, root, P, ["A", "B", "V", "v"]);
+	// A member that verification adds to the type after it built the member
+	// map does not hide a case that the map binds: TypeChecker.visitFunExpr
+	// prepends a synthetic method named like the lambda's parameter, which
+	// is never in the map, and ClassType.lookupCase still finds the case.
+	var synthetic = "type V { case A; def f = fun A() => 0; }\ncomponent M {\n\tdef f(v: V) {\n\t\tmatch (v) {\n\t\t\t$A => ;\n\t\t}\n\t}\n}\n";
+	t.assert_string("this=1 A/0", render(scopeAny(synthetic, P)));
 	// A type that verification left unknown offers nothing.
 	t.assert_string("this=1", render(scopeAny("component M {\n\tdef K = 1;\n\tdef f() {\n\t\tmatch (missing) {\n\t\t\t$K => ;\n\t\t}\n\t}\n}\n", P)));
 }
