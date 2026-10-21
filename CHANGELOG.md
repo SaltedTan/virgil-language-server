@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Analyses, diagnostics, and requests no longer slow down quadratically when a workspace's file names hash alike: maps keyed by path or URI in the server and the analysis worker are ordered trees now, so an 8,000-file analysis that took 15 s takes 0.3 s, with ordinary workspaces as fast as before. See [Maps keyed by path or URI](docs/architecture.md#maps-keyed-by-path-or-uri).
+- Speed up analyses, diagnostics, and requests when a workspace's file names hash alike by using ordered maps for path and URI lookups, with ordinary workspaces as fast as before. See [Maps keyed by path or URI](docs/architecture.md#maps-keyed-by-path-or-uri) for measurements and remaining hash maps.
 - Correct in-scope completion in variant case headers and lambda bodies ending with prefix `++` or `--` ([scope rules](docs/architecture.md#names)).
 
 ## [0.1.0-alpha.1] - 2026-10-20
