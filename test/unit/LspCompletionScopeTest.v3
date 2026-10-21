@@ -33,6 +33,13 @@ def X = [
 	T("LspCompletionScope:stale_document_or_superseded", test_stale_document_or_superseded),
 	T("LspCompletionScope:ref_layouts", test_ref_layouts),
 	T("LspCompletionScope:unreached", test_unreached),
+	T("LspCompletionMembers:as_typed", test_members_as_typed),
+	T("LspCompletionMembers:items", test_members_items),
+	T("LspCompletionMembers:repairs", test_members_repairs),
+	T("LspCompletionMembers:no_analysis", test_members_no_analysis),
+	T("LspCompletionMembers:receivers", test_members_receivers),
+	T("LspCompletionMembers:unvisited_arguments", test_members_unvisited_arguments),
+	T("LspCompletionMembers:malformed", test_members_malformed),
 	()
 ];
 
@@ -292,10 +299,6 @@ def test_positions(t: Tester) {
 		complete(t, s, before(MAIN, paint, "\tdef run() {\n\t\t$\n\t}")));
 	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, before(MAIN, "\tdef grow() { }", "\tdef run() {\n\t\t$\n\t}")));
-	// After "." no names come yet, and no analysis starts.
-	var analyses = s.server.completion.analyses;
-	t.assert_string("| 0", complete(t, s, inScale("\t\ttotal.$")));
-	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
 }
 
@@ -661,5 +664,129 @@ def test_unreached(t: Tester) {
 	for (i < 16) classErrors.put1("\t\tunresolved%d;\n", i);
 	t.assert(!Strings.startsWith(complete(t, s, Arrays.concat(inScale("\t\tto$"), classErrors.puts("\t}\n}\n").toString())), "|"),
 		"declarations where verification reached");
+	s.server.close();
+}
+
+// Member completion: after ".", the members of the receiver's type alone,
+// from the same completion analyses. AnalysisMembersTest covers the member
+// query in full.
+def SQUARE = "grow area sides scale";
+// In a dirty buffer that parses as typed: the members, nearest class first,
+// and no keyword.
+def test_members_as_typed(t: Tester) {
+	var s = session(t);
+	var analyses = s.server.completion.analyses;
+	t.assert_string(Strings.format1("%s | 0", SQUARE), complete(t, s, inScale("\t\tvar q = Square.new();\n\t\tq.$grow();")));
+	t.asserti(analyses + 1, s.server.completion.analyses);
+	// On a type: a component's members, an enum's, and a variant's.
+	t.assert_string("count paint | 0", complete(t, s, inScale("\t\tvar n = Registry.$count;")));
+	t.assert_string("count name tag GREEN RED set | 0", complete(t, s, inScale("\t\tvar c = Color.$RED;")));
+	t.assert_string("name tag End Word | 0", complete(t, s, inScale("\t\tvar w = Token.$End;")));
+	s.server.close();
+}
+// Each member's kind is its symbol kind's, its detail its signature, and its
+// edit replaces the prefix after the ".".
+def test_members_items(t: Tester) {
+	var s = session(t);
+	var id = request(t, s, inScale("\t\tvar q = Square.new();\n\t\tq.gr$();"));
+	s.settle();
+	var result = s.result(t, id);
+	t.assert(member(result, "isIncomplete") == JsonValue.Bool(false), "a complete list");
+	for (expected in [("grow", 2, "def grow()"), ("area", 5, "var area: int"), ("sides", 5, "def sides: int"),
+			("scale", 2, "def scale(factor: int) -> int")]) {
+		var item = itemOf(result, expected.0);
+		t.assert(item != JsonValue.Null, expected.0);
+		t.asserti(expected.1, intAt(item, "kind"));
+		t.assert_string(expected.2, stringAt(item, "detail"));
+		var edit = member(item, "textEdit"), range = member(edit, "range");
+		t.assert_string(expected.0, stringAt(edit, "newText"));
+		t.asserti(5, intAt(member(range, "start"), "line"));
+		t.asserti(4, intAt(member(range, "start"), "character"));
+		t.asserti(5, intAt(member(range, "end"), "line"));
+		t.asserti(6, intAt(member(range, "end"), "character"));
+	}
+	t.asserti(4, array(member(result, "items")).length);
+	// A builtin member has its detail from the list.
+	result = s.result(t, complete0(t, s, inScale("\t\tvar x = int.$max;")));
+	t.assert_string("def max: int", stringAt(itemOf(result, "max"), "detail"));
+	t.asserti(5, intAt(itemOf(result, "max"), "kind"));
+	s.server.close();
+}
+// A text that does not parse is repaired after the ".", as a scope query's
+// is: at the end of a statement, in a call's arguments, in an if's
+// condition, in a lambda, and after a partial name.
+def test_members_repairs(t: Tester) {
+	var s = session(t);
+	var q = "\t\tvar q = Square.new();\n";
+	var analyses = s.server.completion.analyses;
+	for (line in ["\t\tq.$", "\t\tscale(q.$", "\t\tif (q.$", "\t\tvar f = fun () => q.$", "\t\tq.gr$",
+			"\t\tscale(q.$, 1);", "\t\tvar f = fun () { q.$ };"]) {
+		t.assert_string(Strings.format1("%s | 0", SQUARE), complete(t, s, inScale(Arrays.concat(q, line))));
+	}
+	t.asserti(analyses + 7, s.server.completion.analyses);
+	// A repair that does not parse gets nothing, without an analysis.
+	var id = request(t, s, Strings.format1("%sdef broken( {\n", inScale(Arrays.concat(q, "\t\tq.$"))));
+	t.assert_string("| 0", render(t, s.result(t, id)));
+	t.asserti(analyses + 7, s.server.completion.analyses);
+	s.server.close();
+}
+// A "." in a comment, a string, or after a number, as when "1.5" is typed,
+// is answered at once with nothing, and starts no analysis.
+def test_members_no_analysis(t: Tester) {
+	var s = session(t);
+	var analyses = s.server.completion.analyses;
+	for (line in ["\t\t// total.$", "\t\t/* total.$ */", "\t\tvar x = \"total.$\";", "\t\tvar x = 1.$", "\t\tvar x = 1.$5;",
+			"\t\tvar x = 0x1F.$"]) {
+		var id = request(t, s, inScale(line));
+		t.assert(s.reply(id) != null, "answered at once");
+		t.assert_string("| 0", render(t, s.result(t, id)));
+	}
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+// An int's value has no members, and an unknown name none either: nothing is
+// offered in their place.
+def test_members_receivers(t: Tester) {
+	var s = session(t);
+	t.assert_string("| 0", complete(t, s, inScale("\t\ttotal.$")));
+	t.assert_string("| 0", complete(t, s, inScale("\t\tmissing.$")));
+	t.assert_string("length | 0", complete(t, s, inScale("\t\tvar x = \"total\".$")));
+	t.assert_string("area sides scale | 0", complete(t, s, inScale("\t\tthis.$")));
+	// A tuple element's "." follows a number, but not in parentheses.
+	var pair = "\t\tvar p = ((total, 1), 2);\n";
+	t.assert_string("0 1 last | 0", complete(t, s, inScale(Arrays.concat(pair, "\t\tvar x = (p.0).$"))));
+	var analyses = s.server.completion.analyses;
+	t.assert_string("| 0", render(t, s.result(t, request(t, s, inScale(Arrays.concat(pair, "\t\tvar x = p.0.$"))))));
+	t.asserti(analyses, s.server.completion.analyses);
+	s.server.close();
+}
+// In the arguments of a call whose callee does not resolve, which
+// verification skips, a layout's name gets nothing, repaired or as typed:
+// a local there could shadow it. The same in a call that resolves gets the
+// layout's members, or none where a local shadows it.
+def test_members_unvisited_arguments(t: Tester) {
+	var s = session(t);
+	var pixel = "layout Pixel {\n\t+0 v: u32;\n\t=4;\n}\n";
+	var local = "\t\tvar Pixel = 1;\n";
+	for (c in [
+		("missing(Pixel.$", "| 0"),
+		("missing(Pixel.$size);", "| 0"),
+		("missing(Pixel.v.$offset);", "| 0"),
+		("scale(Pixel.$", "size v | 0"),
+		("scale(Pixel.$size);", "size v | 0"),
+		("scale(Pixel.v.$offset);", "offset | 0")
+	]) {
+		t.assert_string(c.1, complete(t, s, Arrays.concat(inScale(Arrays.concat("\t\t", c.0)), pixel)));
+		t.assert_string("| 0", complete(t, s, Arrays.concat(inScale(Strings.format2("%s\t\t%s", local, c.0)), pixel)));
+	}
+	s.server.close();
+}
+// A malformed member answer is rejected, and the completion gets nothing.
+def test_members_malformed(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var id = request(t, s, inScale(Strings.format1("\t\t// %s\n\t\tthis.$", SyntheticAnalysisWorker.SCOPE_MALFORMED)));
+	s.settle();
+	t.assert_string("| 0", render(t, s.result(t, id)));
+	t.assert_string("area sides scale | 0", complete(t, s, inScale("\t\tthis.$")));
 	s.server.close();
 }

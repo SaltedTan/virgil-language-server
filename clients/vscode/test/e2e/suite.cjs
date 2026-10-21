@@ -331,6 +331,32 @@ async function workspace(extension) {
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the declaration prefix', () => words.document.getText() === unedited && !words.document.isDirty);
 
+  // After ".", which triggers completion, the members of the receiver's type
+  // alone, from an analysis of the project with the unsaved text, repaired
+  // after the ".": the parameter "a" is a string, whose one member is its
+  // length. VS Code applies the item, and one undo restores the line.
+  await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), '\t\ta.\n'));
+  const dotted = words.document.getText();
+  const members = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(use + 1, 4), '.',
+  );
+  assert.deepEqual(members.items.map((i) => i.label), ['length']);
+  const length = members.items[0];
+  assert.equal(length.kind, vscode.CompletionItemKind.Field);
+  assert.equal(length.detail, 'def length: int');
+  assert.equal(length.sortText, '0000');
+  const lengthRange = length.range instanceof vscode.Range ? length.range : length.range.replacing;
+  assert.deepEqual(range({ range: lengthRange }), [use + 1, 4, use + 1, 4]);
+  const lengthText = typeof length.insertText === 'string' ? length.insertText : length.insertText.value;
+  assert.equal(lengthText, 'length');
+  await edit(words, (builder) => builder.replace(lengthRange, lengthText));
+  assert.equal(words.document.lineAt(use + 1).text, '\t\ta.length');
+  await vscode.window.showTextDocument(words.document);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the member completion', () => words.document.getText() === dotted);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the receiver', () => words.document.getText() === unedited && !words.document.isDirty);
+
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -353,7 +379,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, signature help, references, rename and undo, keyword and declaration completion, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, signature help, references, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

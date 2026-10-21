@@ -328,8 +328,10 @@ class LspServer {
 		sync["save"] = JsonValue.JObject(save);
 		var capabilities = Strings.newMap<JsonValue>();
 		capabilities["textDocumentSync"] = JsonValue.JObject(sync);
-		// No trigger characters yet: "." comes with member completion (#130).
-		capabilities["completionProvider"] = JsonValue.JObject(Strings.newMap<JsonValue>());
+		// "." asks for the receiver's members (docs/architecture.md#member-completion).
+		var completionOptions = Strings.newMap<JsonValue>();
+		completionOptions["triggerCharacters"] = JsonValue.JArray([JsonValue.String(".")]);
+		capabilities["completionProvider"] = JsonValue.JObject(completionOptions);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["hoverProvider"] = JsonValue.Bool(true);

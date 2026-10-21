@@ -92,8 +92,17 @@ component SyntheticAnalysisWorker {
 			twice.paths = scope.paths;
 			scope = twice;
 		}
-		return AnalysisWire.finishResult(AnalysisWire.encodeResultWithScope(request.id, 1, AeneasAdapter.uidCounter(),
-			analysis, -1, -1, files, scope), 0);
+		var members = if(files != null, request.memberAnswer(analysis));
+		if (members != null && members.names.length > 0 && spells(request.sources, SCOPE_MALFORMED)) {
+			// The first candidate twice, which the server rejects.
+			var twice = AnalysisMemberAnswer.new([members.declarations[0], members.declarations[0]],
+				[members.names[0], members.names[0]], [members.kinds[0], members.kinds[0]],
+				[members.details[0], members.details[0]], [members.levels[0], members.levels[0]], false);
+			twice.paths = members.paths;
+			members = twice;
+		}
+		return AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(request.id, 1, AeneasAdapter.uidCounter(),
+			analysis, -1, -1, files, scope, members), 0);
 	}
 	// Whether any of {sources} contains the bytes of {word}.
 	private def spells(sources: Array<AnalysisSource>, word: string) -> bool {

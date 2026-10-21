@@ -106,10 +106,13 @@ component LspCompletionRepair {
 	def SENTINEL = "virgilLspCursor";
 
 	// The AnalysisScopeKinds of the names that can be at {ctx}, or 0 where
-	// no name can: in a comment or a literal, after ".", or where only
-	// keywords or a new name go.
+	// no name can: in a comment or a literal, where only keywords or a new
+	// name go, and after the "." that follows a number, which the "." of a
+	// number such as 1.5 is while it is typed. After another ".", a member
+	// of the receiver (MEMBERS).
 	def kinds(ctx: LspCursorContext) -> int {
-		if (ctx.place != LspCursorPlace.CODE || ctx.member()) return 0;
+		if (ctx.place != LspCursorPlace.CODE) return 0;
+		if (ctx.member()) return if(!ctx.dotAfterNumber, AnalysisScopeKinds.MEMBERS);
 		var s = ctx.syntax;
 		if ((s & LspCursorSyntax.TYPE) != 0 && refArgument(ctx)) return AnalysisScopeKinds.LAYOUTS;
 		return if((s & (LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION)) != 0, AnalysisScopeKinds.VALUES)
@@ -237,11 +240,11 @@ class LspCompletionRequest(owner: LspCompletion, id: JsonRpcId, keywords: Array<
 }
 
 // textDocument/completion: the keywords that can start at the cursor, from the
-// open document's current text, and the declarations in scope there, from a
-// completion analysis of its project: the document as typed if it parses, or
-// with the repair that the cursor's context selects (LspCompletionRepair). A
-// request that needs no analysis is answered at once. See
-// docs/architecture.md#completion.
+// open document's current text, and the declarations in scope there, or after
+// "." the members of the receiver alone, from a completion analysis of its
+// project: the document as typed if it parses, or with the repair that the
+// cursor's context selects (LspCompletionRepair). A request that needs no
+// analysis is answered at once. See docs/architecture.md#completion.
 class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"
@@ -376,7 +379,8 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 			return finish(r, keywordList(r));
 		}
 		if (AnalysisOutcome.Completed.?(outcome)) {
-			var result = declarations(r, AnalysisOutcome.Completed.!(outcome).snapshot);
+			var snapshot = AnalysisOutcome.Completed.!(outcome).snapshot;
+			var result = if(r.kinds == AnalysisScopeKinds.MEMBERS, members(r, snapshot), declarations(r, snapshot));
 			if (result != JsonValue.Null) {
 				cachedUri = r.uri;
 				cachedIdentity = r.identity;
@@ -436,6 +440,20 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		}
 		for (k < r.keywords.length) items[order.length + k] = r.keywords[k];
 		return list(items, scope.truncated);
+	}
+	// The members of a member query's answer, in its order, each with its
+	// detail or its declaration's signature; or null, as for declarations,
+	// where there is no answer. No keyword follows ".".
+	private def members(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> JsonValue {
+		var m = snapshot.members;
+		if (!snapshot.parsed || m == null) return JsonValue.Null;
+		var items = Array<JsonValue>.new(m.names.length);
+		for (i < items.length) {
+			var detail = m.details[i], d = m.declarations[i];
+			if (detail == null && d >= 0) detail = snapshot.declarations[d].signature;
+			items[i] = item(m.names[i], LspSymbolKind.completion(m.kinds[i]), detail, rank(i), r.range);
+		}
+		return list(items, m.truncated);
 	}
 	// Answers the waiting or running completion that {n} cancels with
 	// RequestCancelled; its job never starts, or its result is dropped.

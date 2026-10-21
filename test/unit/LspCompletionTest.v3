@@ -905,8 +905,8 @@ def test_capability(t: Tester) {
 	var reply = s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}");
 	var caps = JsonValue.JObject.!(JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v["result"]).v["capabilities"]).v;
 	t.assert(caps.has("completionProvider"), "completionProvider advertised");
-	// No trigger characters and no resolve: the options object is empty.
-	t.assert_string("{}", JsonRpcJson.render(StringBuilder.new(), caps["completionProvider"]).toString());
+	// "." triggers member completion, and there is no resolve.
+	t.assert_string("{\"triggerCharacters\":[\".\"]}", JsonRpcJson.render(StringBuilder.new(), caps["completionProvider"]).toString());
 }
 
 def test_parse_failure(t: Tester) {
@@ -1033,14 +1033,14 @@ def test_no_analysis(t: Tester) {
 	doc["uri"] = JsonValue.String(uri);
 	doc["languageId"] = JsonValue.String("virgil");
 	doc["version"] = JsonValue.Int(1);
-	doc["text"] = JsonValue.String("component Main {\n\tdef main() {\n\t\tvar s = Shapes.;\n\t\t// wh\n\t}\n}\n");
+	doc["text"] = JsonValue.String("component Main {\n\tdef main() {\n\t\tvar s = 123456.;\n\t\t// wh\n\t}\n}\n");
 	params["textDocument"] = JsonValue.JObject(doc);
 	s.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
 	t.assert(s.analyzing(), "the open schedules an analysis");
 	var started = supervisor.workersStarted, busy = supervisor.busy(), notifications = sent.length;
 	t.assert(s.projects.forDocument(uri).active != null, "the document is in a project");
 	t.assert(s.projects.forDocument(uri).active.snapshot == null, "no analysis has completed");
-	// After ".", in a comment, and where a new name goes.
+	// After a number's ".", in a comment, and where a new name goes.
 	t.asserti(0, JsonValue.JArray.!(complete(t, s, uri, 2, 17)["items"]).v.length);
 	t.asserti(0, JsonValue.JArray.!(complete(t, s, uri, 3, 7)["items"]).v.length);
 	t.assert_string("def new private var", render(complete(t, s, uri, 4, 2)));
