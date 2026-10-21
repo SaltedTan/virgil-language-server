@@ -224,7 +224,9 @@ def test_unbraced_bodies(t: Tester) {
 // end with lambdas, reads each link of the chain a bounded number of times:
 // twice as deep a chain reads at most about twice as many. Reading each
 // one's extent again at each depth, as range() does, read a number that grows
-// with the cube, and, for a match's default case, doubles at each depth.
+// with the cube, and, for a match's default case, doubles at each depth. A
+// lambda that captures many variables reads each capture a bounded number of
+// times too, rather than once for each of its parameters.
 def test_deep_nesting(t: Tester) {
 	var chains = [
 		("", "if (true) ", "var n = $p;", 1100),
@@ -237,30 +239,50 @@ def test_deep_nesting(t: Tester) {
 	for (c in chains) {
 		var small = deepSteps(t, c, c.3), large = deepSteps(t, c, 2 * c.3);
 		if (small <= 0 || large > 2 * small + 100) {
-			t.fail3("\"%s\" chains read %d statements and expressions at depth %d, ", c.1, large, 2 * c.3);
+			t.fail3("\"%s\" chains read %d steps at depth %d, ", c.1, large, 2 * c.3);
 			t.fail2("against %d at depth %d", small, c.3);
 		}
 	}
+	var small = captureSteps(t, 1000), large = captureSteps(t, 2000);
+	if (small <= 0 || large > 2 * small + 100) t.fail2("a lambda with 2,000 captures reads %d steps, against %d with 1,000", large, small);
 }
-// The statements and expressions read to find the scope under {n} links of
-// {chain}: a head, a link with "%d" for its index, and a tail with the
-// offset, where the parameter must be offered.
+// The steps read to find the scope under {n} links of {chain}: a head, a
+// link with "%d" for its index, and a tail with the offset, where the
+// parameter must be offered.
 def deepSteps(t: Tester, chain: (string, string, string, int), n: int) -> int {
 	var b = StringBuilder.new().puts("component C { def m(p: int) { ").puts(chain.0);
 	for (i < n) b.put1(chain.1, i);
-	var m = unmark(b.puts(chain.2).puts(" } }").toString());
+	return scopeSteps(t, b.puts(chain.2).puts(" } }").toString(), "p", Strings.format2("\"%s\" x %d", chain.1, n));
+}
+// The steps read to find the scope in a lambda that captures each of {n}
+// parameters, the first of which must be offered.
+def captureSteps(t: Tester, n: int) -> int {
+	var params = StringBuilder.new(), uses = StringBuilder.new();
+	for (i < n) {
+		if (i > 0) {
+			params.puts(", ");
+			uses.puts(", ");
+		}
+		params.put1("p%d: int", i);
+		uses.put1("p%d", i);
+	}
+	var text = Strings.format2("component C { def m(%s) { var f = fun () => [$%s]; } }", params.toString(), uses.toString());
+	return scopeSteps(t, text, "p0", Strings.format1("%d captures", n));
+}
+def scopeSteps(t: Tester, marked: string, name: string, label: string) -> int {
+	var m = unmark(marked);
 	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
 	if (!a.verified) {
-		t.fail2("\"%s\" x %d does not verify", chain.1, n);
+		t.fail1("%s does not verify", label);
 		return -1;
 	}
 	var s = a.scopeAt(MAIN, m.1, V, ""), offered = false;
 	if (s == null) {
-		t.fail2("no scope under \"%s\" x %d", chain.1, n);
+		t.fail1("no scope under %s", label);
 		return -1;
 	}
-	for (d in s.declarations) offered = offered || Strings.equal(d.name, "p");
-	t.assert(offered, Strings.format2("p offered under \"%s\" x %d", chain.1, n));
+	for (d in s.declarations) offered = offered || Strings.equal(d.name, name);
+	t.assert(offered, Strings.format2("%s offered under %s", name, label));
 	return s.steps;
 }
 

@@ -57,9 +57,10 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def edge = Vector<FunExpr>.new();
 	private var edgeNext: int;
 	private var edgeEnd: int;
-	// The statements and expressions that stmtEnd and exprEnd have read,
-	// which grows in proportion to the code that contains the offset and its
-	// siblings; AnalysisScope:deep_nesting checks it.
+	// The members, statements, cases, expressions, types, and parameters
+	// that the walk has read, including those that each range() it asks for
+	// reads (see range), which grows in proportion to the code that contains
+	// the offset and its siblings; AnalysisScope:deep_nesting checks it.
 	private var steps: int;
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
@@ -307,13 +308,14 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			else if (i < file.components.length + file.classes.length + file.enums.length) c = file.enums[i - file.components.length - file.classes.length];
 			else c = file.layouts[i - file.components.length - file.classes.length - file.enums.length];
 			// A class's own super clause is its constructor's.
-			if (c.superclause != null && c.superclause.args != null && inside(c.superclause.args.range()) && c.constructor != null) {
+			if (c.superclause != null && c.superclause.args != null && inside(range(c.superclause.args)) && c.constructor != null) {
 				enterConstructor(c, c.constructor, c.superclause.args);
 				return;
 			}
 			var first = int.max;
 			for (l = c.members; l != null; l = l.tail) {
 				var m = l.head;
+				steps++;
 				// A parameter's field, a default constructor, or a lambda's method.
 				if (m.isSynthetic) continue;
 				var e = extent(m);
@@ -340,7 +342,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		match (best) {
 			x: VstNew => {
 				var sc = x.superclause;
-				if (sc != null && sc.args != null && inside(sc.args.range())) enterConstructor(compound, x, sc.args);
+				if (sc != null && sc.args != null && inside(range(sc.args))) enterConstructor(compound, x, sc.args);
 				else enterMethod(x);
 			}
 			x: VstMethod => enterMethod(x);
@@ -365,11 +367,11 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def enterMethod(m: VstMethod) {
 		method = m;
 		var body = m.func.body;
-		if (body == null || offset < point(body.range())) return;
+		if (body == null || offset < point(stmtRange(body))) return;
 		receiver = true;
 		enterScope(!compound.isFileScope);
 		params(m.func.params, null);
-		body.accept(this, ());
+		walkStmt(body);
 	}
 	// A super clause, checked with the constructor's receiver and parameters,
 	// after the field initializers (typeCheckNew), but with initOrder at the
@@ -393,23 +395,41 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (v != null) scopes[scopes.length - 1].put(v);
 	}
 	// Binds {list}, less the parameters that verification appended to a
-	// lambda's for the variables it {captures}.
+	// lambda's for the variables it {captures}. Those are the last: MethodEnv.
+	// lookupVar numbers each capture's parameter after the declared ones,
+	// which TypeChecker.enterFunc numbers from 1, and TypeChecker.
+	// visitFunExpr rebuilds the list in that order.
 	private def params(list: VstList<ParamDecl>, captures: List<(ParamDecl, VarBinding.Local)>) {
 		if (list == null) return;
+		var declared = 0;
 		for (l = list.list; l != null; l = l.tail) {
-			var captured = false;
-			for (c = captures; c != null; c = c.tail) captured = captured || c.head.0 == l.head;
-			if (!captured) bind(l.head);
+			steps++;
+			declared++;
+		}
+		for (c = captures; c != null; c = c.tail) {
+			steps++;
+			declared--;
+		}
+		for (l = list.list; l != null && declared > 0; l = l.tail) {
+			bind(l.head);
+			declared--;
 		}
 	}
 	// Enters a branch, which has a scope of its own (typeCheckStmtWithNewScope).
 	private def branch(s: Stmt) {
 		if (s == null) return;
 		if (!BlockStmt.?(s)) enterScope(false);
-		s.accept(this, ());
+		walkStmt(s);
 	}
+	// Each statement and expression that the walk enters is a step.
 	private def walk(e: Expr) {
-		if (e != null) e.accept(this, ());
+		if (e == null) return;
+		steps++;
+		e.accept(this, ());
+	}
+	private def walkStmt(s: Stmt) {
+		steps++;
+		s.accept(this, ());
 	}
 
 	// Statements that hold the offset.
@@ -417,6 +437,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		enterScope(false);
 		for (l = if(s.stmts != null, s.stmts.list); l != null; l = l.tail) {
 			var st = l.head;
+			steps++;
 			if (stmtBegin(st) > offset) return;
 			var e = stmtEnd(st);
 			if (e <= offset) {
@@ -425,7 +446,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				continue;
 			}
 			end = e;
-			st.accept(this, ());
+			walkStmt(st);
 			return;
 		}
 	}
@@ -448,7 +469,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		enterScope(false);
 		var v = s.varDecl;
 		if (v != null) {
-			if (v.init != null && inside(v.init.range())) return walk(v.init);
+			if (v.init != null && inside(range(v.init))) return walk(v.init);
 			if (offset < varEnd(v)) return;
 			bind(v);
 		}
@@ -471,15 +492,15 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitForLess(s: ForLessStmt, env: void) {
 		var e = end;
 		enterScope(false);
-		if (s.expr != null && offset < rangeEnd(s.expr.range())) return walk(s.expr);
+		if (s.expr != null && offset < rangeEnd(range(s.expr))) return walk(s.expr);
 		bind(s.varDecl);
-		if (holds(s.body, e)) s.body.accept(this, ());
+		if (holds(s.body, e)) walkStmt(s.body);
 	}
 	// Each variable is bound after its initializer (TypeChecker.checkVarDecl).
 	def visitLocal(s: LocalStmt, env: void) {
 		for (l = s.vars; l != null; l = l.tail) {
 			var v = l.head;
-			if (v.init != null && inside(v.init.range())) return walk(v.init);
+			if (v.init != null && inside(range(v.init))) return walk(v.init);
 			if (offset < varEnd(v)) return;
 			bind(v);
 		}
@@ -497,10 +518,11 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// A statement after "else" and the braces ends where the match does.
 	def visitMatch(s: MatchStmt, env: void) {
 		var e = end;
-		if (s.expr != null && offset < rangeEnd(s.expr.range())) return walk(s.expr);
+		if (s.expr != null && offset < rangeEnd(range(s.expr))) return walk(s.expr);
 		var last = elseStmt(s);
 		for (l = if(s.cases != null, s.cases.list); l != null; l = l.tail) {
 			var c = l.head;
+			steps++;
 			if (c.stmt == null || c.patterns == null) continue;
 			var begin = rangeEnd(c.patterns.range());
 			if (begin < 0 || offset < begin) continue;
@@ -517,7 +539,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				else for (p = pat.params.list; p != null; p = p.tail) bind(p.head);
 			}
 			end = caseEnd;
-			c.stmt.accept(this, ());
+			walkStmt(c.stmt);
 			return;
 		}
 		patterns = s;
@@ -596,7 +618,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		enterScope(false);
 		params(e.func.params, e.captures);
-		if (e.func.body != null) e.func.body.accept(this, ());
+		if (e.func.body != null) walkStmt(e.func.body);
 	}
 	private def exprs(list: VstList<Expr>) {
 		if (list != null) for (l = list.list; l != null; l = l.tail) walk(l.head);
@@ -609,8 +631,8 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		match (m) {
 			x: VstMethod => if (x.func.body != null) e = Ints.max(e, stmtEnd(x.func.body));
 			x: VstField => {
-				if (x.tref != null) e = Ints.max(e, rangeEnd(x.tref.range()));
-				if (x.init != null) e = Ints.max(e, rangeEnd(x.init.range()));
+				if (x.tref != null) e = Ints.max(e, rangeEnd(typeRange(x.tref)));
+				if (x.init != null) e = Ints.max(e, rangeEnd(range(x.init)));
 			}
 			x: VstEnumCase => if (x.args != null) e = Ints.max(e, rangeEnd(x.args.range()));
 			_ => ;
@@ -621,7 +643,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// space come between that and its initializer.
 	private def fieldHeaderEnd(f: VstField) -> int {
 		var e = tokenEnd(f.token);
-		if (f.tref != null) e = Ints.max(e, rangeEnd(f.tref.range()));
+		if (f.tref != null) e = Ints.max(e, rangeEnd(typeRange(f.tref)));
 		return if(e < 0, int.max, e);
 	}
 	// Where {s} begins. The range() of a statement with a branch or a body
@@ -635,7 +657,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			x: ForLessStmt => return point(x.start);
 			x: MatchStmt => return point(x.src);
 		}
-		return point(s.range());
+		return point(stmtRange(s));
 	}
 	// Where {s} ends: where the last statement that it ends with does, such
 	// as an unbraced body's, or a match's braces. This reads each of those
@@ -660,7 +682,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				x: LocalStmt => for (v = x.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
 				_ => ;
 			}
-			if (next == null) return Ints.max(e, rangeEnd(s.range()));
+			if (next == null) return Ints.max(e, rangeEnd(stmtRange(s)));
 			s = next;
 		}
 		return e;
@@ -671,7 +693,10 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def elseStmt(s: MatchStmt) -> Stmt {
 		if (s.cases == null) return null;
 		var last: MatchCase;
-		for (l = s.cases.list; l != null; l = l.tail) last = l.head;
+		for (l = s.cases.list; l != null; l = l.tail) {
+			steps++;
+			last = l.head;
+		}
 		if (last == null || last.stmt == null) return null;
 		var braces = rangeEnd(s.cases.range());
 		return if(braces >= 0 && stmtBegin(last.stmt) >= braces, last.stmt);
@@ -701,38 +726,90 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 					e = if(x.right != null, x.right, x.left);
 				}
 				x: AssignExpr => {
-					if (x.target == null) return rangeEnd(x.range());
+					if (x.target == null) return rangeEnd(range(x));
 					e = if(x.expr != null, x.expr, x.target);
 				}
-				x: NotExpr => if (x.expr != null) e = x.expr; else return rangeEnd(x.range());
-				x: NegExpr => if (x.expr != null) e = x.expr; else return rangeEnd(x.range());
-				x: BitwiseNegExpr => if (x.expr != null) e = x.expr; else return rangeEnd(x.range());
+				x: NotExpr => if (x.expr != null) e = x.expr; else return rangeEnd(range(x));
+				x: NegExpr => if (x.expr != null) e = x.expr; else return rangeEnd(range(x));
+				x: BitwiseNegExpr => if (x.expr != null) e = x.expr; else return rangeEnd(range(x));
 				x: RangeExpr => e = if(x.end != null, x.end, x.start);
 				x: FunExpr => {
 					if (record && x != first) edge.put(x);
 					var body = x.func.body;
-					if (!ReturnStmt.?(body) || ReturnStmt.!(body).expr == null) return rangeEnd(x.range());
+					if (!ReturnStmt.?(body) || ReturnStmt.!(body).expr == null) return rangeEnd(range(x));
 					e = ReturnStmt.!(body).expr;
 				}
 				x: VarExpr => return rangeEnd(x.ident.range());
 				x: AutoExpr => return rangeEnd(x.token.range());
-				x: AppExpr => if (x.args != null) return rangeEnd(x.args.range()); else e = x.func;
+				x: AppExpr => if (x.args != null) return rangeEnd(range(x.args)); else e = x.func;
 				x: IndexExpr => if (x.exprs != null) return rangeEnd(x.exprs.range()); else e = x.expr;
 				// Tuples, arrays, if(...), literals, and strings end with
 				// their own last token.
-				_ => return rangeEnd(e.range());
+				_ => return rangeEnd(range(e));
 			}
 		}
 		return -1;
 	}
 	private def varEnd(v: VarDecl) -> int {
 		var e = tokenEnd(v.token);
-		if (v.tref != null) e = Ints.max(e, rangeEnd(v.tref.range()));
-		if (v.init != null) e = Ints.max(e, rangeEnd(v.init.range()));
+		if (v.tref != null) e = Ints.max(e, rangeEnd(typeRange(v.tref)));
+		if (v.init != null) e = Ints.max(e, rangeEnd(range(v.init)));
 		return e;
 	}
+	// Aeneas's range() for an expression, a statement, or a type reads each
+	// node that it begins or ends with (Vst.v3), as exprReads, stmtReads,
+	// and typeReads count them; the scope query asks for one only through
+	// these, which count those nodes as steps.
 	private def range(e: Expr) -> FileRange {
-		return if(e != null, e.range());
+		if (e == null) return null;
+		steps += exprReads(e);
+		return e.range();
+	}
+	private def stmtRange(s: Stmt) -> FileRange {
+		if (s == null) return null;
+		steps += stmtReads(s);
+		return s.range();
+	}
+	private def typeRange(t: TypeRef) -> FileRange {
+		if (t == null) return null;
+		steps += typeReads(t);
+		return t.range();
+	}
+	private def exprReads(e: Expr) -> int {
+		if (e == null) return 0;
+		match (e) {
+			x: VarExpr => return 1 + exprReads(x.expr);
+			x: AutoExpr => return 1 + exprReads(x.expr);
+			x: AppExpr => return 1 + exprReads(x.func) + exprReads(x.args);
+			x: IndexExpr => return 1 + exprReads(x.expr);
+			x: RangeExpr => return 1 + exprReads(x.expr) + exprReads(if(x.end != null, x.end, x.start));
+			x: NotExpr => return 1 + exprReads(x.expr);
+			x: NegExpr => return 1 + exprReads(x.expr);
+			x: BitwiseNegExpr => return 1 + exprReads(x.expr);
+			x: AssignExpr => return if(x.target == null, 1, 1 + exprReads(x.target) + exprReads(x.expr));
+			x: BinOpExpr => return if(x.left == null, 1, 1 + exprReads(x.left) + exprReads(x.right));
+			x: FunExpr => return 1 + stmtReads(x.func.body);
+		}
+		return 1;
+	}
+	private def stmtReads(s: Stmt) -> int {
+		if (s == null) return 0;
+		match (s) {
+			x: IfStmt => return 1 + stmtReads(x.tbranch) + stmtReads(x.fbranch);
+			x: WhileStmt => return 1 + stmtReads(x.body);
+			x: ForStmt => return 1 + stmtReads(x.body);
+			x: ForeachStmt => return 1 + stmtReads(x.body);
+			x: ForLessStmt => return 1 + stmtReads(x.body);
+			x: MatchStmt => return 1 + if(x.defcase != null, 1 + stmtReads(x.defcase.stmt));
+			x: ReturnStmt => return 1 + exprReads(x.expr);
+		}
+		return 1;
+	}
+	private def typeReads(t: TypeRef) -> int {
+		match (t) {
+			x: FuncTypeRef => return 1 + typeReads(x.paramType) + typeReads(x.returnType);
+		}
+		return 1;
 	}
 	private def inside(r: FileRange) -> bool {
 		var b = point(r);
