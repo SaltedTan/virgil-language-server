@@ -45,12 +45,11 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		// Validate every URI before reading files. Canonical duplicates would
 		// otherwise compile the same file twice with misleading diagnostics.
 		var keys = Array<string>.new(uris.length);
-		var seen = Strings.newMap<bool>();
+		var seen = OrderedStringMap<bool>.new();
 		for (i < uris.length) {
 			if (!JsonValue.String.?(uris[i])) return invalid("uris must contain only valid document URIs");
 			var key = DocumentUri.normalize(JsonValue.String.!(uris[i]).v);
-			if (key == null || seen.has(key)) return invalid("uris must be valid and distinct after normalization");
-			seen[key] = true;
+			if (key == null || !seen.add(key, true)) return invalid("uris must be valid and distinct after normalization");
 			keys[i] = key;
 		}
 		var captured = LspAnalysisCapture.capture(store, keys, pendingProject != null);

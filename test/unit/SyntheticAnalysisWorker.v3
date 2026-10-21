@@ -74,13 +74,7 @@ component SyntheticAnalysisWorker {
 			AeneasAdapter.analyzeProgram(request.sources, request.options, false));
 		var files: Array<(string, Array<AnalysisOccurrence>)>;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
-			var list = Vector<(string, Array<AnalysisOccurrence>)>.new();
-			for (i < request.sources.length) {
-				var path = request.sources[i].path, seen = false;
-				for (j < i) seen = seen || Strings.equal(request.sources[j].path, path);
-				if (!seen) list.put((path, analysis.occurrences(path)));
-			}
-			files = list.extract();
+			files = request.occurrences(analysis);
 		} else if (request.scope() != null) {
 			files = [];
 		}

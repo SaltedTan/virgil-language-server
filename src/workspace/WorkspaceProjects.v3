@@ -517,8 +517,8 @@ class WorkspaceProjects(store: DocumentStore) {
 	}
 	def owners(paths: Array<string>) -> Array<ProjectContext> {
 		var result = Array<ProjectContext>.new(paths.length);
-		var nearestByDir = Strings.newMap<string>();
-		var governingByPath = Strings.newMap<WorkspaceConfig>();
+		var nearestByDir = OrderedStringMap<string>.new();
+		var governingByPath = OrderedStringMap<WorkspaceConfig>.new();
 		for (i < paths.length) {
 			var dir = ProjectFiles.parent(paths[i]);
 			if (!nearestByDir.has(dir)) nearestByDir[dir] = nearest(paths[i]);

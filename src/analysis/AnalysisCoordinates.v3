@@ -231,17 +231,18 @@ class AnalysisTokenCoordinates {
 // Maps whole-program diagnostics to byte offsets: through each file's captured
 // retrospective tokens, then its replay map, built only for files with
 // diagnostics. The first source is kept if paths repeat, as the program's
-// binding index does.
+// binding index does. Paths key ordered maps, which take O(log n) whatever
+// the paths; see OrderedStringMap.
 class AnalysisSourceCoordinates {
 	private def maps = AnalysisSourceMaps.new();
-	private def tokens = Strings.newMap<AnalysisTokenCoordinates>();
+	private def tokens = OrderedStringMap<AnalysisTokenCoordinates>.new();
 	private def positions = AnalysisPositionIndex<(int, int)>.new();
 	new(sources: Array<AnalysisSource>) {
 		for (s in sources) maps.add(s.path, s.input);
 	}
 	def capture(path: string) -> AnalysisTokenCoordinates {
 		var result = AnalysisTokenCoordinates.new(positions);
-		if (!tokens.has(path)) tokens[path] = result;
+		tokens.add(path, result);
 		return result;
 	}
 	def diagnostic(d: AnalysisDiagnostic) -> AnalysisDiagnostic {
@@ -260,14 +261,15 @@ class AnalysisSourceCoordinates {
 // The source bytes of a program's files by path, each with a replay map built
 // on first use. The first source is kept if paths repeat. The worker-side
 // {ProgramAnalysis} keeps one for lazy binding collection; the server never
-// holds source bytes this way.
+// holds source bytes this way. Paths key ordered maps, as in
+// {AnalysisSourceCoordinates}.
 class AnalysisSourceMaps {
-	private def inputs = Strings.newMap<Array<byte>>();
-	private def maps = Strings.newMap<AnalysisCoordinates>();
+	private def inputs = OrderedStringMap<Array<byte>>.new();
+	private def maps = OrderedStringMap<AnalysisCoordinates>.new();
 
 	// A missing capture is empty source, as in AeneasAdapter.analyzeProgram.
 	def add(path: string, input: Array<byte>) {
-		if (path != null && !inputs.has(path)) inputs[path] = if(input == null, Array<byte>.new(0), input);
+		if (path != null) inputs.add(path, if(input == null, Array<byte>.new(0), input));
 	}
 	// The replay map of {path}, or null if it has no source.
 	def map(path: string) -> AnalysisCoordinates {

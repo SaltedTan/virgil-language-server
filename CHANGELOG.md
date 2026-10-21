@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A development `repair` command and a corpus of 45 typing states that measure repairing incomplete code at the cursor for semantic completion. [ADR-0006](docs/decisions/0006-incomplete-code-repair.md) records the results and the decision: semantic completion will use the narrow repair at the cursor, and error-tolerant parsing stays in M6.
 - Rename (`textDocument/rename`) and prepare rename (`textDocument/prepareRename`) from open documents in configured projects, including unsaved buffers, with versioned edits across open and closed files and a preflight that checks bindings. The Neovim configurations now declare support for versioned edits. See [Rename](docs/architecture.md#rename) for the rules, refusals, and measurements, and [Prepare rename](docs/architecture.md#prepare-rename) for what can be renamed.
 
+### Fixed
+
+- Analyses, diagnostics, and requests no longer slow down quadratically when a workspace's file names hash alike: maps keyed by path or URI in the server and the analysis worker are ordered trees now, so an 8,000-file analysis that took 15 s takes 0.3 s, with ordinary workspaces as fast as before. See [Maps keyed by path or URI](docs/architecture.md#maps-keyed-by-path-or-uri).
+
 ## [0.1.0-alpha.1] - 2026-10-20
 
 ### Added

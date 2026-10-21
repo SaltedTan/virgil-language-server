@@ -7,8 +7,9 @@
 // implemented. {LspDiagnosticLists} merges them with the URI's
 // current semantic diagnostics and publishes the complete list.
 class LspParserDiagnostics(lists: LspDiagnosticLists) {
-	// The language options each open document was last parsed with, by URI.
-	private def parsedWith = Strings.newMap<Array<string>>();
+	// The language options each open document was last parsed with, by URI
+	// in byte order; see OrderedStringMap.
+	private def parsedWith = OrderedStringMap<Array<string>>.new();
 
 	def update(doc: DocumentOverlay, options: Array<string>) {
 		var path = DocumentUri.filePath(doc.uri);
@@ -32,7 +33,6 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		var found = Vector<string>.new();
 		parsedWith.apply(collectFile(found, _, _));
 		var uris = found.extract();
-		uris = Arrays.sort(uris, 0, uris.length, ProjectFiles.before);
 		var owners = projects.owners(Arrays.map(uris, DocumentUri.filePath));
 		for (i < uris.length) {
 			var doc = store.overlay(uris[i]);
