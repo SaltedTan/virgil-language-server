@@ -18,6 +18,8 @@ def X = [
 	T("LspCompletion:linear_scan", test_linear_scan),
 	T("LspCompletion:context_positions", test_context_positions),
 	T("LspCompletion:parameter_delimiters", test_parameter_delimiters),
+	T("LspCompletion:index_setter_parameter", test_index_setter_parameter),
+	T("LspCompletion:auto_operators", test_auto_operators),
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
 	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
@@ -343,6 +345,83 @@ def test_parameter_delimiters(t: Tester) {
 	t.asserti(1, at(body).calls().length);
 	checkSyntax(t, "match (x) { V.Some(a), $ }", LspCursorSyntax.PATTERN);
 	checkOffered(t, "match (x) { V.Some(a) => $ }", "break continue def false for fun if match null return true var while");
+}
+
+def test_index_setter_parameter(t: Tester) {
+	for (marked in [
+		"class C { def [i: int] = va$ }",
+		"class C { def [i: int] = $ }",
+		"class C { private def [i: Array<(int, bool)>] /* c */ = /* c */ $ }",
+		"component C { def [i: int, j: int]\n=\n$ }"
+	]) {
+		checkOffered(t, marked, "var");
+		checkSyntax(t, marked, LspCursorSyntax.PARAMETER);
+		checkCalls(t, marked, []);
+		t.asserta("setter roles", [LspOpenRole.MEMBERS], at(marked).roles, putRole);
+		t.assert_string("var", labels(t, marked));
+	}
+	checkOffered(t, "type V { case C { def [i: int] = $ } }", "var");
+	checkOffered(t, "class C { def [i: int] = var $ }", "");
+	checkOffered(t, "class C { def [i: int] = value $ }", "");
+	checkSyntax(t, "class C { def [i: int] = value: $ }", LspCursorSyntax.TYPE);
+	var typed = "class C { def [i: int] = var value: Array<(int, $";
+	checkSyntax(t, typed, LspCursorSyntax.TYPE);
+	checkOffered(t, typed, "");
+	t.asserta("setter type roles", [LspOpenRole.MEMBERS, LspOpenRole.TYPE_ARGS, LspOpenRole.TYPES], at(typed).roles, putRole);
+	checkOffered(t, "class C { def [i: int] = value: int; $ }", "def new private var");
+	checkSyntax(t, "class C { def [i: int] = value: int { $ } }", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+	checkOffered(t, "class C { def [i: int] => $ }", "false fun if null true");
+	checkOffered(t, "class C { var x = $ }", "false fun if null true");
+	checkOffered(t, "def f() { a[i] = $ }", "false fun if null true");
+	t.asserti(0, AeneasAdapter.parseFile("setter.v3", "class C { def [i: int] = var value: int {} }", []).diagnostics.length);
+}
+
+def test_auto_operators(t: Tester) {
+	var EXPR = LspCursorSyntax.EXPRESSION;
+	var STMT = LspCursorSyntax.STATEMENT | EXPR;
+	for (op in ["++", "--"]) {
+		for (marked in [
+			"def f() { g(i%s $) }",
+			"def f() { a[i%s $] }",
+			"def f() { if (i%s $) {} }",
+			"def f() { i%s $ }",
+			"def f() { g(a[i]%s $) }",
+			"def f() { g(h()%s $) }",
+			"def f() { g((i)%s $) }"
+		]) {
+			var text = Strings.format1(marked, op);
+			checkOffered(t, text, "");
+			checkSyntax(t, text, 0);
+		}
+		for (marked in ["def f() { i%s\n wh$ }", "def f() { i%s; wh$ }"]) {
+			var text = Strings.format1(marked, op);
+			checkSyntax(t, text, STMT);
+			t.assert_string("break continue def false for fun if match null return true var while", labels(t, text));
+		}
+		for (marked in [
+			"def f() { g(%s$) }",
+			"def f() { a[%s$] }",
+			"def f() { %s$ }",
+			"def f() { return %s$ }",
+			"def f() { if (x) %s$ }",
+			"def f() { while (x) %s$ }",
+			"def f() { for (i < n) %s$ }",
+			"def f() { {} %s$ }",
+			"def f() { g(i > %s$) }",
+			"def f() { g(i + %s$) }"
+		]) {
+			var text = Strings.format1(marked, op);
+			checkOffered(t, text, "false fun if null true");
+			checkSyntax(t, text, EXPR);
+		}
+		checkSyntax(t, Strings.format1("def f() { g(%sx $) }", op), 0);
+		checkSyntax(t, Strings.format1("def f() { %sx\n wh$ }", op), STMT);
+		checkSyntax(t, Strings.format1("def f() { for (i = 0; i < n; i%s $) }", op), 0);
+		checkSyntax(t, Strings.format1("def f() { for (i = 0; i < n; %s$) }", op), EXPR);
+		checkOffered(t, Strings.format1("def f() { g(i%s, $) }", op), "false fun if null true");
+		checkSyntax(t, Strings.format1("def f() { i\n%s $ }", op), 0);
+		t.asserti(0, AeneasAdapter.parseFile("auto.v3", Strings.format2("def f() { var i = 0; %si; i%s; }", op, op), []).diagnostics.length);
+	}
 }
 
 def test_context_positions(t: Tester) {

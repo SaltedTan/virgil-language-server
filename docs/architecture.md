@@ -505,6 +505,7 @@ Positions in reasons are one-based lines and UTF-16 columns of the text before t
 - A string runs from `"` to the next unescaped `"`. A backslash escapes the next byte if it is printable, so `"a\"b"` is one string. A control byte, such as a line break or a tab, ends a string where Aeneas reports it unterminated.
 - A byte literal is read as Aeneas reads it: a quote, one printable byte or an escape (`\xHH` takes up to two hex digits), and a closing quote. A malformed one, such as `'ab'`, ends where Aeneas stops reading it.
 - An identifier is an ASCII letter followed by ASCII letters, digits, and underscores; a keyword is an identifier of two or more bytes that Aeneas's keyword list spells. A number, or `_`, starts with a digit or `_` and runs over identifier bytes and a `.` followed by a digit. Other bytes outside literals, such as control and non-ASCII bytes, are skipped, as Aeneas skips them with an error.
+- Adjacent `++` and `--` are single operators. A prefix operator expects an operand; a postfix operator completes one. After `g(i++ |)` no expression keywords are offered, while after `i--` and a line break, statement keywords are offered through the missing-semicolon recovery below. A control header's closing `)` leaves a statement position, so `if (x) ++` starts a prefix expression.
 
 A cursor inside a comment or a literal, or at the end of an unterminated one, is in it, and gets nothing; a cursor just after a closed one is in code. A cursor in or just past a number or `_` also gets nothing, since an identifier cannot continue it.
 
@@ -529,7 +530,7 @@ The scanner recovers from unbalanced text so that a mistake above the cursor doe
 | An operator, `=`, `(`, `[`, or `,` in a call, condition, group, or index; `return`, `in`, or `=>` outside a match | expression |
 | `:`, `->`, `extends`, `descriptor`, or `describes`; `(` or `,` in a tuple type; `<` or `,` in a type's type arguments | type; after a constructor's `:`, also its `super` clause |
 | `<` in an expression, where a comparison and a generic call's type arguments look alike | expression and type |
-| `(` or `,` in parameters, or `[` or `,` in an indexed method's parameters | a parameter: `var` for a method's, constructor's, lambda's, class's, or data type's, nothing for an enum's, variant case's, or packing's |
+| `(` or `,` in parameters, `[` or `,` in an indexed method's parameters, or `=` immediately after that method's `]` | a parameter: `var` for a method's (including an indexed setter's value parameter), constructor's, lambda's, class's, or data type's, nothing for an enum's, variant case's, or packing's |
 | `(` or `,` in a match pattern head's parameters, including qualified heads such as `V.Some(a, ` | names or `_`, with no keywords |
 | A class's name, type parameters, parameters, or parent | class header (`extends`, `descriptor`, `describes`) |
 | A variant's name or parameters | variant header (`extends`) |
@@ -537,7 +538,7 @@ The scanner recovers from unbalanced text so that a mistake above the cursor doe
 | A loop variable in a for header, before its first `;` | `in` |
 | `private`, `def` in a class, `thread`, `import` and its name, `export` and its name | what may follow: `private class` and the like, `def var`, `thread component`, `import component`, `export def` |
 | `.` | member access, which gets no keywords |
-| Any other operand: a name, a literal, `)`, `]`, a type's closing `>`, or a lambda's end | nothing, since an operator follows; after a line break, also the positions where the block's declarations or statements start, since a missing `;` leaves them unseparated |
+| Any other operand: a name, a literal, `)`, `]`, a type's closing `>`, a lambda's end, or a postfix `++` or `--` | nothing, since an operator follows; after a line break, also the positions where the block's declarations or statements start, since a missing `;` leaves them unseparated |
 
 A new name, such as after `class`, `def`, `var`, `case`, or `for (`, gets nothing, and so do an enum's and a layout's bodies, where only names go.
 

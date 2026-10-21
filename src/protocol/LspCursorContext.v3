@@ -122,6 +122,8 @@ component LspCursorPunct {
 	def FAT_ARROW: byte = 'F';	// "=>"
 	def DOTS: byte = 'R';		// "..", "...", or more dots
 	def EMPTY_BODY: byte = 'E';	// the ";" that is a lambda's empty body
+	def PREFIX_AUTO: byte = 'P';
+	def POSTFIX_AUTO: byte = 'S';
 }
 
 // What a token before the cursor was, as the look-back needs it.
@@ -190,6 +192,7 @@ class LspCursorScanner(text: Array<byte>) {
 	def HEADER_NAME = 1;
 	def HEADER_AFTER_NAME = 2;
 	def HEADER_TYPE_PARAMS = 3;
+	def HEADER_PARAMETER = 4;
 
 	// The context at {cursor}, which is clamped to the text.
 	def scan(cursor: int) -> LspCursorContext {
@@ -282,6 +285,10 @@ class LspCursorScanner(text: Array<byte>) {
 					i += 2;
 				} else if (c == '=' && next == '>') {
 					punct(LspCursorPunct.FAT_ARROW, i);
+					i += 2;
+				} else if ((c == '+' || c == '-') && next == c) {
+					var postfix = operand() && !(prevKind == LspCursorToken.PUNCT && prevByte == '>' && prevClosed != LspOpenRole.TYPE_ARGS);
+					punct(if(postfix, LspCursorPunct.POSTFIX_AUTO, LspCursorPunct.PREFIX_AUTO), i);
 					i += 2;
 				} else if (c == '.' && next == '.') {
 					var j = i + 2;
@@ -532,6 +539,9 @@ class LspCursorScanner(text: Array<byte>) {
 		if ((closed == LspOpenRole.CONTROL || closed == LspOpenRole.FOR || closed == LspOpenRole.FOR_CLAUSES) && inBraces()) {
 			levelDecls[level()] = NO_DECL;
 		}
+		if (c == '=' && prevKind == LspCursorToken.PUNCT && prevByte == ']' && prevClosed == LspOpenRole.INDEX_PARAMS) {
+			header = HEADER_PARAMETER;
+		}
 		setPrev(LspCursorToken.PUNCT, start);
 		prevByte = c;
 		prevClosed = closed;
@@ -632,7 +642,12 @@ class LspCursorScanner(text: Array<byte>) {
 				_ => return false;
 			}
 			PUNCT => match (prevByte) {
-				')', ']', '>', '}', LspCursorPunct.EMPTY_BODY => return true;
+				')' => return prevClosed != LspOpenRole.CONTROL && prevClosed != LspOpenRole.MATCH_CONTROL
+					&& prevClosed != LspOpenRole.FOR && prevClosed != LspOpenRole.FOR_CLAUSES
+					&& prevClosed != LspOpenRole.PARAMS && prevClosed != LspOpenRole.PARAMS_VAR;
+				']' => return prevClosed != LspOpenRole.INDEX_PARAMS;
+				'}' => return prevClosed == LspOpenRole.LAMBDA;
+				'>', LspCursorPunct.EMPTY_BODY, LspCursorPunct.POSTFIX_AUTO => return true;
 				_ => return false;
 			}
 			NONE => return false;
@@ -641,6 +656,7 @@ class LspCursorScanner(text: Array<byte>) {
 
 	// The LspCursorSyntax flags of the current position.
 	private def position() -> int {
+		if (header == HEADER_PARAMETER) return LspCursorSyntax.PARAMETER;
 		if (prevKind == LspCursorToken.PUNCT && prevByte == '.') return LspCursorSyntax.MEMBER;
 		var r = innermost();
 		if (r != LspOpenRole.TOP && !isBrace(r)) return parenPosition(r);
@@ -666,7 +682,7 @@ class LspCursorScanner(text: Array<byte>) {
 					LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
 				'#' => return 0;
 				'>' => if (prevClosed != LspOpenRole.TYPE_ARGS) return LspCursorSyntax.EXPRESSION | forIn(r);
-				')', ']', '}', LspCursorPunct.EMPTY_BODY => ;
+				')', ']', '}', LspCursorPunct.EMPTY_BODY, LspCursorPunct.POSTFIX_AUTO => ;
 				_ => return LspCursorSyntax.EXPRESSION;
 			}
 		}
@@ -707,7 +723,7 @@ class LspCursorScanner(text: Array<byte>) {
 				'>' => if (prevClosed != LspOpenRole.TYPE_ARGS) {
 					return if(header == HEADER_AFTER_NAME, 0, LspCursorSyntax.EXPRESSION) | afterOperand(role, decl);
 				}
-				']', LspCursorPunct.EMPTY_BODY => ;
+				']', LspCursorPunct.EMPTY_BODY, LspCursorPunct.POSTFIX_AUTO => ;
 				_ => return LspCursorSyntax.EXPRESSION;
 			}
 			_ => ;
