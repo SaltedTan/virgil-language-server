@@ -1142,6 +1142,7 @@ def test_scope_answer_round_trip(t: Tester) {
 	offset--;
 	var answer = analysis.scopeAt("s.v3", offset, AnalysisScopeKinds.VALUES, "");
 	t.assert(answer != null && answer.declarations.length >= 3, "the query has an answer");
+	answer.hiddenBuiltins = ["int", "u32"];
 	var decoded = decodeScoped(scopedResult(analysis, answer, true), true);
 	if (decoded == null) return t.fail("scope answer did not decode");
 	var snapshot = decoded.snapshot, scope = snapshot.scope;
@@ -1149,6 +1150,9 @@ def test_scope_answer_round_trip(t: Tester) {
 	t.asserti(answer.declarations.length, scope.declarations.length);
 	t.asserti(answer.thisLevel, scope.thisLevel);
 	t.assertz(answer.truncated, scope.truncated);
+	t.asserti(2, scope.hiddenBuiltins.length);
+	t.assert_string("int", scope.hiddenBuiltins[0]);
+	t.assert_string("u32", scope.hiddenBuiltins[1]);
 	for (i < answer.declarations.length) {
 		var d = snapshot.declarations[scope.declarations[i]];
 		t.assert_string(answer.declarations[i].name, d.name);
@@ -1189,17 +1193,17 @@ def plainLength(analysis: ProgramAnalysis) -> int {
 }
 // {payload}, which ends with an empty scope answer, with {tail} in place of it.
 def withScopeTail(payload: Array<byte>, tail: DataWriter) -> Array<byte> {
-	return Arrays.concat(Arrays.range(payload, 0, payload.length - 3), tail.extract());
+	return Arrays.concat(Arrays.range(payload, 0, payload.length - 4), tail.extract());
 }
 def test_invalid_scope_answers(t: Tester) {
 	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
 	var empty = scopedResult(analysis, AnalysisScopeAnswer.new([], [], -1, false), true);
-	t.assert(Arrays.equal<byte>("\x00\x7F\x00", Arrays.range(empty, empty.length - 3, empty.length)), "an empty answer is three bytes");
+	t.assert(Arrays.equal<byte>("\x00\x7F\x00\x00", Arrays.range(empty, empty.length - 4, empty.length)), "an empty answer is four bytes");
 	var declarations = decodeScoped(empty, true).snapshot.declarations.length;
 	t.assert(declarations >= 3, "the result has declarations");
 	// Well-formed: two candidates at levels 0 and 2, truncated.
 	var good = decodeScoped(withScopeTail(empty, DataWriter.new().putb(1).put_sleb32(0).put_sleb32(2)
-		.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(2)), true);
+		.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(2).put_sleb32(0)), true);
 	t.assert(good != null && good.snapshot.scope.truncated && good.snapshot.scope.declarations.length == 2, "a hand-built answer decodes");
 	var tails = [
 		("invalid flags", DataWriter.new().putb(2).put_sleb32(-1).put_sleb32(0)),
@@ -1211,7 +1215,12 @@ def test_invalid_scope_answers(t: Tester) {
 		("repeated declaration", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(2).put_sleb32(1).put_sleb32(0).put_sleb32(1).put_sleb32(1)),
 		("decreasing level", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(2).put_sleb32(0).put_sleb32(1).put_sleb32(1).put_sleb32(0)),
 		("negative level", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(1).put_sleb32(0).put_sleb32(-1)),
-		("trailing byte", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).putb(0))
+		("trailing byte", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).putb(0).putb(0)),
+		("negative hidden count", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(-1)),
+		("null hidden name", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(1).put_sleb32(-1)),
+		("empty hidden name", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(1).put_sleb32(0)),
+		("repeated hidden name", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(2)
+			.put_sleb32(3).puta("int").put_sleb32(3).puta("int"))
 	];
 	for (c in tails) t.assert(decodeScoped(withScopeTail(empty, c.1), true) == null, c.0);
 	// More than the cap, even of valid candidates.
@@ -1224,8 +1233,6 @@ def test_invalid_scope_answers(t: Tester) {
 	flagged[21] |= 8;
 	t.assert(decodeScoped(flagged, true) == null, "scope answer without occurrences");
 }
-// An ordinary result is charged as before; a scope answer is charged 64
-// bytes for its count and 8 per candidate, for its index and level.
 def test_scope_allocation(t: Tester) {
 	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
 	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
@@ -1233,10 +1240,15 @@ def test_scope_allocation(t: Tester) {
 	var base = decodeScoped(plain, false).snapshot.resultAllocation;
 	t.assertl(base, decodeScoped(plain, true).snapshot.resultAllocation);
 	var empty = scopedResult(analysis, AnalysisScopeAnswer.new([], [], -1, false), true);
-	t.assertl(base + 64, decodeScoped(empty, true).snapshot.resultAllocation);
+	t.assertl(base + 128, decodeScoped(empty, true).snapshot.resultAllocation);
 	var tail = DataWriter.new().putb(0).put_sleb32(0).put_sleb32(3);
 	for (i < 3) tail.put_sleb32(i).put_sleb32(i);
+	tail.put_sleb32(0);
 	var three = decodeScoped(withScopeTail(empty, tail), true).snapshot;
-	t.assertl(base + 64 + 3 * 8, three.resultAllocation);
+	t.assertl(base + 128 + 3 * 8, three.resultAllocation);
 	t.assertl(three.resultAllocation - base, three.retainedBytes - decodeScoped(plain, true).snapshot.retainedBytes);
+	var hidden = AnalysisScopeAnswer.new([], [], -1, false);
+	hidden.hiddenBuiltins = ["int"];
+	var decoded = decodeScoped(scopedResult(analysis, hidden, true), true).snapshot;
+	t.assertl(base + 128 + 8 + 64 + 3, decoded.resultAllocation);
 }

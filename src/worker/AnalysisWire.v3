@@ -348,6 +348,8 @@ component AnalysisWire {
 		w.putb(if(scope.truncated, SCOPE_TRUNCATED, 0)).put_sleb32(scope.thisLevel);
 		w.put_sleb32(scope.declarations.length);
 		for (i < scope.declarations.length) w.put_sleb32(decls.find(scope.declarations[i])).put_sleb32(scope.levels[i]);
+		w.put_sleb32(scope.hiddenBuiltins.length);
+		for (name in scope.hiddenBuiltins) putString(w, name);
 	}
 	// A call is unsigned LEB128 numbers: its opening parenthesis, as the
 	// difference from the previous call's (the first's from zero); its head,
@@ -891,7 +893,19 @@ class AnalysisWireReader {
 				return null;
 			}
 		}
-		return AnalysisSnapshotScope.new(indices, levels, thisLevel, flags == AnalysisWire.SCOPE_TRUNCATED);
+		var hiddenCount = readCount(1, 8);
+		if (hiddenCount > AnalysisScopeOrder.MAX_DECLARATIONS) {
+			r.fail("too many hidden builtin names");
+			return null;
+		}
+		var hidden = Array<string>.new(hiddenCount), seen = Strings.newMap<bool>();
+		for (i = 0; i < hiddenCount && r.ok; i++) {
+			var name = readString(1);
+			if (name == null || name.length == 0 || seen.has(name)) r.fail("invalid hidden builtin name");
+			else seen[name] = true;
+			hidden[i] = name;
+		}
+		return AnalysisSnapshotScope.new(indices, levels, thisLevel, flags == AnalysisWire.SCOPE_TRUNCATED, hidden);
 	}
 	// The bytes read since {start}, charged with {header} more for their array.
 	private def copyFrom(start: int, header: int) -> Array<byte> {

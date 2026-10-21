@@ -11,6 +11,8 @@ def T = UnitTests.register;
 def X = [
 	T("LspCompletionScope:as_typed", test_as_typed),
 	T("LspCompletionScope:items", test_items),
+	T("LspCompletionScope:hidden_bindings", test_hidden_bindings),
+	T("LspCompletionScope:shadowed_this", test_shadowed_this),
 	T("LspCompletionScope:repairs", test_repairs),
 	T("LspCompletionScope:positions", test_positions),
 	T("LspCompletionScope:unrepaired", test_unrepaired),
@@ -209,6 +211,41 @@ def test_items(t: Tester) {
 	t.asserti(KEYWORD_KIND, intAt(keyword, "kind"));
 	t.assert(!has(keyword, "detail"), "a keyword has no detail");
 	t.assert(!has(keyword, "sortText"), "a keyword has no sortText");
+	s.server.close();
+}
+
+def test_hidden_bindings(t: Tester) {
+	var s = session(t);
+	for (name in ["int", "u32", "System"]) {
+		var marked = Strings.format3("def %s = 1; class C { var first = $%s; var %s = 2; }", name, name, name);
+		var result = s.result(t, complete0(t, s, marked));
+		t.assert(itemOf(result, name) == JsonValue.Null, name);
+		t.assert(itemOf(result, "bool") != JsonValue.Null, "unhidden builtin");
+	}
+	for (marked in ["component C { var int = $int; }", "class C { var first = $int; def int() {} }"]) {
+		var result = s.result(t, complete0(t, s, marked));
+		t.assert(itemOf(result, "int") == JsonValue.Null, "no builtin fallback");
+	}
+	var result = s.result(t, complete0(t, s, "class C { var int = 1; def m() { var x: $int; } }"));
+	t.assert(itemOf(result, "int") != JsonValue.Null, "int remains available as a type");
+	s.server.close();
+}
+
+def test_shadowed_this(t: Tester) {
+	var s = session(t);
+	for (fixture in [("\t\tvar this = 1; var x = $this;", "var this: int"),
+		("\t\tvar f = fun (p: int) { var this = p; var x = $this; };", "var this: int"),
+		("\t\tvar f = fun (this: int) => $this;", "this: int")]) {
+		var result = s.result(t, complete0(t, s, inScale(fixture.0))), count = 0;
+		for (item in array(member(result, "items"))) {
+			if (!Strings.equal(stringAt(item, "label"), "this")) continue;
+			count++;
+			t.assert_string(fixture.1, stringAt(item, "detail"));
+		}
+		t.asserti(1, count);
+	}
+	var result = s.result(t, complete0(t, s, inScale("\t\tvar x = $this;")));
+	t.assert(itemOf(result, "this") != JsonValue.Null, "the unshadowed receiver is offered");
 	s.server.close();
 }
 

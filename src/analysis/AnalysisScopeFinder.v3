@@ -62,12 +62,15 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		// without cases, a constant; for a type that verification left
 		// unknown, nothing.
 		if ((kinds & AnalysisScopeKinds.PATTERN) != 0) constants = cases() == 0;
-		var locals = values, memberValues = values || constants;
+		var memberValues = values || constants;
 		var level = 0, thisLevel = -1;
 		for (i = scopes.length - 1; i >= 0; i--) {
-			if (i == thisScope) thisLevel = level;
 			var s = scopes[i];
-			if (locals) for (j < s.length) local(s[j], level);
+			if (memberValues) for (j < s.length) local(s[j], level, values);
+			if (i == thisScope) {
+				if (!valueNames.has("this")) thisLevel = level;
+				valueNames["this"] = true;
+			}
 			level++;
 		}
 		if (receiver && compound != null && !compound.isFileScope) {
@@ -94,9 +97,9 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		// Ref<...> takes (VstCompoundVerifier.resolveRefType).
 		if (layouts && prog.layouts != null) {
 			var l = level;
-			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l));
+			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true));
 		}
-		return answer(thisLevel, prefix);
+		return answer(thisLevel, prefix, values, types);
 	}
 	// Whether verification reached the offset. Verifier.verify type-checks
 	// compound after compound, and stops between two (Verifier.forAll) once
@@ -116,7 +119,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// Sorts the candidates, and caps them: past the cap, only those that
 	// start with {prefix} are kept, up to it.
-	private def answer(thisLevel: int, prefix: string) -> AnalysisScopeAnswer {
+	private def answer(thisLevel: int, prefix: string, values: bool, types: bool) -> AnalysisScopeAnswer {
 		var order = Array<int>.new(found.length);
 		for (i < order.length) order[i] = i;
 		order = AnalysisTables.sort(order, fun (a: int, b: int) => AnalysisScopeOrder.before(
@@ -133,21 +136,32 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			decls[i] = found[kept[i]];
 			result[i] = levels[kept[i]];
 		}
-		return AnalysisScopeAnswer.new(decls, result, thisLevel, truncated);
+		var answer = AnalysisScopeAnswer.new(decls, result, thisLevel, truncated);
+		var hidden = Vector<string>.new();
+		var hide = fun (name: string) {
+			if ((values || types) && (!values || valueNames.has(name)) && (!types || typeNames.has(name))) hidden.put(name);
+		};
+		for (name in AeneasAdapter.BUILTIN_TYPES) hide(name);
+		for (width = 1; width <= Int.MAX_WIDTH; width++) {
+			for (sign in ["i", "u"]) hide(Strings.format2("%s%d", sign, width));
+		}
+		answer.hiddenBuiltins = hidden.extract();
+		return answer;
 	}
 	// Adds {d} at {level} unless an earlier candidate has its name in the
 	// namespace of {names}, or it is a candidate already: a type is added for
 	// both namespaces in turn, so only the last candidate can be it.
-	private def add(names: HashMap<string, bool>, d: AnalysisDeclaration, level: int) {
+	private def add(names: HashMap<string, bool>, d: AnalysisDeclaration, level: int, offered: bool) {
 		if (d == null || names.has(d.name)) return;
 		names[d.name] = true;
+		if (!offered) return;
 		if (found.length > 0 && found[found.length - 1] == d) return;
 		found.put(d);
 		levels.put(level);
 	}
-	private def local(v: VarDecl, level: int) {
+	private def local(v: VarDecl, level: int, offered: bool) {
 		if (v.isUnderscore()) return;
-		add(valueNames, make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v), level);
+		add(valueNames, make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v), level, offered);
 	}
 	// The fields and methods of {c} that a name resolves to through the
 	// receiver if {receiver} (MethodEnv.lookupExprMember), or as a member of
@@ -161,17 +175,17 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def members(c: VstCompound, level: int, receiver: bool) {
 		var checked = receiver && (initOrder > 0 || superCall);
 		// MethodEnv.checkMemberInit: no method while checked.
-		var methods = !VstEnum.?(c) && !checked && !constants;
+		var methods = !checked && !constants;
 		for (l = c.members; l != null; l = l.tail) {
 			var m = l.head;
 			if (m.isPrivate && !sameFile(c)) continue;
 			if (!identifier(m.token.image)) continue;
 			match (m) {
 				x: VstNew => ;
-				x: VstMethod => if (methods && !x.isSynthetic) add(valueNames, make(AnalysisDeclKind.METHOD, x), level);
-				x: VstField => if (field(x, c, checked)) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
-				x: VstVariantTagMember => if (receiver && !constants) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
-				x: VstVariantNameMember => if (receiver && !constants) add(valueNames, make(AnalysisDeclKind.FIELD, x), level);
+				x: VstMethod => if (!VstEnum.?(c) && !x.isSynthetic) add(valueNames, make(AnalysisDeclKind.METHOD, x), level, methods);
+				x: VstField => add(valueNames, make(AnalysisDeclKind.FIELD, x), level, field(x, c, checked));
+				x: VstVariantTagMember => if (receiver) add(valueNames, make(AnalysisDeclKind.FIELD, x), level, !constants);
+				x: VstVariantNameMember => if (receiver) add(valueNames, make(AnalysisDeclKind.FIELD, x), level, !constants);
 				_ => ;
 			}
 		}
@@ -213,8 +227,8 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def typeParams(list: List<TypeParamType>, values: bool, types: bool, level: int) {
 		for (l = list; l != null; l = l.tail) {
 			var d = display.declaration(AnalysisDeclKind.TYPE_PARAM, l.head.token, null, l.head);
-			if (values) add(valueNames, d, level);
-			if (types) add(typeNames, d, level);
+			if (values) add(valueNames, d, level, true);
+			if (types) add(typeNames, d, level, true);
 		}
 	}
 	// The types that {env} itself binds, other than the builtin types, which
@@ -222,8 +236,8 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def typeCons(env: TypeEnv, values: bool, types: bool, level: int) {
 		env.typecons.apply(fun (name: string, tc: TypeCon) {
 			var d = typeDeclaration(tc);
-			if (values) add(valueNames, d, level);
-			if (types) add(typeNames, d, level);
+			if (values) add(valueNames, d, level, true);
+			if (types) add(typeNames, d, level, true);
 		});
 	}
 	private def typeDeclaration(tc: TypeCon) -> AnalysisDeclaration {
@@ -248,7 +262,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var t = if(patterns != null && patterns.expr != null, patterns.expr.exactType);
 		if (t == null || t.typeCon == null || t.typeCon.kind == Kind.VOID) return -1;
 		if (EnumType.?(t)) {
-			for (c in EnumType.!(t).enumDecl.cases) add(valueNames, make(AnalysisDeclKind.ENUM_CASE, c), 0);
+			for (c in EnumType.!(t).enumDecl.cases) add(valueNames, make(AnalysisDeclKind.ENUM_CASE, c), 0, true);
 			return 1;
 		}
 		if (!V3.isVariant(t) || !ClassType.?(t)) return 0;
@@ -257,7 +271,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			if (!VstCaseMember.?(l.head)) continue;
 			var c = VstCaseMember.!(l.head);
 			if (!c.isDefaultCase() && decl.memberMap != null && decl.memberMap[c.name()] == c) {
-				add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0);
+				add(valueNames, make(AnalysisDeclKind.VARIANT_CASE, c), 0, true);
 			}
 		}
 		return 1;
@@ -552,7 +566,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def extent(m: VstMember) -> (int, int) {
 		var b = tokenBegin(m.token), e = tokenEnd(m.token);
 		match (m) {
-			x: VstMethod => if (x.func.body != null) e = Ints.max(e, rangeEnd(x.func.body.range()));
+			x: VstMethod => if (x.func.body != null) e = Ints.max(e, stmtExtent(x.func.body).1);
 			x: VstField => {
 				if (x.tref != null) e = Ints.max(e, rangeEnd(x.tref.range()));
 				if (x.init != null) e = Ints.max(e, rangeEnd(x.init.range()));
@@ -570,9 +584,21 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		return if(e < 0, int.max, e);
 	}
 	private def stmtExtent(s: Stmt) -> (int, int) {
-		if (!LocalStmt.?(s)) return (point(s.range()), rangeEnd(s.range()));
-		var l = LocalStmt.!(s), b = point(l.start), e = b;
-		for (v = l.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
+		if (s == null) return (-1, -1);
+		var r = s.range(), b = point(r), e = rangeEnd(r);
+		match (s) {
+			x: LocalStmt => for (v = x.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
+			x: IfStmt => e = Ints.max(e, Ints.max(stmtExtent(x.tbranch).1, stmtExtent(x.fbranch).1));
+			x: WhileStmt => e = Ints.max(e, stmtExtent(x.body).1);
+			x: ForStmt => e = Ints.max(e, stmtExtent(x.body).1);
+			x: ForeachStmt => e = Ints.max(e, stmtExtent(x.body).1);
+			x: ForLessStmt => e = Ints.max(e, stmtExtent(x.body).1);
+			x: MatchStmt => {
+				for (l = if(x.cases != null, x.cases.list); l != null; l = l.tail) e = Ints.max(e, stmtExtent(l.head.stmt).1);
+				if (x.defcase != null) e = Ints.max(e, stmtExtent(x.defcase.stmt).1);
+			}
+			_ => ;
+		}
 		return (b, e);
 	}
 	private def varEnd(v: VarDecl) -> int {

@@ -11,6 +11,8 @@ def X = [
 	T("AnalysisScope:shadowing", test_shadowing),
 	T("AnalysisScope:sibling_scopes", test_sibling_scopes),
 	T("AnalysisScope:loops", test_loops),
+	T("AnalysisScope:unbraced_bodies", test_unbraced_bodies),
+	T("AnalysisScope:excluded_shadowing", test_excluded_shadowing),
 	T("AnalysisScope:matches", test_matches),
 	T("AnalysisScope:lambdas", test_lambdas),
 	T("AnalysisScope:type_parameters", test_type_parameters),
@@ -193,6 +195,57 @@ def test_loops(t: Tester) {
 	check(t, "class C {\n\tdef m(n: int) {\n\t\tfor (i < n) { var x = $i; }\n\t}\n}\n", V, "this=3 i/1 n/3 m/4 C/8");
 	// A while loop's body is a scope of its own.
 	check(t, "class C {\n\tdef m(n: int) {\n\t\twhile (n > 0) { var w = 1; n = $w; }\n\t}\n}\n", V, "this=2 w/0 n/2 m/3 C/7");
+}
+
+def test_unbraced_bodies(t: Tester) {
+	for (body in ["for (i < 3) var n = $i;", "for (i = 0; i < 3; i++) var n = $i;",
+		"for (i in a) var n = $i;", "for (i < 3) if (i > 0) var n = $i; else var n = 0;"]) {
+		var text = Strings.format1("component C { def m(a: Array<int>) { %s } }", body);
+		agree(t, text, V, ["i", "a", "n"]);
+	}
+	for (body in ["while (true) var n = fun (x: int) => $x;", "if (true) var n = fun (x: int) => $x;",
+		"if (true) var n = 1; else var n = fun (x: int) => $x;",
+		"if (true) while (true) var n = fun (x: int) => $x;"]) {
+		var text = Strings.format1("component C { def m() { %s } }", body);
+		agree(t, text, V, ["x", "n"]);
+	}
+	var variant = "type V { case A(x: int); case B; } component C { def m(v: V) { ";
+	for (body in ["match (v) { A(x) => var n = $x; B => ; }",
+		"match (v) { A(x) => for (i < 3) var n = $x + i; B => ; }",
+		"match (v) { A(x) => ; } else for (i < 3) var n = $i;"]) {
+		var text = Strings.format2("%s%s } }", variant, body);
+		agree(t, text, V, ["x", "i", "n"]);
+	}
+	check(t, "component C { def m() { for (i < 3) var n = i; var after = $0; } }", V, "this=1 m/2 C/6");
+}
+
+def test_excluded_shadowing(t: Tester) {
+	for (text in ["def later = 1; class C { var first = $later; var later = 2; }",
+		"class later {} class C { var first = $later; var later = 2; }",
+		"layout later { +0 f: u32; =4; } class C { var first = $later; var later = 2; }",
+		"class B { var later = 1; } class C extends B { var first = $later; var later = 2; }",
+		"def later = 1; component C { var later = $later; }",
+		"class later {} def later = $later;",
+		"def later = 1; class C { var first = $later; def later() -> int { return 2; } }",
+		"class later {} class C { var first = $later; def later() {} }"]) {
+		agree(t, text, V, ["later"]);
+	}
+	var generic = "class C<T> { var first = $T; var T = 2; }";
+	agree(t, generic, V, ["T"]);
+	t.assert_string("T/2 C/4", render(scopeAny(generic, TY)));
+	var ownType = "class C { var C = $C; }";
+	agree(t, ownType, V, ["C"]);
+	agree(t, "def later = 1; class B(x: int) { var later = 2; } class C(y: int) extends B($y) {}", V, ["later", "y"]);
+	for (text in ["component C { def K = 1; def m(K: int) { match (K) { $K => ; _ => ; } } }",
+		"component C { def K = 1; def m() { var K = 2; match (K) { $K => ; _ => ; } } }"]) {
+		agree(t, text, P, ["K"]);
+	}
+	var builtin = "class C { var first = $int; var int = 2; }";
+	var values = scopeAny(builtin, V), types = scopeAny(builtin, TY), both = scopeAny(builtin, V | TY);
+	t.assert(values != null && types != null && both != null, "scope answers");
+	if (values != null) t.asserti(1, Arrays.filter(values.hiddenBuiltins, fun (name: string) => Strings.equal(name, "int")).length);
+	if (types != null) t.asserti(0, Arrays.filter(types.hiddenBuiltins, fun (name: string) => Strings.equal(name, "int")).length);
+	if (both != null) t.asserti(0, Arrays.filter(both.hiddenBuiltins, fun (name: string) => Strings.equal(name, "int")).length);
 }
 
 def test_matches(t: Tester) {

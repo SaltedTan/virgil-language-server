@@ -31,13 +31,14 @@ class AnalysisScopeRequest(file: int, offset: int, kinds: int, prefix: string) {
 // candidates than the cap, so that only those starting with the prefix were
 // kept, up to the cap.
 class AnalysisScopeAnswer(declarations: Array<AnalysisDeclaration>, levels: Array<int>, thisLevel: int, truncated: bool) {
+	var hiddenBuiltins: Array<string> = [];
 	// The analyzed program's paths, in the request's order, which name the
 	// declarations' files in a result without occurrences.
 	var paths: Array<string>;
 }
 
 // A decoded scope answer, as indices into its snapshot's declarations.
-class AnalysisSnapshotScope(declarations: Array<int>, levels: Array<int>, thisLevel: int, truncated: bool) { }
+class AnalysisSnapshotScope(declarations: Array<int>, levels: Array<int>, thisLevel: int, truncated: bool, hiddenBuiltins: Array<string>) { }
 
 // The order of scope candidates: nearest binding first, then by kind group,
 // then by the bytes of the name. A level is a binding's distance from the

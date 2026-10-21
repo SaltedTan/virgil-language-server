@@ -408,8 +408,8 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 			details.put(d.signature);
 			levels.put(last = scope.levels[i]);
 			groups.put(AnalysisScopeOrder.group(d.kind));
-			names[d.name] = true;
 		}
+		for (name in scope.hiddenBuiltins) names[name] = true;
 		var values = (r.kinds & AnalysisScopeKinds.VALUES) != 0;
 		var filtered = fun (name: string) => scope.truncated && !Strings.startsWith(name, r.prefix);
 		if (values && scope.thisLevel >= 0 && !filtered("this")) {
