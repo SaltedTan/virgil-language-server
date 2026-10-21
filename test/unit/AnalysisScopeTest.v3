@@ -12,6 +12,7 @@ def X = [
 	T("AnalysisScope:sibling_scopes", test_sibling_scopes),
 	T("AnalysisScope:loops", test_loops),
 	T("AnalysisScope:unbraced_bodies", test_unbraced_bodies),
+	T("AnalysisScope:deep_nesting", test_deep_nesting),
 	T("AnalysisScope:excluded_shadowing", test_excluded_shadowing),
 	T("AnalysisScope:matches", test_matches),
 	T("AnalysisScope:lambdas", test_lambdas),
@@ -219,6 +220,50 @@ def test_unbraced_bodies(t: Tester) {
 	check(t, "component C { def m() { for (i < 3) var n = i; var after = $0; } }", V, "this=1 m/2 C/6");
 }
 
+// Finding the offset under a chain of unbraced bodies, or of lambdas that
+// end with lambdas, reads each link of the chain a bounded number of times:
+// twice as deep a chain reads at most about twice as many. Reading each
+// one's extent again at each depth, as range() does, read a number that grows
+// with the cube, and, for a match's default case, doubles at each depth.
+def test_deep_nesting(t: Tester) {
+	var chains = [
+		("", "if (true) ", "var n = $p;", 1100),
+		("", "while (true) ", "var n = $p;", 1100),
+		("", "match (p) { 0 => ; } else ", "var n = $p;", 1100),
+		("", "if (p > 0) ; else ", "var n = $p;", 1100),
+		// The parser stops at a smaller depth of expressions.
+		("var f = ", "fun (a%d: int) => ", "$p;", 300)
+	];
+	for (c in chains) {
+		var small = deepSteps(t, c, c.3), large = deepSteps(t, c, 2 * c.3);
+		if (small <= 0 || large > 2 * small + 100) {
+			t.fail3("\"%s\" chains read %d statements and expressions at depth %d, ", c.1, large, 2 * c.3);
+			t.fail2("against %d at depth %d", small, c.3);
+		}
+	}
+}
+// The statements and expressions read to find the scope under {n} links of
+// {chain}: a head, a link with "%d" for its index, and a tail with the
+// offset, where the parameter must be offered.
+def deepSteps(t: Tester, chain: (string, string, string, int), n: int) -> int {
+	var b = StringBuilder.new().puts("component C { def m(p: int) { ").puts(chain.0);
+	for (i < n) b.put1(chain.1, i);
+	var m = unmark(b.puts(chain.2).puts(" } }").toString());
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	if (!a.verified) {
+		t.fail2("\"%s\" x %d does not verify", chain.1, n);
+		return -1;
+	}
+	var s = a.scopeAt(MAIN, m.1, V, ""), offered = false;
+	if (s == null) {
+		t.fail2("no scope under \"%s\" x %d", chain.1, n);
+		return -1;
+	}
+	for (d in s.declarations) offered = offered || Strings.equal(d.name, "p");
+	t.assert(offered, Strings.format2("p offered under \"%s\" x %d", chain.1, n));
+	return s.steps;
+}
+
 def test_excluded_shadowing(t: Tester) {
 	for (text in ["def later = 1; class C { var first = $later; var later = 2; }",
 		"class later {} class C { var first = $later; var later = 2; }",
@@ -284,6 +329,16 @@ def test_lambdas(t: Tester) {
 		"this=3 b/0 a/1 p/3 apply/4 m/4 K/8");
 	// A lambda in a field's initializer sees the members, without "this".
 	check(t, "component K {\n\tvar base = 1;\n\tdef add = fun (x: int) => $x + base;\n}\n", V, "this=1 x/0 base/2 K/6");
+	// A lambda holds the offset up to where the last part of its body ends,
+	// for each kind of expression that can be, and not after that.
+	var apply = "component K {\n\tdef apply(f: int -> int, v: int) -> int { return f(v); }\n\tdef m(p: int, a: Array<int>) {\n\t\t%s\n\t}\n}\n";
+	for (body in ["apply(fun (x: int) => p + $x, p);", "apply(fun (x: int) => a[$x], p);",
+		"apply(fun (x: int) => apply(fun (y: int) => y, $x), p);", "apply(fun (x: int) => -$x, p);",
+		"apply(fun (x: int) => if(true, p, $x), p);", "var r = fun (x: int) => a[0 ... $x];",
+		"var f = fun (x: int) => fun (y: int) => y + $x;", "apply(fun (x: int) => x, $p);",
+		"var f = fun (x: int) => p + x; var g = $p;", "var f = fun (x: int) => fun (y: int) => y + x; var g = $p;"]) {
+		agree(t, Strings.format1(apply, body), V, ["x", "y"]);
+	}
 }
 
 def test_type_parameters(t: Tester) {

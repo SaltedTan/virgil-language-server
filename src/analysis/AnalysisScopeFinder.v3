@@ -48,6 +48,19 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def levels = Vector<int>.new();
 	private def valueNames = Strings.newMap<bool>();
 	private def typeNames = Strings.newMap<bool>();
+	// Where the statement that the walk enters ends, as the statement or
+	// block around it found (see holds).
+	private var end: int;
+	// The lambdas that the last lambda entered ends with, after it, which
+	// end where it does, at {edgeEnd}; the walk meets them in this order, and
+	// {edgeNext} is the next (see visitFunExpr).
+	private def edge = Vector<FunExpr>.new();
+	private var edgeNext: int;
+	private var edgeEnd: int;
+	// The statements and expressions that stmtEnd and exprEnd have read,
+	// which grows in proportion to the code that contains the offset and its
+	// siblings; AnalysisScope:deep_nesting checks it.
+	private var steps: int;
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
@@ -137,6 +150,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			result[i] = levels[kept[i]];
 		}
 		var answer = AnalysisScopeAnswer.new(decls, result, thisLevel, truncated);
+		answer.steps = steps;
 		var hidden = Vector<string>.new();
 		var hide = fun (name: string) {
 			if ((values || types) && (!values || valueNames.has(name)) && (!types || typeNames.has(name))) hidden.put(name);
@@ -402,29 +416,35 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitBlock(s: BlockStmt, env: void) {
 		enterScope(false);
 		for (l = if(s.stmts != null, s.stmts.list); l != null; l = l.tail) {
-			var st = l.head, e = stmtExtent(st);
-			if (e.0 > offset) return;
-			if (e.1 <= offset) {
+			var st = l.head;
+			if (stmtBegin(st) > offset) return;
+			var e = stmtEnd(st);
+			if (e <= offset) {
 				// A statement before the offset binds only its own locals.
 				if (LocalStmt.?(st)) for (v = LocalStmt.!(st).vars; v != null; v = v.tail) bind(v.head);
 				continue;
 			}
+			end = e;
 			st.accept(this, ());
 			return;
 		}
 	}
+	// A statement's last branch or body ends where the statement does.
 	def visitIf(s: IfStmt, env: void) {
+		var e = end;
 		if (inside(range(s.cond))) walk(s.cond);
-		else if (within(s.tbranch)) branch(s.tbranch);
-		else if (within(s.fbranch)) branch(s.fbranch);
+		else if (holds(s.tbranch, if(s.fbranch == null, e, -1))) branch(s.tbranch);
+		else if (holds(s.fbranch, e)) branch(s.fbranch);
 	}
 	def visitWhile(s: WhileStmt, env: void) {
+		var e = end;
 		if (inside(range(s.cond))) walk(s.cond);
-		else if (within(s.body)) branch(s.body);
+		else if (holds(s.body, e)) branch(s.body);
 	}
 	// The variable is bound after its initializer, and the condition, update,
 	// and body see it (TypeChecker.visitFor).
 	def visitFor(s: ForStmt, env: void) {
+		var e = end;
 		enterScope(false);
 		var v = s.varDecl;
 		if (v != null) {
@@ -434,24 +454,26 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		if (inside(range(s.cond))) walk(s.cond);
 		else if (inside(range(s.update))) walk(s.update);
-		else if (within(s.body)) branch(s.body);
+		else if (holds(s.body, e)) branch(s.body);
 	}
 	// The variable is bound before the expression is checked, so the
 	// expression sees it (TypeChecker.visitForeach).
 	def visitForeach(s: ForeachStmt, env: void) {
+		var e = end;
 		enterScope(false);
 		bind(s.varDecl);
 		if (inside(range(s.expr))) walk(s.expr);
-		else if (within(s.body)) branch(s.body);
+		else if (holds(s.body, e)) branch(s.body);
 	}
 	// The variable is bound after the limit is checked, and the body is
 	// checked in the loop's scope (TypeChecker.visitForLess). The space
 	// before the limit is the limit's.
 	def visitForLess(s: ForLessStmt, env: void) {
+		var e = end;
 		enterScope(false);
 		if (s.expr != null && offset < rangeEnd(s.expr.range())) return walk(s.expr);
 		bind(s.varDecl);
-		if (within(s.body)) s.body.accept(this, ());
+		if (holds(s.body, e)) s.body.accept(this, ());
 	}
 	// Each variable is bound after its initializer (TypeChecker.checkVarDecl).
 	def visitLocal(s: LocalStmt, env: void) {
@@ -472,13 +494,18 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// patterns. The space before the matched expression is the expression's,
 	// and a case's statement begins where its patterns end, after "=>" or
 	// "else" (Parser.parseMatchCase), so the space before it is the case's.
+	// A statement after "else" and the braces ends where the match does.
 	def visitMatch(s: MatchStmt, env: void) {
+		var e = end;
 		if (s.expr != null && offset < rangeEnd(s.expr.range())) return walk(s.expr);
+		var last = elseStmt(s);
 		for (l = if(s.cases != null, s.cases.list); l != null; l = l.tail) {
 			var c = l.head;
 			if (c.stmt == null || c.patterns == null) continue;
-			var begin = rangeEnd(c.patterns.range()), e = stmtExtent(c.stmt);
-			if (begin < 0 || offset < begin || offset >= e.1) continue;
+			var begin = rangeEnd(c.patterns.range());
+			if (begin < 0 || offset < begin) continue;
+			var caseEnd = if(c.stmt == last, e, stmtEnd(c.stmt));
+			if (offset >= caseEnd) continue;
 			var pats = if(c.patterns != null, c.patterns.list);
 			var pat = if(pats != null && pats.tail == null, pats.head);
 			// The default case's pattern binds a variable named by the
@@ -489,6 +516,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				if (pat.vdecl != null) bind(pat.vdecl);
 				else for (p = pat.params.list; p != null; p = p.tail) bind(p.head);
 			}
+			end = caseEnd;
 			c.stmt.accept(this, ());
 			return;
 		}
@@ -550,9 +578,22 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// A lambda's body sees its parameters, then the locals of the methods
 	// around it, which it captures, and their receiver (TypeChecker.enterFunc,
-	// MethodEnv.lookupVar).
+	// MethodEnv.lookupVar). One on the edge of the last lambda entered ends
+	// where that does.
 	def visitFunExpr(e: FunExpr, env: void) {
-		if (!inside(e.range())) return;
+		var b = point(e.start);
+		if (b < 0 || b > offset) return;
+		var onEdge = edgeNext < edge.length && edge[edgeNext] == e;
+		var lambdaEnd = if(onEdge, edgeEnd, exprEnd(e, false));
+		if (offset >= lambdaEnd) return;
+		if (onEdge) {
+			edgeNext++;
+		} else {
+			edge.clear();
+			edgeNext = 0;
+			edgeEnd = lambdaEnd;
+			exprEnd(e, true);
+		}
 		enterScope(false);
 		params(e.func.params, e.captures);
 		if (e.func.body != null) e.func.body.accept(this, ());
@@ -566,7 +607,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def extent(m: VstMember) -> (int, int) {
 		var b = tokenBegin(m.token), e = tokenEnd(m.token);
 		match (m) {
-			x: VstMethod => if (x.func.body != null) e = Ints.max(e, stmtExtent(x.func.body).1);
+			x: VstMethod => if (x.func.body != null) e = Ints.max(e, stmtEnd(x.func.body));
 			x: VstField => {
 				if (x.tref != null) e = Ints.max(e, rangeEnd(x.tref.range()));
 				if (x.init != null) e = Ints.max(e, rangeEnd(x.init.range()));
@@ -583,34 +624,112 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (f.tref != null) e = Ints.max(e, rangeEnd(f.tref.range()));
 		return if(e < 0, int.max, e);
 	}
-	private def stmtExtent(s: Stmt) -> (int, int) {
-		if (s == null) return (-1, -1);
-		var r = s.range(), b = point(r), e = rangeEnd(r);
+	// Where {s} begins. The range() of a statement with a branch or a body
+	// reads every statement that it ends with, as each of those does.
+	private def stmtBegin(s: Stmt) -> int {
 		match (s) {
-			x: LocalStmt => for (v = x.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
-			x: IfStmt => e = Ints.max(e, Ints.max(stmtExtent(x.tbranch).1, stmtExtent(x.fbranch).1));
-			x: WhileStmt => e = Ints.max(e, stmtExtent(x.body).1);
-			x: ForStmt => e = Ints.max(e, stmtExtent(x.body).1);
-			x: ForeachStmt => e = Ints.max(e, stmtExtent(x.body).1);
-			x: ForLessStmt => e = Ints.max(e, stmtExtent(x.body).1);
-			x: MatchStmt => {
-				for (l = if(x.cases != null, x.cases.list); l != null; l = l.tail) e = Ints.max(e, stmtExtent(l.head.stmt).1);
-				if (x.defcase != null) e = Ints.max(e, stmtExtent(x.defcase.stmt).1);
-			}
-			_ => ;
+			x: IfStmt => return point(x.start);
+			x: WhileStmt => return point(x.start);
+			x: ForStmt => return point(x.start);
+			x: ForeachStmt => return point(x.start);
+			x: ForLessStmt => return point(x.start);
+			x: MatchStmt => return point(x.src);
 		}
-		return (b, e);
+		return point(s.range());
+	}
+	// Where {s} ends: where the last statement that it ends with does, such
+	// as an unbraced body's, or a match's braces. This reads each of those
+	// statements once, rather than calling range() on each in turn; and the
+	// walk reads them once in all, as it enters each with its end (see holds).
+	private def stmtEnd(s: Stmt) -> int {
+		var e = -1;
+		while (s != null) {
+			steps++;
+			var next: Stmt;
+			match (s) {
+				x: IfStmt => next = if(x.fbranch != null, x.fbranch, x.tbranch);
+				x: WhileStmt => next = x.body;
+				x: ForStmt => next = x.body;
+				x: ForeachStmt => next = x.body;
+				x: ForLessStmt => next = x.body;
+				x: MatchStmt => {
+					if (x.cases != null) e = Ints.max(e, rangeEnd(x.cases.range()));
+					next = elseStmt(x);
+					if (next == null) return e;
+				}
+				x: LocalStmt => for (v = x.vars; v != null; v = v.tail) e = Ints.max(e, varEnd(v.head));
+				_ => ;
+			}
+			if (next == null) return Ints.max(e, rangeEnd(s.range()));
+			s = next;
+		}
+		return e;
+	}
+	// The statement of a match's default case that follows "else" after its
+	// braces (Parser.parseMatchStmt), or null. Every other case's ends
+	// inside the braces.
+	private def elseStmt(s: MatchStmt) -> Stmt {
+		if (s.cases == null) return null;
+		var last: MatchCase;
+		for (l = s.cases.list; l != null; l = l.tail) last = l.head;
+		if (last == null || last.stmt == null) return null;
+		var braces = rangeEnd(s.cases.range());
+		return if(braces >= 0 && stmtBegin(last.stmt) >= braces, last.stmt);
+	}
+	// Whether {s} holds the offset, given {e}, where it ends if its statement
+	// ends with it, or -1 to find that. If so, the walk enters it next, with
+	// {end} there.
+	private def holds(s: Stmt, e: int) -> bool {
+		if (s == null) return false;
+		var b = stmtBegin(s);
+		if (b < 0 || b > offset) return false;
+		if (e < 0) e = stmtEnd(s);
+		if (offset >= e) return false;
+		end = e;
+		return true;
+	}
+	// Where {e} ends: where the last expression that it ends with does, as
+	// each Expr.range() finds it, without reading what comes before that.
+	// If {record}, the lambdas among those, after {e}, are put in {edge}.
+	private def exprEnd(e: Expr, record: bool) -> int {
+		var first = e;
+		while (e != null) {
+			steps++;
+			match (e) {
+				x: BinOpExpr => {
+					if (x.left == null) return rangeEnd(x.op.token.range());
+					e = if(x.right != null, x.right, x.left);
+				}
+				x: AssignExpr => {
+					if (x.target == null) return rangeEnd(x.range());
+					e = if(x.expr != null, x.expr, x.target);
+				}
+				x: NotExpr => if (x.expr != null) e = x.expr; else return rangeEnd(x.range());
+				x: NegExpr => if (x.expr != null) e = x.expr; else return rangeEnd(x.range());
+				x: BitwiseNegExpr => if (x.expr != null) e = x.expr; else return rangeEnd(x.range());
+				x: RangeExpr => e = if(x.end != null, x.end, x.start);
+				x: FunExpr => {
+					if (record && x != first) edge.put(x);
+					var body = x.func.body;
+					if (!ReturnStmt.?(body) || ReturnStmt.!(body).expr == null) return rangeEnd(x.range());
+					e = ReturnStmt.!(body).expr;
+				}
+				x: VarExpr => return rangeEnd(x.ident.range());
+				x: AutoExpr => return rangeEnd(x.token.range());
+				x: AppExpr => if (x.args != null) return rangeEnd(x.args.range()); else e = x.func;
+				x: IndexExpr => if (x.exprs != null) return rangeEnd(x.exprs.range()); else e = x.expr;
+				// Tuples, arrays, if(...), literals, and strings end with
+				// their own last token.
+				_ => return rangeEnd(e.range());
+			}
+		}
+		return -1;
 	}
 	private def varEnd(v: VarDecl) -> int {
 		var e = tokenEnd(v.token);
 		if (v.tref != null) e = Ints.max(e, rangeEnd(v.tref.range()));
 		if (v.init != null) e = Ints.max(e, rangeEnd(v.init.range()));
 		return e;
-	}
-	private def within(s: Stmt) -> bool {
-		if (s == null) return false;
-		var e = stmtExtent(s);
-		return e.0 >= 0 && e.0 <= offset && offset < e.1;
 	}
 	private def range(e: Expr) -> FileRange {
 		return if(e != null, e.range());

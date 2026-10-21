@@ -35,6 +35,9 @@ class AnalysisScopeAnswer(declarations: Array<AnalysisDeclaration>, levels: Arra
 	// The analyzed program's paths, in the request's order, which name the
 	// declarations' files in a result without occurrences.
 	var paths: Array<string>;
+	// The statements and expressions read to find the offset's extents
+	// (AnalysisScopeFinder.steps), for tests; no reply carries it.
+	var steps: int;
 }
 
 // A decoded scope answer, as indices into its snapshot's declarations.
