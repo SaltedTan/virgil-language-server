@@ -127,12 +127,10 @@ component LspCompletionRepair {
 		if (n == 0 || ctx.roles[n - 1] != LspOpenRole.TYPE_ARGS) return false;
 		var text = ctx.text, open = ctx.opens[n - 1];
 		if (space(text, open + 1) < ctx.prefixStart) return false;
-		var end = open;
-		while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\n' || text[end - 1] == '\r')) end--;
-		var begin = end;
-		while (begin > 0 && isIdentMiddle(text[begin - 1])) begin--;
-		if (end - begin != 3 || (text[begin] != 'R' && text[begin] != 'r') || text[begin + 1] != 'e' || text[begin + 2] != 'f') return false;
-		return begin == 0 || text[begin - 1] != '.';
+		var before = LspCursorScanner.new(text).scan(open);
+		var begin = if(before.prefixStart < open, before.prefixStart, before.previousName);
+		return !before.member() && begin >= 0 && begin + 3 <= open && space(text, begin + 3) == open
+			&& (text[begin] == 'R' || text[begin] == 'r') && text[begin + 1] == 'e' && text[begin + 2] == 'f';
 	}
 	// {ctx}'s text, repaired: the sentinel at the cursor, where it joins the
 	// identifier there, and after that identifier's rest, the text that

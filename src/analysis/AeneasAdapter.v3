@@ -268,11 +268,11 @@ class ProgramAnalysis {
 	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
 		return null;
 	}
-	private def scopeIn(program: Program, path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+	private def scopeIn(program: Program, syntax: SymbolSyntaxIndex, path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
 		if (program == null) return null;
 		for (f in program.vst.files) {
 			if (f == null || !Strings.equal(f.fileName, path)) continue;
-			var answer = AnalysisScopeFinder.new(sources, display, program, f).find(offset, kinds, prefix);
+			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).find(offset, kinds, prefix);
 			if (answer != null) answer.paths = program.files;
 			return answer;
 		}
@@ -309,14 +309,15 @@ class ProgramAnalysis {
 // which an ordinary analysis does not, so that one carries nothing for them.
 // Only a completion's analysis is one (AeneasAdapter.analyzeForScope).
 class AnalysisScopedProgram extends ProgramAnalysis {
+	private def syntax: HashMap<string, SymbolSyntaxIndex>;
 	// Null if the program did not parse.
 	private var program: Program;
 
-	new(d: Array<AnalysisDiagnostic>, s: AnalysisStats, p: bool, v: bool, prog: Program) super(d, s, p, v, prog) {
+	new(d: Array<AnalysisDiagnostic>, s: AnalysisStats, p: bool, v: bool, prog: Program, syntax) super(d, s, p, v, prog) {
 		if (p) program = prog;
 	}
 	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
-		return scopeIn(program, path, offset, kinds, prefix);
+		return scopeIn(program, syntax[path], path, offset, kinds, prefix);
 	}
 }
 
@@ -531,7 +532,8 @@ component AeneasAdapter {
 		var compilation = Compilation.new(compiler, prog);
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
-		var parseErrors = parseProgram(prog, coordinates);
+		var syntax = if(scoped, Strings.newMap<SymbolSyntaxIndex>());
+		var parseErrors = parseProgram(prog, coordinates, syntax);
 		var parsed = prog.ERROR.noErrors;
 		var t1 = System.ticksUs();
 		// Compilation.compile() skips verification after a parse error, and so
@@ -554,15 +556,17 @@ component AeneasAdapter {
 		}
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
-		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog);
+		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax);
 		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
 	}
-	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates) -> AnalysisParseErrors {
+	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates, syntax: HashMap<string, SymbolSyntaxIndex>) -> AnalysisParseErrors {
 		var errors = AnalysisParseErrors.new(prog.ERROR.maxErrors);
 		prog.vst = VstModule.new();
 		var files = Vector<VstFile>.new().grow(prog.files.length);
 		for (i = 0; i < prog.files.length && errors.notTooMany; i++) {
-			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, null,
+			var index = if(syntax != null, SymbolSyntaxIndex.new());
+			if (syntax != null && !syntax.has(prog.files[i])) syntax[prog.files[i]] = index;
+			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, index,
 				prog.typeCache, coordinates.capture(prog.files[i])));
 		}
 		prog.vst.files = files.extract();

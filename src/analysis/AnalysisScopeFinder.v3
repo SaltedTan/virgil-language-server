@@ -10,7 +10,7 @@
 // contain the offset, binding locals in the order TypeChecker binds them, so
 // that no local leaks from a sibling scope or from later in its block, and
 // allocates only its answer. See docs/architecture.md#completion.
-class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay, prog: Program, file: VstFile)
+class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay, prog: Program, file: VstFile, syntax: SymbolSyntaxIndex)
 		extends VstVisitor<void, void> {
 	// A cycle of superclasses is an error; stop following one.
 	def MAX_HIERARCHY = 256;
@@ -271,11 +271,13 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def locate() {
 		var best: VstMember, bestCompound: VstCompound, size = int.max;
 		var header: VstCompound, headerBegin = -1;
-		for (i < file.components.length + file.classes.length + file.enums.length) {
+		var boundaries = DocumentSymbolCollector.new(file, syntax);
+		for (i < file.components.length + file.classes.length + file.enums.length + file.layouts.length) {
 			var c: VstCompound;
 			if (i < file.components.length) c = file.components[i];
 			else if (i < file.components.length + file.classes.length) c = file.classes[i - file.components.length];
-			else c = file.enums[i - file.components.length - file.classes.length];
+			else if (i < file.components.length + file.classes.length + file.enums.length) c = file.enums[i - file.components.length - file.classes.length];
+			else c = file.layouts[i - file.components.length - file.classes.length - file.enums.length];
 			// A class's own super clause is its constructor's.
 			if (c.superclause != null && c.superclause.args != null && inside(c.superclause.args.range()) && c.constructor != null) {
 				enterConstructor(c, c.constructor, c.superclause.args);
@@ -297,7 +299,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			}
 			// A type in a declaration's header, before its members.
 			var begin = if(!c.isSynthetic, tokenBegin(c.token), -1);
-			if (begin >= 0 && begin <= offset && offset < first && begin > headerBegin) {
+			if (begin >= 0 && begin <= offset && offset < first && begin > headerBegin && offset < boundaries.compoundEnd(c)) {
 				header = c;
 				headerBegin = begin;
 			}

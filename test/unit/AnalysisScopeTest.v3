@@ -21,6 +21,7 @@ def X = [
 	T("AnalysisScope:file_scope", test_file_scope),
 	T("AnalysisScope:type_positions", test_type_positions),
 	T("AnalysisScope:headers_and_top_level", test_headers_and_top_level),
+	T("AnalysisScope:compound_boundaries", test_compound_boundaries),
 	T("AnalysisScope:cap", test_cap),
 	T("AnalysisScope:unparsed", test_unparsed),
 	T("AnalysisScope:initialization", test_initialization),
@@ -318,6 +319,18 @@ def test_headers_and_top_level(t: Tester) {
 	// A class's super clause sees its parameters, as its constructor does,
 	// which hide its fields; not the superclass's fields, nor "this".
 	check(t, "class A(x: int) { }\nclass B(y: int) extends A($y) { }\n", V, "y/0 A/6 B/6");
+}
+
+def test_compound_boundaries(t: Tester) {
+	var layoutText = "class C<T> {}\nlayout L { +0 word: $u32; =4; }\n";
+	check(t, layoutText, TY, "C/3");
+	check(t, layoutText, V | TY, "C/3 L/4");
+	check(t, "class C<T> {}\ncomponent K { var field: $int; }\n", TY, "C/3 K/3");
+	check(t, "class C<T> {}\ndef top: $int;\n", TY, "C/4");
+	check(t, "class C<T> {}\n$\ncomponent K {}\n", TY, "C/3 K/3");
+	check(t, "type Box<T>(item: T);\nlayout L { +0 word: $u32; =4; }\n", TY, "Box/3");
+	check(t, "type Box<T>(item: $T);\n", TY, "T/1 Box/3");
+	check(t, "class Base<T> {}\nclass C<T> extends Base<$T> {}\n", TY, "T/1 Base/3 C/3");
 }
 
 // Past the cap, only the candidates that start with the prefix are kept, up

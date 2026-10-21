@@ -23,6 +23,7 @@ def X = [
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
 	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
+	T("LspCompletion:ref_arguments", test_ref_arguments),
 	T("LspCompletion:if_expressions", test_if_expressions),
 	T("LspCompletion:nested_else", test_nested_else),
 	T("LspCompletion:keyword_sets", test_keyword_sets),
@@ -52,6 +53,20 @@ def at(marked: string) -> LspCursorContext {
 		else text.put(c);
 	}
 	return LspCursorScanner.new(text.extract()).scan(cursor);
+}
+
+def test_ref_arguments(t: Tester) {
+	for (name in ["Ref", "ref"]) {
+		for (trivia in ["", " ", " /* comment */ ", " // comment\n", " /* // */ /* next */ "]) {
+			var marked = Strings.format2("var r: %s%s<$Pixel>;", name, trivia);
+			t.asserti(AnalysisScopeKinds.LAYOUTS, LspCompletionRepair.kinds(at(marked)));
+		}
+	}
+	for (marked in ["var r: Array<$Pixel>;", "var r: MoreRef<$Pixel>;", "var r: RefMore<$Pixel>;",
+		"var r: C.Ref<$Pixel>;", "var r: C. /* comment */ Ref /* comment */ <$Pixel>;",
+		"var r: Ref<Pixel, $int>;", "var r: Ref<Array<$int>>;"]) {
+		t.asserti(AnalysisScopeKinds.TYPES, LspCompletionRepair.kinds(at(marked)));
+	}
 }
 // Checks that the cursor in {marked} is in {place}.
 def checkPlace(t: Tester, marked: string, place: LspCursorPlace) {

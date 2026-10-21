@@ -48,6 +48,11 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	private def input = file.input;
 	private def tokens = syntax.tokens;
 
+	def compoundEnd(d: VstCompound) -> int {
+		var i = syntax.find(d.token);
+		return if(i >= 0, tokens[declarationEnd(i, true)].end, -1);
+	}
+
 	def collect() -> Array<AnalysisDocumentSymbol> {
 		var result = Vector<AnalysisDocumentSymbol>.new();
 		for (i < file.components.length) {
