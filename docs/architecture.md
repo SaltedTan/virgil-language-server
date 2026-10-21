@@ -13,7 +13,7 @@ flowchart TD
     S --> P
 ```
 
-`virgil-lsp --stdio` communicates with the editor over standard input/output and owns the protocol layer, in-memory document overlays, and single-file parsing. The diagram includes planned semantic features. Whole-program analysis runs automatically for configured projects, publishing [semantic diagnostics](#semantic-diagnostics) and answering [go-to-definition](#definition), [hover](#hover), [references](#references), [rename](#rename), [signature help](#signature-help), and [workspace symbols](#workspace-symbols) from its results, and through the development `analyze` command and the unadvertised `virgil-lsp/analyze` stdio request; see [Analysis worker](#analysis-worker) for its process model. [Completion](#completion) describes keyword suggestions from the document's text and in-scope names from temporary project analyses. Editor integrations only launch the server and forward configuration.
+`virgil-lsp --stdio` communicates with the editor over standard input/output and owns the protocol layer, in-memory document overlays, and single-file parsing. The diagram includes planned semantic features. Whole-program analysis runs automatically for configured projects, publishing [semantic diagnostics](#semantic-diagnostics) and answering [go-to-definition](#definition), [hover](#hover), [references](#references), [rename](#rename), [signature help](#signature-help), and [workspace symbols](#workspace-symbols) from its results, and through the development `analyze` command and the unadvertised `virgil-lsp/analyze` stdio request; see [Analysis worker](#analysis-worker) for its process model. [Completion](#completion) describes suggestions from the document's text and temporary project analyses, including [receiver members](#member-completion). Editor integrations only launch the server and forward configuration.
 
 ## Source layout
 
@@ -602,7 +602,7 @@ After `.`, completion offers the members of the receiver's type alone: no keywor
 
 **Member query.** A member query is a [scope query](#names) whose kinds are `MEMBERS` alone; `AnalysisScopeKinds.valid` refuses `MEMBERS` combined with other kinds. Everything else is shared with completion of names: the analysis as typed or repaired, the job, the queue, the generation-guarded reuse of the last reply, cancellation, and the time-limit, crash, and shutdown handling. Only the answer differs. The query's offset is the start of the identifier at the cursor, as for names. So `a.fo|`, which parses, is queried as typed at `fo`. `a.|`, which doesn't parse, is repaired to `a.virgilLspCursor`, with the closers and `;` that the [repair](#names) adds for its context, and is queried at the sentinel. Either way the member name doesn't resolve, but verification has typed the receiver. Where the repaired text doesn't parse, the reply is an empty list.
 
-The lookup collects declarations, types, and builtin detail templates without rendering them. After sorting and applying the 1,000-candidate cap and its prefix filter, it creates declarations and renders details only for the retained candidates, including implicit members, enum-set cases, tuple elements, builtins, and System calls.
+The lookup collects declarations, types, and builtin detail templates without rendering them. After sorting and applying the 1,000-candidate cap and its prefix filter, it creates declarations and renders details only for the retained candidates, including implicit members, enum-set cases, tuple elements, builtins, and System calls. `AnalysisMembers:deferred_details` checks signature and type-render counts for capped and prefix-filtered queries.
 
 **Receiver.** `AnalysisScopeFinder.findMembers` locates the receiver in the verified tree, not in the text. It walks to the member and the statements that hold the offset, with the same extents as a scope query. It stops at the member expression (`VarExpr`) whose `.` (`VarExpr.dot`) comes before the offset and whose name begins at or after it. So the receiver can be any expression, as in these examples:
 
@@ -633,7 +633,7 @@ Its binding and type are the ones verification gave it (`TypeChecker.lookupBindi
 - **Enums.**
   - An enum value or a case, `E.A.`: the fields, `tag`, and `name` (`lookupEnumExprMember`, `lookupEnumConstMember`).
   - An enum type, `E.`: these plus its cases, `count`, and the type `set` (`lookupEnumTypeMember`).
-- **Enum sets.** An `E.set` value offers the enum's cases, each a `bool` (`lookupEnumSetExprMember`). The type `E.set.` also offers `all` and `view` (`lookupEnumSetTypeMember`).
+- **Enum sets.** An `E.set` value offers the enum's cases, each a `bool` (`lookupEnumSetExprMember`). The type `E.set.` offers those cases as functions of a set, plus `all` and `view` (`lookupEnumSetTypeMember`). A case is offered only if it is the first non-constructor member of its name, as `Verifier.buildMembers` binds it; an earlier parameter field of the same name hides it on both the set value and the set type (`AnalysisMembers:enum_set_name_precedence`).
 - **Layouts.**
   - A `Ref<L>` value: the layout's fields (`lookupRefExprMember`). The type `Ref<L>.` adds `at` and `of` (`lookupRefTypeMember`).
   - A layout, `L.`: `size` and its fields (`lookupLayoutMember`). The builtin `size` hides a field of that name.
@@ -679,7 +679,7 @@ Each item has these fields:
 - a `sortText` of four digits that is its rank;
 - a `textEdit` that replaces the prefix, which begins after the `.`.
 
-There are at most 1,000 members (`AnalysisScopeOrder.MAX_DECLARATIONS`). Past that cap, the worker keeps only those whose names start with the prefix, up to the cap, and `isIncomplete` is `true`. The worker sends the answer in its own section of the result: protocol version 9, [ADR-0004](decisions/0004-analysis-worker-process.md#channel-and-framing). The candidates are declaration indices, plus a kind and a name for each builtin; the server rejects a malformed or unrequested answer, and charges each field against the [result budget](decisions/0004-analysis-worker-process.md#supported-program-size). An ordinary analysis carries no member data. ADR-0004 records that its result and the worker's heap are unchanged.
+There are at most 1,000 members (`AnalysisScopeOrder.MAX_DECLARATIONS`). Past that cap, the worker keeps only those whose names start with the prefix, up to the cap, and `isIncomplete` is `true`. The worker sends the answer in its own result section; [ADR-0004](decisions/0004-analysis-worker-process.md#channel-and-framing) owns its wire format, validation, and allocation charges. An ordinary analysis carries no member data. ADR-0004 records that its result and the worker's heap are unchanged.
 
 **Performance checks.** The member query's work is linear in the code that it walks and the members that it emits, or n log n in the names that it keeps:
 
@@ -717,14 +717,7 @@ The counts miss work that bypasses them: replacing only the per-level name set w
 
 These were measured on an Intel Core i7-14700KF with the default heaps and a throwaway stdio client.
 
-**Limitations.**
-
-- Nothing is offered after a number's `.`, as in `1.` or a tuple element's `t.0.`, since the scanner can't tell it from a number being typed.
-- A member's `detail` shows types as verification resolved them, so a `string` is `Array<byte>`.
-- Members come only from code that verification typed. A receiver after a syntax error elsewhere, or after the error limit, gets an empty list, as do the [repair's limits](#names).
-- An integer value, such as `x.` for an `x: int`, has no members: the integer members belong to the type.
-- A receiver in the arguments of a call whose callee doesn't resolve, such as a function still to be written, gets an empty list: verification skips them.
-- A layout's field used as a value, as in `L.f` with the cursor before `f`, gets an empty list: verification leaves no trace of looking it up, and refuses it. `L.` itself, `L.size`, and `L.f.offset` get the layout's members.
+**Limitations.** [Known limitations](known-limitations.md#member-completion) owns the user-facing restrictions and workarounds; [No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing) covers the repair and verification limits.
 
 [AnalysisMembersTest](../test/unit/AnalysisMembersTest.v3) checks the member query's exact candidates, order, levels, and details in process. It covers:
 
@@ -738,7 +731,7 @@ These were measured on an Intel Core i7-14700KF with the default heaps and a thr
 - unknown and erroneous receivers, cursor positions, and incomplete code;
 - a cursor that verification didn't reach, receivers in the arguments of a call whose callee doesn't resolve, the cap, kinds and details, and scaling.
 
-For each candidate set, it substitutes every offered member and a sample of others at the cursor, and requires the program to verify exactly when the member is offered. Other tests cover the server and the wire:
+For each candidate set, it substitutes every offered member and a sample of others at the cursor, and checks that the verifier resolves the offered members and rejects the others. Other tests cover the server and the wire:
 
 - [LspCompletionScopeTest](../test/unit/LspCompletionScopeTest.v3) runs member completions on the real worker in a dirty buffer, checking items' kinds, details, and edits. It covers:
   - text as typed and repaired: at the end of a statement, in call arguments, in an `if (` condition, in lambdas, and after a partial name;
