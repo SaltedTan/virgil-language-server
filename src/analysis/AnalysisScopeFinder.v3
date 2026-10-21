@@ -8,8 +8,8 @@
 // declarations, the types, and the layouts, in that order; and TypeEnv.lookup
 // for a name in a type. It walks only the member and the statements that
 // contain the offset, binding locals in the order TypeChecker binds them, so
-// that no local leaks from a sibling scope or from later in its block, and
-// allocates only its answer. See docs/architecture.md#completion.
+// that no local leaks from a sibling scope or from later in its block.
+// See docs/architecture.md#completion.
 class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay, prog: Program, file: VstFile, syntax: SymbolSyntaxIndex)
 		extends VstVisitor<void, void> {
 	// A cycle of superclasses is an error; stop following one.

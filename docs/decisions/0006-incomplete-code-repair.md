@@ -90,8 +90,8 @@ Use the narrow repair for M5's semantic completion, with the repair chosen from 
 
 The maintainer accepted the recommendation on 2026-10-21: M5's semantic completion uses the narrow repair, chosen from the cursor context rather than tried as a ladder, and error-tolerant parsing stays in M6.
 
-- #129 and #130 add worker queries for the scope and the members at the sentinel, which the snapshot doesn't hold today, and a completion job that takes turns with automatic analyses, as rename's preflight does. A newer request replaces an older one, and a result is reused for the same document version.
-- Completion still offers nothing semantic when a syntax error is away from the cursor, or when verification stops before it reaches the sentinel; [Known limitations](../known-limitations.md) says so once #129 lands.
+- #129 implements scope queries and completion jobs; [Completion](../architecture.md#completion) owns the implemented query, repair, scheduling, and reuse rules. #130 will add queries for the receiver's members.
+- Completion still offers nothing semantic when a syntax error is away from the cursor, or when verification stops before it reaches the sentinel; [Known limitations](../known-limitations.md) describes these remaining failure cases.
 - Keyword completion is unchanged, and the development `repair` command stays to measure repairs as the scanner changes.
 - The M6 item "Optional Aeneas `EDITOR` parser mode" stays in M6, as does any fallback to the last snapshot that parsed; counting how often a context keeps failing to parse would inform that decision.
 - Signature help doesn't use the repair yet, so an incomplete call still gets no signature.

@@ -175,8 +175,9 @@ component AnalysisWire {
 	// Encodes a RESULT as {encodeResult} does, and, if {files} and {scope} are
 	// not null, the answer to the request's scope query after the files: its
 	// flags (SCOPE_TRUNCATED), the level of "this" or -1, and a count, then
-	// each candidate's declaration index and level. Its declarations join the
-	// result's after the occurrences' (see AnalysisScopeFinder).
+	// each candidate's declaration index and level, then a count and the
+	// strings of hidden builtin names. Its declarations join the result's
+	// after the occurrences' (see AnalysisScopeFinder).
 	def encodeResultWithScope(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer) -> DataWriter {
