@@ -105,17 +105,36 @@ class AnalysisCoordinates {
 	}
 }
 
+// The work {AnalysisPositionIndex} does, so that tests can pin its scaling.
+// {moves} counts the entries that shifts and merges write, and {comparisons}
+// the key comparisons of the sorts before merges. No reply carries them.
+component AnalysisPositionWork {
+	// How far from the end an earlier key may be shifted into place.
+	def SHIFT_LIMIT = 64;
+	var moves: int;
+	var comparisons: int;
+}
+
 // Maps long keys, such as packed compiler coordinates or byte offsets, to
 // values. The parser records positions in increasing order, so a new key is
-// normally appended and lookups use binary search; an earlier key is inserted
-// in place. HashMap stops growing its table at 1024 buckets, so its lookups
-// slow down in proportion to the number of tokens in a file. Parsers clear
-// and reuse one index for each file: a whole program's worth of discarded
-// arrays would trigger an extra collection of the program in the worker heap.
+// normally appended and lookups use binary search. An earlier key is shifted
+// into place if that moves at most SHIFT_LIMIT entries. One further back
+// waits in a buffer, which the next lookup sorts and merges in one pass:
+// the parser extracts a simple body's "=>" after the body, so nested
+// expression lambdas insert in reverse order, and shifting each one cost
+// time quadratic in their number. HashMap stops growing its table at 1024
+// buckets, so its lookups slow down in proportion to the number of tokens in
+// a file. Parsers clear and reuse one index for each file: a whole program's
+// worth of discarded arrays would trigger an extra collection of the program
+// in the worker heap.
 class AnalysisPositionIndex<V> {
 	private var keys = Array<long>.new(64);
 	private var values = Array<V>.new(64);
 	private var length: int;
+	// Allocated when first needed. A buffered key is not in {keys}: every
+	// later key either goes after it or is buffered too, so it stays more
+	// than SHIFT_LIMIT from the end.
+	private var pending: AnalysisPositionBuffer<V>;
 
 	// Records {value} at {key}, replacing an existing value only if {replace}.
 	def set(key: long, value: V, replace: bool) {
@@ -132,31 +151,78 @@ class AnalysisPositionIndex<V> {
 			if (replace) values[i] = value;
 			return;
 		}
+		if (n - i > AnalysisPositionWork.SHIFT_LIMIT) {
+			if (pending == null) pending = AnalysisPositionBuffer<V>.new();
+			pending.add(key, value, replace);
+			return;
+		}
 		if (n == keys.length) grow();
 		for (j = n; j > i; j--) {
 			keys[j] = keys[j - 1];
 			values[j] = values[j - 1];
 		}
+		AnalysisPositionWork.moves += n - i;
 		keys[i] = key;
 		values[i] = value;
 		length = n + 1;
 	}
 	def has(key: long) -> bool {
+		if (pending != null && pending.length > 0) merge();
 		var i = search(key);
 		return i < length && keys[i] == key;
 	}
 	// Removes every key, keeping the arrays.
 	def clear() {
 		length = 0;
+		if (pending != null) pending.length = 0;
 	}
 	// The value at {key}, or {none} if there is none.
 	def get(key: long, none: V) -> V {
+		if (pending != null && pending.length > 0) merge();
 		var i = search(key);
 		return if(i < length && keys[i] == key, values[i], none);
 	}
 	private def grow() {
 		keys = Arrays.grow(keys, keys.length * 2);
 		values = Arrays.grow(values, values.length * 2);
+	}
+	// Sorts the buffered sets by key, keeping call order among equal keys,
+	// and merges them in from the back, so each entry after the first
+	// buffered key moves once. As for keys set in place, a key's first set
+	// inserts its value, and a later one replaces it only with {replace}.
+	private def merge() {
+		var p = pending, count = p.length;
+		p.length = 0;
+		var order = Array<int>.new(count);
+		for (i < count) order[i] = i;
+		order = AnalysisTables.sort(order, p.before);
+		var distinct = 0;
+		for (i < count) {
+			if (i == 0 || p.keys[order[i]] != p.keys[order[i - 1]]) distinct++;
+		}
+		var total = length + distinct;
+		while (keys.length < total) grow();
+		var from = length - 1, to = total - 1, end = count;
+		while (end > 0) {
+			var first = end - 1, key = p.keys[order[first]];
+			while (first > 0 && p.keys[order[first - 1]] == key) first--;
+			var value = p.values[order[first]];
+			for (i = first + 1; i < end; i++) {
+				if (p.replace[order[i]]) value = p.values[order[i]];
+			}
+			while (from >= 0 && keys[from] > key) {
+				keys[to] = keys[from];
+				values[to] = values[from];
+				from--;
+				to--;
+			}
+			keys[to] = key;
+			values[to] = value;
+			to--;
+			end = first;
+		}
+		AnalysisPositionWork.moves += total - 1 - to;
+		length = total;
 	}
 	// The index of the first key not less than {key}.
 	private def search(key: long) -> int {
@@ -167,6 +233,32 @@ class AnalysisPositionIndex<V> {
 			else high = mid;
 		}
 		return low;
+	}
+}
+
+// The sets that an {AnalysisPositionIndex} buffers, in call order.
+class AnalysisPositionBuffer<V> {
+	var keys = Array<long>.new(16);
+	var values = Array<V>.new(16);
+	var replace = Array<bool>.new(16);
+	var length: int;
+
+	def add(key: long, value: V, replace: bool) {
+		var n = length;
+		if (n == keys.length) {
+			keys = Arrays.grow(keys, 2 * n);
+			values = Arrays.grow(values, 2 * n);
+			this.replace = Arrays.grow(this.replace, 2 * n);
+		}
+		keys[n] = key;
+		values[n] = value;
+		this.replace[n] = replace;
+		length = n + 1;
+	}
+	// Orders buffered sets by key.
+	def before(a: int, b: int) -> bool {
+		AnalysisPositionWork.comparisons++;
+		return keys[a] < keys[b];
 	}
 }
 
