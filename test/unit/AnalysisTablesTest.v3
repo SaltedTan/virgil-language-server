@@ -19,6 +19,8 @@ def X = [
 	T("AnalysisTables:encoder_declarations", test_encoder_declarations),
 	T("AnalysisTables:cold_scope_query", test_cold_scope_query),
 	T("AnalysisTables:colliding_types", test_colliding_types),
+	T("AnalysisTables:spread_types", test_spread_types),
+	T("AnalysisTables:pointer_twins", test_pointer_twins),
 	T("AnalysisTables:seeds", test_seeds),
 	T("AnalysisTables:random_words", test_random_words),
 	()
@@ -289,6 +291,74 @@ def instance(i: int) -> string {
 		b.puts(if((i >> byte.view(k)) % 2 == 1, "T0, T33", "T1, T0"));
 	}
 	return b.puts(">").extract();
+}
+
+// Types of distinct compiler hashes whose low bits are equal, as a program's
+// can be. The display's type table and call keys slot a type by its hash
+// tabulated with the key (AnalysisTables.hashInt); by the hash itself, all of
+// these were in one probe sequence. colliding_types covers types that share
+// one hash, which the tables keep in a tree instead.
+def test_spread_types(t: Tester) {
+	scales(t, "the display's types of distinct hashes", 2048, typeTexts(t, _));
+	scales(t, "the display's calls of distinct hashes", 2048, callTypes(t, _));
+}
+// {n} class types C0 to C{n - 1}, whose compiler hashes are multiples of 2^16.
+def spreadTypes(n: int) -> Array<Type> {
+	var types = Array<Type>.new(n);
+	for (i < n) types[i] = Type.new((i + 1) << 16, TypeCon.new(Strings.format1("C%d", i), Kind.CLASS, 0, TypeUtil.globalCache), null);
+	return types;
+}
+// Renders each of {n} such types twice.
+def typeTexts(t: Tester, n: int) {
+	var types = spreadTypes(n), display = AnalysisDisplay.new(AnalysisSourceMaps.new());
+	for (round < 2) {
+		for (i < n) t.assert_string(Strings.format1("C%d", i), display.typeText(types[i]));
+	}
+}
+// Finds the call signature of a function of each of {n} such types twice.
+// Their function types' hashes are distinct and equal in their low 16 bits.
+def callTypes(t: Tester, n: int) {
+	var types = spreadTypes(n), display = AnalysisDisplay.new(AnalysisSourceMaps.new());
+	for (i < n) types[i] = Function.newType(types[i], Void.TYPE);
+	for (round < 2) {
+		for (i < n) {
+			var s = display.callSignature(null, VarBinding.None, types[i]);
+			t.assert_string(Strings.format1("C%d -> void", i), display.callSignatureAt(s).label);
+		}
+	}
+}
+
+// Pointer twins, which only machine lowering makes, compare as zero
+// (compareTypes), and so do types that differ only after a pair of them. With
+// p and q twins and T0 to T33 of consecutive uids, A = K<p, T0, T33> and
+// B = K<q, T1, T0> share a compiler hash, and so does C = K<p, T1, T0>; the
+// display gave B A's text and A's call signature. Each must get its own in
+// one display, as it does in a fresh one, and looking them up again must not
+// add them again.
+def test_pointer_twins(t: Tester) {
+	var pointer = Pointer_TypeCon.new("Pointer", 64), p = pointer.create1(Int.TYPE), q = pointer.create1(Int.TYPE);
+	var leaves = Array<Type>.new(34);
+	for (i < leaves.length) leaves[i] = TypeCon.new(Strings.format1("T%d", i), Kind.CLASS, 0, TypeUtil.globalCache).create0();
+	var k = TypeCon.new("K", Kind.CLASS, 3, TypeUtil.globalCache);
+	var types = [
+		k.create(List.new(p, Lists.cons2(leaves[0], leaves[33]))),
+		k.create(List.new(q, Lists.cons2(leaves[1], leaves[0]))),
+		k.create(List.new(p, Lists.cons2(leaves[1], leaves[0])))
+	];
+	t.assert(types[0].hash == types[1].hash && types[1].hash == types[2].hash, "the types share a compiler hash");
+	var display = AnalysisDisplay.new(AnalysisSourceMaps.new()), probed = Array<long>.new(3);
+	for (round < probed.length) {
+		var before = AnalysisTables.probes;
+		for (x in types) {
+			t.assert_string(AnalysisDisplay.new(AnalysisSourceMaps.new()).typeText(x), display.typeText(x));
+			var f = Function.newType(x, Void.TYPE), fresh = AnalysisDisplay.new(AnalysisSourceMaps.new());
+			t.assert_string(fresh.callSignatureAt(fresh.callSignature(null, VarBinding.None, f)).label,
+				display.callSignatureAt(display.callSignature(null, VarBinding.None, f)).label);
+		}
+		probed[round] = AnalysisTables.probes - before;
+	}
+	t.assert(probed[1] == probed[2], "looking the types up again added them again");
+	t.assert_string("K<Pointer<int>, T1, T0>", display.typeText(types[1]));
 }
 
 // Two keys give the same program the same result bytes, with and without a

@@ -69,9 +69,7 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 // by its own hash is circular.
 //
 // Instead, the keys of one {sameHash} class share one slot: the first alone,
-// and from the second on, all of them in an AA tree ordered by {compare},
-// which must be a total order that is zero only for keys that may share an
-// index, such as the same key.
+// and from the second on, all of them in an AA tree ordered by {compare}.
 // Keys of one class equal in {hash}, which must be keyed as hashInt is, so
 // that it spreads the classes: a lookup probes O(1) expected slots of other
 // classes, whatever the types, and then compares O(log n) keys of its own,
@@ -80,7 +78,23 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 // class, and a class costs its keys a tree, not a cluster. An ordinary
 // program has few such classes: in the Aeneas sources, the display's type
 // table has 49 of two types and its call keys one, and their trees and the
-// two tables' added fields take 4,320 bytes of a fresh worker's heap.
+// two tables' added fields take 4,336 bytes of a fresh worker's heap.
+//
+// An index is reused only for the very key that holds it (k == key); the
+// order only guides the search. The order is zero for distinct keys that it
+// cannot tell apart, as compareTypes is for the Pointer twins that only
+// machine lowering makes, which analysis never runs. A key that compares zero
+// with a key on its way into the tree is kept, instead, in its class's list
+// of such keys, which every lookup that the tree does not answer scans. So
+// the tree holds only keys whose every comparison on the way in was nonzero,
+// and a lookup, which searches both sides of a key that compares zero with
+// it, finds any key that the tree holds if the nonzero results agree with one
+// total order, as compareTypes's agree with the types' structure. Then the
+// map holds each key once, and a lookup without zeros, as every one is for
+// the canonical types that analysis interns, compares O(log n) keys. With
+// zeros, a lookup takes time up to linear in its class, and if the nonzero
+// results disagree, the map may hold a key more than once, but it never
+// gives one key another's index.
 class AnalysisTypeKeyMap<K>(hash: K -> int, sameHash: (K, K) -> bool, compare: (K, K) -> int) {
 	private def keys = Vector<K>.new();
 	// Each slot holds a key's index plus one if the key is alone in its
@@ -90,6 +104,10 @@ class AnalysisTypeKeyMap<K>(hash: K -> int, sameHash: (K, K) -> bool, compare: (
 	private var slots = Array<int>.new(64);
 	private var classes: int;
 	private var trees: Vector<AnalysisKeyNode>;
+	// The keys of each class that compared zero on their way into its tree,
+	// linked through their nodes' right fields, by the class's index in
+	// {trees}; null until one does.
+	private var ties: Vector<AnalysisKeyNode>;
 	// The index of the key that the last insert() found or added.
 	private var found: int;
 
@@ -109,14 +127,15 @@ class AnalysisTypeKeyMap<K>(hash: K -> int, sameHash: (K, K) -> bool, compare: (
 				if (k == key) return v - 1;
 				if (sameHash(k, key)) {
 					if (trees == null) trees = Vector<AnalysisKeyNode>.new();
-					slots[i] = -1 - trees.length;
-					trees.put(insert(AnalysisKeyNode.new(v - 1), key));
+					var c = trees.length;
+					slots[i] = -1 - c;
+					trees.put(insert(c, AnalysisKeyNode.new(v - 1), key));
 					return found;
 				}
 			} else {
-				var root = trees[-1 - v];
+				var c = -1 - v, root = trees[c];
 				if (sameHash(keys[root.index], key)) {
-					trees[-1 - v] = insert(root, key);
+					trees[c] = insert(c, root, key);
 					return found;
 				}
 			}
@@ -143,23 +162,67 @@ class AnalysisTypeKeyMap<K>(hash: K -> int, sameHash: (K, K) -> bool, compare: (
 			slots[i] = v;
 		}
 	}
-	// Adds {key} to the tree at {n}, of keys of its class, unless it holds
-	// it, and sets {found} to its index.
-	private def insert(n: AnalysisKeyNode, key: K) -> AnalysisKeyNode {
+	// Adds {key} to the tree at {n}, of keys of class {c}, or to the class's
+	// ties, unless either holds it, and sets {found} to its index.
+	private def insert(c: int, n: AnalysisKeyNode, key: K) -> AnalysisKeyNode {
 		if (n == null) {
+			if (ties != null && c < ties.length && tied(ties[c], key)) return null;
 			found = keys.length;
 			keys.put(key);
 			return AnalysisKeyNode.new(found);
 		}
 		AnalysisTables.probes++;
-		var order = compare(key, keys[n.index]);
+		var k = keys[n.index], order = compare(key, k);
 		if (order == 0) {
-			found = n.index;
+			if (k == key) found = n.index;
+			else if (!search(n.left, key) && !search(n.right, key)) tie(c, key);
 			return n;
 		}
-		if (order < 0) n.left = insert(n.left, key);
-		else n.right = insert(n.right, key);
+		if (order < 0) n.left = insert(c, n.left, key);
+		else n.right = insert(c, n.right, key);
 		return split(skew(n));
+	}
+	// Whether the tree at {n} holds {key}, searching both sides of each key
+	// that compares zero with it; sets {found} to its index if so.
+	private def search(n: AnalysisKeyNode, key: K) -> bool {
+		while (n != null) {
+			AnalysisTables.probes++;
+			var k = keys[n.index], order = compare(key, k);
+			if (order == 0) {
+				if (k == key) {
+					found = n.index;
+					return true;
+				}
+				if (search(n.left, key)) return true;
+				n = n.right;
+			} else {
+				n = if(order < 0, n.left, n.right);
+			}
+		}
+		return false;
+	}
+	// Adds {key} to the ties of class {c}, unless they hold it, and sets
+	// {found} to its index.
+	private def tie(c: int, key: K) {
+		if (ties == null) ties = Vector<AnalysisKeyNode>.new();
+		while (ties.length <= c) ties.put(null);
+		if (tied(ties[c], key)) return;
+		found = keys.length;
+		keys.put(key);
+		var n = AnalysisKeyNode.new(found);
+		n.right = ties[c];
+		ties[c] = n;
+	}
+	// Whether the list at {n} holds {key}; sets {found} to its index if so.
+	private def tied(n: AnalysisKeyNode, key: K) -> bool {
+		for (l = n; l != null; l = l.right) {
+			AnalysisTables.probes++;
+			if (keys[l.index] == key) {
+				found = l.index;
+				return true;
+			}
+		}
+		return false;
 	}
 	// Rotates right when {n}'s left child is on its level.
 	private def skew(n: AnalysisKeyNode) -> AnalysisKeyNode {

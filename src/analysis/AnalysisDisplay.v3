@@ -727,14 +727,19 @@ def sameTypeHash(a: Type, b: Type) -> bool {
 	return a.hash == b.hash;
 }
 // Orders types by their constructors' uids, and then by their first nested
-// types that differ, in order. The compiler hash-conses types: a constructor
-// makes one type for each list of nested types (TypeCon.create), so this is
-// zero only for the same type. Pointer_TypeCon.create1, which makes a new
-// type each time, is the exception: its twins compare as zero, and they
-// render alike, so either's text and call signature serve for both. Pairs
-// of nested types that are the same object are skipped, and only the first
-// pair that differs is compared, so this takes time proportional to the
-// types' depth times their arity, not to the size of their trees.
+// types that differ, in order. Pairs of nested types that are the same object
+// are skipped, and only the first pair that differs is compared, so this
+// takes time proportional to the types' depth times their arity, not to the
+// size of their trees. The compiler hash-conses the types that analysis
+// interns: a constructor makes one type for each list of nested types
+// (TypeCon.create), so the first pair that differs differs in structure, and
+// this is a total order on them, zero only for the same type. Machine
+// lowering, which analysis never runs, also makes Pointer twins
+// (Pointer_TypeCon.create1 makes a new type each time); for two of them this
+// is zero, and so it is for types that differ only after a pair of twins,
+// such as K<p, A> and K<q, B>. A result that is not zero always agrees with
+// the order of the types' trees, with twins as equal, which is all that
+// AnalysisTypeKeyMap needs to give each type its own index.
 def compareTypes(a: Type, b: Type) -> int {
 	while (a != b) {
 		if (a.typeCon != b.typeCon) return if(a.typeCon.uid < b.typeCon.uid, -1, 1);
