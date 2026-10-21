@@ -323,7 +323,7 @@ The workspace is n files named from thirteen `Aa`/`BB` blocks (bit j of i choose
 
 **Maps that stay hash-keyed.** Their keys are not paths or URIs, or a small limit bounds them:
 
-- `LspSnapshotRequests.answer` keys the waiting requests' URIs, at most `MAX_WAITING` (256) of them: a batch whose URIs all hash alike compares at most 32,640 URIs, once per completed analysis.
+- `LspSnapshotRequests.answer` keys the waiting requests' URIs, at most `MAX_WAITING` (256) of them: a batch whose URIs all hash alike costs a bounded number of comparisons, about 66,000 for 256 colliding URIs, once per completed analysis.
 - `JsonRpcDispatcher`'s handlers are keyed by the few dozen method names that the server registers. A client's method name is only looked up, so a chain holds at most the server's own names.
 - `ProjectConfig` keys project names (`ProjectConfigValidator.names`) and each object's member keys, from one project file of at most 256 KiB. Its `compilerArgs` and the worker's request options (`AnalysisWire.decodeAnalyze`, at most 64) key only accepted language options, which `ProjectCompilerFlags.check` admits before it adds one. A project file whose names or keys all hash alike costs time quadratic in their number: 4,800 project names take 137 ms to parse, and one object of 8,400 member keys 378 ms. These keys are not paths, so they keep their hash maps for now.
 - `LspDiagnosticLists.publish` keys a URI's diagnostics by range, code, and message: at most one parser diagnostic, since the parser stops at a file's first syntax error, then each semantic one, at most 16.
