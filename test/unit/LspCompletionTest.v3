@@ -12,6 +12,7 @@ def X = [
 	T("LspCompletion:prefix_range", test_prefix_range),
 	T("LspCompletion:numbers", test_numbers),
 	T("LspCompletion:member_after_dot", test_member_after_dot),
+	T("LspCompletion:operator_members", test_operator_members),
 	T("LspCompletion:text_bounds", test_text_bounds),
 	T("LspCompletion:crlf", test_crlf),
 	T("LspCompletion:open_calls", test_open_calls),
@@ -26,6 +27,7 @@ def X = [
 	T("LspCompletion:ref_arguments", test_ref_arguments),
 	T("LspCompletion:if_expressions", test_if_expressions),
 	T("LspCompletion:nested_else", test_nested_else),
+	T("LspCompletion:for_in", test_for_in),
 	T("LspCompletion:keyword_sets", test_keyword_sets),
 	T("LspCompletion:language_options", test_language_options),
 	T("LspCompletion:pinned_keywords", test_pinned_keywords),
@@ -237,6 +239,63 @@ def test_member_after_dot(t: Tester) {
 	t.assertz(false, at("x ... $").member());
 	t.assertz(true, at("var t = (1, 2).$").member());
 	t.assertz(true, at("var b = 3.$").member());
+}
+
+def test_operator_members(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	// Every operator member name that Parser.addMemberSuffix accepts is one
+	// complete operand, so no expression keyword is offered after it.
+	var ops = ["!", "?", "~", "==", "!=", "||", "|", "&&", "&", "<=", "<<", "<<=", "<",
+		">=", ">>", ">>=", ">>>", ">>>=", ">", "+", "+=", "-", "-=", "*", "*=", "/", "/=",
+		"%", "%=", "^", "^=", "[]", "[]="];
+	for (op in ops) {
+		var after = Strings.format1("def f() { g(int.%s $) }", op);
+		checkOffered(t, after, "");
+		checkSyntax(t, after, 0);
+	}
+	// After one, a line break lets a new statement start, as after any
+	// operand that a missing ";" leaves unseparated.
+	checkSyntax(t, "def f() { int.==\n\t$ }", STMT);
+	checkOffered(t, "def f() { int.==\n\t$ }", "break continue def false for fun if match null return true var while");
+	// "!" and "?" may take adjacent type arguments, which stay in the member.
+	checkOffered(t, "def f() { g(V.Case.!<int> $) }", "");
+	checkSyntax(t, "def f() { g(V.Case.!<int> $) }", 0);
+	checkCalls(t, "def f() { V.Case.!<int>( $) }", [23]);
+	checkCalls(t, "def f() { V.Case.!<Array<int>>( $) }", [30]);
+	checkCalls(t, "def f() { V.Case.?<int>( $) }", [23]);
+	// A call after an operator member is a call, not a group.
+	checkCalls(t, "def f() { V.Case.!( $) }", [18]);
+	checkCalls(t, "def f() { g(V.Case.!( $)) }", [11, 20]);
+	checkCalls(t, "def f() { x.+($) }", [13]);
+	checkCalls(t, "def f() { x.[]=($) }", [15]);
+	// A completed operator member ends the member access.
+	t.assertz(false, at("def f() { int.== $ }").member());
+}
+
+def test_for_in(t: Tester) {
+	// "in" belongs to the loop variable's position alone, before an optional
+	// type, at every form of the variable.
+	checkOffered(t, "def f() { for (i $", "in");
+	checkSyntax(t, "def f() { for (i $", LspCursorSyntax.FOR_IN);
+	checkOffered(t, "def f() { for (i: int $", "in");
+	checkSyntax(t, "def f() { for (i: int $", LspCursorSyntax.FOR_IN);
+	checkOffered(t, "def f() { for (i: Array<int> $", "in");
+	checkSyntax(t, "def f() { for (i: Array<int> $", LspCursorSyntax.FOR_IN);
+	// At "<", "in", or "=" the position ends, so no "in" follows.
+	for (marked in [
+		"def f() { for (i < n $) }",
+		"def f() { for (i in xs $) }",
+		"def f() { for (i = 0 $; i < n; i++) }",
+		"def f() { for (i: int = 0 $; i < n; i++) }"
+	]) {
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, 0);
+		var ctx = at(marked);
+		t.asserta("roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], ctx.roles, putRole);
+	}
+	// In the clauses, after the header's first ";", "in" is not offered.
+	checkOffered(t, "def f() { for (i = 0; i $", "");
+	checkSyntax(t, "def f() { for (i = 0; i $", 0);
 }
 
 def test_text_bounds(t: Tester) {
