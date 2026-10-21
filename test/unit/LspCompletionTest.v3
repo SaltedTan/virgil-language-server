@@ -198,9 +198,22 @@ def test_numbers(t: Tester) {
 	for (form in ["1e+3", "1e-3", "1E+3", "0e+3", "1.5e+3", "1.5E-3", "1.e+3",
 			"0x1F", "0X1f_FF", "0x1Fu8", "0x1Fl", "0b1010", "0B1_010", "0b101u8",
 			"1u", "1U", "1l", "1L", "1u8", "1i8", "1ul", "1f", "1F", "1d", "1D",
-			"1.5f", "1.5d", "1_000", "1_000_000u32"]) {
+			"1.5f", "1.5d", "1_000", "1_000_000u32",
+			// Fractional underscores, leading, trailing, and repeated, and an
+			// empty fraction before an exponent or a suffix.
+			"1._5e+3", "1._5", "1._e+3", "1._", "1.5_", "1.__5", "1.5__2",
+			// An underscore before an exponent.
+			"1_e3", "1_e+3", "1__e-3",
+			// The zero path takes the same fraction, exponent, and suffixes.
+			"0._5e+3", "0.5_", "0._"]) {
 		checkPlace(t, Strings.format1("var x = %s$", form), LspCursorPlace.NUMBER);
 	}
+	// An exponent with no digit ends before a float suffix, since
+	// NumberParser reports its error without taking one.
+	checkPlace(t, "var x = 1e+f$", LspCursorPlace.CODE);
+	checkPrefix(t, "var x = 1e+f$", "f");
+	checkPlace(t, "var x = 1.ef$", LspCursorPlace.CODE);
+	checkPrefix(t, "var x = 1.ef$", "f");
 	// A "." that begins no fraction stays outside the number, so a member
 	// completion after it knows that it follows a number.
 	var ctx = at("var x = 1.$");
@@ -697,6 +710,8 @@ def test_lambda_hints(t: Tester) {
 		"def f() { g(fun () #packing 1e-3 ;, $); }",
 		"def f() { g(fun () #packing 1.5e+3 ;, $); }",
 		"def f() { g(fun () #packing 1.e+3 ;, $); }",
+		"def f() { g(fun () #packing 1._5e+3 ;, $); }",
+		"def f() { g(fun () #packing 1._ ;, $); }",
 		"def f() { g(fun () #packing 0b1010 ;, $); }",
 		"def f() { g(fun () #packing 1_000 ;, $); }",
 		"def f() { g(fun () #packing 1.5d ;, $); }",

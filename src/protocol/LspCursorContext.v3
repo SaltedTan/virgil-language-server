@@ -348,56 +348,111 @@ class LspCursorScanner(text: Array<byte>) {
 		}
 		return LspCursorPlace.CODE;
 	}
-	// The end of the number literal at {i}, read as NumberParser reads it:
-	// decimal digits and underscores, a fraction, an exponent whose sign it
-	// carries, hexadecimal or binary digits, and integer or float suffixes.
-	// A "." that begins no fraction stays outside the number, so that the
-	// scanner still recognizes "1.", "0x1F.", and "t.0." as a number and a
-	// "." (LspCompletionRepair.kinds asks for no members after it).
+	// The end of the number literal at {i}, read as NumberParser.parse reads
+	// one: decimal digits and underscores, a fraction of digits and
+	// underscores, an exponent whose sign it carries and whose digits are
+	// decimal, hexadecimal or binary digits, and integer or float suffixes.
+	// A "." that begins no fraction, exponent, or float suffix stays outside
+	// the number, so that the scanner still recognizes "1.", "0x1F.", and
+	// "t.0." as a number and a "." (LspCompletionRepair.kinds asks for no
+	// members after it); docs/architecture.md#completion lists that and the
+	// leading "-" as the deliberate differences from NumberParser.
 	private def numberEnd(i: int) -> int {
 		var n = text.length, j = i;
 		if (text[j] == '0' && j + 1 < n) {
 			var c = text[j + 1];
 			if (c == 'x' || c == 'X') {
 				j += 2;
-				while (j < n && (isHex(text[j]) || text[j] == '_')) j++;
-				return intSuffix(j);
+				var digits = 0;
+				while (j < n && (isHex(text[j]) || text[j] == '_')) {
+					if (isHex(text[j])) digits++;
+					j++;
+				}
+				// With no digit or too many, NumberParser reports the error
+				// before a suffix, so the suffix is not part of the literal.
+				return if(digits > 0 && digits <= 16, intSuffix(j), j);
 			}
 			if (c == 'b' || c == 'B') {
 				j += 2;
-				while (j < n && (text[j] == '0' || text[j] == '1' || text[j] == '_')) j++;
-				return intSuffix(j);
+				var digits = 0;
+				while (j < n && (text[j] == '0' || text[j] == '1' || text[j] == '_')) {
+					if (text[j] != '_') digits++;
+					j++;
+				}
+				return if(digits > 0 && digits <= 64, intSuffix(j), j);
 			}
+			if (c == '.') return fractionEnd(j + 1);
+			if (c == 'e' || c == 'E') {
+				var x = exponentEnd(j + 1);
+				return if(x.1, floatSuffix(x.0), x.0);
+			}
+			if (c >= '0' && c <= '7') {
+				// Aeneas rejects an octal literal but reads its digits.
+				j += 2;
+				while (j < n && text[j] >= '0' && text[j] <= '7') j++;
+				return j;
+			}
+			// NumberParser reads no digits after "0" but a suffix, and "8"
+			// and "9" end the number at the "0".
+			if (c == '8' || c == '9') return j + 1;
+			return numberSuffixEnd(j + 1);
 		}
+		j++;
 		while (j < n && (isDecimal(text[j]) || text[j] == '_')) j++;
-		if (j + 1 < n && text[j] == '.' && (isDecimal(text[j + 1]) || text[j + 1] == 'e' || text[j + 1] == 'E')) {
-			j++;
-			while (j < n && (isDecimal(text[j]) || text[j] == '_')) j++;
-			if (j < n && (text[j] == 'e' || text[j] == 'E')) j = exponentEnd(j);
-			return floatSuffix(j);
+		if (j < n && text[j] == '.') return fractionEnd(j);
+		if (j < n && (text[j] == 'e' || text[j] == 'E')) {
+			var x = exponentEnd(j);
+			return if(x.1, floatSuffix(x.0), x.0);
 		}
-		if (j < n && (text[j] == 'e' || text[j] == 'E')) return floatSuffix(exponentEnd(j));
-		if (j < n) {
-			var c = text[j];
-			if (c == 'f' || c == 'F' || c == 'd' || c == 'D') return j + 1;
+		return numberSuffixEnd(j);
+	}
+	// The end of the fraction whose "." is at {j}, if a fraction, exponent,
+	// or float suffix follows it; or {j}, leaving the "." outside the number.
+	// NumberParser takes an empty fraction before an exponent or a suffix, as
+	// in "1.e+3" and "1.f", and underscores anywhere, as in "1._5e+3"; it
+	// takes a lone "1." as a float, which the scanner leaves as a number and
+	// a "." instead.
+	private def fractionEnd(j: int) -> int {
+		var n = text.length, k = j + 1;
+		if (k >= n) return j;
+		var c = text[k];
+		if (!(isDecimal(c) || c == '_' || c == 'e' || c == 'E' || isFloatSuffix(c))) return j;
+		var e = k;
+		while (e < n && (isDecimal(text[e]) || text[e] == '_')) e++;
+		if (e < n && (text[e] == 'e' || text[e] == 'E')) {
+			var x = exponentEnd(e);
+			return if(x.1, floatSuffix(x.0), x.0);
 		}
-		return intSuffix(j);
+		return floatSuffix(e);
 	}
 	// The end of the exponent at {j}, whose "e" may be followed by a sign and
-	// decimal digits, as NumberParser accepts them.
-	private def exponentEnd(j: int) -> int {
+	// decimal digits, as NumberParser accepts them: its digits carry no "_",
+	// and a first digit of "0" ends them, as NumberParser's match arm does.
+	// {.1} is false when no digit followed, when NumberParser reports the
+	// error before a float suffix rather than taking one.
+	private def exponentEnd(j: int) -> (int, bool) {
 		var n = text.length;
 		j++;
 		if (j < n && (text[j] == '+' || text[j] == '-')) j++;
-		while (j < n && isDecimal(text[j])) j++;
+		if (j >= n || !isDecimal(text[j])) return (j, false);
+		var zero = text[j] == '0';
+		j++;
+		if (!zero) while (j < n && isDecimal(text[j])) j++;
+		return (j, true);
+	}
+	// The end of a float suffix at {j}, or {j} if there is none.
+	private def floatSuffix(j: int) -> int {
+		if (j < text.length && isFloatSuffix(text[j])) return j + 1;
 		return j;
 	}
-	private def floatSuffix(j: int) -> int {
-		if (j < text.length) {
-			var c = text[j];
-			if (c == 'f' || c == 'F' || c == 'd' || c == 'D') return j + 1;
-		}
-		return j;
+	private def isFloatSuffix(c: byte) -> bool {
+		return c == 'f' || c == 'F' || c == 'd' || c == 'D';
+	}
+	// The end of the integer or float suffix at {j}, as NumberParser takes
+	// one: a float suffix first, then an integer suffix.
+	private def numberSuffixEnd(j: int) -> int {
+		if (j < text.length && isFloatSuffix(text[j])) return j + 1;
+		return intSuffix(j);
 	}
 	// An integer suffix, as NumberParser.acceptUIL reads it: "u" may take a
 	// width or an "l", "i" takes a width, and "l" stands alone.
