@@ -272,10 +272,10 @@ async function workspace(extension) {
   await waitFor('the undo of the rename', () => words.document.getText() === fixed);
   await undo(words, unedited);
 
-  // Completion answers from the unsaved text alone, which no longer parses:
-  // "whi" starts a statement, so the keywords of a statement are offered, and
-  // "while" replaces just the prefix. VS Code applies the item, and one undo
-  // restores the line.
+  // Completion takes its keywords from the unsaved text alone, which no
+  // longer parses: "whi" starts a statement, so the keywords of a statement
+  // are offered, and "while" replaces just the prefix. VS Code applies the
+  // item, and one undo restores the line.
   await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), '\t\twhi\n'));
   const typed = words.document.getText();
   const completions = await vscode.commands.executeCommand(
@@ -283,7 +283,8 @@ async function workspace(extension) {
   );
   const keyword = completions.items.find((i) => i.label === 'while');
   assert.ok(keyword, 'while is not offered');
-  assert.deepEqual(completions.items.map((i) => i.label), [
+  const keywords = completions.items.filter((i) => i.kind === vscode.CompletionItemKind.Keyword);
+  assert.deepEqual(keywords.map((i) => i.label), [
     'break', 'continue', 'def', 'false', 'for', 'fun', 'if', 'match', 'null', 'return', 'true', 'var', 'while',
   ]);
   assert.equal(keyword.kind, vscode.CompletionItemKind.Keyword);
@@ -298,6 +299,37 @@ async function workspace(extension) {
   await waitFor('the undo of the completion', () => words.document.getText() === typed);
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the prefix', () => words.document.getText() === unedited && !words.document.isDirty);
+
+  // It also offers the declarations in scope, from an analysis of the
+  // project with the unsaved text, repaired at the cursor: the local "line"
+  // is nearest, so it is ranked first, then the parameters, "this", and the
+  // component's method. Its detail is its signature. VS Code applies the
+  // item, and one undo restores the line.
+  await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), '\t\tli\n'));
+  const prefixed = words.document.getText();
+  const declared = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(use + 1, 4),
+  );
+  // The server ranks declarations by a four-digit sortText; VS Code gives the
+  // keywords their labels.
+  const ranked = declared.items.filter((i) => /^[0-9]{4}$/.test(i.sortText))
+    .sort((x, y) => (x.sortText < y.sortText ? -1 : 1));
+  assert.deepEqual(ranked.slice(0, 5).map((i) => i.label), ['line', 'a', 'b', 'this', 'join']);
+  const local = ranked[0];
+  assert.equal(local.kind, vscode.CompletionItemKind.Variable);
+  assert.equal(local.detail, 'var line: int');
+  assert.equal(local.sortText, '0000');
+  const localRange = local.range instanceof vscode.Range ? local.range : local.range.replacing;
+  assert.deepEqual(range({ range: localRange }), [use + 1, 2, use + 1, 4]);
+  const localText = typeof local.insertText === 'string' ? local.insertText : local.insertText.value;
+  assert.equal(localText, 'line');
+  await edit(words, (builder) => builder.replace(localRange, localText));
+  assert.equal(words.document.lineAt(use + 1).text, '\t\tline');
+  await vscode.window.showTextDocument(words.document);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the declaration completion', () => words.document.getText() === prefixed);
+  await vscode.commands.executeCommand('undo');
+  await waitFor('the undo of the declaration prefix', () => words.document.getText() === unedited && !words.document.isDirty);
 
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
@@ -321,7 +353,7 @@ async function workspace(extension) {
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, signature help, references, rename and undo, keyword completion, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, signature help, references, rename and undo, keyword and declaration completion, workspace symbols, project file edits, and restart with a clean server exit');
 }
 
 async function run() {

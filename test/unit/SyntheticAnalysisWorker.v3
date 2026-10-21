@@ -8,10 +8,15 @@
 // (AnalysisWorker.handle), so that a server can run on this worker, unless a
 // source spells {CRASH} or {TOO_LARGE}: the worker then ends without a reply,
 // or sends a result over the decoding budget. A rename to such a name fails
-// in its preflight alone.
+// in its preflight alone. A request with a scope query whose sources spell
+// {SCOPE_CRASH} ends the worker too, and one whose sources spell
+// {SCOPE_MALFORMED} gets a scope answer that names a declaration twice, so
+// that a completion fails while the project's own analyses succeed.
 component SyntheticAnalysisWorker {
 	def CRASH = "workerEndsHere";
 	def TOO_LARGE = "resultTooLarge";
+	def SCOPE_CRASH = "scopeEndsHere";
+	def SCOPE_MALFORMED = "scopeMalformed";
 
 	def run() -> int {
 		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, 384L * 1024 * 1024))) return 1;
@@ -30,6 +35,7 @@ component SyntheticAnalysisWorker {
 			var mode = request.sources[0].path;
 			if (Strings.endsWith(mode, ".v3")) {
 				if (spells(request.sources, CRASH)) return 1;
+				if (request.scope() != null && spells(request.sources, SCOPE_CRASH)) return 1;
 				if (!spells(request.sources, TOO_LARGE)) {
 					if (!send(analyze(request))) return 1;
 					continue;
@@ -64,7 +70,8 @@ component SyntheticAnalysisWorker {
 	}
 	// The result of the real worker for {request}, without its statistics.
 	private def analyze(request: AnalysisWorkerRequest) -> Range<byte> {
-		var analysis = AeneasAdapter.analyzeProgram(request.sources, request.options, false);
+		var analysis = if(request.scope() != null, AeneasAdapter.analyzeForScope(request.sources, request.options, false),
+			AeneasAdapter.analyzeProgram(request.sources, request.options, false));
 		var files: Array<(string, Array<AnalysisOccurrence>)>;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
 			var list = Vector<(string, Array<AnalysisOccurrence>)>.new();
@@ -74,9 +81,19 @@ component SyntheticAnalysisWorker {
 				if (!seen) list.put((path, analysis.occurrences(path)));
 			}
 			files = list.extract();
+		} else if (request.scope() != null) {
+			files = [];
 		}
-		return AnalysisWire.finishResult(AnalysisWire.encodeResult(request.id, 1, AeneasAdapter.uidCounter(),
-			analysis, -1, -1, files), 0);
+		var scope = if(files != null, request.scopeAnswer(analysis));
+		if (scope != null && scope.declarations.length > 0 && spells(request.sources, SCOPE_MALFORMED)) {
+			// The first candidate twice, which the server rejects.
+			var d = scope.declarations[0], level = scope.levels[0];
+			var twice = AnalysisScopeAnswer.new([d, d], [level, level], scope.thisLevel, false);
+			twice.paths = scope.paths;
+			scope = twice;
+		}
+		return AnalysisWire.finishResult(AnalysisWire.encodeResultWithScope(request.id, 1, AeneasAdapter.uidCounter(),
+			analysis, -1, -1, files, scope), 0);
 	}
 	// Whether any of {sources} contains the bytes of {word}.
 	private def spells(sources: Array<AnalysisSource>, word: string) -> bool {

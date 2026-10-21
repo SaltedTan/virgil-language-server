@@ -21,6 +21,24 @@ component LspSymbolKind {
 			TYPE_PARAM => return 26;	// TypeParameter
 		}
 	}
+	// The CompletionItemKind of a declaration of {kind}: the completion kind
+	// named as its SymbolKind is, so that completion shows each declaration
+	// as the outlines do.
+	def completion(kind: AnalysisDeclKind) -> int {
+		match (of(kind)) {
+			3 => return 9;		// Namespace: Module
+			5 => return 7;		// Class
+			6 => return 2;		// Method
+			8 => return 5;		// Field
+			9 => return 4;		// Constructor
+			10 => return 13;	// Enum
+			13 => return 6;		// Variable
+			22 => return 20;	// EnumMember
+			23 => return 22;	// Struct
+			26 => return 25;	// TypeParameter
+			_ => return 1;		// Text
+		}
+	}
 }
 
 // Outlines parse the overlay with the language options of the document's

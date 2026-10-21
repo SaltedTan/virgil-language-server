@@ -23,6 +23,7 @@ def X = [
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
 	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
+	T("LspCompletion:ref_arguments", test_ref_arguments),
 	T("LspCompletion:if_expressions", test_if_expressions),
 	T("LspCompletion:nested_else", test_nested_else),
 	T("LspCompletion:keyword_sets", test_keyword_sets),
@@ -52,6 +53,20 @@ def at(marked: string) -> LspCursorContext {
 		else text.put(c);
 	}
 	return LspCursorScanner.new(text.extract()).scan(cursor);
+}
+
+def test_ref_arguments(t: Tester) {
+	for (name in ["Ref", "ref"]) {
+		for (trivia in ["", " ", " /* comment */ ", " // comment\n", " /* // */ /* next */ "]) {
+			var marked = Strings.format2("var r: %s%s<$Pixel>;", name, trivia);
+			t.asserti(AnalysisScopeKinds.LAYOUTS, LspCompletionRepair.kinds(at(marked)));
+		}
+	}
+	for (marked in ["var r: Array<$Pixel>;", "var r: MoreRef<$Pixel>;", "var r: RefMore<$Pixel>;",
+		"var r: C.Ref<$Pixel>;", "var r: C. /* comment */ Ref /* comment */ <$Pixel>;",
+		"var r: Ref<Pixel, $int>;", "var r: Ref<Array<$int>>;"]) {
+		t.asserti(AnalysisScopeKinds.TYPES, LspCompletionRepair.kinds(at(marked)));
+	}
 }
 // Checks that the cursor in {marked} is in {place}.
 def checkPlace(t: Tester, marked: string, place: LspCursorPlace) {
@@ -839,9 +854,25 @@ def request(uri: string, line: int, character: int) -> string {
 	return Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":%d,\"character\":%d}}}",
 		uri, line, character);
 }
-// The result of a completion at {line} and {character} of {uri}.
+// Handles {payload} and returns the reply to it, which a completion sends to
+// the server's sink, or null if none came yet. The other messages go on to the
+// sink that was set.
+def answer(s: LspServer, payload: string) -> Array<byte> {
+	var sent = Vector<Array<byte>>.new(), previous = s.sendNotification;
+	s.sendNotification = fun (b: Array<byte>) { sent.put(b); };
+	var reply = s.handle(payload);
+	s.sendNotification = previous;
+	for (i < sent.length) {
+		var obj = JsonValue.JObject.!(JsonRpcJsonParser.new(sent[i]).parseDocument()).v;
+		if (reply == null && obj.has("id") && !obj.has("method")) reply = sent[i];
+		else if (previous != null) previous(sent[i]);
+	}
+	return reply;
+}
+// The result of a completion at {line} and {character} of {uri}, which needs
+// no analysis.
 def complete(t: Tester, s: LspServer, uri: string, line: int, character: int) -> HashMap<string, JsonValue> {
-	var reply = s.handle(request(uri, line, character));
+	var reply = answer(s, request(uri, line, character));
 	t.assert(reply != null, "completion is answered at once");
 	if (reply == null) return null;
 	var obj = JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v;
@@ -986,8 +1017,9 @@ def test_project_options(t: Tester) {
 	t.assert_string("extends", render(complete(t, s, plain, 0, 12)));
 }
 
-// Completion answers from the text even while an analysis is pending, and
-// starts none.
+// Where only keywords can go, completion answers from the text even while
+// an analysis is pending, and starts none; where names can, it waits for its
+// own analysis (LspCompletionScopeTest).
 def test_no_analysis(t: Tester) {
 	HostOs.ignoreSigpipe();
 	var supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
@@ -1001,18 +1033,21 @@ def test_no_analysis(t: Tester) {
 	doc["uri"] = JsonValue.String(uri);
 	doc["languageId"] = JsonValue.String("virgil");
 	doc["version"] = JsonValue.Int(1);
-	doc["text"] = JsonValue.String("component Main {\n\tdef main() {\n\t\tvar s = Shapes.;\n\t\t\n\t}\n}\n");
+	doc["text"] = JsonValue.String("component Main {\n\tdef main() {\n\t\tvar s = Shapes.;\n\t\t// wh\n\t}\n}\n");
 	params["textDocument"] = JsonValue.JObject(doc);
 	s.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
 	t.assert(s.analyzing(), "the open schedules an analysis");
 	var started = supervisor.workersStarted, busy = supervisor.busy(), notifications = sent.length;
 	t.assert(s.projects.forDocument(uri).active != null, "the document is in a project");
 	t.assert(s.projects.forDocument(uri).active.snapshot == null, "no analysis has completed");
+	// After ".", in a comment, and where a new name goes.
 	t.asserti(0, JsonValue.JArray.!(complete(t, s, uri, 2, 17)["items"]).v.length);
-	t.asserti(13, JsonValue.JArray.!(complete(t, s, uri, 3, 2)["items"]).v.length);
+	t.asserti(0, JsonValue.JArray.!(complete(t, s, uri, 3, 7)["items"]).v.length);
+	t.assert_string("def new private var", render(complete(t, s, uri, 4, 2)));
 	t.asserti(started, supervisor.workersStarted);
 	t.assertz(busy, supervisor.busy());
 	t.asserti(notifications, sent.length);
+	t.asserti(0, s.completion.analyses);
 	t.assert(s.analyzing(), "the analysis is still pending");
 	s.close();
 	supervisor.close();
@@ -1021,11 +1056,11 @@ def test_no_analysis(t: Tester) {
 def test_cancellation_and_shutdown(t: Tester) {
 	var s = server(t);
 	s.documents.open(URI, "virgil", 1, "");
-	t.assert(s.handle(request(URI, 0, 0)) != null, "answered at once");
+	t.assert(answer(s, request(URI, 0, 0)) != null, "answered at once");
 	// Cancellation arrives after the reply, and is never answered.
 	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":7}}") == null, "no reply to a cancellation");
 	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}") != null, "shutdown");
-	var reply = s.handle(request(URI, 0, 0));
+	var reply = answer(s, request(URI, 0, 0));
 	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32600,\"message\":\"the server is shutting down\"}}", reply);
 }
 
@@ -1039,12 +1074,12 @@ def test_params(t: Tester) {
 			"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":-1,\"character\":0}}",
 			"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0}}",
 			"{\"textDocument\":{\"uri\":\"untitled:a\"},\"position\":{\"line\":0,\"character\":\"1\"}}"]) {
-		var reply = s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":%s}", params));
+		var reply = answer(s, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":%s}", params));
 		t.assert_string(error, reply);
 	}
 	// A completion context is accepted and changes nothing.
 	s.documents.open(URI, "virgil", 1, "");
-	var reply = s.handle("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"untitled:complete.v3\"},\"position\":{\"line\":0,\"character\":0},\"context\":{\"triggerKind\":1}}}");
+	var reply = answer(s, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"untitled:complete.v3\"},\"position\":{\"line\":0,\"character\":0},\"context\":{\"triggerKind\":1}}}");
 	var result = JsonValue.JObject.!(JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v["result"]).v;
 	t.assert_string("class component def enum export import layout packing private thread type var", render(result));
 }

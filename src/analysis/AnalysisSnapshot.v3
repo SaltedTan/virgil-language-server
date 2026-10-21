@@ -36,6 +36,9 @@ class AnalysisSnapshot {
 	// Every declaration named in the program's files or that an occurrence
 	// resolves to, each once.
 	def declarations: Array<AnalysisDeclaration>;
+	// The answer to the analysis's scope query, as indices into
+	// {declarations}, or null without one; see docs/architecture.md#completion.
+	var scope: AnalysisSnapshotScope;
 	// Each file's index, or null without occurrences.
 	private var files: AnalysisSnapshotFiles;
 	// The result's string table, which holds the use-site types.

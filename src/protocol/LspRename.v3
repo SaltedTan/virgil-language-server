@@ -75,7 +75,6 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("textDocument/rename", receive);
-		dispatcher.onNotification("$/cancelRequest", cancel);
 	}
 	private def receive(request: JsonRpcMessage.Request) {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
@@ -215,7 +214,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
-		return supervisor.beginTemporary(sources, p.ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);
+		return supervisor.beginTemporary(sources, p.ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES, null);
 	}
 	// Replies to {r} once its preflight ends: the edit, if the analysis of the
 	// edits binds as the snapshot does and nothing changed meanwhile, and
@@ -265,8 +264,9 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		return JsonRpcReply.Result(workspaceEdit(changes));
 	}
 	// Answers the pending rename with RequestCancelled if {n} cancels it, and
-	// drops its preflight. Other cancellations are ignored.
-	private def cancel(n: JsonRpcMessage.Notification) {
+	// drops its preflight. Other cancellations are ignored. The server
+	// passes every $/cancelRequest to it.
+	def cancel(n: JsonRpcMessage.Notification) {
 		if (pending == null || !JsonRpcParams.ByName.?(n.params)) return;
 		var params = JsonRpcParams.ByName.!(n.params).v, id: JsonRpcId;
 		if (!params.has("id")) return;

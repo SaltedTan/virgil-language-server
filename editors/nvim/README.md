@@ -50,7 +50,7 @@ The server notices changes made outside the editor, such as a checkout, only fro
 
 ## Completion
 
-The server offers [keyword completion](../../docs/architecture.md#completion) in open buffers, even while they fail to parse. In plain Neovim, ask for it: Neovim 0.11 sets `omnifunc` to `vim.lsp.omnifunc()` when the server attaches, so `<C-x><C-o>` in Insert mode completes the word before the cursor, with no setup. Neovim's built-in LSP completion also has `vim.lsp.completion.get()`, which asks only the servers that `vim.lsp.completion.enable()` enabled for the buffer, so enable it in an `LspAttach` autocommand and map a key to it, as `:help vim.lsp.completion.get()` suggests:
+The server offers [completion](../../docs/architecture.md#completion) of keywords in open buffers, even while they fail to parse, and of the declarations in scope in a configured project, after a moment for an analysis. In plain Neovim, ask for it: Neovim 0.11 sets `omnifunc` to `vim.lsp.omnifunc()` when the server attaches, so `<C-x><C-o>` in Insert mode completes the word before the cursor, with no setup. Neovim's built-in LSP completion also has `vim.lsp.completion.get()`, which asks only the servers that `vim.lsp.completion.enable()` enabled for the buffer, so enable it in an `LspAttach` autocommand and map a key to it, as `:help vim.lsp.completion.get()` suggests:
 
 ```lua
 vim.api.nvim_create_autocmd("LspAttach", {
@@ -80,8 +80,9 @@ project, which uses `lib/util` from the Virgil root, a definition in that
 closed library file, a hover over the same use, signature help in a call on the
 same line, its references in that file and other closed library files, a rename
 of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
-error, and its undo, keyword completion of `whi` to `while` in the unsaved,
-unparsable buffer, applied with Neovim's own edit and undone, a workspace symbol that nothing uses, configuration
+error, and its undo, keyword completion of `whi` to `while` and completion of
+`li` to the local `line` in the unsaved, unparsable buffer, each applied with
+Neovim's own edit and undone, a workspace symbol that nothing uses, configuration
 diagnostics after an unsaved edit to the project file, that other JSON buffers
 stay detached, and a graceful server shutdown with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the

@@ -93,6 +93,7 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// The offset of the "." before the prefix, with only whitespace and
 	// comments between, or -1.
 	def var dot = -1;
+	def var previousName = -1;
 	// The LspCursorSyntax flags of the position; 0 outside CODE.
 	def var syntax: int;
 	// The delimiters open at the cursor, outermost first: their offsets and
@@ -202,6 +203,7 @@ class LspCursorScanner(text: Array<byte>) {
 		ctx.place = scanTo(ctx, cursor);
 		if (ctx.place == LspCursorPlace.CODE) {
 			if (prevKind == LspCursorToken.PUNCT && prevByte == '.') ctx.dot = prevStart;
+			if (prevKind == LspCursorToken.NAME && !prevAfterDot) ctx.previousName = prevStart;
 			ctx.syntax = position();
 		}
 		ctx.opens = opens.copy();

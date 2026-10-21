@@ -1180,7 +1180,8 @@ def test_preflight_is_not_kept(t: Tester) {
 	s.server.close();
 }
 // A job queued behind a running analysis starts as soon as it ends, before a
-// due context; one queued behind a job waits for a due context first.
+// due context; one queued behind a job waits for a due context first, and
+// queued jobs start in order.
 def test_jobs_and_analyses_take_turns(t: Tester) {
 	var s = kindsSession(t);
 	var scheduler = s.server.rename.scheduler, ctx = s.server.projects.forDocument(s.uri("Kinds.v3")).active;
@@ -1189,26 +1190,31 @@ def test_jobs_and_analyses_take_turns(t: Tester) {
 	var job = fun (label: string) => LspAnalysisJob.new(
 		fun (supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 			order.put(Strings.format2("%s after %d", label, ctx.snapshot.generation));
-			return supervisor.beginTemporary(source, [], AnalysisWire.WANT_OCCURRENCES);
+			return supervisor.beginTemporary(source, [], AnalysisWire.WANT_OCCURRENCES, null);
 		},
 		fun (outcome: AnalysisOutcome) { order.put(Strings.format1("%s done", label)); });
 	var generation = ctx.snapshot.generation;
-	// The first job starts at once; the context and the second job wait.
+	// The first job starts at once; the context and the other jobs wait.
 	t.assertz(true, scheduler.submit(job("one")));
 	scheduler.schedule([ctx], false);
 	t.assertz(true, scheduler.submit(job("two")));
-	t.assertz(false, scheduler.submit(job("three")));
+	t.assertz(true, scheduler.submit(job("three")));
+	t.asserti(2, scheduler.jobCount());
 	s.settle();
 	t.assert_string(Strings.format1("one after %d", generation), order[0]);
 	t.assert_string("one done", order[1]);
-	// The context's analysis came between the jobs.
+	// The context's analysis came between the jobs; with no context due, the
+	// third followed the second.
 	t.assert_string(Strings.format1("two after %d", generation + 2), order[2]);
 	t.assert_string("two done", order[3]);
-	t.asserti(4, order.length);
+	t.assert_string(Strings.format1("three after %d", generation + 2), order[4]);
+	t.assert_string("three done", order[5]);
+	t.asserti(6, order.length);
 	// A job submitted while a context's analysis runs starts after it, before
-	// another due context. Each analysis, a job's too, takes a generation.
+	// another due context. Each analysis, a job's too, takes a generation:
+	// the context's snapshot is two behind, for the jobs that followed it.
 	order.clear();
-	generation = ctx.snapshot.generation + 1;
+	generation = ctx.snapshot.generation + 2;
 	scheduler.schedule([ctx], false);
 	t.assertz(true, scheduler.submit(job("four")));
 	scheduler.schedule([ctx], false);

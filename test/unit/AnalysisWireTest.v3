@@ -28,6 +28,11 @@ def X = [
 	T("AnalysisWire:occurrence_token_spans", test_occurrence_token_spans),
 	T("AnalysisWire:result_index_string_budget", test_result_index_string_budget),
 	T("AnalysisWire:wrong_kind", test_wrong_kind),
+	T("AnalysisWire:scope_request_round_trip", test_scope_request_round_trip),
+	T("AnalysisWire:invalid_scope_requests", test_invalid_scope_requests),
+	T("AnalysisWire:scope_answer_round_trip", test_scope_answer_round_trip),
+	T("AnalysisWire:invalid_scope_answers", test_invalid_scope_answers),
+	T("AnalysisWire:scope_allocation", test_scope_allocation),
 	()
 ];
 
@@ -94,8 +99,8 @@ def test_analyze_round_trip(t: Tester) {
 		AnalysisSource.new(null, "\x00\xFF")];
 	var flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
 	var options = ["-lang:simple-bodies=false", "-lang:fun-exprs", "-lang:descriptors"];
-	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, options, sources);
-	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, options, sources));
+	var frame = AnalysisWire.encodeAnalyze(99, flags, 2500, options, sources, null);
+	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(99, flags, 2500, options, sources, null));
 	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
 	if (r == null) return t.fail("request did not decode");
 	t.asserti(99, r.id);
@@ -117,22 +122,22 @@ def test_analyze_frame_size(t: Tester) {
 	var values = [int.min, -8193, -8192, -65, -64, -1, 0, 63, 64, 8191, 8192, int.max];
 	for (value in values) {
 		var sources = [AnalysisSource.new(null, null), AnalysisSource.new("", "")];
-		var frame = AnalysisWire.encodeAnalyze(value, value, value, [], sources);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, [], sources));
+		var frame = AnalysisWire.encodeAnalyze(value, value, value, [], sources, null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(value, value, value, [], sources, null));
 	}
 	for (length in [0, 63, 64, 8191, 8192]) {
 		var bytes = Array<byte>.new(length);
 		var sources = [AnalysisSource.new(bytes, bytes)];
-		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], sources);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], sources));
+		var frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], sources, null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], sources, null));
 		var options = Array<string>.new(length);
 		for (i < options.length) options[i] = "-lang:descriptors";
-		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, options, []);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, options, []));
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, options, [], null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, options, [], null));
 		sources = Array<AnalysisSource>.new(length);
 		for (i < sources.length) sources[i] = AnalysisSource.new(null, null);
-		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], sources);
-		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], sources));
+		frame = AnalysisWire.encodeAnalyze(1, 0, 10000, [], sources, null);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(1, 0, 10000, [], sources, null));
 	}
 }
 
@@ -265,7 +270,7 @@ def test_truncated_messages(t: Tester) {
 	for (n < hello.length) {
 		if (AnalysisWire.decodeHello(Arrays.range(hello, 0, n)) != null) return t.fail1("decoded a hello cut to %d bytes", n);
 	}
-	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, ["-lang:descriptors"], sources));
+	var request = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, ["-lang:descriptors"], sources, null));
 	for (n < request.length) {
 		if (AnalysisWire.decodeAnalyze(Arrays.range(request, 0, n)) != null) return t.fail1("decoded a request cut to %d bytes", n);
 	}
@@ -288,7 +293,7 @@ def test_invalid_counts_and_indexes(t: Tester) {
 	var rejected: Array<Array<string>> = [[null], ["-O2"], ["-lang:unknown"], ["-lang:descriptors=yes"],
 		["-lang:descriptors", "-lang:descriptors=false"], ["descriptors.v3"]];
 	for (options in rejected) {
-		var payload = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, options, []));
+		var payload = payloadOf(AnalysisWire.encodeAnalyze(1, 0, 1000, options, [], null));
 		t.assert(AnalysisWire.decodeAnalyze(payload) == null, "rejected option");
 	}
 	// Results with a huge diagnostic count, a bad path index, a bad declaration
@@ -1066,4 +1071,184 @@ def test_call_allocation(t: Tester) {
 		if (n == 13) t.assert(decodedResult(result(0, w), 1, REQUEST) != null, "a call within the budget");
 		else assertTooLarge(t, result(0, w), "a call beyond the budget");
 	}
+}
+
+def SCOPED = "component C {\n\tdef f(a: int) {\n\t\tvar b = a;\n\t\tb = b + a;\n\t}\n}\n";
+def scopeSources() -> Array<AnalysisSource> {
+	return [AnalysisSource.new("s.v3", SCOPED), AnalysisSource.new("t.v3", "class T { }\n")];
+}
+def test_scope_request_round_trip(t: Tester) {
+	var sources = scopeSources();
+	var flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_SCOPE;
+	for (scope in [AnalysisScopeRequest.new(0, 37, AnalysisScopeKinds.VALUES, "b"),
+			AnalysisScopeRequest.new(1, 0, AnalysisScopeKinds.ALL, ""),
+			AnalysisScopeRequest.new(1, sources[1].input.length, AnalysisScopeKinds.TYPES, Array<byte>.new(AnalysisScopeOrder.MAX_PREFIX))]) {
+		var frame = AnalysisWire.encodeAnalyze(4, flags, 100, [], sources, scope);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, flags, 100, [], sources, scope));
+		var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
+		if (r == null) return t.fail("scope request did not decode");
+		t.asserti(flags, r.flags);
+		t.asserti(scope.file, r.scope().file);
+		t.asserti(scope.offset, r.scope().offset);
+		t.asserti(scope.kinds, r.scope().kinds);
+		t.assert_string(scope.prefix, r.scope().prefix);
+	}
+	// A query needs no occurrences.
+	var alone = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources,
+		AnalysisScopeRequest.new(0, 1, AnalysisScopeKinds.PATTERN, "x"))));
+	t.assert(alone != null && alone.scope() != null && alone.scope().offset == 1, "a query without occurrences");
+	// Without WANT_SCOPE, there is no query.
+	var plain = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_OCCURRENCES, 100, [], sources, null)));
+	t.assert(plain != null && plain.scope() == null, "no scope query");
+}
+// A query for a source, offset, kinds, or prefix that does not exist makes
+// the request malformed.
+def test_invalid_scope_requests(t: Tester) {
+	var sources = scopeSources(), flags = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_SCOPE;
+	var cases = [
+		(flags, AnalysisScopeRequest.new(2, 0, AnalysisScopeKinds.VALUES, "")),
+		(flags, AnalysisScopeRequest.new(-1, 0, AnalysisScopeKinds.VALUES, "")),
+		(flags, AnalysisScopeRequest.new(0, -1, AnalysisScopeKinds.VALUES, "")),
+		(flags, AnalysisScopeRequest.new(1, sources[1].input.length + 1, AnalysisScopeKinds.VALUES, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, 0, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.ALL + 1, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, null)),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, Array<byte>.new(AnalysisScopeOrder.MAX_PREFIX + 1)))
+	];
+	for (c in cases) {
+		t.assert(AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, c.0, 100, [], sources, c.1))) == null, "malformed scope query");
+	}
+	// A query that WANT_SCOPE does not announce is a trailing remainder.
+	var frame = AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_OCCURRENCES, 100, [], sources, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, ""));
+	t.assert(AnalysisWire.decodeAnalyze(payloadOf(frame)) == null, "unannounced scope query");
+}
+// A result with {scope} for the analysis of scopeSources().
+def scopedResult(analysis: ProgramAnalysis, scope: AnalysisScopeAnswer, occurrences: bool) -> Array<byte> {
+	var files: Array<(string, Array<AnalysisOccurrence>)>;
+	if (occurrences) files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithScope(7, 3, 4567, analysis, 12, 42, files, scope), 1L));
+}
+def decodeScoped(payload: Array<byte>, requested: bool) -> AnalysisWorkerResult {
+	match (AnalysisWire.decodeResultWithScope(payload, 5, ["s.v3", "t.v3"], requested)) {
+		Decoded(result) => return result;
+		_ => return null;
+	}
+}
+def test_scope_answer_round_trip(t: Tester) {
+	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	// At the second "b" of "b = b + a": b, then a, then the component's f.
+	var offset = 0;
+	for (n = 0; n < 2; offset++) if (SCOPED[offset] == 'b') n++;
+	offset--;
+	var answer = analysis.scopeAt("s.v3", offset, AnalysisScopeKinds.VALUES, "");
+	t.assert(answer != null && answer.declarations.length >= 3, "the query has an answer");
+	answer.hiddenBuiltins = ["int", "u32"];
+	var decoded = decodeScoped(scopedResult(analysis, answer, true), true);
+	if (decoded == null) return t.fail("scope answer did not decode");
+	var snapshot = decoded.snapshot, scope = snapshot.scope;
+	t.assert(scope != null, "the snapshot has the scope");
+	t.asserti(answer.declarations.length, scope.declarations.length);
+	t.asserti(answer.thisLevel, scope.thisLevel);
+	t.assertz(answer.truncated, scope.truncated);
+	t.asserti(2, scope.hiddenBuiltins.length);
+	t.assert_string("int", scope.hiddenBuiltins[0]);
+	t.assert_string("u32", scope.hiddenBuiltins[1]);
+	for (i < answer.declarations.length) {
+		var d = snapshot.declarations[scope.declarations[i]];
+		t.assert_string(answer.declarations[i].name, d.name);
+		t.assert(answer.declarations[i].kind == d.kind, "the same kind");
+		t.asserti(answer.levels[i], scope.levels[i]);
+	}
+	t.assert_string("b", snapshot.declarations[scope.declarations[0]].name);
+	t.assert_string("a", snapshot.declarations[scope.declarations[1]].name);
+	// A declaration that no occurrence names joins the table: C, at offset 0.
+	var types = analysis.scopeAt("s.v3", 0, AnalysisScopeKinds.TYPES, "");
+	decoded = decodeScoped(scopedResult(analysis, types, true), true);
+	t.assert(decoded != null && decoded.snapshot.scope.declarations.length == types.declarations.length, "type candidates decode");
+	// Without an occurrence section there is no scope section.
+	t.assert(decodeScoped(scopedResult(analysis, answer, false), true).snapshot.scope == null, "no scope without occurrences");
+	// With one that has no files, as a worker sends when the request asked
+	// for no occurrences, the declarations are the candidates'.
+	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithScope(7, 3, 4567, analysis, -1, 42, [], answer), 1L));
+	decoded = decodeScoped(bare, true);
+	t.assert(decoded != null, "a scope answer without files decodes");
+	if (decoded != null) {
+		t.asserti(answer.declarations.length, decoded.snapshot.declarations.length);
+		for (i < answer.declarations.length) {
+			t.asserti(i, decoded.snapshot.scope.declarations[i]);
+			t.assert_string(answer.declarations[i].signature, decoded.snapshot.declarations[i].signature);
+		}
+		t.assert(bare.length < plainLength(analysis), "smaller than the result with occurrences");
+	}
+	// Without a scope, the result is the one encodeResult writes.
+	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	var plain = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
+	t.assert(Arrays.equal(plain, scopedResult(analysis, null, true)), "an ordinary result is unchanged");
+	t.assert(decodeScoped(plain, true).snapshot.scope == null, "no scope in an ordinary result");
+}
+// The length of the result of {analysis} with all its occurrences.
+def plainLength(analysis: ProgramAnalysis) -> int {
+	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	return AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L).length;
+}
+// {payload}, which ends with an empty scope answer, with {tail} in place of it.
+def withScopeTail(payload: Array<byte>, tail: DataWriter) -> Array<byte> {
+	return Arrays.concat(Arrays.range(payload, 0, payload.length - 4), tail.extract());
+}
+def test_invalid_scope_answers(t: Tester) {
+	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var empty = scopedResult(analysis, AnalysisScopeAnswer.new([], [], -1, false), true);
+	t.assert(Arrays.equal<byte>("\x00\x7F\x00\x00", Arrays.range(empty, empty.length - 4, empty.length)), "an empty answer is four bytes");
+	var declarations = decodeScoped(empty, true).snapshot.declarations.length;
+	t.assert(declarations >= 3, "the result has declarations");
+	// Well-formed: two candidates at levels 0 and 2, truncated.
+	var good = decodeScoped(withScopeTail(empty, DataWriter.new().putb(1).put_sleb32(0).put_sleb32(2)
+		.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(2).put_sleb32(0)), true);
+	t.assert(good != null && good.snapshot.scope.truncated && good.snapshot.scope.declarations.length == 2, "a hand-built answer decodes");
+	var tails = [
+		("invalid flags", DataWriter.new().putb(2).put_sleb32(-1).put_sleb32(0)),
+		("invalid this level", DataWriter.new().putb(0).put_sleb32(-2).put_sleb32(0)),
+		("negative count", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(-1)),
+		("count past the bytes", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(2).put_sleb32(0).put_sleb32(0)),
+		("index out of range", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(1).put_sleb32(declarations).put_sleb32(0)),
+		("negative index", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(1).put_sleb32(-1).put_sleb32(0)),
+		("repeated declaration", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(2).put_sleb32(1).put_sleb32(0).put_sleb32(1).put_sleb32(1)),
+		("decreasing level", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(2).put_sleb32(0).put_sleb32(1).put_sleb32(1).put_sleb32(0)),
+		("negative level", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(1).put_sleb32(0).put_sleb32(-1)),
+		("trailing byte", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).putb(0).putb(0)),
+		("negative hidden count", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(-1)),
+		("null hidden name", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(1).put_sleb32(-1)),
+		("empty hidden name", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(1).put_sleb32(0)),
+		("repeated hidden name", DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(0).put_sleb32(2)
+			.put_sleb32(3).puta("int").put_sleb32(3).puta("int"))
+	];
+	for (c in tails) t.assert(decodeScoped(withScopeTail(empty, c.1), true) == null, c.0);
+	// More than the cap, even of valid candidates.
+	var many = DataWriter.new().putb(0).put_sleb32(-1).put_sleb32(AnalysisScopeOrder.MAX_DECLARATIONS + 1);
+	for (i < AnalysisScopeOrder.MAX_DECLARATIONS + 1) many.put_sleb32(i % declarations).put_sleb32(0);
+	t.assert(decodeScoped(withScopeTail(empty, many), true) == null, "over the cap");
+	// An answer that the request did not ask for, or without occurrences.
+	t.assert(decodeScoped(empty, false) == null, "unrequested scope answer");
+	var flagged = scopedResult(analysis, null, false);
+	flagged[21] |= 8;
+	t.assert(decodeScoped(flagged, true) == null, "scope answer without occurrences");
+}
+def test_scope_allocation(t: Tester) {
+	var sources = scopeSources(), analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	var plain = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
+	var base = decodeScoped(plain, false).snapshot.resultAllocation;
+	t.assertl(base, decodeScoped(plain, true).snapshot.resultAllocation);
+	var empty = scopedResult(analysis, AnalysisScopeAnswer.new([], [], -1, false), true);
+	t.assertl(base + 128, decodeScoped(empty, true).snapshot.resultAllocation);
+	var tail = DataWriter.new().putb(0).put_sleb32(0).put_sleb32(3);
+	for (i < 3) tail.put_sleb32(i).put_sleb32(i);
+	tail.put_sleb32(0);
+	var three = decodeScoped(withScopeTail(empty, tail), true).snapshot;
+	t.assertl(base + 128 + 3 * 8, three.resultAllocation);
+	t.assertl(three.resultAllocation - base, three.retainedBytes - decodeScoped(plain, true).snapshot.retainedBytes);
+	var hidden = AnalysisScopeAnswer.new([], [], -1, false);
+	hidden.hiddenBuiltins = ["int"];
+	var decoded = decodeScoped(scopedResult(analysis, hidden, true), true).snapshot;
+	t.assertl(base + 128 + 8 + 64 + 3, decoded.resultAllocation);
 }

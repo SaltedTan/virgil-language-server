@@ -260,6 +260,24 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.located;
 	}
+	// The declarations of {kinds} (AnalysisScopeKinds) visible at byte
+	// {offset} of {path}, or null if the program did not parse or has no such
+	// file, if verification did not reach the offset, or if this analysis
+	// keeps no program: only an AnalysisScopedProgram does. See
+	// AnalysisScopeFinder and docs/architecture.md#completion.
+	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		return null;
+	}
+	private def scopeIn(program: Program, syntax: SymbolSyntaxIndex, path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		if (program == null) return null;
+		for (f in program.vst.files) {
+			if (f == null || !Strings.equal(f.fileName, path)) continue;
+			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).find(offset, kinds, prefix);
+			if (answer != null) answer.paths = program.files;
+			return answer;
+		}
+		return null;
+	}
 	// The declaration of the occurrence in {uses} that starts at {offset}, or null.
 	private def declarationAt(uses: Array<AnalysisOccurrence>, offset: int) -> AnalysisDeclaration {
 		var low = 0, high = uses.length;
@@ -284,6 +302,22 @@ class ProgramAnalysis {
 		}
 		if (low < uses.length && uses[low].range.contains(line, column)) return uses[low].declaration;
 		return null;
+	}
+}
+
+// A ProgramAnalysis that answers scope queries: it keeps the parsed program,
+// which an ordinary analysis does not, so that one carries nothing for them.
+// Only a completion's analysis is one (AeneasAdapter.analyzeForScope).
+class AnalysisScopedProgram extends ProgramAnalysis {
+	private def syntax: HashMap<string, SymbolSyntaxIndex>;
+	// Null if the program did not parse.
+	private var program: Program;
+
+	new(d: Array<AnalysisDiagnostic>, s: AnalysisStats, p: bool, v: bool, prog: Program, syntax) super(d, s, p, v, prog) {
+		if (p) program = prog;
+	}
+	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
+		return scopeIn(program, syntax[path], path, offset, kinds, prefix);
 	}
 }
 
@@ -391,6 +425,45 @@ component AeneasAdapter {
 		return sortedKeywords;
 	}
 	private var sortedKeywords: Array<string>;
+	// The builtin types a name can name, which have no declaration, in byte
+	// order: those of {BUILTIN_TYPES} and of the integer types that the
+	// verifier's top-level type lookup (V3.lookupToplevelType) resolves with
+	// language options {options} (see setLanguageOptions), such as "array"
+	// with read-only arrays, and the System component that analyses install
+	// (SystemCalls.install). The integer types are iN and uN for each width
+	// N up to Aeneas's Int.MAX_WIDTH in decimal, as Int.lookupFsi reads them.
+	def builtinTypes(options: Array<string>) -> Array<string> {
+		// Every completion with names asks, mostly with the same options.
+		if (builtinOptions != null && sameOptions(builtinOptions, options)) return builtinNames;
+		builtinOptions = options;
+		return builtinNames = listBuiltinTypes(options);
+	}
+	private var builtinOptions: Array<string>;
+	private var builtinNames: Array<string>;
+	private def sameOptions(a: Array<string>, b: Array<string>) -> bool {
+		if (a == b) return true;
+		if (a == null || b == null || a.length != b.length) return false;
+		for (i < a.length) if (!Strings.equal(a[i], b[i])) return false;
+		return true;
+	}
+	private def listBuiltinTypes(options: Array<string>) -> Array<string> {
+		setLanguageOptions(options);
+		var v = Vector<string>.new();
+		for (name in BUILTIN_TYPES) {
+			if (V3.lookupToplevelType(name) != null || Strings.equal(name, SystemCalls.TYPECON.name)) v.put(name);
+		}
+		for (width = 1; width <= Int.MAX_WIDTH; width++) {
+			for (sign in ["i", "u"]) {
+				var name = Strings.format2("%s%d", sign, width);
+				if (V3.lookupToplevelType(name) != null) v.put(name);
+			}
+		}
+		resetLanguageOptions();
+		return AnalysisTables.sort(v.extract(), fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+	}
+	// The builtin type names other than the integer types iN and uN.
+	def BUILTIN_TYPES = ["Array", "Range", "Ref", "System", "array", "bool", "byte", "double", "float",
+		"int", "long", "range", "ref", "short", "string", "void"];
 	// The AnalysisKeywordForms that the parser accepts with language options
 	// {options} (see setLanguageOptions), read as Parser.parseFile reads them.
 	def keywordForms(options: Array<string>) -> int {
@@ -433,6 +506,14 @@ component AeneasAdapter {
 	// Never initializes, runs reachability, or generates code.
 	// {collectStats} enables the expensive process-wide type-cache counts.
 	def analyzeProgram(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
+		return analyze(sources, options, collectStats, false);
+	}
+	// Analyzes a program as {analyzeProgram} does, keeping it for scope
+	// queries (AnalysisScopedProgram).
+	def analyzeForScope(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool) -> ProgramAnalysis {
+		return analyze(sources, options, collectStats, true);
+	}
+	private def analyze(sources: Array<AnalysisSource>, options: Array<string>, collectStats: bool, scoped: bool) -> ProgramAnalysis {
 		AnalysisTypeCache.prepare();
 		setLanguageOptions(options);
 		var uidBefore = UID.next, globalBefore = if(collectStats, globalTypeCount(), 0);
@@ -451,7 +532,8 @@ component AeneasAdapter {
 		var compilation = Compilation.new(compiler, prog);
 		var t0 = System.ticksUs();
 		var coordinates = AnalysisSourceCoordinates.new(sources);
-		var parseErrors = parseProgram(prog, coordinates);
+		var syntax = if(scoped, Strings.newMap<SymbolSyntaxIndex>());
+		var parseErrors = parseProgram(prog, coordinates, syntax);
 		var parsed = prog.ERROR.noErrors;
 		var t1 = System.ticksUs();
 		// Compilation.compile() skips verification after a parse error, and so
@@ -474,14 +556,17 @@ component AeneasAdapter {
 		}
 		var stats = AnalysisStats.new(t1 - t0, t2 - t1, UID.next - uidBefore,
 			if(collectStats, globalTypeCount() - globalBefore, -1));
+		if (scoped) return AnalysisScopedProgram.new(diagnostics, stats, parsed, verified, prog, syntax);
 		return ProgramAnalysis.new(diagnostics, stats, parsed, verified, prog);
 	}
-	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates) -> AnalysisParseErrors {
+	private def parseProgram(prog: Program, coordinates: AnalysisSourceCoordinates, syntax: HashMap<string, SymbolSyntaxIndex>) -> AnalysisParseErrors {
 		var errors = AnalysisParseErrors.new(prog.ERROR.maxErrors);
 		prog.vst = VstModule.new();
 		var files = Vector<VstFile>.new().grow(prog.files.length);
 		for (i = 0; i < prog.files.length && errors.notTooMany; i++) {
-			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, null,
+			var index = if(syntax != null, SymbolSyntaxIndex.new());
+			if (syntax != null && !syntax.has(prog.files[i])) syntax[prog.files[i]] = index;
+			files.put(AnalysisSingleFileParser.parse(prog.files[i], prog.inputs[i], errors, index,
 				prog.typeCache, coordinates.capture(prog.files[i])));
 		}
 		prog.vst.files = files.extract();
