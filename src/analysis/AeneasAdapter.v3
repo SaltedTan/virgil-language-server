@@ -278,6 +278,23 @@ class ProgramAnalysis {
 		}
 		return null;
 	}
+	// The members of the receiver of the member expression whose "." comes
+	// before byte {offset} of {path}, or null where scopeAt is, or where no
+	// member expression is there. See AnalysisScopeFinder.findMembers and
+	// docs/architecture.md#member-completion.
+	def membersAt(path: string, offset: int, prefix: string) -> AnalysisMemberAnswer {
+		return null;
+	}
+	private def membersIn(program: Program, syntax: SymbolSyntaxIndex, path: string, offset: int, prefix: string) -> AnalysisMemberAnswer {
+		if (program == null) return null;
+		for (f in program.vst.files) {
+			if (f == null || !Strings.equal(f.fileName, path)) continue;
+			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).findMembers(offset, prefix);
+			if (answer != null) answer.paths = program.files;
+			return answer;
+		}
+		return null;
+	}
 	// The declaration of the occurrence in {uses} that starts at {offset}, or null.
 	private def declarationAt(uses: Array<AnalysisOccurrence>, offset: int) -> AnalysisDeclaration {
 		var low = 0, high = uses.length;
@@ -318,6 +335,9 @@ class AnalysisScopedProgram extends ProgramAnalysis {
 	}
 	def scopeAt(path: string, offset: int, kinds: int, prefix: string) -> AnalysisScopeAnswer {
 		return scopeIn(program, syntax[path], path, offset, kinds, prefix);
+	}
+	def membersAt(path: string, offset: int, prefix: string) -> AnalysisMemberAnswer {
+		return membersIn(program, syntax[path], path, offset, prefix);
 	}
 }
 

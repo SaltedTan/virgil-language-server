@@ -1,0 +1,539 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The answer to a member query (AnalysisScopeKinds.MEMBERS): the members that
+// the verifier resolves after the "." at the query's offset, sorted by
+// AnalysisScopeOrder, at most MAX_DECLARATIONS. A candidate is a
+// {declarations} entry, or null for a builtin member, which has no
+// declaration; its {names}, {kinds}, and {details} entries, where a detail is
+// the declaration's signature with the receiver's type arguments, or null
+// when that is the declaration's own; and its level, the distance up the
+// receiver's class hierarchy. {truncated} is true if there were more
+// candidates than the cap, so that only those starting with the prefix were
+// kept, up to it. See docs/architecture.md#member-completion.
+class AnalysisMemberAnswer(declarations: Array<AnalysisDeclaration>, names: Array<string>, kinds: Array<AnalysisDeclKind>,
+		details: Array<string>, levels: Array<int>, truncated: bool) {
+	// The analyzed program's paths, in the request's order, which name the
+	// declarations' files in a result without occurrences.
+	var paths: Array<string>;
+	// The statements, expressions, and members read to answer, for tests; no
+	// reply carries it.
+	var steps: int;
+	// The name comparisons that the query's OrderedStringSets made, for
+	// tests; no reply carries it.
+	var nameComparisons: long;
+}
+
+// A decoded member answer: each candidate's index into its snapshot's
+// declarations, or -1 for a builtin member, its name, kind, detail (null for
+// a declaration's own signature), and level.
+class AnalysisSnapshotMembers(declarations: Array<int>, names: Array<string>, kinds: Array<AnalysisDeclKind>,
+		details: Array<string>, levels: Array<int>, truncated: bool) { }
+
+// How the verifier looks up a builtin member: on a type, as in "int.max", or
+// on a value, as in "a.length" (MethodEnv.lookupTypeMember and
+// lookupExprMember).
+enum AnalysisMemberReceiver {
+	ARRAY_TYPE, ARRAY, RANGE_TYPE, RANGE, INT_TYPE, FLOAT_TYPE, FLOAT, ENUM_TYPE, ENUM_SET_TYPE,
+	REF_TYPE, LAYOUT, LAYOUT_FIELD, TYPE_PARAM
+}
+
+// A member that the verifier binds by name without a declaration, and its
+// detail: "$" there stands for the receiver's type, and "#" for the member's
+// own type where that depends on the receiver.
+class AnalysisBuiltinMember(receiver: AnalysisMemberReceiver, name: string, kind: AnalysisDeclKind, detail: string) { }
+
+// The builtin members that member completion offers, from the pinned Aeneas's
+// MethodEnv (vendor/virgil/aeneas/src/vst/MethodEnv.v3), by receiver; a test
+// requires each to verify where it is offered. Operators such as "!", "?",
+// "==", and "~", which an identifier cannot name, are not offered. The
+// members that the query makes from the program instead are not listed:
+// tuple elements, System's calls (SystemCall), an enum set's cases, a class's
+// "new", and the "tag" and "name" of variants and enums, which are
+// declarations. Pointer members exist only for a compilation target, which
+// analyses have none of. See docs/architecture.md#member-completion.
+component AnalysisBuiltinMembers {
+	def LIST = [
+		// lookupArrayTypeMember and lookupArrayExprMember.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ARRAY_TYPE, "length", AnalysisDeclKind.METHOD, "def length(array: $) -> int"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ARRAY_TYPE, "new", AnalysisDeclKind.CONSTRUCTOR, "def new(length: int) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ARRAY, "length", AnalysisDeclKind.FIELD, "def length: int"),
+		// lookupRangeTypeMember and lookupRangeExprMember.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.RANGE_TYPE, "length", AnalysisDeclKind.METHOD, "def length(range: $) -> int"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.RANGE, "length", AnalysisDeclKind.FIELD, "def length: int"),
+		// lookupIntTypeMember; the operator "~" is not offered.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "max", AnalysisDeclKind.FIELD, "def max: $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "min", AnalysisDeclKind.FIELD, "def min: $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "pack", AnalysisDeclKind.METHOD, "def pack<T>(value: T) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "truncd", AnalysisDeclKind.METHOD, "def truncd(value: double) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "truncf", AnalysisDeclKind.METHOD, "def truncf(value: float) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "unpack", AnalysisDeclKind.METHOD, "def unpack<T>(value: $) -> T"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.INT_TYPE, "view", AnalysisDeclKind.METHOD, "def view<T>(value: T) -> $"),
+		// lookupFloatTypeMember: "roundd" only for float, not double.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "abs", AnalysisDeclKind.METHOD, "def abs(value: $) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "ceil", AnalysisDeclKind.METHOD, "def ceil(value: $) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "exponent", AnalysisDeclKind.METHOD, "def exponent(value: $) -> #"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "floor", AnalysisDeclKind.METHOD, "def floor(value: $) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "fraction", AnalysisDeclKind.METHOD, "def fraction(value: $) -> #"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "infinity", AnalysisDeclKind.FIELD, "def infinity: $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "nan", AnalysisDeclKind.FIELD, "def nan: $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "round", AnalysisDeclKind.METHOD, "def round(value: $) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "roundd", AnalysisDeclKind.METHOD, "def roundd(value: double) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "roundi", AnalysisDeclKind.METHOD, "def roundi<T>(value: T) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "sign", AnalysisDeclKind.METHOD, "def sign(value: $) -> u1"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "sqrt", AnalysisDeclKind.METHOD, "def sqrt(value: $) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT_TYPE, "view", AnalysisDeclKind.METHOD, "def view<T>(value: T) -> $"),
+		// lookupFloatExprMember.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT, "exponent", AnalysisDeclKind.FIELD, "def exponent: #"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT, "fraction", AnalysisDeclKind.FIELD, "def fraction: #"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.FLOAT, "sign", AnalysisDeclKind.FIELD, "def sign: u1"),
+		// lookupEnumTypeMember, before the enum's own members.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ENUM_TYPE, "count", AnalysisDeclKind.FIELD, "def count: #"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ENUM_TYPE, "set", AnalysisDeclKind.CLASS, "type $.set"),
+		// lookupEnumSetTypeMember, before the enum's cases.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ENUM_SET_TYPE, "all", AnalysisDeclKind.FIELD, "def all: $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.ENUM_SET_TYPE, "view", AnalysisDeclKind.METHOD, "def view<T>(value: T) -> $"),
+		// lookupRefTypeMember, before the layout's fields.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.REF_TYPE, "at", AnalysisDeclKind.METHOD, "def at(array: Array<byte>, offset: int) -> $"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.REF_TYPE, "of", AnalysisDeclKind.METHOD, "def of(range: Range<byte>) -> $"),
+		// lookupLayoutMember, before the layout's fields, and
+		// lookupLayoutFieldMember.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.LAYOUT, "size", AnalysisDeclKind.FIELD, "def size: int"),
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.LAYOUT_FIELD, "offset", AnalysisDeclKind.FIELD, "def offset: int"),
+		// lookupTypeParamMember.
+		AnalysisBuiltinMember.new(AnalysisMemberReceiver.TYPE_PARAM, "default", AnalysisDeclKind.FIELD, "def default: $")
+	];
+}
+
+// What a member's mode accepts, by how the verifier binds what it finds in a
+// compound's member map (MethodEnv).
+component AnalysisMemberModes {
+	// lookupClassTypeMember and lookupClassExprMember: fields and methods.
+	def CLASS = 1;
+	// lookupVariantTypeMember: fields, methods, "tag", "name", and cases.
+	def VARIANT_TYPE = 2;
+	// lookupVariantExprMember: fields, methods, "tag", and "name".
+	def VARIANT = 3;
+	// lookupEnumTypeMember: fields, "tag", "name", and cases.
+	def ENUM_TYPE = 4;
+	// lookupEnumExprMember and lookupEnumConstMember: fields, "tag", and "name".
+	def ENUM = 5;
+	// lookupComponentMember: fields and methods.
+	def COMPONENT = 6;
+	// lookupEnumSetTypeMember and lookupEnumSetExprMember: the enum's cases.
+	def ENUM_SET = 7;
+	// lookupLayoutMember, lookupRefTypeMember, and lookupRefExprMember: the
+	// layout's fields.
+	def LAYOUT = 8;
+}
+
+// The type arguments that an instantiated class's members render with: for
+// its type parameters {params}, {args}, which may name the type parameters of
+// {outer}'s class, which instantiates them in turn, as a superclass's
+// arguments name its subclass's parameters (see AnalysisDisplay.memberSignature).
+class AnalysisTypeSubst(params: List<TypeParamType>, args: List<Type>, outer: AnalysisTypeSubst) { }
+
+// The members that the verifier resolves after "." in member expression {e}
+// of the file {fileName}, given its receiver as verification bound and typed
+// it (TypeChecker.lookupBinding): a type's members, as in "C.new", "V.A", or
+// "int.max", where the receiver names a type, a variant's case, an enum's
+// case, a layout, or a layout's field, and otherwise the members of a value
+// of the receiver's type (MethodEnv.lookupExprMember). An unknown or
+// erroneous receiver type has none. Each class of a hierarchy is read once,
+// nearest first, and a member hides those of its name further up, as
+// MethodEnv.resolveClassMember stops at the first that it can access. Names
+// are deduplicated in AA trees (OrderedStringSet), not in a compound's member
+// map: a map with colliding names scans their chain for each lookup. See
+// docs/architecture.md#member-completion.
+class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: HashMap<string, VstLayout>) {
+	// The names offered or hidden so far, nearest first.
+	private def names = OrderedStringSet.new();
+	private def found = Vector<AnalysisDeclaration>.new();
+	private def labels = Vector<string>.new();
+	private def kinds = Vector<AnalysisDeclKind>.new();
+	private def details = Vector<string>.new();
+	private def levels = Vector<int>.new();
+	private var steps: int;
+	private var compares: long;
+
+	def find(e: VarExpr, prefix: string) -> AnalysisMemberAnswer {
+		var r = e.expr;
+		if (VarExpr.?(r)) {
+			var v = VarExpr.!(r);
+			match (v.varbind) {
+				// An unresolved name, or a layout or its field (see layoutOf);
+				// and "void", which has only operators.
+				None => {
+					var l = layoutOf(v);
+					if (l.0 != null) {
+						builtins(AnalysisMemberReceiver.LAYOUT, null);
+						compound(l.0, null, AnalysisMemberModes.LAYOUT, 0);
+					} else if (l.1 != null) {
+						builtins(AnalysisMemberReceiver.LAYOUT_FIELD, null);
+					}
+				}
+				Void => ;
+				Type(t) => typeMembers(t);
+				VariantCase(receiver, vcase) => caseMembers(receiver, vcase);
+				EnumConst(member) => if (member.receiver != null) compound(member.receiver, null, AnalysisMemberModes.ENUM, 0);
+				_ => valueMembers(v.exactType);
+			}
+		} else if (r != null) {
+			valueMembers(r.exactType);
+		}
+		return answer(prefix);
+	}
+
+	// The layout that {v} names, as in "L.", or its field, as in "L.f.":
+	// MethodEnv.lookupVar returns a layout, and lookupLayoutMember a layout's
+	// field, without binding the expression, so verification leaves it
+	// unbound, as it does an unresolved name. It is a layout's name if
+	// nothing else binds it there, which lookupVar tries first, and a field's
+	// if the layout has one of that name. The layouts are searched in turn,
+	// and the layout's members, without a lookup in their maps.
+	private def layoutOf(v: VarExpr) -> (VstLayout, VstLayoutField) {
+		if (v.expr == null) return (layoutNamed(v.ident.name.image), null);
+		if (!VarExpr.?(v.expr) || !VarExpr.!(v.expr).varbind.none() || VarExpr.!(v.expr).expr != null) return (null, null);
+		var decl = layoutNamed(VarExpr.!(v.expr).ident.name.image), name = v.ident.name.image;
+		if (decl == null) return (null, null);
+		for (l = decl.members; l != null; l = l.tail) {
+			steps++;
+			if (Strings.equal(l.head.token.image, name)) return (null, if(VstLayoutField.?(l.head), VstLayoutField.!(l.head)));
+		}
+		return (null, null);
+	}
+	private def layoutNamed(name: string) -> VstLayout {
+		if (layouts == null) return null;
+		var found = Array<VstLayout>.new(1);
+		layouts.apply(fun (n: string, decl: VstLayout) {
+			steps++;
+			if (found[0] == null && Strings.equal(n, name)) found[0] = decl;
+		});
+		return found[0];
+	}
+	// MethodEnv.lookupExprMember.
+	private def valueMembers(t: Type) {
+		t = resolve(t);
+		if (unknown(t)) return;
+		match (t.typeCon.kind) {
+			ARRAY => builtins(AnalysisMemberReceiver.ARRAY, t);
+			RANGE => builtins(AnalysisMemberReceiver.RANGE, t);
+			COMPONENT => if (V3Component_TypeCon.?(t.typeCon)) {
+				compound(V3Component_TypeCon.!(t.typeCon).componentDecl, null, AnalysisMemberModes.COMPONENT, 0);
+			}
+			CLASS => if (ClassType.?(t)) hierarchy(ClassType.!(t), AnalysisMemberModes.CLASS);
+			TUPLE => tuple(t);
+			VARIANT => if (ClassType.?(t)) hierarchy(ClassType.!(t), AnalysisMemberModes.VARIANT);
+			ENUM => if (EnumType.?(t)) compound(EnumType.!(t).enumDecl, null, AnalysisMemberModes.ENUM, 0);
+			ENUM_SET => if (EnumSetType.?(t)) enumSet(EnumSetType.!(t), false);
+			FLOAT => builtins(AnalysisMemberReceiver.FLOAT, t);
+			REF => if (RefType.?(t)) compound(RefType.!(t).layoutDecl, null, AnalysisMemberModes.LAYOUT, 0);
+			_ => ;
+		}
+	}
+	// MethodEnv.lookupTypeMember. Its casts, queries, and comparisons, and
+	// the infix operators of the type, are operators. System is the one
+	// Member_TypeCon that an analysis has (SystemCalls.install).
+	private def typeMembers(t: Type) {
+		t = resolve(t);
+		if (t != null && t.typeCon == SystemCalls.TYPECON) return system();
+		if (unknown(t)) return;
+		match (t.typeCon.kind) {
+			ARRAY => builtins(AnalysisMemberReceiver.ARRAY_TYPE, t);
+			RANGE => builtins(AnalysisMemberReceiver.RANGE_TYPE, t);
+			COMPONENT => if (V3Component_TypeCon.?(t.typeCon)) {
+				compound(V3Component_TypeCon.!(t.typeCon).componentDecl, null, AnalysisMemberModes.COMPONENT, 0);
+			}
+			CLASS => if (ClassType.?(t)) {
+				constructor(ClassType.!(t));
+				hierarchy(ClassType.!(t), AnalysisMemberModes.CLASS);
+			}
+			VARIANT => if (ClassType.?(t)) hierarchy(ClassType.!(t), AnalysisMemberModes.VARIANT_TYPE);
+			ENUM => if (EnumType.?(t)) {
+				builtins(AnalysisMemberReceiver.ENUM_TYPE, t);
+				compound(EnumType.!(t).enumDecl, null, AnalysisMemberModes.ENUM_TYPE, 0);
+			}
+			ENUM_SET => if (EnumSetType.?(t)) {
+				builtins(AnalysisMemberReceiver.ENUM_SET_TYPE, t);
+				enumSet(EnumSetType.!(t), true);
+			}
+			FLOAT => builtins(AnalysisMemberReceiver.FLOAT_TYPE, t);
+			INT => builtins(AnalysisMemberReceiver.INT_TYPE, t);
+			REF => if (RefType.?(t)) {
+				builtins(AnalysisMemberReceiver.REF_TYPE, t);
+				compound(RefType.!(t).layoutDecl, null, AnalysisMemberModes.LAYOUT, 0);
+			}
+			TYPE_PARAM => builtins(AnalysisMemberReceiver.TYPE_PARAM, t);
+			_ => ;
+		}
+	}
+	// A variant's case as a type, "V.A" (MethodEnv.lookupVariantCaseMember):
+	// a case with parameters is looked up as a type, so that its cases are
+	// members too, and one without as the value that it is. Its class and
+	// the variant's share the variant's type parameters, which {receiver}'s
+	// arguments instantiate (V3.getSyntheticVariantType).
+	private def caseMembers(receiver: Type, vcase: VstCaseMember) {
+		var decl = vcase.decl;
+		if (decl == null) return;
+		receiver = resolve(receiver);
+		var subst = if(decl.typeParams != null && receiver != null && receiver.nested != null,
+			AnalysisTypeSubst.new(decl.typeParams, receiver.nested, null));
+		classes(decl, subst, if(decl.params != null, AnalysisMemberModes.VARIANT_TYPE, AnalysisMemberModes.VARIANT));
+	}
+	// The members of {t}'s class and its superclasses, as resolveClassMember
+	// finds them, with the descriptor field of a class that has a descriptor.
+	private def hierarchy(t: ClassType, mode: int) {
+		var decl = t.classDecl;
+		if (decl == null) return;
+		var subst = if(decl.typeParams != null && t.nested != null, AnalysisTypeSubst.new(decl.typeParams, t.nested, null));
+		var info = decl.descriptorInfo;
+		described = mode == AnalysisMemberModes.CLASS && info != null && info.descriptorTypeRef != null;
+		classes(decl, subst, mode);
+		described = false;
+	}
+	// The receiver's class has a descriptor: its root's descriptor field is
+	// offered (lookupClassExprMember: VstDescriptorField).
+	private var described: bool;
+	// Reads each class of the hierarchy from {decl} up once, until a class
+	// repeats: a second pointer that moves at half the speed meets it then.
+	// A superclass's members render with its type arguments, which name its
+	// subclass's type parameters.
+	private def classes(decl: VstClass, subst: AnalysisTypeSubst, mode: int) {
+		var slow = decl;
+		for (level = 0; decl != null; level++) {
+			var sup = if(decl.superclass != null, resolve(decl.superclass.binding));
+			var root = sup == null;
+			if (root && described) descriptorMember(decl, level);
+			compound(decl, subst, mode, level);
+			if (!ClassType.?(sup)) return;
+			var next = ClassType.!(sup).classDecl;
+			subst = if(next != null && next.typeParams != null && sup.nested != null,
+				AnalysisTypeSubst.new(next.typeParams, sup.nested, subst));
+			decl = next;
+			if ((level & 1) == 1) slow = superclassOf(slow);
+			if (decl == slow) return;
+		}
+	}
+	private def superclassOf(decl: VstClass) -> VstClass {
+		var sup = if(decl != null && decl.superclass != null, resolve(decl.superclass.binding));
+		return if(ClassType.?(sup), ClassType.!(sup).classDecl);
+	}
+	// Verifier.buildDescriptors puts the root's descriptor field in its
+	// member map after its members, over any of its name.
+	private def descriptorMember(root: VstClass, level: int) {
+		var info = root.descriptorInfo;
+		if (info == null || info.descriptorField == null) return;
+		if (!names.add(info.descriptorField.token.image)) return;
+		member(AnalysisDeclKind.FIELD, info.descriptorField, null, null, level);
+	}
+	// A class type's "new": its own constructor, not a superclass's, if it
+	// can access it (lookupClassTypeMember). A default constructor's
+	// declaration is the class's name (Verifier.buildMembers).
+	private def constructor(t: ClassType) {
+		var decl = t.classDecl;
+		if (decl == null || decl.constructor == null) return;
+		var c = decl.constructor;
+		names.add("new");
+		if (c.isPrivate && !sameFile(decl)) return;
+		var subst = if(decl.typeParams != null && t.nested != null, AnalysisTypeSubst.new(decl.typeParams, t.nested, null));
+		member(AnalysisDeclKind.CONSTRUCTOR, c, subst, null, 0);
+	}
+	// The members of {c} that its member map binds: the first of each name,
+	// other than its constructor and the methods that verification adds for
+	// lambdas afterwards (Verifier.buildMembers), and only those that the
+	// file can access (VstCompoundVerifier.canAccessMember, where "private"
+	// is private to a file). A member that a nearer class has the name of is
+	// hidden. Those that {mode} accepts and an identifier names are offered.
+	private def compound(c: VstCompound, subst: AnalysisTypeSubst, mode: int, level: int) {
+		var own = OrderedStringSet.new();
+		for (l = c.members; l != null; l = l.tail) {
+			steps++;
+			var m = l.head;
+			if (VstNew.?(m) || (VstMethod.?(m) && m.isSynthetic)) continue;
+			var name = m.token.image;
+			if (!own.add(name)) continue;
+			if (m.isPrivate && !sameFile(c)) continue;
+			if (!names.add(name) || !identifier(name)) continue;
+			match (m) {
+				x: VstField => if (mode != AnalysisMemberModes.ENUM_SET && mode != AnalysisMemberModes.LAYOUT) {
+					member(AnalysisDeclKind.FIELD, x, subst, null, level);
+				}
+				x: VstMethod => if (mode == AnalysisMemberModes.CLASS || mode == AnalysisMemberModes.VARIANT_TYPE
+						|| mode == AnalysisMemberModes.VARIANT || mode == AnalysisMemberModes.COMPONENT) {
+					member(AnalysisDeclKind.METHOD, x, subst, null, level);
+				}
+				x: VstVariantTagMember => if (implicit(mode)) {
+					member(AnalysisDeclKind.FIELD, x, null, typed("def tag: ", x.getType()), level);
+				}
+				x: VstVariantNameMember => if (implicit(mode)) member(AnalysisDeclKind.FIELD, x, null, typed("def name: ", x.getType()), level);
+				x: VstCaseMember => if (mode == AnalysisMemberModes.VARIANT_TYPE) member(AnalysisDeclKind.VARIANT_CASE, x, subst, null, level);
+				x: VstEnumCase => if (mode == AnalysisMemberModes.ENUM_TYPE) member(AnalysisDeclKind.ENUM_CASE, x, null, null, level);
+				x: VstLayoutField => if (mode == AnalysisMemberModes.LAYOUT) member(AnalysisDeclKind.LAYOUT_FIELD, x, null, null, level);
+				_ => ;
+			}
+		}
+		compares += own.compares;
+	}
+	// The modes whose lookups bind a variant's or an enum's "tag" and "name".
+	private def implicit(mode: int) -> bool {
+		return mode == AnalysisMemberModes.VARIANT_TYPE || mode == AnalysisMemberModes.VARIANT
+			|| mode == AnalysisMemberModes.ENUM_TYPE || mode == AnalysisMemberModes.ENUM;
+	}
+	// An enum set's members are its enum's cases, each a membership test, on
+	// the set type as a function of a set (lookupEnumSetTypeMember) and on a
+	// set as a bool (lookupEnumSetExprMember).
+	private def enumSet(t: EnumSetType, onType: bool) {
+		var decl = t.enumDecl;
+		if (decl == null) return;
+		var text = display.typeText(t);
+		var detail = if(onType && text != null, Strings.format1("(set: %s) -> bool", text), ": bool");
+		var own = OrderedStringSet.new();
+		for (l = decl.members; l != null; l = l.tail) {
+			steps++;
+			var m = l.head;
+			if (!VstEnumCase.?(m) || !own.add(m.token.image) || !names.add(m.token.image)) continue;
+			member(AnalysisDeclKind.ENUM_CASE, m, null, Strings.format2("def %s%s", m.token.image, detail), 0);
+		}
+		compares += own.compares;
+	}
+	// A tuple's elements by index, and "last" (lookupTupleExprMember).
+	private def tuple(t: Type) {
+		var i = 0;
+		for (l = t.nested; l != null; l = l.tail) {
+			steps++;
+			builtin(Strings.format1("%d", i++), AnalysisDeclKind.FIELD, typed(Strings.format1("def %d: ", i - 1), l.head));
+		}
+		var last: Type;
+		for (l = t.nested; l != null; l = l.tail) last = l.head;
+		if (i > 0) builtin("last", AnalysisDeclKind.FIELD, typed("def last: ", last));
+	}
+	// System's calls (System_TypeCon.lookupMember).
+	private def system() {
+		var buf = StringBuilder.new();
+		for (call in SystemCall) {
+			steps++;
+			buf.reset();
+			buf.puts("def ").puts(call.name).putc('(');
+			for (i < call.paramTypes.length) {
+				if (i > 0) buf.puts(", ");
+				var text = display.typeText(call.paramTypes[i]);
+				buf.puts(if(text != null, text, AnalysisDisplayText.UNKNOWN));
+			}
+			buf.putc(')');
+			if (call.returnType != Void.TYPE) buf.puts(" -> ").puts(display.typeText(call.returnType));
+			builtin(call.name, AnalysisDeclKind.METHOD, buf.toString());
+		}
+	}
+	// The builtin members of {receiver}, for a receiver type {t}.
+	private def builtins(receiver: AnalysisMemberReceiver, t: Type) {
+		var text = if(t != null, display.typeText(t));
+		for (b in AnalysisBuiltinMembers.LIST) {
+			steps++;
+			if (b.receiver != receiver) continue;
+			// A double has no "roundd" (lookupFloatTypeMember).
+			if (Strings.equal(b.name, "roundd") && FloatType.?(t) && FloatType.!(t).is64) continue;
+			builtin(b.name, b.kind, detail(b.detail, text, ownType(b.name, t)));
+		}
+	}
+	// The type text of builtin member {name} of {t} where it depends on {t}.
+	private def ownType(name: string, t: Type) -> string {
+		if (FloatType.?(t)) {
+			var f = FloatType.!(t);
+			if (Strings.equal(name, "exponent")) return Strings.format1("i%d", f.exp_width);
+			if (Strings.equal(name, "fraction")) return Strings.format1("u%d", f.fraction_width);
+		}
+		// lookupEnumTypeMember: the narrowest unsigned type that holds the count.
+		if (EnumType.?(t) && EnumType.!(t).enumDecl != null) {
+			var width = 1 + Ints.log(u32.!(EnumType.!(t).enumDecl.cases.length));
+			return Strings.format1("u%d", if(width < 1, 1, width));
+		}
+		return null;
+	}
+	// {template} with "$" replaced by {receiver} and "#" by {own}.
+	private def detail(template: string, receiver: string, own: string) -> string {
+		var buf = StringBuilder.new();
+		for (c in template) {
+			if (c == '$') buf.puts(if(receiver != null, receiver, AnalysisDisplayText.UNKNOWN));
+			else if (c == '#') buf.puts(if(own != null, own, AnalysisDisplayText.UNKNOWN));
+			else buf.putc(c);
+		}
+		return buf.toString();
+	}
+	private def typed(prefix: string, t: Type) -> string {
+		var text = display.typeText(t);
+		return Strings.format2("%s%s", prefix, if(text != null, text, AnalysisDisplayText.UNKNOWN));
+	}
+	private def builtin(name: string, kind: AnalysisDeclKind, detail: string) {
+		if (!names.add(name)) return;
+		found.put(null);
+		labels.put(name);
+		kinds.put(kind);
+		details.put(detail);
+		levels.put(0);
+	}
+	// Declaration {decl} of {kind} at {level}, with {detail}, or, if that is
+	// null, its signature with {subst}'s type arguments where those change it.
+	private def member(kind: AnalysisDeclKind, decl: Decl, subst: AnalysisTypeSubst, detail: string, level: int) {
+		var d = display.declaration(kind, decl.token, decl, null);
+		if (d == null) return;
+		found.put(d);
+		labels.put(d.name);
+		kinds.put(kind);
+		details.put(if(detail != null, detail, display.memberSignature(d, decl, subst)));
+		levels.put(level);
+	}
+	// Sorts the candidates, and caps them as AnalysisScopeFinder does: past
+	// the cap, only those that start with {prefix} are kept, up to it.
+	private def answer(prefix: string) -> AnalysisMemberAnswer {
+		var order = Array<int>.new(labels.length);
+		for (i < order.length) order[i] = i;
+		order = AnalysisTables.sort(order, fun (a: int, b: int) => AnalysisScopeOrder.before(
+			levels[a], AnalysisScopeOrder.group(kinds[a]), labels[a],
+			levels[b], AnalysisScopeOrder.group(kinds[b]), labels[b]));
+		var truncated = order.length > AnalysisScopeOrder.MAX_DECLARATIONS;
+		var kept = Vector<int>.new();
+		for (i in order) {
+			if (kept.length == AnalysisScopeOrder.MAX_DECLARATIONS) break;
+			if (!truncated || Strings.startsWith(labels[i], prefix)) kept.put(i);
+		}
+		var n = kept.length;
+		var a = AnalysisMemberAnswer.new(Array<AnalysisDeclaration>.new(n), Array<string>.new(n),
+			Array<AnalysisDeclKind>.new(n), Array<string>.new(n), Array<int>.new(n), truncated);
+		for (i < n) {
+			var k = kept[i];
+			a.declarations[i] = found[k];
+			a.names[i] = labels[k];
+			a.kinds[i] = kinds[k];
+			a.details[i] = details[k];
+			a.levels[i] = levels[k];
+		}
+		a.steps = steps;
+		a.nameComparisons = compares + names.compares;
+		return a;
+	}
+	private def sameFile(c: VstCompound) -> bool {
+		return c.token != null && Strings.equal(c.token.fileName, fileName);
+	}
+	// Whether an identifier can name {name}; an index or operator method,
+	// such as "[]" or "==", cannot.
+	private def identifier(name: string) -> bool {
+		if (name.length == 0) return false;
+		var c = name[0];
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+	}
+	// Follows solved inference variables, as AnalysisDisplay does.
+	private def resolve(t: Type) -> Type {
+		for (i < AnalysisDisplayText.MAX_DEPTH) {
+			if (!TypeVarType.?(t)) return t;
+			var v = TypeVarType.!(t).vtype;
+			if (v == t) return null;
+			t = v;
+		}
+		return null;
+	}
+	// A null type, an unsolved inference variable, or an error type, whose
+	// type constructor is of kind VOID, has no members to offer.
+	private def unknown(t: Type) -> bool {
+		return t == null || TypeVarType.?(t) || t.typeCon == null || t.typeCon.kind == Kind.VOID;
+	}
+}

@@ -52,8 +52,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private var pending: bool;
 	// The pending analysis's snapshot is not kept as {snapshot}.
 	private var temporary: bool;
-	// The pending analysis has a scope query.
-	private var scoped: bool;
+	// The AnalysisScopeKinds of the pending analysis's scope or member
+	// query, or 0 without one.
+	private var queryKinds: int;
 
 	def busy() -> bool { return pending; }
 
@@ -94,7 +95,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		for (i < paths.length) paths[i] = sources[i].path;
 		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources, scope);
 		pending = true;
-		scoped = scope != null;
+		queryKinds = if(scope != null, scope.kinds);
 		if (!starting) sendRequest();
 		return AnalysisOutcome.Pending;
 	}
@@ -103,7 +104,9 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	// temporary. A rename's preflight (LspRename) analyzes edited sources
 	// that no project has, and a completion (LspCompletion) sources that may
 	// be repaired, so their results must not replace the latest. With
-	// {scope}, the analysis answers the scope query (AnalysisSnapshot.scope);
+	// {scope}, the analysis answers the scope query (AnalysisSnapshot.scope),
+	// or, for AnalysisScopeKinds.MEMBERS, the member query
+	// (AnalysisSnapshot.members);
 	// without WANT_OCCURRENCES too, its snapshot has only the candidates'
 	// declarations, and no files.
 	def beginTemporary(sources: Array<AnalysisSource>, options: Array<string>, flags: int,
@@ -143,7 +146,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 					return AnalysisOutcome.Pending;
 				}
 				var result: AnalysisWorkerResult;
-				match (AnalysisWire.decodeResultWithScope(payload, generation + 1, paths, scoped)) {
+				match (AnalysisWire.decodeResultWithQuery(payload, generation + 1, paths, queryKinds)) {
 					Decoded(decoded) => result = decoded;
 					TooLarge(id) => {
 						if (id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
@@ -196,7 +199,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private def clearPending() {
 		pending = false;
 		temporary = false;
-		scoped = false;
+		queryKinds = 0;
 		request = null;
 		paths = null;
 	}

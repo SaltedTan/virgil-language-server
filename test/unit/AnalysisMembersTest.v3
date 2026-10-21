@@ -1,0 +1,726 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The worker's member query (ProgramAnalysis.membersAt, AnalysisMemberLookup):
+// exact candidate sets, their order, and their details, analyzed in process.
+// In the texts below, "$" marks the query's offset and is removed; a member's
+// name usually follows it, so that the fixture verifies. A candidate renders
+// as its name and level, and "(truncated)" ends a capped answer.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisMembers:classes", test_classes),
+	T("AnalysisMembers:inheritance_and_privacy", test_inheritance_and_privacy),
+	T("AnalysisMembers:generics", test_generics),
+	T("AnalysisMembers:components", test_components),
+	T("AnalysisMembers:variants", test_variants),
+	T("AnalysisMembers:enums", test_enums),
+	T("AnalysisMembers:enum_sets", test_enum_sets),
+	T("AnalysisMembers:layouts", test_layouts),
+	T("AnalysisMembers:tuples", test_tuples),
+	T("AnalysisMembers:arrays", test_arrays),
+	T("AnalysisMembers:builtins", test_builtins),
+	T("AnalysisMembers:builtins_verify", test_builtins_verify),
+	T("AnalysisMembers:system", test_system),
+	T("AnalysisMembers:this", test_this),
+	T("AnalysisMembers:descriptors", test_descriptors),
+	T("AnalysisMembers:type_names", test_type_names),
+	T("AnalysisMembers:receiver_expressions", test_receiver_expressions),
+	T("AnalysisMembers:unknown_receivers", test_unknown_receivers),
+	T("AnalysisMembers:positions", test_positions),
+	T("AnalysisMembers:incomplete", test_incomplete),
+	T("AnalysisMembers:unreached", test_unreached),
+	T("AnalysisMembers:cap", test_cap),
+	T("AnalysisMembers:kinds_and_details", test_kinds_and_details),
+	T("AnalysisMembers:scaling", test_scaling),
+	()
+];
+
+def MAIN = "main.v3";
+
+// {marked} without its "$", and the offset of the "$".
+def unmark(marked: string) -> (string, int) {
+	var cursor = -1, text = Vector<byte>.new();
+	for (c in marked) {
+		if (c == '$' && cursor < 0) cursor = text.length;
+		else text.put(c);
+	}
+	return (text.extract(), cursor);
+}
+// The analysis of {files}, the first of which is marked, and the offset.
+def analyze(files: Array<(string, string)>) -> (ProgramAnalysis, int) {
+	var m = unmark(files[0].1);
+	var sources = Array<AnalysisSource>.new(files.length);
+	sources[0] = AnalysisSource.new(files[0].0, m.0);
+	for (i = 1; i < files.length; i++) sources[i] = AnalysisSource.new(files[i].0, files[i].1);
+	return (AeneasAdapter.analyzeForScope(sources, [], false), m.1);
+}
+// The members at the "$" in the first of {files}, which must verify.
+def membersIn(t: Tester, files: Array<(string, string)>) -> string {
+	var a = analyze(files);
+	if (!a.0.verified) {
+		for (d in a.0.diagnostics) t.fail1("the fixture does not verify: %s", d.toString());
+		return null;
+	}
+	return render(a.0.membersAt(files[0].0, a.1, ""));
+}
+def render(m: AnalysisMemberAnswer) -> string {
+	if (m == null) return null;
+	var buf = StringBuilder.new();
+	for (i < m.names.length) {
+		if (i > 0) buf.putc(' ');
+		buf.put2("%s/%d", m.names[i], m.levels[i]);
+	}
+	if (m.truncated) buf.puts(" (truncated)");
+	return buf.toString();
+}
+// The members at the "$" in {marked}, whether or not it verifies.
+def membersAny(marked: string) -> AnalysisMemberAnswer {
+	var a = analyze([(MAIN, marked)]);
+	return a.0.membersAt(MAIN, a.1, "");
+}
+def check(t: Tester, marked: string, expected: string) {
+	checkIn(t, [(MAIN, marked)], expected);
+}
+def checkIn(t: Tester, files: Array<(string, string)>, expected: string) {
+	var got = membersIn(t, files);
+	if (got != null && !Strings.equal(expected, got)) t.fail3("%s\n  expected: %s\n  got:      %s", files[0].1, expected, got);
+}
+// Each candidate as its name, kind, and detail (or "-"), one per line.
+def described(marked: string) -> string {
+	var m = membersAny(marked);
+	if (m == null) return null;
+	var buf = StringBuilder.new();
+	for (i < m.names.length) {
+		var detail = m.details[i];
+		if (detail == null && m.declarations[i] != null) detail = m.declarations[i].signature;
+		buf.put3("%s %s %s\n", m.names[i], m.kinds[i].name, if(detail != null, detail, "-"));
+	}
+	return buf.toString();
+}
+def checkDescribed(t: Tester, marked: string, expected: string) {
+	var got = described(marked);
+	if (!Strings.equal(expected, got)) t.fail3("%s\n  expected:\n%s  got:\n%s", marked, expected, got);
+}
+def lines(list: Array<string>) -> string {
+	var buf = StringBuilder.new();
+	for (line in list) buf.puts(line).ln();
+	return buf.toString();
+}
+def identByte(c: byte) -> bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+// Whether the verifier resolves {name} as the member at the "$" in the first
+// of {files}, in place of the identifier there: no diagnostic says that the
+// member is unresolved, or that it cannot be accessed.
+def resolves(files: Array<(string, string)>, name: string) -> bool {
+	var m = unmark(files[0].1), end = m.1;
+	while (end < m.0.length && identByte(m.0[end])) end++;
+	var text = Strings.format3("%s%s%s", Arrays.range(m.0, 0, m.1), name, Arrays.range(m.0, end, m.0.length));
+	var sources = Array<AnalysisSource>.new(files.length);
+	sources[0] = AnalysisSource.new(files[0].0, text);
+	for (i = 1; i < files.length; i++) sources[i] = AnalysisSource.new(files[i].0, files[i].1);
+	var a = AeneasAdapter.analyzeProgram(sources, [], false);
+	for (d in a.diagnostics) {
+		if (Strings.equal(d.kind, "UnresolvedMember")) return false;
+	}
+	return a.parsed;
+}
+// Checks that the member query and the verifier agree at the "$" in the first
+// of {files}: every offered member resolves there, and each of {others},
+// which are not offered, does not.
+def agreeIn(t: Tester, files: Array<(string, string)>, others: Array<string>) {
+	var a = analyze(files), m = a.0.membersAt(files[0].0, a.1, "");
+	if (m == null) return t.fail1("no members: %s", files[0].1);
+	for (name in m.names) {
+		if (!resolves(files, name)) t.fail2("%s\n  %s is offered but does not resolve", files[0].1, name);
+	}
+	for (name in others) {
+		var offered = false;
+		for (n in m.names) offered = offered || Strings.equal(n, name);
+		if (offered) t.fail2("%s\n  %s is offered", files[0].1, name);
+		else if (resolves(files, name)) t.fail2("%s\n  %s resolves but is not offered", files[0].1, name);
+	}
+}
+def agree(t: Tester, marked: string, others: Array<string>) {
+	agreeIn(t, [(MAIN, marked)], others);
+}
+
+def CLASSES = lines([
+	"class Shape(var name: string) {",
+	"\tvar sides: int;",
+	"\tdef area() -> int { return 0; }",
+	"\tdef [i: int] -> int { return i; }",
+	"\tdef describe() -> string { return name; }",
+	"}",
+	"class Square extends Shape {",
+	"\tvar edge: int;",
+	"\tnew(edge) super(\"square\") { }",
+	"\tdef area() -> int { return edge * edge; }",
+	"}"
+]);
+
+// A class's fields, methods, and its parameters' fields; not its constructor
+// or its operator methods.
+def test_classes(t: Tester) {
+	var text = Arrays.concat(CLASSES, "def f(s: Shape) { s.$sides = 1; }\n");
+	check(t, text, "name/0 sides/0 area/0 describe/0");
+	agree(t, text, ["new", "edge", "missing"]);
+}
+// Inherited members follow the class's own, a level up each; an overridden
+// method is offered once, the nearest. A private member is offered only in
+// its own file.
+def test_inheritance_and_privacy(t: Tester) {
+	var text = Arrays.concat(CLASSES, "def f(s: Square) { s.$edge = 1; }\n");
+	check(t, text, "edge/0 area/0 name/1 sides/1 describe/1");
+	agree(t, text, ["new", "missing"]);
+	var other = lines([
+		"class A {",
+		"\tvar shared: int;",
+		"\tprivate var secret: int;",
+		"\tdef visible() { }",
+		"}",
+		"class B extends A {",
+		"\tprivate def hidden() { }",
+		"\tdef own() { }",
+		"}"
+	]);
+	var here = "def f(b: B) { b.$own(); }\n";
+	checkIn(t, [(MAIN, here), ("other.v3", other)], "own/0 shared/1 visible/1");
+	agreeIn(t, [(MAIN, here), ("other.v3", other)], ["secret", "hidden"]);
+	var same = Arrays.concat(other, "def f(b: B) { b.$own(); }\n");
+	check(t, same, "hidden/0 own/0 secret/1 shared/1 visible/1");
+	agree(t, same, []);
+}
+// A generic class's members show its type arguments, through each
+// superclass's arguments in turn; a method's own type parameters stay.
+def test_generics(t: Tester) {
+	var text = lines([
+		"class List<T>(head: T, tail: List<T>) {",
+		"\tdef map<R>(f: T -> R) -> List<R> { return null; }",
+		"}",
+		"class Pair<A, B>(first: A, second: B) { }",
+		"class Named<V> extends Pair<string, List<V>> {",
+		"\tnew(v: List<V>) super(\"\", v) { }",
+		"}",
+		"def f(l: List<int>, n: Named<bool>) { l.$head; }"
+	]);
+	checkDescribed(t, text, lines([
+		"head FIELD def head: int",
+		"tail FIELD def tail: List<int>",
+		"map METHOD def map<R>(f: int -> R) -> List<R>"
+	]));
+	var named = lines([
+		"class List<T>(head: T, tail: List<T>) { }",
+		"class Pair<A, B>(first: A, second: B) { }",
+		"class Named<V> extends Pair<string, List<V>> {",
+		"\tnew(v: List<V>) super(\"\", v) { }",
+		"}",
+		"def f(n: Named<bool>) { n.$first; }"
+	]);
+	checkDescribed(t, named, lines([
+		"first FIELD def first: Array<byte>",
+		"second FIELD def second: List<bool>"
+	]));
+	agree(t, named, ["head"]);
+	// The class's own type parameters, through "this".
+	checkDescribed(t, "class Box<T>(var item: T) { def m() { this.$item = item; } }\n", lines([
+		"item FIELD var item: T",
+		"m METHOD def m()"
+	]));
+}
+// A component's fields and methods, through its name; private ones only in
+// its file.
+def test_components(t: Tester) {
+	var other = "component K {\n\tdef count = 1;\n\tvar items: Array<int>;\n\tprivate def secret() { }\n\tdef add(i: int) { }\n}\n";
+	checkIn(t, [(MAIN, "def f() { K.$add(1); }\n"), ("other.v3", other)], "count/0 items/0 add/0");
+	agreeIn(t, [(MAIN, "def f() { K.$add(1); }\n"), ("other.v3", other)], ["secret", "new", "missing"]);
+	check(t, Arrays.concat(other, "def f() { K.$add(1); }\n"), "count/0 items/0 add/0 secret/0");
+}
+def VARIANT = lines([
+	"type Expr {",
+	"\tcase Num(value: int) { def eval() -> int { return value; } }",
+	"\tcase Neg(inner: Expr);",
+	"\tcase Zero;",
+	"\tdef eval() -> int { return 0; }",
+	"}"
+]);
+// A variant type offers its cases, methods, "tag", and "name"; a value of it
+// its methods, "tag", and "name"; a case's value its own fields too, and a
+// case with parameters, as a type, the variant's cases.
+def test_variants(t: Tester) {
+	var onType = Arrays.concat(VARIANT, "def f() { var e = Expr.$Zero; }\n");
+	check(t, onType, "name/0 tag/0 eval/0 Neg/0 Num/0 Zero/0");
+	agree(t, onType, ["value", "missing"]);
+	var onValue = Arrays.concat(VARIANT, "def f(e: Expr) { var x = e.$tag; }\n");
+	check(t, onValue, "name/0 tag/0 eval/0");
+	agree(t, onValue, ["Zero", "Num", "value"]);
+	var onCase = Arrays.concat(VARIANT, "def f(e: Expr.Num) { var x = e.$value; }\n");
+	check(t, onCase, "value/0 eval/0 name/1 tag/1");
+	agree(t, onCase, ["Zero", "inner"]);
+	// A case without parameters is a value; one with them a type.
+	var zero = Arrays.concat(VARIANT, "def f() { var x = Expr.Zero.$tag; }\n");
+	check(t, zero, "name/1 tag/1 eval/1");
+	agree(t, zero, ["Num", "Zero"]);
+	var num = Arrays.concat(VARIANT, "def f() { var x = Expr.Num.$value; }\n");
+	// The case's own "eval" overrides the variant's.
+	check(t, num, "value/0 eval/0 name/1 tag/1 Neg/1 Num/1 Zero/1");
+	// A data type's own fields; it has no "tag" or "name".
+	var data = "type Point(x: int, y: int) { def norm() -> int { return x; } }\ndef f(p: Point) { var a = p.$x; }\n";
+	check(t, data, "x/0 y/0 norm/0");
+	agree(t, data, ["tag", "name"]);
+}
+def test_enums(t: Tester) {
+	var e = "enum Color(rgb: int) { RED(0xFF0000), GREEN(0x00FF00) }\n";
+	var onType = Arrays.concat(e, "def f() { var c = Color.$RED; }\n");
+	check(t, onType, "count/0 name/0 rgb/0 tag/0 GREEN/0 RED/0 set/0");
+	agree(t, onType, ["missing", "all"]);
+	var onValue = Arrays.concat(e, "def f(c: Color) { var x = c.$rgb; }\n");
+	check(t, onValue, "name/0 rgb/0 tag/0");
+	agree(t, onValue, ["RED", "count", "set"]);
+	var onCase = Arrays.concat(e, "def f() { var x = Color.RED.$rgb; }\n");
+	check(t, onCase, "name/0 rgb/0 tag/0");
+	agree(t, onCase, ["RED", "GREEN", "count"]);
+}
+def test_enum_sets(t: Tester) {
+	var e = "enum Flag { A, B, C }\n";
+	var onType = Arrays.concat(e, "def f() { var s = Flag.set.$all; }\n");
+	check(t, onType, "all/0 view/0 A/0 B/0 C/0");
+	agree(t, onType, ["count", "tag"]);
+	var onValue = Arrays.concat(e, "def f(s: Flag.set) { var x = s.$A; }\n");
+	check(t, onValue, "A/0 B/0 C/0");
+	agree(t, onValue, ["all", "tag", "name"]);
+	checkDescribed(t, Arrays.concat(e, "def f(s: Flag.set) { var x = s.$A; }\n"), lines([
+		"A ENUM_CASE def A: bool",
+		"B ENUM_CASE def B: bool",
+		"C ENUM_CASE def C: bool"
+	]));
+}
+def LAYOUT = "layout Header {\n\t+0 kind: u8;\n\t+4 size: u32;\n\t=8;\n}\n";
+def test_layouts(t: Tester) {
+	var onRef = Arrays.concat(LAYOUT, "def f(r: Ref<Header>) { var x = r.$kind; }\n");
+	check(t, onRef, "kind/0 size/0");
+	agree(t, onRef, ["at", "of", "offset"]);
+	var onRefType = Arrays.concat(LAYOUT, "def f(a: Array<byte>) { var r = Ref<Header>.$at(a, 0); }\n");
+	check(t, onRefType, "kind/0 size/0 at/0 of/0");
+	agree(t, onRefType, ["offset"]);
+	var onLayout = Arrays.concat(LAYOUT, "def f() { var x = Header.$size; }\n");
+	check(t, onLayout, "kind/0 size/0");
+	var onField = Arrays.concat(LAYOUT, "def f() { var x = Header.kind.$offset; }\n");
+	check(t, onField, "offset/0");
+	agree(t, onField, ["size", "kind"]);
+}
+def test_tuples(t: Tester) {
+	var text = "def f(p: (int, string, bool)) { var x = p.$last; }\n";
+	check(t, text, "0/0 1/0 2/0 last/0");
+	agree(t, text, ["3", "length"]);
+	checkDescribed(t, text, lines(["0 FIELD def 0: int", "1 FIELD def 1: Array<byte>", "2 FIELD def 2: bool", "last FIELD def last: bool"]));
+	// A nested tuple's element in parentheses, which completion asks for
+	// where "t.0." would follow a number.
+	check(t, "def f(p: ((int, bool), int)) { var x = (p.0).$last; }\n", "0/0 1/0 last/0");
+}
+def test_arrays(t: Tester) {
+	check(t, "def f(a: Array<int>) { var x = a.$length; }\n", "length/0");
+	agree(t, "def f(a: Array<int>) { var x = a.$length; }\n", ["new", "size"]);
+	check(t, "def f(s: string) { var x = s.$length; }\n", "length/0");
+	check(t, "def f(r: Range<int>) { var x = r.$length; }\n", "length/0");
+	check(t, "def f() { var a = Array<int>.$new(3); }\n", "length/0 new/0");
+	agree(t, "def f() { var a = Array<int>.$new(3); }\n", ["size"]);
+	check(t, "def f() { var a = Range<int>.$length; }\n", "length/0");
+}
+// Each receiver kind's builtin members, as the list has them.
+def test_builtins(t: Tester) {
+	check(t, "def f() { var x = int.$max; }\n", "max/0 min/0 pack/0 truncd/0 truncf/0 unpack/0 view/0");
+	check(t, "def f() { var x = byte.$max; }\n", "max/0 min/0 pack/0 truncd/0 truncf/0 unpack/0 view/0");
+	check(t, "def f() { var x = float.$nan; }\n",
+		"infinity/0 nan/0 abs/0 ceil/0 exponent/0 floor/0 fraction/0 round/0 roundd/0 roundi/0 sign/0 sqrt/0 view/0");
+	check(t, "def f() { var x = double.$nan; }\n",
+		"infinity/0 nan/0 abs/0 ceil/0 exponent/0 floor/0 fraction/0 round/0 roundi/0 sign/0 sqrt/0 view/0");
+	check(t, "def f(d: double) { var x = d.$sign; }\n", "exponent/0 fraction/0 sign/0");
+	check(t, "def f<T>() { var x = T.$default; }\n", "default/0");
+	// No members: bool, void, and integers as values.
+	t.assert_string("", render(membersAny("def f(b: bool, i: int) { var x = i.$y; }\n")));
+	t.assert_string("", render(membersAny("def f(b: bool, i: int) { var x = b.$y; }\n")));
+	checkDescribed(t, "def f(d: double) { var x = d.$sign; }\n", lines([
+		"exponent FIELD def exponent: i11", "fraction FIELD def fraction: u52", "sign FIELD def sign: u1"]));
+	checkDescribed(t, "def f() { var x = u16.$max; }\n", lines([
+		"max FIELD def max: u16", "min FIELD def min: u16",
+		"pack METHOD def pack<T>(value: T) -> u16", "truncd METHOD def truncd(value: double) -> u16",
+		"truncf METHOD def truncf(value: float) -> u16", "unpack METHOD def unpack<T>(value: u16) -> T",
+		"view METHOD def view<T>(value: T) -> u16"]));
+}
+// Each builtin member of the list verifies where the query offers it, in a
+// use that the verifier accepts whole; so does each of System's calls.
+def test_builtins_verify(t: Tester) {
+	var uses = [
+		(AnalysisMemberReceiver.ARRAY_TYPE, "length", "var x = Array<int>.length([1]);"),
+		(AnalysisMemberReceiver.ARRAY_TYPE, "new", "var x = Array<int>.new(3);"),
+		(AnalysisMemberReceiver.ARRAY, "length", "var x = [1].length;"),
+		(AnalysisMemberReceiver.RANGE_TYPE, "length", "var a = [1]; var x = Range<int>.length(a[0 ...]);"),
+		(AnalysisMemberReceiver.RANGE, "length", "var a = [1]; var x = a[0 ...].length;"),
+		(AnalysisMemberReceiver.INT_TYPE, "max", "var x = int.max;"),
+		(AnalysisMemberReceiver.INT_TYPE, "min", "var x = int.min;"),
+		(AnalysisMemberReceiver.INT_TYPE, "pack", "var x = u64.pack<(u32, u32)>((1u, 2u));"),
+		(AnalysisMemberReceiver.INT_TYPE, "truncd", "var x = int.truncd(1.5d);"),
+		(AnalysisMemberReceiver.INT_TYPE, "truncf", "var x = int.truncf(1.5f);"),
+		(AnalysisMemberReceiver.INT_TYPE, "unpack", "var x = u64.unpack<(u32, u32)>(3uL);"),
+		(AnalysisMemberReceiver.INT_TYPE, "view", "var x = int.view(3u);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "abs", "var x = float.abs(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "ceil", "var x = float.ceil(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "exponent", "var x = float.exponent(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "floor", "var x = float.floor(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "fraction", "var x = float.fraction(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "infinity", "var x = float.infinity;"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "nan", "var x = float.nan;"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "round", "var x = float.round(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "roundd", "var x = float.roundd(1.5d);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "roundi", "var x = float.roundi(3);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "sign", "var x = float.sign(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "sqrt", "var x = float.sqrt(1.5f);"),
+		(AnalysisMemberReceiver.FLOAT_TYPE, "view", "var x = float.view(3u);"),
+		(AnalysisMemberReceiver.FLOAT, "exponent", "var x = (1.5f).exponent;"),
+		(AnalysisMemberReceiver.FLOAT, "fraction", "var x = (1.5f).fraction;"),
+		(AnalysisMemberReceiver.FLOAT, "sign", "var x = (1.5f).sign;"),
+		(AnalysisMemberReceiver.ENUM_TYPE, "count", "var x = Flag.count;"),
+		(AnalysisMemberReceiver.ENUM_TYPE, "set", "var x: Flag.set;"),
+		(AnalysisMemberReceiver.ENUM_SET_TYPE, "all", "var x = Flag.set.all;"),
+		(AnalysisMemberReceiver.ENUM_SET_TYPE, "view", "var x = Flag.set.view(3u);"),
+		(AnalysisMemberReceiver.REF_TYPE, "at", "var x = Ref<Header>.at(Array<byte>.new(8), 0);"),
+		(AnalysisMemberReceiver.REF_TYPE, "of", "var x = Ref<Header>.of(Array<byte>.new(8)[0 ...]);"),
+		(AnalysisMemberReceiver.LAYOUT, "size", "var x = Header.size;"),
+		(AnalysisMemberReceiver.LAYOUT_FIELD, "offset", "var x = Header.kind.offset;"),
+		(AnalysisMemberReceiver.TYPE_PARAM, "default", "var x = T.default;")
+	];
+	var listed = 0;
+	for (b in AnalysisBuiltinMembers.LIST) {
+		var found = false;
+		for (u in uses) {
+			if (u.0 != b.receiver || !Strings.equal(u.1, b.name)) continue;
+			found = true;
+			var text = Strings.format2("enum Flag { A, B }\n%sdef f<T>() { %s }\n", LAYOUT, u.2);
+			var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, text)], [], false);
+			if (!a.verified) {
+				t.fail2("%s.%s does not verify", b.receiver.name, b.name);
+				for (d in a.diagnostics) t.fail1("  %s", d.toString());
+			}
+		}
+		if (!found) t.fail2("no use of %s.%s", b.receiver.name, b.name);
+		listed++;
+	}
+	t.asserti(uses.length, listed);
+	// And a sample of names that no builtin list has does not.
+	for (text in ["var x = int.length;", "var x = float.min;", "var x = [1].new;", "var x = Flag.set.count;",
+			"var x = Header.offset;", "var x = T.max;", "var x = double.roundd(1.5d);"]) {
+		var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN,
+			Strings.format2("enum Flag { A, B }\n%sdef f<T>() { %s }\n", LAYOUT, text))], [], false);
+		t.assert(!a.verified, Strings.format1("%s verifies", text));
+	}
+}
+def test_system(t: Tester) {
+	var text = "def f() { System.$puts(\"\"); }\n";
+	var buf = StringBuilder.new();
+	var names = Array<string>.new(SystemCall.count);
+	for (c in SystemCall) names[c.tag] = c.name;
+	names = AnalysisTables.sort(names, fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+	for (i < names.length) {
+		if (i > 0) buf.putc(' ');
+		buf.put1("%s/0", names[i]);
+	}
+	check(t, text, buf.toString());
+	agree(t, text, ["missing"]);
+	var d = described(text);
+	t.assert(contains(d, "puts METHOD def puts(Array<byte>)\n"), d);
+	t.assert(contains(d, "ticksUs METHOD def ticksUs() -> int\n"), d);
+}
+// "this" is the receiver: a class's own private members, and its
+// superclasses'.
+def test_this(t: Tester) {
+	var text = Arrays.concat(CLASSES, "class Cube extends Square {\n\tprivate var depth: int;\n\tnew() super(1) { this.$depth = 1; }\n}\n");
+	check(t, text, "depth/0 edge/1 area/1 name/2 sides/2 describe/2");
+	agree(t, text, ["new"]);
+	check(t, "component K {\n\tvar x: int;\n\tdef m() { this.$x = 1; }\n}\n", "x/0 m/0");
+}
+// With -lang:descriptors, a class with a descriptor reads its root's
+// descriptor field (lookupClassExprMember: VstDescriptorField), which a class
+// without one, its root included, does not. Each offered member verifies,
+// and "descriptor" on the root does not.
+def DESCRIBED = "class D describes B { var tag: int; }\nclass A { var x: int; }\nclass B extends A descriptor D { }\n";
+def test_descriptors(t: Tester) {
+	var options = ["-lang:descriptors"];
+	for (marked in [
+		(Arrays.concat(DESCRIBED, "def f(b: B) { var y = b.$x; }\n"), "descriptor/1 x/1", true),
+		(Arrays.concat(DESCRIBED, "def f(a: A) { var y = a.$x; }\n"), "x/0", false)
+	]) {
+		var m = unmark(marked.0);
+		var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], options, false);
+		if (!a.verified) {
+			for (d in a.diagnostics) t.fail1("the fixture does not verify: %s", d.toString());
+			continue;
+		}
+		var answer = a.membersAt(MAIN, m.1, "");
+		var got = render(answer);
+		if (!Strings.equal(marked.1, got)) t.fail3("%s\n  expected: %s\n  got:      %s", marked.0, marked.1, got);
+		if (answer != null && answer.names.length > 0 && answer.declarations[0] != null && marked.2) {
+			t.assert_string("descriptor", answer.declarations[0].name);
+		}
+		for (name in ["descriptor", "x"]) {
+			var text = Strings.format3("%s%s%s", Arrays.range(m.0, 0, m.1), name, Arrays.range(m.0, m.1 + 1, m.0.length));
+			var v = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, text)], options, false);
+			var offered = name[0] == 'x' || marked.2;
+			if (v.verified != offered) t.fail2("%s\n  %s does not agree with the verifier", text, name);
+		}
+	}
+}
+// A type's name offers what the verifier looks up on the type: a class's
+// constructor, fields, and methods; an enum's cases.
+def test_type_names(t: Tester) {
+	var text = Arrays.concat(CLASSES, "def f() { var s = Square.$new(2); }\n");
+	check(t, text, "edge/0 area/0 new/0 name/1 sides/1 describe/1");
+	agree(t, text, ["missing"]);
+	var generic = "class Box<T>(item: T) { }\ndef f() { var b = Box<int>.$new(1); }\n";
+	checkDescribed(t, generic, lines(["item FIELD def item: int", "new CONSTRUCTOR new(item: int)"]));
+	// A private constructor only in its file.
+	var other = "class Hidden {\n\tprivate new() { }\n\tdef m() { }\n}\n";
+	checkIn(t, [(MAIN, "def f() { var x = Hidden.$m; }\n"), ("other.v3", other)], "m/0");
+	agreeIn(t, [(MAIN, "def f() { var x = Hidden.$m; }\n"), ("other.v3", other)], ["new"]);
+}
+// Receivers that are calls, indexes, parenthesized expressions, and chains,
+// at statements, in arguments, and in conditions and lambdas.
+def test_receiver_expressions(t: Tester) {
+	var head = Arrays.concat(CLASSES, "def make() -> Square { return Square.new(1); }\n");
+	var shape = "edge/0 area/0 name/1 sides/1 describe/1";
+	for (body in [
+		"var x = make().$edge;",
+		"var a = [make()]; var x = a[0].$edge;",
+		"var s = make(); var x = (s).$edge;",
+		"var s = make(); var x = (if(true, s, s)).$edge;",
+		"var s = make(); g(s.$edge);",
+		"var s = make(); if (s.$edge > 0) { }",
+		"var s = make(); var h = fun () => s.$edge;",
+		"var s = make(); var h = fun () -> int { return s.$edge; };",
+		"var s = make(); while (s.$edge > 0) { }"
+	]) {
+		check(t, Strings.format2("%sdef g(i: int) { }\ndef f() { %s }\n", head, body), shape);
+	}
+	// A chain's receiver is the last link.
+	var chain = Arrays.concat(CLASSES, "class Node(next: Node, shape: Square) { }\ndef f(n: Node) { var x = n.next.next.shape.$edge; }\n");
+	check(t, chain, shape);
+	check(t, Arrays.concat(CLASSES, "class Node(next: Node, shape: Square) { }\ndef f(n: Node) { var x = n.next.$next; }\n"), "next/0 shape/0");
+	check(t, Arrays.concat(CLASSES, "def f(s: Square) { var x = s.name.$length; }\n"), "length/0");
+	check(t, Arrays.concat(CLASSES, "def f(s: Square) { var x = s.describe().$length; }\n"), "length/0");
+	// The space and comments after the ".".
+	check(t, Arrays.concat(CLASSES, "def f(s: Square) { var x = s. /* c */ $edge; }\n"), shape);
+	check(t, Arrays.concat(CLASSES, "def f(s: Square) { s.\n\t\t$edge = 1; }\n"), shape);
+}
+// An unknown or erroneous receiver type has no members, and nothing else is
+// offered in their place.
+def test_unknown_receivers(t: Tester) {
+	t.assert_string("", render(membersAny("def f() { missing.$x; }\n")));
+	t.assert_string("", render(membersAny("def f() { var y = g().$x; }\n")));
+	t.assert_string("", render(membersAny("def f(a: Missing) { a.$x; }\n")));
+	t.assert_string("", render(membersAny("def f() { var x = void.$y; }\n")));
+	t.assert_string("", render(membersAny("def f(g: int -> int) { var x = g.$y; }\n")));
+	t.assert_string("", render(membersAny("def f() { var x = null.$y; }\n")));
+}
+// The query's offset must follow a member expression's "."; elsewhere, as
+// in a type's name, there is none.
+def test_positions(t: Tester) {
+	var text = Arrays.concat(CLASSES, "def f(s: Square) { var x = $s.edge; }\n");
+	t.assert(membersAny(text) == null, "no member before the receiver");
+	t.assert(membersAny("enum Flag { A }\ndef f() { var s: Flag.$set; }\n") == null, "no member in a type");
+	t.assert(membersAny("class C { }\n$") == null, "no member at the end");
+}
+// A partial name (as typed) and the repair's sentinel name do not resolve,
+// but the receiver's type is known.
+def test_incomplete(t: Tester) {
+	var shape = "edge/0 area/0 name/1 sides/1 describe/1";
+	for (body in [
+		"s.$ed;",
+		"s.$virgilLspCursor;",
+		"g(s.$virgilLspCursor);",
+		"if (s.$virgilLspCursor) { }",
+		"var h = fun () => s.$virgilLspCursor;",
+		"var h = fun () => s.$edvirgilLspCursor;"
+	]) {
+		var text = Strings.format2("%sdef g(i: int) { }\ndef f(s: Square) { %s }\n", CLASSES, body);
+		t.assert_string(shape, render(membersAny(text)));
+	}
+}
+// Members are offered only where verification reached the offset, as
+// scopes are.
+def test_unreached(t: Tester) {
+	// Components are checked before classes, and stop at the error limit.
+	var errors = StringBuilder.new().puts("component Errors {\n\tdef f() {\n");
+	for (i < 16) errors.put1("\t\tunresolved%d;\n", i);
+	var bad = errors.puts("\t}\n}\n").toString();
+	var query = "class C(p: string) {\n\tdef m() {\n\t\tvar x = p.$length;\n\t}\n}\n";
+	t.assert(membersAny(Arrays.concat(bad, query)) == null, "no members where verification did not reach");
+	var later = StringBuilder.new().puts("class Errors {\n\tdef f() {\n");
+	for (i < 16) later.put1("\t\tunresolved%d;\n", i);
+	t.assert_string("length/0", render(membersAny(Arrays.concat("component K {\n\tdef m(p: string) {\n\t\tvar x = p.$length;\n\t}\n}\n",
+		later.puts("\t}\n}\n").toString()))));
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, "class C { def m() { var x = ; } }")], [], false);
+	t.assert(a.membersAt(MAIN, 20, "") == null, "no members without a parse");
+	var plain = AeneasAdapter.analyzeProgram([AnalysisSource.new(MAIN, "def f(s: string) { s.length; }")], [], false);
+	t.assert(plain.membersAt(MAIN, 21, "") == null, "no members from an ordinary analysis");
+}
+// Past the cap, only the members that start with the prefix, up to it.
+def test_cap(t: Tester) {
+	var b = StringBuilder.new().puts("class C {\n");
+	for (i < 1200) b.put1("\tvar f%d: int;\n", i);
+	b.puts("\tvar g: int;\n}\ndef f(c: C) { c.$g = 1; }\n");
+	var a = analyze([(MAIN, b.toString())]);
+	var all = a.0.membersAt(MAIN, a.1, "");
+	t.asserti(AnalysisScopeOrder.MAX_DECLARATIONS, all.names.length);
+	t.assert(all.truncated, "truncated");
+	var some = a.0.membersAt(MAIN, a.1, "g");
+	t.asserti(1, some.names.length);
+	t.assert_string("g", some.names[0]);
+	var f1 = a.0.membersAt(MAIN, a.1, "f1");
+	t.asserti(1 + 10 + 100 + 200, f1.names.length);
+}
+// Kinds and details: each member's declaration kind, and its signature.
+def test_kinds_and_details(t: Tester) {
+	checkDescribed(t, Arrays.concat(CLASSES, "def f(s: Square) { s.$edge = 1; }\n"), lines([
+		"edge FIELD var edge: int",
+		"area METHOD def area() -> int",
+		"name FIELD var name: Array<byte>",
+		"sides FIELD var sides: int",
+		"describe METHOD def describe() -> Array<byte>"
+	]));
+	checkDescribed(t, Arrays.concat(VARIANT, "def f() { var e = Expr.$Zero; }\n"), lines([
+		"name FIELD def name: Array<byte>",
+		"tag FIELD def tag: u2",
+		"eval METHOD def eval() -> int",
+		"Neg VARIANT_CASE case Neg(inner: Expr)",
+		"Num VARIANT_CASE case Num(value: int)",
+		"Zero VARIANT_CASE case Zero"
+	]));
+	checkDescribed(t, "enum Flag { A, B }\ndef f() { var x = Flag.$A; }\n", lines([
+		"count FIELD def count: u2",
+		"name FIELD def name: Array<byte>",
+		"tag FIELD def tag: u1",
+		"A ENUM_CASE Flag.A",
+		"B ENUM_CASE Flag.B",
+		"set CLASS type Flag.set"
+	]));
+	checkDescribed(t, Arrays.concat(LAYOUT, "def f(r: Ref<Header>) { var x = r.$kind; }\n"), lines([
+		"kind LAYOUT_FIELD +0 kind: u8",
+		"size LAYOUT_FIELD +4 size: u32"
+	]));
+}
+
+// The member query's work is linear, or n log n for its name sets, in the
+// code it walks and the members it emits; see AnalysisScope:deep_nesting for
+// how steps, bytes, and name comparisons are measured.
+def test_scaling(t: Tester) {
+	scales(t, "a class's members", 2000, classCost(t, 2000, false), classCost(t, 4000, false));
+	scales(t, "colliding member names", 500, classCost(t, 500, true), classCost(t, 1000, true));
+	scales(t, "an inheritance chain", 300, chainCost(t, 300, false), chainCost(t, 600, false));
+	scales(t, "a generic inheritance chain", 200, chainCost(t, 200, true), chainCost(t, 400, true));
+	scales(t, "a receiver chain", 300, receiverCost(t, 300, false), receiverCost(t, 600, false));
+	scales(t, "a chain's first link", 300, receiverCost(t, 300, true), receiverCost(t, 600, true));
+	scales(t, "same-named members of unrelated types", 1000, unrelatedCost(t, 1000), unrelatedCost(t, 2000));
+}
+def scales(t: Tester, label: string, n: int, small: (int, long, long), large: (int, long, long)) {
+	if (small.0 <= 0 || large.0 > 2 * small.0 + 100) {
+		t.fail3("%s read %d steps at %d, ", label, large.0, 2 * n);
+		t.fail2("against %d at %d", small.0, n);
+	}
+	if (small.1 <= 0 || large.1 > 3 * small.1 + 100000) {
+		t.fail3("%s allocate %d bytes at %d, ", label, large.1, 2 * n);
+		t.fail2("against %d at %d", small.1, n);
+	}
+	if (small.2 <= 0 || large.2 > 2 * small.2 + 32 * n) {
+		t.fail3("%s compare %d names at %d, ", label, large.2, 2 * n);
+		t.fail2("against %d at %d", small.2, n);
+	}
+}
+// {i} as thirteen "Aa" or "BB" blocks, whose equal length and polynomial hash
+// make a Strings.newMap keep them all in one bucket.
+def blockName(i: int) -> string {
+	var b = StringBuilder.new(), mask = 1;
+	for (bit = 0; bit < 13; bit++) {
+		b.puts(if((i & mask) != 0, "Aa", "BB"));
+		mask = mask * 2;
+	}
+	return b.toString();
+}
+// A class of {n} fields, half of them methods, named as {colliding} says.
+def classCost(t: Tester, n: int, colliding: bool) -> (int, long, long) {
+	var b = StringBuilder.new().puts("class C {\n");
+	for (i < n) {
+		var name = if(colliding, blockName(i), Strings.format1("m%d", i));
+		if ((i & 1) == 0) b.put1("\tvar %s: int;\n", name);
+		else b.put1("\tdef %s() { }\n", name);
+	}
+	b.puts("}\ndef f(c: C) { c.$");
+	b.puts(if(colliding, blockName(0), "m0")).puts(" = 1; }\n");
+	return cost(t, b.toString(), if(colliding, blockName(0), "m0"), Strings.format1("%d members", n));
+}
+// A chain of {n} classes, each overriding the method of its superclass and
+// adding a field; generic ones pass their type parameter up.
+def chainCost(t: Tester, n: int, generic: bool) -> (int, long, long) {
+	var b = StringBuilder.new();
+	for (i < n) {
+		if (generic) b.put1("class C%d<T>", i);
+		else b.put1("class C%d", i);
+		if (i > 0) b.put1(" extends C%d", i - 1).puts(if(generic, "<T>", ""));
+		b.put1(" {\n\tvar f%d: ", i).puts(if(generic, "T", "int")).puts(";\n\tdef m() { }\n}\n");
+	}
+	b.put1("def f(c: C%d", n - 1).puts(if(generic, "<int>", "")).puts(") { c.$f0 = c.f0; }\n");
+	return cost(t, b.toString(), "f0", Strings.format1("%d classes", n));
+}
+// A receiver chain of {n} links, n.next.next..., queried after its last
+// link, or, if {first}, after its first, which the walk reaches through all
+// the others.
+def receiverCost(t: Tester, n: int, first: bool) -> (int, long, long) {
+	var b = StringBuilder.new().puts("class Node(next: Node, value: int) { }\ndef f(n: Node) { var x = n");
+	for (i < n) b.puts(if(first && i == 0, ".$next", ".next"));
+	b.puts(if(first, ".value; }\n", ".$value; }\n"));
+	return cost(t, b.toString(), if(first, "next", "value"), Strings.format1("%d links", n));
+}
+// {n} unrelated classes with the same member names, and a query on one.
+def unrelatedCost(t: Tester, n: int) -> (int, long, long) {
+	var b = StringBuilder.new();
+	for (i < n) b.put1("class C%d { var shared: int; def other() { } }\n", i);
+	b.puts("def f(c: C0) { c.$shared = 1; }\n");
+	return cost(t, b.toString(), "shared", Strings.format1("%d classes", n));
+}
+// The steps read, the bytes allocated, and the name comparisons made to find
+// the members at the "$" in {marked}, where {name} must be offered, as
+// AnalysisScope's scopeCost measures a scope.
+def cost(t: Tester, marked: string, name: string, label: string) -> (int, long, long) {
+	var m = unmark(marked);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	if (!a.verified) {
+		t.fail1("%s does not verify", label);
+		for (d in a.diagnostics) {
+			t.fail1("  %s", d.toString());
+			break;
+		}
+		return (-1, -1, -1);
+	}
+	if (a.membersAt(MAIN, m.1, "") == null) {
+		t.fail1("no members under %s", label);
+		return (-1, -1, -1);
+	}
+	RiGc.forceGC();
+	var before = Semispace.fromSpaceUsed(), collections = GcStats.gc_count;
+	var s = a.membersAt(MAIN, m.1, "");
+	var bytes = Semispace.fromSpaceUsed() - before;
+	if (GcStats.gc_count != collections) {
+		t.fail1("finding the members under %s collected the heap", label);
+		return (-1, -1, -1);
+	}
+	var offered = false;
+	for (n in s.names) offered = offered || Strings.equal(n, name);
+	t.assert(offered, Strings.format2("%s offered under %s", name, label));
+	return (s.steps, bytes, s.nameComparisons);
+}
+// Whether {s} contains {part}.
+def contains(s: string, part: string) -> bool {
+	for (i = 0; i + part.length <= s.length; i++) {
+		if (Strings.equal(Arrays.range(s, i, i + part.length), part)) return true;
+	}
+	return false;
+}

@@ -33,6 +33,10 @@ def X = [
 	T("AnalysisWire:scope_answer_round_trip", test_scope_answer_round_trip),
 	T("AnalysisWire:invalid_scope_answers", test_invalid_scope_answers),
 	T("AnalysisWire:scope_allocation", test_scope_allocation),
+	T("AnalysisWire:member_request_round_trip", test_member_request_round_trip),
+	T("AnalysisWire:member_answer_round_trip", test_member_answer_round_trip),
+	T("AnalysisWire:invalid_member_answers", test_invalid_member_answers),
+	T("AnalysisWire:member_allocation", test_member_allocation),
 	()
 ];
 
@@ -1111,7 +1115,8 @@ def test_invalid_scope_requests(t: Tester) {
 		(flags, AnalysisScopeRequest.new(0, -1, AnalysisScopeKinds.VALUES, "")),
 		(flags, AnalysisScopeRequest.new(1, sources[1].input.length + 1, AnalysisScopeKinds.VALUES, "")),
 		(flags, AnalysisScopeRequest.new(0, 0, 0, "")),
-		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.ALL + 1, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.MEMBERS << 1, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.MEMBERS | AnalysisScopeKinds.VALUES, "")),
 		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, null)),
 		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, Array<byte>.new(AnalysisScopeOrder.MAX_PREFIX + 1)))
 	];
@@ -1126,10 +1131,10 @@ def test_invalid_scope_requests(t: Tester) {
 def scopedResult(analysis: ProgramAnalysis, scope: AnalysisScopeAnswer, occurrences: bool) -> Array<byte> {
 	var files: Array<(string, Array<AnalysisOccurrence>)>;
 	if (occurrences) files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
-	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithScope(7, 3, 4567, analysis, 12, 42, files, scope), 1L));
+	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42, files, scope, null), 1L));
 }
 def decodeScoped(payload: Array<byte>, requested: bool) -> AnalysisWorkerResult {
-	match (AnalysisWire.decodeResultWithScope(payload, 5, ["s.v3", "t.v3"], requested)) {
+	match (AnalysisWire.decodeResultWithQuery(payload, 5, ["s.v3", "t.v3"], if(requested, AnalysisScopeKinds.VALUES))) {
 		Decoded(result) => return result;
 		_ => return null;
 	}
@@ -1169,7 +1174,7 @@ def test_scope_answer_round_trip(t: Tester) {
 	t.assert(decodeScoped(scopedResult(analysis, answer, false), true).snapshot.scope == null, "no scope without occurrences");
 	// With one that has no files, as a worker sends when the request asked
 	// for no occurrences, the declarations are the candidates'.
-	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithScope(7, 3, 4567, analysis, -1, 42, [], answer), 1L));
+	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42, [], answer, null), 1L));
 	decoded = decodeScoped(bare, true);
 	t.assert(decoded != null, "a scope answer without files decodes");
 	if (decoded != null) {
@@ -1251,4 +1256,174 @@ def test_scope_allocation(t: Tester) {
 	hidden.hiddenBuiltins = ["int"];
 	var decoded = decodeScoped(scopedResult(analysis, hidden, true), true).snapshot;
 	t.assertl(base + 128 + 8 + 64 + 3, decoded.resultAllocation);
+}
+
+def MEMBERED = "class P(x: int) {\n\tdef m() { }\n}\ndef f(p: P, a: Array<int>) {\n\tp.x;\n\ta.length;\n}\n";
+def memberSources() -> Array<AnalysisSource> {
+	return [AnalysisSource.new("s.v3", MEMBERED), AnalysisSource.new("t.v3", "class T { }\n")];
+}
+// The offset of the {n}th "." in MEMBERED, plus one.
+def afterDot(n: int) -> int {
+	var i = 0;
+	for (k = 0; k < n; i++) if (MEMBERED[i] == '.') k++;
+	return i;
+}
+// A member query is a scope query of MEMBERS alone, which the worker answers
+// with members rather than a scope.
+def test_member_request_round_trip(t: Tester) {
+	var sources = memberSources();
+	var query = AnalysisScopeRequest.new(0, afterDot(1), AnalysisScopeKinds.MEMBERS, "x");
+	var frame = AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources, query);
+	t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, AnalysisWire.WANT_SCOPE, 100, [], sources, query));
+	var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
+	if (r == null) return t.fail("member request did not decode");
+	t.asserti(AnalysisScopeKinds.MEMBERS, r.scope().kinds);
+	var analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	t.assert(r.scopeAnswer(analysis) == null, "no scope answer to a member query");
+	var members = r.memberAnswer(analysis);
+	t.assert(members != null && members.names.length == 2, "the member query has an answer");
+	// A scope query has no member answer.
+	var scoped = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources,
+		AnalysisScopeRequest.new(0, afterDot(1), AnalysisScopeKinds.VALUES, ""))));
+	t.assert(scoped.memberAnswer(analysis) == null, "no member answer to a scope query");
+}
+// A result with {members} for the analysis of memberSources().
+def memberResult(analysis: ProgramAnalysis, members: AnalysisMemberAnswer, occurrences: bool) -> Array<byte> {
+	var files: Array<(string, Array<AnalysisOccurrence>)>;
+	if (occurrences) files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42, files, null, members), 1L));
+}
+def decodeMembers(payload: Array<byte>, kinds: int) -> AnalysisWorkerResult {
+	match (AnalysisWire.decodeResultWithQuery(payload, 5, ["s.v3", "t.v3"], kinds)) {
+		Decoded(result) => return result;
+		_ => return null;
+	}
+}
+// Checks that {snapshot}'s member answer is {answer}.
+def sameMembers(t: Tester, answer: AnalysisMemberAnswer, snapshot: AnalysisSnapshot) {
+	var m = snapshot.members;
+	if (m == null) return t.fail("the snapshot has no members");
+	t.asserti(answer.names.length, m.names.length);
+	t.assertz(answer.truncated, m.truncated);
+	for (i < answer.names.length) {
+		t.assert_string(answer.names[i], m.names[i]);
+		t.assert(answer.kinds[i] == m.kinds[i], "the same kind");
+		t.assert_string(answer.details[i], m.details[i]);
+		t.asserti(answer.levels[i], m.levels[i]);
+		if (answer.declarations[i] == null) {
+			t.asserti(-1, m.declarations[i]);
+		} else {
+			var d = snapshot.declarations[m.declarations[i]];
+			t.assert_string(answer.declarations[i].name, d.name);
+			t.assert_string(answer.declarations[i].signature, d.signature);
+		}
+	}
+}
+def test_member_answer_round_trip(t: Tester) {
+	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], false);
+	var members = analysis.membersAt("s.v3", afterDot(1), "");
+	t.assert(members != null && members.names.length == 2 && members.declarations[0] != null, "declared members");
+	var decoded = decodeMembers(memberResult(analysis, members, true), AnalysisScopeKinds.MEMBERS);
+	if (decoded == null) return t.fail("member answer did not decode");
+	sameMembers(t, members, decoded.snapshot);
+	t.assert(decoded.snapshot.scope == null, "no scope in a member answer");
+	// A builtin member, with its name and detail in the string table.
+	var builtin = analysis.membersAt("s.v3", afterDot(2), "");
+	t.assert(builtin != null && builtin.names.length == 1 && builtin.declarations[0] == null, "a builtin member");
+	decoded = decodeMembers(memberResult(analysis, builtin, true), AnalysisScopeKinds.MEMBERS);
+	if (decoded == null) return t.fail("builtin member answer did not decode");
+	sameMembers(t, builtin, decoded.snapshot);
+	// Without occurrences, an occurrence section with no files holds only the
+	// members' declarations.
+	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42, [], null, members), 1L));
+	decoded = decodeMembers(bare, AnalysisScopeKinds.MEMBERS);
+	if (decoded == null) return t.fail("a member answer without files did not decode");
+	t.asserti(2, decoded.snapshot.declarations.length);
+	sameMembers(t, members, decoded.snapshot);
+	// Without an answer, the result is the one encodeResult writes.
+	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	var plain = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
+	t.assert(Arrays.equal(plain, memberResult(analysis, null, true)), "an ordinary result is unchanged");
+	t.assert(decodeMembers(plain, AnalysisScopeKinds.MEMBERS).snapshot.members == null, "no members in an ordinary result");
+}
+// {payload}, which ends with an empty member answer, with {tail} in place of it.
+def withMemberTail(payload: Array<byte>, tail: DataWriter) -> Array<byte> {
+	return Arrays.concat(Arrays.range(payload, 0, payload.length - 2), tail.extract());
+}
+def test_invalid_member_answers(t: Tester) {
+	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], false);
+	var none = AnalysisMemberAnswer.new([], [], [], [], [], false);
+	var empty = memberResult(analysis, none, true);
+	t.assert(Arrays.equal<byte>("\x00\x00", Arrays.range(empty, empty.length - 2, empty.length)), "an empty answer is two bytes");
+	var snapshot = decodeMembers(empty, AnalysisScopeKinds.MEMBERS).snapshot;
+	var declarations = snapshot.declarations.length, field = -1;
+	for (i < declarations) if (field < 0 && snapshot.declarations[i].kind == AnalysisDeclKind.FIELD) field = i;
+	t.assert(field >= 0, "the result declares a field");
+	// Well-formed: the field, and a builtin member named by string 0, at
+	// levels 0 and 1, truncated.
+	var good = decodeMembers(withMemberTail(empty, DataWriter.new().putb(1).put_sleb32(2)
+		.put_sleb32(field + 1).put_sleb32(0).put_sleb32(0)
+		.put_sleb32(0).putb(byte.view(AnalysisDeclKind.METHOD.tag)).put_sleb32(0).put_sleb32(1).put_sleb32(1)), AnalysisScopeKinds.MEMBERS);
+	t.assert(good != null && good.snapshot.members.truncated && good.snapshot.members.names.length == 2, "a hand-built answer decodes");
+	var tails = [
+		("invalid flags", DataWriter.new().putb(2).put_sleb32(0)),
+		("negative count", DataWriter.new().putb(0).put_sleb32(-1)),
+		("count past the bytes", DataWriter.new().putb(0).put_sleb32(2).put_sleb32(field + 1).put_sleb32(0).put_sleb32(0)),
+		("index out of range", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(declarations + 1).put_sleb32(0).put_sleb32(0)),
+		("negative index", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(-1).put_sleb32(0).put_sleb32(0)),
+		("invalid kind tag", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(0).putb(byte.view(AnalysisDeclKind.count)).put_sleb32(0).put_sleb32(0).put_sleb32(0)),
+		("not a member's kind", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(0).putb(byte.view(AnalysisDeclKind.LOCAL.tag)).put_sleb32(0).put_sleb32(0).put_sleb32(0)),
+		("invalid name index", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(0).putb(byte.view(AnalysisDeclKind.FIELD.tag)).put_sleb32(-1).put_sleb32(0).put_sleb32(0)),
+		("invalid detail index", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(field + 1).put_sleb32(-1).put_sleb32(0)),
+		("negative level", DataWriter.new().putb(0).put_sleb32(1).put_sleb32(field + 1).put_sleb32(0).put_sleb32(-1)),
+		("trailing byte", DataWriter.new().putb(0).put_sleb32(0).putb(0))
+	];
+	for (c in tails) t.assert(decodeMembers(withMemberTail(empty, c.1), AnalysisScopeKinds.MEMBERS) == null, c.0);
+	// Answers that the encoder writes as given, and the decoder rejects.
+	var d = analysis.membersAt("s.v3", afterDot(1), "").declarations[0];
+	var answers = [
+		("repeated declaration", AnalysisMemberAnswer.new([d, d], [d.name, d.name], [d.kind, d.kind], [null, null], [0, 0], false)),
+		("repeated name", AnalysisMemberAnswer.new([d, null], [d.name, d.name], [d.kind, AnalysisDeclKind.FIELD], [null, null], [0, 0], false)),
+		("decreasing level", AnalysisMemberAnswer.new([d, null], [d.name, "y"], [d.kind, AnalysisDeclKind.FIELD], [null, null], [1, 0], false)),
+		("empty name", AnalysisMemberAnswer.new([null], [""], [AnalysisDeclKind.FIELD], [null], [0], false)),
+		("a local", AnalysisMemberAnswer.new([null], ["y"], [AnalysisDeclKind.LOCAL], [null], [0], false))
+	];
+	for (c in answers) t.assert(decodeMembers(memberResult(analysis, c.1, true), AnalysisScopeKinds.MEMBERS) == null, c.0);
+	// More than the cap, even of valid builtin members.
+	var many = Array<string>.new(AnalysisScopeOrder.MAX_DECLARATIONS + 1);
+	for (i < many.length) many[i] = Strings.format1("m%d", i);
+	var over = AnalysisMemberAnswer.new(Array<AnalysisDeclaration>.new(many.length), many,
+		Array<AnalysisDeclKind>.new(many.length), Array<string>.new(many.length), Array<int>.new(many.length), false);
+	for (i < many.length) over.kinds[i] = AnalysisDeclKind.FIELD;
+	t.assert(decodeMembers(memberResult(analysis, over, true), AnalysisScopeKinds.MEMBERS) == null, "over the cap");
+	// An answer that the request did not ask for, or of the other kind, or
+	// without occurrences.
+	t.assert(decodeMembers(empty, 0) == null, "unrequested member answer");
+	t.assert(decodeMembers(empty, AnalysisScopeKinds.VALUES) == null, "member answer to a scope query");
+	var scope = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42,
+		[("s.v3", analysis.occurrences("s.v3"))], AnalysisScopeAnswer.new([], [], -1, false), null), 1L));
+	t.assert(decodeMembers(scope, AnalysisScopeKinds.MEMBERS) == null, "scope answer to a member query");
+	var flagged = memberResult(analysis, null, false);
+	flagged[21] |= 16;
+	t.assert(decodeMembers(flagged, AnalysisScopeKinds.MEMBERS) == null, "member answer without occurrences");
+}
+// A member answer is charged 64 bytes for its count and 32 for each
+// candidate; its names and details are strings of the table.
+def test_member_allocation(t: Tester) {
+	var analysis = AeneasAdapter.analyzeForScope(memberSources(), [], false);
+	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	var plain = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
+	var base = decodeMembers(plain, 0).snapshot.resultAllocation;
+	t.assertl(base, decodeMembers(plain, AnalysisScopeKinds.MEMBERS).snapshot.resultAllocation);
+	var empty = memberResult(analysis, AnalysisMemberAnswer.new([], [], [], [], [], false), true);
+	t.assertl(base + 64, decodeMembers(empty, AnalysisScopeKinds.MEMBERS).snapshot.resultAllocation);
+	var members = analysis.membersAt("s.v3", afterDot(1), "");
+	var two = decodeMembers(memberResult(analysis, members, true), AnalysisScopeKinds.MEMBERS).snapshot;
+	t.assertl(base + 64 + 2 * 32, two.resultAllocation);
+	t.assertl(two.resultAllocation - base, two.retainedBytes - decodeMembers(plain, 0).snapshot.retainedBytes);
+	// A builtin's name and detail join the string table: 64 plus their
+	// bytes, and an 8-byte slot, each.
+	var builtin = analysis.membersAt("s.v3", afterDot(2), "");
+	var one = decodeMembers(memberResult(analysis, builtin, true), AnalysisScopeKinds.MEMBERS).snapshot;
+	t.assertl(base + 64 + 32 + 2 * (64 + 8) + "length".length + "def length: int".length, one.resultAllocation);
 }

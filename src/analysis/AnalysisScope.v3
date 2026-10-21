@@ -17,12 +17,22 @@ component AnalysisScopeKinds {
 	// The type argument of Ref<...> or ref<...>: layouts.
 	def LAYOUTS = 8;
 	def ALL = VALUES | TYPES | PATTERN | LAYOUTS;
+	// A name after ".": the members of the receiver's type, rather than a
+	// scope (AnalysisScopeFinder.findMembers). A query asks for it alone.
+	def MEMBERS = 16;
+
+	// Whether a query may ask for {kinds}: a nonempty set of scope kinds, or
+	// MEMBERS alone.
+	def valid(kinds: int) -> bool {
+		return kinds == MEMBERS || (kinds > 0 && (kinds & ~ALL) == 0);
+	}
 }
 
 // A scope query, sent with an ANALYZE request (AnalysisWire.WANT_SCOPE): the
 // names visible in the request's source {file} at byte {offset} of the kinds
-// {kinds}. {prefix}, at most MAX_PREFIX bytes, selects candidates only when
-// there are more than AnalysisScopeOrder.MAX_DECLARATIONS.
+// {kinds}, or, for MEMBERS, the members of the receiver before it. {prefix},
+// at most MAX_PREFIX bytes, selects candidates only when there are more than
+// AnalysisScopeOrder.MAX_DECLARATIONS.
 class AnalysisScopeRequest(file: int, offset: int, kinds: int, prefix: string) { }
 
 // The worker's answer to a scope query: the visible declarations, each with

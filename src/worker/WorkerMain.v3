@@ -80,13 +80,14 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			// no files.
 			files = [];
 		}
-		// Only a completion asks for the scope at its cursor; see
-		// docs/architecture.md#completion.
+		// Only a completion asks for the scope or the members at its cursor;
+		// see docs/architecture.md#completion.
 		var scope = if(files != null, request.scopeAnswer(analysis));
+		var members = if(files != null, request.memberAnswer(analysis));
 		HostOs.setAlarm(0);
 		var globalTypes = if(stats, AeneasAdapter.globalTypeCount(), -1);
-		return AnalysisWire.encodeResultWithScope(request.id, analyses, AeneasAdapter.uidCounter(),
-			analysis, collectUs, globalTypes, files, scope);
+		return AnalysisWire.encodeResultWithQuery(request.id, analyses, AeneasAdapter.uidCounter(),
+			analysis, collectUs, globalTypes, files, scope, members);
 	}
 	// Reads the next request payload. Returns null at the end of the input,
 	// on a read error, or if the frame was invalid.

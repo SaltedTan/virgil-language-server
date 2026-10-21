@@ -93,6 +93,9 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// The offset of the "." before the prefix, with only whitespace and
 	// comments between, or -1.
 	def var dot = -1;
+	// The token before that "." is a number literal, as when "1." begins
+	// "1.5" (see LspCompletionRepair.kinds).
+	def var dotAfterNumber: bool;
 	def var previousName = -1;
 	// The LspCursorSyntax flags of the position; 0 outside CODE.
 	def var syntax: int;
@@ -167,6 +170,8 @@ class LspCursorScanner(text: Array<byte>) {
 	private var prevKeyword: LspKeyword;
 	private var prevStart: int;
 	private var prevAfterDot: bool;
+	// The token before the previous one, a ".", is a number literal.
+	private var prevDotAfterNumber: bool;
 	private var prevClosed: LspOpenRole;	// what a ")", "]", or "}" closed
 	private var newline: bool;		// a line ends after the token
 	private var prevIfStatement: bool;	// the "if" before is a statement's
@@ -202,7 +207,10 @@ class LspCursorScanner(text: Array<byte>) {
 		var ctx = LspCursorContext.new(text, cursor);
 		ctx.place = scanTo(ctx, cursor);
 		if (ctx.place == LspCursorPlace.CODE) {
-			if (prevKind == LspCursorToken.PUNCT && prevByte == '.') ctx.dot = prevStart;
+			if (prevKind == LspCursorToken.PUNCT && prevByte == '.') {
+				ctx.dot = prevStart;
+				ctx.dotAfterNumber = prevDotAfterNumber;
+			}
 			if (prevKind == LspCursorToken.NAME && !prevAfterDot) ctx.previousName = prevStart;
 			ctx.syntax = position();
 		}
@@ -544,6 +552,7 @@ class LspCursorScanner(text: Array<byte>) {
 		if (c == '=' && prevKind == LspCursorToken.PUNCT && prevByte == ']' && prevClosed == LspOpenRole.INDEX_PARAMS) {
 			header = HEADER_PARAMETER;
 		}
+		prevDotAfterNumber = c == '.' && prevKind == LspCursorToken.LITERAL && isDecimal(text[prevStart]);
 		setPrev(LspCursorToken.PUNCT, start);
 		prevByte = c;
 		prevClosed = closed;

@@ -66,6 +66,10 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// reads (see range), which grows in proportion to the code that contains
 	// the offset and its siblings; AnalysisScope:deep_nesting checks it.
 	private var steps: int;
+	// For a member query (findMembers), the member expression whose "." the
+	// offset follows, once the walk has found it; the walk then stops.
+	private var memberQuery: bool;
+	private var memberExpr: VarExpr;
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
@@ -117,6 +121,23 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			prog.layouts.apply(fun (name: string, decl: VstLayout) => add(valueNames, make(AnalysisDeclKind.LAYOUT, decl), l, true));
 		}
 		return answer(thisLevel, prefix, values, types);
+	}
+	// The members of the receiver of the member expression whose "." comes
+	// before {offset}, with only space, comments, and the start of its name
+	// between, as AnalysisMemberLookup finds them; see AnalysisScopeOrder for
+	// the order and the cap, which {prefix} applies. The walk to the offset
+	// is a scope query's, which reads each expression of the statement that
+	// holds it until it meets the member expression. Null if verification
+	// did not reach the offset (see reached), or if no member expression is
+	// there, as in a type's name.
+	def findMembers(offset: int, prefix: string) -> AnalysisMemberAnswer {
+		this.offset = offset;
+		memberQuery = true;
+		locate();
+		if (!reached() || memberExpr == null) return null;
+		var answer = AnalysisMemberLookup.new(display, file.fileName, prog.layouts).find(memberExpr, prefix);
+		answer.steps += steps;
+		return answer;
 	}
 	// Whether verification reached the offset. Verifier.verify type-checks
 	// compound after compound, and stops between two (Verifier.forAll) once
@@ -434,11 +455,12 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// Each statement and expression that the walk enters is a step.
 	private def walk(e: Expr) {
-		if (e == null) return;
+		if (e == null || memberExpr != null) return;
 		steps++;
 		e.accept(this, ());
 	}
 	private def walkStmt(s: Stmt) {
+		if (memberExpr != null) return;
 		steps++;
 		s.accept(this, ());
 	}
@@ -571,7 +593,18 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitArray(e: ArrayExpr, env: void) {
 		exprs(e.exprs);
 	}
+	// A member query's expression is the member expression whose "." is
+	// before the offset and whose name starts at or after it (VarExpr.dot);
+	// what follows a "." is one member's name, so no other has the offset
+	// between the two.
 	def visitVar(e: VarExpr, env: void) {
+		if (memberQuery && e.expr != null) {
+			var dot = point(e.dot);
+			if (dot >= 0 && dot < offset && offset <= tokenBegin(e.ident.name)) {
+				memberExpr = e;
+				return;
+			}
+		}
 		walk(e.expr);
 	}
 	def visitLiteral(e: Literal, env: void) { }

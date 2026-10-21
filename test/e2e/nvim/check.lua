@@ -314,6 +314,36 @@ local function check()
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
     "the buffer was not restored")
 
+  -- After ".", the members of the receiver's type alone, from an analysis of
+  -- the project with the unsaved text, repaired after the ".": the parameter
+  -- "a" is a string, whose one member is its length. Neovim applies the
+  -- item's edit, which inserts after the ".", and one undo restores the line.
+  vim.api.nvim_buf_set_lines(words_buf, 7, 7, true, { "\t\ta." })
+  typed = vim.api.nvim_buf_get_lines(words_buf, 0, -1, true)
+  vim.o.undolevels = vim.o.undolevels
+  response, err = client:request_sync("textDocument/completion", {
+    textDocument = { uri = words_uri }, position = { line = 7, character = 4 },
+    context = { triggerKind = 2, triggerCharacter = "." },
+  }, 20000, words_buf)
+  assert(response and not response.err, "completion failed: " .. vim.inspect(err or response.err))
+  list = response.result
+  item = list and list.items[1]
+  assert(list and #list.items == 1 and list.isIncomplete == false and item.label == "length"
+    and item.kind == vim.lsp.protocol.CompletionItemKind.Field and item.detail == "def length: int"
+    and item.sortText == "0000" and vim.deep_equal(item.textEdit, {
+      newText = "length", range = { start = { line = 7, character = 4 }, ["end"] = { line = 7, character = 4 } },
+    }), "unexpected member completion: " .. vim.inspect(list))
+  vim.lsp.util.apply_text_edits({ item.textEdit }, words_buf, client.offset_encoding)
+  assert(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)[1] == "\t\ta.length",
+    "the member completion was not applied: " .. vim.inspect(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)))
+  vim.o.undolevels = vim.o.undolevels
+  vim.cmd("silent undo")
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), typed),
+    "undo did not restore the typed receiver")
+  vim.api.nvim_buf_set_lines(words_buf, 7, 8, true, {})
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(words_buf, 0, -1, true), original),
+    "the buffer was not restored")
+
   -- Other JSON files stay with the editor. Project file buffers go to the same
   -- client, so its configuration diagnostics follow unsaved edits. The client
   -- attaches to the project file after the other JSON buffer has been handled.
@@ -340,7 +370,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, rename and undo, keyword and declaration completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()
