@@ -1,0 +1,159 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The project file's maps (issue #158), at project names and member keys that
+// are strings of 13 "Aa" or "BB" blocks: they all hash alike under
+// Strings.newMap, which would keep them in one bucket. Each test checks the
+// diagnostics or the model, that the validator holds the names or keys in
+// OrderedStringMaps, and that the comparisons those make grow as n log n
+// from n names or keys to 2n.
+def T = UnitTests.register;
+def X = [
+	T("ProjectConfigMaps:project_names", test_project_names),
+	T("ProjectConfigMaps:project_keys", test_project_keys),
+	T("ProjectConfigMaps:file_keys", test_file_keys),
+	()
+];
+// {count} blocks of "Aa" or "BB", as bit k of {index} selects for block k.
+def blocks(count: int, index: int) -> string {
+	var b = StringBuilder.new();
+	for (k < count) b.puts(if((index >> byte.view(k)) % 2 == 1, "BB", "Aa"));
+	return b.extract();
+}
+// {n} names that all hash alike.
+def colliding(n: int) -> Array<string> {
+	var names = Array<string>.new(n);
+	for (i < n) names[i] = blocks(13, i);
+	return names;
+}
+// The keys that ordered maps compare and the entries they add while {f}
+// runs on {n} names.
+def cost(f: int -> void, n: int) -> (long, long) {
+	var compares = OrderedStringMaps.compares, added = OrderedStringMaps.added;
+	f(n);
+	return (OrderedStringMaps.compares - compares, OrderedStringMaps.added - added);
+}
+// Fails unless {f} adds at least {entries} times the names to ordered maps,
+// which it does only if each map it exercises holds them in one, and
+// compares at most about twice as many keys at 2n names as at n: a tree
+// descends about one level more for twice the keys, so each of at most
+// {operations} operations per name may add two comparisons. A map that keeps
+// the names in one bucket would compare four times as many.
+def scales(t: Tester, label: string, n: int, entries: int, operations: int, f: int -> void) {
+	var small = cost(f, n), large = cost(f, 2 * n);
+	added(t, label, n, entries, small.1);
+	added(t, label, 2 * n, entries, large.1);
+	if (small.0 <= 0 || large.0 > 2 * small.0 + 2L * operations * 2 * n) {
+		t.fail3("%s compared %d keys at %d, ", label, large.0, 2 * n);
+		t.fail2("against %d at %d", small.0, n);
+	}
+}
+def added(t: Tester, label: string, n: int, entries: int, got: long) {
+	if (got < long.view(entries) * n) t.fail3("%s added %d entries to ordered maps at %d", label, got, n);
+}
+// A project file whose projects are named {names}, each with sources
+// [{source}].
+def projectsFile(names: Array<string>, source: string) -> string {
+	var b = StringBuilder.new().puts("{\"version\": 1, \"projects\": [");
+	for (i < names.length) {
+		if (i > 0) b.puts(", ");
+		b.puts("{\"name\": \"").puts(names[i]).puts("\", \"sources\": [\"").puts(source).puts("\"]}");
+	}
+	return b.puts("]}").extract();
+}
+// {list} with each element twice in a row.
+def twice(list: Array<string>) -> Array<string> {
+	var r = Array<string>.new(2 * list.length);
+	for (i < r.length) r[i] = list[i / 2];
+	return r;
+}
+// The diagnostics that a project file should have, as codes and messages,
+// of which the parser reports the first MAX_DIAGNOSTICS.
+class ExpectedProblems {
+	def codes = Vector<ProjectConfigCode>.new();
+	def messages = Vector<string>.new();
+	def put(code: ProjectConfigCode, message: string) -> this {
+		codes.put(code);
+		messages.put(message);
+	}
+	def check(t: Tester, label: string, text: string) {
+		var r = ProjectConfigParser.parse(text);
+		if (r.config != null) return t.fail1("%s has a model", label);
+		var n = if(codes.length < ProjectConfigParser.MAX_DIAGNOSTICS, codes.length, ProjectConfigParser.MAX_DIAGNOSTICS);
+		if (r.diagnostics.length != n) return t.fail3("%s has %d diagnostics, not %d", label, r.diagnostics.length, n);
+		for (i < n) {
+			var d = r.diagnostics[i];
+			if (d.code == codes[i] && Strings.equal(d.message, messages[i])) continue;
+			return t.fail3("%s's diagnostic %d is %s", label, i, d.message);
+		}
+	}
+}
+def invalidSource() -> string {
+	return ProjectPatterns.check("a", true);
+}
+def duplicateField(key: string) -> string {
+	return Strings.format1("'%s' appears more than once in this object", key);
+}
+
+def test_project_names(t: Tester) {
+	scales(t, "project names", 512, 11, 4, projectNames(t, _));
+}
+// Parses {n} projects with distinct names, then the same with one name
+// repeated last, then with each name twice and an invalid source in each.
+def projectNames(t: Tester, n: int) {
+	var names = colliding(n);
+	var r = ProjectConfigParser.parse(projectsFile(names, "a.v3"));
+	if (r.config == null || r.config.projects.length != n) return t.fail1("%d distinct names are not a model", n);
+	for (i < n) {
+		var p = r.config.projects[i];
+		if (Strings.equal(p.name, names[i]) && p.sources.length == 1 && Strings.equal(p.sources[0].text, "a.v3")) continue;
+		return t.fail1("project %d is wrong", i);
+	}
+	var repeated = Arrays.append(names[n / 2], names);
+	ExpectedProblems.new()
+		.put(ProjectConfigCode.DUPLICATE_PROJECT_NAME, Strings.format1("another project is already named '%s'", names[n / 2]))
+		.check(t, "a repeated last name", projectsFile(repeated, "a.v3"));
+	var expected = ExpectedProblems.new();
+	for (i < n) {
+		expected.put(ProjectConfigCode.INVALID_PATTERN, invalidSource());
+		expected.put(ProjectConfigCode.DUPLICATE_PROJECT_NAME, Strings.format1("another project is already named '%s'", names[i]));
+		expected.put(ProjectConfigCode.INVALID_PATTERN, invalidSource());
+	}
+	expected.check(t, "names given twice", projectsFile(twice(names), "a"));
+}
+
+def test_project_keys(t: Tester) {
+	scales(t, "a project's keys", 1024, 1, 2, projectKeys(t, _));
+}
+// Parses one project object with an invalid source and {n} unknown keys, each
+// twice.
+def projectKeys(t: Tester, n: int) {
+	var keys = twice(colliding(n));
+	var b = StringBuilder.new().puts("{\"version\": 1, \"projects\": [{\"name\": \"p\", \"sources\": [\"a\"]");
+	for (k in keys) b.puts(", \"").puts(k).puts("\": 0");
+	var expected = ExpectedProblems.new().put(ProjectConfigCode.INVALID_PATTERN, invalidSource());
+	for (i = 0; i < keys.length; i += 2) {
+		expected.put(ProjectConfigCode.UNKNOWN_FIELD, Strings.format2("unknown field '%s' in a project; the fields are %s",
+			keys[i], "name, sources, dependencies, virgilDependencies, exclude, compilerArgs, target"));
+		expected.put(ProjectConfigCode.DUPLICATE_FIELD, duplicateField(keys[i]));
+	}
+	expected.check(t, "a project's keys given twice", b.puts("}]}").extract());
+}
+
+def test_file_keys(t: Tester) {
+	scales(t, "the file's keys", 1024, 1, 2, fileKeys(t, _));
+}
+// Parses a project file with a project with an invalid source, and {n}
+// unknown keys, each twice.
+def fileKeys(t: Tester, n: int) {
+	var keys = twice(colliding(n));
+	var b = StringBuilder.new().puts("{\"version\": 1, \"projects\": [{\"name\": \"p\", \"sources\": [\"a\"]}]");
+	for (k in keys) b.puts(", \"").puts(k).puts("\": 0");
+	var expected = ExpectedProblems.new().put(ProjectConfigCode.INVALID_PATTERN, invalidSource());
+	for (i = 0; i < keys.length; i += 2) {
+		expected.put(ProjectConfigCode.UNKNOWN_FIELD,
+			Strings.format1("unknown field '%s' in the project file; the fields are version, projects", keys[i]));
+		expected.put(ProjectConfigCode.DUPLICATE_FIELD, duplicateField(keys[i]));
+	}
+	expected.check(t, "the file's keys given twice", b.puts("}").extract());
+}
