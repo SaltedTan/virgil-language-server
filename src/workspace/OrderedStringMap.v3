@@ -1,0 +1,225 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Counts of the work of every OrderedStringMap, which tests use to bound the
+// work of maps that their owners keep private.
+component OrderedStringMaps {
+	// The keys compared.
+	var compares: long;
+	// The entries added.
+	var added: long;
+}
+
+class OrderedStringEntry<V>(var key: string, var value: V) {
+	var level = 1;
+	var left: OrderedStringEntry<V>;
+	var right: OrderedStringEntry<V>;
+}
+// A map from strings in byte order, as ProjectFiles.before orders them, for
+// keys such as paths and URIs that a workspace or client chooses. It is the
+// AA tree of OrderedStringSet with a value at each key and removal, and
+// skips the prefixes that a search knows its key shares in the same way, so
+// each operation compares at most about 2 log2(n) keys, whatever the keys
+// are; Strings.newMap would compare all n when their hashes collide. A
+// lookup or update first tries the entry last found or added, if it has the
+// very same key object, as HashMap's cache does. A null key, which a worker
+// request can name a source with, comes before every string.
+//
+// Paths in one map usually share a directory, which the search would compare
+// again at each key until it has passed keys on both sides. The map also
+// keeps a lower bound on the bytes that all its keys share: once a search has
+// compared its key with the root, it shares at least the lesser of that bound
+// and their shared bytes with every key, and skips them.
+class OrderedStringMap<V> {
+	private var root: OrderedStringEntry<V>;
+	private var last: OrderedStringEntry<V>;
+	var length: int;
+	// At most the bytes that all keys share, while there are keys.
+	private var shared: int;
+	// During an operation, -1 until it has compared its key with the root,
+	// and then the bytes that its key shares with every key at least.
+	private var floor: int;
+	// Whether insert() replaces the value of a key that is present.
+	private var replace: bool;
+	// The result of the last compare(): the bytes {key} and the visited key
+	// share, and their order.
+	private var common: int;
+	private var order: int;
+	// The entry that the last removeMin() unlinked.
+	private var unlinked: OrderedStringEntry<V>;
+
+	// The value of {key}, or the default value of V if it has none.
+	def [key: string] -> V {
+		var e = find(key);
+		if (e != null) return e.value;
+		var none: V;
+		return none;
+	}
+	def [key: string] = value: V {
+		var e = last;
+		if (e != null && e.key == key) {
+			e.value = value;
+			return;
+		}
+		floor = -1;
+		replace = true;
+		root = insert(root, key, value, 0, 0);
+	}
+	// Adds {key} with {value} if it has no value, and returns whether it did.
+	def add(key: string, value: V) -> bool {
+		var e = last;
+		if (e != null && e.key == key) return false;
+		var before = length;
+		floor = -1;
+		replace = false;
+		root = insert(root, key, value, 0, 0);
+		return length > before;
+	}
+	def has(key: string) -> bool {
+		return find(key) != null;
+	}
+	// Removes {key}, and returns whether it was present.
+	def remove(key: string) -> bool {
+		var before = length;
+		last = null;
+		floor = -1;
+		root = delete(root, key, 0, 0);
+		return length < before;
+	}
+	// Applies {func} to each key and its value, in byte order of the keys.
+	// {func} must not change the map.
+	def apply(func: (string, V) -> void) {
+		visit(root, func);
+	}
+	private def visit(e: OrderedStringEntry<V>, func: (string, V) -> void) {
+		while (e != null) {
+			visit(e.left, func);
+			func(e.key, e.value);
+			e = e.right;
+		}
+	}
+	private def find(key: string) -> OrderedStringEntry<V> {
+		var e = last;
+		if (e != null && e.key == key) return e;
+		var below = 0, above = 0;
+		floor = -1;
+		for (e = root; e != null; ) {
+			compareAt(key, e.key, below, above);
+			if (order == 0) return last = e;
+			if (order < 0) {
+				above = common;
+				e = e.left;
+			} else {
+				below = common;
+				e = e.right;
+			}
+		}
+		return null;
+	}
+	// {below} and {above} are the bytes that {key} shares with the nearest
+	// keys passed on the way to {e} that are less and greater than it.
+	private def insert(e: OrderedStringEntry<V>, key: string, value: V, below: int, above: int) -> OrderedStringEntry<V> {
+		if (e == null) {
+			// The root's compare found what the new key shares with all keys.
+			shared = if(length > 0, floor, if(key != null, key.length));
+			length++;
+			OrderedStringMaps.added++;
+			return last = OrderedStringEntry.new(key, value);
+		}
+		compareAt(key, e.key, below, above);
+		if (order == 0) {
+			if (replace) e.value = value;
+			last = e;
+			return e;
+		}
+		if (order < 0) e.left = insert(e.left, key, value, below, common);
+		else e.right = insert(e.right, key, value, common, above);
+		return split(skew(e));
+	}
+	private def delete(e: OrderedStringEntry<V>, key: string, below: int, above: int) -> OrderedStringEntry<V> {
+		if (e == null) return null;
+		compareAt(key, e.key, below, above);
+		if (order < 0) {
+			e.left = delete(e.left, key, below, common);
+		} else if (order > 0) {
+			e.right = delete(e.right, key, common, above);
+		} else {
+			length--;
+			// Without a left child, {e} is on level 1, and so is its right
+			// child if it has one, which has no children.
+			if (e.left == null) return e.right;
+			// Otherwise {e} has both children: its successor takes its place.
+			e.right = removeMin(e.right);
+			e.key = unlinked.key;
+			e.value = unlinked.value;
+			unlinked = null;
+		}
+		return rebalance(e);
+	}
+	// Unlinks the least entry below {e} into {unlinked}.
+	private def removeMin(e: OrderedStringEntry<V>) -> OrderedStringEntry<V> {
+		if (e.left == null) {
+			unlinked = e;
+			return e.right;
+		}
+		e.left = removeMin(e.left);
+		return rebalance(e);
+	}
+	// Restores the levels above a removal, then the AA tree's shape.
+	private def rebalance(e: OrderedStringEntry<V>) -> OrderedStringEntry<V> {
+		var l = if(e.left != null, e.left.level), r = if(e.right != null, e.right.level);
+		var should = 1 + if(l < r, l, r);
+		if (should < e.level) {
+			e.level = should;
+			if (e.right != null && should < e.right.level) e.right.level = should;
+		}
+		e = skew(e);
+		if (e.right != null) {
+			e.right = skew(e.right);
+			if (e.right.right != null) e.right.right = skew(e.right.right);
+		}
+		e = split(e);
+		if (e.right != null) e.right = split(e.right);
+		return e;
+	}
+	// Rotates right when {e}'s left child is on its level.
+	private def skew(e: OrderedStringEntry<V>) -> OrderedStringEntry<V> {
+		var l = e.left;
+		if (l == null || l.level != e.level) return e;
+		e.left = l.right;
+		l.right = e;
+		return l;
+	}
+	// Rotates left and raises the new parent when {e} has two right children
+	// on its level.
+	private def split(e: OrderedStringEntry<V>) -> OrderedStringEntry<V> {
+		var r = e.right;
+		if (r == null || r.right == null || r.right.level != e.level) return e;
+		e.right = r.left;
+		r.left = e;
+		r.level++;
+		return r;
+	}
+	// Compares {key} with {b}, given the bytes {key} shares with the nearest
+	// keys passed that are less and greater than it.
+	private def compareAt(key: string, b: string, below: int, above: int) {
+		var skip = if(below < above, below, above);
+		if (skip < floor) skip = floor;
+		compare(key, b, skip);
+		if (floor < 0) floor = if(common < shared, common, shared);
+	}
+	// Compares {a} with {b}, whose first {skip} bytes are known to be equal.
+	private def compare(a: string, b: string, skip: int) {
+		OrderedStringMaps.compares++;
+		if (a == null || b == null) {
+			common = 0;
+			order = if(a != null, 1, if(b != null, -1, 0));
+			return;
+		}
+		var n = if(a.length < b.length, a.length, b.length), i = skip;
+		while (i < n && a[i] == b[i]) i++;
+		common = i;
+		if (i < n) order = if(a[i] < b[i], -1, 1);
+		else order = a.length - b.length;
+	}
+}
