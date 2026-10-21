@@ -1,6 +1,6 @@
 # 0006. Semantic context for completion in incomplete code
 
-- Status: Proposed. The maintainer decides after reading the results below; until then, this record holds a recommendation, not a decision.
+- Status: Accepted (2026-10-21). The maintainer accepted the recommendation after reading the results below.
 - Date: 2026-10-21
 - Discussion: [#128](https://github.com/SaltedTan/virgil-language-server/issues/128), for [#129](https://github.com/SaltedTan/virgil-language-server/issues/129) and [#130](https://github.com/SaltedTan/virgil-language-server/issues/130)
 
@@ -88,4 +88,10 @@ Use the narrow repair for M5's semantic completion, with the repair chosen from 
 
 ## Consequences
 
-To be written when the maintainer decides. If the recommendation is accepted: #129 and #130 add worker queries for the scope and the members at the sentinel, a completion job that takes turns with automatic analyses as rename's preflight does, and replacement of superseded requests; keyword completion is unchanged; and the M6 item "Optional Aeneas `EDITOR` parser mode" stays where it is.
+The maintainer accepted the recommendation on 2026-10-21: M5's semantic completion uses the narrow repair, chosen from the cursor context rather than tried as a ladder, and error-tolerant parsing stays in M6.
+
+- #129 and #130 add worker queries for the scope and the members at the sentinel, which the snapshot doesn't hold today, and a completion job that takes turns with automatic analyses, as rename's preflight does. A newer request replaces an older one, and a result is reused for the same document version.
+- Completion still offers nothing semantic when a syntax error is away from the cursor, or when verification stops before it reaches the sentinel; [Known limitations](../known-limitations.md) says so once #129 lands.
+- Keyword completion is unchanged, and the development `repair` command stays to measure repairs as the scanner changes.
+- The M6 item "Optional Aeneas `EDITOR` parser mode" stays in M6, as does any fallback to the last snapshot that parsed; counting how often a context keeps failing to parse would inform that decision.
+- Signature help doesn't use the repair yet, so an incomplete call still gets no signature.
