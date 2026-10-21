@@ -191,6 +191,28 @@ def test_numbers(t: Tester) {
 	checkPlace(t, "var x = f(_$", LspCursorPlace.NUMBER);
 	checkPlace(t, "var x = 12 $", LspCursorPlace.CODE);
 	t.assert_string("", at("var x = 0x1f$").prefix());
+	// Every number form that NumberParser accepts is one literal, with a
+	// signed exponent included.
+	for (form in ["1e+3", "1e-3", "1E+3", "0e+3", "1.5e+3", "1.5E-3", "1.e+3",
+			"0x1F", "0X1f_FF", "0x1Fu8", "0x1Fl", "0b1010", "0B1_010", "0b101u8",
+			"1u", "1U", "1l", "1L", "1u8", "1i8", "1ul", "1f", "1F", "1d", "1D",
+			"1.5f", "1.5d", "1_000", "1_000_000u32"]) {
+		checkPlace(t, Strings.format1("var x = %s$", form), LspCursorPlace.NUMBER);
+	}
+	// A "." that begins no fraction stays outside the number, so a member
+	// completion after it knows that it follows a number.
+	var ctx = at("var x = 1.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+	ctx = at("var x = 0x1F.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+	ctx = at("var t = (1, 2); var x = t.0.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+	ctx = at("var x = 1e+3.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
 }
 
 def test_member_after_dot(t: Tester) {
@@ -610,6 +632,16 @@ def test_lambda_hints(t: Tester) {
 		"def f() { g(fun () #packing 0x0F ;, $); }",
 		"def f() { g(fun () #packing 0.5 ;, $); }",
 		"def f() { g(fun () #packing 1u8 ;, $); }",
+		// Number forms, including signed exponents, whose sign must stay in
+		// the literal rather than cancel the lambda's header.
+		"def f() { g(fun () #packing 1e+3 ;, $); }",
+		"def f() { g(fun () #packing 1e-3 ;, $); }",
+		"def f() { g(fun () #packing 1.5e+3 ;, $); }",
+		"def f() { g(fun () #packing 1.e+3 ;, $); }",
+		"def f() { g(fun () #packing 0b1010 ;, $); }",
+		"def f() { g(fun () #packing 1_000 ;, $); }",
+		"def f() { g(fun () #packing 1.5d ;, $); }",
+		"def f() { g(fun () #packing 0X1f_FF ;, $); }",
 		"def f() { g(fun () #packing 0b1?x ;, $); }",
 		"def f() { g(fun () #packing 0b??_01xy ;, $); }",
 		"def f() { g(fun () #packing #concat(a, 0b01) ;, $); }",

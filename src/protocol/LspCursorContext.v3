@@ -279,9 +279,15 @@ class LspCursorScanner(text: Array<byte>) {
 				if (kw.0) keyword(kw.1, i);
 				else name(i);
 				i = j;
-			} else if (isDecimal(c) || c == '_') {
+			} else if (c == '_') {
+				// A placeholder, read as an identifier's middle bytes are.
 				var j = i + 1;
 				while (j < n && (isIdentMiddle(text[j]) || (text[j] == '.' && j + 1 < n && isDecimal(text[j + 1])))) j++;
+				if (end <= j) return LspCursorPlace.NUMBER;
+				token(LspCursorToken.LITERAL, i);
+				i = j;
+			} else if (isDecimal(c)) {
+				var j = numberEnd(i);
 				if (end <= j) return LspCursorPlace.NUMBER;
 				token(LspCursorToken.LITERAL, i);
 				i = j;
@@ -329,6 +335,87 @@ class LspCursorScanner(text: Array<byte>) {
 			}
 		}
 		return LspCursorPlace.CODE;
+	}
+	// The end of the number literal at {i}, read as NumberParser reads it:
+	// decimal digits and underscores, a fraction, an exponent whose sign it
+	// carries, hexadecimal or binary digits, and integer or float suffixes.
+	// A "." that begins no fraction stays outside the number, so that the
+	// scanner still recognizes "1.", "0x1F.", and "t.0." as a number and a
+	// "." (LspCompletionRepair.kinds asks for no members after it).
+	private def numberEnd(i: int) -> int {
+		var n = text.length, j = i;
+		if (text[j] == '0' && j + 1 < n) {
+			var c = text[j + 1];
+			if (c == 'x' || c == 'X') {
+				j += 2;
+				while (j < n && (isHex(text[j]) || text[j] == '_')) j++;
+				return intSuffix(j);
+			}
+			if (c == 'b' || c == 'B') {
+				j += 2;
+				while (j < n && (text[j] == '0' || text[j] == '1' || text[j] == '_')) j++;
+				return intSuffix(j);
+			}
+		}
+		while (j < n && (isDecimal(text[j]) || text[j] == '_')) j++;
+		if (j + 1 < n && text[j] == '.' && (isDecimal(text[j + 1]) || text[j + 1] == 'e' || text[j + 1] == 'E')) {
+			j++;
+			while (j < n && (isDecimal(text[j]) || text[j] == '_')) j++;
+			if (j < n && (text[j] == 'e' || text[j] == 'E')) j = exponentEnd(j);
+			return floatSuffix(j);
+		}
+		if (j < n && (text[j] == 'e' || text[j] == 'E')) return floatSuffix(exponentEnd(j));
+		if (j < n) {
+			var c = text[j];
+			if (c == 'f' || c == 'F' || c == 'd' || c == 'D') return j + 1;
+		}
+		return intSuffix(j);
+	}
+	// The end of the exponent at {j}, whose "e" may be followed by a sign and
+	// decimal digits, as NumberParser accepts them.
+	private def exponentEnd(j: int) -> int {
+		var n = text.length;
+		j++;
+		if (j < n && (text[j] == '+' || text[j] == '-')) j++;
+		while (j < n && isDecimal(text[j])) j++;
+		return j;
+	}
+	private def floatSuffix(j: int) -> int {
+		if (j < text.length) {
+			var c = text[j];
+			if (c == 'f' || c == 'F' || c == 'd' || c == 'D') return j + 1;
+		}
+		return j;
+	}
+	// An integer suffix, as NumberParser.acceptUIL reads it: "u" may take a
+	// width or an "l", "i" takes a width, and "l" stands alone.
+	private def intSuffix(j: int) -> int {
+		var n = text.length;
+		if (j >= n) return j;
+		var c = text[j];
+		if (c == 'u') {
+			j++;
+			if (j < n && text[j] >= '1' && text[j] <= '9') {
+				while (j < n && isDecimal(text[j])) j++;
+			} else if (j < n && (text[j] == 'l' || text[j] == 'L')) {
+				j++;
+			}
+			return j;
+		}
+		if (c == 'U') {
+			j++;
+			if (j < n && (text[j] == 'l' || text[j] == 'L')) j++;
+			return j;
+		}
+		if (c == 'i') {
+			j++;
+			if (j < n && text[j] >= '1' && text[j] <= '9') {
+				while (j < n && isDecimal(text[j])) j++;
+			}
+			return j;
+		}
+		if (c == 'l' || c == 'L') return j + 1;
+		return j;
 	}
 	// The end of the byte literal at {i}, read as Chars.parseLiteral reads
 	// it: a quote, one printable byte or an escape, and a closing quote; and
