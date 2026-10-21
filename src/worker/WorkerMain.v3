@@ -14,6 +14,9 @@ component VirgilLspWorker {
 			Log.error2("%s is started by %s and is not run directly", NAME, BuildInfo.NAME);
 			return 2;
 		}
+		// Key the analysis tables' hashes before any table exists.
+		var key = HostOs.randomWords();
+		AnalysisTables.seed(key.0, key.1);
 		return AnalysisWorker.new(AnalysisWire.REQUEST_FD, AnalysisWire.RESULT_FD).run();
 	}
 }

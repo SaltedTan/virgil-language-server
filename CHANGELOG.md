@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Parsing no longer takes time quadratic in the number of nested expression lambdas, or of simple-body methods and `[]` members on one line ([coordinates](docs/architecture.md#coordinates)).
 - Speed up analyses, diagnostics, and requests when a workspace's file names hash alike by using ordered maps for path and URI lookups, with ordinary workspaces as fast as before. See [Maps keyed by path or URI](docs/architecture.md#maps-keyed-by-path-or-uri) for measurements and remaining hash maps.
 - Speed up parsing project files whose project names or member keys hash alike, which took time quadratic in their number, by keeping the names and keys in ordered maps. Diagnostics and accepted configurations are unchanged. See [Project files](docs/architecture.md#project-files-partly-present) for measurements.
+- Speed up completion and analyses when a program's names or file names hash alike, by hashing the analysis worker's display tables with a key that each worker draws as it starts, with ordinary analyses as fast as before. See [Display text](docs/architecture.md#display-text) for the hash and measurements.
 - Correct in-scope completion in variant case headers and lambda bodies ending with prefix `++` or `--` ([scope rules](docs/architecture.md#names)).
 
 ## [0.1.0-alpha.1] - 2026-10-20

@@ -590,9 +590,10 @@ component AnalysisWire {
 		w.put_sleb32(r.beginLine).put_sleb32(r.beginColumn).put_sleb32(r.endLine).put_sleb32(r.endColumn);
 		w.put_sleb32(r.beginOffset).put_sleb32(r.endOffset);
 	}
+	// As the display's declaration keys (AnalysisDeclarationKeys.hash) do.
 	private def hashDeclaration(d: AnalysisDeclaration) -> int {
 		var r = d.range;
-		return Strings.hash(r.path) * 31 + r.beginLine * 1009 + r.beginColumn * 7 + d.kind.tag;
+		return int.view(AnalysisTables.hashPosition(r.path, r.beginLine, r.beginColumn, d.kind.tag));
 	}
 	private def sameDeclaration(a: AnalysisDeclaration, b: AnalysisDeclaration) -> bool {
 		var x = a.range, y = b.range;

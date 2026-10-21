@@ -1,0 +1,269 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The analysis tables' hash (AnalysisTables.hashBytes, issue #155). Names
+// and paths built from "Aa" and "BB" blocks of one length all had one
+// polynomial hash, so each table put them in one probe sequence. Each
+// scaling test checks its result and that the slots probed past a key's
+// first (AnalysisTables.probes) grow about linearly from n keys to 2n, as
+// they would not if the keys collided. The key stays the fixed one that
+// tests start with, apart from the test that changes it.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisTables:siphash_vectors", test_siphash_vectors),
+	T("AnalysisTables:colliding_strings", test_colliding_strings),
+	T("AnalysisTables:colliding_declaration_keys", test_colliding_declaration_keys),
+	T("AnalysisTables:colliding_files", test_colliding_files),
+	T("AnalysisTables:encoder_declarations", test_encoder_declarations),
+	T("AnalysisTables:cold_scope_query", test_cold_scope_query),
+	T("AnalysisTables:seeds", test_seeds),
+	T("AnalysisTables:random_words", test_random_words),
+	()
+];
+// The key that tests run with, bytes 0 to 15, as in SipHash's test vectors.
+def KEY0 = 0x0706050403020100ul;
+def KEY1 = 0x0F0E0D0C0B0A0908ul;
+
+// {count} blocks of "Aa" or "BB", as bit k of {index} selects for block k.
+def blocks(count: int, index: int) -> string {
+	var b = StringBuilder.new();
+	for (k < count) b.puts(if((index >> byte.view(k)) % 2 == 1, "BB", "Aa"));
+	return b.extract();
+}
+// {n} paths whose names all had one polynomial hash.
+def collidingPaths(n: int) -> Array<string> {
+	var paths = Array<string>.new(n);
+	for (i < n) paths[i] = Strings.format1("/tables/%s.v3", blocks(11, i));
+	return paths;
+}
+// Fails unless {f} probes at most about twice as many slots at 2n keys as at
+// n: a table is at most half full, so each operation probes a few slots on
+// average whatever the keys. Keys that collide would probe four times as many.
+def scales(t: Tester, label: string, n: int, f: int -> void) {
+	var small = probes(f, n), large = probes(f, 2 * n);
+	if (small <= 0 || large > 3 * small) {
+		t.fail3("%s probed %d slots at %d keys, ", label, large, 2 * n);
+		t.fail2("against %d at %d", small, n);
+	}
+}
+def probes(f: int -> void, n: int) -> long {
+	var before = AnalysisTables.probes;
+	f(n);
+	return AnalysisTables.probes - before;
+}
+// The bytes 0 to {length} - 1.
+def counting(length: int) -> Array<byte> {
+	var a = Array<byte>.new(length);
+	for (i < length) a[i] = byte.view(i);
+	return a;
+}
+
+// SipHash-1-3 of the bytes 0 to n - 1 with the key 0 to 15, from a reference
+// implementation that reproduces SipHash-2-4's published vectors. The first
+// eight bytes are the prefix word.
+def test_siphash_vectors(t: Tester) {
+	var bytes = counting(64), rest = Arrays.range(bytes, 8, 64);
+	var expected = [(8, 0x369095118d299a8eul), (15, 0xd320d86d2a519956ul), (16, 0xcc4fdd1a7d908b66ul), (64, 0xf17997ec4b4a6065ul)];
+	for (e in expected) {
+		var h = AnalysisTables.hashBytes(rest, e.0 - 8, KEY0);
+		if (h != e.1) t.fail1("hash of %d bytes", e.0);
+	}
+	var name: Array<byte> = "name: int";
+	if (AnalysisTables.hashBytes(name, name.length, KEY0) != 0xa852bcdb2dcc3b3bul) t.fail("hash of a name");
+	// A string's slot hash has no prefix.
+	t.asserti(int.view(0xece30299u), AnalysisTables.hashString(name, name.length));
+}
+
+def test_colliding_strings(t: Tester) {
+	scales(t, "the string table", 1024, internStrings(t, _));
+}
+// Interns {n} colliding names from a builder, then adds and finds each.
+def internStrings(t: Tester, n: int) {
+	var table = AnalysisStringTable.new(), names = Array<string>.new(n), buf = StringBuilder.new();
+	for (i < n) {
+		names[i] = blocks(11, i);
+		buf.puts(names[i]).puts(": int");
+		var s = table.intern(buf);
+		t.asserti(i, table.find(s));
+	}
+	for (i < n) {
+		buf.puts(names[i]).puts(": int");
+		t.asserti(i, table.add(table.intern(buf)));
+		t.asserti(-1, table.find(names[i]));
+	}
+	t.asserti(n, table.length());
+}
+
+def test_colliding_declaration_keys(t: Tester) {
+	scales(t, "the declaration keys", 1024, declarationKeys(t, _));
+}
+// Adds a class in each of {n} colliding files, all at one position, and a
+// field and a parameter at its token, then finds each.
+def declarationKeys(t: Tester, n: int) {
+	var map = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
+	var paths = collidingPaths(n), tokens = Array<Token>.new(n);
+	for (i < n) {
+		tokens[i] = Token.new(paths[i], "C", 1, 7);
+		t.asserti(i, map.add((tokens[i], AnalysisDeclKind.CLASS)));
+	}
+	for (i < n) {
+		t.asserti(n + 2 * i, map.add((tokens[i], AnalysisDeclKind.FIELD)));
+		t.asserti(n + 2 * i + 1, map.add((tokens[i], AnalysisDeclKind.PARAMETER)));
+	}
+	for (i < n) {
+		t.asserti(i, map.find((tokens[i], AnalysisDeclKind.CLASS)));
+		t.asserti(n + 2 * i, map.find((tokens[i], AnalysisDeclKind.FIELD)));
+	}
+	t.asserti(3 * n, map.length());
+}
+
+// #155's item 2: a program of {n} colliding files that each declare a
+// component with a method at one position, and a main file that calls each,
+// so that the display's declaration keys and call keys see them all.
+def collidingProgram(n: int) -> Array<AnalysisSource> {
+	var paths = collidingPaths(n), sources = Array<AnalysisSource>.new(n + 1), main = StringBuilder.new();
+	main.puts("component Main {\n\tdef main() {\n");
+	for (i < n) {
+		sources[i + 1] = AnalysisSource.new(paths[i], Strings.format1("component C%d { def m() { } }\n", i));
+		main.put1("\t\tC%d.m();\n", i);
+	}
+	main.puts("\t}\n}\n");
+	sources[0] = AnalysisSource.new("/tables/main.v3", main.extract());
+	return sources;
+}
+def test_colliding_files(t: Tester) {
+	scales(t, "a program of colliding files", 512, analyzeFiles(t, _));
+}
+def analyzeFiles(t: Tester, n: int) {
+	var sources = collidingProgram(n);
+	var a = AeneasAdapter.analyzeProgram(sources, [], false);
+	t.assertz(true, a.verified);
+	var calls = 0;
+	for (o in a.occurrences(sources[0].path)) {
+		var d = o.declaration;
+		if (d.kind == AnalysisDeclKind.METHOD && Strings.equal("m", d.name)) calls++;
+	}
+	t.asserti(n, calls);
+	for (i < n) {
+		var sites = a.declarationSites(sources[i + 1].path);
+		t.assert(sites.length >= 2, "a component and its method");
+		t.assert_string(Strings.format1("C%d", i), sites[0].name);
+	}
+}
+
+// The encoder's declaration index, which holds every declaration of the
+// colliding files; only encoding is counted.
+def test_encoder_declarations(t: Tester) {
+	var small = encodingProbes(t, 512), large = encodingProbes(t, 1024);
+	if (small <= 0 || large > 3 * small) t.fail2("the encoder probed %d slots, against %d for half the files", large, small);
+}
+def encodingProbes(t: Tester, n: int) -> long {
+	var sources = collidingProgram(n), a = AeneasAdapter.analyzeProgram(sources, [], false);
+	t.assertz(true, a.verified);
+	for (s in sources) a.occurrences(s.path);
+	var before = AnalysisTables.probes;
+	encodeAll(t, a, sources);
+	return AnalysisTables.probes - before;
+}
+// Encodes {a}'s result with every file's occurrences and decodes it.
+def encodeAll(t: Tester, a: ProgramAnalysis, sources: Array<AnalysisSource>) {
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length), paths = Array<string>.new(sources.length);
+	for (i < sources.length) {
+		paths[i] = sources[i].path;
+		files[i] = (paths[i], a.occurrences(paths[i]));
+	}
+	var w = AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, files);
+	var payload = Ranges.dup(AnalysisWire.finishResult(w, 0L)[WorkerFraming.HEADER_BYTES ...]);
+	match (AnalysisWire.decodeResult(payload, 1, paths)) {
+		Decoded(result) => {
+			var s = result.snapshot;
+			for (i < 4) {
+				var sites = s.declarationSites(paths[i + 1]);
+				t.assert(sites.length >= 2, "a component and its method");
+				t.assert_string(Strings.format1("C%d", i), sites[0].name);
+			}
+		}
+		_ => t.fail("result did not decode");
+	}
+}
+
+// #155's item 1: the first scope query in a method of {n} parameters with
+// colliding names, whose signatures all had one hash. A scope answer holds at
+// most 1,000 candidates, so n stays below that.
+def test_cold_scope_query(t: Tester) {
+	scales(t, "a cold scope query", 480, scopeQuery(t, _));
+}
+def scopeQuery(t: Tester, n: int) {
+	var text = StringBuilder.new();
+	text.puts("component C { def m(");
+	for (i < n) {
+		if (i > 0) text.puts(", ");
+		text.puts(blocks(11, i)).puts(": int");
+	}
+	text.puts(") { var x = ");
+	var offset = text.length;
+	text.puts("0; } }\n");
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new("/tables/scope.v3", text.extract())], [], false);
+	t.assertz(true, a.verified);
+	var s = a.scopeAt("/tables/scope.v3", offset, AnalysisScopeKinds.VALUES, "");
+	var params = 0;
+	for (d in s.declarations) {
+		if (d.kind == AnalysisDeclKind.PARAMETER) {
+			params++;
+			t.assert(Strings.endsWith(d.signature, ": int"), "a parameter's signature");
+		}
+	}
+	t.asserti(n, params);
+}
+
+// Two keys give the same program the same result bytes, with and without a
+// scope query, although they hash its strings differently.
+def test_seeds(t: Tester) {
+	var first = seededResults(t, 0x0123456789ABCDEFul, 0xFEDCBA9876543210ul);
+	var a = AnalysisTables.hashString("C1", 2), probed = AnalysisTables.probes;
+	var second = seededResults(t, 0x5555555555555555ul, 0x3333333333333333ul);
+	var b = AnalysisTables.hashString("C1", 2);
+	AnalysisTables.seed(KEY0, KEY1);
+	t.assert(a != b, "the keys hash a string differently");
+	t.assert(first.0.length > 0 && first.1.length > 0, "results");
+	t.assertb(first.0, second.0);
+	t.assertb(first.1, second.1);
+	t.assert(AnalysisTables.probes - probed > 0, "the tables probed");
+}
+// The result of a program with occurrences, and of a scope query in it,
+// under the key {k0}, {k1}.
+def seededResults(t: Tester, k0: u64, k1: u64) -> (Array<byte>, Array<byte>) {
+	AnalysisTables.seed(k0, k1);
+	var sources = collidingProgram(64), main = sources[0].path;
+	sources[1] = AnalysisSource.new(sources[1].path, Arrays.concat(sources[1].input,
+		"class K<T>(x: T) { def m() -> T { return x; } }\nclass D extends K<int> { new() super(0) { } def n(a: int, b: string) => m() + a; }\n"));
+	var a = AeneasAdapter.analyzeProgram(sources, [], false);
+	t.assertz(true, a.verified);
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length);
+	for (i < sources.length) files[i] = (sources[i].path, a.occurrences(sources[i].path));
+	var result = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, -1, files), 0L));
+	var text = sources[0].input, offset = 0;
+	while (text[offset] != '\t' || text[offset + 1] != '\t') offset++;
+	var s = AeneasAdapter.analyzeForScope(sources, [], false);
+	var answer = s.scopeAt(main, offset + 2, AnalysisScopeKinds.ALL, "");
+	t.assert(answer != null && answer.declarations.length > sources.length, "a scope answer");
+	var scoped = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 1, s, 0, -1, [], answer, null), 0L));
+	return (result, scoped);
+}
+// A result frame without its parse and verify times, the varints after its
+// flags, which differ from run to run.
+def withoutTimes(frame: Range<byte>) -> Array<byte> {
+	var flags = WorkerFraming.HEADER_BYTES + 21, p = flags + 1;
+	for (i < 2) {
+		while ((frame[p] & 0x80) != 0) p++;
+		p++;
+	}
+	return Arrays.concat(Ranges.dup(frame[0 ... flags + 1]), Ranges.dup(frame[p ...]));
+}
+
+// The worker's key comes from the kernel and differs from call to call.
+def test_random_words(t: Tester) {
+	var a = HostOs.randomWords(), b = HostOs.randomWords();
+	t.assert(a.0 != b.0 || a.1 != b.1, "two keys differ");
+	t.assert(a.0 != 0 || a.1 != 0, "a key is not zero");
+}

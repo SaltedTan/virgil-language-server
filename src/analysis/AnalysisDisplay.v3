@@ -723,9 +723,12 @@ def identical<T>(a: T, b: T) -> bool {
 	return a == b;
 }
 // A call's signature key is its callee's declaration, which the display
-// makes once, its type, which is hash-consed, and whether it passes the receiver.
+// makes once, its type, which is hash-consed, and whether it passes the
+// receiver. The declaration hashes by its path as well as its position, as
+// declaration keys do, so that callees at one position in many files spread.
 def hashCall(key: (AnalysisDeclaration, Type, bool)) -> int {
-	var d = key.0, h = if(d != null, d.range.beginOffset * 31 + d.kind.tag);
+	var d = key.0, h = 0;
+	if (d != null) h = int.view(AnalysisTables.hashPosition(d.range.path, d.range.beginLine, d.range.beginColumn, d.kind.tag));
 	return h * 1009 + key.1.hash * 7 + if(key.2, 1);
 }
 def sameCall(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type, bool)) -> bool {
@@ -733,10 +736,11 @@ def sameCall(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type
 }
 // Signatures are equal if their texts and parameter offsets are.
 component AnalysisSignatures {
+	// Each parameter's text is hashed with the hash so far as its prefix.
 	def hash(s: AnalysisSignature) -> int {
-		var h = AnalysisTables.hashBytes(s.label, s.label.length) * 31 + s.start;
-		for (p in s.params) h = h * 31 + AnalysisTables.hashBytes(p, p.length);
-		return h;
+		var h = AnalysisTables.hashBytes(s.label, s.label.length, u64.view(s.start));
+		for (p in s.params) h = AnalysisTables.hashBytes(p, p.length, h);
+		return int.view(h);
 	}
 	def equal(a: AnalysisSignature, b: AnalysisSignature) -> bool {
 		if (a.start != b.start || a.params.length != b.params.length || !Strings.equal(a.label, b.label)) return false;
@@ -747,10 +751,11 @@ component AnalysisSignatures {
 // A declaration is its name token and kind: a class parameter's token names
 // both a parameter and a field.
 component AnalysisDeclarationKeys {
+	// The path and the position hash together, so that equal positions in
+	// many files spread whatever the files are named.
 	def hash(key: (Token, AnalysisDeclKind)) -> int {
-		var t = key.0, file = t.fileName, h = t.beginLine * 1009 + t.beginColumn * 31 + key.1.tag;
-		if (file != null) h += AnalysisTables.hashBytes(file, file.length);
-		return h;
+		var t = key.0;
+		return int.view(AnalysisTables.hashPosition(t.fileName, t.beginLine, t.beginColumn, key.1.tag));
 	}
 	def equal(a: (Token, AnalysisDeclKind), b: (Token, AnalysisDeclKind)) -> bool {
 		return a.0 == b.0 && a.1 == b.1;

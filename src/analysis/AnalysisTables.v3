@@ -21,6 +21,7 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 	def find(key: K) -> int {
 		var mask = slots.length - 1;
 		for (i = AnalysisTables.mix(hash(key)) & mask; slots[i] != 0; i = (i + 1) & mask) {
+			AnalysisTables.probes++;
 			var k = keys[slots[i] - 1];
 			if (k == key || equal(k, key)) return slots[i] - 1;
 		}
@@ -30,6 +31,7 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 	def add(key: K) -> int {
 		var mask = slots.length - 1, i = AnalysisTables.mix(hash(key)) & mask;
 		while (slots[i] != 0) {
+			AnalysisTables.probes++;
 			var k = keys[slots[i] - 1];
 			if (k == key || equal(k, key)) return slots[i] - 1;
 			i = (i + 1) & mask;
@@ -45,7 +47,10 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 		var mask = slots.length - 1;
 		for (index < keys.length) {
 			var i = AnalysisTables.mix(hash(keys[index])) & mask;
-			while (slots[i] != 0) i = (i + 1) & mask;
+			while (slots[i] != 0) {
+				AnalysisTables.probes++;
+				i = (i + 1) & mask;
+			}
 			slots[i] = index + 1;
 		}
 	}
@@ -53,7 +58,8 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 
 // Interns strings by content, so that equal text is one object with one
 // index. {intern} looks up the text in a builder without allocating unless
-// the text is new.
+// the text is new. Strings are slotted by AnalysisTables.hashString, which
+// a program's names cannot make collide.
 class AnalysisStringTable {
 	private def strings = Vector<string>.new();
 	private var slots = Array<int>.new(64);
@@ -67,8 +73,9 @@ class AnalysisStringTable {
 	// The interned string with the bytes of {buf}, which is reset.
 	def intern(buf: StringBuilder) -> string {
 		var bytes = buf.buf, length = buf.length;
-		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(bytes, length)) & mask;
+		var mask = slots.length - 1, i = AnalysisTables.hashString(bytes, length) & mask;
 		while (slots[i] != 0) {
+			AnalysisTables.probes++;
 			var s = strings[slots[i] - 1];
 			if (AnalysisTables.sameBytes(s, bytes, length)) {
 				buf.reset();
@@ -92,8 +99,9 @@ class AnalysisStringTable {
 	}
 	// The slot that holds {s}, or the empty slot where it would go.
 	private def slot(s: string) -> int {
-		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(s, s.length)) & mask;
+		var mask = slots.length - 1, i = AnalysisTables.hashString(s, s.length) & mask;
 		while (slots[i] != 0) {
+			AnalysisTables.probes++;
 			var t = strings[slots[i] - 1];
 			if (t == s || AnalysisTables.sameBytes(t, s, s.length)) return i;
 			i = (i + 1) & mask;
@@ -108,8 +116,11 @@ class AnalysisStringTable {
 			slots = Array<int>.new(2 * slots.length);
 			var mask = slots.length - 1;
 			for (j < strings.length) {
-				var t = strings[j], i = AnalysisTables.mix(AnalysisTables.hashBytes(t, t.length)) & mask;
-				while (slots[i] != 0) i = (i + 1) & mask;
+				var t = strings[j], i = AnalysisTables.hashString(t, t.length) & mask;
+				while (slots[i] != 0) {
+					AnalysisTables.probes++;
+					i = (i + 1) & mask;
+				}
 				slots[i] = j + 1;
 			}
 		}
@@ -141,15 +152,45 @@ component AnalysisTables {
 		}
 		return src;
 	}
-	// Spreads a hash's bits into the low bits that select a slot.
+	// Spreads a hash's bits into the low bits that select a slot, for keys
+	// that are already numbers, such as indexes and the compiler's type
+	// hashes. A SipHash keeps its spread, and the string table skips this.
 	def mix(h: int) -> int {
 		var x = u32.view(h) * 0x9E3779B1u;
 		return int.view(x ^ (x >> 15));
 	}
-	def hashBytes(bytes: Array<byte>, length: int) -> int {
-		var h = length;
-		for (i < length) h = h * 31 + bytes[i];
-		return h;
+	// Keys a process's hashes. The worker calls this once, as it starts and
+	// before it makes any table, with words from the kernel's random source
+	// (HostOs.randomWords), so that no file can be written to make names or
+	// paths collide. A table must not outlive a change of key. Until then,
+	// as in tests, the key is fixed. No output depends on the key: every
+	// table keeps its keys in insertion order and lists them in that order.
+	def seed(k0: u64, k1: u64) {
+		key0 = k0;
+		key1 = k1;
+	}
+	// SipHash-1-3 (Aumasson and Bernstein, 2012) of the eight little-endian
+	// bytes of {prefix} followed by the first {length} bytes of {bytes}, keyed
+	// as {seed} set. SipHash is a keyed pseudorandom function, so without the
+	// key no set of inputs hashes alike more often than random ones do. A
+	// polynomial such as h * 31 + b gives every equal-length name built from
+	// "Aa" and "BB" blocks one hash, and multiply-and-shift hashes such as
+	// MurmurHash have collisions that hold for every seed; either would put
+	// such names in one probe sequence.
+	def hashBytes(bytes: Array<byte>, length: int, prefix: u64) -> u64 {
+		return sipHash(bytes, length, prefix, -8);
+	}
+	// A string's slot hash: SipHash-1-3 of its first {length} bytes.
+	def hashString(bytes: Array<byte>, length: int) -> int {
+		return int.view(sipHash(bytes, length, 0, 0));
+	}
+	// The hash of a position in {path}, which may be null: a line, a column,
+	// and a small tag, such as a declaration kind's. The three share the
+	// prefix word, which keeps them apart for any line below 2^24 and tag
+	// below 256, beyond a supported source's size.
+	def hashPosition(path: string, line: int, column: int, tag: int) -> u64 {
+		var prefix = (u64.view(line) << 40) ^ (u64.view(u32.view(column)) << 8) ^ u64.view(tag);
+		return hashBytes(path, if(path != null, path.length), prefix);
 	}
 	// Negative, zero, or positive as {a} is before, equal to, or after {b}
 	// in byte order.
@@ -164,5 +205,45 @@ component AnalysisTables {
 		if (s.length != length) return false;
 		for (i < length) if (s[i] != bytes[i]) return false;
 		return true;
+	}
+
+	// The slots that the tables have probed past a key's first, for tests.
+	var probes: long;
+	private var key0 = 0x0706050403020100ul;
+	private var key1 = 0x0F0E0D0C0B0A0908ul;
+	private def sipHash(bytes: Array<byte>, length: int, prefix: u64, start: int) -> u64 {
+		var v0 = key0 ^ 0x736f6d6570736575ul, v1 = key1 ^ 0x646f72616e646f6dul;
+		var v2 = key0 ^ 0x6c7967656e657261ul, v3 = key1 ^ 0x7465646279746573ul;
+		// The blocks are {prefix} if {start} is -8, the bytes eight at a time,
+		// and a last block of the bytes that remain and, in its top byte, the
+		// message's length. {length} must not pass the end of {bytes}. The
+		// rounds are written out: a method returning the four words as a tuple
+		// made hashing more than twice as slow. A word is one load, which is
+		// little-endian and may be unaligned on the x86-64 targets; nothing
+		// allocates, so the array cannot move, between taking its address and
+		// loading. This makes hashing a path cost what the polynomial did.
+		var end = length - (length & 7), m = prefix;
+		for (i = start; i <= end; i += 8) {
+			if (i == end) {
+				m = u64.view(length - start) << 56;
+				for (j = end; j < length; j++) m |= u64.view(bytes[j]) << byte.view(8 * (j - end));
+			} else if (i >= 0) {
+				m = (Pointer.atContents(bytes) + i).load<u64>();
+			}
+			v3 ^= m;
+			v0 += v1; v1 = (v1 << 13) | (v1 >> 51); v1 ^= v0; v0 = (v0 << 32) | (v0 >> 32);
+			v2 += v3; v3 = (v3 << 16) | (v3 >> 48); v3 ^= v2;
+			v0 += v3; v3 = (v3 << 21) | (v3 >> 43); v3 ^= v0;
+			v2 += v1; v1 = (v1 << 17) | (v1 >> 47); v1 ^= v2; v2 = (v2 << 32) | (v2 >> 32);
+			v0 ^= m;
+		}
+		v2 ^= 0xFF;
+		for (r < 3) {
+			v0 += v1; v1 = (v1 << 13) | (v1 >> 51); v1 ^= v0; v0 = (v0 << 32) | (v0 >> 32);
+			v2 += v3; v3 = (v3 << 16) | (v3 >> 48); v3 ^= v2;
+			v0 += v3; v3 = (v3 << 21) | (v3 >> 43); v3 ^= v0;
+			v2 += v1; v1 = (v1 << 17) | (v1 >> 47); v1 ^= v2; v2 = (v2 << 32) | (v2 >> 32);
+		}
+		return v0 ^ v1 ^ v2 ^ v3;
 	}
 }
