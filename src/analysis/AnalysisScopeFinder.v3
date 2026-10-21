@@ -766,8 +766,9 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		end = e;
 		return true;
 	}
-	// Where {e} ends: where the last expression that it ends with does, as
-	// each Expr.range() finds it, without reading what comes before that.
+	// Where {e} ends: where the last expression that it ends with does,
+	// including a prefix increment's or decrement's operand, which
+	// AutoExpr.range() omits, without reading what comes before that.
 	// If {record}, the lambdas among those, after {e}, are put in {edge}.
 	private def exprEnd(e: Expr, record: bool) -> int {
 		var first = e;

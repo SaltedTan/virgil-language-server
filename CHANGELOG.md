@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Correct in-scope completion in variant case headers and lambda bodies ending with prefix `++` or `--` ([scope rules](docs/architecture.md#names)).
+
 ### Added
 
 - Member completion after `.` (`textDocument/completion`), in open documents of configured projects, including unsaved buffers and code that doesn't parse yet. It offers the members that the type checker accepts for the receiver's type, and only those: fields and methods through the class hierarchy, with type arguments substituted and private members only in their file, constructors, a component's members, variant and enum cases, `tag` and `name`, enum sets, layouts, tuple elements, and the builtin members of arrays, ranges, and number types. The receiver can be any expression or a type's name. The server now declares `.` as a completion trigger character, and a `.` in a comment, a literal, or after a number gets an empty list at once. See [Member completion](docs/architecture.md#member-completion) for the lookup rules, the builtin list, the reply, and measurements, and [Known limitations](docs/known-limitations.md#member-completion).
