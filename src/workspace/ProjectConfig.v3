@@ -76,10 +76,12 @@ component ProjectConfigParser {
 
 // Checks a parsed project file and builds its model. Diagnostics come out in
 // source order: a missing member is reported at its object's opening brace,
-// before the object's members.
+// before the object's members. The project names and each object's member
+// keys are in ordered maps, as paths are, since a file could choose names
+// that all hash alike in a Strings.newMap.
 class ProjectConfigValidator {
 	def diagnostics = Vector<ProjectConfigDiagnostic>.new();
-	private def names = Strings.newMap<bool>();
+	private def names = OrderedStringMap<bool>.new();
 
 	def result(config: ProjectConfig) -> ProjectConfigResult {
 		if (diagnostics.length > 0) config = null;
@@ -103,7 +105,7 @@ class ProjectConfigValidator {
 		// checked until the version is known.
 		if (!version(root)) return null;
 		var projects: Array<ProjectDefinition>;
-		var seen = Strings.newMap<bool>();
+		var seen = OrderedStringMap<bool>.new();
 		missing(root, "projects", "the project file");
 		for (m in root.members) {
 			if (!firstMember(m, seen)) continue;
@@ -154,7 +156,7 @@ class ProjectConfigValidator {
 		var name: string, sources: Array<ProjectPattern>;
 		var dependencies: Array<ProjectPattern> = [], exclude: Array<ProjectPattern> = [];
 		var virgilDependencies: Array<ProjectPattern> = [], args: Array<string> = [];
-		var seen = Strings.newMap<bool>();
+		var seen = OrderedStringMap<bool>.new();
 		missing(n, "name", "a project");
 		missing(n, "sources", "a project");
 		for (m in n.members) {
@@ -202,12 +204,11 @@ class ProjectConfigValidator {
 				return null;
 			}
 		}
-		if (names.has(s)) {
+		if (!names.add(s, true)) {
 			errorAt(ProjectConfigCode.DUPLICATE_PROJECT_NAME, n,
 				Strings.format1("another project is already named '%s'", s));
 			return null;
 		}
-		names[s] = true;
 		return s;
 	}
 	// Returns the strings of an array, or null after reporting why it is not
@@ -266,14 +267,11 @@ class ProjectConfigValidator {
 	}
 	// Reports a member whose key repeats an earlier one in the same object.
 	// Returns true for the first occurrence of a key.
-	private def firstMember(m: ProjectJsonMember, seen: HashMap<string, bool>) -> bool {
+	private def firstMember(m: ProjectJsonMember, seen: OrderedStringMap<bool>) -> bool {
 		var key = m.key.text;
-		if (seen.has(key)) {
-			errorAt(ProjectConfigCode.DUPLICATE_FIELD, m.key, Strings.format1("'%s' appears more than once in this object", key));
-			return false;
-		}
-		seen[key] = true;
-		return true;
+		if (seen.add(key, true)) return true;
+		errorAt(ProjectConfigCode.DUPLICATE_FIELD, m.key, Strings.format1("'%s' appears more than once in this object", key));
+		return false;
 	}
 	private def unknown(m: ProjectJsonMember, where: string, known: string) {
 		errorAt(ProjectConfigCode.UNKNOWN_FIELD, m.key,
