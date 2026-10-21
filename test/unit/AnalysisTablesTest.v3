@@ -21,6 +21,7 @@ def X = [
 	T("AnalysisTables:colliding_types", test_colliding_types),
 	T("AnalysisTables:spread_types", test_spread_types),
 	T("AnalysisTables:pointer_twins", test_pointer_twins),
+	T("AnalysisTables:tied_keys", test_tied_keys),
 	T("AnalysisTables:seeds", test_seeds),
 	T("AnalysisTables:random_words", test_random_words),
 	()
@@ -359,6 +360,26 @@ def test_pointer_twins(t: Tester) {
 	}
 	t.assert(probed[1] == probed[2], "looking the types up again added them again");
 	t.assert_string("K<Pointer<int>, T1, T0>", display.typeText(types[1]));
+}
+// A map whose order is zero for distinct keys of one class, as compareTypes
+// is for twins, keeps each key once, at the index it was first added at,
+// however often it is added again.
+def test_tied_keys(t: Tester) {
+	var keys = ["a", "b", "c"], map = AnalysisTypeKeyMap<string>.new(oneSlot, oneClass, noOrder);
+	for (round < 5) {
+		for (i < keys.length) t.asserti(i, map.add(keys[i]));
+		t.asserti(keys.length, map.length());
+	}
+	for (i < keys.length) t.assert(map[i] == keys[i], "a key is at its first index");
+}
+def oneSlot(s: string) -> int {
+	return 0;
+}
+def oneClass(a: string, b: string) -> bool {
+	return true;
+}
+def noOrder(a: string, b: string) -> int {
+	return 0;
 }
 
 // Two keys give the same program the same result bytes, with and without a
