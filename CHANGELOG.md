@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Guidance for using the VS Code extension alongside `titzer.virgil`, the Virgil author's extension ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
 
+### Fixed
+
+- The VS Code extension's Extension Host test now runs on macOS, where VS Code's socket path under the system temporary directory was too long for a Unix socket; there the test's temporary directory is now under `/tmp` ([Extension Host test](clients/vscode/README.md#extension-host-test)).
+
 ## [0.1.0-alpha.2] - 2026-10-22
 
 ### Added
