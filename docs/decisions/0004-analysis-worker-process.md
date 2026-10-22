@@ -198,11 +198,13 @@ Hashing the display's and the encoder's tables with a per-worker key, and orderi
 - A fresh worker's heap grows by 4,336 bytes, from 200,738,960 to 200,743,296, with no collection, over 3 runs of each build, leaving 583,296 bytes of the semispace. In these sources, 49 pairs of distinct types share a compiler hash, and so do the types of two calls of one callee; the display's type table and call keys keep each pair in a tree of two nodes (`AnalysisTypeKeyMap`), and the trees, their lists, and the two tables' added fields take those bytes. No pair's structural order is zero, so neither table allocates the list that it keeps for such keys, and the two tables' fields for it take 16 of the bytes. The string and declaration hashes add nothing to a table or its entries, and the worker reads its key, and fills the type hash's tables from it, into arrays that the program is built with: an array allocated as the worker starts added 24 bytes.
 - The normalized `RESULT` payloads are identical, at 3,936,035 bytes, and so are the `--bindings --display` outputs, at 55,963,557 bytes.
 
-Protocol version 10 changes no ordinary analysis either. The measurements used the same method, comparing `6d5de01` with the commit that adds the call query, with the same `BuildInfo` revision string in both builds:
+Protocol version 10 changes no ordinary analysis either. The measurements used the same method on the rebased history, comparing `05df58b` with the commit that adds the call query, with the same copied `BuildInfo` revision string in both builds, both pinned with `taskset -c 4`, over 3 fresh workers of each:
 
 - The Aeneas sources' charged result allocation is 13,250,205 bytes before and after.
-- A fresh worker's heap is 200,738,968 bytes before and after, with no collection, over 3 runs of each build, leaving 587,624 bytes of the semispace.
-- The normalized `RESULT` payloads are identical, at 3,936,044 bytes, and so are the `--bindings` and `--display` outputs.
+- A fresh worker's heap is 200,743,296 bytes before and after, with no collection, leaving 583,296 bytes of the semispace: 0 bytes more.
+- The raw `RESULT` payloads are identical, at 3,936,044 bytes, and so are the `--bindings --display` outputs, at 55,963,557 bytes.
+
+The commits after it change only the server, and [#165](https://github.com/SaltedTan/virgil-language-server/issues/165) only its scanner, so these figures stand for `3250aed`.
 
 An ordinary request still carries no query, and the call query's state lives only in a call request's analysis: the finder and the collector that `AnalysisScopedProgram.callAt` creates. A signature help's result holds only the call, its callee's declaration, and its signature.
 
