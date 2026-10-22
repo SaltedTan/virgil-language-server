@@ -211,7 +211,10 @@ stop_processes() {
   if [[ $frozen == ' ' ]]; then
     for sock in "$work"/*.sock; do
       [[ -S $sock ]] || continue
-      pid=$(deadline 2 tmux -S "$sock" display-message -p '#{pid}' 2>/dev/null || true)
+      # A tmux client passes its output to the server, and a stopped server
+      # would hold a pipe open; so the PID goes through a file.
+      deadline 2 tmux -S "$sock" display-message -p '#{pid}' > "$work/tmux.pid" 2>/dev/null || true
+      pid=$(cat "$work/tmux.pid" 2>/dev/null || true)
       if [[ $pid =~ ^[0-9]+$ ]]; then
         frozen="$frozen$pid "
         kill -STOP "$pid" 2>/dev/null || true
@@ -269,7 +272,7 @@ stop_processes() {
 # stays open after Neovim exits, so this also keeps what Neovim printed.
 save_screen() {
   local name=$1 sock=$work/$1.sock
-  if [[ -S $sock ]] && deadline 2 tmux -S "$sock" has-session -t "$name" 2>/dev/null; then
+  if [[ -S $sock ]] && deadline 2 tmux -S "$sock" has-session -t "$name" >/dev/null 2>&1; then
     {
       echo "== screen $2"
       deadline 5 tmux -S "$sock" capture-pane -p -S - -t "$name" 2>&1 || true
