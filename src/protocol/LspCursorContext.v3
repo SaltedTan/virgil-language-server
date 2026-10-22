@@ -695,6 +695,7 @@ class LspCursorScanner(text: Array<byte>) {
 	private def punct(c: byte, start: int) {
 		var closed = LspOpenRole.TOP;
 		var h = header;
+		var adjacentName = prevKind == LspCursorToken.NAME && isIdentMiddle(text[start - 1]);
 		header = 0;
 		// A lambda's body begins at the depth of its "fun".
 		var body = inLambdaHeader() && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
@@ -733,15 +734,15 @@ class LspCursorScanner(text: Array<byte>) {
 					boundary();
 				}
 			}
-			'<' => if (prevHint || (packingExpr && prevKind == LspCursorToken.NAME && inLambdaHeader())) {
+			'<' => if (prevHint || (packingExpr && adjacentName && inLambdaHeader())) {
 				push(start, LspOpenRole.TYPE_ARGS, 3);
-			} else if (h == HEADER_AFTER_NAME) {
+			} else if (h == HEADER_AFTER_NAME && adjacentName) {
 				header = HEADER_TYPE_PARAMS;
 				angles = 1;
 			} else if (h == HEADER_TYPE_PARAMS) {
 				header = h;
 				angles++;
-			} else if (typeName && prevKind == LspCursorToken.NAME) {
+			} else if (typeName && adjacentName) {
 				push(start, LspOpenRole.TYPE_ARGS, 3);
 			} else if (prevKind == LspCursorToken.MEMBER && prevStart + 1 == start
 					&& (text[prevStart] == '!' || text[prevStart] == '?')) {

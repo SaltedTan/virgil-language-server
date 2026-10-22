@@ -24,6 +24,7 @@ def X = [
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
 	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
+	T("LspCompletion:type_argument_adjacency", test_type_argument_adjacency),
 	T("LspCompletion:ref_arguments", test_ref_arguments),
 	T("LspCompletion:if_expressions", test_if_expressions),
 	T("LspCompletion:nested_else", test_nested_else),
@@ -60,12 +61,12 @@ def at(marked: string) -> LspCursorContext {
 def test_ref_arguments(t: Tester) {
 	for (name in ["Ref", "ref"]) {
 		for (trivia in ["", " ", " /* comment */ ", " // comment\n", " /* // */ /* next */ "]) {
-			var marked = Strings.format2("var r: %s%s<$Pixel>;", name, trivia);
+			var marked = Strings.format2("var r: %s<%s$Pixel>;", name, trivia);
 			t.asserti(AnalysisScopeKinds.LAYOUTS, LspCompletionRepair.kinds(at(marked)));
 		}
 	}
 	for (marked in ["var r: Array<$Pixel>;", "var r: MoreRef<$Pixel>;", "var r: RefMore<$Pixel>;",
-		"var r: C.Ref<$Pixel>;", "var r: C. /* comment */ Ref /* comment */ <$Pixel>;",
+		"var r: C.Ref<$Pixel>;", "var r: C. /* comment */ Ref< /* comment */ $Pixel>;",
 		"var r: Ref<Pixel, $int>;", "var r: Ref<Array<$int>>;"]) {
 		t.asserti(AnalysisScopeKinds.TYPES, LspCompletionRepair.kinds(at(marked)));
 	}
@@ -326,6 +327,10 @@ def test_for_in(t: Tester) {
 	// At "<", "in", or "=" the position ends, so no "in" follows.
 	for (marked in [
 		"def f() { for (i < n $) }",
+		"def f(n: int) { for (i: int < n >> 1 $) {} }",
+		"def f(n: int) { for (i: A.B < n $) {} }",
+		"def f(n: int) { for (i: int /*c*/ < n $) {} }",
+		"def f(n: int) { for (i: Array<int> < n $) {} }",
 		"def f() { for (i in xs $) }",
 		"def f() { for (i = 0 $; i < n; i++) }",
 		"def f() { for (i: int = 0 $; i < n; i++) }"
@@ -794,6 +799,49 @@ def test_lambda_hints(t: Tester) {
 	checkSyntax(t, "type T(a: u8) #packing P($", 0);
 	ctx = at("type T(a: u8) #packing P($");
 	t.asserta("roles", [LspOpenRole.PARAMS], ctx.roles, putRole);
+}
+
+def test_type_argument_adjacency(t: Tester) {
+	for (name in ["int", "A.B", "Array<int>.B", "Ref", "ref"]) {
+		for (trivia in [" ", "\t", "\n", "/**/", " /*c*/ ", " //c\n"]) {
+			var marked = Strings.format2("def f(n: int) { for (i: %s%s< $) {} }", name, trivia);
+			checkOffered(t, marked, "false fun if null true");
+			checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+			t.asserta("comparison roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], at(marked).roles, putRole);
+			marked = Strings.format2("def f(n: int) { for (i: %s%s< n >> 1 $) {} }", name, trivia);
+			checkOffered(t, marked, "");
+			checkSyntax(t, marked, 0);
+			t.asserta("limit roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], at(marked).roles, putRole);
+			marked = Strings.format2("var x: %s%s< $", name, trivia);
+			checkOffered(t, marked, "false fun if null true");
+			checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+			t.asserti(0, at(marked).roles.length);
+			t.asserti(AnalysisScopeKinds.VALUES | AnalysisScopeKinds.TYPES, LspCompletionRepair.kinds(at(marked)));
+		}
+	}
+	for (name in ["Array", "A.B", "Array<int>.B"]) {
+		var marked = Strings.format1("def f() { for (i: %s<$int>) {} }", name);
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, LspCursorSyntax.TYPE);
+		t.asserta("adjacent type roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR, LspOpenRole.TYPE_ARGS], at(marked).roles, putRole);
+		marked = Strings.format1("def f() { for (i: %s<int> $) {} }", name);
+		checkOffered(t, marked, "in");
+		checkSyntax(t, marked, LspCursorSyntax.FOR_IN);
+		t.asserta("closed type roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], at(marked).roles, putRole);
+	}
+	for (trivia in [" ", "/**/", " //c\n"]) {
+		var marked = Strings.format1("def f() { g(fun () #packing f%s< $", trivia);
+		checkOffered(t, marked, "false fun if null true");
+		checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+		t.asserta("packing comparison roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL], at(marked).roles, putRole);
+		marked = Strings.format1("def f() { g(fun () #hint%s< $", trivia);
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, LspCursorSyntax.TYPE);
+		t.asserta("hint type roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL, LspOpenRole.TYPE_ARGS], at(marked).roles, putRole);
+		marked = Strings.format1("class A%s< $", trivia);
+		checkOffered(t, marked, "false fun if null true");
+		checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+	}
 }
 
 // Tuple types, type arguments, and function types stay type positions.
