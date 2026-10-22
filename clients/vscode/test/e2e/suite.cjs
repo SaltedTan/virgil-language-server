@@ -617,8 +617,12 @@ async function noVirgilRoot(failures, words) {
       return list.length > 0 && list;
     }, 40000);
     assert.deepEqual(missing.map((d) => [code(d), d.source, d.range.start.line]), [['MissingVirgilRoot', 'virgil-lsp', 6]]);
-    // The server initialized, reporting its version, and still answers.
-    assert.ok(log().includes('Started virgil-lsp '), 'the server started without reporting its version');
+    // The server initialized, reporting its version (not the extension's
+    // "(no version reported)" fallback), and still answers.
+    await waitFor('the server to start and report its version', () => {
+      expectNoServerError(log);
+      return /Started virgil-lsp \d+\.\d+\.\d+\S*$/m.test(log());
+    });
     assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
     expectNoServerError(log);
   }, restore);
