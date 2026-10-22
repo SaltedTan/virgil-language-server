@@ -73,6 +73,12 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// The member expression whose receiver memberExpr is, as "L.f.offset" is
 	// for "L.f", if any.
 	private var memberUse: VarExpr;
+	// For a call query (findCall), the application whose argument list opens
+	// at the offset, once the walk has found it; the walk then stops. The
+	// lambdas that the walk is in, innermost first.
+	private var callQuery: bool;
+	private var callExpr: AppExpr;
+	private var lambdas: List<FunExpr>;
 
 	// The names of {kinds} (AnalysisScopeKinds) visible at {offset}; see
 	// AnalysisScopeOrder for the order and the cap, which {prefix} applies.
@@ -140,6 +146,28 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (!reached() || memberExpr == null) return null;
 		var answer = AnalysisMemberLookup.new(display, file.fileName, prog.layouts).find(memberExpr, memberUse, prefix);
 		answer.steps += steps;
+		return answer;
+	}
+	// The call whose argument list opens at {offset}, its "(", as {collector}
+	// records it (OccurrenceCollector.recordCall). The walk to the offset is a
+	// scope query's, which reads each expression of the statement that holds
+	// it until it meets an application whose argument list begins there, and
+	// enters a lambda only if the lambda holds the offset. Null if
+	// verification did not reach the offset (see reached), or if no call
+	// opens there, as at a parenthesized expression or a constructor's super
+	// clause, which the syntax tree keeps as no application.
+	def findCall(offset: int, collector: OccurrenceCollector) -> AnalysisCallAnswer {
+		this.offset = offset;
+		callQuery = true;
+		locate();
+		if (!reached() || callExpr == null) return null;
+		// The receiver of the method around the call, or of the compound's
+		// constructor, which checks its initializers and super clause.
+		var f = if(method != null, method.func, if(compound != null && compound.constructor != null, compound.constructor.func));
+		var answer = collector.recordCall(file, callExpr, if(f != null, f.thisParam),
+			if(VstClass.?(compound), VstClass.!(compound)), lambdas);
+		if (answer == null || answer.open != offset) return null;
+		answer.steps = steps + collector.located;
 		return answer;
 	}
 	// Whether verification reached the offset. Verifier.verify type-checks
@@ -460,12 +488,12 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// Each statement and expression that the walk enters is a step.
 	private def walk(e: Expr) {
-		if (e == null || memberExpr != null) return;
+		if (e == null || memberExpr != null || callExpr != null) return;
 		steps++;
 		e.accept(this, ());
 	}
 	private def walkStmt(s: Stmt) {
-		if (memberExpr != null) return;
+		if (memberExpr != null || callExpr != null) return;
 		steps++;
 		s.accept(this, ());
 	}
@@ -615,7 +643,13 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	def visitLiteral(e: Literal, env: void) { }
 	def visitString(e: StringExpr, env: void) { }
+	// A call query's expression is the application whose argument list begins
+	// at the offset, as Parser.parseTupleExpr records it, at its "(".
 	def visitApp(e: AppExpr, env: void) {
+		if (callQuery && e.args != null && e.args.exprs != null && point(e.args.exprs.src) == offset) {
+			callExpr = e;
+			return;
+		}
 		walk(e.func);
 		walk(e.args);
 	}
@@ -668,7 +702,11 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		enterScope(false);
 		params(e.func.params, e.captures);
-		if (e.func.body != null) walkStmt(e.func.body);
+		if (e.func.body == null) return;
+		var outer = lambdas;
+		if (callQuery) lambdas = List.new(e, outer);
+		walkStmt(e.func.body);
+		if (callExpr == null) lambdas = outer;
 	}
 	private def exprs(list: VstList<Expr>) {
 		if (list != null) for (l = list.list; l != null; l = l.tail) walk(l.head);

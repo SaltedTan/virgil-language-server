@@ -261,34 +261,21 @@ component LspCompletionRepair {
 	}
 }
 
-// One textDocument/completion request whose candidates need an analysis, from
-// its arrival to its reply. Its job's functions are bound to it, so that a
-// request that was replaced or cancelled is told apart from the current one.
-class LspCompletionRequest(owner: LspCompletion, id: JsonRpcId, keywords: Array<JsonValue>, range: JsonValue) {
-	// Its reply has been sent.
-	var answered: bool;
-	var job: LspAnalysisJob;
-	// The open document as the request found it, its project, the text to
-	// analyze for it, as typed or repaired, and the scope query's offset,
-	// kinds, and prefix.
-	var uri: string;
-	var identity: DocumentVersionIdentity;
-	var cursor: int;
-	var context: ProjectContext;
-	var text: Array<byte>;
-	var offset: int;
-	var kinds: int;
-	var prefix: string;
-	// LspCompletion's invalidation generation when its analysis began, and
-	// whether it has run again because the sources changed while it ran.
-	var generation: int;
-	var rerun: bool;
+// One textDocument/completion request whose candidates need an analysis:
+// its keywords, which are its reply without the analysis's answer, and the
+// range that each item's edit replaces, the prefix.
+class LspCompletionRequest extends LspQueryRequest {
+	def completion: LspCompletion;
+	def keywords: Array<JsonValue>;
+	def range: JsonValue;
 
-	def begin(supervisor: AnalysisSupervisor) -> AnalysisOutcome {
-		return owner.begin(this, supervisor);
+	new(completion, id: JsonRpcId, keywords, range) super(completion, id) { }
+	def fallback() -> JsonRpcReply {
+		return completion.keywordList(this);
 	}
-	def complete(outcome: AnalysisOutcome) {
-		owner.complete(this, outcome);
+	// The declarations in scope and the keywords, or after "." the members.
+	def answer(snapshot: AnalysisSnapshot) -> JsonValue {
+		return if(kinds == AnalysisScopeKinds.MEMBERS, completion.members(this, snapshot), completion.declarations(this, snapshot));
 	}
 }
 
@@ -297,27 +284,16 @@ class LspCompletionRequest(owner: LspCompletion, id: JsonRpcId, keywords: Array<
 // "." the members of the receiver alone, from a completion analysis of its
 // project: the document as typed if it parses, or with the repair that the
 // cursor's context selects (LspCompletionRepair). A request that needs no
-// analysis is answered at once. See docs/architecture.md#completion.
-class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
+// analysis is answered at once; one that does is scheduled, replaced,
+// cancelled, and reused as LspQueryRequests describes. See
+// docs/architecture.md#completion.
+class LspCompletion extends LspQueryRequests {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"
 	def CLASS_KIND = 7;	// CompletionItemKind.Class, for builtin types
 	def MODULE_KIND = 9;	// CompletionItemKind.Module, for System
-	// Starts completion analyses, or null without an analysis worker.
-	var scheduler: LspSemanticDiagnostics;
-	// The completion analyses started, for tests.
-	def var analyses: int;
-	// The request whose job waits for the worker, and the one whose job runs.
-	private var waiting: LspCompletionRequest;
-	private var running: LspCompletionRequest;
-	// Counts the events that can change a completion's sources or project
-	// (invalidate): an analysis that began in an older generation is stale.
-	private var generation: int;
-	// The last reply with declarations, for its document version and cursor.
-	private var cachedUri: string;
-	private var cachedIdentity: DocumentVersionIdentity;
-	private var cachedCursor: int;
-	private var cachedResult: JsonValue;
+
+	new(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) super(store, projects, send, "completion") { }
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onDeferredRequest("textDocument/completion", receive);
@@ -347,10 +323,8 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		var path = DocumentUri.filePath(overlay.uri);
 		// Keywords alone where no name can go, and without a project or a worker.
 		if (kinds == 0 || project == null || path == null || scheduler == null) return finish(r, keywordList(r));
-		if (cachedIdentity != null && cachedIdentity == overlay.identity && cachedCursor == ctx.cursor
-				&& Strings.equal(cachedUri, overlay.uri)) {
-			return finish(r, JsonRpcReply.Result(cachedResult));
-		}
+		var reuse = cached(overlay, ctx.cursor);
+		if (reuse != JsonValue.Null) return finish(r, JsonRpcReply.Result(reuse));
 		// The document as typed if it parses, or with the repair; the repair
 		// inserts nothing before the cursor, so the identifier's start, where the
 		// scope is queried, is the same offset in both (as LspRepairMapping keeps
@@ -360,95 +334,18 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 			text = LspCompletionRepair.repair(ctx);
 			if (!parses(path, text, options)) return finish(r, keywordList(r));
 		}
-		r.uri = overlay.uri;
-		r.identity = overlay.identity;
-		r.cursor = ctx.cursor;
-		r.context = project;
-		r.text = text;
 		r.offset = ctx.prefixStart;
 		r.kinds = kinds;
 		var prefix = ctx.prefix();
 		r.prefix = if(prefix.length > AnalysisScopeOrder.MAX_PREFIX, Arrays.range(prefix, 0, AnalysisScopeOrder.MAX_PREFIX), prefix);
 		// A newer request replaces one that waits, which gets its keywords.
-		if (waiting != null) finish(waiting, keywordList(waiting));
-		submit(r);
-	}
-	// Queues {r}'s analysis, as the waiting request.
-	private def submit(r: LspCompletionRequest) {
-		waiting = r;
-		r.job = LspAnalysisJob.new(r.begin, r.complete);
-		if (!scheduler.submit(r.job)) finish(r, keywordList(r));
-	}
-	// Starts {r}'s analysis: the project's sources as an automatic analysis
-	// captures them, with {r}'s text for its document, admitted within the
-	// snapshot budget, which the supervisor does not keep as its latest.
-	def begin(r: LspCompletionRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
-		if (waiting == r) waiting = null;
-		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the completion was answered");
-		running = r;
-		if (!current(r)) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document changed");
-		var ctx = r.context;
-		// The sources are captured now, in this generation.
-		r.generation = generation;
-		var keys = Array<string>.new(ctx.sources.length), index = -1;
-		for (i < keys.length) {
-			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
-			if (keys[i] == null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "cannot form a document URI");
-			if (index < 0 && Strings.equal(keys[i], r.uri)) index = i;
-		}
-		if (index < 0) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document is not in the project");
-		var captured = LspAnalysisCapture.capture(store, keys, true);
-		if (captured.1 != null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, captured.1);
-		var inputs = captured.0;
-		inputs.sources[index] = AnalysisSource.new(inputs.sources[index].path, r.text);
-		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
-			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
-		}
-		analyses++;
-		var scope = AnalysisScopeRequest.new(index, r.offset, r.kinds, r.prefix);
-		// No occurrences: the result holds only the candidates' declarations.
-		return supervisor.beginTemporary(inputs.sources, ctx.definition.compilerArgs, 0, scope);
-	}
-	// Whether {r}'s document is open at the version it was requested at, in
-	// the same current project.
-	private def current(r: LspCompletionRequest) -> bool {
-		var overlay = store.overlay(r.uri), ctx = projects.forDocument(r.uri).active;
-		return overlay != null && overlay.identity == r.identity && ctx == r.context && ctx.config.current;
-	}
-	// Replies to {r} once its analysis ends: the declarations in scope and the
-	// keywords, or, if it failed or did not parse, the keywords alone. An
-	// analysis whose sources an event invalidated while it ran is stale: it
-	// runs again, once, if its document is unchanged and no newer completion
-	// waits; otherwise the reply is the keywords. A stale result is neither
-	// sent nor kept.
-	def complete(r: LspCompletionRequest, outcome: AnalysisOutcome) {
-		if (running == r) running = null;
-		if (r.answered) return;
-		if (AnalysisOutcome.Completed.?(outcome) && r.generation != generation) {
-			if (!r.rerun && waiting == null && current(r)) {
-				r.rerun = true;
-				return submit(r);
-			}
-			return finish(r, keywordList(r));
-		}
-		if (AnalysisOutcome.Completed.?(outcome)) {
-			var snapshot = AnalysisOutcome.Completed.!(outcome).snapshot;
-			var result = if(r.kinds == AnalysisScopeKinds.MEMBERS, members(r, snapshot), declarations(r, snapshot));
-			if (result != JsonValue.Null) {
-				cachedUri = r.uri;
-				cachedIdentity = r.identity;
-				cachedCursor = r.cursor;
-				cachedResult = result;
-				return finish(r, JsonRpcReply.Result(result));
-			}
-		}
-		finish(r, keywordList(r));
+		queue(r, overlay, ctx.cursor, project, text);
 	}
 	// A parsed program can lack a scope answer when verification did not reach
 	// the cursor; the caller then returns keywords alone. Bindings excluded from
 	// the candidates still hide builtin types through hiddenBuiltins. See
 	// docs/architecture.md#names for candidate and reply rules.
-	private def declarations(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> JsonValue {
+	def declarations(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> JsonValue {
 		var scope = snapshot.scope;
 		if (!snapshot.parsed || scope == null) return JsonValue.Null;
 		var labels = Vector<string>.new(), kinds = Vector<int>.new(), details = Vector<string>.new();
@@ -497,7 +394,7 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 	// The members of a member query's answer, in its order, each with its
 	// detail or its declaration's signature; or null, as for declarations,
 	// where there is no answer. No keyword follows ".".
-	private def members(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> JsonValue {
+	def members(r: LspCompletionRequest, snapshot: AnalysisSnapshot) -> JsonValue {
 		var m = snapshot.members;
 		if (!snapshot.parsed || m == null) return JsonValue.Null;
 		var items = Array<JsonValue>.new(m.names.length);
@@ -507,54 +404,6 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 			items[i] = item(m.names[i], LspSymbolKind.completion(m.kinds[i]), detail, rank(i), r.range);
 		}
 		return list(items, m.truncated);
-	}
-	// Answers the waiting or running completion that {n} cancels with
-	// RequestCancelled; its job never starts, or its result is dropped.
-	// Other cancellations are ignored.
-	def cancel(n: JsonRpcMessage.Notification) {
-		if (!JsonRpcParams.ByName.?(n.params)) return;
-		var params = JsonRpcParams.ByName.!(n.params).v, id: JsonRpcId;
-		if (!params.has("id")) return;
-		match (params["id"]) {
-			Int(v) => id = JsonRpcId.Int(v);
-			String(v) => id = JsonRpcId.String(v);
-			_ => return;
-		}
-		for (r in [waiting, running]) {
-			if (r != null && r.id.equal(id)) finish(r, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, "the completion was cancelled")));
-		}
-	}
-	// Answers the waiting and running completions with their keywords, at
-	// shutdown, exit, or the end of the input.
-	def close() {
-		for (r in [waiting, running]) if (r != null) finish(r, keywordList(r));
-	}
-	// Forgets the last reply, and makes the running analysis stale: the
-	// sources or the configuration may have changed. Called for document
-	// changes, saves, and closes, configuration changes, which replace
-	// contexts, and file and folder events.
-	def invalidate() {
-		generation++;
-		cachedResult = JsonValue.Null;
-		cachedIdentity = null;
-		cachedUri = null;
-	}
-	private def finish(r: LspCompletionRequest, reply: JsonRpcReply) {
-		if (r.answered) return;
-		r.answered = true;
-		if (waiting == r) waiting = null;
-		if (running == r) running = null;
-		if (r.job != null && scheduler != null) scheduler.withdraw(r.job);
-		respond(r.id, reply);
-	}
-	private def respond(id: JsonRpcId, reply: JsonRpcReply) {
-		match (reply) {
-			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
-			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
-		}
-	}
-	private def parses(path: string, text: Array<byte>, options: Array<string>) -> bool {
-		return AeneasAdapter.parseFile(path, text, options).diagnostics.length == 0;
 	}
 	// {k} in four decimal digits, which sort as the numbers do: there are
 	// fewer than 10,000 candidates.
@@ -566,7 +415,7 @@ class LspCompletion(store: DocumentStore, projects: WorkspaceProjects, send: Arr
 		}
 		return digits;
 	}
-	private def keywordList(r: LspCompletionRequest) -> JsonRpcReply {
+	def keywordList(r: LspCompletionRequest) -> JsonRpcReply {
 		return JsonRpcReply.Result(list(r.keywords, false));
 	}
 	// An item whose edit replaces {range}, the prefix, with {label}.

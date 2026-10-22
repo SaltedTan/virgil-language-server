@@ -20,20 +20,42 @@ component AnalysisScopeKinds {
 	// A name after ".": the members of the receiver's type, rather than a
 	// scope (AnalysisScopeFinder.findMembers). A query asks for it alone.
 	def MEMBERS = 16;
+	// The call whose argument list opens at the offset, its "(", rather than
+	// a scope (AnalysisScopeFinder.findCall). A query asks for it alone, with
+	// no prefix.
+	def CALL = 32;
 
 	// Whether a query may ask for {kinds}: a nonempty set of scope kinds, or
-	// MEMBERS alone.
+	// MEMBERS or CALL alone.
 	def valid(kinds: int) -> bool {
-		return kinds == MEMBERS || (kinds > 0 && (kinds & ~ALL) == 0);
+		return kinds == MEMBERS || kinds == CALL || (kinds > 0 && (kinds & ~ALL) == 0);
 	}
 }
 
 // A scope query, sent with an ANALYZE request (AnalysisWire.WANT_SCOPE): the
 // names visible in the request's source {file} at byte {offset} of the kinds
-// {kinds}, or, for MEMBERS, the members of the receiver before it. {prefix},
-// at most MAX_PREFIX bytes, selects candidates only when there are more than
+// {kinds}, or, for MEMBERS, the members of the receiver before it, or, for
+// CALL, the call whose argument list opens there. {prefix}, at most
+// MAX_PREFIX bytes, selects candidates only when there are more than
 // AnalysisScopeOrder.MAX_DECLARATIONS.
 class AnalysisScopeRequest(file: int, offset: int, kinds: int, prefix: string) { }
+
+// The worker's answer to a call query: the call whose "(" is at {open}, as
+// its {record}, which the collector records with the rest of its file
+// (OccurrenceCollector.recordCall), with its callee as an offset before its
+// "(" (AnalysisCallFlags.CALLEE_OFFSET) and its signature as an index plus
+// one from AnalysisDisplay.callSignature; and the declaration that its
+// callee names, or null.
+class AnalysisCallAnswer(open: int, record: Array<byte>, target: AnalysisDeclaration) {
+	// The analyzed program's paths, in the request's order, which name the
+	// target's file in a result without occurrences.
+	var paths: Array<string>;
+	// The members, statements, and expressions read to find the call
+	// (AnalysisScopeFinder.steps), and those read to locate its parentheses
+	// and arguments (OccurrenceCollector.located), for tests; no reply
+	// carries them.
+	var steps: int;
+}
 
 // The worker's answer to a scope query: the visible declarations, each with
 // its level, sorted by AnalysisScopeOrder, and the level of "this" or -1 where

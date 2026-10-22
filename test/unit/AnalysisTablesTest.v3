@@ -414,7 +414,7 @@ def seededResults(t: Tester, k0: u64, k1: u64) -> (Array<byte>, Array<byte>) {
 	var s = AeneasAdapter.analyzeForScope(sources, [], false);
 	var answer = s.scopeAt(main, offset + 2, AnalysisScopeKinds.ALL, "");
 	t.assert(answer != null && answer.declarations.length > sources.length, "a scope answer");
-	var scoped = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 1, s, 0, -1, [], answer, null), 0L));
+	var scoped = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 1, s, 0, -1, [], answer, null, null), 0L));
 	return (result, scoped);
 }
 // A result frame's payload without its parse and verify times, the varints

@@ -23,18 +23,24 @@
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":2}}}
 {"recv":{"jsonrpc":"2.0","id":5,"result":{"activeParameter":1,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
 # An edit that leaves the call unclosed fails to parse, so the snapshot of the exact text has no
-# calls: the request that waits for it gets null, never an answer from the older snapshot.
+# calls. The request gets the signature from an analysis of the text repaired at the cursor, as
+# completion repairs it, with the parameter after the comma active.
 {"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":3},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, ;\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":6,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":26}}}]}
 {"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"invalid start of expression","range":{"end":{"character":27,"line":4},"start":{"character":27,"line":4}},"severity":1,"source":"aeneas"}],"uri":"@ROOT@/two-file/main.v3","version":3}}}
-{"recv":{"jsonrpc":"2.0","id":6,"result":null}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":{"activeParameter":1,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
+# The call has just been opened, with the rest of the line deleted, and its ( triggers the request.
+# The repair closes the call and the statement after the cursor, so the first parameter is active.
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":4},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":7,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":24},"context":{"triggerKind":2,"triggerCharacter":"(","isRetrigger":false}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"ParseError","message":"keyword \"return\" cannot be used as identifier","range":{"end":{"character":8,"line":5},"start":{"character":2,"line":5}},"severity":1,"source":"aeneas"},{"code":"ParseError","message":"',' or ')' expected","range":{"end":{"character":9,"line":5},"start":{"character":9,"line":5}},"severity":1,"source":"aeneas"}],"uri":"@ROOT@/two-file/main.v3","version":4}}}
+{"recv":{"jsonrpc":"2.0","id":7,"result":{"activeParameter":0,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
 # Once the call is closed again, the request that waits for that analysis is answered, just after
 # the (; just past the ), the position is outside the call.
-{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":4},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, 4);\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":7,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":24}}}]}
-{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":4}}}
-{"recv":{"jsonrpc":"2.0","id":7,"result":{"activeParameter":0,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
-{"send":{"jsonrpc":"2.0","id":8,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":29}}}}
-{"recv":{"jsonrpc":"2.0","id":8,"result":null}}
-{"send":{"jsonrpc":"2.0","id":9,"method":"shutdown"}}
+{"send":[{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3","version":5},"contentChanges":[{"text":"// Uses declarations from shapes.v3, after an inserted line.\n// Uses declarations from shapes.v3.\ncomponent Main {\n\tdef main() -> int {\n\t\tvar r = Shapes.scaled(3, 4);\n\t\treturn r.area();\n\t}\n}\n"}]}},{"jsonrpc":"2.0","id":8,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":24}}}]}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOT@/two-file/main.v3","version":5}}}
+{"recv":{"jsonrpc":"2.0","id":8,"result":{"activeParameter":0,"activeSignature":0,"signatures":[{"label":"def scaled(side: int, factor: int) -> Rect","parameters":[{"label":[11,20]},{"label":[22,33]}]}]}}}
+{"send":{"jsonrpc":"2.0","id":9,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"@ROOT@/two-file/main.v3"},"position":{"line":4,"character":29}}}}
 {"recv":{"jsonrpc":"2.0","id":9,"result":null}}
+{"send":{"jsonrpc":"2.0","id":10,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":10,"result":null}}
 {"send":{"jsonrpc":"2.0","method":"exit"}}
 {"stderr": "discarded analysis 1 of project shapes: file://.*/two-file/shapes\\.v3 changed after its sources were captured"}

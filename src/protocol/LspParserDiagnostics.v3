@@ -7,19 +7,30 @@
 // implemented. {LspDiagnosticLists} merges them with the URI's
 // current semantic diagnostics and publishes the complete list.
 class LspParserDiagnostics(lists: LspDiagnosticLists) {
-	// The language options each open document was last parsed with, by URI
-	// in byte order; see OrderedStringMap.
-	private def parsedWith = OrderedStringMap<Array<string>>.new();
+	// The last parse of each open document, by URI in byte order; see
+	// OrderedStringMap.
+	private def parsedWith = OrderedStringMap<LspParsedDocument>.new();
 
 	def update(doc: DocumentOverlay, options: Array<string>) {
-		var path = DocumentUri.filePath(doc.uri);
-		if (path == null) path = doc.uri;
-		var result = AeneasAdapter.parseFile(path, doc.text, options);
+		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
 		for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
-		parsedWith[doc.uri] = options;
+		parsedWith[doc.uri] = LspParsedDocument.new(doc.identity, options, diagnostics.length == 0);
 		lists.parsed(doc, diagnostics);
+	}
+	// Whether {doc}'s text parses with language options {options}: as its
+	// last parse found, if that parsed this version with these options, and
+	// otherwise by parsing it again, without publishing anything.
+	def parses(doc: DocumentOverlay, options: Array<string>) -> bool {
+		var last = if(parsedWith.has(doc.uri), parsedWith[doc.uri]);
+		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return last.clean;
+		return AeneasAdapter.parseFile(pathOf(doc), doc.text, options).diagnostics.length == 0;
+	}
+	// The path that names {doc} in its diagnostics: its file's, or its URI.
+	private def pathOf(doc: DocumentOverlay) -> string {
+		var path = DocumentUri.filePath(doc.uri);
+		return if(path != null, path, doc.uri);
 	}
 	def close(doc: DocumentOverlay) {
 		parsedWith.remove(doc.uri);
@@ -37,10 +48,10 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		for (i < uris.length) {
 			var doc = store.overlay(uris[i]);
 			var options: Array<string> = if(owners[i] != null, owners[i].definition.compilerArgs, []);
-			if (doc != null && !sameOptions(parsedWith[uris[i]], options)) update(doc, options);
+			if (doc != null && !sameOptions(parsedWith[uris[i]].options, options)) update(doc, options);
 		}
 	}
-	private def collectFile(uris: Vector<string>, uri: string, options: Array<string>) {
+	private def collectFile(uris: Vector<string>, uri: string, last: LspParsedDocument) {
 		if (DocumentUri.filePath(uri) != null) uris.put(uri);
 	}
 	private def sameOptions(a: Array<string>, b: Array<string>) -> bool {
@@ -49,6 +60,10 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		return true;
 	}
 }
+
+// The last parse of an open document for its diagnostics: the overlay it
+// parsed, the language options it parsed with, and whether it parsed.
+class LspParsedDocument(identity: DocumentVersionIdentity, options: Array<string>, clean: bool) { }
 
 // One LSP diagnostic and the identity used to merge sources: its byte range,
 // code, and message. A whole-program parse error that repeats a single-file

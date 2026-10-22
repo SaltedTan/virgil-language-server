@@ -448,7 +448,7 @@ def test_label_offsets(t: Tester) {
 // parameter the label holds; a label with non-ASCII text before and inside
 // its parameters checks the conversion itself.
 def test_utf16_label_offsets(t: Tester) {
-	var h = LspSignatureHelp.new();
+	var h = LspSignatureHelp.new(null, null, null);
 	h.labelOffsets = true;
 	var e = "\xC3\xA9", clef = "\xF0\x9D\x84\x9E";
 	var label = Strings.format3("d%s(%s: int, %s: int) -> int", clef, e, clef);
@@ -460,7 +460,7 @@ def test_utf16_label_offsets(t: Tester) {
 }
 // The comma between two argument spans, outside comments.
 def test_separators(t: Tester) {
-	var h = LspSignatureHelp.new();
+	var h = LspSignatureHelp.new(null, null, null);
 	var cases: Array<(string, int)> = [
 		(" , ", 1),
 		("/* , */,", 7),
@@ -539,8 +539,11 @@ def test_stale_without_analysis(t: Tester) {
 	s.server.close();
 }
 // While the document fails to parse, as an unclosed call does, the snapshot
-// has no calls, so the reply is null; once it parses again, the reply that
-// waited for that analysis answers.
+// has no calls. The unclosed call itself, which the repair at the cursor
+// mends, gets its signature from an analysis of the repaired document
+// (LspSignatureRepairTest covers these), but any other call gets null at
+// once, never a reply from the old snapshot; once the document parses again,
+// the reply that waited for that analysis answers.
 def test_parse_failure(t: Tester) {
 	var s = session(t);
 	var broken = Strings.format1("%s\ncomponent Broken { def f() { M.add(1, } }\n", SOURCE);
@@ -548,7 +551,7 @@ def test_parse_failure(t: Tester) {
 	var id = s.request("textDocument/signatureHelp", at(broken, "M.add(1, }", 9));
 	t.assert(s.reply(id) == null, "the reply waits");
 	s.settle();
-	t.assert(s.result(t, id) == JsonValue.Null, "an unparseable document");
+	t.assert_string(strings(ADD, ADD_PARAMS, 1), render(s.result(t, id)));
 	expectNullIn(t, s, broken, "add(10, 20)", 8, "nor any other call while it fails to parse");
 	s.change(3, SOURCE);
 	id = s.request("textDocument/signatureHelp", at(SOURCE, "add(10, 20)", 8));

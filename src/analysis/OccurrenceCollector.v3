@@ -530,6 +530,31 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		// missed; none is known.
 		if (depth == 0) callEnds.clear();
 	}
+	// Records the call {e} in {file} alone, as collect records it with the rest
+	// of the file, for a call query (AnalysisScopeFinder.findCall): it walks
+	// {e}'s callee, then reads its arguments only to locate them (see call).
+	// {thisParam} and {thisClass} are the receiver of the member around {e},
+	// and {lambdas} the lambdas around it, innermost first, whose captures
+	// name the variables of the code around them, as in visitFunExpr. Returns
+	// the call's record and the declaration that its callee names, or null
+	// where collect records no call, as for "void(e)".
+	def recordCall(file: VstFile, e: AppExpr, thisParam: ParamDecl, thisClass: VstClass, lambdas: List<FunExpr>) -> AnalysisCallAnswer {
+		fileName = file.fileName;
+		this.thisParam = thisParam;
+		this.thisClass = thisClass;
+		for (l = Lists.reverse(lambdas); l != null; l = l.tail) {
+			for (c = l.head.captures; c != null; c = c.tail) captures = List.new(c.head, captures);
+		}
+		expr(e.func);
+		// The callee's own calls, as in f(a)(b), come first.
+		var start = callRecords.pos;
+		if (call(e) < 0) return null;
+		var record = Ranges.dup(callRecords.alias()[start ...]);
+		var c = AnalysisCallCursor.new(DataReader.new(record), 1);
+		c.absolute = true;
+		c.next();
+		return AnalysisCallAnswer.new(c.open, record, if(c.calleeDelta > 0, lastDeclaration));
+	}
 	// Records the call {e}, after its callee, whose name is the last use
 	// recorded if it is a use at all. Its parentheses and arguments are found
 	// from the tokens around them, which the parser captured with their

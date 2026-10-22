@@ -43,6 +43,9 @@ class AnalysisSnapshot {
 	// {declarations} and builtin members, or null without one; see
 	// docs/architecture.md#member-completion.
 	var members: AnalysisSnapshotMembers;
+	// The answer to the analysis's call query, or null without one or where
+	// no call opens at its offset; see docs/architecture.md#signature-help.
+	var queriedCall: AnalysisCall;
 	// Each file's index, or null without occurrences.
 	private var files: AnalysisSnapshotFiles;
 	// The result's string table, which holds the use-site types.
@@ -680,6 +683,19 @@ class AnalysisSnapshotSignatures(strings: Array<string>, text: Array<byte>, text
 		var params = Array<string>.new(r.read_sleb32());
 		for (k < params.length) params[k] = string(r.read_sleb32(), reader);
 		return AnalysisSignature.new(label, start, params);
+	}
+	// The bytes that decoding signature {i} allocates beyond its object: 8
+	// for each parameter's slot, and each string of signature text that it
+	// names, which is copied, with 64 bytes for its array.
+	def copiedBytes(i: int) -> long {
+		var r = DataReader.new(records).at(offsets[i]);
+		var label = r.read_sleb32(), start = r.read_sleb32(), n = r.read_sleb32();
+		var bytes = 8L * n + copied(label);
+		for (k < n) bytes += copied(r.read_sleb32());
+		return bytes;
+	}
+	private def copied(ref: int) -> long {
+		return if(ref < strings.length, 0, 64L + length(ref));
 	}
 	// A copy of signature text {i}.
 	def copyText(i: int) -> string {

@@ -1,14 +1,89 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// textDocument/signatureHelp from the call sites of a current snapshot, which
-// LspSnapshotRequests selects as for a hover. See
+// One textDocument/signatureHelp request in a document that does not parse,
+// whose call needs a call query (AnalysisScopeKinds.CALL) of an analysis of
+// the document repaired at the cursor. Its query's offset is the "(" of the
+// innermost call open at the cursor.
+class LspSignatureRequest extends LspQueryRequest {
+	def help: LspSignatureHelp;
+
+	new(help, id: JsonRpcId) super(help, id) { }
+	def answer(snapshot: AnalysisSnapshot) -> JsonValue {
+		return help.repaired(this, snapshot);
+	}
+}
+
+// textDocument/signatureHelp. Where the open document's text parses, or no
+// document is open, the call sites of a current snapshot, which
+// LspSnapshotRequests selects as for a hover. Where it does not parse, the
+// innermost call open at the cursor, from a call query of an analysis of the
+// document with the repair that completion uses (LspCompletionRepair), which
+// is scheduled, replaced, cancelled, and reused as LspQueryRequests
+// describes; or null at once where no call is open at the cursor, the cursor
+// is in a comment or a literal, or the repair does not parse. See
 // docs/architecture.md#signature-help.
-class LspSignatureHelp {
+class LspSignatureHelp extends LspQueryRequests {
 	// True if the client's textDocument.signatureHelp.signatureInformation
 	// .parameterInformation.labelOffsetSupport is true, so that parameters
 	// are labelled by their UTF-16 offsets in the signature's label.
 	var labelOffsets: bool;
+	// The open documents' last parses, or null to parse each document again.
+	var parser: LspParserDiagnostics;
+	// The requests answered from snapshots.
+	private var snapshots: LspSnapshotMethod;
+
+	new(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) super(store, projects, send, "signature help") { }
+
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		snapshots = requests.unregistered("signatureHelp", answer);
+		dispatcher.onDeferredRequest("textDocument/signatureHelp", receive);
+	}
+	// Gives {request} to the snapshot requests unless its document is open and
+	// does not parse with its project's language options. A request whose
+	// parameters are invalid goes there too, for its error.
+	private def receive(request: JsonRpcMessage.Request) {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = member(params, "textDocument"), position = member(params, "position");
+		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
+		var line = intMember(position, "line"), character = intMember(position, "character");
+		var overlay = if(uri != null && line >= 0 && character >= 0, store.overlay(uri));
+		var project = if(overlay != null, projects.forDocument(overlay.uri).active);
+		if (project == null || documentParses(overlay, project.definition.compilerArgs)) return snapshots.handle(request);
+		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
+		var ctx = LspCursorScanner.new(overlay.text).scan(map.positionToOffset(line, character));
+		var r = LspSignatureRequest.new(this, request.id), calls = ctx.calls();
+		var path = DocumentUri.filePath(overlay.uri);
+		// Null where no call is open, in a comment or a literal, and without
+		// a file path or a worker.
+		if (ctx.place != LspCursorPlace.CODE || calls.length == 0 || path == null || scheduler == null) return finish(r, r.fallback());
+		var reuse = cached(overlay, ctx.cursor);
+		if (reuse != JsonValue.Null) return finish(r, JsonRpcReply.Result(reuse));
+		// The repair inserts nothing before the cursor, so every "(" before it
+		// is at the same offset in both texts.
+		var text = LspCompletionRepair.repair(ctx);
+		if (!parses(path, text, project.definition.compilerArgs)) return finish(r, r.fallback());
+		r.offset = calls[calls.length - 1];
+		r.kinds = AnalysisScopeKinds.CALL;
+		r.prefix = "";
+		queue(r, overlay, ctx.cursor, project, text);
+	}
+	// Whether {doc}'s text parses with language options {options}.
+	private def documentParses(doc: DocumentOverlay, options: Array<string>) -> bool {
+		if (parser != null) return parser.parses(doc, options);
+		var path = DocumentUri.filePath(doc.uri);
+		return parses(if(path != null, path, doc.uri), doc.text, options);
+	}
+	// The SignatureHelp of {r}'s call, from {snapshot}, the result of its
+	// call query, with its active parameter in the repaired text, which has
+	// the same commas before the cursor as the document; or null if the
+	// program did not parse, verification did not reach the call, or the call
+	// has no signature.
+	def repaired(r: LspSignatureRequest, snapshot: AnalysisSnapshot) -> JsonValue {
+		var call = snapshot.queriedCall;
+		if (!snapshot.parsed || call == null || call.open != r.offset || call.signature == null) return JsonValue.Null;
+		return help(call.signature, activeParameter(r.text, call, r.cursor));
+	}
 
 	// The SignatureHelp of the innermost call whose argument list holds
 	// {offset}, after its opening parenthesis and up to its closing one, if
@@ -88,5 +163,13 @@ class LspSignatureHelp {
 			}
 		}
 		return end;
+	}
+	private def member(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def intMember(obj: HashMap<string, JsonValue>, key: string) -> int {
+		if (obj == null || !obj.has(key) || !JsonValue.Int.?(obj[key])) return -1;
+		return JsonValue.Int.!(obj[key]).v;
 	}
 }

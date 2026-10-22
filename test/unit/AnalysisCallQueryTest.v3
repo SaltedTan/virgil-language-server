@@ -1,0 +1,281 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The worker's call query (ProgramAnalysis.callAt, AnalysisScopeFinder.
+// findCall), analyzed in process: the call whose argument list opens at an
+// offset, as the collector records it with the rest of its file. In the texts
+// below, "$" marks the query's offset, before a "(", and is removed.
+def T = UnitTests.register;
+def X = [
+	T("AnalysisCallQuery:same_as_collection", test_same_as_collection),
+	T("AnalysisCallQuery:library_calls", test_library_calls),
+	T("AnalysisCallQuery:places", test_places),
+	T("AnalysisCallQuery:sentinel", test_sentinel),
+	T("AnalysisCallQuery:no_call", test_no_call),
+	T("AnalysisCallQuery:lambda_captures", test_lambda_captures),
+	T("AnalysisCallQuery:scaling", test_scaling),
+	()
+];
+def MAIN = "main.v3";
+def CALL_SITES = "test/fixtures/analysis/call-sites/main.v3";
+
+// {marked} without its "$", and the offset of the "$".
+def unmark(marked: string) -> (string, int) {
+	var cursor = -1, text = Vector<byte>.new();
+	for (c in marked) {
+		if (c == '$' && cursor < 0) cursor = text.length;
+		else text.put(c);
+	}
+	return (text.extract(), cursor);
+}
+// The call of {answer}, from {a}'s display, as ProgramAnalysis.calls makes one.
+def callOf(a: ProgramAnalysis, answer: AnalysisCallAnswer) -> AnalysisCall {
+	if (answer == null) return null;
+	var c = AnalysisCallCursor.new(DataReader.new(answer.record), 1);
+	c.absolute = true;
+	if (!c.next()) return null;
+	var args = Array<int>.new(2 * c.argCount);
+	for (i < c.argCount) {
+		c.nextArg();
+		args[2 * i] = c.argBegin;
+		args[2 * i + 1] = c.argEnd;
+	}
+	c.finish();
+	return AnalysisCall.new(c.open, c.close, args, if(c.calleeDelta > 0, c.open - c.calleeDelta, -1), answer.target,
+		if(c.signature > 0, a.callSignature(c.signature - 1)));
+}
+// {call}'s parentheses, arguments, callee and its declaration, and signature.
+def render(call: AnalysisCall) -> string {
+	if (call == null) return "none";
+	var buf = StringBuilder.new().put2("@%d-%d [", call.open, call.close);
+	for (i < call.argCount()) {
+		if (i > 0) buf.putc(' ');
+		buf.put2("%d-%d", call.args[2 * i], call.args[2 * i + 1]);
+	}
+	buf.put1("] callee %d ", call.callee);
+	if (call.target != null) call.target.render(buf);
+	else buf.puts("-");
+	var s = call.signature;
+	if (s == null) return buf.puts(" no signature").toString();
+	buf.put2(": %s @%d", s.label, s.start);
+	for (p in s.params) buf.put1(" [%s]", p);
+	return buf.toString();
+}
+// The call at the "$" in {marked}, whether or not it verifies, with only the
+// label and parameters of its signature, or "none".
+def labelAt(marked: string) -> string {
+	var m = unmark(marked);
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var call = callOf(a, a.callAt(MAIN, m.1));
+	if (call == null) return "none";
+	if (call.signature == null) return "no signature";
+	var buf = StringBuilder.new().puts(call.signature.label);
+	for (p in call.signature.params) buf.put1(" [%s]", p);
+	return buf.put1(" / %d", call.argCount()).toString();
+}
+def check(t: Tester, marked: string, expected: string) {
+	var got = labelAt(marked);
+	if (!Strings.equal(expected, got)) t.fail3("%s\n  expected: %s\n  got:      %s", marked, expected, got);
+}
+// Checks that the query at each call of {path} in {sources} answers that
+// call as an ordinary analysis collects it, and returns how many it checked.
+def agree(t: Tester, sources: Array<AnalysisSource>, path: string) -> int {
+	var ordinary = AeneasAdapter.analyzeProgram(sources, [], false);
+	var scoped = AeneasAdapter.analyzeForScope(sources, [], false);
+	var calls = ordinary.calls(path);
+	for (call in calls) {
+		var expected = render(call), got = render(callOf(scoped, scoped.callAt(path, call.open)));
+		if (!Strings.equal(expected, got)) t.fail3("%s\n  expected: %s\n  got:      %s", path, expected, got);
+	}
+	return calls.length;
+}
+
+// Every call of the call-sites fixture, of each kind that the collector
+// records: the same parentheses, arguments, callee, declaration, and
+// signature, including calls of a call's result, nested and generic calls,
+// and calls in a lambda.
+def test_same_as_collection(t: Tester) {
+	var input = System.fileLoad(CALL_SITES);
+	if (input == null) return t.fail1("cannot read %s; run the unit tests from the repository root", CALL_SITES);
+	t.asserti(29, agree(t, [AnalysisSource.new(CALL_SITES, input)], CALL_SITES));
+}
+// Every call of each file of Virgil's lib/util, analyzed together.
+def test_library_calls(t: Tester) {
+	var dir = "vendor/virgil/lib/util", listed = ProjectFiles.list(dir, 256);
+	if (listed.names == null) return t.fail1("cannot list %s", dir);
+	var sources = Vector<AnalysisSource>.new();
+	for (name in listed.names) {
+		if (!Strings.endsWith(name, ".v3")) continue;
+		var path = ProjectFiles.join(dir, name), input = System.fileLoad(path);
+		if (input == null) return t.fail1("cannot read %s", path);
+		sources.put(AnalysisSource.new(path, input));
+	}
+	var all = sources.extract(), checked = 0;
+	for (s in all) checked += agree(t, all, s.path);
+	t.assert(checked > 1000, "lib/util's calls");
+}
+// A call in each place that a member holds code: a method's statements, a
+// field's initializer, a component's, an enum case's arguments, a class's
+// super clause and a constructor's, a lambda's body, and an if's condition.
+def test_places(t: Tester) {
+	var add = "def add(a: int, b: int) -> int [a: int] [b: int] / 2";
+	var util = "component U { def add(a: int, b: int) -> int { return a + b; } }\n";
+	for (marked in [
+		"class C { def m() { var x = U.add$(1, 2); } }",
+		"class C { var f = U.add$(1, 2); }",
+		"component K { var f = U.add$(1, 2); }",
+		"enum E(v: int) { A(U.add$(1, 2)) }",
+		"class B(v: int) { } class C extends B(U.add$(1, 2)) { }",
+		"class B(v: int) { } class C extends B { new() super(U.add$(1, 2)) { } }",
+		"class C { def m() { var f = fun (x: int) => U.add$(x, 2); } }",
+		"class C { def m() { if (U.add$(1, 2) > 0) return; } }",
+		"def top = U.add$(1, 2);"
+	]) {
+		check(t, Arrays.concat(util, marked), add);
+	}
+}
+// The repair's sentinel is an unresolved name, which leaves a generic call's
+// type argument unknown where nothing else infers it, as the call without it
+// does, and lets an earlier argument infer one.
+def test_sentinel(t: Tester) {
+	var util = "component U { def id<T>(v: T) -> T { return v; } def pair<A, B>(a: A, b: B) -> (A, B) { return (a, b); } }\n";
+	check(t, Arrays.concat(util, "def x = U.id$(virgilLspCursor);"), "def id(v: ?) -> ? [v: ?] / 1");
+	check(t, Arrays.concat(util, "def x = U.id$();"), "def id(v: ?) -> ? [v: ?] / 0");
+	check(t, Arrays.concat(util, "def x = U.id<int>$(virgilLspCursor);"), "def id(v: int) -> int [v: int] / 1");
+	check(t, Arrays.concat(util, "def x = U.pair$(1, virgilLspCursor);"), "def pair(a: int, b: ?) -> (int, ?) [a: int] [b: ?] / 2");
+	check(t, Arrays.concat(util, "def x = U.pair$(1, );"), "def pair(a: ?, b: ?) -> (?, ?) [a: ?] [b: ?] / 1");
+	// An unresolved callee has a call without a signature.
+	check(t, "def x = missing$(virgilLspCursor);", "no signature");
+}
+// No call opens at a "(" that is not an application's: a group, a tuple, a
+// condition, parameters, a super clause, or void(...); nor where the offset
+// is not a "(", nor where the program did not parse or verification did not
+// reach the call.
+def test_no_call(t: Tester) {
+	var util = "component U { def add(a: int, b: int) -> int { return a + b; } }\n";
+	for (marked in [
+		"def x = $(1 + 2);",
+		"def x = $(1, 2);",
+		"def f(b: bool) { if $(b) return; }",
+		"def f$(b: bool) { }",
+		"class B(v: int) { } class C extends B { new() super$(1) { } }",
+		"def f() { void$(U.add(1, 2)); }",
+		"def x = U.$add(1, 2);",
+		"def x = U.add(1, 2)$;",
+		"def x = U.add$(1, 2"
+	]) {
+		check(t, Arrays.concat(util, marked), "none");
+	}
+	// Past the error limit, verification stops before a later component.
+	var errors = StringBuilder.new().puts("component Errors { def f() {\n");
+	for (i < 16) errors.put1("unresolved%d;\n", i);
+	check(t, Arrays.concat(util, errors.puts("} }\ncomponent Late { def g() { U.add$(1, 2); } }\n").toString()), "none");
+}
+// A closure called in a lambda names the variable that the lambda captures,
+// not the parameter that verification adds for the capture, as collection
+// does.
+def test_lambda_captures(t: Tester) {
+	var text = "component C {\n\tdef m(g: int -> int) {\n\t\tvar f = fun (x: int) => fun (y: int) => g(x + y);\n\t}\n}\n";
+	t.assert(agree(t, [AnalysisSource.new(MAIN, text)], MAIN) == 1, "one call");
+	var m = unmark("component C {\n\tdef m(g: int -> int) {\n\t\tvar f = fun (x: int) => fun (y: int) => g$(x + y);\n\t}\n}\n");
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	var call = callOf(a, a.callAt(MAIN, m.1));
+	t.assert(call != null && call.target != null, "the callee's declaration");
+	if (call != null && call.target != null) {
+		t.assert(call.target.kind == AnalysisDeclKind.PARAMETER, "a parameter");
+		t.asserti(1, call.target.range.beginLine - 1);
+	}
+}
+// Doubling the depth of nested calls, of nested calls of results, or the
+// number of a call's arguments at most doubles the steps that the query
+// reads to find and record the call, whether the call is the innermost or
+// the outermost, or a call whose callee holds the others, and at most
+// triples the bytes it allocates.
+def test_scaling(t: Tester) {
+	var shapes: Array<(string, int -> (string, string), int)> = [
+		("innermost of nested calls", nest("f(", "f$(1)", ")", _), 1000),
+		("outermost of nested calls", nest("f(", "1", ")", _), 1000),
+		("nested calls of results", nest("h(", "1", ")()", _), 500),
+		("call of nested results", results, 500),
+		("arguments", arguments, 2000)
+	];
+	for (shape in shapes) {
+		var n = shape.2, small = cost(t, shape.1(n)), large = cost(t, shape.1(2 * n));
+		if (small.0 <= 0 || large.0 > 2 * small.0 + 100) {
+			t.fail3("the %s read %d steps at %d, ", shape.0, large.0, 2 * n);
+			t.fail2("against %d at %d", small.0, n);
+		}
+		if (small.1 <= 0 || large.1 > 3 * small.1 + 100000) {
+			t.fail3("the %s allocate %d bytes at %d, ", shape.0, large.1, 2 * n);
+			t.fail2("against %d at %d", small.1, n);
+		}
+	}
+}
+// No declarations, and {open}, {n} times, then {middle}, then {close}, {n}
+// times; the query is at the first "(" unless {middle} marks another.
+def nest(open: string, middle: string, close: string, n: int) -> (string, string) {
+	var b = StringBuilder.new();
+	for (i < n) b.puts(open);
+	b.puts(middle);
+	for (i < n) b.puts(close);
+	return ("", b.toString());
+}
+// Calls of results nested {n} deep, h(h(...)())(), queried at the last "(",
+// whose callee holds the others.
+def results(n: int) -> (string, string) {
+	var b = StringBuilder.new();
+	for (i < n) b.puts("h(");
+	b.puts("1");
+	for (i < n - 1) b.puts(")()");
+	return ("", b.puts(")$()").toString());
+}
+// A method of {n} parameters, and a call of it.
+def arguments(n: int) -> (string, string) {
+	var d = StringBuilder.new().puts("\tdef g("), b = StringBuilder.new().puts("g(");
+	for (i < n) {
+		if (i > 0) {
+			d.puts(", ");
+			b.puts(", ");
+		}
+		d.put1("p%d: int", i);
+		b.puts("1");
+	}
+	return (d.puts(") -> int { return 0; }\n").toString(), b.puts(")").toString());
+}
+// The steps that the query reads and the bytes it allocates at the call
+// {fixture.1}, in a method beside the declarations {fixture.0}, at its "$" or
+// else at its first "(".
+def cost(t: Tester, fixture: (string, string)) -> (int, long) {
+	var expr = fixture.1;
+	var b = StringBuilder.new().puts("component C {\n\tdef f(x: int) -> int { return x; }\n").puts(fixture.0);
+	b.puts("\tdef h(x: int) -> void -> int { return fun () => x; }\n");
+	b.puts("\tdef run() {\n\t\tvar n = ");
+	if (!hasMark(expr)) {
+		var i = 0;
+		while (expr[i] != '(') i++;
+		expr = Strings.format2("%s$%s", Arrays.range(expr, 0, i), Arrays.range(expr, i, expr.length));
+	}
+	var m = unmark(b.puts(expr).puts(";\n\t}\n}\n").toString());
+	var a = AeneasAdapter.analyzeForScope([AnalysisSource.new(MAIN, m.0)], [], false);
+	if (!a.verified) {
+		for (d in a.diagnostics) t.fail1("the fixture does not verify: %s", d.toString());
+		return (-1, -1);
+	}
+	if (a.callAt(MAIN, m.1) == null) {
+		t.fail("no call at the offset");
+		return (-1, -1);
+	}
+	RiGc.forceGC();
+	var before = Semispace.fromSpaceUsed(), collections = GcStats.gc_count;
+	var answer = a.callAt(MAIN, m.1);
+	var bytes = Semispace.fromSpaceUsed() - before;
+	if (GcStats.gc_count != collections) {
+		t.fail("the query collected the heap");
+		return (-1, -1);
+	}
+	return (answer.steps, bytes);
+}
+def hasMark(s: string) -> bool {
+	for (c in s) if (c == '$') return true;
+	return false;
+}
