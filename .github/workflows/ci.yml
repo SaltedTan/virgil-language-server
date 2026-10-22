@@ -67,6 +67,14 @@ jobs:
         run: |
           build/virgil-lsp --version
           file build/virgil-lsp
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-macos
+          path: |
+            build/virgil-lsp
+            build/virgil-lsp-worker
+          if-no-files-found: error
+          retention-days: 3
 
   vscode-client:
     name: VS Code client (type-check and test, linux)
@@ -127,3 +135,40 @@ jobs:
       - name: Extension Host test against the installed VSIX
         working-directory: clients/vscode
         run: xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-*.vsix
+
+  vscode-extension-host-macos:
+    # Runs the test against the server that test-macos built and tested, rather
+    # than building Virgil again. It is a separate job, not a step of
+    # test-macos, so that it is not yet a required check; see
+    # docs/compatibility.md for CI policy. macOS needs no virtual display.
+    name: VS Code Extension Host test (built server, macOS Apple Silicon via Rosetta 2)
+    needs: test-macos
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      # The test's fixture project uses the pinned Virgil checkout's libraries.
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install Rosetta 2
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - uses: actions/download-artifact@v8
+        with:
+          name: server-macos
+          path: build
+      - name: Restore executable permissions
+        # Artifacts don't preserve file permissions.
+        run: |
+          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          build/virgil-lsp --version
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install client dependencies from the lockfile
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Extension Host test
+        working-directory: clients/vscode
+        run: npm run test:e2e
