@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Guidance for using the VS Code extension alongside `titzer.virgil`, the Virgil author's extension ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
+- A scripted test of the LazyVim configuration, `test/e2e/lazyvim/run.sh` (`make test-lazyvim`), run locally against a release archive or a build. It runs the shipped plugin spec under the pinned LazyVim starter and plugins, in Neovim's terminal UI in tmux, through LazyVim's own keys, on Linux and macOS and with Neovim 0.11 and 0.12. The missing-root warning that noice.nvim drops is reported as an expected failure, with a separate run of the workaround. See the [LazyVim test](test/e2e/lazyvim/README.md).
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 # Neovim / LazyVim
 
-> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; see the [scripted run results](../../docs/manual-testing.md#results).
+> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; a [scripted LazyVim test](../../test/e2e/lazyvim/README.md) runs it locally, and the [results](../../docs/manual-testing.md#results) record its runs.
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 

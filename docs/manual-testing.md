@@ -1,25 +1,25 @@
 # Manual testing
 
-In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
+In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration locally. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
 
 ## What the automated tests cover
 
-Both editor tests use the same fixture, [`test/e2e/nvim/fixture`](../test/e2e/nvim/fixture/), copied into a temporary directory.
+The editor tests use the same fixture, [`test/e2e/nvim/fixture`](../test/e2e/nvim/fixture/), copied into a temporary directory.
 
 | Test | Command | Where it runs | What it checks |
 | --- | --- | --- | --- |
 | [Headless Neovim test](../editors/nvim/README.md#headless-smoke-test) | `make test-nvim`, also part of `make test` | CI jobs `test` (`ubuntu-24.04`, Neovim 0.11.6) and `test-macos` (`macos-15`, Apple Silicon under Rosetta 2, Homebrew Neovim), and both build jobs of the [release workflow](releasing.md#how-the-workflow-works) | See the [plain-configuration smoke-test coverage](../editors/nvim/README.md#headless-smoke-test). |
 | [Extension Host test](../clients/vscode/README.md#extension-host-test) | `npm run test:e2e` in `clients/vscode`; not part of `make test` | CI job `vscode-extension-host` (`ubuntu-24.04`, VS Code 1.142.0), on the extension from source and on a VSIX it packages and installs, and CI job `vscode-extension-host-macos` (`macos-15`, Apple Silicon under Rosetta 2, with the server that `test-macos` built), on the extension from source. The release workflow runs it on the VSIX it attaches ([#117](https://github.com/SaltedTan/virgil-language-server/issues/117)). | See the [Extension Host checks](../clients/vscode/README.md#extension-host-test), including installed-VSIX mode. |
 | [Lifecycle tests](../clients/vscode/README.md#development) | `npm test` in `clients/vscode` | CI job `vscode-client` (`ubuntu-24.04`) | Client startup, shutdown, restart, and recovery, the Virgil root settings, and the documents and files sent to the server, with a simulated extension host and language client |
+| [Scripted LazyVim test](../test/e2e/lazyvim/README.md) | `test/e2e/lazyvim/run.sh --archive <archive>`, or `make test-lazyvim` for the build; not part of `make test` | Local runs only, not CI: Linux or macOS, with tmux and access to GitHub | The procedure's Neovim steps through LazyVim's own client, keys, and windows, in a terminal UI under the pinned starter and plugins, including a restart, a missing Virgil root, and a change on disk. See [what it checks](../test/e2e/lazyvim/README.md#what-it-checks). |
 
 The editor tests don't cover:
 
 - VS Code Remote-SSH or Remote-WSL. Nothing runs inside WSL 2.
 - An installed VSIX on macOS. CI runs the Extension Host test there only on the extension from source.
-- The LazyVim configuration.
-- In Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings.
-- Restarting the server from Neovim.
-- What the editor shows. The tests read diagnostics, symbols, locations, hover text, signature help, and completion items through editor APIs, not from the Problems view, the outline, a hover popup, a signature popup, a completion menu, or a notification.
+- In plain Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, and the LazyVim test covers them in LazyVim.
+- Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
+- What the editor shows. The tests read diagnostics, symbols, locations, hover text, signature help, and completion items through editor APIs, not from the Problems view, the outline, a hover popup, a signature popup, a completion menu, or a notification. The LazyVim test reads the text of noice.nvim's hover and signature windows and blink.cmp's menu items, but not how they look.
 
 ## Matrix
 
@@ -34,7 +34,7 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 | Neovim, plain configuration | Linux x86-64, locally or over SSH | `x86-64-linux` | Headless Neovim test |
 | Neovim, plain configuration | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | Headless Neovim test |
 | Neovim, plain configuration | WSL 2 | `x86-64-linux` | None |
-| LazyVim | Linux x86-64, macOS, or WSL 2 | As for Neovim | None |
+| LazyVim | Linux x86-64, macOS, or WSL 2 | As for Neovim | Scripted LazyVim test (local runs only) |
 
 [Where the server runs](compatibility.md#where-the-server-runs) explains the remote setups.
 
@@ -54,6 +54,8 @@ Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), whi
 ### Neovim and LazyVim
 
 Set `VIRGIL_LOC` to the checkout's `vendor/virgil`, change to `/tmp/virgil-check`, and start Neovim there. Neovim 0.11 doesn't show diagnostics as virtual text by default; `:lua vim.diagnostic.setloclist()` lists them.
+
+For LazyVim on Linux and macOS, `test/e2e/lazyvim/run.sh --archive <archive>` runs these steps through LazyVim's own keys, with its own Neovim, starter, and plugins, and reports each one ([LazyVim test](../test/e2e/lazyvim/README.md)). Record its summary, and look through the steps by hand for what it doesn't check.
 
 1. **Diagnostics.** Open `bad.v3`. It has one error, "invalid start of expression", at line 3, column 27. Without saving, replace line 3 with `component C { def value = 1; }`; the error disappears. Undo the edit; it comes back. Open `words/Words.v3`. After a moment, it has one error, "expected int in var initialization, got Array<byte>", on line 7.
 2. **Document symbols.** In `words/Words.v3`, `gO` (or `:lua vim.lsp.buf.document_symbol()`) lists the component `Words` and its method `join`.
