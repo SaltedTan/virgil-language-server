@@ -59,7 +59,7 @@ The [manual test matrix](manual-testing.md) records which of these setups were t
 
 Server and VS Code extension versions are independent, and the extension's version doesn't follow the server's ([versions](../clients/vscode/README.md#versions)). Each server prerelease also attaches the VSIX of the extension's version at the tagged commit, tested against that release's Linux server, and its release notes give both versions ([Releases](releasing.md#vs-code-extension)). The extension bundles no server. This table records which versions work together.
 
-For using the extension alongside `titzer.virgil`, the Virgil author's extension, see [With the Virgil extension installed](../clients/vscode/README.md#with-the-virgil-extension-installed) for the observed behavior and limits of the coexistence test.
+The extension can be installed alongside `titzer.virgil`, the Virgil author's extension. [With the Virgil extension installed](../clients/vscode/README.md#with-the-virgil-extension-installed) describes what VS Code 1.142.0 did in a test with both installed, and what that test didn't cover.
 
 | VS Code extension | Server versions |
 | --- | --- |
