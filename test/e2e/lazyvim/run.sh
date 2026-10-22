@@ -199,18 +199,16 @@ stop_processes() {
   for pid in $left; do kill -KILL "$pid" 2>/dev/null || true; done
 }
 
-# Saves what a run leaves in the work directory: its LSP log and, while its
-# session is still open, the screen.
-save_evidence() {
+# save_screen NAME WHEN: appends the screen of NAME's pane, with its
+# scrollback, to its screen file, while its session is still open. The pane
+# stays open after Neovim exits, so this also keeps what Neovim printed.
+save_screen() {
   local name=$1 sock=$work/$1.sock
   if [[ -S $sock ]] && tmux -S "$sock" has-session -t "$name" 2>/dev/null; then
     {
-      echo "== screen when the run was stopped"
-      tmux -S "$sock" capture-pane -p -t "$name" 2>&1 || true
+      echo "== screen $2"
+      tmux -S "$sock" capture-pane -p -S - -t "$name" 2>&1 || true
     } >> "$out/$name.screen.txt"
-  fi
-  if [[ -f ${XDG_STATE_HOME:-}/nvim/lsp.log ]]; then
-    mv "$XDG_STATE_HOME/nvim/lsp.log" "$out/$name.lsp.log"
   fi
 }
 
@@ -224,7 +222,10 @@ cleanup() {
   fi
   if [[ -n $current ]]; then
     echo "FAIL: $current did not finish; its screen and LSP log are in $out"
-    save_evidence "$current"
+    save_screen "$current" "when the run was stopped"
+    if [[ -f ${XDG_STATE_HOME:-}/nvim/lsp.log ]]; then
+      mv "$XDG_STATE_HOME/nvim/lsp.log" "$out/$current.lsp.log"
+    fi
     (( rc != 0 )) || rc=1
   fi
   stop_processes
@@ -400,12 +401,14 @@ cat "$work/plugins.txt" >> "$out/provenance.txt"
 cat "$work/plugins.txt"
 
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
-# One run: Neovim with the observer and the driver, then its exit status.
+# One run: Neovim with the observer and the driver, then its exit status,
+# which the pane also exits with.
 cat > "$work/pane.sh" <<'SH'
 TERM=xterm-256color nvim -n --cmd 'lua dofile(vim.env.VIRGIL_HARNESS .. "/observer.lua")' \
   -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/driver.lua")' "$VIRGIL_DRIVER_FILE"
-echo $? > "$VIRGIL_DRIVER_STATUS"
-tmux wait-for -S "$VIRGIL_DRIVER_RUN"
+status=$?
+echo "$status" > "$VIRGIL_DRIVER_STATUS"
+exit "$status"
 SH
 
 summary=''
@@ -420,23 +423,35 @@ run() {
   echo "== $name"
   (
     if [[ $mode == main ]]; then export VIRGIL_LOC=$virgil_loc; fi
-    export VIRGIL_DRIVER_RUN=$name VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
+    export VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
     export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$results
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
     export VIRGIL_DRIVER_STATUS=$work/$name.status
-    tmux -S "$sock" -f /dev/null new-session -d -s "$name" -x 200 -y 50 -c "$work/project" \
-      "/bin/sh $work/pane.sh"
+    # The pane stays open when Neovim exits, for its screen, and keeps the
+    # tmux server running until stop_processes; the hook then wakes wait-for,
+    # whether before or after it starts waiting. The script's path is an
+    # argument of its own, not split by a shell.
+    tmux -S "$sock" -f /dev/null set-option -g remain-on-exit on \; \
+      set-hook -g pane-died "wait-for -S $name" \; \
+      new-session -d -s "$name" -x 200 -y 50 -c "$work/project" /bin/sh "$work/pane.sh"
   )
   deadline "$run_timeout" tmux -S "$sock" wait-for "$name" || rc=$?
   if (( rc == 124 )); then
     echo "FAIL: $name exceeded $run_timeout seconds; screen in $out/$name.screen.txt"
-    save_evidence "$name"
+    save_screen "$name" "when the run timed out"
     stop_processes
     verdict=FAIL
   fi
-  current=''
   exit_status=$(cat "$work/$name.status" 2>/dev/null || echo '?')
+  done_line=$(grep '^DONE ' "$results" 2>/dev/null | tail -n 1 || true)
+  re='^DONE ([0-9]+) passed, ([0-9]+) failed, ([0-9]+) expected failure'
   echo "-- Neovim exit status $exit_status, after $((SECONDS - started)) s"
+  if (( rc != 124 )) && [[ $exit_status != 0 || ! $done_line =~ $re ]]; then
+    echo "-- the screen after Neovim exited is in $out/$name.screen.txt"
+    save_screen "$name" "after Neovim exited"
+    verdict=FAIL
+  fi
+  current=''
   cat "$results" 2>/dev/null || echo "FAIL: no results"
   local log=$XDG_STATE_HOME/nvim/lsp.log
   if [[ -f $log ]]; then
@@ -461,8 +476,6 @@ run() {
     verdict=FAIL
   fi
   stop_processes
-  done_line=$(grep '^DONE ' "$results" 2>/dev/null | tail -n 1 || true)
-  re='^DONE ([0-9]+) passed, ([0-9]+) failed, ([0-9]+) expected failure'
   if [[ $done_line =~ $re ]]; then
     passed=${BASH_REMATCH[1]} failed=${BASH_REMATCH[2]} xfail=${BASH_REMATCH[3]}
   fi

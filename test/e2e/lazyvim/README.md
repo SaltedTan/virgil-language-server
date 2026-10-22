@@ -49,12 +49,12 @@ The output directory gets:
 - `lazy-install.log`: lazy.nvim's output while it installs the plugins;
 - `<run>.results`: a line per check, then `DONE <n> passed, <n> failed, <n> expected failure(s)`;
 - `<run>.lsp.log`: Neovim's LSP log at debug level, with the server's stderr;
-- `<run>.screen.txt`: the screen at each failure, and when a run times out or is interrupted;
+- `<run>.screen.txt`: the screen at each failed step; when a run times out or is interrupted; and after Neovim exits with a nonzero or unknown status or without a complete `<run>.results`, with what Neovim left on the terminal, such as an error it printed as it exited, and tmux's line with its exit status;
 - `summary.txt`: a line per run, its `XFAIL` lines, and the result.
 
 Everything else, the XDG directories, plugins, server, and a copy of the [Neovim test's fixture](../nvim/fixture/), is in a work directory, which is removed at the end unless `--keep-work`. It is under `/tmp` on macOS, where tmux's socket path would be too long under `$TMPDIR`, as for the [Extension Host test](../../../clients/vscode/README.md#extension-host-test), and under `$TMPDIR` elsewhere. A run writes nothing in the checkout, except with `--update-lock`.
 
-Installing the plugins has a 600-second deadline, and each run 240 seconds; `VIRGIL_LAZYVIM_RUN_TIMEOUT` sets another, to test the timeout path. After each run, the server and worker processes must have exited by themselves. On a timeout, SIGINT, SIGTERM, or SIGHUP, the script saves the screen and the LSP log, then stops the tmux server and every process of the runs: the tmux server's process tree, the server and worker processes that `observer.lua` recorded, and any process whose command line names the work directory, with SIGTERM and, after five seconds, SIGKILL. It then checks that none is left, reports any that is, and exits with a nonzero status.
+Installing the plugins has a 600-second deadline, and each run 240 seconds; `VIRGIL_LAZYVIM_RUN_TIMEOUT` sets another, to test the timeout path. Each run's tmux pane stays open after Neovim exits, so that its screen can be saved, until the script stops its tmux server. After each run, the server and worker processes must have exited by themselves. On a timeout, SIGINT, SIGTERM, or SIGHUP, the script saves the screen and the LSP log, then stops the tmux server and every process of the runs: the tmux server's process tree, the server and worker processes that `observer.lua` recorded, and any process whose command line names the work directory, with SIGTERM and, after five seconds, SIGKILL. It then checks that none is left, reports any that is, and exits with a nonzero status.
 
 ## Expected results
 
