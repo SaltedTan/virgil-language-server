@@ -1,6 +1,6 @@
 # Neovim / LazyVim
 
-> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for 0.1.0-alpha.1 and 0.1.0-alpha.2 ([results](../../docs/manual-testing.md#results)).
+> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; see the [scripted run results](../../docs/manual-testing.md#results).
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
@@ -97,5 +97,5 @@ The test skips with a message if Neovim is missing or older than 0.11. Set
 ## Troubleshooting
 
 - `:checkhealth vim.lsp` shows whether the client attached.
-- `:LspInfo` (with nvim-lspconfig) or `:lua =vim.lsp.get_clients()` lists running clients.
-- `:LspLog` (with nvim-lspconfig) opens the client log; without it, `:lua =vim.lsp.log.get_filename()` prints the log's path. Server logs are written to stderr and appear there, as lines marked `"stderr"`.
+- `:LspInfo` (with nvim-lspconfig on Neovim 0.11) or `:lua =vim.lsp.get_clients()` lists running clients.
+- For the client log, including the server's stderr and LSP messages, see [Collecting logs](../../docs/manual-testing.md#collecting-logs).

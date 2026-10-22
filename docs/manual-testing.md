@@ -1,6 +1,6 @@
 # Manual testing
 
-The automated editor tests run the plain Neovim configuration on Linux and macOS, and VS Code on Linux. This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
+In CI, the automated editor tests run the plain Neovim configuration on Linux and macOS, and VS Code on Linux. Local runs, including VS Code on macOS, are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
 
 ## What the automated tests cover
 
@@ -14,7 +14,7 @@ Both editor tests use the same fixture, [`test/e2e/nvim/fixture`](../test/e2e/nv
 
 The editor tests don't cover:
 
-- VS Code on macOS, Remote-SSH, or Remote-WSL. Nothing runs inside WSL 2.
+- VS Code Remote-SSH or Remote-WSL. Nothing runs inside WSL 2. The Extension Host test can run locally on macOS, but CI runs it only on Linux.
 - The LazyVim configuration.
 - Configuration changes other than an unsaved edit to the project file: changes on disk, a missing Virgil root, and changed settings. The lifecycle tests check the extension's side of a settings change only against a simulated extension host.
 - Restarting the server from Neovim.
@@ -27,7 +27,7 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
 | VS Code | Linux x86-64 | `x86-64-linux` | Extension Host test |
-| VS Code | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | None |
+| VS Code | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | Extension Host test (local runs only) |
 | VS Code Remote-SSH, from any desktop | Linux x86-64 | `x86-64-linux` | None |
 | VS Code Remote-WSL, from Windows | WSL 2 | `x86-64-linux` | None |
 | Neovim, plain configuration | Linux x86-64, locally or over SSH | `x86-64-linux` | Headless Neovim test |
@@ -69,7 +69,7 @@ Set `VIRGIL_LOC` to the checkout's `vendor/virgil`, change to `/tmp/virgil-check
 ### Collecting logs
 
 - **VS Code:** the "Virgil Language Server" output channel holds the extension's startup messages and the server's stderr. To add the LSP messages, set the channel's log level to Trace ([Settings](../clients/vscode/README.md#settings)).
-- **Neovim:** the server's stderr goes to Neovim's LSP log, as `ERROR` lines marked `"stderr"`. `:LspLog` opens the log with nvim-lspconfig, which LazyVim includes; otherwise, `:lua =vim.lsp.log.get_filename()` prints its path. To add the LSP messages, run `:lua vim.lsp.log.set_level("debug")` before reproducing the problem.
+- **Neovim:** the server's stderr goes to Neovim's LSP log, as `ERROR` lines marked `"stderr"`. `:LspLog` opens the log with nvim-lspconfig on Neovim 0.11; otherwise, `:lua =vim.lsp.log.get_filename()` prints its path. To add the LSP messages, run `:lua vim.lsp.log.set_level("debug")` before reproducing the problem.
 
 Report a failed check with the [bug report form](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml), after checking the [known limitations](known-limitations.md).
 
@@ -79,7 +79,7 @@ For each release, record every run with its date, the server's source revision, 
 
 ### 0.1.0-alpha.2
 
-These runs are at `0c79095`, the release preparation branch before these results were added. Its pull request's CI and the branch's [dry run](releasing.md#dry-runs) check out its merge with `main`, `44e5ec1`, which has the same tree, and the local runs use that dry run's Linux archive and VSIX. Two of them check the extension versions against each other's server: the `0.1.0` VSIX that `0.1.0-alpha.1` attached with this release's server, and this release's `0.1.1` VSIX with the `0.1.0-alpha.1` server and that release's Extension Host test ([compatibility](compatibility.md#editors)). The matrix records what they check; the manual tests with the same archives and VSIX fill in the rest. The last four runs are at the release itself, `a153d13`: one on Linux with the other Virgil extension, `titzer.virgil`, also installed, and three on macOS, an Apple Silicon Mac, with the release's macOS archive and VSIX and the repository's tests from the tag.
+These runs are at `0c79095`, the release preparation branch before these results were added. Its pull request's CI and the branch's [dry run](releasing.md#dry-runs) check out its merge with `main`, `44e5ec1`, which has the same tree, and the local runs use that dry run's Linux archive and VSIX. Two of them check the extension versions against each other's server: the `0.1.0` VSIX that `0.1.0-alpha.1` attached with this release's server, and this release's `0.1.1` VSIX with the `0.1.0-alpha.1` server and that release's Extension Host test ([compatibility](compatibility.md#editors)). The matrix records what they check; the manual tests with the same archives and VSIX fill in the rest. The last four runs are at the release itself, `a153d13`: one on Linux with the other Virgil extension, `titzer.virgil`, also installed, and three on macOS, an Apple Silicon Mac, with the release's macOS archive and VSIX and the repository's tests from the tag, except for the Extension Host harness adjustment noted below.
 
 | Date | Commit | Where | Command | Editor | Result |
 | --- | --- | --- | --- | --- | --- |
