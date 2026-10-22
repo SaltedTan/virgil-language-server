@@ -343,7 +343,8 @@ class ProgramAnalysis {
 
 // A ProgramAnalysis that answers scope queries: it keeps the parsed program,
 // which an ordinary analysis does not, so that one carries nothing for them.
-// Only a completion's analysis is one (AeneasAdapter.analyzeForScope).
+// Only an analysis with a scope, member, or call query is one
+// (AeneasAdapter.analyzeForScope).
 class AnalysisScopedProgram extends ProgramAnalysis {
 	private def syntax: OrderedStringMap<SymbolSyntaxIndex>;
 	// Null if the program did not parse.
