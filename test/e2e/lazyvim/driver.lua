@@ -678,7 +678,7 @@ local function main_checks()
   -- Completion as blink.cmp shows it while typing, as in step 9 of the
   -- procedure: a new line below line 7, a keyword, a name, and a member,
   -- each accepted with Enter (LazyVim's blink.cmp preset) and undone with
-  -- one u after Esc. The buffer is saved first, so "unmodified" is checkable.
+  -- u after Esc. The buffer is saved first, so "unmodified" is checkable.
   vim.api.nvim_set_current_buf(words_buf)
   vim.cmd("silent write")
   local function open_line()

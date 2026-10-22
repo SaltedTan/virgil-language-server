@@ -4,13 +4,15 @@
 
 ## Running it
 
-It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. From any directory:
+It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. From the repository root:
 
 ```sh
 test/e2e/lazyvim/run.sh --archive virgil-lsp-0.1.0-alpha.2-x86-64-linux.tar.gz
 test/e2e/lazyvim/run.sh build/virgil-lsp
 make test-lazyvim
 ```
+
+The script also works from any directory when invoked by its path in the checkout; archive, server, and output paths are relative to the calling directory.
 
 The first installs a release archive as its README says: extracted into its one directory, with a `virgil-lsp` symlink on `PATH`. The second puts a build's directory on `PATH`; `virgil-lsp-worker` must be beside `virgil-lsp`. `make test-lazyvim` builds the server and runs the second with `build/virgil-lsp`. The options are:
 
@@ -52,14 +54,14 @@ The output directory gets:
 - `<run>.screen.txt`: the screen at each failed step; when a run times out or is interrupted; and after Neovim exits with a nonzero or unknown status or without a complete `<run>.results`, with what Neovim left on the terminal, such as an error it printed as it exited, and tmux's line with its exit status;
 - `summary.txt`: a line per run, its `XFAIL` lines, and the result.
 
-Everything else, the XDG directories, plugins, server, and a copy of the [Neovim test's fixture](../nvim/fixture/), is in a work directory, which is removed at the end unless `--keep-work`. It is under `/tmp` on macOS, where tmux's socket path would be too long under `$TMPDIR`, as for the [Extension Host test](../../../clients/vscode/README.md#extension-host-test), and under `$TMPDIR` elsewhere. A run writes nothing in the checkout, except with `--update-lock`.
+The XDG directories, plugins, extracted server (in archive mode), and a copy of the [Neovim test's fixture](../nvim/fixture/) are in a work directory, which is removed at the end unless `--keep-work`. It is under `/tmp` on macOS, where tmux's socket path would be too long under `$TMPDIR`, as for the [Extension Host test](../../../clients/vscode/README.md#extension-host-test), and under `$TMPDIR` (or `/tmp`) elsewhere. A run writes nothing in the checkout, except with `--update-lock`.
 
 Installing the plugins has a 600-second deadline, and each run 240 seconds; `VIRGIL_LAZYVIM_RUN_TIMEOUT` sets another, to test the timeout path. Each run's tmux pane stays open after Neovim exits, so that its screen can be saved, until the script stops its tmux server. After each run, the server and worker processes must have exited by themselves. On a timeout, SIGINT, SIGTERM, or SIGHUP, the script saves the screen and the LSP log, then stops the tmux server and every process of the runs: the tmux server's process tree, the server and worker processes that `observer.lua` recorded, any process whose command line names the work directory, and their descendants. It freezes them with SIGSTOP, the tmux server first, until it finds no new one, so that none starts another process or leaves an orphan while it reads their trees, then kills them with SIGKILL. A frozen Neovim couldn't act on SIGTERM, and on SIGTERM it runs on for seconds and starts processes, such as parser downloads and a new language server. A signal that comes while it freezes and kills them takes effect once they are killed, and the script gives up a query to a tmux server that gets no answer within seconds, since a stopped server never answers. The script looks again every 0.2 seconds for five seconds and removes the work directory only once none is left; otherwise, or if it couldn't list the processes after a few tries, it reports so, keeps the work directory, and exits with a nonzero status. It can't find a process that was already an orphan before the teardown, whose command line doesn't name the work directory, and that `observer.lua` didn't record; for example, a parser build left behind by a Neovim that had crashed.
 
 ## Expected results
 
 - `main`: every step passes.
-- `noroot`: every step passes except "Invalid project file warning shown", which reports `XFAIL`: noice.nvim at the locked commit drops every server's `window/showMessage` ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)). If that step passes, it reports `XPASS` and fails the test: a lock update has fixed noice, so remove the expected failure from `driver.lua` and update the [LazyVim section](../../../editors/nvim/README.md#lazyvim).
+- `noroot`: every step passes except "Invalid project file warning shown", which reports `XFAIL`: noice.nvim at the locked commit drops every server's `window/showMessage` ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)). If that step passes, it reports `XPASS` and fails the test: a lock update has fixed noice, so remove the expected failure from `driver.lua`, adjust `run.sh`'s expected XFAIL count for `noroot`, and update the [LazyVim section](../../../editors/nvim/README.md#lazyvim).
 - `noroot-noice-workaround`: every step passes.
 
 `INFO` and `WARN` lines don't change the result.
@@ -74,7 +76,7 @@ Neovim 0.12 has a built-in `:lsp` command, and the locked nvim-lspconfig then de
 
 ## Changes on disk
 
-Neovim declares `workspace.didChangeWatchedFiles.dynamicRegistration` on macOS and not on Linux, in 0.11 and 0.12 alike ([Changes on disk](../../../editors/nvim/README.md#changes-on-disk)). If the client declares it, the server registers file watchers, and the step checks that the `UnknownField` error appears with no change to a `.v3` buffer. Otherwise the step checks that it doesn't appear within three seconds, and appears after a `.v3` change. The step's name says which case ran. It runs before the project file has been open in a buffer, since closing that buffer also makes the server read the file again.
+The step follows the client's declared file-watching capability ([Changes on disk](../../../editors/nvim/README.md#changes-on-disk)). If the client declares it, the step checks that the `UnknownField` error appears with no change to a `.v3` buffer. Otherwise the step checks that it doesn't appear within three seconds, and appears after a `.v3` change. The step's name says which case ran. It runs before the project file has been open in a buffer, since closing that buffer also makes the server read the file again.
 
 ## Pins
 

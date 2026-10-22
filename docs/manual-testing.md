@@ -34,7 +34,8 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 | Neovim, plain configuration | Linux x86-64, locally or over SSH | `x86-64-linux` | Headless Neovim test |
 | Neovim, plain configuration | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | Headless Neovim test |
 | Neovim, plain configuration | WSL 2 | `x86-64-linux` | None |
-| LazyVim | Linux x86-64, macOS, or WSL 2 | As for Neovim | Scripted LazyVim test (local runs only) |
+| LazyVim | Linux x86-64 or macOS | As for Neovim | Scripted LazyVim test (local runs only) |
+| LazyVim | WSL 2 | `x86-64-linux` | None |
 
 [Where the server runs](compatibility.md#where-the-server-runs) explains the remote setups.
 
@@ -55,7 +56,7 @@ Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), whi
 
 Set `VIRGIL_LOC` to the checkout's `vendor/virgil`, change to `/tmp/virgil-check`, and start Neovim there. Neovim 0.11 doesn't show diagnostics as virtual text by default; `:lua vim.diagnostic.setloclist()` lists them.
 
-For LazyVim on Linux and macOS, `test/e2e/lazyvim/run.sh --archive <archive>` runs these steps through LazyVim's own keys, with its own Neovim, starter, and plugins, and reports each one ([LazyVim test](../test/e2e/lazyvim/README.md)). Record its summary, and look through the steps by hand for what it doesn't check.
+For LazyVim on Linux and macOS, run `test/e2e/lazyvim/run.sh --archive <archive>` from the checkout. It uses Neovim on `PATH`, an isolated starter and plugins, and LazyVim's own keys to run the checks described in the [LazyVim test](../test/e2e/lazyvim/README.md). Record its summary, and look through the steps by hand for what it doesn't check.
 
 1. **Diagnostics.** Open `bad.v3`. It has one error, "invalid start of expression", at line 3, column 27. Without saving, replace line 3 with `component C { def value = 1; }`; the error disappears. Undo the edit; it comes back. Open `words/Words.v3`. After a moment, it has one error, "expected int in var initialization, got Array<byte>", on line 7.
 2. **Document symbols.** In `words/Words.v3`, `gO` (or `:lua vim.lsp.buf.document_symbol()`) lists the component `Words` and its method `join`.

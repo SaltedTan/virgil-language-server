@@ -40,7 +40,7 @@ Both configurations also attach the server to `.virgil-lsp.json` buffers, so con
 
 ## Changes on disk
 
-The server notices changes made outside the editor, such as a checkout, only from `workspace/didChangeWatchedFiles` file events ([changes on disk](../../docs/configuration.md#changes-on-disk)). It asks for them when the client declares `workspace.didChangeWatchedFiles.dynamicRegistration`. Neovim 0.11.6 on Linux declares it false (`:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles`), so with these configurations the server refreshes projects when they are used instead: a project file fixed on disk is noticed when a `.v3` buffer is next opened, changed, or saved, and a source created or deleted outside Neovim when a project file changes. Restart the server (`:LspRestart` with nvim-lspconfig, or `:lsp restart` on Neovim 0.12 and later) after a checkout that adds or removes files.
+The server notices changes made outside the editor, such as a checkout, only from `workspace/didChangeWatchedFiles` file events ([changes on disk](../../docs/configuration.md#changes-on-disk)). It asks for them when the client declares `workspace.didChangeWatchedFiles.dynamicRegistration`. Neovim 0.11 and 0.12 declare it true on macOS and false on Linux (`:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles`). On macOS, the server registers file watchers and notices project-file changes without a buffer edit. On Linux, with these configurations the server refreshes projects when they are used instead: a project file fixed on disk is noticed when a `.v3` buffer is next opened, changed, or saved, and a source created or deleted outside Neovim when a project file changes. Restart the server (`:LspRestart` with nvim-lspconfig, or `:lsp restart` on Neovim 0.12 and later) after a checkout that adds or removes files.
 
 `vim.lsp.buf.add_workspace_folder()` and `vim.lsp.buf.remove_workspace_folder()` send `workspace/didChangeWorkspaceFolders`, which the server handles.
 
@@ -87,8 +87,9 @@ diagnostics after an unsaved edit to the project file, that other JSON buffers
 stay detached, and a graceful server shutdown with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the
 directory is removed afterward. The VS Code
-[Extension Host test](../../clients/vscode/README.md#extension-host-test) uses
-the same fixture, so a change to it affects both editors' checks.
+[Extension Host test](../../clients/vscode/README.md#extension-host-test) and
+[LazyVim test](../../test/e2e/lazyvim/README.md) use the same fixture, so a
+change to it affects all three suites.
 
 The test skips with a message if Neovim is missing or older than 0.11. Set
 `REQUIRE_NVIM=1` to fail instead of skipping, as both CI jobs do. See the
