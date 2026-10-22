@@ -1,0 +1,9 @@
+Content-Length: 555
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 351
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"MissingVirgilRoot","message":"virgilDependencies requires a Virgil root (initializationOptions.virgilRoot)","range":{"end":{"character":124,"line":0},"start":{"character":109,"line":0}},"severity":1,"source":"virgil-lsp"}],"uri":"file:///.virgil-lsp.json"}}Content-Length: 163
+
+{"jsonrpc":"2.0","method":"window/showMessage","params":{"message":"Invalid project file /.virgil-lsp.json; its semantic project contexts are disabled.","type":2}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":2,"result":null}

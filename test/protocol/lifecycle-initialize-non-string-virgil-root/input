@@ -1,0 +1,11 @@
+Content-Length: 149
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{},"initializationOptions":{"virgilRoot":42}}}Content-Length: 52
+
+{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 298
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///.virgil-lsp.json","languageId":"json","version":1,"text":"{\"version\": 1, \"projects\": [{\"name\": \"p\", \"sources\": [\"virgil-lsp-protocol-test.v3\"], \"virgilDependencies\": [\"lib/util/*.v3\"]}]}\n"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33
+
+{"jsonrpc":"2.0","method":"exit"}
