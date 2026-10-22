@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 9;
+	def PROTOCOL_VERSION = 10;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -26,9 +26,10 @@ component AnalysisWire {
 	// in the order given (see AeneasAdapter.setLanguageOptions), file count,
 	// then each file's path and contents; and, with WANT_SCOPE, a scope query:
 	// a source's index, a byte offset in it, AnalysisScopeKinds, and a prefix.
-	// The kinds are scope kinds, or MEMBERS alone for a member query.
-	// Without WANT_OCCURRENCES, the result of a scope query has an occurrence
-	// section with no files, whose declarations are the candidates'.
+	// The kinds are scope kinds, or MEMBERS alone for a member query, or CALL
+	// alone, with no prefix, for a call query. Without WANT_OCCURRENCES, the
+	// result of a query has an occurrence section with no files, whose
+	// declarations are the answer's.
 	def ANALYZE: byte = 2;
 	// Worker to server: see encodeResult.
 	def RESULT: byte = 3;
@@ -44,6 +45,7 @@ component AnalysisWire {
 	private def OCCURRENCES = 4;
 	private def SCOPE = 8;
 	private def MEMBERS = 16;
+	private def CALL = 32;
 	// A scope or member answer's flags.
 	def SCOPE_TRUNCATED: byte = 1;
 	// The fixed-width part of a RESULT, after the kind: request ID, the
@@ -116,7 +118,8 @@ component AnalysisWire {
 	}
 	// Returns null for a malformed request, including one with a language
 	// option that a project file would not accept, and a scope query for a
-	// source, offset, kinds, or prefix that do not exist.
+	// source, offset, kinds, or prefix that do not exist, or a call query
+	// with a prefix.
 	def decodeAnalyze(payload: Array<byte>) -> AnalysisWorkerRequest {
 		var r = AnalysisWireReader.new(payload, ANALYZE);
 		var id = r.readInt(), flags = r.readInt(), timeoutMs = r.readInt();
@@ -137,6 +140,7 @@ component AnalysisWire {
 			if (u32.view(file) >= u32.view(sources.length) || offset < 0 || offset > sources[file].input.length) return null;
 			if (!AnalysisScopeKinds.valid(kinds)) return null;
 			if (prefix == null || prefix.length > AnalysisScopeOrder.MAX_PREFIX) return null;
+			if (kinds == AnalysisScopeKinds.CALL && prefix.length > 0) return null;
 			scope = AnalysisScopeRequest.new(file, offset, kinds, prefix);
 		}
 		if (!r.finish()) return null;
@@ -172,27 +176,35 @@ component AnalysisWire {
 	// without occurrences. Call finishResult before sending.
 	def encodeResult(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>) -> DataWriter {
-		return encodeResultWithQuery(id, analyses, uidNext, analysis, collectUs, globalTypeTotal, files, null, null);
+		return encodeResultWithQuery(id, analyses, uidNext, analysis, collectUs, globalTypeTotal, files, null, null, null);
 	}
 	// Encodes a RESULT as {encodeResult} does, and, if {files} is not null,
-	// the answer to the request's scope or member query after the files, if
-	// it has {scope} or {members}, which are never both. A scope answer is its
-	// flags (SCOPE_TRUNCATED), the level of "this" or -1, and a count, then
-	// each candidate's declaration index and level, then a count and the
-	// strings of hidden builtin names (see AnalysisScopeFinder). A member
-	// answer is its flags and a count, then for each candidate: its
-	// declaration index plus one, or zero for a builtin member, which is
-	// followed by its kind and its name's string index; its detail's string
-	// index plus one, or zero; and its level (see AnalysisMemberLookup). The
-	// answer's declarations join the result's after the occurrences', and its
-	// names and details its string table.
+	// the answer to the request's scope, member, or call query after the
+	// files, if it has {scope}, {members}, or {call}, of which it has at most
+	// one. A scope answer is its flags (SCOPE_TRUNCATED), the level of "this"
+	// or -1, and a count, then each candidate's declaration index and level,
+	// then a count and the strings of hidden builtin names (see
+	// AnalysisScopeFinder). A member answer is its flags and a count, then for
+	// each candidate: its declaration index plus one, or zero for a builtin
+	// member, which is followed by its kind and its name's string index; its
+	// detail's string index plus one, or zero; and its level (see
+	// AnalysisMemberLookup). A call answer is its call (see encodeCall), sent
+	// only if a file's calls would send it (see AnalysisCallCheck). The
+	// answer's declarations join the result's after the occurrences', its
+	// names and details its string table, and its call's signature the call
+	// signatures.
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
-			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer) -> DataWriter {
+			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
 		var w = WorkerFraming.start().putb(RESULT);
 		w.put_b32(id).put_b32(analyses).put_b32(uidNext).put_b64(0);
+		// The call answer's signature index plus one, or zero, or -1 if its
+		// call is not sent.
+		var callSignature = if(files != null && call != null, checkCall(call, analysis.callSignatureCount()), -1);
+		if (callSignature < 0) call = null;
 		var flags = if(analysis.parsed, PARSED) | if(analysis.verified, VERIFIED) | if(files != null, OCCURRENCES)
-			| if(files != null && scope != null, SCOPE) | if(files != null && members != null, MEMBERS);
+			| if(files != null && scope != null, SCOPE) | if(files != null && members != null, MEMBERS)
+			| if(call != null, CALL);
 		w.putb(flags);
 		var s = analysis.stats;
 		w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
@@ -218,6 +230,7 @@ component AnalysisWire {
 				}
 				skipped += records.1 - calls[i];
 			}
+			if (callSignature > 0) uses[callSignature - 1]++;
 		}
 		w.put_sleb32(skipped);
 		w.put_sleb32(analysis.diagnostics.length);
@@ -228,8 +241,15 @@ component AnalysisWire {
 			putString(w, d.kind);
 			putString(w, d.message);
 		}
-		if (files != null) encodeOccurrences(w, analysis, files, calls, uses, scope, members);
+		if (files != null) encodeOccurrences(w, analysis, files, calls, uses, scope, members, call);
 		return w;
+	}
+	// The signature index plus one, or zero, of {call}'s record, if it is
+	// valid with {signatures} signatures, as a file's calls must be; or -1.
+	private def checkCall(call: AnalysisCallAnswer, signatures: int) -> int {
+		var check = AnalysisCallCheck.new(signatures), records: (Range<byte>, int) = (call.record, 1);
+		var c = check.start(records);
+		return if(c.next() && check.sends(), c.signature, -1);
 	}
 	// Fills in the live heap bytes of a result from {encodeResult} and returns its frame.
 	def finishResult(w: DataWriter, liveBytes: long) -> Range<byte> {
@@ -238,15 +258,16 @@ component AnalysisWire {
 		return WorkerFraming.finish(w);
 	}
 	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>,
-			calls: Array<int>, uses: Array<int>, scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer) {
+			calls: Array<int>, uses: Array<int>, scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer,
+			call: AnalysisCallAnswer) {
 		// A path is its file's index in {files}, the request's distinct paths
 		// in order, plus one. The paths key an ordered map, which takes
 		// O(log n) whatever they are; see OrderedStringMap.
 		var paths = OrderedStringMap<int>.new();
 		for (i < files.length) paths.add(files[i].0, i + 1);
-		// A scope or member answer without occurrences has no files; its
-		// program has the request's paths.
-		var queried = if(scope != null, scope.paths, if(members != null, members.paths));
+		// A query's answer without occurrences has no files; its program has
+		// the request's paths.
+		var queried = if(scope != null, scope.paths, if(members != null, members.paths, if(call != null, call.paths)));
 		if (files.length == 0 && queried != null) {
 			var n = 0;
 			for (p in queried) if (p != null && paths.add(p, n + 1)) n++;
@@ -273,6 +294,7 @@ component AnalysisWire {
 			}
 		}
 		if (scope != null) for (d in scope.declarations) if (decls.find(d) < 0) decls.add(d);
+		if (call != null && call.target != null && decls.find(call.target) < 0) decls.add(call.target);
 		if (members != null) {
 			for (d in members.declarations) if (d != null && decls.find(d) < 0) decls.add(d);
 			for (i < members.names.length) {
@@ -362,6 +384,7 @@ component AnalysisWire {
 			w.put_sleb32(calls[i]);
 			encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
 		}
+		if (call != null) encodeCall(w, call, decls, rank);
 		if (members != null) {
 			w.putb(if(members.truncated, SCOPE_TRUNCATED, 0)).put_sleb32(members.names.length);
 			for (i < members.names.length) {
@@ -412,6 +435,23 @@ component AnalysisWire {
 			last = open;
 		}
 	}
+	// A call answer is its call, as the first of a file's calls is encoded,
+	// except that it names its callee, if it has one, by the offset before its
+	// "(" (CALLEE_OFFSET), since the answer has no uses; then the index plus
+	// one of its callee's declaration, or zero.
+	private def encodeCall(w: DataWriter, call: AnalysisCallAnswer, decls: AnalysisIndexMap<AnalysisDeclaration>, rank: Array<int>) {
+		var c = AnalysisCallCursor.new(DataReader.new(call.record), 1);
+		c.absolute = true;
+		c.next();
+		var from = c.r.pos;
+		c.skipArgs();
+		putU(w, c.open);
+		putU(w, c.argCount * 8 + (c.flags & (AnalysisCallFlags.CALLEE_OFFSET | AnalysisCallFlags.CLOSE_GAP)));
+		if (c.calleeDelta > 0) putU(w, c.calleeDelta);
+		putU(w, if(c.signature > 0, rank[c.signature - 1]));
+		w.putr(call.record[from ... c.r.pos]);
+		w.put_sleb32(if(call.target != null, 1 + decls.find(call.target)));
+	}
 	// Decodes a RESULT into the worker's state and a snapshot with
 	// {generation} for a request with {paths}. Budget exhaustion stops decoding
 	// before allocating; it is distinct from a malformed payload. The remainder
@@ -421,8 +461,8 @@ component AnalysisWire {
 	}
 	// Decodes a RESULT as {decodeResult} does, which may answer a query of
 	// AnalysisScopeKinds {kinds}, or 0 for none: a member answer to a MEMBERS
-	// query, and a scope answer to another. An answer to a request that did
-	// not ask for its kind is malformed.
+	// query, a call answer to a CALL query, and a scope answer to another. An
+	// answer to a request that did not ask for its kind is malformed.
 	def decodeResultWithQuery(payload: Array<byte>, generation: int, paths: Array<string>, kinds: int) -> AnalysisResultDecode {
 		var r = AnalysisWireReader.new(payload, RESULT);
 		var id = r.readU32(), analyses = r.readU32(), uidNext = r.readU32();
@@ -517,16 +557,20 @@ component AnalysisWire {
 				r.readCalls(file, signatures);
 				files.add(fileIndex, file);
 			}
-			var memberQuery = kinds == AnalysisScopeKinds.MEMBERS;
+			var memberQuery = kinds == AnalysisScopeKinds.MEMBERS, callQuery = kinds == AnalysisScopeKinds.CALL;
+			if ((flags & CALL) != 0 && r.ok()) {
+				if (callQuery) snapshot.queriedCall = r.readCall(declarations, signatures);
+				else r.fail("unrequested call answer");
+			}
 			if ((flags & MEMBERS) != 0 && r.ok()) {
 				if (memberQuery) snapshot.members = r.readMembers(declarations, strings);
 				else r.fail("unrequested member answer");
 			}
 			if ((flags & SCOPE) != 0 && r.ok()) {
-				if (kinds != 0 && !memberQuery) snapshot.scope = r.readScope(declarations.length);
+				if (kinds != 0 && !memberQuery && !callQuery) snapshot.scope = r.readScope(declarations.length);
 				else r.fail("unrequested scope answer");
 			}
-		} else if ((flags & (SCOPE | MEMBERS)) != 0) {
+		} else if ((flags & (SCOPE | MEMBERS | CALL)) != 0) {
 			r.fail("query answer without occurrences");
 		}
 		if (r.overBudget) return AnalysisResultDecode.TooLarge(id);
@@ -618,7 +662,7 @@ class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<
 	// program parsed: see ProgramAnalysis.scopeAt.
 	def scopeAnswer(analysis: ProgramAnalysis) -> AnalysisScopeAnswer {
 		var q = scope();
-		if (q == null || q.kinds == AnalysisScopeKinds.MEMBERS) return null;
+		if (q == null || q.kinds == AnalysisScopeKinds.MEMBERS || q.kinds == AnalysisScopeKinds.CALL) return null;
 		return analysis.scopeAt(sources[q.file].path, q.offset, q.kinds, q.prefix);
 	}
 	// The answer to the member query from {analysis}, if there is one, the
@@ -628,6 +672,14 @@ class AnalysisWorkerRequest(id: int, flags: int, timeoutMs: int, options: Array<
 		var q = scope();
 		if (q == null || q.kinds != AnalysisScopeKinds.MEMBERS) return null;
 		return analysis.membersAt(sources[q.file].path, q.offset, q.prefix);
+	}
+	// The answer to the call query from {analysis}, if there is one, the
+	// program parsed, and a call opens at its offset: see
+	// ProgramAnalysis.callAt.
+	def callAnswer(analysis: ProgramAnalysis) -> AnalysisCallAnswer {
+		var q = scope();
+		if (q == null || q.kinds != AnalysisScopeKinds.CALL) return null;
+		return analysis.callAt(sources[q.file].path, q.offset);
 	}
 	// The occurrences in each distinct path of the request, in order; a
 	// repeated path keeps the first file's bindings, as ProgramAnalysis does.
@@ -919,6 +971,40 @@ class AnalysisWireReader {
 			closes[depth++] = cursor.close;
 		}
 		if (r.ok) file.setCalls(count, copyFrom(start, 0));
+	}
+	// Reads a call answer (AnalysisWire.encodeCall) for a result with
+	// {declarations} and {signatures}: one call, checked as a file's first
+	// call is, whose callee is an offset, not a use, and whose signature is
+	// one of {signatures}, then its callee's declaration index plus one, or
+	// zero. The call is charged 64 bytes, and 8 for each argument; its
+	// signature, 64 bytes, 8 for each parameter, and the signature text that
+	// it copies (AnalysisSnapshotSignatures.copiedBytes).
+	def readCall(declarations: Array<AnalysisDeclaration>, signatures: AnalysisSnapshotSignatures) -> AnalysisCall {
+		var cursor = AnalysisCallCursor.new(r, 1);
+		if (!cursor.next()) return null;
+		if (cursor.calleeEndsAtParen()) r.fail("invalid callee");
+		if (cursor.signature > signatures.count()) r.fail("invalid signature index");
+		if (!reserve(64 + 8L * cursor.argCount)) return null;
+		var args = Array<int>.new(2 * cursor.argCount);
+		for (i = 0; i < cursor.argCount && r.ok; i++) {
+			if (!cursor.nextArg()) break;
+			args[2 * i] = cursor.argBegin;
+			args[2 * i + 1] = cursor.argEnd;
+		}
+		if (!r.ok || !cursor.finish()) return null;
+		var target = r.read_sleb32() - 1;
+		if (target < -1 || target >= declarations.length) {
+			r.fail("invalid declaration index");
+			return null;
+		}
+		var s: AnalysisSignature;
+		if (cursor.signature > 0) {
+			var i = cursor.signature - 1;
+			if (!reserve(64 + signatures.copiedBytes(i))) return null;
+			s = signatures.signature(i, AnalysisSignatureReader.new(signatures));
+		}
+		var callee = if(cursor.calleeDelta > 0, cursor.open - cursor.calleeDelta, -1);
+		return AnalysisCall.new(cursor.open, cursor.close, args, callee, if(target >= 0, declarations[target]), s);
 	}
 	// Reads a scope answer (AnalysisWire.encodeResultWithScope) for a result
 	// with {declarations} declarations: at most MAX_DECLARATIONS candidates,

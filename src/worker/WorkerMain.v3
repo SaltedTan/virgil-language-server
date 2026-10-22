@@ -61,7 +61,8 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		var alarm = 2L * request.timeoutMs + 1000;
 		HostOs.setAlarm(if(request.timeoutMs <= 0, 0, if(alarm > int.max, int.max, int.view(alarm))));
 		var stats = (request.flags & AnalysisWire.WANT_STATS) != 0;
-		// Only a completion's analysis keeps its program, for the scope query.
+		// Only a completion's or a signature help's analysis keeps its program,
+		// for its query.
 		var analysis = if(request.scope() != null,
 			AeneasAdapter.analyzeForScope(request.sources, request.options, stats),
 			AeneasAdapter.analyzeProgram(request.sources, request.options, stats));
@@ -79,10 +80,13 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		// see docs/architecture.md#completion.
 		var scope = if(files != null, request.scopeAnswer(analysis));
 		var members = if(files != null, request.memberAnswer(analysis));
+		// Only a signature help asks for the call at its cursor; see
+		// docs/architecture.md#signature-help.
+		var call = if(files != null, request.callAnswer(analysis));
 		HostOs.setAlarm(0);
 		var globalTypes = if(stats, AeneasAdapter.globalTypeCount(), -1);
 		return AnalysisWire.encodeResultWithQuery(request.id, analyses, AeneasAdapter.uidCounter(),
-			analysis, collectUs, globalTypes, files, scope, members);
+			analysis, collectUs, globalTypes, files, scope, members, call);
 	}
 	// Reads the next request payload. Returns null at the end of the input,
 	// on a read error, or if the frame was invalid.

@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 9, self.hello
+        assert self.hello["protocol"] == 10, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout

@@ -96,7 +96,7 @@ component SyntheticAnalysisWorker {
 			members = twice;
 		}
 		return AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(request.id, 1, AeneasAdapter.uidCounter(),
-			analysis, -1, -1, files, scope, members), 0);
+			analysis, -1, -1, files, scope, members, request.callAnswer(analysis)), 0);
 	}
 	// Whether any of {sources} contains the bytes of {word}.
 	private def spells(sources: Array<AnalysisSource>, word: string) -> bool {

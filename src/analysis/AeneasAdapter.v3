@@ -296,6 +296,24 @@ class ProgramAnalysis {
 		}
 		return null;
 	}
+	// The call whose argument list opens at byte {offset} of {path}, its "(",
+	// as the collector records it, or null where scopeAt is, or where no call
+	// opens there. See AnalysisScopeFinder.findCall and
+	// docs/architecture.md#signature-help.
+	def callAt(path: string, offset: int) -> AnalysisCallAnswer {
+		return null;
+	}
+	private def callIn(program: Program, syntax: SymbolSyntaxIndex, path: string, offset: int) -> AnalysisCallAnswer {
+		if (program == null) return null;
+		for (f in program.vst.files) {
+			if (f == null || !Strings.equal(f.fileName, path)) continue;
+			var collector = OccurrenceCollector.new(sources, display, packings, AnalysisCallEnds.new(), names);
+			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).findCall(offset, collector);
+			if (answer != null) answer.paths = program.files;
+			return answer;
+		}
+		return null;
+	}
 	// The declaration of the occurrence in {uses} that starts at {offset}, or null.
 	private def declarationAt(uses: Array<AnalysisOccurrence>, offset: int) -> AnalysisDeclaration {
 		var low = 0, high = uses.length;
@@ -339,6 +357,9 @@ class AnalysisScopedProgram extends ProgramAnalysis {
 	}
 	def membersAt(path: string, offset: int, prefix: string) -> AnalysisMemberAnswer {
 		return membersIn(program, syntax[path], path, offset, prefix);
+	}
+	def callAt(path: string, offset: int) -> AnalysisCallAnswer {
+		return callIn(program, syntax[path], path, offset);
 	}
 }
 

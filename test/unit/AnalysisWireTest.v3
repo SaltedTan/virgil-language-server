@@ -37,6 +37,11 @@ def X = [
 	T("AnalysisWire:member_answer_round_trip", test_member_answer_round_trip),
 	T("AnalysisWire:invalid_member_answers", test_invalid_member_answers),
 	T("AnalysisWire:member_allocation", test_member_allocation),
+	T("AnalysisWire:call_request_round_trip", test_call_request_round_trip),
+	T("AnalysisWire:call_answer_round_trip", test_call_answer_round_trip),
+	T("AnalysisWire:hand_built_call_answers", test_hand_built_call_answers),
+	T("AnalysisWire:invalid_call_answers", test_invalid_call_answers),
+	T("AnalysisWire:call_answer_allocation", test_call_answer_allocation),
 	()
 ];
 
@@ -1115,7 +1120,10 @@ def test_invalid_scope_requests(t: Tester) {
 		(flags, AnalysisScopeRequest.new(0, -1, AnalysisScopeKinds.VALUES, "")),
 		(flags, AnalysisScopeRequest.new(1, sources[1].input.length + 1, AnalysisScopeKinds.VALUES, "")),
 		(flags, AnalysisScopeRequest.new(0, 0, 0, "")),
-		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.MEMBERS << 1, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.CALL << 1, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.CALL | AnalysisScopeKinds.VALUES, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.CALL | AnalysisScopeKinds.MEMBERS, "")),
+		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.CALL, "f")),
 		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.MEMBERS | AnalysisScopeKinds.VALUES, "")),
 		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, null)),
 		(flags, AnalysisScopeRequest.new(0, 0, AnalysisScopeKinds.VALUES, Array<byte>.new(AnalysisScopeOrder.MAX_PREFIX + 1)))
@@ -1131,7 +1139,7 @@ def test_invalid_scope_requests(t: Tester) {
 def scopedResult(analysis: ProgramAnalysis, scope: AnalysisScopeAnswer, occurrences: bool) -> Array<byte> {
 	var files: Array<(string, Array<AnalysisOccurrence>)>;
 	if (occurrences) files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
-	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42, files, scope, null), 1L));
+	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42, files, scope, null, null), 1L));
 }
 def decodeScoped(payload: Array<byte>, requested: bool) -> AnalysisWorkerResult {
 	match (AnalysisWire.decodeResultWithQuery(payload, 5, ["s.v3", "t.v3"], if(requested, AnalysisScopeKinds.VALUES))) {
@@ -1174,7 +1182,7 @@ def test_scope_answer_round_trip(t: Tester) {
 	t.assert(decodeScoped(scopedResult(analysis, answer, false), true).snapshot.scope == null, "no scope without occurrences");
 	// With one that has no files, as a worker sends when the request asked
 	// for no occurrences, the declarations are the candidates'.
-	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42, [], answer, null), 1L));
+	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42, [], answer, null, null), 1L));
 	decoded = decodeScoped(bare, true);
 	t.assert(decoded != null, "a scope answer without files decodes");
 	if (decoded != null) {
@@ -1291,7 +1299,7 @@ def test_member_request_round_trip(t: Tester) {
 def memberResult(analysis: ProgramAnalysis, members: AnalysisMemberAnswer, occurrences: bool) -> Array<byte> {
 	var files: Array<(string, Array<AnalysisOccurrence>)>;
 	if (occurrences) files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
-	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42, files, null, members), 1L));
+	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42, files, null, members, null), 1L));
 }
 def decodeMembers(payload: Array<byte>, kinds: int) -> AnalysisWorkerResult {
 	match (AnalysisWire.decodeResultWithQuery(payload, 5, ["s.v3", "t.v3"], kinds)) {
@@ -1335,7 +1343,7 @@ def test_member_answer_round_trip(t: Tester) {
 	sameMembers(t, builtin, decoded.snapshot);
 	// Without occurrences, an occurrence section with no files holds only the
 	// members' declarations.
-	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42, [], null, members), 1L));
+	var bare = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, -1, 42, [], null, members, null), 1L));
 	decoded = decodeMembers(bare, AnalysisScopeKinds.MEMBERS);
 	if (decoded == null) return t.fail("a member answer without files did not decode");
 	t.asserti(2, decoded.snapshot.declarations.length);
@@ -1401,7 +1409,7 @@ def test_invalid_member_answers(t: Tester) {
 	t.assert(decodeMembers(empty, 0) == null, "unrequested member answer");
 	t.assert(decodeMembers(empty, AnalysisScopeKinds.VALUES) == null, "member answer to a scope query");
 	var scope = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, 12, 42,
-		[("s.v3", analysis.occurrences("s.v3"))], AnalysisScopeAnswer.new([], [], -1, false), null), 1L));
+		[("s.v3", analysis.occurrences("s.v3"))], AnalysisScopeAnswer.new([], [], -1, false), null, null), 1L));
 	t.assert(decodeMembers(scope, AnalysisScopeKinds.MEMBERS) == null, "scope answer to a member query");
 	var flagged = memberResult(analysis, null, false);
 	flagged[21] |= 16;
@@ -1426,4 +1434,192 @@ def test_member_allocation(t: Tester) {
 	var builtin = analysis.membersAt("s.v3", afterDot(2), "");
 	var one = decodeMembers(memberResult(analysis, builtin, true), AnalysisScopeKinds.MEMBERS).snapshot;
 	t.assertl(base + 64 + 32 + 2 * (64 + 8) + "length".length + "def length: int".length, one.resultAllocation);
+}
+
+def CALLING = "component C {\n\tdef f(a: int, b: int) -> int { return a; }\n\tdef g() { f(1, 2); }\n\tdef h(p: int -> int) { p(f(3, 4)); }\n}\n";
+def callSources() -> Array<AnalysisSource> {
+	return [AnalysisSource.new("s.v3", CALLING), AnalysisSource.new("t.v3", "class T { }\n")];
+}
+// The offset of the first "(" of the first {call} in CALLING.
+def openOf(call: string) -> int {
+	var i = 0;
+	while (call[i] != '(') i++;
+	return OccurrenceCollectorTest.indexOf(CALLING, call) + i;
+}
+// A call query is a scope query of CALL alone, with no prefix, which the
+// worker answers with the call whose argument list opens at its offset.
+def test_call_request_round_trip(t: Tester) {
+	var sources = callSources();
+	var query = AnalysisScopeRequest.new(0, openOf("f(1"), AnalysisScopeKinds.CALL, "");
+	for (flags in [AnalysisWire.WANT_SCOPE, AnalysisWire.WANT_SCOPE | AnalysisWire.WANT_OCCURRENCES]) {
+		var frame = AnalysisWire.encodeAnalyze(4, flags, 100, [], sources, query);
+		t.assertl(long.view(frame.length), AnalysisWire.analyzeFrameSize(4, flags, 100, [], sources, query));
+		var r = AnalysisWire.decodeAnalyze(payloadOf(frame));
+		if (r == null) return t.fail("call request did not decode");
+		t.asserti(AnalysisScopeKinds.CALL, r.scope().kinds);
+		t.asserti(query.offset, r.scope().offset);
+		t.assert_string("", r.scope().prefix);
+	}
+	var r = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources, query)));
+	var analysis = AeneasAdapter.analyzeForScope(sources, [], false);
+	t.assert(r.scopeAnswer(analysis) == null, "no scope answer to a call query");
+	t.assert(r.memberAnswer(analysis) == null, "no member answer to a call query");
+	var call = r.callAnswer(analysis);
+	t.assert(call != null && call.open == query.offset, "the call query has an answer");
+	// Where no call opens, there is no answer.
+	var none = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources,
+		AnalysisScopeRequest.new(0, query.offset + 1, AnalysisScopeKinds.CALL, ""))));
+	t.assert(none != null && none.callAnswer(analysis) == null, "no call at the offset");
+	// Scope and member queries have no call answer.
+	for (kinds in [AnalysisScopeKinds.VALUES, AnalysisScopeKinds.MEMBERS]) {
+		var other = AnalysisWire.decodeAnalyze(payloadOf(AnalysisWire.encodeAnalyze(4, AnalysisWire.WANT_SCOPE, 100, [], sources,
+			AnalysisScopeRequest.new(0, query.offset, kinds, ""))));
+		t.assert(other != null && other.callAnswer(analysis) == null, "no call answer to another query");
+	}
+}
+// A result with {call} for the analysis of callSources(), with every file's
+// occurrences, or, as a worker sends when the request asked for none, an
+// occurrence section with no files.
+def callResult(analysis: ProgramAnalysis, call: AnalysisCallAnswer, occurrences: bool) -> Array<byte> {
+	var files: Array<(string, Array<AnalysisOccurrence>)> = [];
+	if (occurrences) files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	return payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(7, 3, 4567, analysis, if(occurrences, 12, -1), 42, files, null, null, call), 1L));
+}
+def decodeCall(payload: Array<byte>, kinds: int, paths: Array<string>) -> AnalysisWorkerResult {
+	match (AnalysisWire.decodeResultWithQuery(payload, 5, paths, kinds)) {
+		Decoded(result) => return result;
+		_ => return null;
+	}
+}
+// The answer is the call as the file's calls have it: its parentheses,
+// arguments, callee, target, and signature.
+def test_call_answer_round_trip(t: Tester) {
+	var analysis = AeneasAdapter.analyzeForScope(callSources(), [], false), paths = ["s.v3", "t.v3"];
+	var plain = decodeCall(callResult(analysis, null, true), AnalysisScopeKinds.CALL, paths);
+	if (plain == null) return t.fail("the ordinary result did not decode");
+	t.assert(plain.snapshot.queriedCall == null, "no call answer in an ordinary result");
+	// f(1, 2), with a method as its callee; p(...), with a parameter; and
+	// f(3, 4), as p's argument.
+	var expected = [
+		(openOf("f(1"), "@70-76 callee 69 @71-72 @74-75 target METHOD f @ s.v3:2:13-2:14 signature def f(a: int, b: int) -> int at 6: [a: int] [b: int]"),
+		(openOf("p(f"), "@105-114 callee 104 @106-113 target PARAMETER p @ s.v3:4:15-4:16 signature int -> int at 0: [int]"),
+		(openOf("f(3"), "@107-113 callee 106 @108-109 @111-112 target METHOD f @ s.v3:2:13-2:14 signature def f(a: int, b: int) -> int at 6: [a: int] [b: int]")
+	];
+	for (e in expected) {
+		var call = analysis.callAt("s.v3", e.0);
+		if (call == null) return t.fail1("no call at %d", e.0);
+		var ordinary = renderCall(plain.snapshot.callAt("s.v3", e.0 + 1));
+		t.assert_string(e.1, ordinary);
+		// With occurrences, and without them, when the declarations and
+		// signatures are only the answer's.
+		for (occurrences in [true, false]) {
+			var decoded = decodeCall(callResult(analysis, call, occurrences), AnalysisScopeKinds.CALL, paths);
+			if (decoded == null) return t.fail("call answer did not decode");
+			t.assert_string(ordinary, renderCall(decoded.snapshot.queriedCall));
+			t.assert(decoded.snapshot.scope == null && decoded.snapshot.members == null, "only a call answer");
+			if (!occurrences) {
+				t.asserti(1, decoded.snapshot.declarations.length);
+				t.asserti(0, decoded.snapshot.calls("s.v3").length);
+			}
+		}
+	}
+	// Without an answer, the result is the one encodeResult writes.
+	var files = [("s.v3", analysis.occurrences("s.v3")), ("t.v3", analysis.occurrences("t.v3"))];
+	var bytes = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, 12, 42, files), 1L));
+	t.assert(Arrays.equal(bytes, callResult(analysis, null, true)), "an ordinary result is unchanged");
+	// An answer to the other queries is malformed, and so is one without
+	// occurrences.
+	var answer = callResult(analysis, analysis.callAt("s.v3", openOf("f(1")), true);
+	for (kinds in [0, AnalysisScopeKinds.VALUES, AnalysisScopeKinds.MEMBERS]) {
+		t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResultWithQuery(answer, 5, paths, kinds)), "unrequested call answer");
+	}
+	var flagged = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(7, 3, 4567, analysis, -1, 42, null), 1L));
+	flagged[21] |= 32;
+	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResultWithQuery(flagged, 5, paths, AnalysisScopeKinds.CALL)), "call answer without occurrences");
+}
+// The bytes of a call answer, after the occurrences of withCalls: as a
+// file's call, its opening parenthesis, its argument count times eight plus
+// its flags, a callee offset with CALLEE_OFFSET, its signature index plus
+// one, its arguments, and its closing gap with CLOSE_GAP; then its target's
+// declaration index plus one, or zero.
+def callAnswer(signatures: string, tail: string) -> Array<byte> {
+	var payload = result(0, withCalls(signatures, 0, "").puta(tail));
+	payload[21] |= 32;
+	return payload;
+}
+def decodeCallAnswer(signatures: string, tail: string) -> AnalysisResultDecode {
+	return AnalysisWire.decodeResultWithQuery(callAnswer(signatures, tail), 1, REQUEST, AnalysisScopeKinds.CALL);
+}
+def queried(d: AnalysisResultDecode) -> AnalysisCall {
+	match (d) {
+		Decoded(result) => return result.snapshot.queriedCall;
+		_ => return null;
+	}
+}
+def test_hand_built_call_answers(t: Tester) {
+	// At 11, a call with its callee two bytes before it, an argument just
+	// inside it, and the signature, whose callee names declaration 0.
+	t.assert_string("@11-14 callee 9 @12-13 target LOCAL x @ p.v3:1:1-1:2 signature f(a: int) at 2: [a: int]",
+		renderCall(queried(decodeCallAnswer(ONE_SIGNATURE, "\x0B\x0A\x02\x01\x04\x01"))));
+	// With neither callee, signature, nor target, and a closing gap.
+	t.assert_string("@11-16 callee -1 @13-14 target null no signature",
+		renderCall(queried(decodeCallAnswer(NO_SIGNATURES, "\x0B\x0C\x00\x05\x01\x00"))));
+	// A call that ends at the last offset.
+	var last = queried(decodeCallAnswer(NO_SIGNATURES, "\xFD\xFF\xFF\xFF\x07\x00\x00\x00"));
+	t.assert(last != null && last.close == int.max, "a call that ends at int.max");
+	// Without a call at the offset, the worker sends no answer.
+	var none = AnalysisWire.decodeResultWithQuery(result(0, withCalls(NO_SIGNATURES, 0, "")), 1, REQUEST, AnalysisScopeKinds.CALL);
+	t.assert(AnalysisResultDecode.Decoded.?(none) && queried(none) == null, "no answer");
+}
+def test_invalid_call_answers(t: Tester) {
+	// int.max - 2 is FD FF FF FF 07.
+	var bad = [
+		("\x0B\x01\x00\x00", "a callee at the parenthesis, which names a use"),
+		("\x0B\x03\x01\x00\x00", "both callee flags"),
+		("\x0B\x02\x00\x00\x00", "a callee offset of zero"),
+		("\x0B\x02\x0C\x00\x00", "a callee offset before the file"),
+		("\x0B\x00\x02\x00", "a signature index past the signatures"),
+		("\x0B\x08\x00\x00\x00", "an empty argument"),
+		("\x0B\xC0\x3E\x00\x04\x00", "an argument count past the message"),
+		("\xFD\xFF\xFF\xFF\x07\x04\x00\x01\x00", "a closing gap past the end of the offsets"),
+		("\x80\x80\x80\x80\x08\x00\x00\x00", "a number past int.max"),
+		("\x0B\x00\x00\x02", "a target past the declarations"),
+		("\x0B\x00\x00\x7F", "a negative target"),
+		("\x0B\x00\x00", "no target"),
+		("\x0B\x00\x00\x00\x00", "a trailing byte"),
+		("", "a flag without an answer")
+	];
+	for (b in bad) {
+		for (signatures in [NO_SIGNATURES, ONE_SIGNATURE]) {
+			t.assert(AnalysisResultDecode.Malformed.?(decodeCallAnswer(signatures, b.0)), b.1);
+		}
+	}
+	// A valid answer, unrequested.
+	var good = callAnswer(ONE_SIGNATURE, "\x0B\x0A\x02\x01\x04\x01");
+	for (kinds in [0, AnalysisScopeKinds.VALUES, AnalysisScopeKinds.MEMBERS]) {
+		t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResultWithQuery(good, 1, REQUEST, kinds)), "unrequested call answer");
+	}
+}
+// A call answer is charged 64 bytes and 8 for each argument; its signature,
+// 64 bytes, 8 for each parameter, and the signature text that it copies, 64
+// bytes and its length for each string.
+def test_call_answer_allocation(t: Tester) {
+	var cases = [
+		// No arguments, no signature.
+		(NO_SIGNATURES, "\x0B\x00\x00\x00", 64),
+		// Two arguments.
+		(NO_SIGNATURES, "\x0B\x10\x00\x04\x05\x00", 64 + 2 * 8),
+		// ONE_SIGNATURE's: "f(a: int)" and "a: int" are signature text.
+		(ONE_SIGNATURE, "\x0B\x0A\x02\x01\x04\x01", 64 + 8 + 64 + 8 + (64 + 9) + (64 + 6)),
+		// A label from the string table, "int", copies nothing.
+		("\x00\x01\x01\x03\x00", "\x0B\x00\x01\x00", 64 + 64)
+	];
+	for (c in cases) {
+		var base = AnalysisWire.decodeResultWithQuery(result(0, withCalls(c.0, 0, "")), 1, REQUEST, AnalysisScopeKinds.CALL);
+		var answered = decodeCallAnswer(c.0, c.1);
+		if (!AnalysisResultDecode.Decoded.?(base) || queried(answered) == null) return t.fail1("%s did not decode", c.1);
+		var before = AnalysisResultDecode.Decoded.!(base).result.snapshot, after = AnalysisResultDecode.Decoded.!(answered).result.snapshot;
+		t.assertl(long.view(c.2), after.resultAllocation - before.resultAllocation);
+		t.assertl(after.resultAllocation - before.resultAllocation, after.retainedBytes - before.retainedBytes);
+	}
 }

@@ -344,7 +344,7 @@ def workerRequest(t: Tester, n: int, scoped: bool) {
 		AeneasAdapter.analyzeProgram(request.sources, request.options, false));
 	var files = if(scoped, Array<(string, Array<AnalysisOccurrence>)>.new(0), request.occurrences(analysis));
 	var scope = request.scopeAnswer(analysis);
-	var result = AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 0, analysis, -1, -1, files, scope, null), 0);
+	var result = AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 0, analysis, -1, -1, files, scope, null, null), 0);
 	var requestPaths = Arrays.map(sources, pathOf);
 	var snapshot: AnalysisSnapshot;
 	match (AnalysisWire.decodeResultWithQuery(Ranges.dup(result[WorkerFraming.HEADER_BYTES ...]), 1, requestPaths, if(scoped, AnalysisScopeKinds.VALUES))) {
