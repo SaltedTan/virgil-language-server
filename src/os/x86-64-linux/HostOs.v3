@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Host system calls that Virgil's {System} component lacks: pipes, process
-// creation, readiness polling, and signals. This is the x86-64 Linux version;
-// src/os/x86-64-darwin/HostOs.v3 declares the same members, and the Makefile
-// compiles only the file for the target. Failures return a negated errno.
-// See docs/decisions/0004-analysis-worker-process.md.
+// creation, readiness polling, signals, and random words. This is the x86-64
+// Linux version; src/os/x86-64-darwin/HostOs.v3 declares the same members,
+// and the Makefile compiles only the file for the target. Failures return a
+// negated errno. See docs/decisions/0004-analysis-worker-process.md.
 component HostOs {
 	def EINTR = -4;
 	def ELOOP = -40;
@@ -42,6 +42,8 @@ component HostOs {
 	private def SYS_kill = 62;
 	private def SYS_fcntl = 72;
 	private def SYS_readlink = 89;
+	private def SYS_getpid = 39;
+	private def SYS_getrandom = 318;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
@@ -54,6 +56,8 @@ component HostOs {
 	private def ITIMER_REAL = 0;
 	private def SIGPIPE = 13;
 	private def SIG_IGN = 1L;
+	// Built with the program, so that reading random words allocates nothing.
+	private def words = Array<long>.new(2);
 
 	// Creates a pipe. Returns its read and write descriptors, both
 	// close-on-exec, or a negated errno as the first value.
@@ -146,6 +150,12 @@ component HostOs {
 		var action = Array<long>.new(4); // handler, flags, restorer, mask
 		action[0] = SIG_IGN;
 		sys(SYS_rt_sigaction, (SIGPIPE, Pointer.atContents(action), Pointer.NULL, 8));
+	}
+	// Two words from the kernel's random source, or, if it fails, from the
+	// time and the process ID.
+	def randomWords() -> (u64, u64) {
+		if (sys(SYS_getrandom, (Pointer.atContents(words), 16, 0)) == 16) return (u64.view(words[0]), u64.view(words[1]));
+		return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), u64.view(sys(SYS_getpid, ())));
 	}
 	// The absolute path of this process's executable, or null.
 	def executablePath() -> string {

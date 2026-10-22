@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Host system calls that Virgil's {System} component lacks: pipes, process
-// creation, readiness polling, and signals. This is the x86-64 Darwin version,
-// which also runs under Rosetta 2; src/os/x86-64-linux/HostOs.v3 declares the
-// same members, and the Makefile compiles only the file for the target. The
-// kernel reports a failure with the carry flag and a positive errno, which this
-// component returns negated. See docs/decisions/0004-analysis-worker-process.md.
+// creation, readiness polling, signals, and random words. This is the x86-64
+// Darwin version, which also runs under Rosetta 2;
+// src/os/x86-64-linux/HostOs.v3 declares the same members, and the Makefile
+// compiles only the file for the target. The kernel reports a failure with
+// the carry flag and a positive errno, which this component returns negated.
+// See docs/decisions/0004-analysis-worker-process.md.
 component HostOs {
 	def EINTR = -4;
 	def ELOOP = -62;
@@ -44,6 +45,7 @@ component HostOs {
 	private def SYS_fstatat64 = 0x20001D6;
 	private def SYS_getdirentries64 = 0x2000158;
 	private def SYS_openat = 0x20001CF;
+	private def SYS_getentropy = 0x20001F4;
 	private def F_SETFD = 2;
 	private def F_GETFL = 3;
 	private def F_SETFL = 4;
@@ -56,6 +58,8 @@ component HostOs {
 	private def ITIMER_REAL = 0;
 	private def SIGPIPE = 13;
 	private def SIG_IGN = 1L;
+	// Built with the program, so that reading random words allocates nothing.
+	private def words = Array<long>.new(2);
 	private def PROC_INFO_CALL_PIDINFO = 2;
 	private def PROC_PIDPATHINFO = 11;
 	private def CF_FLAG = 1L;
@@ -156,6 +160,12 @@ component HostOs {
 		var action = Array<long>.new(3); // handler, trampoline, mask and flags
 		action[0] = SIG_IGN;
 		sys(SYS_sigaction, (SIGPIPE, Pointer.atContents(action), Pointer.NULL));
+	}
+	// Two words from the kernel's random source, or, if it fails, from the
+	// time and the process ID.
+	def randomWords() -> (u64, u64) {
+		if (sys(SYS_getentropy, (Pointer.atContents(words), 16)) == 0) return (u64.view(words[0]), u64.view(words[1]));
+		return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), u64.view(sys(SYS_getpid, ())));
 	}
 	// The absolute path of this process's executable, or null. This is
 	// libproc's proc_pidpath(), which returns a NUL-terminated path.

@@ -21,6 +21,7 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 	def find(key: K) -> int {
 		var mask = slots.length - 1;
 		for (i = AnalysisTables.mix(hash(key)) & mask; slots[i] != 0; i = (i + 1) & mask) {
+			AnalysisTables.probes++;
 			var k = keys[slots[i] - 1];
 			if (k == key || equal(k, key)) return slots[i] - 1;
 		}
@@ -30,6 +31,7 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 	def add(key: K) -> int {
 		var mask = slots.length - 1, i = AnalysisTables.mix(hash(key)) & mask;
 		while (slots[i] != 0) {
+			AnalysisTables.probes++;
 			var k = keys[slots[i] - 1];
 			if (k == key || equal(k, key)) return slots[i] - 1;
 			i = (i + 1) & mask;
@@ -45,15 +47,213 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 		var mask = slots.length - 1;
 		for (index < keys.length) {
 			var i = AnalysisTables.mix(hash(keys[index])) & mask;
-			while (slots[i] != 0) i = (i + 1) & mask;
+			while (slots[i] != 0) {
+				AnalysisTables.probes++;
+				i = (i + 1) & mask;
+			}
 			slots[i] = index + 1;
 		}
 	}
 }
 
+// Maps each distinct key to a dense index, in insertion order, as
+// AnalysisIndexMap does, for keys that hold a compiler type. The compiler's
+// type hash (Type.hash) is a polynomial in its constructors' uids, which
+// many distinct types share: for consecutive uids u, 33u + (u + 33) is
+// 33(u + 1) + u, so K<T0, T33> and K<T1, T0> hash alike, and so do the 2^13
+// types that choose one of the two pairs thirteen times. No mixing of the
+// hash can tell them apart, and in an AnalysisIndexMap they all probed one
+// slot sequence. A structural hash cannot replace it: a type's tree can be
+// exponentially larger than its DAG, a type has no identity hash because it
+// moves under the collector, and memoizing a type's hash in a table keyed
+// by its own hash is circular.
+//
+// Instead, the keys of one {sameHash} class share one slot: the first alone,
+// and from the second on, all of them in an AA tree ordered by {compare}.
+// Keys of one class equal in {hash}, which must be keyed as hashInt is, so
+// that it spreads the classes: a lookup probes O(1) expected slots of other
+// classes, whatever the types, and then compares O(log n) keys of its own,
+// each in time bounded by the types' depth times their arity (AnalysisDisplay's
+// compareTypes). No set of types can share a probe sequence but by sharing a
+// class, and a class costs its keys a tree, not a cluster. An ordinary
+// program has few such classes: in the Aeneas sources, the display's type
+// table has 49 of two types and its call keys one, and their trees and the
+// two tables' added fields take 4,336 bytes of a fresh worker's heap.
+//
+// An index is reused only for the very key that holds it (k == key); the
+// order only guides the search. The order is zero for distinct keys that it
+// cannot tell apart, as compareTypes is for the Pointer twins that only
+// machine lowering makes, which analysis never runs. A key that compares zero
+// with a key on its way into the tree is kept, instead, in its class's list
+// of such keys, which every lookup that the tree does not answer scans. So
+// the tree holds only keys whose every comparison on the way in was nonzero,
+// and a lookup, which searches both sides of a key that compares zero with
+// it, finds any key that the tree holds if the nonzero results agree with one
+// total order, as compareTypes's agree with the types' structure. Then the
+// map holds each key once, and a lookup without zeros, as every one is for
+// the canonical types that analysis interns, compares O(log n) keys. With
+// zeros, a lookup takes time up to linear in its class, and if the nonzero
+// results disagree, the map may hold a key more than once, but it never
+// gives one key another's index.
+class AnalysisTypeKeyMap<K>(hash: K -> int, sameHash: (K, K) -> bool, compare: (K, K) -> int) {
+	private def keys = Vector<K>.new();
+	// Each slot holds a key's index plus one if the key is alone in its
+	// class, or minus one minus the index in {trees} of its class's tree,
+	// or zero if it is empty. The table is a power of two and at most half
+	// full of classes.
+	private var slots = Array<int>.new(64);
+	private var classes: int;
+	private var trees: Vector<AnalysisKeyNode>;
+	// The keys of each class that compared zero on their way into its tree,
+	// linked through their nodes' right fields, by the class's index in
+	// {trees}; null until one does.
+	private var ties: Vector<AnalysisKeyNode>;
+	// The index of the key that the last insert() found or added.
+	private var found: int;
+
+	def length() -> int {
+		return keys.length;
+	}
+	def [index: int] -> K {
+		return keys[index];
+	}
+	// The index of {key}, adding it if it is new.
+	def add(key: K) -> int {
+		var mask = slots.length - 1, i = hash(key) & mask;
+		for (v = slots[i]; v != 0; v = slots[i]) {
+			AnalysisTables.probes++;
+			if (v > 0) {
+				var k = keys[v - 1];
+				if (k == key) return v - 1;
+				if (sameHash(k, key)) {
+					if (trees == null) trees = Vector<AnalysisKeyNode>.new();
+					var c = trees.length;
+					slots[i] = -1 - c;
+					trees.put(insert(c, AnalysisKeyNode.new(v - 1), key));
+					return found;
+				}
+			} else {
+				var c = -1 - v, root = trees[c];
+				if (sameHash(keys[root.index], key)) {
+					trees[c] = insert(c, root, key);
+					return found;
+				}
+			}
+			i = (i + 1) & mask;
+		}
+		var index = keys.length;
+		keys.put(key);
+		slots[i] = index + 1;
+		classes++;
+		if (2 * classes > slots.length) grow();
+		return index;
+	}
+	private def grow() {
+		var old = slots;
+		slots = Array<int>.new(2 * old.length);
+		var mask = slots.length - 1;
+		for (v in old) {
+			if (v == 0) continue;
+			var i = hash(keys[if(v > 0, v - 1, trees[-1 - v].index)]) & mask;
+			while (slots[i] != 0) {
+				AnalysisTables.probes++;
+				i = (i + 1) & mask;
+			}
+			slots[i] = v;
+		}
+	}
+	// Adds {key} to the tree at {n}, of keys of class {c}, or to the class's
+	// ties, unless either holds it, and sets {found} to its index.
+	private def insert(c: int, n: AnalysisKeyNode, key: K) -> AnalysisKeyNode {
+		if (n == null) {
+			if (ties != null && c < ties.length && tied(ties[c], key)) return null;
+			found = keys.length;
+			keys.put(key);
+			return AnalysisKeyNode.new(found);
+		}
+		AnalysisTables.probes++;
+		var k = keys[n.index], order = compare(key, k);
+		if (order == 0) {
+			if (k == key) found = n.index;
+			else if (!search(n.left, key) && !search(n.right, key)) tie(c, key);
+			return n;
+		}
+		if (order < 0) n.left = insert(c, n.left, key);
+		else n.right = insert(c, n.right, key);
+		return split(skew(n));
+	}
+	// Whether the tree at {n} holds {key}, searching both sides of each key
+	// that compares zero with it; sets {found} to its index if so.
+	private def search(n: AnalysisKeyNode, key: K) -> bool {
+		while (n != null) {
+			AnalysisTables.probes++;
+			var k = keys[n.index], order = compare(key, k);
+			if (order == 0) {
+				if (k == key) {
+					found = n.index;
+					return true;
+				}
+				if (search(n.left, key)) return true;
+				n = n.right;
+			} else {
+				n = if(order < 0, n.left, n.right);
+			}
+		}
+		return false;
+	}
+	// Adds {key} to the ties of class {c}, unless they hold it, and sets
+	// {found} to its index.
+	private def tie(c: int, key: K) {
+		if (ties == null) ties = Vector<AnalysisKeyNode>.new();
+		while (ties.length <= c) ties.put(null);
+		if (tied(ties[c], key)) return;
+		found = keys.length;
+		keys.put(key);
+		var n = AnalysisKeyNode.new(found);
+		n.right = ties[c];
+		ties[c] = n;
+	}
+	// Whether the list at {n} holds {key}; sets {found} to its index if so.
+	private def tied(n: AnalysisKeyNode, key: K) -> bool {
+		for (l = n; l != null; l = l.right) {
+			AnalysisTables.probes++;
+			if (keys[l.index] == key) {
+				found = l.index;
+				return true;
+			}
+		}
+		return false;
+	}
+	// Rotates right when {n}'s left child is on its level.
+	private def skew(n: AnalysisKeyNode) -> AnalysisKeyNode {
+		var l = n.left;
+		if (l == null || l.level != n.level) return n;
+		n.left = l.right;
+		l.right = n;
+		return l;
+	}
+	// Rotates left and raises the new parent when {n} has two right children
+	// on its level.
+	private def split(n: AnalysisKeyNode) -> AnalysisKeyNode {
+		var r = n.right;
+		if (r == null || r.right == null || r.right.level != n.level) return n;
+		n.right = r.left;
+		r.left = n;
+		r.level++;
+		return r;
+	}
+}
+// A key of an AnalysisTypeKeyMap tree, by its index.
+class AnalysisKeyNode(index: int) {
+	var level = 1;
+	var left: AnalysisKeyNode;
+	var right: AnalysisKeyNode;
+}
+
 // Interns strings by content, so that equal text is one object with one
 // index. {intern} looks up the text in a builder without allocating unless
-// the text is new.
+// the text is new. Strings are slotted by AnalysisTables.hashString, which
+// a program's names cannot make collide.
 class AnalysisStringTable {
 	private def strings = Vector<string>.new();
 	private var slots = Array<int>.new(64);
@@ -67,8 +267,9 @@ class AnalysisStringTable {
 	// The interned string with the bytes of {buf}, which is reset.
 	def intern(buf: StringBuilder) -> string {
 		var bytes = buf.buf, length = buf.length;
-		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(bytes, length)) & mask;
+		var mask = slots.length - 1, i = AnalysisTables.hashString(bytes, length) & mask;
 		while (slots[i] != 0) {
+			AnalysisTables.probes++;
 			var s = strings[slots[i] - 1];
 			if (AnalysisTables.sameBytes(s, bytes, length)) {
 				buf.reset();
@@ -92,8 +293,9 @@ class AnalysisStringTable {
 	}
 	// The slot that holds {s}, or the empty slot where it would go.
 	private def slot(s: string) -> int {
-		var mask = slots.length - 1, i = AnalysisTables.mix(AnalysisTables.hashBytes(s, s.length)) & mask;
+		var mask = slots.length - 1, i = AnalysisTables.hashString(s, s.length) & mask;
 		while (slots[i] != 0) {
+			AnalysisTables.probes++;
 			var t = strings[slots[i] - 1];
 			if (t == s || AnalysisTables.sameBytes(t, s, s.length)) return i;
 			i = (i + 1) & mask;
@@ -108,8 +310,11 @@ class AnalysisStringTable {
 			slots = Array<int>.new(2 * slots.length);
 			var mask = slots.length - 1;
 			for (j < strings.length) {
-				var t = strings[j], i = AnalysisTables.mix(AnalysisTables.hashBytes(t, t.length)) & mask;
-				while (slots[i] != 0) i = (i + 1) & mask;
+				var t = strings[j], i = AnalysisTables.hashString(t, t.length) & mask;
+				while (slots[i] != 0) {
+					AnalysisTables.probes++;
+					i = (i + 1) & mask;
+				}
 				slots[i] = j + 1;
 			}
 		}
@@ -141,15 +346,62 @@ component AnalysisTables {
 		}
 		return src;
 	}
-	// Spreads a hash's bits into the low bits that select a slot.
+	// Spreads a hash's bits into the low bits that select a slot, for keys
+	// that are already numbers, such as the indexes that a snapshot's
+	// signature reader keys. A SipHash keeps its spread, and the string table
+	// skips this.
 	def mix(h: int) -> int {
 		var x = u32.view(h) * 0x9E3779B1u;
 		return int.view(x ^ (x >> 15));
 	}
-	def hashBytes(bytes: Array<byte>, length: int) -> int {
-		var h = length;
-		for (i < length) h = h * 31 + bytes[i];
-		return h;
+	// Keys a process's hashes. The worker calls this once, as it starts and
+	// before it makes any table, with words from the kernel's random source
+	// (HostOs.randomWords), so that no file can be written to make names or
+	// paths collide. A table must not outlive a change of key. Until then,
+	// as in tests, the key is fixed. No output depends on the key: every
+	// table keeps its keys in insertion order and lists them in that order.
+	def seed(k0: u64, k1: u64) {
+		key0 = k0;
+		key1 = k1;
+		fill(tables);
+	}
+	// SipHash-1-3 (Aumasson and Bernstein, 2012) of the eight little-endian
+	// bytes of {prefix} followed by the first {length} bytes of {bytes}, keyed
+	// as {seed} set. SipHash is a keyed pseudorandom function, so without the
+	// key no set of inputs hashes alike more often than random ones do. A
+	// polynomial such as h * 31 + b gives every equal-length name built from
+	// "Aa" and "BB" blocks one hash, and multiply-and-shift hashes such as
+	// MurmurHash have collisions that hold for every seed; either would put
+	// such names in one probe sequence.
+	def hashBytes(bytes: Array<byte>, length: int, prefix: u64) -> u64 {
+		return sipHash(bytes, length, prefix, -8);
+	}
+	// Simple tabulation hashing (Zobrist, 1970) of {x}, for keys that are
+	// numbers a program can choose, such as the compiler's type hashes: the
+	// xor of one word for each of its four bytes, from four tables of 256
+	// that {seed} fills with SipHash from the key. With it, linear probing in
+	// a table at most half full takes O(1) expected probes per operation for
+	// any set of keys chosen without the tables (Patrascu and Thorup, 2012),
+	// as with SipHash, and so it does when the hash is xored with a SipHash
+	// of the rest of a key, which acts as a fifth character (AnalysisDisplay's
+	// hashCall). It costs four loads, against about 15 ns for a SipHash, which
+	// made collecting the Aeneas sources 2.5% slower: the display's type
+	// table hashes a type for each one it renders.
+	def hashInt(x: int) -> int {
+		var t = tables;
+		return int.view(t[x & 0xFF] ^ t[256 + ((x >> 8) & 0xFF)] ^ t[512 + ((x >> 16) & 0xFF)] ^ t[768 + ((x >> 24) & 0xFF)]);
+	}
+	// A string's slot hash: SipHash-1-3 of its first {length} bytes.
+	def hashString(bytes: Array<byte>, length: int) -> int {
+		return int.view(sipHash(bytes, length, 0, 0));
+	}
+	// The hash of a position in {path}, which may be null: a line, a column,
+	// and a small tag, such as a declaration kind's. The three share the
+	// prefix word, which keeps them apart for any line below 2^24 and tag
+	// below 256, beyond a supported source's size.
+	def hashPosition(path: string, line: int, column: int, tag: int) -> u64 {
+		var prefix = (u64.view(line) << 40) ^ (u64.view(u32.view(column)) << 8) ^ u64.view(tag);
+		return hashBytes(path, if(path != null, path.length), prefix);
 	}
 	// Negative, zero, or positive as {a} is before, equal to, or after {b}
 	// in byte order.
@@ -164,5 +416,52 @@ component AnalysisTables {
 		if (s.length != length) return false;
 		for (i < length) if (s[i] != bytes[i]) return false;
 		return true;
+	}
+
+	// The slots that the tables have probed past a key's first, for tests.
+	var probes: long;
+	private var key0 = 0x0706050403020100ul;
+	private var key1 = 0x0F0E0D0C0B0A0908ul;
+	// hashInt's tables, filled from the key. The program is built with them
+	// filled from the fixed key, so they take no heap.
+	private def tables = fill(Array<u32>.new(1024));
+	private def fill(t: Array<u32>) -> Array<u32> {
+		for (i < t.length) t[i] = u32.view(hashBytes(null, 0, u64.view(i)));
+		return t;
+	}
+	private def sipHash(bytes: Array<byte>, length: int, prefix: u64, start: int) -> u64 {
+		var v0 = key0 ^ 0x736f6d6570736575ul, v1 = key1 ^ 0x646f72616e646f6dul;
+		var v2 = key0 ^ 0x6c7967656e657261ul, v3 = key1 ^ 0x7465646279746573ul;
+		// The blocks are {prefix} if {start} is -8, the bytes eight at a time,
+		// and a last block of the bytes that remain and, in its top byte, the
+		// message's length. {length} must not pass the end of {bytes}. The
+		// rounds are written out: a method returning the four words as a tuple
+		// made hashing more than twice as slow. A word is one load, which is
+		// little-endian and may be unaligned on the x86-64 targets; nothing
+		// allocates, so the array cannot move, between taking its address and
+		// loading. This makes hashing a path cost what the polynomial did.
+		var end = length - (length & 7), m = prefix;
+		for (i = start; i <= end; i += 8) {
+			if (i == end) {
+				m = u64.view(length - start) << 56;
+				for (j = end; j < length; j++) m |= u64.view(bytes[j]) << byte.view(8 * (j - end));
+			} else if (i >= 0) {
+				m = (Pointer.atContents(bytes) + i).load<u64>();
+			}
+			v3 ^= m;
+			v0 += v1; v1 = (v1 << 13) | (v1 >> 51); v1 ^= v0; v0 = (v0 << 32) | (v0 >> 32);
+			v2 += v3; v3 = (v3 << 16) | (v3 >> 48); v3 ^= v2;
+			v0 += v3; v3 = (v3 << 21) | (v3 >> 43); v3 ^= v0;
+			v2 += v1; v1 = (v1 << 17) | (v1 >> 47); v1 ^= v2; v2 = (v2 << 32) | (v2 >> 32);
+			v0 ^= m;
+		}
+		v2 ^= 0xFF;
+		for (r < 3) {
+			v0 += v1; v1 = (v1 << 13) | (v1 >> 51); v1 ^= v0; v0 = (v0 << 32) | (v0 >> 32);
+			v2 += v3; v3 = (v3 << 16) | (v3 >> 48); v3 ^= v2;
+			v0 += v3; v3 = (v3 << 21) | (v3 >> 43); v3 ^= v0;
+			v2 += v1; v1 = (v1 << 17) | (v1 >> 47); v1 ^= v2; v2 = (v2 << 32) | (v2 >> 32);
+		}
+		return v0 ^ v1 ^ v2 ^ v3;
 	}
 }

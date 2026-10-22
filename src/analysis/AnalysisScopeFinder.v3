@@ -308,8 +308,8 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// as the method of a lambda's name (TypeChecker.visitFunExpr), is not in
 	// the map and so hides nothing. The query asks the same map, as the
 	// verifier does itself while checking the match, so it does no more of
-	// that work than the analysis that produced it; the map's 1,024-bucket
-	// cap is tracked in #155.
+	// that work than the analysis that produced it; see
+	// docs/architecture.md#names for the remaining member-map cost.
 	private def cases() -> int {
 		var t = if(patterns != null && patterns.expr != null, patterns.expr.exactType);
 		if (t == null || t.typeCon == null || t.typeCon.kind == Kind.VOID) return -1;
