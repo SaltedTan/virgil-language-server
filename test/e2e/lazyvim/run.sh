@@ -173,9 +173,21 @@ run_processes() {
     cat "$work"/*.pids 2>/dev/null | while read -r pid name; do
       ps -p "$pid" -o pid=,command= 2>/dev/null | grep virgil-lsp || true
     done
-    ps -ax -o pid=,command= | W=$work/ awk 'index($0, ENVIRON["W"])' || true
+    ps -ax -o pid=,command= | W=$work/ awk 'index($0, ENVIRON["W"])'
   } | sort -u
 }
+
+# run_trees PIDS: prints the running PIDS, the processes that run_processes
+# finds, and all their descendants; fails if the processes can't be listed.
+run_trees() {
+  local roots
+  roots=$(run_processes | awk '{ print $1 }') && descendants "$1 $roots"
+}
+
+# stopping is 1 while stop_processes runs, and pending then holds the exit
+# status of a signal that came meanwhile. frozen holds the PIDs that it has
+# frozen and not yet killed.
+stopping=0 pending='' frozen=' '
 
 # Stops each tmux server and every process of the runs: the servers' process
 # trees, the processes that run_processes finds, and all their descendants.
@@ -185,42 +197,71 @@ run_processes() {
 # one: a stopped process neither starts another nor exits. A tmux server
 # would send SIGCONT to its pane's stopped processes, so it stops first. Then
 # they get SIGKILL. SIGTERM would need SIGCONT, and on SIGTERM Neovim runs on
-# for seconds, and starts processes. Every 0.2 seconds it looks again and
-# kills any process it finds; if any is left after five seconds, or the
-# processes can't be listed, it prints so and fails.
+# for seconds, and starts processes. If a look can't list the processes, it
+# tries again after 0.2 seconds, up to five times, with those found so far
+# still frozen. Then every 0.2 seconds it looks again and kills any process
+# it finds; if any is left after five seconds, or the processes couldn't be
+# listed, it prints so and fails. A signal meanwhile exits only after that,
+# and a stopped tmux server would answer no query: so a query that gets no
+# answer in two seconds is given up, and if a call didn't finish, the next
+# kills what it froze without asking the servers.
 stop_processes() {
-  local frozen=' ' new pids sock pid tries=0
-  for sock in "$work"/*.sock; do
-    [[ -S $sock ]] || continue
-    pid=$(tmux -S "$sock" display-message -p '#{pid}' 2>/dev/null || true)
-    if [[ -n $pid ]]; then kill -STOP "$pid" 2>/dev/null && frozen="$frozen$pid "; fi
-  done
+  local list new pids sock pid tries=0 fails=0 listed=1 rc=0
+  stopping=1
+  if [[ $frozen == ' ' ]]; then
+    for sock in "$work"/*.sock; do
+      [[ -S $sock ]] || continue
+      pid=$(deadline 2 tmux -S "$sock" display-message -p '#{pid}' 2>/dev/null || true)
+      if [[ $pid =~ ^[0-9]+$ ]]; then
+        frozen="$frozen$pid "
+        kill -STOP "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
   while (( tries < 25 )); do
+    if ! list=$(run_trees "$frozen"); then
+      fails=$((fails + 1))
+      if (( fails == 5 )); then listed=0; break; fi
+      sleep 0.2
+      continue
+    fi
     new=''
-    for pid in $(descendants "$frozen$(run_processes | awk '{ print $1 }')"); do
+    for pid in $list; do
       [[ $frozen == *" $pid "* ]] || new="$new$pid "
     done
     [[ -n $new ]] || break
-    for pid in $new; do kill -STOP "$pid" 2>/dev/null || true; done
     frozen="$frozen$new"
+    for pid in $new; do kill -STOP "$pid" 2>/dev/null || true; done
     tries=$((tries + 1))
   done
   pids=$frozen tries=0
   while :; do
     for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
-    if ! pids=$(descendants "$pids $(run_processes | awk '{ print $1 }')"); then
-      echo "FAIL: could not list the processes of the runs"
-      return 1
+    frozen=' '
+    if ! pids=$(run_trees "$pids"); then
+      listed=0
+      break
     fi
-    [[ -n $pids ]] || return 0
+    [[ -n $pids ]] || break
     if (( tries == 25 )); then
       echo "FAIL: processes still running after SIGKILL:"
       for pid in $pids; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
-      return 1
+      rc=1
+      break
     fi
     sleep 0.2
     tries=$((tries + 1))
   done
+  if (( ! listed )); then
+    echo "FAIL: could not list the processes of the runs"
+    rc=1
+  fi
+  stopping=0
+  if [[ -n $pending ]]; then
+    rc=$pending pending=''
+    exit "$rc"
+  fi
+  return "$rc"
 }
 
 # save_screen NAME WHEN: appends the screen of NAME's pane, with its
@@ -228,10 +269,10 @@ stop_processes() {
 # stays open after Neovim exits, so this also keeps what Neovim printed.
 save_screen() {
   local name=$1 sock=$work/$1.sock
-  if [[ -S $sock ]] && tmux -S "$sock" has-session -t "$name" 2>/dev/null; then
+  if [[ -S $sock ]] && deadline 2 tmux -S "$sock" has-session -t "$name" 2>/dev/null; then
     {
       echo "== screen $2"
-      tmux -S "$sock" capture-pane -p -S - -t "$name" 2>&1 || true
+      deadline 5 tmux -S "$sock" capture-pane -p -S - -t "$name" 2>&1 || true
     } >> "$out/$name.screen.txt"
   fi
 }
@@ -270,12 +311,15 @@ cleanup() {
 }
 
 on_signal() {
+  local rc
   echo "run.sh: interrupted by SIG$1" >&4
   case $1 in
-    INT) exit 130 ;;
-    TERM) exit 143 ;;
-    *) exit 129 ;;
+    INT) rc=130 ;;
+    TERM) rc=143 ;;
+    *) rc=129 ;;
   esac
+  # stop_processes exits once it has killed what it froze.
+  if (( stopping )); then pending=${pending:-$rc}; else exit "$rc"; fi
 }
 
 work=$(mktemp -d "${tmp%/}/virgil-lazyvim.XXXXXX")
