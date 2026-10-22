@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- The VS Code extension's README now describes using it alongside `titzer.virgil`, the Virgil author's extension: with both installed, VS Code 1.142.0 uses this extension's grammar and quote rules, and the other extension adds its semantic highlighting and debugger ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
+- Guidance for using the VS Code extension alongside `titzer.virgil`, the Virgil author's extension ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
 
 ## [0.1.0-alpha.2] - 2026-10-22
 
