@@ -605,7 +605,7 @@ async function noVirgilRoot(failures, words) {
     }, 40000);
     assert.deepEqual(missing.map((d) => [code(d), d.source, d.range.start.line]), [['MissingVirgilRoot', 'virgil-lsp', 6]]);
   }, restore, {
-    bug: 'the server exits during initialize when initializationOptions has no virgilRoot, as the extension sends it without a root',
+    bug: 'the server exits during initialize when initializationOptions has no virgilRoot, as the extension sends it without a root (#175)',
     signature: 'in WorkspaceProjects.initialize()',
   });
 }
