@@ -570,7 +570,7 @@ Positions in reasons are one-based lines and UTF-16 columns of the text before t
 A snapshot of text that doesn't parse has no calls. So where the open document's text doesn't parse, as in `f(a,` or an unclosed `f(`, the server answers from a temporary analysis of the text repaired at the cursor, as [completion](#names) does ([#163](https://github.com/SaltedTan/virgil-language-server/issues/163)), instead of waiting for the document's snapshot:
 
 1. `LspCursorScanner` reads the text up to the cursor. The reply is `null` at once if the cursor is in a comment or a literal, or if no call is open there (`LspCursorContext.calls()`). It is also `null` at once for a document without a file path, such as an `untitled:` one, and when the server has no worker.
-2. The server inserts completion's repair (`LspCompletionRepair.repair`, [ADR-0006](decisions/0006-incomplete-code-repair.md)): the sentinel `virgilLspCursor` at the cursor, then the closers and `;` that the cursor's context needs, so `f(a, |` becomes `f(a, virgilLspCursor);`. If the repaired text doesn't parse, the reply is `null` at once and no analysis starts.
+2. The server inserts completion's repair (`LspCompletionRepair.repair`, [ADR-0006](decisions/0006-incomplete-code-repair.md)): the sentinel `virgilLspCursor` at the cursor, then the closers and `;` that the cursor's context needs, so `f(a, |` becomes `f(a, virgilLspCursor);`. Where an editor closed the `(` at once, as in `f(a, |)` at the end of a line, the `;` goes after that `)` ([Repair](#names)). If the repaired text doesn't parse, the reply is `null` at once and no analysis starts.
 3. The repair inserts nothing before the cursor, so the innermost open call's `(` is at the same offset in both texts. The analysis answers a call query at that offset (below).
 4. The reply is that call's signature, as for a call that parses. Its active parameter is counted in the repaired text, which has the document's commas before the cursor. A call without a signature, or one that verification didn't reach, gets `null`.
 
@@ -613,7 +613,6 @@ Dropping the collector's record of the last call that it walked, so that each ca
 **Limitations.** An incomplete call gets its signature only where the repair at the cursor mends the program:
 
 - A syntax error elsewhere in the file or in another file of the project, or a block whose `}` is missing, as in a lambda body still being typed, leaves `null`, as it leaves completion the keywords alone.
-- Delimiters that an editor closed at once, with no `;` after them, as in `f(|)` at the end of a line, aren't mended yet ([#162](https://github.com/SaltedTan/virgil-language-server/issues/162)). With the `;`, `f(|);` parses, and gets its signature from the analysis of that exact text.
 - The innermost open call is the scanner's, which reads tokens, not a parse. After `>`, as in `a > (b`, it takes a group for a call's arguments, and it takes a constructor's `super(` clause for a call, though the syntax tree has no application there. Both get `null`, not the call around them.
 - A call in an if expression's first argument, as in `if(f(|`, gets `null`. The repair leaves the if expression with one argument, and verification then checks none of them (`TypeChecker.visitIfExpr`).
 

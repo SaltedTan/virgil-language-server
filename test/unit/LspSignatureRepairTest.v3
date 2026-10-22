@@ -13,6 +13,7 @@
 def T = UnitTests.register;
 def X = [
 	T("LspSignatureRepair:incomplete_calls", test_incomplete_calls),
+	T("LspSignatureRepair:auto_closed_calls", test_auto_closed_calls),
 	T("LspSignatureRepair:operator_member_calls", test_operator_member_calls),
 	T("LspSignatureRepair:label_offsets", test_label_offsets),
 	T("LspSignatureRepair:no_analysis", test_no_analysis),
@@ -185,6 +186,40 @@ def test_incomplete_calls(t: Tester) {
 		if (!Strings.equal(c.1, got)) t.fail3("%s\n  expected: %s\n  got:      %s", c.0, c.1, got);
 	}
 	// The first case reuses the reply above.
+	t.asserti(cases.length, analyses(s));
+	s.server.close();
+}
+
+// A call whose "(" an editor closed at once, at the end of a line with no
+// ";" yet: the repair ends the statement after the closers that follow the
+// cursor, so it gets its signature as an open call does. A syntax error
+// elsewhere still leaves null, with no analysis.
+def test_auto_closed_calls(t: Tester) {
+	var s = session(t);
+	var id = "def id(v: int) -> int";
+	var point = "class Point(x: int, y: int)", pointParams = ["x: int", "y: int"];
+	var cases = [
+		("\t\tUtil.add($)", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1, $)", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(1, n$)", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tvar m = Util.add($)", expected(ADD, ADD_PARAMS, 0)),
+		// Nested, with both closers typed, and with only the inner one.
+		("\t\tUtil.add(Util.add($))", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1, Util.add(n, $))", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(Util.add($)", expected(ADD, ADD_PARAMS, 0)),
+		// A constructor and a generic call.
+		("\t\tPoint.new(1, $)", expected(point, pointParams, 1)),
+		("\t\tUtil.id<int>($)", expected(id, ["v: int"], 0))
+	];
+	for (c in cases) {
+		var marked = inRun(c.0);
+		t.assert(!parses(marked), c.0);
+		var got = help(t, s, marked);
+		if (!Strings.equal(c.1, got)) t.fail3("%s\n  expected: %s\n  got:      %s", c.0, c.1, got);
+	}
+	t.asserti(cases.length, analyses(s));
+	var broken = request(t, s, Strings.format1("%sdef broken( {\n", inRun("\t\tUtil.add(1, $)")));
+	t.assert(isNull(s, broken), "an error elsewhere");
 	t.asserti(cases.length, analyses(s));
 	s.server.close();
 }
