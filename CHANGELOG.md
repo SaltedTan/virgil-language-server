@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Guidance for using the VS Code extension alongside `titzer.virgil`, the Virgil author's extension ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
+- Where the Neovim documentation says `:LspRestart`, it now also gives `:lsp restart`, the command on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart` ([Neovim](editors/nvim/README.md), [manual testing](docs/manual-testing.md#procedure)).
 
 ### Fixed
 
