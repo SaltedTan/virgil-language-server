@@ -59,8 +59,10 @@ class WorkspaceProjects(store: DocumentStore) {
 	private var scanWarned: bool;
 	private var singleFileWarned: bool;
 
-	// Called only after initialize's params have been validated. Folder order
-	// does not influence context selection. Nonlocal URIs are not disk roots.
+	// Called with initialize's params once they are known to be an object. Any
+	// member may be missing, and a missing one reads as the default JsonValue,
+	// String(null). Folder order does not influence context selection.
+	// Nonlocal URIs are not disk roots.
 	def initialize(params: HashMap<string, JsonValue>) {
 		var roots = Vector<string>.new();
 		if (JsonValue.JArray.?(params["workspaceFolders"])) {
@@ -70,10 +72,12 @@ class WorkspaceProjects(store: DocumentStore) {
 		} else addFolder(roots, params["rootUri"]);
 		folders = roots.extract();
 		folders = Arrays.sort(folders, 0, folders.length, ProjectFiles.before);
+		// Only an absolute path string sets the root. A missing, null,
+		// non-string, empty, or relative virgilRoot leaves none.
 		if (JsonValue.JObject.?(params["initializationOptions"])) {
-			var value = JsonValue.JObject.!(params["initializationOptions"]).v["virgilRoot"];
-			if (JsonValue.String.?(value)) {
-				var path = JsonValue.String.!(value).v;
+			var options = JsonValue.JObject.!(params["initializationOptions"]).v;
+			if (options.has("virgilRoot") && JsonValue.String.?(options["virgilRoot"])) {
+				var path = JsonValue.String.!(options["virgilRoot"]).v;
 				if (path.length > 0 && path[0] == '/') virgilRoot = DocumentUri.filePath(ProjectFiles.uri(path));
 			}
 		}

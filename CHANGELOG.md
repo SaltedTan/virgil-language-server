@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- VS Code users with no Virgil root configured had no language server, not even for single files: when neither `virgil.virgilRoot` nor `VIRGIL_LOC` gives an absolute path, the extension sends `initializationOptions` without `virgilRoot`, and the server exited during `initialize` (0.1.0-alpha.1 and 0.1.0-alpha.2). It now starts without a Virgil root, as it already did for a `null`, non-string, empty, or relative `virgilRoot`. Only projects with `virgilDependencies` need a root; without one, their project file gets a `MissingVirgilRoot` error ([The Virgil root](docs/configuration.md#the-virgil-root), [#175](https://github.com/SaltedTan/virgil-language-server/issues/175)).
 - The VS Code extension's Extension Host test now runs on macOS, where VS Code's socket path under the system temporary directory was too long for a Unix socket; there the test's temporary directory is now under `/tmp`, and CI now runs the test on macOS too ([Extension Host test](clients/vscode/README.md#extension-host-test)).
 - Correct the Neovim instructions for Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`, `:LspLog`, or `:LspInfo`: restart with `:lsp restart`, and find the log with `:lua =vim.lsp.log.get_filename()` ([Neovim](editors/nvim/README.md), [manual testing](docs/manual-testing.md#procedure), [bug report form](.github/ISSUE_TEMPLATE/bug_report.yml)).
 
