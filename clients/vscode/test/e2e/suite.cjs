@@ -31,8 +31,23 @@ function channelLog() {
   return file === undefined ? '' : fs.readFileSync(path.join(logs, file), 'utf8');
 }
 
+// Returns a function that returns what the channel has logged since this call.
+function logFromHere() {
+  const start = channelLog().length;
+  return () => channelLog().slice(start);
+}
+
 function count(text, substring) {
   return text.split(substring).length - 1;
+}
+
+function setting(name) {
+  return vscode.workspace.getConfiguration().get(name);
+}
+
+// Changes a user setting, as the Settings editor does.
+function setSetting(name, value) {
+  return vscode.workspace.getConfiguration().update(name, value, vscode.ConfigurationTarget.Global);
 }
 
 async function open(...segments) {
@@ -146,6 +161,64 @@ async function undo(editor, text) {
   await waitFor('the undo', () => editor.document.getText() === text && !editor.document.isDirty);
 }
 
+// Whether words/Words.v3 has its single type error, which only an analysis
+// with lib/util from the Virgil root reports.
+function hasTypeError(words) {
+  const list = diagnostics(words);
+  return list.length === 1 && code(list[0]) === 'TypeError' && list[0].range.start.line === 6;
+}
+
+// The fatal errors in the server's stderr, as the output channel logs it: each
+// is an exception line, such as "!NullCheckException", and the stack frames
+// under it, innermost first, without their timestamps.
+function fatalErrors(text) {
+  const errors = [];
+  for (const line of text.split('\n')) {
+    const message = /^\S+ \S+ \[error\] (.*)$/.exec(line)?.[1];
+    if (message === undefined) continue;
+    if (message.startsWith('!')) errors.push(message);
+    else if (/^\s+in /.test(message) && errors.length > 0) errors[errors.length - 1] += `\n\t${message.trim()}`;
+  }
+  return errors;
+}
+
+// Throws, with the server's stderr, if the output channel's log shows that a
+// server exited with an error since log began. The message has each distinct
+// fatal error in full, so that a different one after a crash loop shows.
+function expectNoServerError(log) {
+  const text = log();
+  if (/Server process exited with (code|signal)/.test(text)) {
+    const errors = new Set(fatalErrors(text));
+    const exits = new Set(text.match(/Server process exited with (code|signal) \S+/g));
+    throw new Error(`a server exited with an error:\n${[...errors, ...exits].join('\n')}`);
+  }
+}
+
+// Runs a scenario that changes a setting or a file on disk. restore undoes
+// what is still changed and waits until a server serves the project as before,
+// so that a scenario that fails is reported and the next one still runs. If
+// restoring fails, the suite stops.
+async function scenario(failures, name, check, restore) {
+  let failure;
+  try {
+    await check();
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    await restore();
+  } catch (error) {
+    if (failure !== undefined) console.error(`FAIL: VS Code ${name}: ${failure.stack}`);
+    throw new Error(`restoring the state after "${name}" failed: ${error.message}`);
+  }
+  if (failure === undefined) {
+    console.log(`PASS: VS Code ${name}`);
+  } else {
+    failures.push(name);
+    console.error(`FAIL: VS Code ${name}: ${failure.stack}`);
+  }
+}
+
 async function expectParserDiagnostic(editor) {
   const list = await waitForDiagnostics('the parser diagnostic in bad.v3', editor);
   assert.equal(list.length, 1, 'expected exactly one parser diagnostic');
@@ -173,6 +246,7 @@ async function singleFile(extension) {
 }
 
 async function workspace(extension) {
+  const failures = [];
   // The project file activates the extension before any document opens.
   await waitFor('activation by the workspace project file', () => extension.isActive);
   assert.deepEqual(vscode.workspace.textDocuments.filter((d) => d.languageId === 'virgil'), []);
@@ -249,6 +323,17 @@ async function workspace(extension) {
   assert.deepEqual(uses.filter((u) => u.text !== 'StringBuilder'
     || (u.file !== words.document.uri.fsPath && !u.file.startsWith(libraryDirectory))), []);
   assert.ok(new Set(uses.map((u) => u.file)).size > 2, 'no references in other library files');
+
+  // While the type error stands, the server refuses to rename the local line,
+  // with its reason, both when VS Code prepares the rename, as F2 does, and
+  // when it asks for the edit. F2 shows the reason beside the cursor.
+  const refusal = { message: "the project's analysis has errors; rename needs a program that verifies" };
+  await assert.rejects(vscode.commands.executeCommand(
+    'vscode.prepareRename', words.document.uri, new vscode.Position(use, 6),
+  ), refusal);
+  await assert.rejects(vscode.commands.executeCommand(
+    'vscode.executeDocumentRenameProvider', words.document.uri, new vscode.Position(use, 6), 'text',
+  ), refusal);
 
   // Rename needs a program that verifies, so an unsaved edit fixes the type
   // error first. The server's versioned edit renames both uses of the local
@@ -357,6 +442,42 @@ async function workspace(extension) {
   await vscode.commands.executeCommand('undo');
   await waitFor('the undo of the receiver', () => words.document.getText() === unedited && !words.document.isDirty);
 
+  // Signature help in a call still being typed, with no ")", comes from the
+  // unsaved text repaired at the cursor: just after the "(" of .puts( the
+  // method's one parameter is active, and after "1, " in Ints.max( from
+  // lib/util the second is.
+  const unclosed = '\t\tStringBuilder.new().puts(';
+  await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), `${unclosed}\n`));
+  assert.deepEqual(await signatureHelp(words, use + 1, unclosed.length), {
+    activeSignature: 0, activeParameter: 0, signatures: [['def puts(s: Array<byte>) -> this', [[9, 23]]]],
+  });
+  await undo(words, unedited);
+  const second = '\t\tvar n = Ints.max(1, ';
+  await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), `${second}\n`));
+  assert.deepEqual(await signatureHelp(words, use + 1, second.length), {
+    activeSignature: 0, activeParameter: 1, signatures: [['def max(a: int, b: int) -> int', [[8, 14], [16, 22]]]],
+  });
+  await undo(words, unedited);
+
+  // Inside the comment on line 3 the server offers nothing, either where
+  // completion is invoked after the word StringBuilder or after a ".", which
+  // triggers it. run.cjs turns off VS Code's word-based suggestions, so the
+  // items are the server's alone.
+  const comment = 2;
+  const word = words.document.lineAt(comment).text.indexOf('StringBuilder') + 'StringBuilder'.length;
+  const invoked = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(comment, word),
+  );
+  assert.deepEqual(invoked.items.map((i) => i.label), [], 'completion in a comment offered items');
+  await edit(words, (builder) => builder.insert(new vscode.Position(comment, word), '.'));
+  const commented = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(comment, word + 1), '.',
+  );
+  assert.deepEqual(commented.items.map((i) => i.label), [], 'completion after a "." in a comment offered items');
+  await undo(words, unedited);
+
+  await projectFileOnDisk(failures, bad, words);
+
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
   const config = await open('.virgil-lsp.json');
@@ -377,9 +498,192 @@ async function workspace(extension) {
     return count(log, 'Server process exited successfully') === 1 && count(log, 'Started virgil-lsp ') === 2;
   });
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
+  // The stopped client's diagnostics went with it, so the type error is the
+  // replacement's, from its copy of words/Words.v3.
+  await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, signature help, references, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and restart with a clean server exit');
+    + 'Virgil root, definition, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
+    + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
+
+  // The scenarios that restart the server, or could disturb it, come last.
+  await trace(failures, words);
+  await noVirgilRoot(failures, words);
+  await missingServer(failures, words);
+  await missingWorker(failures, words);
+  assert.deepEqual(failures, [], 'scenarios failed');
+}
+
+// With the project file closed and no document edited, a change on disk
+// reaches the server only as a file event from the client's watchers. The
+// scenario closes every editor, and reopens bad.v3 and words/Words.v3 in tabs
+// of their own, as they were, so that the restart serves them as open editors.
+async function projectFileOnDisk(failures, bad, words) {
+  const file = path.join(project, '.virgil-lsp.json');
+  const uri = vscode.Uri.file(file);
+  const original = fs.readFileSync(file, 'utf8');
+  const settled = () => vscode.languages.getDiagnostics(uri).length === 0 && hasTypeError(words);
+  await scenario(failures, 'project file changed on disk while closed: UnknownField, cleared when restored', async () => {
+    assert.ok(vscode.workspace.textDocuments.every((d) => d.uri.fsPath !== file), 'the project file is open');
+    // The server also reads the project file again whenever it looks up a
+    // document's project, as for the outline of a visible editor, and when an
+    // analysis ends. With no editor visible, and the last edit's analysis
+    // done, which a definition waits for, only a file event brings the change.
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    const column = words.document.lineAt(6).text.indexOf('StringBuilder');
+    assert.equal((await definitions(words, 6, column)).length, 1);
+    await waitFor('the project in its usual state', settled, 40000);
+    fs.writeFileSync(file, original.replace('{\n', '{\n  "bogus": 1,\n'));
+    const unknown = await waitFor('UnknownField after a change on disk', () => {
+      const list = vscode.languages.getDiagnostics(uri);
+      return list.length > 0 && list;
+    });
+    assert.deepEqual(unknown.map((d) => [code(d), d.source, d.range.start.line]), [['UnknownField', 'virgil-lsp', 1]]);
+    fs.writeFileSync(file, original);
+    await waitFor('cleared diagnostics and the type error in words/Words.v3 again', settled, 40000);
+  }, async () => {
+    if (fs.readFileSync(file, 'utf8') !== original) fs.writeFileSync(file, original);
+    await waitFor('the project in its usual state', settled, 40000);
+    await vscode.window.showTextDocument(bad.document, { preview: false });
+    await vscode.window.showTextDocument(words.document, { preview: false });
+  });
+}
+
+// At the output channel's Trace log level, the channel records the LSP
+// messages. The test sets the level as the Output view's log level menu does,
+// on the channel that VS Code names after the extension and its log file. The
+// menu's commands end in the level's number.
+async function trace(failures, words) {
+  const unedited = words.document.getText();
+  const level = async (value) => {
+    await vscode.commands.executeCommand('workbench.output.action.switchBetweenOutputs', `${EXTENSION_ID}.${CHANNEL_LOG}`);
+    await vscode.commands.executeCommand(`workbench.action.output.activeOutputLogLevel.${value}`);
+  };
+  await scenario(failures, 'message trace at the Trace log level, with textDocument/didChange', async () => {
+    const log = logFromHere();
+    await level(vscode.LogLevel.Trace);
+    // The client traces the $/setTrace notification that starts the trace.
+    await waitFor('the trace to start', () => log().includes("Sending notification '$/setTrace'"));
+    // The project file's editor is the active one.
+    const editor = await vscode.window.showTextDocument(words.document);
+    await edit(editor, (builder) => builder.insert(new vscode.Position(7, 0), '\n'));
+    await waitFor('textDocument/didChange in the trace', () => log().includes("Sending notification 'textDocument/didChange'"));
+  }, async () => {
+    await level(vscode.LogLevel.Info);
+    if (words.document.getText() !== unedited) await undo(words, unedited);
+    await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+  });
+}
+
+// With neither virgil.virgilRoot nor VIRGIL_LOC, which run.cjs removes, the
+// server restarts without a Virgil root, and the project's virgilDependencies
+// can't be resolved. The output channel and the diagnostic are checked by
+// separate scenarios, each from its own restart.
+async function noVirgilRoot(failures, words) {
+  const root = setting('virgil.virgilRoot');
+  const server = setting('virgil.server.path');
+  const config = vscode.Uri.file(path.join(project, '.virgil-lsp.json'));
+  // Errors logged meanwhile can come from a client that the restart replaces,
+  // as after a failed check, so only the new server's start counts.
+  const restore = async () => {
+    if (setting('virgil.virgilRoot') !== root) {
+      const log = logFromHere();
+      await setSetting('virgil.virgilRoot', root);
+      await waitFor('a restart with the Virgil root', () => {
+        const text = log();
+        return text.includes(`Virgil root: ${root} (from virgil.virgilRoot)`) && text.includes('Started virgil-lsp ');
+      }, 20000);
+    }
+    await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+    assert.deepEqual(vscode.languages.getDiagnostics(config), [], 'MissingVirgilRoot did not clear');
+  };
+  await scenario(failures, 'no Virgil root: a restart that says so in the output channel', async () => {
+    assert.equal(process.env.VIRGIL_LOC, undefined, 'VIRGIL_LOC is set in the extension host');
+    const log = logFromHere();
+    await setSetting('virgil.virgilRoot', '');
+    await waitFor('a restart that says there is no Virgil root', () => {
+      const text = log();
+      return text.includes('virgil.virgilRoot changed; restarting the server')
+        && text.includes('No Virgil root: neither virgil.virgilRoot nor VIRGIL_LOC is set')
+        && text.includes(`Starting ${server} --stdio`);
+    });
+  }, restore);
+  await scenario(failures, 'no Virgil root: a running server, and MissingVirgilRoot on .virgil-lsp.json, cleared when restored', async () => {
+    const log = logFromHere();
+    await setSetting('virgil.virgilRoot', '');
+    const missing = await waitFor('MissingVirgilRoot on .virgil-lsp.json', () => {
+      expectNoServerError(log);
+      const list = vscode.languages.getDiagnostics(config);
+      return list.length > 0 && list;
+    }, 40000);
+    assert.deepEqual(missing.map((d) => [code(d), d.source, d.range.start.line]), [['MissingVirgilRoot', 'virgil-lsp', 6]]);
+    // The server initialized, reporting its version (not the extension's
+    // "(no version reported)" fallback), and still answers.
+    await waitFor('the server to start and report its version', () => {
+      expectNoServerError(log);
+      return /Started virgil-lsp \d+\.\d+\.\d+\S*$/m.test(log());
+    });
+    assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
+    expectNoServerError(log);
+  }, restore);
+}
+
+// Points virgil.server.path back at server, if it no longer is, and waits for
+// the server to start from it and publish words/Words.v3's diagnostics again.
+async function restoreServer(server, words) {
+  if (setting('virgil.server.path') !== server) {
+    const log = logFromHere();
+    await setSetting('virgil.server.path', server);
+    await waitFor('the server to start again', () => {
+      expectNoServerError(log);
+      const text = log();
+      return text.includes(`Starting ${server} --stdio`) && text.includes('Started virgil-lsp ');
+    }, 20000);
+  }
+  await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+}
+
+// An absolute virgil.server.path that doesn't exist stops the server, and no
+// client runs. The error notification beside the log message is visual.
+async function missingServer(failures, words) {
+  const server = setting('virgil.server.path');
+  const missing = path.join(path.dirname(project), 'missing', 'virgil-lsp');
+  await scenario(failures, 'nonexistent virgil.server.path: the output channel, no client, and recovery', async () => {
+    const log = logFromHere();
+    await setSetting('virgil.server.path', missing);
+    await waitFor('the missing server in the output channel', () => log().includes(
+      `The server did not start: ${missing} (from virgil.server.path) is missing or not an executable file.`,
+    ));
+    // Nothing started, and the stopped client's diagnostics and features
+    // went with it.
+    assert.ok(!log().includes('Starting '), 'a server started');
+    assert.deepEqual(diagnostics(words), []);
+    assert.deepEqual(await symbols(words), []);
+  }, () => restoreServer(server, words));
+}
+
+// A virgil.server.path without virgil-lsp-worker beside it: a copy of the
+// server in a directory of its own, so that the real worker is never moved.
+async function missingWorker(failures, words) {
+  const server = setting('virgil.server.path');
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'no-worker-'));
+  const copy = path.join(directory, 'virgil-lsp');
+  await scenario(failures, 'virgil.server.path without virgil-lsp-worker: the output channel and recovery', async () => {
+    fs.copyFileSync(server, copy);
+    fs.chmodSync(copy, 0o755);
+    const log = logFromHere();
+    await setSetting('virgil.server.path', copy);
+    await waitFor('the missing worker in the output channel', () => log().includes(
+      `The server did not start: ${path.join(directory, 'virgil-lsp-worker')} is missing or not executable.`,
+    ));
+    assert.ok(!log().includes('Starting '), 'a server started');
+  }, async () => {
+    try {
+      await restoreServer(server, words);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 }
 
 async function run() {
