@@ -103,6 +103,10 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// what each encloses.
 	def var opens: Array<int>;
 	def var roles: Array<LspOpenRole>;
+	// inLambdaHeader() at each delimiter's push, before its depth changes.
+	// Repair also recognizes headers by role; this flag covers any role
+	// pushed in a lambda header, and excludes the lambda's body delimiter.
+	def var headers: Array<bool>;
 
 	// The identifier before the cursor, which may be empty.
 	def prefix() -> string {
@@ -150,12 +154,13 @@ class LspCursorScanner(text: Array<byte>) {
 	def STARTED = -2;		// the declaration or statement starts with no keyword
 	def PATTERN_HEAD = -3;
 
-	// The open delimiters and their roles.
+	// The open delimiters, their roles, and LspCursorContext.headers flags.
 	private def opens = Vector<int>.new();
 	private def roles = Vector<LspOpenRole>.new();
 	// For each open delimiter, whether a for loop's header has left its
 	// loop-variable position, at "in", "=", or a comparison's "<".
 	private def forLimits = Vector<bool>.new();
+	private def headers = Vector<bool>.new();
 	// Open "(", "[", "{", and type argument "<" counts, by kind (kindOf), so
 	// that a stray closer is skipped at once.
 	private def counts = Array<int>.new(4);
@@ -221,6 +226,7 @@ class LspCursorScanner(text: Array<byte>) {
 		}
 		ctx.opens = opens.copy();
 		ctx.roles = roles.copy();
+		ctx.headers = headers.copy();
 		return ctx;
 	}
 	private def scanTo(ctx: LspCursorContext, end: int) -> LspCursorPlace {
@@ -813,6 +819,7 @@ class LspCursorScanner(text: Array<byte>) {
 		levelElse.put(false);
 	}
 	private def push(offset: int, role: LspOpenRole, kind: int) {
+		headers.put(inLambdaHeader());
 		opens.put(offset);
 		roles.put(role);
 		forLimits.put(false);
@@ -829,6 +836,7 @@ class LspCursorScanner(text: Array<byte>) {
 			opens.length--;
 			roles.length--;
 			forLimits.length--;
+			headers.length--;
 			counts[k]--;
 			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) popLambda();
 			if (k == 2) {

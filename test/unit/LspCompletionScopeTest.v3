@@ -14,6 +14,8 @@ def X = [
 	T("LspCompletionScope:hidden_bindings", test_hidden_bindings),
 	T("LspCompletionScope:shadowed_this", test_shadowed_this),
 	T("LspCompletionScope:repairs", test_repairs),
+	T("LspCompletionScope:auto_closed", test_auto_closed),
+	T("LspCompletionScope:repairs_past_headers", test_repairs_past_headers),
 	T("LspCompletionScope:positions", test_positions),
 	T("LspCompletionScope:operator_type_arguments", test_operator_type_arguments),
 	T("LspCompletionScope:empty_fraction_operators", test_empty_fraction_operators),
@@ -281,6 +283,49 @@ def test_repairs(t: Tester) {
 	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\ttotal = f$a")));
 	t.assert_string(Strings.format1("%s | 13", values), complete(t, s, inScale("\t\tto$tal")));
 	t.assert(AeneasAdapter.parseFile("Main.v3", unmark(inScale("\t\ttotal = $")).0, []).diagnostics.length > 0, "the text does not parse");
+	s.server.close();
+}
+
+// An editor closes a call's ")" as soon as the "(" is typed, so a call whose
+// arguments are being typed ends at the cursor and its statement has no ";".
+// The repair ends the statement after the closers, so the names in scope are
+// offered as in the same call with its ";".
+def test_auto_closed(t: Tester) {
+	var s = session(t);
+	var values = Strings.format1("total factor this area sides scale mainShared Color Other Registry Shape Square Token %s", builtins());
+	// The empty first argument, the second argument, and an identifier prefix.
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tvar n = scale($)")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tvar n = scale(total, $)")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tvar n = scale(to$tal)")));
+	// A statement call, and a call nested in another's arguments.
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tscale($)")));
+	t.assert_string(Strings.format1("%s | 5", values), complete(t, s, inScale("\t\tvar n = scale(scale(1, $))")));
+	// A member access in an auto-closed call: the receiver's members.
+	t.assert_string("area sides scale | 0", complete(t, s, inScale("\t\tvar n = scale(this.$)")));
+	s.server.close();
+}
+
+// A matched closer that ends a header is followed by the rest of that header
+// or by a body, so the repair inserts nothing there: the type after a lambda's
+// parameter, an if condition with an unbraced body and else, and a type
+// annotation with a representation hint.
+def test_repairs_past_headers(t: Tester) {
+	var s = session(t);
+	// A lambda's parameter type, in a call whose ")" follows the header.
+	var lambda = before(before(MAIN, "class Square", "def apply(f: int -> int) { }\n"), MARK,
+		"\t\tapply(fun (x: $) { return x; });");
+	t.assert_string(Strings.format1("Color Other Registry Shape Square Token %s | 0", builtins()),
+		complete(t, s, lambda));
+	// An if's condition: the unbraced body keeps its statement, and the
+	// receiver keeps its members.
+	var condition = before(MAIN, "\tdef paint", "\tdef check(r: R) {\n\t\tif (r.$) f(); else g();\n\t}\n");
+	condition = before(condition, "class Square", "class R { var field: bool; }\ndef f() { }\ndef g() { }\n");
+	t.assert_string("field | 0", complete(t, s, condition));
+	// A representation hint after a completed type annotation.
+	var hinted = before(MAIN, "\tdef count = 3;", "\tvar b: Box<$> #hint;");
+	hinted = before(hinted, "class Square", "class Box<T> { }\n");
+	t.assert_string(Strings.format1("Box Color Other Registry Shape Square Token %s | 0", builtins()),
+		complete(t, s, hinted));
 	s.server.close();
 }
 
