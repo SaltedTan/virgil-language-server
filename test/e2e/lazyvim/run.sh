@@ -147,12 +147,14 @@ deadline() {
   return "$rc"
 }
 
-# Prints PID and the PIDs of all its descendants.
+# descendants PIDS: prints those of the space-separated PIDS that are
+# running, and the PIDs of all their descendants. Zombies don't count.
 descendants() {
-  ps -ax -o pid=,ppid= | awk -v root="$1" '
-    { parent[$1] = $2 }
+  ps -ax -o pid=,ppid=,stat= | awk -v roots="$1" '
+    $3 !~ /^Z/ { parent[$1] = $2 }
     END {
-      keep[root] = 1
+      n = split(roots, list, " ")
+      for (i = 1; i <= n; i++) if (list[i] in parent) keep[list[i]] = 1
       do {
         added = 0
         for (pid in parent) if (!(pid in keep) && (parent[pid] in keep)) { keep[pid] = 1; added = 1 }
@@ -173,30 +175,45 @@ run_processes() {
   } | sort -u
 }
 
-# Stops each tmux server and every process of the runs, first with SIGTERM
-# and, after five seconds, with SIGKILL. A server's process tree is read
-# before it is killed: Neovim starts the language server in its own process
-# group, and an orphan no longer descends from the tmux server.
+# Stops each tmux server and every process of the runs: the servers' process
+# trees, the processes that run_processes finds, and all their descendants.
+# Processes start while others stop, such as the C compiler that builds a
+# tree-sitter parser, and an orphan no longer descends from the process that
+# started it. So they are first frozen with SIGSTOP, until a look finds no new
+# one: a stopped process neither starts another nor exits. A tmux server
+# would send SIGCONT to its pane's stopped processes, so it stops first. Then
+# they get SIGKILL. SIGTERM would need SIGCONT, and on SIGTERM Neovim runs on
+# for seconds, and starts processes. Every 0.2 seconds it looks again and
+# kills any process it finds; if any is left after five seconds, it prints
+# them and fails.
 stop_processes() {
-  local pids='' sock tmux_pid pid left tries=0
+  local frozen=' ' new pids sock pid tries=0
   for sock in "$work"/*.sock; do
     [[ -S $sock ]] || continue
-    tmux_pid=$(tmux -S "$sock" display-message -p '#{pid}' 2>/dev/null || true)
-    if [[ -n $tmux_pid ]]; then pids="$pids $(descendants "$tmux_pid")"; fi
-    tmux -S "$sock" kill-server 2>/dev/null || true
+    pid=$(tmux -S "$sock" display-message -p '#{pid}' 2>/dev/null || true)
+    if [[ -n $pid ]]; then kill -STOP "$pid" 2>/dev/null && frozen="$frozen$pid "; fi
   done
-  pids="$pids $(run_processes | awk '{ print $1 }')"
-  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
   while (( tries < 25 )); do
-    left=''
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then left="$left $pid"; fi
+    new=''
+    for pid in $(descendants "$frozen$(run_processes | awk '{ print $1 }')"); do
+      [[ $frozen == *" $pid "* ]] || new="$new$pid "
     done
-    [[ -n $left ]] || return 0
+    [[ -n $new ]] || break
+    for pid in $new; do kill -STOP "$pid" 2>/dev/null || true; done
+    frozen="$frozen$new"
+    tries=$((tries + 1))
+  done
+  pids=$frozen tries=0
+  while pids=$(descendants "$pids $(run_processes | awk '{ print $1 }')"); [[ -n $pids ]]; do
+    if (( tries == 25 )); then
+      echo "FAIL: processes still running after SIGKILL:"
+      for pid in $pids; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
+      return 1
+    fi
+    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
     sleep 0.2
     tries=$((tries + 1))
   done
-  for pid in $left; do kill -KILL "$pid" 2>/dev/null || true; done
 }
 
 # save_screen NAME WHEN: appends the screen of NAME's pane, with its
@@ -213,7 +230,7 @@ save_screen() {
 }
 
 cleanup() {
-  local rc=$? left
+  local rc=$?
   set +eu
   trap '' INT TERM HUP
   if [[ -n $helper ]]; then
@@ -228,14 +245,12 @@ cleanup() {
     fi
     (( rc != 0 )) || rc=1
   fi
-  stop_processes
-  left=$(run_processes)
-  if [[ -n $left ]]; then
-    echo "FAIL: processes still running after cleanup:"
-    echo "$left" | sed 's/^/   /'
-    (( rc != 0 )) || rc=1
+  # The work directory is removed only once no process of the runs is left.
+  if stop_processes; then
+    echo "-- no process of the runs left running"
   else
-    echo "-- no tmux server, server, or worker process left running"
+    (( rc != 0 )) || rc=1
+    keep_work=1
   fi
   if (( keep_work )); then
     echo "work directory kept: $work"
@@ -439,7 +454,7 @@ run() {
   if (( rc == 124 )); then
     echo "FAIL: $name exceeded $run_timeout seconds; screen in $out/$name.screen.txt"
     save_screen "$name" "when the run timed out"
-    stop_processes
+    stop_processes || true
     verdict=FAIL
   fi
   exit_status=$(cat "$work/$name.status" 2>/dev/null || echo '?')
@@ -481,7 +496,7 @@ run() {
     echo "$left" | sed 's/^/   /'
     verdict=FAIL
   fi
-  stop_processes
+  stop_processes || verdict=FAIL
   if [[ $complete == 0 || $exit_status != 0 || $failed != 0 || $xfail != "$expected_xfail" ]]; then
     verdict=FAIL
   fi
