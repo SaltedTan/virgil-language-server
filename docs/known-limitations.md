@@ -1,6 +1,6 @@
 # Known limitations
 
-This page lists what the v0.1 alpha doesn't do, or does only in part, as of `main`. Rename and completion came after `0.1.0-alpha.1`, which has neither, so [What rename refuses](#what-rename-refuses) applies to `main` only. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
+This page lists what the v0.1 alpha doesn't do, or does only in part, as of `0.1.0-alpha.2`. Rename, completion, and signature help for calls still being typed came with `0.1.0-alpha.2`. `0.1.0-alpha.1` has none of them, so what this page says about them, such as [What rename refuses](#what-rename-refuses), applies from `0.1.0-alpha.2`. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
 
 ## Features not yet implemented
 
@@ -62,7 +62,7 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 - WSL 2 on x86-64 Windows is best effort. The Linux build is expected to run inside it, but nobody tests it there, and CI runs only on Linux itself ([host platforms](compatibility.md#host-platforms)).
 - Native Windows, WSL 1, and Linux arm64 aren't supported. On Windows, use WSL 2, on a best-effort basis; the VS Code extension refuses to start natively on Windows ([startup checks](../clients/vscode/README.md#startup-checks)). macOS on Intel uses the same build but is untested.
 - Apple Silicon needs Rosetta 2 until Virgil can build for `arm64-darwin`. Apple has said that macOS 27 is the last release with full Rosetta 2 support ([ADR-0003](decisions/0003-supported-platforms.md)).
-- Neovim needs version 0.11 or later, and VS Code 1.91 or later. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for this alpha ([editors](compatibility.md#editors)). In LazyVim, noice.nvim drops servers' `window/showMessage` warnings, such as "Invalid project file …", although the diagnostics still appear; [the LazyVim setup](../editors/nvim/README.md#lazyvim) shows how to turn its handler off. The [manual test matrix](manual-testing.md) records which editor and platform combinations were tried.
+- Neovim needs version 0.11 or later, and VS Code 1.91 or later. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for `0.1.0-alpha.2`, rename and completion included ([editors](compatibility.md#editors)). In LazyVim, noice.nvim drops servers' `window/showMessage` warnings, such as "Invalid project file …", although the diagnostics still appear; [the LazyVim setup](../editors/nvim/README.md#lazyvim) shows how to turn its handler off. The [manual test matrix](manual-testing.md) records which editor and platform combinations were tried.
 
 ## Installation
 

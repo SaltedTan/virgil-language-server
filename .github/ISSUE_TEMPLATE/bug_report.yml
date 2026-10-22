@@ -94,7 +94,7 @@ body:
       description: |
         Neovim: `nvim --version`. VS Code: `code --version`, and the extension's version in the Extensions view.
         Write "none" for a command-line problem.
-      placeholder: "e.g. Neovim 0.11.6, LazyVim 15.x; or VS Code 1.142.0, extension 0.1.0"
+      placeholder: "e.g. Neovim 0.11.6, LazyVim 15.x; or VS Code 1.142.0, extension 0.1.1"
     validations:
       required: true
   - type: dropdown

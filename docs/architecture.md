@@ -27,7 +27,6 @@ flowchart TD
 | `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document synchronization, feature handlers, watched-file and workspace-folder events, parser and semantic diagnostic publication, analysis scheduling | See [JSON-RPC messages](#json-rpc-messages) for handlers and their implementation status |
 | `src/documents/` | URI normalization, versioned in-memory overlays with injected disk fallback, `PositionMap` | Present |
 | `src/workspace/` | Project-file parsing, bounded glob expansion, workspace discovery, active contexts, diagnostic ownership, and configuration revisions | Present |
-| `src/features/` | Semantic symbols and later features | Planned (M4–M5) |
 
 ## Build model
 

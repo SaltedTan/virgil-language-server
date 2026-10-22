@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-10-22
+
 ### Added
 
 - Signature help (`textDocument/signatureHelp`) for calls that are still being typed, such as `f(a,` or an unclosed `f(`, in open documents of configured projects, including unsaved buffers. Where the document doesn't parse, the server repairs it at the cursor as completion does, analyzes the repaired text with a query for the innermost call open at the cursor, and replies with that call's signature and active parameter. Each such request runs its own analysis, scheduled as a completion's is, and the worker protocol moves to version 10. Text that parses gets signature help as before. See [Incomplete calls](docs/architecture.md#incomplete-calls) for the rules, scheduling, limits, and measurements, and [Known limitations](docs/known-limitations.md#signature-help).
@@ -14,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Keyword completion (`textDocument/completion`) in open documents, from their current text alone, so it works while a file fails to parse and needs no project. A cursor scanner that lexes comments, strings, and byte literals as Aeneas does finds the identifier being typed, member access after `.`, the open delimiters, and the syntactic position, and the server offers the keywords of the pinned compiler that can start there, with the project's language options. See [Completion](docs/architecture.md#completion) for the positions, the reply, and editor setup, and [Known limitations](docs/known-limitations.md) for what it doesn't offer yet.
 - A development `repair` command and a corpus of 45 typing states that measure repairing incomplete code at the cursor for semantic completion. [ADR-0006](docs/decisions/0006-incomplete-code-repair.md) records the results and the decision: semantic completion will use the narrow repair at the cursor, and error-tolerant parsing stays in M6.
 - Rename (`textDocument/rename`) and prepare rename (`textDocument/prepareRename`) from open documents in configured projects, including unsaved buffers, with versioned edits across open and closed files and a preflight that checks bindings. The Neovim configurations now declare support for versioned edits. See [Rename](docs/architecture.md#rename) for the rules, refusals, and measurements, and [Prepare rename](docs/architecture.md#prepare-rename) for what can be renamed.
+
+### Changed
+
+- The VS Code extension's version is now 0.1.1. Its code is the same as 0.1.0's: only its README, which the VSIX includes, changed, to describe rename and completion. Both versions work with this release and with `0.1.0-alpha.1` ([compatibility](docs/compatibility.md#editors)).
 
 ### Fixed
 

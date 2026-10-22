@@ -1,6 +1,6 @@
 # Neovim / LazyVim
 
-> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for 0.1.0-alpha.1 ([results](../../docs/manual-testing.md#results)).
+> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for 0.1.0-alpha.1 and 0.1.0-alpha.2 ([results](../../docs/manual-testing.md#results)).
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
@@ -66,7 +66,7 @@ vim.api.nvim_create_autocmd("LspAttach", {
 
 In either case, `<C-y>` accepts the selected item. Neovim 0.11.6's `autotrigger = true` asks only after one of the server's `completionProvider.triggerCharacters`, which is `.`: it shows a receiver's members as you type `.`, but not names or keywords as you type an identifier. That is read from Neovim's source; the headless test asks for completion directly.
 
-LazyVim needs no setup, and shows the items as you type. Its default completion plugin, blink.cmp, asks every attached server that declares `completionProvider` through its `lsp` source (`sources.default` in LazyVim 16.0.1's `coding.blink` extra), and blink.cmp 1.10.2 asks its sources whenever you type a keyword character (`completion.trigger.show_on_keyword`, on by default, which LazyVim leaves unchanged), with or without trigger characters. That is read from LazyVim's and blink.cmp's source; it hasn't been tried in a LazyVim session with this server.
+LazyVim needs no setup, and shows the items as you type. Its default completion plugin, blink.cmp, asks every attached server that declares `completionProvider` through its `lsp` source (`sources.default` in LazyVim 16.0.1's `coding.blink` extra), and blink.cmp 1.10.2 asks its sources whenever you type a keyword character (`completion.trigger.show_on_keyword`, on by default, which LazyVim leaves unchanged), with or without trigger characters. A scripted LazyVim session with this server, LazyVim 16.0.1, and blink.cmp 1.10.2 showed keywords and names in the menu as an identifier was typed, and the receiver's members as `.` was typed, for 0.1.0-alpha.2 ([results](../../docs/manual-testing.md#010-alpha2)). blink.cmp added words from the buffer only where the server offered nothing, such as in a comment.
 
 ## Headless smoke test
 
