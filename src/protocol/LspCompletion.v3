@@ -151,25 +151,9 @@ component LspCompletionRepair {
 	// when the closers of the delimiters open at the cursor already follow,
 	// right after the last of them that does.
 	//
-	// The match-pattern rule comes first. Then the closers of the open
-	// delimiters in the innermost block, innermost first, are matched in order
-	// against the text, with whitespace and comments between them.
-	//
-	// - None matched: the decision is at the cursor, as it was before. Nothing
-	//   where the text completes the expression: before ",", an operator, or
-	//   "=", and before ";" in a for loop's header; before "{", the closers
-	//   still missing; otherwise those closers and ";".
-	// - A matched closer ends a header's delimiter, whose header or body goes
-	//   on past it (parameters, a control header, a for header, a hint's
-	//   arguments, or a lambda header's type arguments): nothing.
-	// - Otherwise the decision is after the last matched closer, at the first
-	//   token past it after whitespace and comments. When that token is on the
-	//   closer's line and is not "}" or "else", the text goes on with the
-	//   expression or the statement there, so nothing is inserted; before "{",
-	//   the closers still missing. Otherwise, on a later line, at "}", at
-	//   "else", or at the end of the text: nothing before an operator, ",",
-	//   "=", ".", "(", "[", or "#", which go on there too; before "{" or ";",
-	//   the closers still missing; otherwise those closers and ";".
+	// docs/architecture.md#names owns the repair's decision rules. Match the
+	// innermost block's closers in one forward scan, allowing whitespace and
+	// comments between them, so look-ahead stays linear.
 	def completion(ctx: LspCursorContext) -> (string, int) {
 		var text = ctx.text, closers = StringBuilder.new(), last = ctx.roles.length;
 		// The role of the innermost open block, which holds the cursor when

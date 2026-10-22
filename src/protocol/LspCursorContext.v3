@@ -103,6 +103,9 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// what each encloses.
 	def var opens: Array<int>;
 	def var roles: Array<LspOpenRole>;
+	// inLambdaHeader() at each delimiter's push, before its depth changes.
+	// Repair also recognizes headers by role; this flag covers any role
+	// pushed in a lambda header, and excludes the lambda's body delimiter.
 	def var headers: Array<bool>;
 
 	// The identifier before the cursor, which may be empty.
@@ -151,7 +154,7 @@ class LspCursorScanner(text: Array<byte>) {
 	def STARTED = -2;		// the declaration or statement starts with no keyword
 	def PATTERN_HEAD = -3;
 
-	// The open delimiters and their roles, and whether each is a header's.
+	// The open delimiters, their roles, and LspCursorContext.headers flags.
 	private def opens = Vector<int>.new();
 	private def roles = Vector<LspOpenRole>.new();
 	// For each open delimiter, whether a for loop's header has left its
