@@ -63,8 +63,11 @@ async function main() {
   const interrupt = () => controller.abort();
   process.on('SIGINT', interrupt).on('SIGTERM', interrupt);
   // Keep edits and VS Code state out of the checkout's fixture and the user's
-  // home. Physical paths match the URIs that the server reports.
-  const work = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'virgil-vscode-e2e-'));
+  // home. Physical paths match the URIs that the server reports. VS Code's IPC
+  // socket goes in --user-data-dir, and a Unix socket path has at most 103
+  // characters on macOS, which its long os.tmpdir() under /var/folders exceeds.
+  const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+  const work = fs.mkdtempSync(path.join(fs.realpathSync(base), 'virgil-vscode-e2e-'));
   try {
     const project = path.join(work, 'project');
     fs.cpSync(path.join(repo, 'test/e2e/nvim/fixture'), project, { recursive: true });

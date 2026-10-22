@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Guidance for using the VS Code extension alongside `titzer.virgil`, the Virgil author's extension ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
 
+### Fixed
+
+- The VS Code extension's Extension Host test now runs on macOS, where VS Code's socket path under the system temporary directory was too long for a Unix socket; there the test's temporary directory is now under `/tmp` ([Extension Host test](clients/vscode/README.md#extension-host-test)).
+- Correct the Neovim instructions for Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`, `:LspLog`, or `:LspInfo`: restart with `:lsp restart`, and find the log with `:lua =vim.lsp.log.get_filename()` ([Neovim](editors/nvim/README.md), [manual testing](docs/manual-testing.md#procedure), [bug report form](.github/ISSUE_TEMPLATE/bug_report.yml)).
+
 ## [0.1.0-alpha.2] - 2026-10-22
 
 ### Added

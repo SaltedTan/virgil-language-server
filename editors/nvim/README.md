@@ -1,6 +1,6 @@
 # Neovim / LazyVim
 
-> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; a scripted run on Linux passed for 0.1.0-alpha.1 and 0.1.0-alpha.2 ([results](../../docs/manual-testing.md#results)).
+> **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. The LazyVim configuration isn't tested in CI; see the [scripted run results](../../docs/manual-testing.md#results).
 
 Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
@@ -32,7 +32,7 @@ Project files name Virgil's own libraries relative to a Virgil checkout or insta
 export VIRGIL_LOC=$HOME/virgil
 ```
 
-Or replace `vim.env.VIRGIL_LOC` with the path. Without a root, a project file with `virgilDependencies` gets a `MissingVirgilRoot` diagnostic, and its documents stay in single-file mode. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig.
+Or replace `vim.env.VIRGIL_LOC` with the path. Without a root, a project file with `virgilDependencies` gets a `MissingVirgilRoot` diagnostic, and its documents stay in single-file mode. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
 
 ## Project files
 
@@ -40,7 +40,7 @@ Both configurations also attach the server to `.virgil-lsp.json` buffers, so con
 
 ## Changes on disk
 
-The server notices changes made outside the editor, such as a checkout, only from `workspace/didChangeWatchedFiles` file events ([changes on disk](../../docs/configuration.md#changes-on-disk)). It asks for them when the client declares `workspace.didChangeWatchedFiles.dynamicRegistration`. Neovim 0.11.6 on Linux declares it false (`:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles`), so with these configurations the server refreshes projects when they are used instead: a project file fixed on disk is noticed when a `.v3` buffer is next opened, changed, or saved, and a source created or deleted outside Neovim when a project file changes. Restart the server (`:LspRestart` with nvim-lspconfig) after a checkout that adds or removes files.
+The server notices changes made outside the editor, such as a checkout, only from `workspace/didChangeWatchedFiles` file events ([changes on disk](../../docs/configuration.md#changes-on-disk)). It asks for them when the client declares `workspace.didChangeWatchedFiles.dynamicRegistration`. Neovim 0.11.6 on Linux declares it false (`:lua =vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles`), so with these configurations the server refreshes projects when they are used instead: a project file fixed on disk is noticed when a `.v3` buffer is next opened, changed, or saved, and a source created or deleted outside Neovim when a project file changes. Restart the server (`:LspRestart` with nvim-lspconfig, or `:lsp restart` on Neovim 0.12 and later) after a checkout that adds or removes files.
 
 `vim.lsp.buf.add_workspace_folder()` and `vim.lsp.buf.remove_workspace_folder()` send `workspace/didChangeWorkspaceFolders`, which the server handles.
 
@@ -97,5 +97,5 @@ The test skips with a message if Neovim is missing or older than 0.11. Set
 ## Troubleshooting
 
 - `:checkhealth vim.lsp` shows whether the client attached.
-- `:LspInfo` (with nvim-lspconfig) or `:lua =vim.lsp.get_clients()` lists running clients.
-- `:LspLog` (with nvim-lspconfig) opens the client log; without it, `:lua =vim.lsp.log.get_filename()` prints the log's path. Server logs are written to stderr and appear there, as lines marked `"stderr"`.
+- `:LspInfo` (with nvim-lspconfig on Neovim 0.11) or `:lua =vim.lsp.get_clients()` lists running clients.
+- For the client log, including the server's stderr and LSP messages, see [Collecting logs](../../docs/manual-testing.md#collecting-logs).
