@@ -188,6 +188,10 @@ run_trees() {
 # status of a signal that came meanwhile. frozen holds the PIDs that it has
 # frozen and not yet killed.
 stopping=0 pending='' frozen=' '
+# lost is 1 once a call failed: its processes may have outlived their
+# parents unseen, so a later call that finds none doesn't make the teardown
+# complete.
+lost=0
 
 # Stops each tmux server and every process of the runs: the servers' process
 # trees, the processes that run_processes finds, and all their descendants.
@@ -259,6 +263,7 @@ stop_processes() {
     echo "FAIL: could not list the processes of the runs"
     rc=1
   fi
+  (( rc == 0 )) || lost=1
   stopping=0
   if [[ -n $pending ]]; then
     rc=$pending pending=''
@@ -298,9 +303,10 @@ cleanup() {
     (( rc != 0 )) || rc=1
   fi
   # The work directory is removed only once no process of the runs is left.
-  if stop_processes; then
+  if stop_processes && (( ! lost )); then
     echo "-- no process of the runs left running"
   else
+    (( ! lost )) || echo "FAIL: an earlier teardown failed, so processes of the runs may be left running"
     (( rc != 0 )) || rc=1
     keep_work=1
   fi
