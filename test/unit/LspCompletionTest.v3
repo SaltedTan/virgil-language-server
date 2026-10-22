@@ -249,6 +249,16 @@ def test_repair(t: Tester) {
 	// A line comment that runs to the end of the text leaves no token, so the
 	// statement ends there.
 	t.assert_string("def t() { f(g(virgilLspCursor)); // c", repaired("def t() { f(g($) // c"));
+	for (c in [
+		// Whitespace and comments may come between the closers; the tail
+		// goes right after the last one.
+		("f(g($) /* comment */ )", "f(g(virgilLspCursor) /* comment */ );"),
+		("f(g($) // comment\n)", "f(g(virgilLspCursor) // comment\n);"),
+		// A closer that does not match decides at the cursor, as before.
+		("f($]", "f(virgilLspCursor);]")
+	]) {
+		t.assert_string(c.1, repaired(c.0));
+	}
 	var members = [
 		// A hint follows a completed type annotation, and a lambda header
 		// keeps its type arguments.
@@ -267,7 +277,7 @@ def test_repair(t: Tester) {
 			"g(fun () #hint($) ;);", "g(fun () #packing f<$> ;);", "if (r.$) f(); else g();",
 			"if (r.$)\n\t\tf();", "while (f($)) x++;", "for (i < f($))\n\t\tx();", "var n = f($)[0];",
 			"a[$][j];", "var n = f($)(x);", "var n = f($) + 1;", "x = f($)\n\t\t.bar();",
-			"f($) // c\n\t\treturn n;"]) {
+			"f($) // c\n\t\treturn n;", "f(g($) /* comment */ )", "f(g($) // comment\n)"]) {
 		checkRepairParses(t, repairProgram(line));
 	}
 	for (line in ["var a: Box<$> #hint;", "def t() -> Array<$> #hint { return x; }", "var a: Box<$>",
