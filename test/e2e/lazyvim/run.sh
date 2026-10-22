@@ -94,9 +94,11 @@ helper=''    # PID of a running deadline helper
 current=''   # name of the run in progress
 status=0     # 1 once anything fails
 
-# deadline SECONDS COMMAND...: runs COMMAND in a new process group, as
-# test/e2e/nvim/run.sh does, and on expiry kills its process tree and group
-# and exits 124. SIGTERM or SIGHUP kills them the same way.
+# deadline SECONDS [-o FILE] COMMAND...: runs COMMAND in a new process group,
+# as test/e2e/nvim/run.sh does, with its output in FILE if given, and on
+# expiry kills its process tree and group and exits 124. SIGTERM or SIGHUP
+# kills them the same way. FILE isn't a redirection of the call, which would
+# also take what the traps print when a signal interrupts it.
 read -r -d '' deadline_py <<'PY' || true
 import os, signal, subprocess, sys
 
@@ -127,7 +129,12 @@ def stop(code):
     process.wait()
     sys.exit(code)
 
-process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+command, output = sys.argv[2:], None
+if command[0] == "-o":
+    output = open(command[1], "w")
+    command = command[2:]
+process = subprocess.Popen(command, start_new_session=True, stdout=output,
+                           stderr=None if output is None else subprocess.STDOUT)
 for sig in (signal.SIGTERM, signal.SIGHUP):
     signal.signal(sig, lambda signum, frame: stop(128 + signum))
 try:
@@ -378,7 +385,7 @@ fi
 echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
 started=$SECONDS
 rc=0
-deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
+deadline "$install_timeout" -o "$out/lazy-install.log" nvim --headless "+Lazy! $action" +qa || rc=$?
 (( rc != 124 )) || die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
 (( rc == 0 )) || die "installing the plugins failed with status $rc; see $out/lazy-install.log"
 echo "   done in $((SECONDS - started)) s"
