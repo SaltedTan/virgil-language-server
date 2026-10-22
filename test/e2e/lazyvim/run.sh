@@ -154,13 +154,15 @@ deadline() {
   return "$rc"
 }
 
-# descendants PIDS: prints those of the space-separated PIDS that are
-# running, and the PIDs of all their descendants. Zombies don't count.
+# descendants PIDS: prints those of the PIDS, separated by spaces or
+# newlines, that are running, and the PIDs of all their descendants. Zombies
+# don't count. The PIDS go through the environment: macOS's awk rejects a
+# newline in a -v value.
 descendants() {
-  ps -ax -o pid=,ppid=,stat= | awk -v roots="$1" '
+  ps -ax -o pid=,ppid=,stat= | R=$1 awk '
     $3 !~ /^Z/ { parent[$1] = $2 }
     END {
-      n = split(roots, list, " ")
+      n = split(ENVIRON["R"], list, " ")
       for (i = 1; i <= n; i++) if (list[i] in parent) keep[list[i]] = 1
       do {
         added = 0
@@ -191,8 +193,8 @@ run_processes() {
 # would send SIGCONT to its pane's stopped processes, so it stops first. Then
 # they get SIGKILL. SIGTERM would need SIGCONT, and on SIGTERM Neovim runs on
 # for seconds, and starts processes. Every 0.2 seconds it looks again and
-# kills any process it finds; if any is left after five seconds, it prints
-# them and fails.
+# kills any process it finds; if any is left after five seconds, or the
+# processes can't be listed, it prints so and fails.
 stop_processes() {
   local frozen=' ' new pids sock pid tries=0
   for sock in "$work"/*.sock; do
@@ -211,13 +213,18 @@ stop_processes() {
     tries=$((tries + 1))
   done
   pids=$frozen tries=0
-  while pids=$(descendants "$pids $(run_processes | awk '{ print $1 }')"); [[ -n $pids ]]; do
+  while :; do
+    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+    if ! pids=$(descendants "$pids $(run_processes | awk '{ print $1 }')"); then
+      echo "FAIL: could not list the processes of the runs"
+      return 1
+    fi
+    [[ -n $pids ]] || return 0
     if (( tries == 25 )); then
       echo "FAIL: processes still running after SIGKILL:"
       for pid in $pids; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
       return 1
     fi
-    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
     sleep 0.2
     tries=$((tries + 1))
   done
