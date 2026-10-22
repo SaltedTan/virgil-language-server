@@ -122,18 +122,18 @@ The packaging script uses the host target and the same environment variables as 
 Download the archive for your platform and `SHA256SUMS` from the release page, or with the GitHub CLI:
 
 ```sh
-gh release download v0.1.0-alpha.1 --repo SaltedTan/virgil-language-server \
+gh release download v0.1.0-alpha.2 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' --pattern SHA256SUMS
 ```
 
 Then check the archive's line of `SHA256SUMS`:
 
 ```sh
-grep ' virgil-lsp-0.1.0-alpha.1-x86-64-linux.tar.gz$' SHA256SUMS | sha256sum --check        # Linux
-grep ' virgil-lsp-0.1.0-alpha.1-x86-64-darwin.tar.gz$' SHA256SUMS | shasum -a 256 --check   # macOS
+grep ' virgil-lsp-0.1.0-alpha.2-x86-64-linux.tar.gz$' SHA256SUMS | sha256sum --check        # Linux
+grep ' virgil-lsp-0.1.0-alpha.2-x86-64-darwin.tar.gz$' SHA256SUMS | shasum -a 256 --check   # macOS
 ```
 
-Both print `OK` for a good download. Check the VSIX the same way, with its own line: `grep ' virgil-lsp-vscode-0.1.0.vsix$' SHA256SUMS | sha256sum --check`. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
+Both print `OK` for a good download. Check the VSIX the same way, with its own line: `grep ' virgil-lsp-vscode-0.1.1.vsix$' SHA256SUMS | sha256sum --check`. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
 
 ## Installing
 
@@ -150,8 +150,8 @@ Extract the archive and put a symlink to `virgil-lsp` on your `PATH`. The worker
 
 ```sh
 mkdir -p ~/.local/opt ~/.local/bin
-tar -xzf virgil-lsp-0.1.0-alpha.1-x86-64-linux.tar.gz -C ~/.local/opt
-ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.1-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
+tar -xzf virgil-lsp-0.1.0-alpha.2-x86-64-linux.tar.gz -C ~/.local/opt
+ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.2-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
 virgil-lsp --version
 ```
 
@@ -170,7 +170,7 @@ softwareupdate --install-rosetta --agree-to-license
 The executables are unsigned. A web browser marks what it downloads as quarantined, and macOS may then refuse to run them. Download with `curl` or `gh`, which don't set the quarantine attribute, or remove it after extracting:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.1-x86-64-darwin
+xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.2-x86-64-darwin
 ```
 
 ### Editors
@@ -185,9 +185,9 @@ The editors start `virgil-lsp --stdio`:
 The release's `virgil-lsp-vscode-<extension version>.vsix` is the extension that the workflow tested against the release's Linux server. The same VSIX works on every platform. Install it where the server runs, as the [table above](#installing) describes: with Remote-SSH or Remote-WSL, in a window connected to the remote machine or WSL distribution, not on the machine showing the editor. Download it and check it against `SHA256SUMS`, then install it:
 
 ```sh
-gh release download v0.1.0-alpha.1 --repo SaltedTan/virgil-language-server \
+gh release download v0.1.0-alpha.2 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-vscode-*.vsix' --pattern SHA256SUMS
-code --install-extension virgil-lsp-vscode-0.1.0.vsix
+code --install-extension virgil-lsp-vscode-0.1.1.vsix
 ```
 
 or use **Extensions: Install from VSIX...** in VS Code. VS Code doesn't update an extension installed from a VSIX; install the next release's VSIX to upgrade. [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix) covers remote windows, upgrading, and removal, and [compatibility](compatibility.md#editors) records which server versions each extension version works with.

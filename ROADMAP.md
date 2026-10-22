@@ -56,7 +56,7 @@ A user can install the server following the [build and executable placement guid
 
 ### Later releases
 
-- v0.2: prepare-rename/rename, already available on `main`.
+- v0.2: prepare-rename/rename, already available in `0.1.0-alpha.2`.
 - v0.3: context-aware completion, better behavior on incomplete syntax, faster reanalysis.
 - v0.5: platform-specific VS Code packages, an upstream `nvim-lspconfig` configuration, compatibility testing. Release automation is [present](docs/releasing.md).
 - v1.0: stable configuration format, defined performance budgets, robust error recovery, completion/references/rename suitable for everyday use, and a documented compatibility policy for Virgil versions.

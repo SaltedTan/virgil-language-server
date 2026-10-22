@@ -5,6 +5,7 @@
 | Server version | Pinned Virgil revision | Notes |
 | --- | --- | --- |
 | `main` (unreleased) | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Required CI |
+| `0.1.0-alpha.2` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Second prerelease |
 | `0.1.0-alpha.1` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | First prerelease |
 
 The scheduled `virgil-master` workflow builds and tests against current upstream `master` as an advisory signal. A failure there does not block merges.
@@ -60,4 +61,7 @@ Server and VS Code extension versions are independent, and the extension's versi
 
 | VS Code extension | Server versions |
 | --- | --- |
-| `0.1.0` (prerelease VSIX, attached to server `0.1.0-alpha.1`; `clients/vscode` on `main`) | `0.1.0-alpha.1`, the first server prerelease, and `main`. The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`, `textDocument/references`, `textDocument/signatureHelp`, `workspace/symbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. With `main`, it also uses `textDocument/prepareRename` and `textDocument/rename` with versioned `documentChanges`, and `textDocument/completion`, whose `completionProvider` declares the trigger character `.` for [member completion](architecture.md#member-completion), none of which `0.1.0-alpha.1` answers. It needs `virgil-lsp-worker` beside `virgil-lsp`, which its startup checks verify. |
+| `0.1.1` (prerelease VSIX, attached to server `0.1.0-alpha.2`; `clients/vscode` on `main`) | `0.1.0-alpha.2`, `0.1.0-alpha.1`, and `main` |
+| `0.1.0` (prerelease VSIX, attached to server `0.1.0-alpha.1`) | `0.1.0-alpha.1` and `0.1.0-alpha.2` |
+
+The two extension versions have the same code: `0.1.1` differs from `0.1.0` only in its README. The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`, `textDocument/references`, `textDocument/signatureHelp`, `workspace/symbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. With `0.1.0-alpha.2`, it also uses `textDocument/prepareRename` and `textDocument/rename` with versioned `documentChanges`, and `textDocument/completion`, whose `completionProvider` declares the trigger character `.` for [member completion](architecture.md#member-completion), none of which `0.1.0-alpha.1` answers. It needs `virgil-lsp-worker` beside `virgil-lsp`, which its startup checks verify. Each release workflow tests the VSIX it attaches with its own server; the Extension Host test also passed with `0.1.0` and `0.1.0-alpha.2`'s server, and with `0.1.1` and `0.1.0-alpha.1`'s ([results](manual-testing.md#010-alpha2)).
