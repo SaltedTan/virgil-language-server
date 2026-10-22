@@ -92,6 +92,19 @@ If a check fails, or the server doesn't start, the extension writes the reason t
 
 `syntaxes/virgil.tmLanguage.json` was written for this project from Virgil's lexical rules in the pinned Virgil checkout (`vendor/virgil/doc/virgil-grammar.ebnf` and the Aeneas lexer). It covers comments, string and character literals with their escapes, numbers, keywords, primitive type names, declaration names, and representation hints. It doesn't use or adapt any other Virgil grammar or extension. Code from repositories without an explicit license, such as [`linxuanm/virgil-vsc`](https://github.com/linxuanm/virgil-vsc), must not be copied ([ROADMAP](../../ROADMAP.md#open-source-and-licensing-plan)).
 
+### With the Virgil extension installed
+
+Virgil's author has a VS Code extension of their own, [titzer/virgil-vscode](https://github.com/titzer/virgil-vscode) (`titzer.virgil`, version 0.1.0). It has syntax highlighting from a TextMate grammar, semantic highlighting from a tree-sitter parse of the open file, and a debugger that runs a program in the compiler's interpreter (`v3c -debug`), but no language server. As of 2026-10-22 it isn't published: it has no GitHub release, and it is on neither the Visual Studio Marketplace nor Open VSX.
+
+This extension keeps its own grammar and language configuration, as decided in [#171](https://github.com/SaltedTan/virgil-language-server/issues/171). Both extensions contribute the `virgil` language for `.v3` files, a language configuration, and a TextMate grammar with the same scope name, `source.virgil`. VS Code 1.142.0 used one grammar for that scope, and merged the two language configurations property by property, the one registered later supplying each property that both define. A test with VS Code 1.142.0 on Linux, with both extensions installed in either order, found:
+
+- `.v3` files were colored by this extension's grammar, and this extension's language configuration applied, so `"` and `'` didn't auto-close inside comments and strings. VS Code 1.142.0 ordered the installed extensions by folder name, and the grammar and configuration registered last won: `virgil-language-server.virgil-lsp-vscode-…` sorts after `titzer.virgil-…`. That is what the test observed; neither extension declares this order, and VS Code doesn't guarantee it.
+- The other extension's tree-sitter semantic colors appeared on top of this grammar, coloring declarations, parameters, types, and calls. Its debugger started and stopped on entry.
+- This extension's [Extension Host test](#extension-host-test) passed unchanged in both install orders. It checks diagnostics, document and workspace symbols, the Virgil root, definition, hover, signature help, references, rename, completion, an unsaved project-file edit, and restart; the [manual checklist](#manual-checklist) wasn't run.
+- The only sign of the overlap was a message in the developer console, "Overwriting grammar scope name to file mapping for scope source.virgil". It is expected with both installed, not a bug. Nothing appeared in the UI or the log files.
+
+Both extensions run on the workspace side, so with Remote-SSH both would be installed on the remote host. That case wasn't tested.
+
 ## Development
 
 ```sh
