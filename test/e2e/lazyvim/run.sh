@@ -94,11 +94,9 @@ helper=''    # PID of a running deadline helper
 current=''   # name of the run in progress
 status=0     # 1 once anything fails
 
-# deadline SECONDS [-o FILE] COMMAND...: runs COMMAND in a new process group,
-# as test/e2e/nvim/run.sh does, with its output in FILE if given, and on
-# expiry kills its process tree and group and exits 124. SIGTERM or SIGHUP
-# kills them the same way. FILE isn't a redirection of the call, which would
-# also take what the traps print when a signal interrupts it.
+# deadline SECONDS COMMAND...: runs COMMAND in a new process group, as
+# test/e2e/nvim/run.sh does, and on expiry kills its process tree and group
+# and exits 124. SIGTERM or SIGHUP kills them the same way.
 read -r -d '' deadline_py <<'PY' || true
 import os, signal, subprocess, sys
 
@@ -129,12 +127,7 @@ def stop(code):
     process.wait()
     sys.exit(code)
 
-command, output = sys.argv[2:], None
-if command[0] == "-o":
-    output = open(command[1], "w")
-    command = command[2:]
-process = subprocess.Popen(command, start_new_session=True, stdout=output,
-                           stderr=None if output is None else subprocess.STDOUT)
+process = subprocess.Popen(sys.argv[2:], start_new_session=True)
 for sig in (signal.SIGTERM, signal.SIGHUP):
     signal.signal(sig, lambda signum, frame: stop(128 + signum))
 try:
@@ -247,6 +240,7 @@ cleanup() {
   local rc=$?
   set +eu
   trap '' INT TERM HUP
+  exec 1>&3 2>&4
   if [[ -n $helper ]]; then
     kill -TERM "$helper" 2>/dev/null
     wait "$helper" 2>/dev/null
@@ -276,7 +270,7 @@ cleanup() {
 }
 
 on_signal() {
-  echo "run.sh: interrupted by SIG$1" >&2
+  echo "run.sh: interrupted by SIG$1" >&4
   case $1 in
     INT) exit 130 ;;
     TERM) exit 143 ;;
@@ -285,6 +279,10 @@ on_signal() {
 }
 
 work=$(mktemp -d "${tmp%/}/virgil-lazyvim.XXXXXX")
+# The traps print to the script's own output, on 3 and 4, even when a signal
+# interrupts a command whose output goes to a file, such as the plugins'
+# install.
+exec 3>&1 4>&2
 trap cleanup EXIT
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
@@ -392,7 +390,7 @@ fi
 echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
 started=$SECONDS
 rc=0
-deadline "$install_timeout" -o "$out/lazy-install.log" nvim --headless "+Lazy! $action" +qa || rc=$?
+deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
 (( rc != 124 )) || die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
 (( rc == 0 )) || die "installing the plugins failed with status $rc; see $out/lazy-install.log"
 echo "   done in $((SECONDS - started)) s"
