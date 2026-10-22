@@ -38,7 +38,10 @@ jobs:
         run: make test
       - name: Version
         run: build/virgil-lsp --version
+      # Only lazyvim-linux uses this artifact, so a failed upload mustn't fail
+      # this required job; lazyvim-linux then fails at its download instead.
       - uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: server-linux
           path: |
