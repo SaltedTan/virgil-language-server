@@ -21,7 +21,7 @@ Requirements: a VS Code version and a server version that work with the extensio
 2. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:
 
    ```sh
-   code --install-extension virgil-lsp-vscode-0.1.1.vsix
+   code --install-extension virgil-lsp-vscode-0.1.2.vsix
    ```
 
 3. Unless `virgil-lsp` is on `PATH`, set `virgil.server.path` to its absolute path, and for projects with `virgilDependencies`, set `virgil.virgilRoot` ([Settings](#settings)).
@@ -119,7 +119,7 @@ CI installs the dependencies with `npm ci`, then runs `npm run check` and `npm t
 
 ### Packaging
 
-`npm run package` compiles the extension and runs the pinned [`@vscode/vsce`](https://github.com/microsoft/vscode-vsce), which writes `virgil-lsp-vscode-<version>.vsix` in this directory. The VSIX contains `out/extension.js`, `package.json`, the grammar, the language configuration, this README, the repository's `LICENSE` (through the symbolic link `LICENSE` here), and the runtime dependencies from `node_modules`, each with its own license file ([third-party notices](../../THIRD_PARTY_NOTICES.md#vs-code-client-npm)). vsce leaves out the development dependencies, and `.vscodeignore` leaves out the TypeScript sources, tests, source maps, type declarations, and the Extension Host test's VS Code download. To see what a VSIX contains, run `unzip -l virgil-lsp-vscode-0.1.1.vsix`; `npx vsce ls` lists what the next package would contain.
+`npm run package` compiles the extension and runs the pinned [`@vscode/vsce`](https://github.com/microsoft/vscode-vsce), which writes `virgil-lsp-vscode-<version>.vsix` in this directory. The VSIX contains `out/extension.js`, `package.json`, the grammar, the language configuration, this README, the repository's `LICENSE` (through the symbolic link `LICENSE` here), and the runtime dependencies from `node_modules`, each with its own license file ([third-party notices](../../THIRD_PARTY_NOTICES.md#vs-code-client-npm)). vsce leaves out the development dependencies, and `.vscodeignore` leaves out the TypeScript sources, tests, source maps, type declarations, and the Extension Host test's VS Code download. To see what a VSIX contains, run `unzip -l virgil-lsp-vscode-0.1.2.vsix`; `npx vsce ls` lists what the next package would contain.
 
 In the packaged README, vsce turns relative links into links to `main` on GitHub. It also warns that the extension isn't bundled: the runtime dependencies stay separate files, so that their license files ship unchanged. `"private": true` in `package.json` only stops `npm publish`; vsce ignores it.
 
@@ -151,7 +151,7 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 
 Each check that changes a setting or a file on disk restores it, and waits until a server serves the project as before, so that a failed check doesn't affect the next. The error notifications and the rendered views remain for the [manual checklist](#manual-checklist).
 
-To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.1.vsix`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
+To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.2.vsix`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
 
 Each start of VS Code and each installation of a VSIX has a 120-second timeout and runs in a process group of its own. On a timeout, SIGINT, or SIGTERM, the test sends SIGTERM to the whole group, then SIGKILL if it remains after five seconds. When VS Code exits, closing its window, the servers that it started are in its group: if a `virgil-lsp` or `virgil-lsp-worker` process remains there five seconds later, the test fails and stops the group the same way. It also fails if the output channel's log records an unclean exit of the last server, but the channel usually closes before the server exits. It waits without a deadline for the group to exit before removing its temporary directory. On a launch failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward.
 

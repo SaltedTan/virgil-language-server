@@ -2,7 +2,7 @@
   "name": "virgil-lsp-vscode",
   "displayName": "Virgil Language Server",
   "description": "Virgil language support from the virgil-lsp language server, which is installed separately.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "publisher": "virgil-language-server",
   "preview": true,

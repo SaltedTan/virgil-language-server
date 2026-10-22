@@ -5,6 +5,7 @@
 | Server version | Pinned Virgil revision | Notes |
 | --- | --- | --- |
 | `main` (unreleased) | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Required CI |
+| `0.1.0-alpha.3` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Third prerelease |
 | `0.1.0-alpha.2` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | Second prerelease |
 | `0.1.0-alpha.1` | [`7cf038fc`](https://github.com/titzer/virgil/commit/7cf038fc13a5474836bec8b14c7a3e796fd07fa5) (2026-10-08) | First prerelease |
 
@@ -63,7 +64,12 @@ The extension can be installed alongside `titzer.virgil`, the Virgil author's ex
 
 | VS Code extension | Server versions |
 | --- | --- |
-| `0.1.1` (prerelease VSIX, attached to server `0.1.0-alpha.2`; `clients/vscode` on `main`) | `0.1.0-alpha.2`, `0.1.0-alpha.1`, and `main` |
-| `0.1.0` (prerelease VSIX, attached to server `0.1.0-alpha.1`) | `0.1.0-alpha.1` and `0.1.0-alpha.2` |
+| `0.1.2` (prerelease VSIX, attached to server `0.1.0-alpha.3`; `clients/vscode` on `main`) | `0.1.0-alpha.3` and `main`; `0.1.0-alpha.2` and `0.1.0-alpha.1` only with a Virgil root (below) |
+| `0.1.1` (prerelease VSIX, attached to server `0.1.0-alpha.2`) | `0.1.0-alpha.3`; `0.1.0-alpha.2` and `0.1.0-alpha.1` only with a Virgil root |
+| `0.1.0` (prerelease VSIX, attached to server `0.1.0-alpha.1`) | `0.1.0-alpha.3`; `0.1.0-alpha.2` and `0.1.0-alpha.1` only with a Virgil root |
 
-The two extension versions have the same code: `0.1.1` differs from `0.1.0` only in its README. The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`, `textDocument/references`, `textDocument/signatureHelp`, `workspace/symbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. With `0.1.0-alpha.2`, it also uses `textDocument/prepareRename` and `textDocument/rename` with versioned `documentChanges`, and `textDocument/completion`, whose `completionProvider` declares the trigger character `.` for [member completion](architecture.md#member-completion), none of which `0.1.0-alpha.1` answers. It needs `virgil-lsp-worker` beside `virgil-lsp`, which its startup checks verify. Each release workflow tests the VSIX it attaches with its own server; the Extension Host test also passed with `0.1.0` and `0.1.0-alpha.2`'s server, and with `0.1.1` and `0.1.0-alpha.1`'s ([results](manual-testing.md#010-alpha2)).
+The three extension versions have the same code, and differ only in their READMEs. The extension relies only on standard LSP: full-text document synchronization, `publishDiagnostics`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`, `textDocument/references`, `textDocument/signatureHelp`, `workspace/symbol`, file events (`workspace/didChangeWatchedFiles`), and workspace-folder changes. With `0.1.0-alpha.2` and later, it also uses `textDocument/prepareRename` and `textDocument/rename` with versioned `documentChanges`, and `textDocument/completion`, whose `completionProvider` declares the trigger character `.` for [member completion](architecture.md#member-completion), none of which `0.1.0-alpha.1` answers. It needs `virgil-lsp-worker` beside `virgil-lsp`, which its startup checks verify.
+
+With a server before `0.1.0-alpha.3`, every extension version needs a Virgil root. When neither `virgil.virgilRoot` nor `VIRGIL_LOC` gives an absolute path, the extension starts the server without one, and `0.1.0-alpha.1` and `0.1.0-alpha.2` then exit as they start, so VS Code has no language server, not even for single files ([#175](https://github.com/SaltedTan/virgil-language-server/issues/175)). Set `virgil.virgilRoot` to a Virgil checkout ([The Virgil root](releasing.md#the-virgil-root)), or install `0.1.0-alpha.3`, which starts without a root.
+
+Each release workflow tests the VSIX it attaches with its own server. The Extension Host test also passed with `0.1.0` and `0.1.0-alpha.2`'s server, and with `0.1.1` and `0.1.0-alpha.1`'s ([results](manual-testing.md#010-alpha2)), and with `0.1.0` and `0.1.1` and `0.1.0-alpha.3`'s server, and with `0.1.2` and `0.1.0-alpha.2`'s server and that release's test, which always sets a Virgil root ([results](manual-testing.md#010-alpha3)).
