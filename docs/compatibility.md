@@ -59,6 +59,8 @@ The [manual test matrix](manual-testing.md) records which of these setups were t
 
 Server and VS Code extension versions are independent, and the extension's version doesn't follow the server's ([versions](../clients/vscode/README.md#versions)). Each server prerelease also attaches the VSIX of the extension's version at the tagged commit, tested against that release's Linux server, and its release notes give both versions ([Releases](releasing.md#vs-code-extension)). The extension bundles no server. This table records which versions work together.
 
+The extension can be installed alongside `titzer.virgil`, the Virgil author's extension, which has its own grammar and debugger but no language server. In a test with VS Code 1.142.0, in either install order, `.v3` files used this extension's grammar and language configuration, the other extension's semantic highlighting and debugger also worked, and this extension's features were unaffected ([with the Virgil extension installed](../clients/vscode/README.md#with-the-virgil-extension-installed)).
+
 | VS Code extension | Server versions |
 | --- | --- |
 | `0.1.1` (prerelease VSIX, attached to server `0.1.0-alpha.2`; `clients/vscode` on `main`) | `0.1.0-alpha.2`, `0.1.0-alpha.1`, and `main` |
