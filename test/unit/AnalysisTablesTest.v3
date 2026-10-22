@@ -23,6 +23,7 @@ def X = [
 	T("AnalysisTables:pointer_twins", test_pointer_twins),
 	T("AnalysisTables:tied_keys", test_tied_keys),
 	T("AnalysisTables:seeds", test_seeds),
+	T("AnalysisTables:without_times", test_without_times),
 	T("AnalysisTables:random_words", test_random_words),
 	()
 ];
@@ -416,15 +417,32 @@ def seededResults(t: Tester, k0: u64, k1: u64) -> (Array<byte>, Array<byte>) {
 	var scoped = withoutTimes(AnalysisWire.finishResult(AnalysisWire.encodeResultWithQuery(1, 1, 1, s, 0, -1, [], answer, null), 0L));
 	return (result, scoped);
 }
-// A result frame without its parse and verify times, the varints after its
-// flags, which differ from run to run.
+// A result frame's payload without its parse and verify times, the varints
+// after its flags, which differ from run to run. The frame's header, the
+// payload's length, is left out too: a time that takes one more byte to
+// encode changes it.
 def withoutTimes(frame: Range<byte>) -> Array<byte> {
 	var flags = WorkerFraming.HEADER_BYTES + 21, p = flags + 1;
 	for (i < 2) {
 		while ((frame[p] & 0x80) != 0) p++;
 		p++;
 	}
-	return Arrays.concat(Ranges.dup(frame[0 ... flags + 1]), Ranges.dup(frame[p ...]));
+	return Arrays.concat(Ranges.dup(frame[WorkerFraming.HEADER_BYTES ... flags + 1]), Ranges.dup(frame[p ...]));
+}
+// Two frames whose times take different numbers of bytes compare equal
+// without them: 63 takes one byte as a signed LEB128 varint, and 64 two.
+def test_without_times(t: Tester) {
+	var a = timedFrame(63, 5), b = timedFrame(64, 70000);
+	t.assert(a.length != b.length, "the frames differ in length");
+	t.assertb(withoutTimes(a), withoutTimes(b));
+}
+// A result frame's fixed fields, flags, and times, as encodeResult writes
+// them, followed by one more varint.
+def timedFrame(parseUs: int, verifyUs: int) -> Range<byte> {
+	var w = WorkerFraming.start().putb(AnalysisWire.RESULT);
+	w.put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(0);
+	w.put_sleb32(parseUs).put_sleb32(verifyUs).put_sleb32(7);
+	return WorkerFraming.finish(w);
 }
 
 // The worker's key comes from the kernel and differs from call to call.
