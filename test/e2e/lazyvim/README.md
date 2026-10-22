@@ -1,6 +1,6 @@
 # LazyVim test
 
-`run.sh` tests the shipped [LazyVim plugin spec](../../../editors/nvim/lazyvim/virgil.lua) as a LazyVim user runs it: under the [LazyVim starter](https://github.com/LazyVim/starter) and the plugins that [`lazy-lock.json`](lazy-lock.json) pins, in Neovim's terminal UI, through LazyVim's own keys. It runs locally, not in CI, and isn't part of `make test`.
+`run.sh` tests the shipped [LazyVim plugin spec](../../../editors/nvim/lazyvim/virgil.lua) as a LazyVim user runs it: under the [LazyVim starter](https://github.com/LazyVim/starter) and the plugins that [`lazy-lock.json`](lazy-lock.json) pins, in Neovim's terminal UI, through LazyVim's own keys. It runs locally and in [CI](#ci), and isn't part of `make test`.
 
 ## Running it
 
@@ -21,6 +21,24 @@ The first installs a release archive as its README says: extracted into its one 
 - `--update-lock`: install the latest plugins and write the lock; see [Pins](#pins).
 
 The exit status is 0 only when all three runs give the [expected results](#expected-results).
+
+## CI
+
+- **Pull requests.** The CI job `lazyvim-linux`, "LazyVim test (built server, linux)" in [`ci.yml`](../../../.github/workflows/ci.yml), runs `run.sh` on every pull request and push to `main`, after the `test` job, with the server that `test` built, Neovim 0.11.6, and tmux from the runner's packages. It isn't a required check: it installs the starter and plugins from GitHub, so it stays advisory until it has passed 20 runs in a row ([CI policy](../../../docs/compatibility.md#host-platforms)). A failure shows in the pull request but doesn't block the merge.
+- **Weekly.** The [editor tests workflow](../../../.github/workflows/editor-tests.yml) runs every Monday, and by hand before each release (`gh workflow run editor-tests.yml --ref <branch>`). It builds the server and runs `run.sh` on Linux with Neovim 0.11.6 and 0.12.6, each checked against its pinned SHA-256, and on macOS (Apple Silicon, with the server under Rosetta 2) with Homebrew's Neovim and tmux. It also runs the [Extension Host test](../../../clients/vscode/README.md#extension-host-test) on macOS on a VSIX it packages and installs. None of its jobs are required.
+- **Artifacts.** Each job uploads the [output directory](#outputs) as `results/` and the script's own output as `run.log`, also when the test fails: `lazyvim-linux` from CI, and `lazyvim-linux-nvim-<version>` and `lazyvim-macos` from the weekly workflow. `gh run download <run-id> --name lazyvim-linux` fetches one.
+- **Run history.** To count the CI job's runs in a row, list its results, newest first. Cancelled runs, which a newer push to the same branch replaces, and skipped ones, after `test` failed, don't count either way.
+
+  ```sh
+  gh run list --workflow ci.yml --limit 50 --json databaseId --jq '.[].databaseId' |
+    while read -r id; do
+      gh run view "$id" --json jobs,event,headBranch --jq '.event as $e | .headBranch as $b | .jobs[]
+        | select(.name == "LazyVim test (built server, linux)")
+        | "\(.completedAt) \(.conclusion) \($e) \($b) \(.url)"'
+    done
+  ```
+
+- **No plugin cache.** Each job installs the plugins from GitHub. On a local Linux machine, a cold install took 5 to 11 seconds of a run of about a minute, so a cache would save little and add a way for a run to differ from a user's first start.
 
 ## What it checks
 

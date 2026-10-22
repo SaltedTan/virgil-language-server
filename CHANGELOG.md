@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The [LazyVim test](test/e2e/lazyvim/README.md#ci) now runs in CI on Linux for every pull request as an advisory check, and weekly on Linux and macOS. The weekly workflow also runs the [Extension Host test](clients/vscode/README.md#extension-host-test) on an installed VSIX on macOS.
+
 ## [0.1.0-alpha.3] - 2026-10-23
 
 ### Added
