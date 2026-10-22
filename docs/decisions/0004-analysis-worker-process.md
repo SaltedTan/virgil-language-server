@@ -202,7 +202,7 @@ Protocol version 10 changes no ordinary analysis either. The measurements used t
 
 - The Aeneas sources' charged result allocation is 13,250,205 bytes before and after.
 - A fresh worker's heap is 200,743,296 bytes before and after, with no collection, leaving 583,296 bytes of the semispace: 0 bytes more.
-- The raw `RESULT` payloads are identical, at 3,936,044 bytes, and so are the `--bindings --display` outputs, at 55,963,557 bytes.
+- The raw `RESULT` payloads are the same size, 3,936,044 bytes, and byte-identical once the live heap and timing statistics are normalized. The `--bindings --display` outputs are byte-identical, at 55,963,557 bytes.
 
 The commits after it change only the server, and [#165](https://github.com/SaltedTan/virgil-language-server/issues/165) only its scanner, so these figures stand for `3250aed`.
 
