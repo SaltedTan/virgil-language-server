@@ -17,7 +17,7 @@ The editor tests don't cover:
 - VS Code Remote-SSH or Remote-WSL. Nothing runs inside WSL 2.
 - An installed VSIX on macOS. CI runs the Extension Host test there only on the extension from source.
 - The LazyVim configuration.
-- In Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, but its check of the `MissingVirgilRoot` diagnostic is an expected failure while the server exits without a Virgil root ([#175](https://github.com/SaltedTan/virgil-language-server/issues/175)).
+- In Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings.
 - Restarting the server from Neovim.
 - What the editor shows. The tests read diagnostics, symbols, locations, hover text, signature help, and completion items through editor APIs, not from the Problems view, the outline, a hover popup, a signature popup, a completion menu, or a notification.
 

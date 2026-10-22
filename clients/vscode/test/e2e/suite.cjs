@@ -176,24 +176,21 @@ function fatalErrors(text) {
   for (const line of text.split('\n')) {
     const message = /^\S+ \S+ \[error\] (.*)$/.exec(line)?.[1];
     if (message === undefined) continue;
-    if (message.startsWith('!')) errors.push({ exception: message, frames: [] });
-    else if (/^\s+in /.test(message) && errors.length > 0) errors.at(-1).frames.push(message.trim());
+    if (message.startsWith('!')) errors.push(message);
+    else if (/^\s+in /.test(message) && errors.length > 0) errors[errors.length - 1] += `\n\t${message.trim()}`;
   }
   return errors;
 }
 
 // Throws, with the server's stderr, if the output channel's log shows that a
-// server exited with an error since log began. The error's fatalErrors are
-// those that the log shows, and its message has each distinct one in full.
+// server exited with an error since log began. The message has each distinct
+// fatal error in full, so that a different one after a crash loop shows.
 function expectNoServerError(log) {
   const text = log();
   if (/Server process exited with (code|signal)/.test(text)) {
-    const errors = fatalErrors(text);
-    const distinct = [...new Set(errors.map((e) => [e.exception, ...e.frames.map((f) => `\t${f}`)].join('\n')))];
-    const exits = [...new Set(text.match(/Server process exited with (code|signal) \S+/g))];
-    const error = new Error(`a server exited with an error:\n${[...distinct, ...exits].join('\n')}`);
-    error.fatalErrors = errors;
-    throw error;
+    const errors = new Set(fatalErrors(text));
+    const exits = new Set(text.match(/Server process exited with (code|signal) \S+/g));
+    throw new Error(`a server exited with an error:\n${[...errors, ...exits].join('\n')}`);
   }
 }
 
@@ -201,19 +198,7 @@ function expectNoServerError(log) {
 // what is still changed and waits until a server serves the project as before,
 // so that a scenario that fails is reported and the next one still runs. If
 // restoring fails, the suite stops.
-//
-// A scenario that fails because of a known bug names it in known: the bug, and
-// the fatal error that shows it, as its exception and innermost frame. A
-// failure that expectNoServerError threw for that fatal error alone is reported
-// as XFAIL, and a pass as FAIL, so that the fix removes the mark.
-// Whether failure is a server exit whose fatal errors are all known's.
-function isKnown(failure, known) {
-  const errors = failure?.fatalErrors ?? [];
-  return errors.length > 0
-    && errors.every((e) => e.exception === known.exception && e.frames[0] === known.frame);
-}
-
-async function scenario(failures, name, check, restore, known) {
+async function scenario(failures, name, check, restore) {
   let failure;
   try {
     await check();
@@ -226,12 +211,7 @@ async function scenario(failures, name, check, restore, known) {
     if (failure !== undefined) console.error(`FAIL: VS Code ${name}: ${failure.stack}`);
     throw new Error(`restoring the state after "${name}" failed: ${error.message}`);
   }
-  if (known !== undefined && isKnown(failure, known)) {
-    console.log(`XFAIL: VS Code ${name}: ${known.bug}`);
-  } else if (known !== undefined && failure === undefined) {
-    failures.push(name);
-    console.error(`FAIL: VS Code ${name} passed, but is marked as an expected failure: ${known.bug}`);
-  } else if (failure === undefined) {
+  if (failure === undefined) {
     console.log(`PASS: VS Code ${name}`);
   } else {
     failures.push(name);
@@ -604,7 +584,7 @@ async function noVirgilRoot(failures, words) {
   const server = setting('virgil.server.path');
   const config = vscode.Uri.file(path.join(project, '.virgil-lsp.json'));
   // Errors logged meanwhile can come from a client that the restart replaces,
-  // so only the new server's start counts.
+  // as after a failed check, so only the new server's start counts.
   const restore = async () => {
     if (setting('virgil.virgilRoot') !== root) {
       const log = logFromHere();
@@ -628,7 +608,7 @@ async function noVirgilRoot(failures, words) {
         && text.includes(`Starting ${server} --stdio`);
     });
   }, restore);
-  await scenario(failures, 'no Virgil root: MissingVirgilRoot on .virgil-lsp.json, cleared when restored', async () => {
+  await scenario(failures, 'no Virgil root: a running server, and MissingVirgilRoot on .virgil-lsp.json, cleared when restored', async () => {
     const log = logFromHere();
     await setSetting('virgil.virgilRoot', '');
     const missing = await waitFor('MissingVirgilRoot on .virgil-lsp.json', () => {
@@ -637,11 +617,11 @@ async function noVirgilRoot(failures, words) {
       return list.length > 0 && list;
     }, 40000);
     assert.deepEqual(missing.map((d) => [code(d), d.source, d.range.start.line]), [['MissingVirgilRoot', 'virgil-lsp', 6]]);
-  }, restore, {
-    bug: 'the server exits during initialize when initializationOptions has no virgilRoot, as the extension sends it without a root (#175)',
-    exception: '!NullCheckException',
-    frame: 'in WorkspaceProjects.initialize() [src/workspace/WorkspaceProjects.v3 @ 77:41]',
-  });
+    // The server initialized, reporting its version, and still answers.
+    assert.ok(log().includes('Started virgil-lsp '), 'the server started without reporting its version');
+    assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
+    expectNoServerError(log);
+  }, restore);
 }
 
 // Points virgil.server.path back at server, if it no longer is, and waits for
