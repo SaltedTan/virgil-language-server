@@ -100,9 +100,12 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// The LspCursorSyntax flags of the position; 0 outside CODE.
 	def var syntax: int;
 	// The delimiters open at the cursor, outermost first: their offsets and
-	// what each encloses.
+	// what each encloses. A delimiter is part of a header, which goes on past
+	// its closer, where a hint's type arguments or a packing expression's name
+	// in a lambda header opened it.
 	def var opens: Array<int>;
 	def var roles: Array<LspOpenRole>;
+	def var headers: Array<bool>;
 
 	// The identifier before the cursor, which may be empty.
 	def prefix() -> string {
@@ -150,12 +153,13 @@ class LspCursorScanner(text: Array<byte>) {
 	def STARTED = -2;		// the declaration or statement starts with no keyword
 	def PATTERN_HEAD = -3;
 
-	// The open delimiters and their roles.
+	// The open delimiters and their roles, and whether each is a header's.
 	private def opens = Vector<int>.new();
 	private def roles = Vector<LspOpenRole>.new();
 	// For each open delimiter, whether a for loop's header has left its
 	// loop-variable position, at "in", "=", or a comparison's "<".
 	private def forLimits = Vector<bool>.new();
+	private def headers = Vector<bool>.new();
 	// Open "(", "[", "{", and type argument "<" counts, by kind (kindOf), so
 	// that a stray closer is skipped at once.
 	private def counts = Array<int>.new(4);
@@ -221,6 +225,7 @@ class LspCursorScanner(text: Array<byte>) {
 		}
 		ctx.opens = opens.copy();
 		ctx.roles = roles.copy();
+		ctx.headers = headers.copy();
 		return ctx;
 	}
 	private def scanTo(ctx: LspCursorContext, end: int) -> LspCursorPlace {
@@ -705,12 +710,12 @@ class LspCursorScanner(text: Array<byte>) {
 			if (levelDecls[level()] == NO_DECL && c != ';' && c != '{' && c != '}') levelDecls[level()] = STARTED;
 		}
 		match (c) {
-			'(' => push(start, parenRole(h), 0);
+			'(' => push(start, parenRole(h), 0, false);
 			'[' => push(start, if(h == HEADER_NAME && headerKeyword == LspKeyword.DEF,
-				LspOpenRole.INDEX_PARAMS, LspOpenRole.INDEX), 1);
+				LspOpenRole.INDEX_PARAMS, LspOpenRole.INDEX), 1, false);
 			'{' => {
 				var role = if(body, LspOpenRole.LAMBDA, braceRole());
-				push(start, role, 2);
+				push(start, role, 2, false);
 				pushLevel(role);
 			}
 			')' => closed = pop(0);
@@ -734,7 +739,7 @@ class LspCursorScanner(text: Array<byte>) {
 				}
 			}
 			'<' => if (prevHint || (packingExpr && adjacentName && inLambdaHeader())) {
-				push(start, LspOpenRole.TYPE_ARGS, 3);
+				push(start, LspOpenRole.TYPE_ARGS, 3, true);
 			} else if (h == HEADER_AFTER_NAME && adjacentName) {
 				header = HEADER_TYPE_PARAMS;
 				angles = 1;
@@ -742,13 +747,13 @@ class LspCursorScanner(text: Array<byte>) {
 				header = h;
 				angles++;
 			} else if (typeName && adjacentName) {
-				push(start, LspOpenRole.TYPE_ARGS, 3);
+				push(start, LspOpenRole.TYPE_ARGS, 3, false);
 			} else if (prevKind == LspCursorToken.MEMBER && prevStart + 1 == start
 					&& (text[prevStart] == '!' || text[prevStart] == '?')) {
 				// The adjacent type arguments of "!" or "?", as in
 				// "V.Case.!<int>", which Parser.addMemberSuffix reads as a
 				// "<" list after the member rather than as a comparison.
-				push(start, LspOpenRole.TYPE_ARGS, 3);
+				push(start, LspOpenRole.TYPE_ARGS, 3, false);
 			} else if (innermost() == LspOpenRole.FOR) {
 				// A comparison, so the loop variable's position is over.
 				forLimits[forLimits.length - 1] = true;
@@ -812,10 +817,11 @@ class LspCursorScanner(text: Array<byte>) {
 		levelIfs.put(0);
 		levelElse.put(false);
 	}
-	private def push(offset: int, role: LspOpenRole, kind: int) {
+	private def push(offset: int, role: LspOpenRole, kind: int, header: bool) {
 		opens.put(offset);
 		roles.put(role);
 		forLimits.put(false);
+		headers.put(header);
 		counts[kind]++;
 	}
 	// Pops the innermost open delimiter of {kind} and every one inside it,
@@ -829,6 +835,7 @@ class LspCursorScanner(text: Array<byte>) {
 			opens.length--;
 			roles.length--;
 			forLimits.length--;
+			headers.length--;
 			counts[k]--;
 			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) popLambda();
 			if (k == 2) {

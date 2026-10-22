@@ -196,43 +196,83 @@ def repaired(marked: string) -> string {
 def repairProgram(line: string) -> string {
 	return Strings.format1("component Main {\n\tdef run() {\n\t\t%s\n\t}\n}\n", line);
 }
+// A component's member {line}.
+def repairMember(line: string) -> string {
+	return Strings.format1("component Main {\n\t%s\n}\n", line);
+}
+// Checks that repairing {marked} parses.
+def checkRepairParses(t: Tester, marked: string) {
+	var text = LspCompletionRepair.repair(at(marked));
+	var n = AeneasAdapter.parseFile("repair.v3", text, []).diagnostics.length;
+	if (n != 0) t.fail2("does not parse: %s: %s", marked, text);
+}
 // An editor closes a delimiter as soon as it is typed, so a call's arguments
 // end at the cursor and the statement has no ";": the repair matches the
 // closers that already follow the cursor, decides after them as it does at
-// the cursor, and inserts what is missing right after them.
+// the cursor, and inserts what is missing right after them. A delimiter that
+// ends a header (a lambda's parameters, a control header, a for header, a
+// hint's arguments, or a lambda header's type arguments) is followed by the
+// rest of that header or its body, so nothing is inserted there.
 def test_repair(t: Tester) {
-	for (c in [
-		("var n = Util.add($)", "var n = Util.add(virgilLspCursor);"),
-		("Util.add(1, x$)", "Util.add(1, xvirgilLspCursor);"),
-		("f(g($))", "f(g(virgilLspCursor));"),
-		("f(g($)", "f(g(virgilLspCursor));"),
-		("if (f($)) {", "if (f(virgilLspCursor)) {"),
-		("var x = a[$]", "var x = a[virgilLspCursor];"),
+	var programs = [
+		// A statement's identifier, a second argument, and nested calls.
+		("var n = Util.add($)\n\t\treturn n;", "var n = Util.add(virgilLspCursor);\n\t\treturn n;"),
+		("{ f($) }", "{ f(virgilLspCursor); }"),
 		("g(fun () { f($) })", "g(fun () { f(virgilLspCursor); })"),
-		("foo(x.$)", "foo(x.virgilLspCursor);"),
-		("for (x = g($); x < 10; x++) { }", "for (x = g(virgilLspCursor); x < 10; x++) { }"),
 		("if (a) f($) else g();", "if (a) f(virgilLspCursor); else g();"),
-		// The decision goes past the matched closers: a separator or an
-		// operator there completes the expression, so nothing is inserted.
-		("g(f($), 1)", "g(f(virgilLspCursor), 1)"),
+		("f(g($)\n", "f(g(virgilLspCursor));\n"),
+		// A missing closer, and a complete condition.
+		("if (f($) { f(); }", "if (f(virgilLspCursor)) { f(); }"),
+		("if (f($)) { }", "if (f(virgilLspCursor)) { }"),
+		("var x = a[$]", "var x = a[virgilLspCursor];"),
+		// A lambda header: its parameter type, an empty body, and hints.
+		("g(fun (x: $) { return x; });", "g(fun (x: virgilLspCursor) { return x; });"),
+		("g(fun (x: $););", "g(fun (x: virgilLspCursor););"),
+		("g(fun () #hint<$> ;);", "g(fun () #hint<virgilLspCursor> ;);"),
+		("g(fun () #hint($) ;);", "g(fun () #hint(virgilLspCursor) ;);"),
+		("g(fun () #packing f<$> ;);", "g(fun () #packing f<virgilLspCursor> ;);"),
+		// A control header keeps its unbraced body, on the same line or not.
+		("if (r.$) f(); else g();", "if (r.virgilLspCursor) f(); else g();"),
+		("if (r.$)\n\t\tf();", "if (r.virgilLspCursor)\n\t\tf();"),
+		("while (f($)) x++;", "while (f(virgilLspCursor)) x++;"),
+		("for (i < f($))\n\t\tx();", "for (i < f(virgilLspCursor))\n\t\tx();"),
+		// A call or index on the result keeps the expression going.
+		("var n = f($)[0];", "var n = f(virgilLspCursor)[0];"),
+		("a[$][j]", "a[virgilLspCursor][j]"),
+		("var n = f($)(x);", "var n = f(virgilLspCursor)(x);"),
 		("var n = f($) + 1", "var n = f(virgilLspCursor) + 1"),
-		// Whitespace and comments may come between the closers; the tail
-		// goes right after the last one.
-		("f(g($) /* comment */ )", "f(g(virgilLspCursor) /* comment */ );"),
-		("f(g($) // comment\n)", "f(g(virgilLspCursor) // comment\n);"),
-		// A closer that does not match decides at the cursor, as before.
-		("f($]", "f(virgilLspCursor);]")
-	]) {
-		t.assert_string(c.1, repaired(c.0));
+		("x = f($)\n\t\t.bar();", "x = f(virgilLspCursor)\n\t\t.bar();"),
+		// A comment ends at its newline, so the statement is over.
+		("f($) // c\n\t\treturn n;", "f(virgilLspCursor); // c\n\t\treturn n;")
+	];
+	for (c in programs) t.assert_string(repairProgram(c.1), repaired(repairProgram(c.0)));
+	// A line comment that runs to the end of the text leaves no token, so the
+	// statement ends there.
+	t.assert_string("def t() { f(g(virgilLspCursor)); // c", repaired("def t() { f(g($) // c"));
+	var members = [
+		// A hint follows a completed type annotation, and a lambda header
+		// keeps its type arguments.
+		("var a: Box<$> #hint;", "var a: Box<virgilLspCursor> #hint;"),
+		("def t() -> Array<$> #hint { return x; }", "def t() -> Array<virgilLspCursor> #hint { return x; }"),
+		// At a line break after a complete type annotation, ";" is missing.
+		("var a: Box<$>", "var a: Box<virgilLspCursor>;"),
+		("def m(a: $)\n{ }", "def m(a: virgilLspCursor)\n{ }")
+	];
+	for (c in members) t.assert_string(repairMember(c.1), repaired(repairMember(c.0)));
+	// Each repaired program parses. The three whose statement ends outside
+	// the row get their ";" in the source.
+	for (line in ["var n = Util.add($)\n\t\treturn n;", "{ f($) }", "g(fun () { f($) });",
+			"if (a) f($) else g();", "f(g($)\n", "if (f($) { f(); }", "if (f($)) { }", "var x = a[$]",
+			"g(fun (x: $) { return x; });", "g(fun (x: $););", "g(fun () #hint<$> ;);",
+			"g(fun () #hint($) ;);", "g(fun () #packing f<$> ;);", "if (r.$) f(); else g();",
+			"if (r.$)\n\t\tf();", "while (f($)) x++;", "for (i < f($))\n\t\tx();", "var n = f($)[0];",
+			"a[$][j];", "var n = f($)(x);", "var n = f($) + 1;", "x = f($)\n\t\t.bar();",
+			"f($) // c\n\t\treturn n;"]) {
+		checkRepairParses(t, repairProgram(line));
 	}
-	// Each repaired program parses.
-	for (line in ["var n = Util.add($)", "Util.add(1, x$)", "f(g($))", "f(g($)",
-			"var x = a[$]", "var x = g(fun () { f($) });", "foo(x.$)", "for (x = g($); x < 10; x++) { }",
-			"if (a) f($) else g();", "var x = g(f($), 1);", "var n = f($) + 1;",
-			"f(g($) /* comment */ )", "f(g($) // comment\n)"]) {
-		var text = LspCompletionRepair.repair(at(repairProgram(line)));
-		var n = AeneasAdapter.parseFile("repair.v3", text, []).diagnostics.length;
-		if (n != 0) t.fail2("does not parse: %s: %s", line, text);
+	for (line in ["var a: Box<$> #hint;", "def t() -> Array<$> #hint { return x; }", "var a: Box<$>",
+			"def m(a: $)\n{ }"]) {
+		checkRepairParses(t, repairMember(line));
 	}
 	var ifBody = "component Main {\n\tdef run() {\n\t\tif (f($)) {\n\t\t\tvar y = 0;\n\t\t}\n\t}\n}\n";
 	var block = LspCompletionRepair.repair(at(ifBody));
