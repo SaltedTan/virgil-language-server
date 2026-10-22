@@ -574,6 +574,8 @@ A snapshot of text that doesn't parse has no calls. So where the open document's
 3. The repair inserts nothing before the cursor, so the innermost open call's `(` is at the same offset in both texts. The analysis answers a call query at that offset (below).
 4. The reply is that call's signature, as for a call that parses. Its active parameter is counted in the repaired text, which has the document's commas before the cursor. A call without a signature, or one that verification didn't reach, gets `null`.
 
+The scanner also takes an operator-named member's `(` for a call's: a cast's `B.!(`, a type test's `B.?(`, a builtin operator's `int.+(`, and a variant case's `V.One.!(`, alone or among another call's arguments. The reply is that call's, not the call that holds it.
+
 **Sentinel.** Completion's repair is used unchanged, sentinel included. The sentinel is an unresolved name, so it infers no type argument, but it keeps the call's argument count, so an earlier argument still infers one. Without it, `pair(1, |` would become `pair(1, )`, a call with one argument, which verification infers nothing from:
 
 | Typed | Label with the sentinel | Label without it |
@@ -583,6 +585,8 @@ A snapshot of text that doesn't parse has no calls. So where the open document's
 | `id<int>(\|` | `def id(v: int) -> int` | `def id(v: int) -> int` |
 
 A callee that isn't generic shows its declared signature either way: a function, a method through its class, a constructor, a closure, or a builtin.
+
+A cast's source type is inferred from its argument, as a generic call's type argument is, so while that argument is the sentinel the type is unknown and shows as `?`: `B.!(|` gets `? -> B`, and `V.One.!(|` gets `? -> V.One`.
 
 **Call query.** A call query is a [scope query](#names) whose kinds are `CALL` alone, with no prefix, at the offset of the call's `(` (protocol version 10, [ADR-0004](decisions/0004-analysis-worker-process.md#channel-and-framing)). The worker answers it in two steps:
 

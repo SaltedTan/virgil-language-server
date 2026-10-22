@@ -13,6 +13,7 @@
 def T = UnitTests.register;
 def X = [
 	T("LspSignatureRepair:incomplete_calls", test_incomplete_calls),
+	T("LspSignatureRepair:operator_member_calls", test_operator_member_calls),
 	T("LspSignatureRepair:label_offsets", test_label_offsets),
 	T("LspSignatureRepair:no_analysis", test_no_analysis),
 	T("LspSignatureRepair:unresolved_callee", test_unresolved_callee),
@@ -41,6 +42,14 @@ def MARK = "\t\treturn n;";
 def ADD = "def add(a: int, b: int) -> int";
 def ADD_PARAMS = ["a: int", "b: int"];
 
+// Main.v3 for the operator-member calls: classes A and B, a variant V, and a
+// statement before OPERATOR_MARK for each call being typed. A cast's source
+// type comes from its argument, so it is unknown while that is the repair's
+// sentinel.
+def OPERATOR_CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"operators\",\"sources\":[\"Main.v3\"]}]}";
+def OPERATOR_MAIN = "class A { }\nclass B extends A { }\ntype V {\n\tcase One(f: int);\n\tcase Two(s: string);\n}\ncomponent Main {\n\tdef outer(a: B, n: int) { }\n\tdef bools(a: bool, n: int) { }\n\tdef ints(a: int, n: int) { }\n\tdef take(x: int, y: int) { }\n\tdef run(a: A, a2: B, v: V) {\n\t\tvar n = 1;\n\t}\n}\n";
+def OPERATOR_MARK = "\t\tvar n = 1;";
+
 def session(t: Tester) -> RenameTestSession {
 	return sessionOn(null, t);
 }
@@ -51,14 +60,29 @@ def sessionOn(worker: string, t: Tester) -> RenameTestSession {
 	s.settle();
 	return s;
 }
-// Main.v3 with {line} before the line of MARK.
-def inRun(line: string) -> string {
-	for (i = 0; i + MARK.length <= MAIN.length; i++) {
-		if (Strings.equal(Arrays.range(MAIN, i, i + MARK.length), MARK)) {
-			return Strings.format3("%s%s\n%s", Arrays.range(MAIN, 0, i), line, Arrays.range(MAIN, i, MAIN.length));
+// The operator-member program's session, with Main.v3 open as it is on disk.
+def operatorSession(t: Tester) -> RenameTestSession {
+	var s = RenameTestSession.new("signature-repair", [(".virgil-lsp.json", OPERATOR_CONFIG), ("Main.v3", OPERATOR_MAIN)], true, null, t);
+	s.open("Main.v3", 1, OPERATOR_MAIN);
+	s.settle();
+	return s;
+}
+// {text} with {line} before the line of {mark}.
+def insertBefore(text: string, mark: string, line: string) -> string {
+	for (i = 0; i + mark.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + mark.length), mark)) {
+			return Strings.format3("%s%s\n%s", Arrays.range(text, 0, i), line, Arrays.range(text, i, text.length));
 		}
 	}
 	return null;
+}
+// Main.v3 with {line} before the line of MARK.
+def inRun(line: string) -> string {
+	return insertBefore(MAIN, MARK, line);
+}
+// The operator-member program's Main.v3 with {line} before OPERATOR_MARK.
+def inOperatorRun(line: string) -> string {
+	return insertBefore(OPERATOR_MAIN, OPERATOR_MARK, line);
 }
 // The text and the cursor's offset of {marked}.
 def unmark(marked: string) -> (string, int) {
@@ -161,6 +185,43 @@ def test_incomplete_calls(t: Tester) {
 		if (!Strings.equal(c.1, got)) t.fail3("%s\n  expected: %s\n  got:      %s", c.0, c.1, got);
 	}
 	// The first case reuses the reply above.
+	t.asserti(cases.length, analyses(s));
+	s.server.close();
+}
+
+// A call whose callee is an operator-named member, such as a cast, is the
+// innermost open call, not the call that holds it. A cast's source type is
+// inferred from its argument, so it shows as "?" while that argument is the
+// repair's sentinel. Both the label and the active parameter are checked, at
+// each cursor position.
+def test_operator_member_calls(t: Tester) {
+	var s = operatorSession(t);
+	var cast = "? -> B", castParams = ["?"];
+	var arithmetic = "(int, int) -> int", intParams = ["int", "int"];
+	var cases = [
+		// A cast and a type test in an enclosing call's first argument.
+		("\t\touter(B.!($", expected(cast, castParams, 0)),
+		("\t\tbools(B.?($", expected("? -> bool", ["?"], 0)),
+		// Builtin numeric operators in an enclosing call's first argument.
+		("\t\tints(int.+($", expected(arithmetic, intParams, 0)),
+		("\t\tbools(int.==($", expected("(int, int) -> bool", intParams, 0)),
+		// A builtin operator in the enclosing call's first argument, at its
+		// own second parameter.
+		("\t\ttake(int.+(1,$", expected(arithmetic, intParams, 1)),
+		// The operator-member call alone, with no call around it.
+		("\t\tvar x = int.+($", expected(arithmetic, intParams, 0)),
+		// A cast in a later argument of the enclosing call.
+		("\t\touter(a2, B.!($", expected(cast, castParams, 0)),
+		// A variant case's cast, and its argument's type from the sentinel.
+		("\t\tvar z = V.One.!($", expected("? -> V.One", ["?"], 0))
+	];
+	for (c in cases) {
+		var marked = inOperatorRun(c.0);
+		t.assert(!parses(marked), c.0);
+		var got = help(t, s, marked);
+		if (!Strings.equal(c.1, got)) t.fail3("%s\n  expected: %s\n  got:      %s", c.0, c.1, got);
+	}
+	// Each case is an analysis of its own text.
 	t.asserti(cases.length, analyses(s));
 	s.server.close();
 }
