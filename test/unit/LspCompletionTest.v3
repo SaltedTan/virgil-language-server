@@ -11,6 +11,7 @@ def X = [
 	T("LspCompletion:byte_literals", test_byte_literals),
 	T("LspCompletion:prefix_range", test_prefix_range),
 	T("LspCompletion:repair", test_repair),
+	T("LspCompletion:repair_headers", test_repair_headers),
 	T("LspCompletion:numbers", test_numbers),
 	T("LspCompletion:empty_fraction_operators", test_empty_fraction_operators),
 	T("LspCompletion:decimal_members", test_decimal_members),
@@ -287,6 +288,38 @@ def test_repair(t: Tester) {
 	var ifBody = "component Main {\n\tdef run() {\n\t\tif (f($)) {\n\t\t\tvar y = 0;\n\t\t}\n\t}\n}\n";
 	var block = LspCompletionRepair.repair(at(ifBody));
 	if (AeneasAdapter.parseFile("repair.v3", block, []).diagnostics.length != 0) t.fail1("does not parse: %s", block);
+}
+
+def test_repair_headers(t: Tester) {
+	for (c in [
+		("g(fun () -> Array<$> { return null; });", "g(fun () -> Array<virgilLspCursor> { return null; });"),
+		("g(fun () -> (int, $) { return null; });", "g(fun () -> (int, virgilLspCursor) { return null; });"),
+		("g(fun () -> Array<(int, $)> { return null; });", "g(fun () -> Array<(int, virgilLspCursor)> { return null; });"),
+		("g(fun () -> Array<$> #hint { return null; });", "g(fun () -> Array<virgilLspCursor> #hint { return null; });"),
+		("g(fun () -> Array<$> => null);", "g(fun () -> Array<virgilLspCursor> => null);"),
+		("g(fun () -> (int, $) => null);", "g(fun () -> (int, virgilLspCursor) => null);"),
+		("g(fun () #packing P($) { });", "g(fun () #packing P(virgilLspCursor) { });"),
+		("g(fun () #packing P<int>($) { });", "g(fun () #packing P<int>(virgilLspCursor) { });"),
+		("g(fun () #packing P($) #hint ;);", "g(fun () #packing P(virgilLspCursor) #hint ;);"),
+		("g(fun () #packing P<Array<$>> { });", "g(fun () #packing P<Array<virgilLspCursor>> { });"),
+		("g(fun () #hint(fun () -> Array<$> { return null; }) ;);", "g(fun () #hint(fun () -> Array<virgilLspCursor> { return null; }) ;);"),
+		("g(fun () { f($) });", "g(fun () { f(virgilLspCursor); });"),
+		("g(fun () => f($));", "g(fun () => f(virgilLspCursor));"),
+		("g(fun ();, f($));", "g(fun ();, f(virgilLspCursor));")
+	]) {
+		var marked = repairProgram(c.0);
+		t.assert_string(repairProgram(c.1), repaired(marked));
+		checkRepairParses(t, marked);
+	}
+	for (c in [
+		("type V<T> { case Some(value: T) #hint<$>\n}", "type V<T> { case Some(value: T) #hint<virgilLspCursor>;\n}"),
+		("type V<T> { case Some(value: T) #hint<$>\ncase None; }", "type V<T> { case Some(value: T) #hint<virgilLspCursor>;\ncase None; }"),
+		("component Main { var value: int #hint<$>\n}", "component Main { var value: int #hint<virgilLspCursor>;\n}"),
+		("component Main { var value: int #hint<$>\nvar next: int; }", "component Main { var value: int #hint<virgilLspCursor>;\nvar next: int; }")
+	]) {
+		t.assert_string(c.1, repaired(c.0));
+		checkRepairParses(t, c.0);
+	}
 }
 
 def test_numbers(t: Tester) {

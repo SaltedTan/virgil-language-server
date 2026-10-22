@@ -226,17 +226,11 @@ component LspCompletionRepair {
 	}
 	// Whether one of the {j} closers that the text already has, innermost
 	// first, ends a header's delimiter, whose header or body goes on past it.
-	// A hint's type arguments and a packing expression's name in a lambda
-	// header are a header's, though their role alone doesn't say so.
 	private def headerDelimiter(ctx: LspCursorContext, j: int) -> bool {
 		var last = ctx.roles.length;
 		for (i = 0; i < j; i++) {
 			var role = ctx.roles[last - 1 - i];
-			if (role == LspOpenRole.TYPE_ARGS) {
-				if (ctx.headers[last - 1 - i]) return true;
-			} else if (isHeaderRole(role)) {
-				return true;
-			}
+			if (ctx.headers[last - 1 - i] || isHeaderRole(role)) return true;
 		}
 		return false;
 	}

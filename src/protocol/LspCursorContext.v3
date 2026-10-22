@@ -100,9 +100,7 @@ class LspCursorContext(text: Array<byte>, cursor: int) {
 	// The LspCursorSyntax flags of the position; 0 outside CODE.
 	def var syntax: int;
 	// The delimiters open at the cursor, outermost first: their offsets and
-	// what each encloses. A delimiter is part of a header, which goes on past
-	// its closer, where a hint's type arguments or a packing expression's name
-	// in a lambda header opened it.
+	// what each encloses.
 	def var opens: Array<int>;
 	def var roles: Array<LspOpenRole>;
 	def var headers: Array<bool>;
@@ -710,12 +708,12 @@ class LspCursorScanner(text: Array<byte>) {
 			if (levelDecls[level()] == NO_DECL && c != ';' && c != '{' && c != '}') levelDecls[level()] = STARTED;
 		}
 		match (c) {
-			'(' => push(start, parenRole(h), 0, false);
+			'(' => push(start, parenRole(h), 0);
 			'[' => push(start, if(h == HEADER_NAME && headerKeyword == LspKeyword.DEF,
-				LspOpenRole.INDEX_PARAMS, LspOpenRole.INDEX), 1, false);
+				LspOpenRole.INDEX_PARAMS, LspOpenRole.INDEX), 1);
 			'{' => {
 				var role = if(body, LspOpenRole.LAMBDA, braceRole());
-				push(start, role, 2, false);
+				push(start, role, 2);
 				pushLevel(role);
 			}
 			')' => closed = pop(0);
@@ -739,7 +737,7 @@ class LspCursorScanner(text: Array<byte>) {
 				}
 			}
 			'<' => if (prevHint || (packingExpr && adjacentName && inLambdaHeader())) {
-				push(start, LspOpenRole.TYPE_ARGS, 3, true);
+				push(start, LspOpenRole.TYPE_ARGS, 3);
 			} else if (h == HEADER_AFTER_NAME && adjacentName) {
 				header = HEADER_TYPE_PARAMS;
 				angles = 1;
@@ -747,13 +745,13 @@ class LspCursorScanner(text: Array<byte>) {
 				header = h;
 				angles++;
 			} else if (typeName && adjacentName) {
-				push(start, LspOpenRole.TYPE_ARGS, 3, false);
+				push(start, LspOpenRole.TYPE_ARGS, 3);
 			} else if (prevKind == LspCursorToken.MEMBER && prevStart + 1 == start
 					&& (text[prevStart] == '!' || text[prevStart] == '?')) {
 				// The adjacent type arguments of "!" or "?", as in
 				// "V.Case.!<int>", which Parser.addMemberSuffix reads as a
 				// "<" list after the member rather than as a comparison.
-				push(start, LspOpenRole.TYPE_ARGS, 3, false);
+				push(start, LspOpenRole.TYPE_ARGS, 3);
 			} else if (innermost() == LspOpenRole.FOR) {
 				// A comparison, so the loop variable's position is over.
 				forLimits[forLimits.length - 1] = true;
@@ -817,11 +815,11 @@ class LspCursorScanner(text: Array<byte>) {
 		levelIfs.put(0);
 		levelElse.put(false);
 	}
-	private def push(offset: int, role: LspOpenRole, kind: int, header: bool) {
+	private def push(offset: int, role: LspOpenRole, kind: int) {
+		headers.put(inLambdaHeader());
 		opens.put(offset);
 		roles.put(role);
 		forLimits.put(false);
-		headers.put(header);
 		counts[kind]++;
 	}
 	// Pops the innermost open delimiter of {kind} and every one inside it,
