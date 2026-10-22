@@ -354,11 +354,8 @@ class LspCursorScanner(text: Array<byte>) {
 		return LspCursorPlace.CODE;
 	}
 	// The end of the number literal at {i}, read as NumberParser.parse reads one.
-	// A "." that begins no fraction, exponent, or float suffix stays outside
-	// the number, so that the scanner still recognizes "1.", "0x1F.", and
-	// "t.0." as a number and a "." (LspCompletionRepair.kinds asks for no
-	// members after it); docs/architecture.md#completion lists that and the
-	// leading "-" as the deliberate differences from NumberParser.
+	// Decimal tuple indices are handled separately by scan. See
+	// docs/architecture.md#completion for deliberate completion differences.
 	private def numberEnd(i: int) -> int {
 		var n = text.length, j = i;
 		if (text[j] == '0' && j + 1 < n) {
@@ -493,8 +490,7 @@ class LspCursorScanner(text: Array<byte>) {
 	// operator, "~", or "[]" or "[]=". Parser.parseInfix takes one token for
 	// an operator and a "=" after it even where the compound is illegal, as
 	// in "===", but "||" and "&&" end at themselves, as it returns them
-	// before an "=", which is an assignment. A name or a decimal member is
-	// read as an identifier or a number instead.
+	// before an "=", which is an assignment.
 	private def memberEnd(i: int) -> int {
 		var n = text.length, c = text[i];
 		if (c == '!' || c == '?') {
@@ -883,8 +879,7 @@ class LspCursorScanner(text: Array<byte>) {
 		if (decl == LspKeyword.MATCH.tag && prevKind == LspCursorToken.PUNCT && prevByte == ')') return LspOpenRole.MATCH;
 		return LspOpenRole.STATEMENTS;
 	}
-	// True if the previous token ends an operand: a name, a literal, a
-	// closing ")", "]", "}", or ">", or a lambda's empty body.
+	// An empty-fraction decimal's separate dot still completes the operand.
 	private def operand() -> bool {
 		match (prevKind) {
 			NAME, LITERAL, MEMBER => return true;
