@@ -348,10 +348,7 @@ class LspCursorScanner(text: Array<byte>) {
 		}
 		return LspCursorPlace.CODE;
 	}
-	// The end of the number literal at {i}, read as NumberParser.parse reads
-	// one: decimal digits and underscores, a fraction of digits and
-	// underscores, an exponent whose sign it carries and whose digits are
-	// decimal, hexadecimal or binary digits, and integer or float suffixes.
+	// The end of the number literal at {i}, read as NumberParser.parse reads one.
 	// A "." that begins no fraction, exponent, or float suffix stays outside
 	// the number, so that the scanner still recognizes "1.", "0x1F.", and
 	// "t.0." as a number and a "." (LspCompletionRepair.kinds asks for no

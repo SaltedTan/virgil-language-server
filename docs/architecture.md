@@ -608,7 +608,7 @@ The scanner recovers from unbalanced text so that a mistake above the cursor doe
 | A class's name, type parameters, parameters, or parent | class header (`extends`, `descriptor`, `describes`) |
 | A variant's name or parameters | variant header (`extends`) |
 | A constructor's parameters | constructor header (`super`) |
-| A loop variable in a for header, before `<`, `in`, or `=` | `in` |
+| A loop variable in a for header, before a comparison's `<`, `in`, or `=` | `in` |
 | `private`, `def` in a class, `thread`, `import` and its name, `export` and its name | what may follow: `private class` and the like, `def var`, `thread component`, `import component`, `export def` |
 | `.` | member access, which gets no keywords, only the [members](#member-completion) of the receiver |
 | Any other operand: a name, a literal, an operator-named member such as `int.==`, `)`, `]`, a type's closing `>`, a lambda's end, or a postfix `++` or `--` | nothing, since an operator follows; after a line break, also the positions where the block's declarations or statements start, since a missing `;` leaves them unseparated |
