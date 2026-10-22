@@ -27,7 +27,7 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 | `V3C_TARGET` | Force a target such as `x86-64-darwin`. The `Makefile` also uses it to choose `src/os/<target>/`. |
 | `WORKER_HEAP` | The analysis worker's heap for `make` and release packaging, e.g. `make WORKER_HEAP=1g` (see [ADR-0004](decisions/0004-analysis-worker-process.md#measurements) for the default and its measurements) |
 
-[Releases](releasing.md) covers packaging the executables as release archives, locally and in the release workflow.
+[Releases](releasing.md) covers packaging the executables as release archives, locally and in the release workflow, including the [editor-test dispatch required before each release](releasing.md#making-a-release).
 
 ## Running
 
