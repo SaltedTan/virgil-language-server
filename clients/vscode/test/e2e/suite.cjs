@@ -168,13 +168,32 @@ function hasTypeError(words) {
   return list.length === 1 && code(list[0]) === 'TypeError' && list[0].range.start.line === 6;
 }
 
+// The fatal errors in the server's stderr, as the output channel logs it: each
+// is an exception line, such as "!NullCheckException", and the stack frames
+// under it, innermost first, without their timestamps.
+function fatalErrors(text) {
+  const errors = [];
+  for (const line of text.split('\n')) {
+    const message = /^\S+ \S+ \[error\] (.*)$/.exec(line)?.[1];
+    if (message === undefined) continue;
+    if (message.startsWith('!')) errors.push({ exception: message, frames: [] });
+    else if (/^\s+in /.test(message) && errors.length > 0) errors.at(-1).frames.push(message.trim());
+  }
+  return errors;
+}
+
 // Throws, with the server's stderr, if the output channel's log shows that a
-// server exited with an error since log began.
+// server exited with an error since log began. The error's fatalErrors are
+// those that the log shows, and its message has each distinct one in full.
 function expectNoServerError(log) {
   const text = log();
   if (/Server process exited with (code|signal)/.test(text)) {
-    const errors = text.split('\n').filter((line) => line.includes(' [error] ')).slice(0, 12);
-    throw new Error(`a server exited with an error:\n${errors.join('\n')}`);
+    const errors = fatalErrors(text);
+    const distinct = [...new Set(errors.map((e) => [e.exception, ...e.frames.map((f) => `\t${f}`)].join('\n')))];
+    const exits = [...new Set(text.match(/Server process exited with (code|signal) \S+/g))];
+    const error = new Error(`a server exited with an error:\n${[...distinct, ...exits].join('\n')}`);
+    error.fatalErrors = errors;
+    throw error;
   }
 }
 
@@ -183,9 +202,17 @@ function expectNoServerError(log) {
 // so that a scenario that fails is reported and the next one still runs. If
 // restoring fails, the suite stops.
 //
-// A scenario that fails because of a known bug names it in known: the bug and
-// a substring of the failure that shows it. That failure is reported as XFAIL,
-// and a pass as FAIL, so that the fix removes the mark.
+// A scenario that fails because of a known bug names it in known: the bug, and
+// the fatal error that shows it, as its exception and innermost frame. A
+// failure that expectNoServerError threw for that fatal error alone is reported
+// as XFAIL, and a pass as FAIL, so that the fix removes the mark.
+// Whether failure is a server exit whose fatal errors are all known's.
+function isKnown(failure, known) {
+  const errors = failure?.fatalErrors ?? [];
+  return errors.length > 0
+    && errors.every((e) => e.exception === known.exception && e.frames[0] === known.frame);
+}
+
 async function scenario(failures, name, check, restore, known) {
   let failure;
   try {
@@ -199,7 +226,7 @@ async function scenario(failures, name, check, restore, known) {
     if (failure !== undefined) console.error(`FAIL: VS Code ${name}: ${failure.stack}`);
     throw new Error(`restoring the state after "${name}" failed: ${error.message}`);
   }
-  if (known !== undefined && failure?.message.includes(known.signature)) {
+  if (known !== undefined && isKnown(failure, known)) {
     console.log(`XFAIL: VS Code ${name}: ${known.bug}`);
   } else if (known !== undefined && failure === undefined) {
     failures.push(name);
@@ -469,7 +496,7 @@ async function workspace(extension) {
   assert.deepEqual(commented.items.map((i) => i.label), [], 'completion after a "." in a comment offered items');
   await undo(words, unedited);
 
-  await projectFileOnDisk(failures, words);
+  await projectFileOnDisk(failures, bad, words);
 
   // Project file buffers go to the server too, so their configuration
   // diagnostics follow unsaved edits.
@@ -491,6 +518,9 @@ async function workspace(extension) {
     return count(log, 'Server process exited successfully') === 1 && count(log, 'Started virgil-lsp ') === 2;
   });
   assert.equal(count(channelLog(), 'Server process exited'), 1, 'the server did not exit cleanly');
+  // The stopped client's diagnostics went with it, so the type error is the
+  // replacement's, from its copy of words/Words.v3.
+  await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
     + 'Virgil root, definition, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
@@ -505,8 +535,10 @@ async function workspace(extension) {
 }
 
 // With the project file closed and no document edited, a change on disk
-// reaches the server only as a file event from the client's watchers.
-async function projectFileOnDisk(failures, words) {
+// reaches the server only as a file event from the client's watchers. The
+// scenario closes every editor, and reopens bad.v3 and words/Words.v3 in tabs
+// of their own, as they were, so that the restart serves them as open editors.
+async function projectFileOnDisk(failures, bad, words) {
   const file = path.join(project, '.virgil-lsp.json');
   const uri = vscode.Uri.file(file);
   const original = fs.readFileSync(file, 'utf8');
@@ -532,7 +564,8 @@ async function projectFileOnDisk(failures, words) {
   }, async () => {
     if (fs.readFileSync(file, 'utf8') !== original) fs.writeFileSync(file, original);
     await waitFor('the project in its usual state', settled, 40000);
-    await vscode.window.showTextDocument(words.document);
+    await vscode.window.showTextDocument(bad.document, { preview: false });
+    await vscode.window.showTextDocument(words.document, { preview: false });
   });
 }
 
@@ -551,7 +584,7 @@ async function trace(failures, words) {
     await level(vscode.LogLevel.Trace);
     // The client traces the $/setTrace notification that starts the trace.
     await waitFor('the trace to start', () => log().includes("Sending notification '$/setTrace'"));
-    // The project file's editor has replaced the earlier one.
+    // The project file's editor is the active one.
     const editor = await vscode.window.showTextDocument(words.document);
     await edit(editor, (builder) => builder.insert(new vscode.Position(7, 0), '\n'));
     await waitFor('textDocument/didChange in the trace', () => log().includes("Sending notification 'textDocument/didChange'"));
@@ -606,7 +639,8 @@ async function noVirgilRoot(failures, words) {
     assert.deepEqual(missing.map((d) => [code(d), d.source, d.range.start.line]), [['MissingVirgilRoot', 'virgil-lsp', 6]]);
   }, restore, {
     bug: 'the server exits during initialize when initializationOptions has no virgilRoot, as the extension sends it without a root (#175)',
-    signature: 'in WorkspaceProjects.initialize()',
+    exception: '!NullCheckException',
+    frame: 'in WorkspaceProjects.initialize() [src/workspace/WorkspaceProjects.v3 @ 77:41]',
   });
 }
 
