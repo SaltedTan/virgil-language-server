@@ -7,7 +7,7 @@
 It needs Neovim 0.11 or later, tmux, git, and Python 3 on `PATH`, and access to GitHub, from which it clones the starter and the plugins. The checkout's `vendor/virgil` must be initialized: the fixture's project uses `lib/util` from it. From the repository root:
 
 ```sh
-test/e2e/lazyvim/run.sh --archive virgil-lsp-0.1.0-alpha.2-x86-64-linux.tar.gz
+test/e2e/lazyvim/run.sh --archive virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz
 test/e2e/lazyvim/run.sh build/virgil-lsp
 make test-lazyvim
 ```

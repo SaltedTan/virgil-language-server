@@ -6,10 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-10-23
+
 ### Added
 
 - Guidance for using the VS Code extension alongside `titzer.virgil`, the Virgil author's extension ([With the Virgil extension installed](clients/vscode/README.md#with-the-virgil-extension-installed)).
 - A scripted test of the LazyVim configuration, `test/e2e/lazyvim/run.sh` (`make test-lazyvim`), run locally against a release archive or a build. It runs the shipped plugin spec under the pinned LazyVim starter and plugins, in Neovim's terminal UI in tmux, through LazyVim's own keys, on Linux and macOS and with Neovim 0.11 and 0.12. The missing-root warning that noice.nvim drops is reported as an expected failure, with a separate run of the workaround. See the [LazyVim test](test/e2e/lazyvim/README.md).
+
+### Changed
+
+- The VS Code extension's version is now 0.1.2. Its code is the same as 0.1.1's: only its README, which the VSIX includes, changed, to describe using it alongside `titzer.virgil` and the Extension Host test's new checks. Every extension version works with this release. With `0.1.0-alpha.1` and `0.1.0-alpha.2`, each needs `virgil.virgilRoot` or `VIRGIL_LOC` to give an absolute path, because of the fix below ([compatibility](docs/compatibility.md#editors)).
 
 ### Fixed
 
