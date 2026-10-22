@@ -17,6 +17,7 @@ def X = [
 	T("LspCompletionScope:positions", test_positions),
 	T("LspCompletionScope:operator_type_arguments", test_operator_type_arguments),
 	T("LspCompletionScope:empty_fraction_operators", test_empty_fraction_operators),
+	T("LspCompletionMembers:decimal_receivers", test_decimal_receivers),
 	T("LspCompletionScope:unrepaired", test_unrepaired),
 	T("LspCompletionScope:cap", test_cap),
 	T("LspCompletionScope:reuse", test_reuse),
@@ -301,6 +302,25 @@ def test_positions(t: Tester) {
 		complete(t, s, before(MAIN, paint, "\tdef run() {\n\t\t$\n\t}")));
 	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, before(MAIN, "\tdef grow() { }", "\tdef run() {\n\t\t$\n\t}")));
+	s.server.close();
+}
+
+def test_decimal_receivers(t: Tester) {
+	var s = session(t);
+	for (index in ["0", "1"]) {
+		for (member in ["f", "F", "d", "D", "e", "E"]) {
+			for (trivia in ["", " /*c*/ "]) {
+				var marked = Strings.format3("class C(%s: string) {}\ndef g(t: (C, C)) { var x = t.%s%s", member, trivia, index);
+				marked = Strings.format2("%s.%s.$; }\n", marked, member);
+				t.assert_string("length | 0", complete(t, s, marked));
+			}
+		}
+	}
+	for (index in ["0", "1"]) {
+		var marked = Strings.format1("class C(e: int) {}\ndef g(t: (C, C)) { var local = 1; var x = t.%s.e+ lo$cal; }\n", index);
+		var result = s.result(t, complete0(t, s, marked));
+		t.assert(itemOf(result, "local") != JsonValue.Null, "local name after member and addition");
+	}
 	s.server.close();
 }
 

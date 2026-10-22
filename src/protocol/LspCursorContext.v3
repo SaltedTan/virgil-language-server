@@ -229,6 +229,7 @@ class LspCursorScanner(text: Array<byte>) {
 		var i = 0, n = text.length;
 		while (i < end) {
 			var c = text[i];
+			var afterMemberDot = prevKind == LspCursorToken.PUNCT && prevByte == '.' && prevStart != emptyFractionDot;
 			if (c == '\n' || c == '\r') {
 				newline = true;
 				i++;
@@ -292,7 +293,10 @@ class LspCursorScanner(text: Array<byte>) {
 				token(LspCursorToken.LITERAL, i);
 				i = j;
 			} else if (isDecimal(c)) {
-				var j = numberEnd(i);
+				var j = i + 1;
+				if (afterMemberDot) {
+					while (j < n && isDecimal(text[j])) j++;
+				} else j = numberEnd(i);
 				if (end <= j) return LspCursorPlace.NUMBER;
 				token(LspCursorToken.LITERAL, i);
 				i = j;
@@ -300,7 +304,7 @@ class LspCursorScanner(text: Array<byte>) {
 				// Whitespace, and bytes that Aeneas skips with an error.
 				i++;
 			} else {
-				if (prevKind == LspCursorToken.PUNCT && prevByte == '.' && prevStart != emptyFractionDot) {
+				if (afterMemberDot) {
 					var m = memberEnd(i);
 					if (m > i) {
 						token(LspCursorToken.MEMBER, i);
@@ -413,7 +417,7 @@ class LspCursorScanner(text: Array<byte>) {
 	private def fractionEnd(j: int) -> int {
 		var n = text.length, k = j + 1;
 		if (k >= n || !(isDecimal(text[k]) || text[k] == '_' || text[k] == 'e' || text[k] == 'E' || isFloatSuffix(text[k]))) {
-			if (prevKind != LspCursorToken.PUNCT || prevByte != '.') emptyFractionDot = j;
+			emptyFractionDot = j;
 			return j;
 		}
 		var e = k;

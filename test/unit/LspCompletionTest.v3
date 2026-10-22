@@ -12,6 +12,7 @@ def X = [
 	T("LspCompletion:prefix_range", test_prefix_range),
 	T("LspCompletion:numbers", test_numbers),
 	T("LspCompletion:empty_fraction_operators", test_empty_fraction_operators),
+	T("LspCompletion:decimal_members", test_decimal_members),
 	T("LspCompletion:member_after_dot", test_member_after_dot),
 	T("LspCompletion:operator_members", test_operator_members),
 	T("LspCompletion:text_bounds", test_text_bounds),
@@ -288,6 +289,40 @@ def test_empty_fraction_operators(t: Tester) {
 	}
 }
 
+def test_decimal_members(t: Tester) {
+	for (index in ["0", "1", "12", "007", "0.1", "1.0"]) {
+		for (trivia in ["", " ", " /*c*/ ", " //c\n"]) {
+			var receiver = Strings.format2("t.%s%s", trivia, index);
+			var marked = Strings.format1("def f() { var x = %s.$; }", receiver);
+			checkOffered(t, marked, "");
+			checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+			t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			for (member in ["f", "F", "d", "D", "e", "E", "e3", "E3"]) {
+				marked = Strings.format2("def f() { var x = %s.%s.$; }", receiver, member);
+				checkOffered(t, marked, "");
+				checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+				t.asserti(AnalysisScopeKinds.MEMBERS, LspCompletionRepair.kinds(at(marked)));
+				t.assertz(false, at(marked).dotAfterNumber);
+				for (op in ["+", "-"]) {
+					marked = Strings.format3("def f() { var x = %s.%s%s $; }", receiver, member, op);
+					checkOffered(t, marked, "false fun if null true");
+					checkSyntax(t, marked, LspCursorSyntax.EXPRESSION);
+					t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(at(marked)));
+				}
+			}
+		}
+	}
+	for (suffix in ["f", "F", "d", "D", "e", "E", "u8", "i32"]) {
+		var marked = Strings.format1("def f() { var x = t.0%s$; }", suffix);
+		checkPlace(t, marked, LspCursorPlace.CODE);
+		checkPrefix(t, marked, suffix);
+	}
+	checkPlace(t, "def f() { var x = t.0$12; }", LspCursorPlace.NUMBER);
+	checkPlace(t, "def f() { var x = t.01$2; }", LspCursorPlace.NUMBER);
+	checkSyntax(t, "def f() { var x = t.0.e+ loc$al; }", LspCursorSyntax.EXPRESSION);
+	t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(at("def f() { var x = t.0.e+ loc$al; }")));
+}
+
 def test_member_after_dot(t: Tester) {
 	var ctx = at("def f() { x.$ }");
 	t.assertz(true, ctx.member());
@@ -483,6 +518,18 @@ def test_linear_scan(t: Tester) {
 	t.asserti(LspCursorSyntax.EXPRESSION, ctx.syntax);
 	buf.puts(nested);
 	for (i < 20000) buf.puts(") ;)");
+	ctx = at(buf.puts("; $").toString());
+	t.asserti(1, ctx.opens.length);
+	t.asserti(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, ctx.syntax);
+	buf = StringBuilder.new().puts("def f() { ");
+	for (i < 100000) buf.puts("g(t.0.f, 1. + ");
+	var chain = buf.toString();
+	ctx = at(Arrays.concat(chain, "$"));
+	t.asserti(100000, ctx.calls().length);
+	t.asserti(LspCursorSyntax.EXPRESSION, ctx.syntax);
+	t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(ctx));
+	buf.puts(chain);
+	for (i < 100000) buf.puts(")");
 	ctx = at(buf.puts("; $").toString());
 	t.asserti(1, ctx.opens.length);
 	t.asserti(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, ctx.syntax);
