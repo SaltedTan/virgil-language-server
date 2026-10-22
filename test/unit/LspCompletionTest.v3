@@ -11,7 +11,10 @@ def X = [
 	T("LspCompletion:byte_literals", test_byte_literals),
 	T("LspCompletion:prefix_range", test_prefix_range),
 	T("LspCompletion:numbers", test_numbers),
+	T("LspCompletion:empty_fraction_operators", test_empty_fraction_operators),
+	T("LspCompletion:decimal_members", test_decimal_members),
 	T("LspCompletion:member_after_dot", test_member_after_dot),
+	T("LspCompletion:operator_members", test_operator_members),
 	T("LspCompletion:text_bounds", test_text_bounds),
 	T("LspCompletion:crlf", test_crlf),
 	T("LspCompletion:open_calls", test_open_calls),
@@ -23,9 +26,11 @@ def X = [
 	T("LspCompletion:lambda_bodies", test_lambda_bodies),
 	T("LspCompletion:lambda_hints", test_lambda_hints),
 	T("LspCompletion:type_positions", test_type_positions),
+	T("LspCompletion:type_argument_adjacency", test_type_argument_adjacency),
 	T("LspCompletion:ref_arguments", test_ref_arguments),
 	T("LspCompletion:if_expressions", test_if_expressions),
 	T("LspCompletion:nested_else", test_nested_else),
+	T("LspCompletion:for_in", test_for_in),
 	T("LspCompletion:keyword_sets", test_keyword_sets),
 	T("LspCompletion:language_options", test_language_options),
 	T("LspCompletion:pinned_keywords", test_pinned_keywords),
@@ -58,12 +63,12 @@ def at(marked: string) -> LspCursorContext {
 def test_ref_arguments(t: Tester) {
 	for (name in ["Ref", "ref"]) {
 		for (trivia in ["", " ", " /* comment */ ", " // comment\n", " /* // */ /* next */ "]) {
-			var marked = Strings.format2("var r: %s%s<$Pixel>;", name, trivia);
+			var marked = Strings.format2("var r: %s<%s$Pixel>;", name, trivia);
 			t.asserti(AnalysisScopeKinds.LAYOUTS, LspCompletionRepair.kinds(at(marked)));
 		}
 	}
 	for (marked in ["var r: Array<$Pixel>;", "var r: MoreRef<$Pixel>;", "var r: RefMore<$Pixel>;",
-		"var r: C.Ref<$Pixel>;", "var r: C. /* comment */ Ref /* comment */ <$Pixel>;",
+		"var r: C.Ref<$Pixel>;", "var r: C. /* comment */ Ref< /* comment */ $Pixel>;",
 		"var r: Ref<Pixel, $int>;", "var r: Ref<Array<$int>>;"]) {
 		t.asserti(AnalysisScopeKinds.TYPES, LspCompletionRepair.kinds(at(marked)));
 	}
@@ -191,6 +196,131 @@ def test_numbers(t: Tester) {
 	checkPlace(t, "var x = f(_$", LspCursorPlace.NUMBER);
 	checkPlace(t, "var x = 12 $", LspCursorPlace.CODE);
 	t.assert_string("", at("var x = 0x1f$").prefix());
+	// Every number form that NumberParser accepts is one literal, with a
+	// signed exponent included.
+	for (form in ["1e+3", "1e-3", "1E+3", "0e+3", "1.5e+3", "1.5E-3", "1.e+3",
+			"0x1F", "0X1f_FF", "0x1Fu8", "0x1Fl", "0b1010", "0B1_010", "0b101u8",
+			"1u", "1U", "1l", "1L", "1u8", "1i8", "1ul", "1f", "1F", "1d", "1D",
+			"1.5f", "1.5d", "1_000", "1_000_000u32",
+			// Fractional underscores, leading, trailing, and repeated, and an
+			// empty fraction before an exponent or a suffix.
+			"1._5e+3", "1._5", "1._e+3", "1._", "1.5_", "1.__5", "1.5__2",
+			"1.f", "1._f", "0.f",
+			// An underscore before an exponent.
+			"1_e3", "1_e+3", "1__e-3",
+			// The zero path takes the same fraction, exponent, and suffixes.
+			"0._5e+3", "0.5_", "0._"]) {
+		checkPlace(t, Strings.format1("var x = %s$", form), LspCursorPlace.NUMBER);
+	}
+	// An exponent with no digit ends before a float suffix, since
+	// NumberParser reports its error without taking one.
+	checkPlace(t, "var x = 1e+f$", LspCursorPlace.CODE);
+	checkPrefix(t, "var x = 1e+f$", "f");
+	checkPlace(t, "var x = 1.ef$", LspCursorPlace.CODE);
+	checkPrefix(t, "var x = 1.ef$", "f");
+	// A "." that begins no fraction stays outside the number, so a member
+	// completion after it knows that it follows a number.
+	var ctx = at("var x = 1.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+	ctx = at("var x = 0x1F.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+	ctx = at("var t = (1, 2); var x = t.0.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+	ctx = at("var x = 1e+3.$");
+	t.assertz(true, ctx.member());
+	t.assertz(true, ctx.dotAfterNumber);
+}
+
+def test_empty_fraction_operators(t: Tester) {
+	for (number in ["0", "1", "12_3"]) {
+		for (trivia in ["", " ", " /*c*/ ", " //c\n"]) {
+			for (op in ["+", "-", "*", "/", "%", "^", "!=", "!==", "==", "===", "|", "||", "&", "&&",
+				"<", "<=", "<<", "<<=", ">", ">=", ">>", ">>>", ">>=", ">>>=", "+=", "-=", "!", "?", "~"]) {
+				var marked = Strings.format3("def f() { var x = %s.%s%s $; }", number, trivia, op);
+				var last = op[op.length - 1];
+				var syntax = LspCursorSyntax.EXPRESSION | if(last == '<', LspCursorSyntax.TYPE);
+				checkOffered(t, marked, "false fun if null true");
+				checkSyntax(t, marked, syntax);
+				t.asserti(AnalysisScopeKinds.VALUES | if((syntax & LspCursorSyntax.TYPE) != 0, AnalysisScopeKinds.TYPES), LspCompletionRepair.kinds(at(marked)));
+			}
+			var marked = Strings.format2("def f() { var x = %s.%s+ loc$al; }", number, trivia);
+			checkOffered(t, marked, "false fun if null true");
+			checkSyntax(t, marked, LspCursorSyntax.EXPRESSION);
+			t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(at(marked)));
+			marked = Strings.format2("def f() { var x = %s.%s$; }", number, trivia);
+			checkOffered(t, marked, "");
+			checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+			t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			for (op in ["++", "--"]) {
+				marked = Strings.format3("def f() { g(%s.%s%s $); }", number, trivia, op);
+				checkOffered(t, marked, "");
+				checkSyntax(t, marked, 0);
+				t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			}
+		}
+		var parser = NumberParser.new(Arrays.concat(number, ".+"));
+		t.assertz(true, parser.parse());
+		t.assertz(true, parser.is_float);
+		t.asserti(number.length + 1, parser.pos);
+	}
+	for (receiver in ["t.0", "t.1", "t.0.1", "int", "x", "V.Case", "0x1F", "0b1", "1e3", "1f", "1.5", "1 ", "0 "]) {
+		for (trivia in ["", " ", " /*c*/ "]) {
+			for (op in ["+", "==", "!"]) {
+				var marked = Strings.format3("def f() { var x = %s.%s%s $; }", receiver, trivia, op);
+				checkOffered(t, marked, "");
+				checkSyntax(t, marked, 0);
+				t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			}
+		}
+	}
+	for (receiver in ["t.0", "t.0.1", "0x1F"]) {
+		var marked = Strings.format1("def f() { var x = %s.$; }", receiver);
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+		t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+	}
+	checkSyntax(t, "def f() { var x = 1.[$]; }", LspCursorSyntax.EXPRESSION);
+	t.asserta("number index roles", [LspOpenRole.STATEMENTS, LspOpenRole.INDEX], at("def f() { var x = 1.[$]; }").roles, putRole);
+	for (text in ["def f() { var x = 1.+2; }", "def f(t: (int, int)) { var x = t.0.+; }"]) {
+		t.asserti(0, AeneasAdapter.parseFile("NumberDot.v3", text, []).diagnostics.length);
+	}
+}
+
+def test_decimal_members(t: Tester) {
+	for (index in ["0", "1", "12", "007", "0.1", "1.0"]) {
+		for (trivia in ["", " ", " /*c*/ ", " //c\n"]) {
+			var receiver = Strings.format2("t.%s%s", trivia, index);
+			var marked = Strings.format1("def f() { var x = %s.$; }", receiver);
+			checkOffered(t, marked, "");
+			checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+			t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			for (member in ["f", "F", "d", "D", "e", "E", "e3", "E3"]) {
+				marked = Strings.format2("def f() { var x = %s.%s.$; }", receiver, member);
+				checkOffered(t, marked, "");
+				checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+				t.asserti(AnalysisScopeKinds.MEMBERS, LspCompletionRepair.kinds(at(marked)));
+				t.assertz(false, at(marked).dotAfterNumber);
+				for (op in ["+", "-"]) {
+					marked = Strings.format3("def f() { var x = %s.%s%s $; }", receiver, member, op);
+					checkOffered(t, marked, "false fun if null true");
+					checkSyntax(t, marked, LspCursorSyntax.EXPRESSION);
+					t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(at(marked)));
+				}
+			}
+		}
+	}
+	for (suffix in ["f", "F", "d", "D", "e", "E", "u8", "i32"]) {
+		var marked = Strings.format1("def f() { var x = t.0%s$; }", suffix);
+		checkPlace(t, marked, LspCursorPlace.CODE);
+		checkPrefix(t, marked, suffix);
+	}
+	checkPlace(t, "def f() { var x = t.0$12; }", LspCursorPlace.NUMBER);
+	checkPlace(t, "def f() { var x = t.01$2; }", LspCursorPlace.NUMBER);
+	checkSyntax(t, "def f() { var x = t.0.e+ loc$al; }", LspCursorSyntax.EXPRESSION);
+	t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(at("def f() { var x = t.0.e+ loc$al; }")));
 }
 
 def test_member_after_dot(t: Tester) {
@@ -215,6 +345,95 @@ def test_member_after_dot(t: Tester) {
 	t.assertz(false, at("x ... $").member());
 	t.assertz(true, at("var t = (1, 2).$").member());
 	t.assertz(true, at("var b = 3.$").member());
+}
+
+def test_operator_members(t: Tester) {
+	var STMT = LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION;
+	// Every operator member name that Parser.addMemberSuffix reads is one
+	// complete operand, so no expression keyword is offered after it. An
+	// operator and its "=" are one token even where the compound is illegal,
+	// as Parser.parseInfix reads "===".
+	var ops = ["!", "?", "~", "==", "!=", "||", "|", "&&", "&", "<=", "<<", "<<=", "<",
+		">=", ">>", ">>=", ">>>", ">>>=", ">", "+", "+=", "-", "-=", "*", "*=", "/", "/=",
+		"%", "%=", "^", "^=", "[]", "[]=", "===", "!==", "<==", ">=="];
+	for (op in ops) {
+		var after = Strings.format1("def f() { g(int.%s $) }", op);
+		checkOffered(t, after, "");
+		checkSyntax(t, after, 0);
+	}
+	// After one, a line break lets a new statement start, as after any
+	// operand that a missing ";" leaves unseparated.
+	checkSyntax(t, "def f() { int.==\n\t$ }", STMT);
+	checkOffered(t, "def f() { int.==\n\t$ }", "break continue def false for fun if match null return true var while");
+	// "||" and "&&" end before "=", as Parser.parseInfix returns them at
+	// once; the "=" is the assignment, after which an expression starts.
+	for (op in ["||", "&&"]) {
+		var marked = Strings.format1("def f() { bool.%s= $; }", op);
+		checkOffered(t, marked, "false fun if null true");
+		checkSyntax(t, marked, LspCursorSyntax.EXPRESSION);
+		var c = at(marked);
+		t.asserta("logical assignment", [LspOpenRole.STATEMENTS], c.roles, putRole);
+	}
+	checkSyntax(t, "def f() { bool.||=$ }", LspCursorSyntax.EXPRESSION);
+	checkSyntax(t, "def f() { bool.&&=$ }", LspCursorSyntax.EXPRESSION);
+	// "!" and "?" may take adjacent type arguments, which open a TYPE_ARGS
+	// delimiter of their own as after a type's name: the member is just the
+	// one-byte name, and the type arguments are an ordinary type position.
+	checkPrefix(t, "def f() { var y = Child.!<It$em>(x); }", "It");
+	checkSyntax(t, "def f() { var y = Child.!<It$em>(x); }", LspCursorSyntax.TYPE);
+	var ctx = at("def f() { var y = Child.!<It$em>(x); }");
+	t.asserta("operator type arguments", [LspOpenRole.STATEMENTS, LspOpenRole.TYPE_ARGS], ctx.roles, putRole);
+	checkSyntax(t, "def f() { var y = Child.!<$", LspCursorSyntax.TYPE);
+	checkPlace(t, "def f() { var y = Child.!</* $ */ int>(x); }", LspCursorPlace.BLOCK_COMMENT);
+	checkPlace(t, "def f() { var y = Child.?</* $ */ int>(x); }", LspCursorPlace.BLOCK_COMMENT);
+	var repaired = LspCompletionRepair.repair(at("def f() { var x = int.!<$ }"));
+	t.asserti(0, AeneasAdapter.parseFile("Repair.v3", repaired, []).diagnostics.length);
+	// Only a one-byte "!" or "?" takes type arguments, and only when "<" is
+	// adjacent, as Parser.addMemberSuffix checks with peek(1).
+	checkSyntax(t, "def f() { x = int.! < $; }", LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+	checkSyntax(t, "def f() { x = int.!=<$", LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+	checkOffered(t, "def f() { g(V.Case.!<int> $) }", "");
+	checkSyntax(t, "def f() { g(V.Case.!<int> $) }", 0);
+	checkCalls(t, "def f() { V.Case.!<int>( $) }", [23]);
+	checkCalls(t, "def f() { V.Case.!<Array<int>>( $) }", [30]);
+	checkCalls(t, "def f() { V.Case.?<int>( $) }", [23]);
+	// A call after an operator member is a call, not a group.
+	checkCalls(t, "def f() { V.Case.!( $) }", [18]);
+	checkCalls(t, "def f() { g(V.Case.!( $)) }", [11, 20]);
+	checkCalls(t, "def f() { x.+($) }", [13]);
+	checkCalls(t, "def f() { x.[]=($) }", [15]);
+	// A completed operator member ends the member access.
+	t.assertz(false, at("def f() { int.== $ }").member());
+}
+
+def test_for_in(t: Tester) {
+	// "in" belongs to the loop variable's position alone, before an optional
+	// type, at every form of the variable.
+	checkOffered(t, "def f() { for (i $", "in");
+	checkSyntax(t, "def f() { for (i $", LspCursorSyntax.FOR_IN);
+	checkOffered(t, "def f() { for (i: int $", "in");
+	checkSyntax(t, "def f() { for (i: int $", LspCursorSyntax.FOR_IN);
+	checkOffered(t, "def f() { for (i: Array<int> $", "in");
+	checkSyntax(t, "def f() { for (i: Array<int> $", LspCursorSyntax.FOR_IN);
+	// At "<", "in", or "=" the position ends, so no "in" follows.
+	for (marked in [
+		"def f() { for (i < n $) }",
+		"def f(n: int) { for (i: int < n >> 1 $) {} }",
+		"def f(n: int) { for (i: A.B < n $) {} }",
+		"def f(n: int) { for (i: int /*c*/ < n $) {} }",
+		"def f(n: int) { for (i: Array<int> < n $) {} }",
+		"def f() { for (i in xs $) }",
+		"def f() { for (i = 0 $; i < n; i++) }",
+		"def f() { for (i: int = 0 $; i < n; i++) }"
+	]) {
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, 0);
+		var ctx = at(marked);
+		t.asserta("roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], ctx.roles, putRole);
+	}
+	// In the clauses, after the header's first ";", "in" is not offered.
+	checkOffered(t, "def f() { for (i = 0; i $", "");
+	checkSyntax(t, "def f() { for (i = 0; i $", 0);
 }
 
 def test_text_bounds(t: Tester) {
@@ -299,6 +518,18 @@ def test_linear_scan(t: Tester) {
 	t.asserti(LspCursorSyntax.EXPRESSION, ctx.syntax);
 	buf.puts(nested);
 	for (i < 20000) buf.puts(") ;)");
+	ctx = at(buf.puts("; $").toString());
+	t.asserti(1, ctx.opens.length);
+	t.asserti(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, ctx.syntax);
+	buf = StringBuilder.new().puts("def f() { ");
+	for (i < 100000) buf.puts("g(t.0.f, 1. + ");
+	var chain = buf.toString();
+	ctx = at(Arrays.concat(chain, "$"));
+	t.asserti(100000, ctx.calls().length);
+	t.asserti(LspCursorSyntax.EXPRESSION, ctx.syntax);
+	t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(ctx));
+	buf.puts(chain);
+	for (i < 100000) buf.puts(")");
 	ctx = at(buf.puts("; $").toString());
 	t.asserti(1, ctx.opens.length);
 	t.asserti(LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION, ctx.syntax);
@@ -610,6 +841,18 @@ def test_lambda_hints(t: Tester) {
 		"def f() { g(fun () #packing 0x0F ;, $); }",
 		"def f() { g(fun () #packing 0.5 ;, $); }",
 		"def f() { g(fun () #packing 1u8 ;, $); }",
+		// Number forms, including signed exponents, whose sign must stay in
+		// the literal rather than cancel the lambda's header.
+		"def f() { g(fun () #packing 1e+3 ;, $); }",
+		"def f() { g(fun () #packing 1e-3 ;, $); }",
+		"def f() { g(fun () #packing 1.5e+3 ;, $); }",
+		"def f() { g(fun () #packing 1.e+3 ;, $); }",
+		"def f() { g(fun () #packing 1._5e+3 ;, $); }",
+		"def f() { g(fun () #packing 1._ ;, $); }",
+		"def f() { g(fun () #packing 0b1010 ;, $); }",
+		"def f() { g(fun () #packing 1_000 ;, $); }",
+		"def f() { g(fun () #packing 1.5d ;, $); }",
+		"def f() { g(fun () #packing 0X1f_FF ;, $); }",
 		"def f() { g(fun () #packing 0b1?x ;, $); }",
 		"def f() { g(fun () #packing 0b??_01xy ;, $); }",
 		"def f() { g(fun () #packing #concat(a, 0b01) ;, $); }",
@@ -659,6 +902,49 @@ def test_lambda_hints(t: Tester) {
 	checkSyntax(t, "type T(a: u8) #packing P($", 0);
 	ctx = at("type T(a: u8) #packing P($");
 	t.asserta("roles", [LspOpenRole.PARAMS], ctx.roles, putRole);
+}
+
+def test_type_argument_adjacency(t: Tester) {
+	for (name in ["int", "A.B", "Array<int>.B", "Ref", "ref"]) {
+		for (trivia in [" ", "\t", "\n", "/**/", " /*c*/ ", " //c\n"]) {
+			var marked = Strings.format2("def f(n: int) { for (i: %s%s< $) {} }", name, trivia);
+			checkOffered(t, marked, "false fun if null true");
+			checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+			t.asserta("comparison roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], at(marked).roles, putRole);
+			marked = Strings.format2("def f(n: int) { for (i: %s%s< n >> 1 $) {} }", name, trivia);
+			checkOffered(t, marked, "");
+			checkSyntax(t, marked, 0);
+			t.asserta("limit roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], at(marked).roles, putRole);
+			marked = Strings.format2("var x: %s%s< $", name, trivia);
+			checkOffered(t, marked, "false fun if null true");
+			checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+			t.asserti(0, at(marked).roles.length);
+			t.asserti(AnalysisScopeKinds.VALUES | AnalysisScopeKinds.TYPES, LspCompletionRepair.kinds(at(marked)));
+		}
+	}
+	for (name in ["Array", "A.B", "Array<int>.B"]) {
+		var marked = Strings.format1("def f() { for (i: %s<$int>) {} }", name);
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, LspCursorSyntax.TYPE);
+		t.asserta("adjacent type roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR, LspOpenRole.TYPE_ARGS], at(marked).roles, putRole);
+		marked = Strings.format1("def f() { for (i: %s<int> $) {} }", name);
+		checkOffered(t, marked, "in");
+		checkSyntax(t, marked, LspCursorSyntax.FOR_IN);
+		t.asserta("closed type roles", [LspOpenRole.STATEMENTS, LspOpenRole.FOR], at(marked).roles, putRole);
+	}
+	for (trivia in [" ", "/**/", " //c\n"]) {
+		var marked = Strings.format1("def f() { g(fun () #packing f%s< $", trivia);
+		checkOffered(t, marked, "false fun if null true");
+		checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+		t.asserta("packing comparison roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL], at(marked).roles, putRole);
+		marked = Strings.format1("def f() { g(fun () #hint%s< $", trivia);
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, LspCursorSyntax.TYPE);
+		t.asserta("hint type roles", [LspOpenRole.STATEMENTS, LspOpenRole.CALL, LspOpenRole.TYPE_ARGS], at(marked).roles, putRole);
+		marked = Strings.format1("class A%s< $", trivia);
+		checkOffered(t, marked, "false fun if null true");
+		checkSyntax(t, marked, LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE);
+	}
 }
 
 // Tuple types, type arguments, and function types stay type positions.

@@ -136,6 +136,7 @@ enum LspCursorToken {
 	NAME,		// an identifier that is not a keyword
 	KEYWORD,	// a keyword
 	LITERAL,	// a number, string, byte literal, or "_"
+	MEMBER,		// an operator-named member after ".", such as "=="
 	PUNCT		// punctuation; LspCursorScanner.prevByte says which
 }
 
@@ -152,6 +153,9 @@ class LspCursorScanner(text: Array<byte>) {
 	// The open delimiters and their roles.
 	private def opens = Vector<int>.new();
 	private def roles = Vector<LspOpenRole>.new();
+	// For each open delimiter, whether a for loop's header has left its
+	// loop-variable position, at "in", "=", or a comparison's "<".
+	private def forLimits = Vector<bool>.new();
 	// Open "(", "[", "{", and type argument "<" counts, by kind (kindOf), so
 	// that a stray closer is skipped at once.
 	private def counts = Array<int>.new(4);
@@ -172,6 +176,7 @@ class LspCursorScanner(text: Array<byte>) {
 	private var prevAfterDot: bool;
 	// The token before the previous one, a ".", is a number literal.
 	private var prevDotAfterNumber: bool;
+	private var emptyFractionDot = -1;
 	private var prevClosed: LspOpenRole;	// what a ")", "]", or "}" closed
 	private var newline: bool;		// a line ends after the token
 	private var prevIfStatement: bool;	// the "if" before is a statement's
@@ -224,6 +229,7 @@ class LspCursorScanner(text: Array<byte>) {
 		var i = 0, n = text.length;
 		while (i < end) {
 			var c = text[i];
+			var afterMemberDot = prevKind == LspCursorToken.PUNCT && prevByte == '.' && prevStart != emptyFractionDot;
 			if (c == '\n' || c == '\r') {
 				newline = true;
 				i++;
@@ -279,9 +285,18 @@ class LspCursorScanner(text: Array<byte>) {
 				if (kw.0) keyword(kw.1, i);
 				else name(i);
 				i = j;
-			} else if (isDecimal(c) || c == '_') {
+			} else if (c == '_') {
+				// A placeholder, read as an identifier's middle bytes are.
 				var j = i + 1;
 				while (j < n && (isIdentMiddle(text[j]) || (text[j] == '.' && j + 1 < n && isDecimal(text[j + 1])))) j++;
+				if (end <= j) return LspCursorPlace.NUMBER;
+				token(LspCursorToken.LITERAL, i);
+				i = j;
+			} else if (isDecimal(c)) {
+				var j = i + 1;
+				if (afterMemberDot) {
+					while (j < n && isDecimal(text[j])) j++;
+				} else j = numberEnd(i);
 				if (end <= j) return LspCursorPlace.NUMBER;
 				token(LspCursorToken.LITERAL, i);
 				i = j;
@@ -289,6 +304,14 @@ class LspCursorScanner(text: Array<byte>) {
 				// Whitespace, and bytes that Aeneas skips with an error.
 				i++;
 			} else {
+				if (afterMemberDot) {
+					var m = memberEnd(i);
+					if (m > i) {
+						token(LspCursorToken.MEMBER, i);
+						i = m;
+						continue;
+					}
+				}
 				var next = if(i + 1 < end, text[i + 1]);
 				if (c == '-' && next == '>') {
 					punct(LspCursorPunct.ARROW, i);
@@ -329,6 +352,196 @@ class LspCursorScanner(text: Array<byte>) {
 			}
 		}
 		return LspCursorPlace.CODE;
+	}
+	// The end of the number literal at {i}, read as NumberParser.parse reads one.
+	// Decimal tuple indices are handled separately by scan. See
+	// docs/architecture.md#completion for deliberate completion differences.
+	private def numberEnd(i: int) -> int {
+		var n = text.length, j = i;
+		if (text[j] == '0' && j + 1 < n) {
+			var c = text[j + 1];
+			if (c == 'x' || c == 'X') {
+				j += 2;
+				var digits = 0;
+				while (j < n && (isHex(text[j]) || text[j] == '_')) {
+					if (isHex(text[j])) digits++;
+					j++;
+				}
+				// With no digit or too many, NumberParser reports the error
+				// before a suffix, so the suffix is not part of the literal.
+				return if(digits > 0 && digits <= 16, intSuffix(j), j);
+			}
+			if (c == 'b' || c == 'B') {
+				j += 2;
+				var digits = 0;
+				while (j < n && (text[j] == '0' || text[j] == '1' || text[j] == '_')) {
+					if (text[j] != '_') digits++;
+					j++;
+				}
+				return if(digits > 0 && digits <= 64, intSuffix(j), j);
+			}
+			if (c == '.') return fractionEnd(j + 1);
+			if (c == 'e' || c == 'E') {
+				var x = exponentEnd(j + 1);
+				return if(x.1, floatSuffix(x.0), x.0);
+			}
+			if (c >= '0' && c <= '7') {
+				// Aeneas rejects an octal literal but reads its digits.
+				j += 2;
+				while (j < n && text[j] >= '0' && text[j] <= '7') j++;
+				return j;
+			}
+			// NumberParser reads no digits after "0" but a suffix, and "8"
+			// and "9" end the number at the "0".
+			if (c == '8' || c == '9') return j + 1;
+			return numberSuffixEnd(j + 1);
+		}
+		j++;
+		while (j < n && (isDecimal(text[j]) || text[j] == '_')) j++;
+		if (j < n && text[j] == '.') return fractionEnd(j);
+		if (j < n && (text[j] == 'e' || text[j] == 'E')) {
+			var x = exponentEnd(j);
+			return if(x.1, floatSuffix(x.0), x.0);
+		}
+		return numberSuffixEnd(j);
+	}
+	// The end of the fraction whose "." is at {j}, if a fraction, exponent,
+	// or float suffix follows it; or {j}, leaving the "." outside the number.
+	// NumberParser takes an empty fraction before an exponent or a suffix, as
+	// in "1.e+3" and "1.f", and underscores anywhere, as in "1._5e+3"; it
+	// takes a lone "1." as a float, which the scanner leaves as a number and
+	// a "." instead.
+	private def fractionEnd(j: int) -> int {
+		var n = text.length, k = j + 1;
+		if (k >= n || !(isDecimal(text[k]) || text[k] == '_' || text[k] == 'e' || text[k] == 'E' || isFloatSuffix(text[k]))) {
+			emptyFractionDot = j;
+			return j;
+		}
+		var e = k;
+		while (e < n && (isDecimal(text[e]) || text[e] == '_')) e++;
+		if (e < n && (text[e] == 'e' || text[e] == 'E')) {
+			var x = exponentEnd(e);
+			return if(x.1, floatSuffix(x.0), x.0);
+		}
+		return floatSuffix(e);
+	}
+	// The end of the exponent at {j}, whose "e" may be followed by a sign and
+	// decimal digits, as NumberParser accepts them: its digits carry no "_",
+	// and a first digit of "0" ends them, as NumberParser's match arm does.
+	// {.1} is false when no digit followed, when NumberParser reports the
+	// error before a float suffix rather than taking one.
+	private def exponentEnd(j: int) -> (int, bool) {
+		var n = text.length;
+		j++;
+		if (j < n && (text[j] == '+' || text[j] == '-')) j++;
+		if (j >= n || !isDecimal(text[j])) return (j, false);
+		var zero = text[j] == '0';
+		j++;
+		if (!zero) while (j < n && isDecimal(text[j])) j++;
+		return (j, true);
+	}
+	// The end of a float suffix at {j}, or {j} if there is none.
+	private def floatSuffix(j: int) -> int {
+		if (j < text.length && isFloatSuffix(text[j])) return j + 1;
+		return j;
+	}
+	private def isFloatSuffix(c: byte) -> bool {
+		return c == 'f' || c == 'F' || c == 'd' || c == 'D';
+	}
+	// The end of the integer or float suffix at {j}, as NumberParser takes
+	// one: a float suffix first, then an integer suffix.
+	private def numberSuffixEnd(j: int) -> int {
+		if (j < text.length && isFloatSuffix(text[j])) return j + 1;
+		return intSuffix(j);
+	}
+	// An integer suffix, as NumberParser.acceptUIL reads it: "u" may take a
+	// width or an "l", "i" takes a width, and "l" stands alone.
+	private def intSuffix(j: int) -> int {
+		var n = text.length;
+		if (j >= n) return j;
+		var c = text[j];
+		if (c == 'u') {
+			j++;
+			if (j < n && text[j] >= '1' && text[j] <= '9') {
+				while (j < n && isDecimal(text[j])) j++;
+			} else if (j < n && (text[j] == 'l' || text[j] == 'L')) {
+				j++;
+			}
+			return j;
+		}
+		if (c == 'U') {
+			j++;
+			if (j < n && (text[j] == 'l' || text[j] == 'L')) j++;
+			return j;
+		}
+		if (c == 'i') {
+			j++;
+			if (j < n && text[j] >= '1' && text[j] <= '9') {
+				while (j < n && isDecimal(text[j])) j++;
+			}
+			return j;
+		}
+		if (c == 'l' || c == 'L') return j + 1;
+		return j;
+	}
+	// The end of the operator-named member at {i}, which follows a "." that
+	// Parser.addMemberSuffix reads: "!" or "?" alone (its adjacent type
+	// arguments open a "<" delimiter of their own), an infix or compound
+	// operator, "~", or "[]" or "[]=". Parser.parseInfix takes one token for
+	// an operator and a "=" after it even where the compound is illegal, as
+	// in "===", but "||" and "&&" end at themselves, as it returns them
+	// before an "=", which is an assignment.
+	private def memberEnd(i: int) -> int {
+		var n = text.length, c = text[i];
+		if (c == '!' || c == '?') {
+			if (i + 1 < n && text[i + 1] == '=') {
+				if (c == '?') return i;
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
+			return i + 1;
+		}
+		if (c == '~') return i + 1;
+		if (c == '[') {
+			if (i + 1 < n && text[i + 1] == ']') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
+			return i;
+		}
+		if (c == '=') {
+			if (i + 1 < n && text[i + 1] == '=') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
+			return i;
+		}
+		if (c == '|' || c == '&') {
+			if (i + 1 < n && text[i + 1] == c) return i + 2;
+			return if(i + 1 < n && text[i + 1] == '=', i + 2, i + 1);
+		}
+		if (c == '<') {
+			if (i + 1 < n && text[i + 1] == '=') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
+			var j = i + 1;
+			if (j < n && text[j] == '<') j++;
+			if (j < n && text[j] == '=') j++;
+			return j;
+		}
+		if (c == '>') {
+			if (i + 1 < n && text[i + 1] == '=') {
+				return if(i + 2 < n && text[i + 2] == '=', i + 3, i + 2);
+			}
+			var j = i + 1;
+			if (j < n && text[j] == '>') {
+				j++;
+				if (j < n && text[j] == '>') j++;
+			}
+			if (j < n && text[j] == '=') j++;
+			return j;
+		}
+		if (c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '^') {
+			return if(i + 1 < n && text[i + 1] == '=', i + 2, i + 1);
+		}
+		return i;
 	}
 	// The end of the byte literal at {i}, read as Chars.parseLiteral reads
 	// it: a quote, one printable byte or an escape, and a closing quote; and
@@ -453,6 +666,10 @@ class LspCursorScanner(text: Array<byte>) {
 			if (kw != LspKeyword.ELSE && (decl == NO_DECL || isModifier(decl))) levelDecls[l] = kw.tag;
 		}
 		lambdaToken(false);
+		if (kw == LspKeyword.IN && innermost() == LspOpenRole.FOR) {
+			// The loop variable's position is over.
+			forLimits[forLimits.length - 1] = true;
+		}
 		if (kw == LspKeyword.FUN) {
 			lambdas.put(opens.length);
 			packingExpr = false;
@@ -477,6 +694,7 @@ class LspCursorScanner(text: Array<byte>) {
 	private def punct(c: byte, start: int) {
 		var closed = LspOpenRole.TOP;
 		var h = header;
+		var adjacentName = prevKind == LspCursorToken.NAME && isIdentMiddle(text[start - 1]);
 		header = 0;
 		// A lambda's body begins at the depth of its "fun".
 		var body = inLambdaHeader() && (c == '{' || c == ';' || c == LspCursorPunct.FAT_ARROW);
@@ -515,16 +733,25 @@ class LspCursorScanner(text: Array<byte>) {
 					boundary();
 				}
 			}
-			'<' => if (prevHint || (packingExpr && prevKind == LspCursorToken.NAME && inLambdaHeader())) {
+			'<' => if (prevHint || (packingExpr && adjacentName && inLambdaHeader())) {
 				push(start, LspOpenRole.TYPE_ARGS, 3);
-			} else if (h == HEADER_AFTER_NAME) {
+			} else if (h == HEADER_AFTER_NAME && adjacentName) {
 				header = HEADER_TYPE_PARAMS;
 				angles = 1;
 			} else if (h == HEADER_TYPE_PARAMS) {
 				header = h;
 				angles++;
-			} else if (typeName && prevKind == LspCursorToken.NAME) {
+			} else if (typeName && adjacentName) {
 				push(start, LspOpenRole.TYPE_ARGS, 3);
+			} else if (prevKind == LspCursorToken.MEMBER && prevStart + 1 == start
+					&& (text[prevStart] == '!' || text[prevStart] == '?')) {
+				// The adjacent type arguments of "!" or "?", as in
+				// "V.Case.!<int>", which Parser.addMemberSuffix reads as a
+				// "<" list after the member rather than as a comparison.
+				push(start, LspOpenRole.TYPE_ARGS, 3);
+			} else if (innermost() == LspOpenRole.FOR) {
+				// A comparison, so the loop variable's position is over.
+				forLimits[forLimits.length - 1] = true;
 			}
 			'>' => if (h == HEADER_TYPE_PARAMS) {
 				header = if(--angles == 0, HEADER_AFTER_NAME, h);
@@ -536,6 +763,13 @@ class LspCursorScanner(text: Array<byte>) {
 				levelDecls[level()] = NO_DECL;
 				levelIfs[level()] = 0;
 				levelElse[level()] = false;
+			}
+			'=' => {
+				if (innermost() == LspOpenRole.FOR) {
+					// The loop variable's position is over.
+					forLimits[forLimits.length - 1] = true;
+				}
+				if (h == HEADER_TYPE_PARAMS) header = h;
 			}
 			_ => if (h == HEADER_TYPE_PARAMS) header = h;
 		}
@@ -581,6 +815,7 @@ class LspCursorScanner(text: Array<byte>) {
 	private def push(offset: int, role: LspOpenRole, kind: int) {
 		opens.put(offset);
 		roles.put(role);
+		forLimits.put(false);
 		counts[kind]++;
 	}
 	// Pops the innermost open delimiter of {kind} and every one inside it,
@@ -593,6 +828,7 @@ class LspCursorScanner(text: Array<byte>) {
 			var k = kindOf(role);
 			opens.length--;
 			roles.length--;
+			forLimits.length--;
 			counts[k]--;
 			while (lambdas.length > 0 && lambdas[lambdas.length - 1] > opens.length) popLambda();
 			if (k == 2) {
@@ -643,16 +879,16 @@ class LspCursorScanner(text: Array<byte>) {
 		if (decl == LspKeyword.MATCH.tag && prevKind == LspCursorToken.PUNCT && prevByte == ')') return LspOpenRole.MATCH;
 		return LspOpenRole.STATEMENTS;
 	}
-	// True if the previous token ends an operand: a name, a literal, a
-	// closing ")", "]", "}", or ">", or a lambda's empty body.
+	// An empty-fraction decimal's separate dot still completes the operand.
 	private def operand() -> bool {
 		match (prevKind) {
-			NAME, LITERAL => return true;
+			NAME, LITERAL, MEMBER => return true;
 			KEYWORD => match (prevKeyword) {
 				TRUE, FALSE, NULL => return true;
 				_ => return false;
 			}
 			PUNCT => match (prevByte) {
+				'.' => return prevStart == emptyFractionDot;
 				')' => return prevClosed != LspOpenRole.CONTROL && prevClosed != LspOpenRole.MATCH_CONTROL
 					&& prevClosed != LspOpenRole.FOR && prevClosed != LspOpenRole.FOR_CLAUSES
 					&& prevClosed != LspOpenRole.PARAMS && prevClosed != LspOpenRole.PARAMS_VAR;
@@ -701,7 +937,8 @@ class LspCursorScanner(text: Array<byte>) {
 		return 0;
 	}
 	private def forIn(r: LspOpenRole) -> int {
-		return if(r == LspOpenRole.FOR, LspCursorSyntax.FOR_IN);
+		if (r != LspOpenRole.FOR) return 0;
+		return if(forLimits[forLimits.length - 1], 0, LspCursorSyntax.FOR_IN);
 	}
 	// At a brace level, or at the top level.
 	private def bracePosition(l: int) -> int {
