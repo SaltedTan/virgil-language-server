@@ -123,7 +123,7 @@ body:
       label: Server log
       description: |
         - VS Code: the "Virgil Language Server" output channel, which also holds the server's stderr. For LSP messages, set its log level to Trace with **Developer: Set Log Level...**.
-        - Neovim: the LSP log, where the server's stderr appears as lines marked `"stderr"`. `:LspLog` opens it with nvim-lspconfig, which LazyVim includes; otherwise `:lua =vim.lsp.log.get_filename()` prints its path. For LSP messages, run `:lua vim.lsp.log.set_level("debug")` before reproducing the problem.
+        - Neovim: the LSP log, where the server's stderr appears as lines marked `"stderr"`. `:LspLog` opens it with nvim-lspconfig on Neovim 0.11; otherwise, as on Neovim 0.12, `:lua =vim.lsp.log.get_filename()` prints its path. For LSP messages, run `:lua vim.lsp.log.set_level("debug")` before reproducing the problem.
         - Command line: the command's stderr.
 
         Remove anything private before pasting.
