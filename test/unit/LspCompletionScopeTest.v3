@@ -16,6 +16,7 @@ def X = [
 	T("LspCompletionScope:repairs", test_repairs),
 	T("LspCompletionScope:positions", test_positions),
 	T("LspCompletionScope:operator_type_arguments", test_operator_type_arguments),
+	T("LspCompletionScope:empty_fraction_operators", test_empty_fraction_operators),
 	T("LspCompletionScope:unrepaired", test_unrepaired),
 	T("LspCompletionScope:cap", test_cap),
 	T("LspCompletionScope:reuse", test_reuse),
@@ -300,6 +301,18 @@ def test_positions(t: Tester) {
 		complete(t, s, before(MAIN, paint, "\tdef run() {\n\t\t$\n\t}")));
 	t.assert_string(Strings.format1("this grow run area sides scale mainShared Color Other Registry Shape Square Token %s | 13", builtins()),
 		complete(t, s, before(MAIN, "\tdef grow() { }", "\tdef run() {\n\t\t$\n\t}")));
+	s.server.close();
+}
+
+def test_empty_fraction_operators(t: Tester) {
+	var s = session(t);
+	for (number in ["0", "1"]) {
+		for (trivia in ["", " ", " /*c*/ "]) {
+			var marked = inScale(Strings.format2("\t\tvar x = %s.%s+ to$tal;", number, trivia));
+			var result = s.result(t, complete0(t, s, marked));
+			t.assert(itemOf(result, "total") != JsonValue.Null, "local name after addition");
+		}
+	}
 	s.server.close();
 }
 

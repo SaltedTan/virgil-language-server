@@ -11,6 +11,7 @@ def X = [
 	T("LspCompletion:byte_literals", test_byte_literals),
 	T("LspCompletion:prefix_range", test_prefix_range),
 	T("LspCompletion:numbers", test_numbers),
+	T("LspCompletion:empty_fraction_operators", test_empty_fraction_operators),
 	T("LspCompletion:member_after_dot", test_member_after_dot),
 	T("LspCompletion:operator_members", test_operator_members),
 	T("LspCompletion:text_bounds", test_text_bounds),
@@ -230,6 +231,61 @@ def test_numbers(t: Tester) {
 	ctx = at("var x = 1e+3.$");
 	t.assertz(true, ctx.member());
 	t.assertz(true, ctx.dotAfterNumber);
+}
+
+def test_empty_fraction_operators(t: Tester) {
+	for (number in ["0", "1", "12_3"]) {
+		for (trivia in ["", " ", " /*c*/ ", " //c\n"]) {
+			for (op in ["+", "-", "*", "/", "%", "^", "!=", "!==", "==", "===", "|", "||", "&", "&&",
+				"<", "<=", "<<", "<<=", ">", ">=", ">>", ">>>", ">>=", ">>>=", "+=", "-=", "!", "?", "~"]) {
+				var marked = Strings.format3("def f() { var x = %s.%s%s $; }", number, trivia, op);
+				var last = op[op.length - 1];
+				var syntax = LspCursorSyntax.EXPRESSION | if(last == '<', LspCursorSyntax.TYPE);
+				checkOffered(t, marked, "false fun if null true");
+				checkSyntax(t, marked, syntax);
+				t.asserti(AnalysisScopeKinds.VALUES | if((syntax & LspCursorSyntax.TYPE) != 0, AnalysisScopeKinds.TYPES), LspCompletionRepair.kinds(at(marked)));
+			}
+			var marked = Strings.format2("def f() { var x = %s.%s+ loc$al; }", number, trivia);
+			checkOffered(t, marked, "false fun if null true");
+			checkSyntax(t, marked, LspCursorSyntax.EXPRESSION);
+			t.asserti(AnalysisScopeKinds.VALUES, LspCompletionRepair.kinds(at(marked)));
+			marked = Strings.format2("def f() { var x = %s.%s$; }", number, trivia);
+			checkOffered(t, marked, "");
+			checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+			t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			for (op in ["++", "--"]) {
+				marked = Strings.format3("def f() { g(%s.%s%s $); }", number, trivia, op);
+				checkOffered(t, marked, "");
+				checkSyntax(t, marked, 0);
+				t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			}
+		}
+		var parser = NumberParser.new(Arrays.concat(number, ".+"));
+		t.assertz(true, parser.parse());
+		t.assertz(true, parser.is_float);
+		t.asserti(number.length + 1, parser.pos);
+	}
+	for (receiver in ["t.0", "t.1", "t.0.1", "int", "x", "V.Case", "0x1F", "0b1", "1e3", "1f", "1.5", "1 ", "0 "]) {
+		for (trivia in ["", " ", " /*c*/ "]) {
+			for (op in ["+", "==", "!"]) {
+				var marked = Strings.format3("def f() { var x = %s.%s%s $; }", receiver, trivia, op);
+				checkOffered(t, marked, "");
+				checkSyntax(t, marked, 0);
+				t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+			}
+		}
+	}
+	for (receiver in ["t.0", "t.0.1", "0x1F"]) {
+		var marked = Strings.format1("def f() { var x = %s.$; }", receiver);
+		checkOffered(t, marked, "");
+		checkSyntax(t, marked, LspCursorSyntax.MEMBER);
+		t.asserti(0, LspCompletionRepair.kinds(at(marked)));
+	}
+	checkSyntax(t, "def f() { var x = 1.[$]; }", LspCursorSyntax.EXPRESSION);
+	t.asserta("number index roles", [LspOpenRole.STATEMENTS, LspOpenRole.INDEX], at("def f() { var x = 1.[$]; }").roles, putRole);
+	for (text in ["def f() { var x = 1.+2; }", "def f(t: (int, int)) { var x = t.0.+; }"]) {
+		t.asserti(0, AeneasAdapter.parseFile("NumberDot.v3", text, []).diagnostics.length);
+	}
 }
 
 def test_member_after_dot(t: Tester) {
