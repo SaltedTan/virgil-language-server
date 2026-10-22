@@ -1,0 +1,217 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// One request whose reply needs a query of a temporary analysis of its
+// document's project (LspQueryRequests), from its arrival to its reply: a
+// completion's scope or member query, or a signature help's call query. Its
+// job's functions are bound to it, so that a request that was replaced or
+// cancelled is told apart from the current one.
+class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
+	// Its reply has been sent.
+	var answered: bool;
+	var job: LspAnalysisJob;
+	// The open document as the request found it, its project, the text to
+	// analyze for it, as typed or repaired, and the query's offset, kinds,
+	// and prefix (AnalysisScopeRequest).
+	var uri: string;
+	var identity: DocumentVersionIdentity;
+	var cursor: int;
+	var context: ProjectContext;
+	var text: Array<byte>;
+	var offset: int;
+	var kinds: int;
+	var prefix: string;
+	// The owner's invalidation generation when its analysis began, and
+	// whether it has run again because the sources changed while it ran.
+	var generation: int;
+	var rerun: bool;
+
+	def begin(supervisor: AnalysisSupervisor) -> AnalysisOutcome {
+		return owner.begin(this, supervisor);
+	}
+	def complete(outcome: AnalysisOutcome) {
+		owner.complete(this, outcome);
+	}
+	// The reply without the query's answer: where no analysis is needed, or
+	// the analysis failed, did not parse, or has no answer.
+	def fallback() -> JsonRpcReply {
+		return JsonRpcReply.Result(JsonValue.Null);
+	}
+	// The reply from {snapshot}, the result of the request's analysis, or
+	// Null where it has no answer.
+	def answer(snapshot: AnalysisSnapshot) -> JsonValue {
+		return JsonValue.Null;
+	}
+}
+
+// The requests of one method whose replies need a query of a temporary
+// analysis of their document's project, with the document's text, as typed
+// or repaired at the cursor, in place of its overlay: textDocument/completion
+// (LspCompletion) and textDocument/signatureHelp (LspSignatureHelp), each
+// with its own, so that neither replaces the other's requests. An analysis
+// is a job of semantic diagnostics (LspAnalysisJob), which takes turns with
+// other jobs and the projects' analyses. One request waits for the worker,
+// and one runs: a newer request replaces the one that waits, which gets its
+// fallback reply. The last reply with an answer is kept for its document
+// version and cursor. See docs/architecture.md#completion and
+// docs/architecture.md#signature-help.
+class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void, what: string) {
+	// Starts the analyses, or null without an analysis worker.
+	var scheduler: LspSemanticDiagnostics;
+	// The analyses started, for tests.
+	def var analyses: int;
+	// The request whose job waits for the worker, and the one whose job runs.
+	private var waiting: LspQueryRequest;
+	private var running: LspQueryRequest;
+	// Counts the events that can change a request's sources or project
+	// (invalidate): an analysis that began in an older generation is stale.
+	private var generation: int;
+	// The last reply with an answer, for its document version and cursor.
+	private var cachedUri: string;
+	private var cachedIdentity: DocumentVersionIdentity;
+	private var cachedCursor: int;
+	private var cachedResult: JsonValue;
+
+	// The last reply with an answer for {overlay}'s version at {cursor}, or
+	// Null.
+	def cached(overlay: DocumentOverlay, cursor: int) -> JsonValue {
+		if (cachedIdentity == null || cachedIdentity != overlay.identity || cachedCursor != cursor
+			|| !Strings.equal(cachedUri, overlay.uri)) return JsonValue.Null;
+		return cachedResult;
+	}
+	// Queues {r}'s analysis of {text} for {overlay} in {project}, at {cursor},
+	// with its query's fields set, as the waiting request. The request that
+	// waited, if any, gets its fallback reply.
+	def queue(r: LspQueryRequest, overlay: DocumentOverlay, cursor: int, project: ProjectContext, text: Array<byte>) {
+		r.uri = overlay.uri;
+		r.identity = overlay.identity;
+		r.cursor = cursor;
+		r.context = project;
+		r.text = text;
+		if (waiting != null) finish(waiting, waiting.fallback());
+		submit(r);
+	}
+	// Queues {r}'s analysis, as the waiting request.
+	private def submit(r: LspQueryRequest) {
+		waiting = r;
+		r.job = LspAnalysisJob.new(r.begin, r.complete);
+		if (!scheduler.submit(r.job)) finish(r, r.fallback());
+	}
+	// Starts {r}'s analysis: the project's sources as an automatic analysis
+	// captures them, with {r}'s text for its document, admitted within the
+	// snapshot budget, which the supervisor does not keep as its latest.
+	def begin(r: LspQueryRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
+		if (waiting == r) waiting = null;
+		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the request was answered");
+		running = r;
+		if (!current(r)) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document changed");
+		var ctx = r.context;
+		// The sources are captured now, in this generation.
+		r.generation = generation;
+		var keys = Array<string>.new(ctx.sources.length), index = -1;
+		for (i < keys.length) {
+			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
+			if (keys[i] == null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "cannot form a document URI");
+			if (index < 0 && Strings.equal(keys[i], r.uri)) index = i;
+		}
+		if (index < 0) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the document is not in the project");
+		var captured = LspAnalysisCapture.capture(store, keys, true);
+		if (captured.1 != null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, captured.1);
+		var inputs = captured.0;
+		inputs.sources[index] = AnalysisSource.new(inputs.sources[index].path, r.text);
+		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
+			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
+		}
+		analyses++;
+		var query = AnalysisScopeRequest.new(index, r.offset, r.kinds, r.prefix);
+		// No occurrences: the result holds only the answer's declarations.
+		return supervisor.beginTemporary(inputs.sources, ctx.definition.compilerArgs, 0, query);
+	}
+	// Whether {r}'s document is open at the version it was requested at, in
+	// the same current project.
+	private def current(r: LspQueryRequest) -> bool {
+		var overlay = store.overlay(r.uri), ctx = projects.forDocument(r.uri).active;
+		return overlay != null && overlay.identity == r.identity && ctx == r.context && ctx.config.current;
+	}
+	// Replies to {r} once its analysis ends: with its answer, or, if it
+	// failed, did not parse, or has none, its fallback reply. An analysis
+	// whose sources an event invalidated while it ran is stale: it runs
+	// again, once, if its document is unchanged and no newer request waits;
+	// otherwise the reply is the fallback. A stale result is neither sent nor
+	// kept.
+	def complete(r: LspQueryRequest, outcome: AnalysisOutcome) {
+		if (running == r) running = null;
+		if (r.answered) return;
+		if (AnalysisOutcome.Completed.?(outcome) && r.generation != generation) {
+			if (!r.rerun && waiting == null && current(r)) {
+				r.rerun = true;
+				return submit(r);
+			}
+			return finish(r, r.fallback());
+		}
+		if (AnalysisOutcome.Completed.?(outcome)) {
+			var result = r.answer(AnalysisOutcome.Completed.!(outcome).snapshot);
+			if (result != JsonValue.Null) {
+				cachedUri = r.uri;
+				cachedIdentity = r.identity;
+				cachedCursor = r.cursor;
+				cachedResult = result;
+				return finish(r, JsonRpcReply.Result(result));
+			}
+		}
+		finish(r, r.fallback());
+	}
+	// Answers the waiting or running request that {n} cancels with
+	// RequestCancelled; its job never starts, or its result is dropped.
+	// Other cancellations are ignored.
+	def cancel(n: JsonRpcMessage.Notification) {
+		if (!JsonRpcParams.ByName.?(n.params)) return;
+		var params = JsonRpcParams.ByName.!(n.params).v, id: JsonRpcId;
+		if (!params.has("id")) return;
+		match (params["id"]) {
+			Int(v) => id = JsonRpcId.Int(v);
+			String(v) => id = JsonRpcId.String(v);
+			_ => return;
+		}
+		for (r in [waiting, running]) {
+			if (r != null && r.id.equal(id)) {
+				finish(r, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, Strings.format1("the %s was cancelled", what))));
+			}
+		}
+	}
+	// Answers the waiting and running requests with their fallback replies,
+	// at shutdown, exit, or the end of the input.
+	def close() {
+		for (r in [waiting, running]) if (r != null) finish(r, r.fallback());
+	}
+	// Forgets the last reply, and makes the running analysis stale: the
+	// sources or the configuration may have changed. Called for document
+	// changes, saves, and closes, configuration changes, which replace
+	// contexts, and file and folder events.
+	def invalidate() {
+		generation++;
+		cachedResult = JsonValue.Null;
+		cachedIdentity = null;
+		cachedUri = null;
+	}
+	// Sends {reply} to {r}, unless it was answered, and withdraws its job.
+	def finish(r: LspQueryRequest, reply: JsonRpcReply) {
+		if (r.answered) return;
+		r.answered = true;
+		if (waiting == r) waiting = null;
+		if (running == r) running = null;
+		if (r.job != null && scheduler != null) scheduler.withdraw(r.job);
+		respond(r.id, reply);
+	}
+	def respond(id: JsonRpcId, reply: JsonRpcReply) {
+		match (reply) {
+			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
+			Error(e) => send(JsonRpcMessage.ErrorResponse(id, e).encode());
+		}
+	}
+	// Whether {text} parses on its own, at {path}, with language options
+	// {options}.
+	def parses(path: string, text: Array<byte>, options: Array<string>) -> bool {
+		return AeneasAdapter.parseFile(path, text, options).diagnostics.length == 0;
+	}
+}

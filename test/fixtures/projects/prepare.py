@@ -139,6 +139,8 @@ rename_shared.mkdir(exist_ok=True)
 )
 # LspCompletionScopeTest writes each test's project file and sources itself.
 (root / "completion").mkdir(exist_ok=True)
+# LspSignatureRepairTest writes each test's project file and sources itself.
+(root / "signature-repair").mkdir(exist_ok=True)
 # LspRenameTest writes each test's project file and sources itself. The
 # Virgil root of rename-root holds a library that its project depends on.
 (root / "rename-edits").mkdir(exist_ok=True)

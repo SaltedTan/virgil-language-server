@@ -58,7 +58,9 @@ class LspServer {
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private var prepareRename: LspPrepareRename;
-	private def signatureHelp = LspSignatureHelp.new();
+	// Signature help from snapshots, and from call queries where the document
+	// does not parse; tests read its count of analyses.
+	var signatureHelp: LspSignatureHelp;
 	// textDocument/rename; tests may lower its bounds.
 	var rename: LspRename;
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
@@ -94,12 +96,14 @@ class LspServer {
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
 		snapshotRequests.registerPrepared(dispatcher, "textDocument/references", "references",
 			LspReferences.REQUIRES, LspReferences.prepare);
-		snapshotRequests.register(dispatcher, "textDocument/signatureHelp", "signatureHelp", signatureHelp.answer);
+		signatureHelp = LspSignatureHelp.new(documents, projects, publishNotification);
+		signatureHelp.register(dispatcher, snapshotRequests);
 		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
 		rename.register(dispatcher);
-		// Both rename and completion requests can be cancelled while they wait.
+		// Rename, completion, and repaired signature help requests can be
+		// cancelled while they wait.
 		dispatcher.onNotification("$/cancelRequest", cancel);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
@@ -107,6 +111,7 @@ class LspServer {
 		workspaceEvents.info = projectInfo;
 		diagnosticLists = LspDiagnosticLists.new(documents, publishNotification);
 		parserDiagnostics = LspParserDiagnostics.new(diagnosticLists);
+		signatureHelp.parser = parserDiagnostics;
 		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
 		projects.warn = projectWarning;
 		projects.onConfig = configChanged;
@@ -127,6 +132,7 @@ class LspServer {
 		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
 		rename.scheduler = semanticDiagnostics;
 		completion.scheduler = semanticDiagnostics;
+		signatureHelp.scheduler = semanticDiagnostics;
 	}
 	// Called after every poll, including a timeout. Completes analyses and
 	// expires server requests the client hasn't answered in time.
@@ -148,7 +154,7 @@ class LspServer {
 	}
 	private def configChanged(c: WorkspaceConfig) {
 		rename.configChanged();
-		completion.invalidate();
+		invalidateQueries();
 		projectDiagnostics.update(c);
 		if (semanticDiagnostics != null) semanticDiagnostics.configChanged();
 		configurationChanged = true;
@@ -167,20 +173,20 @@ class LspServer {
 		documentUpdated(doc, true);
 	}
 	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
-		completion.invalidate();
+		invalidateQueries();
 		if (reloadProjectFile(doc)) return;
 		var mapping = projects.forDocument(doc.uri);
 		parserDiagnostics.update(doc, mapping.compilerArgs());
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(mapping.contexts, debounce);
 	}
 	private def documentSaved(doc: DocumentOverlay) {
-		completion.invalidate();
+		invalidateQueries();
 		if (semanticDiagnostics != null && !isProjectFile(doc)) {
 			semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
 		}
 	}
 	private def documentClosed(doc: DocumentOverlay) {
-		completion.invalidate();
+		invalidateQueries();
 		if (reloadProjectFile(doc)) return;
 		parserDiagnostics.close(doc);
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
@@ -200,8 +206,14 @@ class LspServer {
 	// Disk changes are debounced like edits, so that a burst of file events
 	// (a checkout, say) analyzes each project once.
 	private def scheduleWatched(contexts: Array<ProjectContext>) {
-		completion.invalidate();
+		invalidateQueries();
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(contexts, true);
+	}
+	// An event that can change the sources or the project of a completion's
+	// or a signature help's analysis makes it stale and forgets its last reply.
+	private def invalidateQueries() {
+		completion.invalidate();
+		signatureHelp.invalidate();
 	}
 	private def isProjectFile(doc: DocumentOverlay) -> bool {
 		var path = DocumentUri.filePath(doc.uri);
@@ -378,6 +390,7 @@ class LspServer {
 	private def cancel(n: JsonRpcMessage.Notification) {
 		rename.cancel(n);
 		completion.cancel(n);
+		signatureHelp.cancel(n);
 	}
 	// The client's first notification after initialize.
 	private def initialized(n: JsonRpcMessage.Notification) {
@@ -408,6 +421,7 @@ class LspServer {
 		snapshotRequests.close(msg);
 		rename.close(msg);
 		completion.close();
+		signatureHelp.close();
 		dispatcher.pending.failAll(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, msg));
 	}
 }

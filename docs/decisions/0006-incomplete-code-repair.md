@@ -94,4 +94,4 @@ The maintainer accepted the recommendation on 2026-10-21: M5's semantic completi
 - Completion still offers nothing semantic when a syntax error is away from the cursor, or when verification stops before it reaches the sentinel; [Known limitations](../known-limitations.md) describes these remaining failure cases.
 - Keyword completion is unchanged, and the development `repair` command stays to measure repairs as the scanner changes.
 - The M6 item "Optional Aeneas `EDITOR` parser mode" stays in M6, as does any fallback to the last snapshot that parsed; counting how often a context keeps failing to parse would inform that decision.
-- Signature help doesn't use the repair yet, so an incomplete call still gets no signature.
+- #163 applies the same repair to signature help: a call that is still being typed gets the signature of the innermost call open at the cursor, from a call query of the repaired text's own analysis. The repair is used unchanged, sentinel included, since the sentinel keeps an earlier argument's inferred type arguments. [Incomplete calls](../architecture.md#incomplete-calls) owns the rules.

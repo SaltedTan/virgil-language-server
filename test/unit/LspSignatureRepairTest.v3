@@ -1,0 +1,462 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/signatureHelp in a document that does not parse: the call open
+// at the cursor, from a call query of an analysis of the document repaired
+// there, on the real worker, or on the unit-test executable where a worker
+// must fail. Each session writes its project file and sources into the
+// build's project-fixtures/signature-repair directory, and edits Main.v3 in
+// the editor without saving it: "$" marks the cursor in the texts below, and
+// is removed before they are sent. LspSignatureHelpTest covers the replies
+// from snapshots, where the document parses, and AnalysisCallQueryTest the
+// query itself.
+def T = UnitTests.register;
+def X = [
+	T("LspSignatureRepair:incomplete_calls", test_incomplete_calls),
+	T("LspSignatureRepair:label_offsets", test_label_offsets),
+	T("LspSignatureRepair:no_analysis", test_no_analysis),
+	T("LspSignatureRepair:unresolved_callee", test_unresolved_callee),
+	T("LspSignatureRepair:parse_path_unchanged", test_parse_path_unchanged),
+	T("LspSignatureRepair:reuse", test_reuse),
+	T("LspSignatureRepair:replacement", test_replacement),
+	T("LspSignatureRepair:cancel", test_cancel),
+	T("LspSignatureRepair:invalidated_while_running", test_invalidated_while_running),
+	T("LspSignatureRepair:stale_reruns_once", test_stale_reruns_once),
+	T("LspSignatureRepair:shutdown", test_shutdown),
+	T("LspSignatureRepair:worker_crash", test_worker_crash),
+	T("LspSignatureRepair:time_limit", test_time_limit),
+	T("LspSignatureRepair:admission", test_admission),
+	T("LspSignatureRepair:takes_turns_with_completion", test_takes_turns_with_completion),
+	()
+];
+
+def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"s\",\"sources\":[\"Main.v3\",\"Util.v3\"]}]}";
+// Util.v3, whose calls the requests are in Main.v3. UTIL_RENAMED renames
+// add's first parameter.
+def UTIL = "class Point(x: int, y: int) {\n\tdef scaled(k: int) -> Point { return Point.new(x * k, y * k); }\n}\ncomponent Util {\n\tdef add(a: int, b: int) -> int { return a + b; }\n\tdef id<T>(v: T) -> T { return v; }\n\tdef apply(f: int -> int, x: int) -> int { return f(x); }\n}\n";
+def UTIL_RENAMED = "class Point(x: int, y: int) {\n\tdef scaled(k: int) -> Point { return Point.new(x * k, y * k); }\n}\ncomponent Util {\n\tdef add(first: int, b: int) -> int { return first + b; }\n\tdef id<T>(v: T) -> T { return v; }\n\tdef apply(f: int -> int, x: int) -> int { return f(x); }\n}\n";
+// Main.v3 on disk; the editor's text adds a line before MARK.
+def MAIN = "component Main {\n\tdef run(p: Point, f: int -> int) -> int {\n\t\tvar n = 1;\n\t\treturn n;\n\t}\n}\n";
+def MARK = "\t\treturn n;";
+def ADD = "def add(a: int, b: int) -> int";
+def ADD_PARAMS = ["a: int", "b: int"];
+
+def session(t: Tester) -> RenameTestSession {
+	return sessionOn(null, t);
+}
+// A session on the worker at {worker}, with Main.v3 open as it is on disk.
+def sessionOn(worker: string, t: Tester) -> RenameTestSession {
+	var s = RenameTestSession.new("signature-repair", [(".virgil-lsp.json", CONFIG), ("Main.v3", MAIN), ("Util.v3", UTIL)], true, worker, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	return s;
+}
+// Main.v3 with {line} before the line of MARK.
+def inRun(line: string) -> string {
+	for (i = 0; i + MARK.length <= MAIN.length; i++) {
+		if (Strings.equal(Arrays.range(MAIN, i, i + MARK.length), MARK)) {
+			return Strings.format3("%s%s\n%s", Arrays.range(MAIN, 0, i), line, Arrays.range(MAIN, i, MAIN.length));
+		}
+	}
+	return null;
+}
+// The text and the cursor's offset of {marked}.
+def unmark(marked: string) -> (string, int) {
+	var cursor = 0;
+	while (marked[cursor] != '$') cursor++;
+	return (Arrays.concat(Arrays.range(marked, 0, cursor), Arrays.range(marked, cursor + 1, marked.length)), cursor);
+}
+// Requests signature help at the "$" in {marked}, which becomes Main.v3's
+// next version unless it is the current text, and returns its id.
+def request(t: Tester, s: RenameTestSession, marked: string) -> int {
+	var u = unmark(marked), f = s.file("Main.v3");
+	if (!Strings.equal(f.text, u.0)) s.change("Main.v3", f.version + 1, u.0);
+	var p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	return s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character));
+}
+// The rendered reply to the request at the "$" in {marked}, once answered.
+def help(t: Tester, s: RenameTestSession, marked: string) -> string {
+	var id = request(t, s, marked);
+	s.settle();
+	t.asserti(1, s.count(id));
+	return render(s.result(t, id));
+}
+def render(v: JsonValue) -> string {
+	return JsonRpcJson.render(StringBuilder.new(), v).toString();
+}
+// The SignatureHelp of {label} with the string parameter labels {params} and
+// parameter {active} active, rendered as JSON.
+def expected(label: string, params: Array<string>, active: int) -> string {
+	var buf = StringBuilder.new().puts("{\"activeParameter\":").putd(active);
+	buf.puts(",\"activeSignature\":0,\"signatures\":[{\"label\":");
+	JsonRpcJson.renderString(buf, label).puts(",\"parameters\":[");
+	for (i < params.length) {
+		if (i > 0) buf.putc(',');
+		JsonRpcJson.renderString(buf.puts("{\"label\":"), params[i]).putc('}');
+	}
+	return buf.puts("]}]}").toString();
+}
+// Whether {s}'s reply to {id} has arrived and is null.
+def isNull(s: RenameTestSession, id: int) -> bool {
+	var r = s.reply(id);
+	return r != null && r.has("result") && r["result"] == JsonValue.Null;
+}
+def analyses(s: RenameTestSession) -> int {
+	return s.server.signatureHelp.analyses;
+}
+def parses(marked: string) -> bool {
+	return AeneasAdapter.parseFile("Main.v3", unmark(marked).0, []).diagnostics.length == 0;
+}
+
+// Each state of a call being typed, repaired at the cursor: the innermost
+// open call's signature, as verification checked the repaired call, and the
+// active parameter, counted in the repaired text. The analysis is the
+// request's own: never the project's or the supervisor's snapshot, and
+// nothing is published.
+def test_incomplete_calls(t: Tester) {
+	var s = session(t);
+	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
+	// The project's own analysis of the edit first, then the request's.
+	var first = inRun("\t\tUtil.add($");
+	s.change("Main.v3", 2, unmark(first).0);
+	s.settle();
+	var snapshot = ctx.snapshot, latest = s.supervisor.snapshot, published = s.notifications.length;
+	t.assert_string(expected(ADD, ADD_PARAMS, 0), help(t, s, first));
+	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
+	t.assert(s.supervisor.snapshot == latest, "the supervisor keeps its latest snapshot");
+	t.asserti(published, s.notifications.length);
+	var id = "def id(v: int) -> int", unknown = "def id(v: ?) -> ?";
+	var scaled = "def scaled(Point, k: int) -> Point", scaledParams = ["Point", "k: int"];
+	var cases = [
+		("\t\tUtil.add($", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1,$", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(1, $", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(1, n$", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(n$", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1 + $", expected(ADD, ADD_PARAMS, 0)),
+		// Nested: the innermost open call.
+		("\t\tUtil.add(Util.add($", expected(ADD, ADD_PARAMS, 0)),
+		("\t\tUtil.add(1, Util.add(n, $", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(Util.id(1), $", expected(ADD, ADD_PARAMS, 1)),
+		// Generic: as the repaired call instantiates it.
+		("\t\tUtil.id<int>($", expected(id, ["v: int"], 0)),
+		("\t\tUtil.id(1 + $", expected(id, ["v: int"], 0)),
+		("\t\tUtil.id($", expected(unknown, ["v: ?"], 0)),
+		// Through its class, a constructor, a closure, and a builtin.
+		("\t\tPoint.scaled(p, $", expected(scaled, scaledParams, 1)),
+		("\t\tPoint.new($", expected("class Point(x: int, y: int)", ["x: int", "y: int"], 0)),
+		("\t\tPoint.new(1, $", expected("class Point(x: int, y: int)", ["x: int", "y: int"], 1)),
+		("\t\tf($", expected("int -> int", ["int"], 0)),
+		("\t\tvar a = Array<int>.new($", expected("int -> Array<int>", ["int"], 0)),
+		// In a lambda's body inside a call, the call in the body.
+		("\t\tUtil.apply(fun (x: int) => Util.add(x, $", expected(ADD, ADD_PARAMS, 1)),
+		// In a statement's condition, and after a comment between arguments.
+		("\t\tif (Util.add(1, $", expected(ADD, ADD_PARAMS, 1)),
+		("\t\tUtil.add(1 /* , */, $", expected(ADD, ADD_PARAMS, 1))
+	];
+	for (c in cases) {
+		var marked = inRun(c.0);
+		t.assert(!parses(marked), c.0);
+		var got = help(t, s, marked);
+		if (!Strings.equal(c.1, got)) t.fail3("%s\n  expected: %s\n  got:      %s", c.0, c.1, got);
+	}
+	// The first case reuses the reply above.
+	t.asserti(cases.length, analyses(s));
+	s.server.close();
+}
+
+// With labelOffsetSupport, parameters are labelled by their offsets, as from
+// a snapshot.
+def test_label_offsets(t: Tester) {
+	var s = session(t);
+	s.server.signatureHelp.labelOffsets = true;
+	t.assert_string("{\"activeParameter\":1,\"activeSignature\":0,\"signatures\":[{\"label\":\"def add(a: int, b: int) -> int\",\"parameters\":[{\"label\":[8,14]},{\"label\":[16,22]}]}]}",
+		help(t, s, inRun("\t\tUtil.add(1, $")));
+	s.server.close();
+}
+
+// Null at once, without an analysis: in a comment or a string in a call's
+// arguments, where no call is open, where the repair does not parse because
+// of an error elsewhere or a block it cannot close, and in a document in no
+// project.
+def test_no_analysis(t: Tester) {
+	var s = session(t);
+	for (line in [
+		"\t\tUtil.add(1, // Util.add($",
+		"\t\tUtil.add(1, /* Util.add($ */",
+		"\t\tUtil.add(1, \"Util.add($",
+		"\t\tn = $",
+		"\t\tif (n > $",
+		"\t\tvar a = [Util.add(1, 2), $",
+		"\t\tUtil.apply(fun (x: int) { Util.add(x, $"
+	]) {
+		var marked = inRun(line);
+		t.assert(!parses(marked), line);
+		var id = request(t, s, marked);
+		t.assert(isNull(s, id), line);
+	}
+	var id = request(t, s, Strings.format1("%sdef broken( {\n", inRun("\t\tUtil.add(1, $")));
+	t.assert(isNull(s, id), "an error elsewhere");
+	t.asserti(0, analyses(s));
+	// A document in no project.
+	var doc = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String("untitled:Loose.v3");
+	doc["languageId"] = JsonValue.String("virgil");
+	doc["version"] = JsonValue.Int(1);
+	doc["text"] = JsonValue.String("def f(x: int) -> int { return x; }\ndef g() {\n\tf(\n}\n");
+	params["textDocument"] = JsonValue.JObject(doc);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didOpen", JsonRpcParams.ByName(params)).encode());
+	doc.remove("languageId");
+	doc.remove("version");
+	doc.remove("text");
+	position["line"] = JsonValue.Int(2);
+	position["character"] = JsonValue.Int(3);
+	params["position"] = JsonValue.JObject(position);
+	id = s.send(t, "textDocument/signatureHelp", params);
+	t.assert(isNull(s, id), "no project");
+	t.asserti(0, analyses(s));
+	s.server.close();
+}
+
+// A callee that does not resolve has a call without a signature, so the
+// reply is null after the analysis, rather than the call around it.
+def test_unresolved_callee(t: Tester) {
+	var s = session(t);
+	t.assert_string("null", help(t, s, inRun("\t\tmissing($")));
+	t.assert_string("null", help(t, s, inRun("\t\tUtil.add(1, missing($")));
+	t.asserti(2, analyses(s));
+	s.server.close();
+}
+
+// Where the document parses, the reply comes from the project's snapshot, as
+// before, with no call query; and where another file of the project does not
+// parse, it is null, since the repair fixes only the cursor's file.
+def test_parse_path_unchanged(t: Tester) {
+	var s = session(t);
+	var marked = inRun("\t\tUtil.add(1, $2);");
+	t.assert(parses(marked), "the text parses");
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, marked));
+	t.asserti(0, analyses(s));
+	s.open("Util.v3", 1, Strings.format1("%sdef broken( {\n", UTIL));
+	s.settle();
+	t.assert_string("null", help(t, s, marked));
+	t.assertz(false, parses(inRun("\t\tUtil.add(1, $")));
+	t.assert_string("null", help(t, s, inRun("\t\tUtil.add(1, $")));
+	t.asserti(1, analyses(s));
+	s.server.close();
+}
+
+// The same version and cursor reuse the last reply; an edit or another cursor
+// does not.
+def test_reuse(t: Tester) {
+	var s = session(t);
+	var marked = inRun("\t\tUtil.add(1, $");
+	var first = help(t, s, marked);
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), first);
+	var id = request(t, s, marked);
+	t.assert(s.reply(id) != null, "answered at once");
+	t.assert_string(first, render(s.result(t, id)));
+	t.asserti(1, analyses(s));
+	// Just after the comma, before the space.
+	var u = unmark(marked), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	id = s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character - 1));
+	s.settle();
+	t.assert_string(first, render(s.result(t, id)));
+	t.asserti(2, analyses(s));
+	s.change("Main.v3", s.file("Main.v3").version + 1, u.0);
+	t.assert_string(first, help(t, s, marked));
+	t.asserti(3, analyses(s));
+	s.server.close();
+}
+
+// A request that waits is replaced by a newer one, and answered at once with
+// null; the one that runs is answered in full.
+def test_replacement(t: Tester) {
+	var s = session(t);
+	var text = inRun("\t\tUtil.add(1, nn$");
+	var running = request(t, s, text);
+	t.assert(s.reply(running) == null, "the first runs");
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character - 1));
+	t.assert(s.reply(waiting) == null, "the second waits");
+	var newer = s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character - 2));
+	t.assert(isNull(s, waiting), "the replaced one gets null at once");
+	t.assert(s.reply(newer) == null, "the newest waits");
+	s.settle();
+	for (id in [running, waiting, newer]) t.asserti(1, s.count(id));
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), render(s.result(t, running)));
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), render(s.result(t, newer)));
+	t.asserti(2, analyses(s));
+	t.asserti(0, s.server.rename.scheduler.jobCount());
+	s.server.close();
+}
+
+// $/cancelRequest answers a waiting or a running request with
+// RequestCancelled at once; a waiting one's job is withdrawn.
+def test_cancel(t: Tester) {
+	var s = session(t);
+	var text = inRun("\t\tUtil.add(1, nn$");
+	var running = request(t, s, text);
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character - 1));
+	t.asserti(1, s.server.rename.scheduler.jobCount());
+	s.cancel(waiting + 1000);
+	t.assert(s.reply(waiting) == null && s.reply(running) == null, "another id cancels nothing");
+	s.cancel(waiting);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(waiting)["error"], "code"));
+	t.asserti(0, s.server.rename.scheduler.jobCount());
+	s.cancel(running);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(s.reply(running)["error"], "code"));
+	t.assert_string("the signature help was cancelled", stringAt(s.reply(running)["error"], "message"));
+	s.settle();
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	t.asserti(1, analyses(s));
+	// The next request is answered in full.
+	t.assert_string(expected(ADD, ADD_PARAMS, 0), help(t, s, inRun("\t\tUtil.add($")));
+	s.server.close();
+}
+
+// A project file that changes while the analysis runs makes it stale: it
+// runs again, and the reply, and the reply kept for reuse, are the new ones.
+def test_invalidated_while_running(t: Tester) {
+	var s = session(t);
+	s.open("Util.v3", 1, UTIL);
+	s.settle();
+	var marked = inRun("\t\tUtil.add($");
+	var id = request(t, s, marked);
+	t.assert(s.reply(id) == null, "the request runs");
+	s.change("Util.v3", 2, UTIL_RENAMED);
+	s.settle();
+	var renamed = expected("def add(first: int, b: int) -> int", ["first: int", "b: int"], 0);
+	t.assert_string(renamed, render(s.result(t, id)));
+	t.asserti(2, analyses(s));
+	var again = request(t, s, marked);
+	t.assert(s.reply(again) != null, "answered at once");
+	t.assert_string(renamed, render(s.result(t, again)));
+	t.asserti(2, analyses(s));
+	s.server.close();
+}
+
+// A request runs again only once: stale again, its reply is null, and
+// nothing is kept.
+def test_stale_reruns_once(t: Tester) {
+	var s = session(t);
+	s.open("Util.v3", 1, UTIL);
+	s.settle();
+	var marked = inRun("\t\tUtil.add($");
+	var id = request(t, s, marked);
+	s.change("Util.v3", 2, UTIL_RENAMED);
+	var fds = Array<int>.new(4);
+	while (analyses(s) < 2 && s.server.analyzing()) {
+		var count = s.supervisor.pollFds(fds, 0);
+		HostOs.poll(fds, count, s.server.pollTimeout());
+		s.server.onPoll();
+	}
+	t.asserti(2, analyses(s));
+	t.assert(s.reply(id) == null, "the request runs again");
+	s.change("Util.v3", 3, UTIL);
+	s.settle();
+	t.assert(isNull(s, id), "null when stale again");
+	t.asserti(2, analyses(s));
+	t.assert_string(expected(ADD, ADD_PARAMS, 0), help(t, s, marked));
+	t.asserti(3, analyses(s));
+	s.server.close();
+}
+
+// Shutdown answers the running and the waiting request with null; later
+// requests are refused.
+def test_shutdown(t: Tester) {
+	var s = session(t);
+	var text = inRun("\t\tUtil.add(1, nn$");
+	var running = request(t, s, text);
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var waiting = s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character - 1));
+	t.assert(s.reply(running) == null && s.reply(waiting) == null, "one runs and one waits");
+	var shutdown = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.ByName(Strings.newMap<JsonValue>())).encode());
+	t.assert(shutdown != null, "shutdown answered");
+	t.assert(isNull(s, running), "the running request gets null");
+	t.assert(isNull(s, waiting), "the waiting request gets null");
+	t.asserti(1, s.count(running));
+	t.asserti(1, s.count(waiting));
+	s.server.close();
+}
+
+// A worker that ends during the analysis leaves null, and the project's
+// snapshot; the replaced worker answers the next request.
+def test_worker_crash(t: Tester) {
+	var s = sessionOn(HostOs.executablePath(), t);
+	var marked = inRun(Strings.format1("\t\t// %s\n\t\tUtil.add($", SyntheticAnalysisWorker.SCOPE_CRASH));
+	var started = s.supervisor.workersStarted;
+	var id = request(t, s, marked);
+	s.settle();
+	t.assert(isNull(s, id), "null after a crash");
+	t.assert_string(expected(ADD, ADD_PARAMS, 0), help(t, s, inRun("\t\tUtil.add($")));
+	t.assert(s.supervisor.workersStarted > started, "a new worker started");
+	s.server.close();
+}
+
+// An analysis past the time limit leaves null.
+def test_time_limit(t: Tester) {
+	var s = session(t);
+	s.limits.timeoutMs = 0;
+	var id = request(t, s, inRun("\t\tUtil.add($"));
+	s.settle();
+	t.assert(isNull(s, id), "null after a timeout");
+	t.asserti(1, s.count(id));
+	s.limits.timeoutMs = 10000;
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1, $")));
+	s.server.close();
+}
+
+// The result is admitted within the workspace's snapshot budget, as a
+// completion's is; when it does not fit, the reply is null and no analysis
+// starts.
+def test_admission(t: Tester) {
+	var s = session(t);
+	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
+	latest.retainedBytes = s.server.projects.MAX_SNAPSHOT_BYTES;
+	var id = request(t, s, inRun("\t\tUtil.add($"));
+	s.settle();
+	t.assert(isNull(s, id), "null when the snapshot does not fit");
+	t.asserti(0, analyses(s));
+	latest.retainedBytes = bytes;
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), help(t, s, inRun("\t\tUtil.add(1, $")));
+	t.asserti(1, analyses(s));
+	s.server.close();
+}
+
+// Signature help and completion requests wait side by side: neither replaces
+// the other's, and each is answered from its own analysis.
+def test_takes_turns_with_completion(t: Tester) {
+	var s = session(t);
+	var text = inRun("\t\tUtil.add(1, n$");
+	var u = unmark(text), p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
+	var help1 = request(t, s, text);
+	var completion1 = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character));
+	var help2 = s.send(t, "textDocument/signatureHelp", s.params("Main.v3", p.line, p.character - 1));
+	t.assert(s.reply(help1) == null && s.reply(help2) == null, "one signature help runs, and one waits");
+	t.assert(s.reply(completion1) == null, "a signature help does not replace a completion");
+	var completion2 = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
+	t.assert(s.reply(completion1) != null, "a newer completion replaces the older completion");
+	t.assert(s.reply(help2) == null, "a completion does not replace a signature help");
+	s.settle();
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), render(s.result(t, help1)));
+	t.assert_string(expected(ADD, ADD_PARAMS, 1), render(s.result(t, help2)));
+	var items = member(s.result(t, completion2), "items");
+	t.assert(JsonValue.JArray.?(items) && JsonValue.JArray.!(items).v.length > 0, "the completion is answered");
+	t.asserti(2, analyses(s));
+	t.asserti(1, s.server.completion.analyses);
+	s.server.close();
+}
+def intAt(v: JsonValue, key: string) -> int {
+	var m = if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+	return if(JsonValue.Int.?(m), JsonValue.Int.!(m).v, -1);
+}
+def stringAt(v: JsonValue, key: string) -> string {
+	var m = if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
+}
+def member(v: JsonValue, key: string) -> JsonValue {
+	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
+}

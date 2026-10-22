@@ -116,8 +116,15 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// {label} names it in parameter errors.
 	def register(dispatcher: JsonRpcDispatcher, method: string, label: string,
 			answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) {
-		registerPrepared(dispatcher, method, label, "a valid textDocument.uri and position", always(answer, _));
+		registerPrepared(dispatcher, method, label, POSITION, always(answer, _));
 	}
+	// The method that {register} would register, for a handler that answers
+	// some of its requests otherwise and gives the rest to its {handle}, as
+	// signature help does (LspSignatureHelp).
+	def unregistered(label: string, answer: (LspSnapshotPosition, int) -> (bool, JsonValue)) -> LspSnapshotMethod {
+		return LspSnapshotMethod.new(this, label, POSITION, always(answer, _));
+	}
+	private def POSITION = "a valid textDocument.uri and position";
 	// Handles {method}, whose requests also have other parameters, with the
 	// answer function that {prepare} returns for each (see LspSnapshotMethod).
 	def registerPrepared(dispatcher: JsonRpcDispatcher, method: string, label: string, requires: string,
