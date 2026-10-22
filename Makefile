@@ -31,7 +31,7 @@ WORKER_HEAP ?= 384m
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 
-.PHONY: all test test-nvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -88,6 +88,11 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
 test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
+
+# Local only, not part of `make test`: needs tmux and GitHub access, and takes
+# about a minute (test/e2e/lazyvim/README.md).
+test-lazyvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
+	test/e2e/lazyvim/run.sh $(BUILD)/virgil-lsp
 
 # scripts/package-release.sh records the worker heap in its build manifest.
 print-worker-heap:
