@@ -417,7 +417,7 @@ summary=''
 run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
   local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
-  local exit_status done_line passed='?' failed='?' xfail='?' verdict=PASS left
+  local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
   current=$name
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
@@ -443,10 +443,16 @@ run() {
     verdict=FAIL
   fi
   exit_status=$(cat "$work/$name.status" 2>/dev/null || echo '?')
-  done_line=$(grep '^DONE ' "$results" 2>/dev/null | tail -n 1 || true)
-  re='^DONE ([0-9]+) passed, ([0-9]+) failed, ([0-9]+) expected failure'
+  # Complete results end with their only DONE line, whole, as driver.lua
+  # writes it.
+  re='^DONE ([0-9]+) passed, ([0-9]+) failed, ([0-9]+) expected failure\(s\)$'
+  if [[ -f $results ]] && (( $(grep -c '^DONE' "$results" || true) == 1 )) &&
+    [[ -z $(tail -c 1 "$results") && $(tail -n 1 "$results") =~ $re ]]; then
+    complete=1 passed=${BASH_REMATCH[1]} failed=${BASH_REMATCH[2]} xfail=${BASH_REMATCH[3]}
+  fi
   echo "-- Neovim exit status $exit_status, after $((SECONDS - started)) s"
-  if (( rc != 124 )) && [[ $exit_status != 0 || ! $done_line =~ $re ]]; then
+  if [[ -f $results ]] && (( ! complete )); then echo "-- $results does not end with one complete DONE line"; fi
+  if (( rc != 124 )) && [[ $exit_status != 0 || $complete == 0 ]]; then
     echo "-- the screen after Neovim exited is in $out/$name.screen.txt"
     save_screen "$name" "after Neovim exited"
     verdict=FAIL
@@ -476,10 +482,9 @@ run() {
     verdict=FAIL
   fi
   stop_processes
-  if [[ $done_line =~ $re ]]; then
-    passed=${BASH_REMATCH[1]} failed=${BASH_REMATCH[2]} xfail=${BASH_REMATCH[3]}
+  if [[ $complete == 0 || $exit_status != 0 || $failed != 0 || $xfail != "$expected_xfail" ]]; then
+    verdict=FAIL
   fi
-  if [[ $exit_status != 0 || $failed != 0 || $xfail != "$expected_xfail" ]]; then verdict=FAIL; fi
   [[ $verdict == PASS ]] || status=1
   summary="$summary$name: $passed passed, $failed failed, $xfail expected failure(s) (expected $expected_xfail); Neovim exit status $exit_status; $((SECONDS - started)) s: $verdict"$'\n'
   summary="$summary$(grep '^XFAIL ' "$results" 2>/dev/null | sed 's/^/  /' || true)"

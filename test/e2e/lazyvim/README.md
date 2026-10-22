@@ -47,7 +47,7 @@ The output directory gets:
 
 - `provenance.txt`: the date, the repository's commit and whether it is modified, the OS, CPU, Neovim, tmux, git, and Python, the server's `--version`, the archive's SHA-256, and the starter's and every plugin's commit;
 - `lazy-install.log`: lazy.nvim's output while it installs the plugins;
-- `<run>.results`: a line per check, then `DONE <n> passed, <n> failed, <n> expected failure(s)`;
+- `<run>.results`: a line per check, then `DONE <n> passed, <n> failed, <n> expected failure(s)`; a run whose results don't end with that line, whole and only once, fails;
 - `<run>.lsp.log`: Neovim's LSP log at debug level, with the server's stderr;
 - `<run>.screen.txt`: the screen at each failed step; when a run times out or is interrupted; and after Neovim exits with a nonzero or unknown status or without a complete `<run>.results`, with what Neovim left on the terminal, such as an error it printed as it exited, and tmux's line with its exit status;
 - `summary.txt`: a line per run, its `XFAIL` lines, and the result.
