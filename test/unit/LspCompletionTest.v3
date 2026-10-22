@@ -10,6 +10,7 @@ def X = [
 	T("LspCompletion:strings", test_strings),
 	T("LspCompletion:byte_literals", test_byte_literals),
 	T("LspCompletion:prefix_range", test_prefix_range),
+	T("LspCompletion:repair", test_repair),
 	T("LspCompletion:numbers", test_numbers),
 	T("LspCompletion:empty_fraction_operators", test_empty_fraction_operators),
 	T("LspCompletion:decimal_members", test_decimal_members),
@@ -185,6 +186,57 @@ def test_prefix_range(t: Tester) {
 	// The look-back skips the prefix: it is in a statement either way.
 	checkSyntax(t, "def f() { wh$ }", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
 	checkSyntax(t, "def f() { $ }", LspCursorSyntax.STATEMENT | LspCursorSyntax.EXPRESSION);
+}
+
+// The text of {marked}, with its "$" cursor, repaired.
+def repaired(marked: string) -> string {
+	return LspCompletionRepair.repair(at(marked));
+}
+// A method body holding {line} as its last statement.
+def repairProgram(line: string) -> string {
+	return Strings.format1("component Main {\n\tdef run() {\n\t\t%s\n\t}\n}\n", line);
+}
+// An editor closes a delimiter as soon as it is typed, so a call's arguments
+// end at the cursor and the statement has no ";": the repair matches the
+// closers that already follow the cursor, decides after them as it does at
+// the cursor, and inserts what is missing right after them.
+def test_repair(t: Tester) {
+	for (c in [
+		("var n = Util.add($)", "var n = Util.add(virgilLspCursor);"),
+		("Util.add(1, x$)", "Util.add(1, xvirgilLspCursor);"),
+		("f(g($))", "f(g(virgilLspCursor));"),
+		("f(g($)", "f(g(virgilLspCursor));"),
+		("if (f($)) {", "if (f(virgilLspCursor)) {"),
+		("var x = a[$]", "var x = a[virgilLspCursor];"),
+		("g(fun () { f($) })", "g(fun () { f(virgilLspCursor); })"),
+		("foo(x.$)", "foo(x.virgilLspCursor);"),
+		("for (x = g($); x < 10; x++) { }", "for (x = g(virgilLspCursor); x < 10; x++) { }"),
+		("if (a) f($) else g();", "if (a) f(virgilLspCursor); else g();"),
+		// The decision goes past the matched closers: a separator or an
+		// operator there completes the expression, so nothing is inserted.
+		("g(f($), 1)", "g(f(virgilLspCursor), 1)"),
+		("var n = f($) + 1", "var n = f(virgilLspCursor) + 1"),
+		// Whitespace and comments may come between the closers; the tail
+		// goes right after the last one.
+		("f(g($) /* comment */ )", "f(g(virgilLspCursor) /* comment */ );"),
+		("f(g($) // comment\n)", "f(g(virgilLspCursor) // comment\n);"),
+		// A closer that does not match decides at the cursor, as before.
+		("f($]", "f(virgilLspCursor);]")
+	]) {
+		t.assert_string(c.1, repaired(c.0));
+	}
+	// Each repaired program parses.
+	for (line in ["var n = Util.add($)", "Util.add(1, x$)", "f(g($))", "f(g($)",
+			"var x = a[$]", "var x = g(fun () { f($) });", "foo(x.$)", "for (x = g($); x < 10; x++) { }",
+			"if (a) f($) else g();", "var x = g(f($), 1);", "var n = f($) + 1;",
+			"f(g($) /* comment */ )", "f(g($) // comment\n)"]) {
+		var text = LspCompletionRepair.repair(at(repairProgram(line)));
+		var n = AeneasAdapter.parseFile("repair.v3", text, []).diagnostics.length;
+		if (n != 0) t.fail2("does not parse: %s: %s", line, text);
+	}
+	var ifBody = "component Main {\n\tdef run() {\n\t\tif (f($)) {\n\t\t\tvar y = 0;\n\t\t}\n\t}\n}\n";
+	var block = LspCompletionRepair.repair(at(ifBody));
+	if (AeneasAdapter.parseFile("repair.v3", block, []).diagnostics.length != 0) t.fail1("does not parse: %s", block);
 }
 
 def test_numbers(t: Tester) {

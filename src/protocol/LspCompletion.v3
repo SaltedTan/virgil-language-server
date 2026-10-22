@@ -135,54 +135,71 @@ component LspCompletionRepair {
 			&& (text[begin] == 'R' || text[begin] == 'r') && text[begin + 1] == 'e' && text[begin + 2] == 'f';
 	}
 	// {ctx}'s text, repaired: the sentinel at the cursor, where it joins the
-	// identifier there, and after that identifier's rest, the text that
-	// {completion} selects.
+	// identifier there, and {completion}'s text at the offset it gives. The
+	// repair inserts nothing before the cursor, and nothing between the
+	// cursor and the second insertion point, so the identifier's start, where
+	// the scope is queried, and the offsets of the text between the two
+	// insertions are the same in both texts.
 	def repair(ctx: LspCursorContext) -> Array<byte> {
-		var text = ctx.text, end = ctx.cursor;
-		while (end < text.length && isIdentMiddle(text[end])) end++;
-		var tail = completion(ctx), buf = StringBuilder.new();
-		buf.putk(text, 0, ctx.cursor).puts(SENTINEL).putk(text, ctx.cursor, end).puts(tail);
-		return buf.putk(text, end, text.length).extract();
+		var text = ctx.text, c = completion(ctx), buf = StringBuilder.new();
+		buf.putk(text, 0, ctx.cursor).puts(SENTINEL).putk(text, ctx.cursor, c.1).puts(c.0);
+		return buf.putk(text, c.1, text.length).extract();
 	}
-	// What completes the identifier at {ctx}'s cursor, from the text that
-	// follows it, past whitespace and comments:
+	// What completes the identifier at {ctx}'s cursor, and the offset in
+	// {ctx}'s text that it goes at: after the identifier's rest as typed, or,
+	// when the closers of the delimiters open at the cursor already follow,
+	// right after the last of them that does.
+	//
+	// From the text that follows the identifier, past whitespace and comments:
 	// - in a match's patterns, " => ;" to complete a case unless "=>" or ","
 	//   follows;
-	// - nothing where the text after it completes the expression: before the
-	//   closer of the innermost open delimiter, ",", an operator, or "=", and
-	//   before ";" in a for loop's header;
-	// - before "{", the closers of the open delimiters in the innermost
-	//   block, innermost first, as in "if (" before its body;
-	// - otherwise, those closers and ";", which ends the statement or the
+	// - the closers of the open delimiters in the innermost block, innermost
+	//   first, matched in order against the text, with whitespace and comments
+	//   between them; the decision below is made after the last matched one,
+	//   and the closers after it are still missing;
+	// - nothing where the text after it completes the expression: before ",",
+	//   an operator, or "=", and before ";" in a for loop's header;
+	// - before "{", the closers still missing, as in "if (" before its body;
+	// - otherwise, those closers and ";", which end the statement or the
 	//   declaration.
-	def completion(ctx: LspCursorContext) -> string {
-		var text = ctx.text, closers = StringBuilder.new();
-		for (i = ctx.roles.length - 1; i >= 0; i--) {
+	def completion(ctx: LspCursorContext) -> (string, int) {
+		var text = ctx.text, closers = StringBuilder.new(), last = ctx.roles.length;
+		// The role of the innermost open block, which holds the cursor when
+		// every closer of the delimiters open at it matches.
+		var block = LspOpenRole.TOP;
+		for (i = last - 1; i >= 0; i--) {
 			var c = text[ctx.opens[i]];
-			if (c == '{') break;
+			if (c == '{') {
+				block = ctx.roles[i];
+				break;
+			}
 			closers.putc(if(c == '(', ')', if(c == '<', '>', ']')));
 		}
 		var close = closers.toString();
-		var inner = if(ctx.roles.length > 0, ctx.roles[ctx.roles.length - 1], LspOpenRole.TOP);
-		var i = next(text, ctx.cursor);
-		var n = if(i < text.length, text[i], '\x00'), n2 = if(i + 1 < text.length, text[i + 1], '\x00');
+		var inner = if(last > 0, ctx.roles[last - 1], LspOpenRole.TOP);
+		var end = ctx.cursor;
+		while (end < text.length && isIdentMiddle(text[end])) end++;
+		var at = end, scan = space(text, end);
 		if ((ctx.syntax & LspCursorSyntax.PATTERN) != 0 && inner == LspOpenRole.MATCH) {
-			return if((n == '=' && n2 == '>') || n == ',', "", " => ;");
+			var n = if(scan < text.length, text[scan], '\x00'), n2 = if(scan + 1 < text.length, text[scan + 1], '\x00');
+			return (if((n == '=' && n2 == '>') || n == ',', "", " => ;"), end);
 		}
-		if (close.length > 0 && n == close[0]) return "";
-		if (n == ';' && (inner == LspOpenRole.FOR || inner == LspOpenRole.FOR_CLAUSES)) return "";
+		var j = 0;
+		while (j < close.length && scan < text.length && text[scan] == close[j]) {
+			j++;
+			at = scan + 1;
+			scan = space(text, at);
+		}
+		var missing = Arrays.range(close, j, close.length);
+		var open = if(j < close.length, ctx.roles[last - 1 - j], block);
+		var n = if(scan < text.length, text[scan], '\x00');
+		if (n == ';' && (open == LspOpenRole.FOR || open == LspOpenRole.FOR_CLAUSES)) return ("", at);
 		match (n) {
-			',', '=', '+', '-', '*', '/', '%', '&', '|', '^', '<', '>', '!', '?', '.' => return "";
-			'{', ';' => return close;
+			',', '=', '+', '-', '*', '/', '%', '&', '|', '^', '<', '>', '!', '?', '.' => return ("", at);
+			'{', ';' => return (missing, at);
 			_ => ;
 		}
-		return Strings.format1("%s;", close);
-	}
-	// The first byte at or after {i} that is not part of the identifier
-	// there, whitespace, or a comment.
-	private def next(text: Array<byte>, i: int) -> int {
-		while (i < text.length && isIdentMiddle(text[i])) i++;
-		return space(text, i);
+		return (Strings.format1("%s;", missing), at);
 	}
 	// The first byte at or after {i} that is not whitespace or a comment.
 	private def space(text: Array<byte>, i: int) -> int {
