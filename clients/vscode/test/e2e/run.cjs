@@ -15,7 +15,7 @@
 // runs the suite against the installed copy. Without a display, run it under
 // xvfb-run on Linux.
 
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -29,6 +29,8 @@ const VSCODE_VERSION = '1.142.0';
 const LAUNCH_TIMEOUT_MS = 120000;
 // How long a stopped process group gets after SIGTERM before SIGKILL.
 const STOP_GRACE_MS = 5000;
+// How long the servers that a launch started get to exit after VS Code has.
+const SERVER_EXIT_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
 
 const extension = path.resolve(__dirname, '../..');
@@ -80,10 +82,14 @@ async function main() {
       'update.mode': 'none',
       'workbench.startupEditor': 'none',
       'files.autoSave': 'off',
+      // Where the server offers no completion items, as in a comment, VS Code
+      // would offer the document's words instead.
+      'editor.wordBasedSuggestions': 'off',
     };
     console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
-    const options = { executable, settings, project, vsix, signal: controller.signal };
+    const servers = [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
+    const options = { executable, settings, project, vsix, servers, signal: controller.signal };
     let passed = await launch(options, path.join(work, 'single-file'));
     if (passed) passed = await launch(options, path.join(work, 'workspace'), project);
     if (!passed) process.exitCode = 1;
@@ -113,7 +119,7 @@ function isolatedEnv(variables) {
 // Starts VS Code with its own user data and extensions directories under dir,
 // and returns whether the suite passed. The suite opens a folder only if it is
 // given one.
-async function launch({ executable, settings, project, vsix, signal }, dir, folder) {
+async function launch({ executable, settings, project, vsix, servers, signal }, dir, folder) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
   // VS Code runs the suite only in extension development mode. With a VSIX,
@@ -163,20 +169,34 @@ async function launch({ executable, settings, project, vsix, signal }, dir, fold
       return false;
     }
   }
-  const result = await runGroup(executable, args, { env, stdin: 'inherit', signal });
+  const result = await runGroup(executable, args, { env, stdin: 'inherit', signal, servers });
   if (!succeeded(result)) {
     console.error(`FAIL: ${name} launch ${outcome(result)}`);
     printChannelLogs(userData);
+    return false;
   }
-  return succeeded(result);
+  // Closing the window deactivates the extension, which sends shutdown and
+  // exit. The channel may close before the server exits, so its log need not
+  // record the exit.
+  const exit = lastServerExit(userData);
+  if (exit !== undefined && !exit.includes('Server process exited successfully')) {
+    console.error(`FAIL: VS Code window close (${name} launch): the server did not exit cleanly: ${exit}`);
+    printChannelLogs(userData);
+    return false;
+  }
+  console.log(`PASS: VS Code window close (${name} launch): no virgil-lsp or virgil-lsp-worker left running, `
+    + 'and no unclean server exit in the log');
+  return true;
 }
 
 // Runs command in a process group of its own, so that a timeout or an
 // interrupt can stop all of it: VS Code and the server, or the installer,
 // which bin/code starts without exec on Linux. A stopped group gets SIGTERM,
 // then SIGKILL, and the promise resolves only after the whole group has exited,
-// before the caller removes the temporary directory.
-function runGroup(command, args, { env, stdin, signal }) {
+// before the caller removes the temporary directory. If the group still runs
+// one of the servers SERVER_EXIT_MS after the command itself has exited, the
+// group is stopped as well.
+function runGroup(command, args, { env, stdin, signal, servers = [] }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { env, stdio: [stdin, 'inherit', 'inherit'], detached: true });
     let stopped;
@@ -210,10 +230,45 @@ function runGroup(command, args, { env, stdin, signal }) {
       if (signal.aborted) interrupt();
     });
     child.on('error', (error) => finish({ error }));
+    // VS Code starts the servers in its own group, where they outlive it only
+    // if they don't exit.
+    const expectServersGone = async () => {
+      const limit = Date.now() + SERVER_EXIT_MS;
+      for (;;) {
+        let running;
+        try {
+          running = groupProcesses(child.pid, servers);
+        } catch (error) {
+          stop(`could not be checked for servers left running: ${error.message}`);
+          return;
+        }
+        if (running.length === 0 || stopped !== undefined) return;
+        if (Date.now() > limit) {
+          const left = running.map((p) => `${path.basename(p.executable)} (pid ${p.pid})`).join(', ');
+          stop(`left ${left} running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    };
     child.on('exit', (code, exitSignal) => {
       exited = { code, signal: exitSignal };
       if (!groupExists(child.pid)) finish(exited);
+      else if (servers.length > 0) void expectServersGone();
     });
+  });
+}
+
+// The processes in process group pgid that run one of executables, by the
+// first argument that ps lists: the client starts virgil-lsp, and virgil-lsp
+// its worker, with an absolute path.
+function groupProcesses(pgid, executables) {
+  const ps = spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'pgid=', '-o', 'args='], { encoding: 'utf8' });
+  if (ps.status !== 0) throw new Error(`ps failed: ${ps.error?.message ?? ps.stderr}`);
+  return ps.stdout.split('\n').flatMap((line) => {
+    const [, pid, group, args] = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line) ?? [];
+    const executable = executables.find((file) => args === file || args?.startsWith(`${file} `));
+    return Number(group) === pgid && executable !== undefined ? [{ pid: Number(pid), executable }] : [];
   });
 }
 
@@ -243,17 +298,31 @@ function outcome(result) {
   return result.stopped ?? `exited with ${result.code ?? result.signal}`;
 }
 
+function channelLogs(userData) {
+  const logs = path.join(userData, 'logs');
+  return fs.existsSync(logs)
+    ? fs.readdirSync(logs, { recursive: true }).filter((file) => path.basename(file) === CHANNEL_LOG)
+      .map((file) => path.join(logs, file))
+    : [];
+}
+
 // The output channel's log also holds the server's stderr.
 function printChannelLogs(userData) {
-  const logs = path.join(userData, 'logs');
-  const files = fs.existsSync(logs)
-    ? fs.readdirSync(logs, { recursive: true }).filter((file) => path.basename(file) === CHANNEL_LOG)
-    : [];
-  if (files.length === 0) console.error(`No "${CHANNEL_LOG}" in ${logs}`);
+  const files = channelLogs(userData);
+  if (files.length === 0) console.error(`No "${CHANNEL_LOG}" in ${path.join(userData, 'logs')}`);
   for (const file of files) {
-    console.error(`--- ${file} ---`);
-    console.error(fs.readFileSync(path.join(logs, file), 'utf8'));
+    console.error(`--- ${path.relative(path.join(userData, 'logs'), file)} ---`);
+    console.error(fs.readFileSync(file, 'utf8'));
   }
+}
+
+// The line of the output channel's log that records how the last server to
+// start exited, if any: the client's report of its exit status, or the
+// server's error for input that ended before shutdown.
+function lastServerExit(userData) {
+  const lines = channelLogs(userData).flatMap((file) => fs.readFileSync(file, 'utf8').split('\n'));
+  const start = lines.findLastIndex((line) => line.includes(' [info] Starting '));
+  return lines.slice(start + 1).find((line) => /Server process exited|the input ended before a shutdown request/.test(line));
 }
 
 main().catch((error) => {
