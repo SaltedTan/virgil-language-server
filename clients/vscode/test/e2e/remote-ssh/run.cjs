@@ -320,7 +320,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // milliseconds: a process that joins the group less than that before the
 // command exits, and outlives every process that the runner saw there, isn't
 // waited for or signaled.
-function runGroup(command, args, { env, input, timeout, signal, onData }) {
+function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true,
@@ -389,6 +389,7 @@ function runGroup(command, args, { env, input, timeout, signal, onData }) {
     child.on('exit', (code, exitSignal) => {
       exited = { code, signal: exitSignal, at: Date.now() };
       group.reaped();
+      onExit?.(exited);
       finish();
     });
   });
@@ -689,7 +690,7 @@ for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)
     found.push({ pid: Number(pid), ppid: Number(fields[1]), start, exe });
   } catch {}
 }
-console.log(JSON.stringify({ found, host: hostRuns, signaledAt }));`;
+console.log(JSON.stringify({ found, host: hostRuns, signaledAt, sampledAt: Date.now() }));`;
 
 // The target's processes that run an executable from its work directory,
 // other than the VS Code Server's, which stays running between windows:
@@ -706,7 +707,10 @@ async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
     throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
   }
   const server = (p) => p.exe.startsWith(`${layout.agent}/`);
-  return { left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length, host: listing.host, signaledAt: listing.signaledAt };
+  return {
+    found: listing.found, left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length,
+    host: listing.host, signaledAt: listing.signaledAt, sampledAt: listing.sampledAt,
+  };
 }
 
 // The remote extension host that bootstrap.cjs ran in, by its PID, start
@@ -719,12 +723,23 @@ function extensionHost(evidence, layout) {
 
 // Waits up to SERVER_EXIT_MS for the language servers to exit, and for host
 // too, if given; returns what still runs then.
-async function settle(run, layout, at, host) {
+async function settle(run, layout, at, host, firstSample) {
   const deadline = at + SERVER_EXIT_MS;
+  let timely = false;
+  if (!Number.isFinite(deadline)) throw infra('leak check could not be verified in time');
   for (;;) {
-    const processes = await remoteProcesses(run, layout, { host });
-    if ((processes.left.length === 0 && !processes.host) || Date.now() >= deadline) return processes;
-    await sleep(200);
+    const processes = firstSample ?? await remoteProcesses(run, layout, { host });
+    firstSample = undefined;
+    processes.host = host !== undefined && processes.found.some((p) => p.pid === host.pid && p.start === host.start && p.exe === host.exe);
+    if (!Number.isFinite(processes.sampledAt)) throw infra('leak check could not be verified in time');
+    timely ||= processes.sampledAt <= deadline;
+    if (!timely) throw infra('leak check could not be verified in time');
+    if (processes.left.length === 0 && !processes.host) {
+      if (processes.sampledAt > deadline) throw infra('leak check could not be verified in time');
+      return processes;
+    }
+    if (processes.sampledAt >= deadline) return processes;
+    if (Date.now() < deadline) await sleep(Math.min(200, deadline - Date.now()));
   }
 }
 
@@ -755,13 +770,13 @@ async function stopHost(run, layout, host) {
   let at = started;
   for (const signal of ['SIGTERM', 'SIGKILL']) {
     const processes = await remoteProcesses(run, layout, { host, signal });
-    if (!processes.host) return { signal: sent, seconds: (Date.now() - started) / 1000, at };
+    if (!processes.host) return { signal: sent, seconds: (Date.now() - started) / 1000, at, processes };
     sent = signal;
     at = processes.signaledAt;
     for (const deadline = Date.now() + HOST_STOP_MS; Date.now() < deadline;) {
       await sleep(100);
       const stopped = await remoteProcesses(run, layout, { host });
-      if (!stopped.host) return { signal, seconds: (Date.now() - started) / 1000, at };
+      if (!stopped.host) return { signal, seconds: (Date.now() - started) / 1000, at, processes: stopped };
     }
   }
   throw infra(`the remote extension host (pid ${host.pid}) that VS Code left running still ran ${HOST_STOP_MS / 1000} seconds after SIGKILL`);
@@ -857,10 +872,17 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   const timeout = mode === 'probe' ? PROBE_TIMEOUT_MS : LAUNCH_TIMEOUT_MS;
   let unwritten;
   let exit;
+  let sampling;
+  let firstSample;
   try {
     infrastructure(`write launches/${name}.log`, () => fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`));
     exit = await runGroup(executable, args, {
       env: run.env, timeout, signal: run.signal,
+      onExit: () => {
+        if (mode !== 'probe') {
+          sampling = remoteProcesses(run, layout).then((processes) => ({ processes }), (error) => ({ error }));
+        }
+      },
       onData: (data) => {
         try {
           fs.writeSync(log, data);
@@ -871,11 +893,13 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
       },
     });
   } finally {
+    firstSample = await sampling;
     infrastructure(`close launches/${name}.log`, () => fs.closeSync(log));
   }
   record.seconds = exit.seconds;
   record.exit = exit.error?.message ?? exit.stopped ?? exit.code ?? exit.signal;
   run.checkpoint();
+  if (firstSample?.error !== undefined) throw firstSample.error;
   if (unwritten !== undefined) throw infra(`could not write launches/${name}.log: ${unwritten.message}`);
 
   const report = await run.remote(`cat ${sh(result)}`, { allowFailure: true });
@@ -902,7 +926,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   // during a later launch.
   if (mode !== 'probe') {
     const host = extensionHost(evidence, layout);
-    let processes = await settle(run, layout, exit.at, host);
+    let processes = await settle(run, layout, exit.at, host, firstSample?.processes);
     if (host !== undefined) record.remoteExtensionHost = { pid: host.pid, start: host.start, leftRunning: processes.host };
     if (processes.host) {
       record.remoteExtensionHost.processes = descendants(processes.left, host.pid);
@@ -910,7 +934,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
       run.note(`${name}: ${record.info[0]}`);
       const stopped = await stopHost(run, layout, host);
       Object.assign(record.remoteExtensionHost, { stoppedWith: stopped.signal, stopSeconds: stopped.seconds });
-      processes = await settle(run, layout, stopped.at);
+      processes = await settle(run, layout, stopped.at, undefined, stopped.processes);
     }
     record.leftRunning = processes.left;
     record.vscodeServerProcesses = processes.vscodeServer;

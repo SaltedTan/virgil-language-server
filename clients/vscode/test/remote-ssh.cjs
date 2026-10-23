@@ -346,7 +346,7 @@ test('leak checks use the client-exit or host-stop time rather than the retrieva
     const server = { pid: 20, start: '600', exe: '/remote/virgil-lsp/virgil-lsp' };
     const remote = {
       target: { root: '/remote' },
-      remote: async () => ({ stdout: JSON.stringify({ found: now < at + 6000 ? [server] : [], host: false }) }),
+      remote: async () => ({ stdout: JSON.stringify({ found: now < at + 6000 ? [server] : [], host: false, sampledAt: now }) }),
     };
     const result = await run.settle(remote, { agent: '/remote/server', serverNode: '/node' }, at);
     assert.deepEqual(JSON.parse(JSON.stringify(result.left)), [server]);
@@ -373,7 +373,7 @@ test('host containment retains the signal timestamp across slow SSH responses', 
           stoppedAt = now;
         }
         const host = signaled || (stubborn && signals < 2);
-        const stdout = JSON.stringify({ found: [], host, signaledAt: signaled ? now : undefined });
+        const stdout = JSON.stringify({ found: [], host, signaledAt: signaled ? now : undefined, sampledAt: now });
         now += 1000;
         return { stdout };
       },
@@ -382,6 +382,160 @@ test('host containment retains the signal timestamp across slow SSH responses', 
     assert.equal(result.signal, stubborn ? 'SIGKILL' : 'SIGTERM');
     assert.equal(result.at, stoppedAt);
     assert.ok(result.at < now - 1000);
+    assert.ok(result.processes.sampledAt > result.at);
+  }
+});
+
+test('a late first sample or a late empty sample cannot verify the leak deadline', async () => {
+  for (const at of [0, 10000]) {
+    for (const samples of [[{ offset: 7000, alive: false }], [{ offset: 7000, alive: true }],
+      [{ offset: 3000, alive: true }, { offset: 7000, alive: false }]]) {
+      let now = at;
+      const runner = load('run.cjs', {}, {}, {
+        Date: { now: () => now },
+        setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+      });
+      const pending = [...samples];
+      const remote = {
+        target: { root: '/remote' },
+        remote: async () => {
+          const sample = pending.shift();
+          now = at + sample.offset;
+          return { stdout: JSON.stringify({
+            found: sample.alive ? [{ pid: 20, start: '600', exe: '/remote/virgil-lsp' }] : [],
+            host: false, sampledAt: now,
+          }) };
+        },
+      };
+      await assert.rejects(runner.settle(remote, { agent: '/remote/server', serverNode: '/node' }, at),
+        (error) => error.kind === 'infra' && error.message === 'leak check could not be verified in time');
+    }
+  }
+});
+
+test('host containment cannot pass with only a late shutdown-confirmation sample', async () => {
+  let now = 0;
+  const runner = load('run.cjs', {}, {}, {
+    Date: { now: () => now },
+    setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+  });
+  const remote = {
+    target: { root: '/remote' },
+    remote: async (command) => {
+      const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+      if (options.signal) return { stdout: JSON.stringify({ found: [], host: true, signaledAt: 0, sampledAt: 0 }) };
+      now = 7000;
+      return { stdout: JSON.stringify({ found: [], host: false, sampledAt: now }) };
+    },
+  };
+  const layout = { agent: '/remote/server', serverNode: '/node' };
+  const stopped = await runner.stopHost(remote, layout, { pid: 10, start: '500', exe: '/node' });
+  await assert.rejects(runner.settle(remote, layout, stopped.at, undefined, stopped.processes),
+    (error) => error.kind === 'infra' && error.message === 'leak check could not be verified in time');
+});
+
+test('launch samples at client exit and preserves deadlines across reports and host containment', async () => {
+  for (const scenario of [
+    { serverExit: 0, reportAt: 7000, result: 'PASS' },
+    { serverExit: 6000, reportAt: 7000, result: 'INFRA' },
+    { linger: true, reportAt: 1500, result: 'PASS' },
+    { linger: true, ignoresHost: true, reportAt: 1500, result: 'FAIL' },
+  ]) {
+    let now = 0;
+    let next = 1;
+    const timers = new Map();
+    const add = (fn, ms, every) => {
+      timers.set(next, { at: now + ms, fn, every });
+      return next++;
+    };
+    const advance = async (ms) => {
+      const end = now + ms;
+      for (;;) {
+        const [id, timer] = [...timers].filter(([, value]) => value.at <= end).sort(([, a], [, b]) => a.at - b.at)[0] ?? [];
+        if (timer === undefined) break;
+        now = timer.at;
+        if (timer.every === undefined) timers.delete(id);
+        else timer.at += timer.every;
+        timer.fn();
+        await new Promise(setImmediate);
+      }
+      now = end;
+      await new Promise(setImmediate);
+    };
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    const sampleTimes = [];
+    const notes = [];
+    const failures = [];
+    let stoppedAt;
+    let reportStarted;
+    const runner = load('run.cjs', {
+      'node:fs': { ...fs, mkdirSync() {}, writeFileSync() {}, openSync: () => 42, writeSync() {}, closeSync() {} },
+      'node:child_process': { spawn: () => {
+        queueMicrotask(() => {
+          child.emit('exit', 0, null);
+          child.stdout.emit('data', Buffer.from('PASS: suite\n'));
+          add(() => child.emit('close', 0, null), 1500);
+        });
+        return child;
+      } },
+    }, {}, {
+      Date: { now: () => now },
+      setTimeout: (fn, ms) => add(fn, ms), setInterval: (fn, ms) => add(fn, ms, ms),
+      clearTimeout: (id) => timers.delete(id), clearInterval: (id) => timers.delete(id),
+    });
+    const run = {
+      target: { alias: 'host', root: '/remote' }, work: '/work', evidence: '/evidence', settings: {},
+      manifest: { launches: [] }, signal: new AbortController().signal,
+      checkpoint() {}, fail: (message) => failures.push(message), note: (message) => notes.push(message),
+      remote: async (command) => {
+        if (command.startsWith("'/remote/server/node' -e ")) {
+          sampleTimes.push(now);
+          const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+          const hostRuns = scenario.linger && stoppedAt === undefined;
+          const serverRuns = scenario.linger ? scenario.ignoresHost || stoppedAt === undefined : now < scenario.serverExit;
+          if (options.signal) stoppedAt = now;
+          return { stdout: JSON.stringify({
+            found: [
+              ...(hostRuns ? [{ pid: 10, start: '500', exe: '/remote/server/node' }] : []),
+              ...(serverRuns ? [{ pid: 20, ppid: 10, start: '600', exe: '/remote/virgil-lsp' }] : []),
+            ],
+            host: hostRuns, sampledAt: now, signaledAt: options.signal ? now : undefined,
+          }) };
+        }
+        if (command === "cat '/results/late.json'") {
+          reportStarted = now;
+          await new Promise((resolve) => add(resolve, scenario.reportAt - now));
+          return { code: 0, stdout: JSON.stringify({ outcome: 'pass', pid: 10, start: '500', folders: null, seconds: 1 }) };
+        }
+        return { code: 0, stdout: '' };
+      },
+    };
+    const layout = {
+      results: '/results', data: '/data', project: '/project', tests: '/tests', fixture: '/fixture',
+      machineSettings: '/settings/machine.json', server: '/remote', agent: '/remote/server', serverNode: '/remote/server/node',
+    };
+    const result = runner.launch(run, 'late', 'single-file', { executable: '/code', layout, vsix: { version: '1' } })
+      .then((record) => ({ record }), (error) => ({ error }));
+    await new Promise(setImmediate);
+    assert.deepEqual(sampleTimes, [0]);
+    assert.equal(reportStarted, undefined);
+    await advance(11000);
+    assert.equal(reportStarted, 1500);
+    const completed = await result;
+    if (scenario.result === 'INFRA') {
+      assert.equal(completed.error.kind, 'infra');
+      assert.equal(completed.error.message, 'leak check could not be verified in time');
+      assert.equal(run.manifest.launches[0].result, 'INFRA');
+    } else {
+      assert.equal(completed.record.result, scenario.result);
+      assert.equal(failures.length, scenario.result === 'FAIL' ? 1 : 0);
+    }
+    assert.equal(notes.length, scenario.linger ? 1 : 0);
+    if (scenario.linger) {
+      assert.equal(stoppedAt, 5000);
+      assert.equal(completed.record.remoteExtensionHost.stoppedWith, 'SIGTERM');
+    }
+    assert.equal(timers.size, 0);
   }
 });
 
