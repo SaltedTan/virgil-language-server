@@ -303,11 +303,8 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// Rename checks it again before it replies.
 	def current(ctx: ProjectContext, s: AnalysisSnapshot) -> bool {
 		var versions = s.documentVersions;
-		if (!s.matchesProject() || versions.length != ctx.sources.length) return false;
-		for (i < versions.length) {
-			var key = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
-			if (key == null || !Strings.equal(key, versions[i].uri) || !versions[i].matchesDocument(store)) return false;
-		}
+		if (!s.matchesProject() || !LspAnalysisCapture.matchesSources(versions, ctx.sources)) return false;
+		for (v in versions) if (!v.matchesDocument(store)) return false;
 		return true;
 	}
 	// The reply of {lookup} at {line}:{character} in

@@ -19,6 +19,15 @@ component LspAnalysisCapture {
 	// Aggregate paths, source bytes, and a conservative metadata allowance.
 	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 
+	def matchesSources(versions: Array<AnalysisDocumentVersion>, sources: Array<ProjectSource>) -> bool {
+		if (versions.length != sources.length) return false;
+		for (i < versions.length) {
+			var key = DocumentUri.normalize(ProjectFiles.uri(sources[i].path));
+			if (key == null || !Strings.equal(key, versions[i].uri)) return false;
+		}
+		return true;
+	}
+
 	// Returns the inputs for canonical document URIs {keys}, or null and the
 	// reason they cannot be captured.
 	def capture(store: DocumentStore, keys: Array<string>, project: bool) -> (LspAnalysisInputs, string) {

@@ -272,6 +272,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	private def publish(run: LspSemanticRun, snapshot: AnalysisSnapshot) {
 		var ctx = run.context, inputs = run.inputs;
 		if (!snapshot.matchesProject()) return discard(ctx, snapshot, "its project configuration changed");
+		if (!LspAnalysisCapture.matchesSources(inputs.versions, ctx.sources)) return discard(ctx, snapshot, "its source membership changed");
 		for (v in inputs.versions) {
 			if (!v.matchesDocument(store)) return discard(ctx, snapshot, Strings.format1("%s changed after its sources were captured", v.uri));
 		}

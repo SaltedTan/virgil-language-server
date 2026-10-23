@@ -64,6 +64,16 @@ if mode == "--run":
 if mode is not None:
     sys.exit(f"error: unknown option {mode}")
 closed_shared = root / "closed-shared"
+for name in ["semantic-membership", "semantic-membership-running"]:
+    base = root / name
+    base.mkdir(parents=True, exist_ok=True)
+    (base / ".virgil-lsp.json").write_text(
+        '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}', encoding="utf-8",
+    )
+    (base / "main.v3").write_text(
+        "component Main { def main() -> int { return Shapes.answer(); } }\n", encoding="utf-8",
+    )
+    (base / "shapes.v3").unlink(missing_ok=True)
 shutil.copytree(Path(__file__).parent / "two-programs", closed_shared, dirs_exist_ok=True)
 shared = closed_shared / "shared" / "Greeting.v3"
 shared.write_text(shared.read_text().replace("return who;", "return missing;"), encoding="utf-8")

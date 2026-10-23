@@ -82,6 +82,7 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// applies before accepting a completed analysis.
 	private def fresh(owner: ProjectContext, sources: Array<AnalysisDocumentVersion>) -> bool {
 		if (owner == null || !owner.config.current || sources == null) return false;
+		if (!LspAnalysisCapture.matchesSources(sources, owner.sources)) return false;
 		for (v in sources) if (!v.matchesDocument(store)) return false;
 		return true;
 	}
