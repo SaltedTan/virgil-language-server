@@ -31,7 +31,7 @@ WORKER_HEAP ?= 384m
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 
-.PHONY: all test test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-unit test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -70,11 +70,18 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 	$(V3C) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
 	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
+# The unit tests need two fixture directories to be unreadable. --run applies
+# that for the test process only and restores it however the process ends, so
+# the build directory stays removable. Pass a glob with ARGS, e.g.
+# `make test-unit ARGS='ProjectExpansion:*'`.
+test-unit: $(BUILD)/unit-tests
+	python3 test/fixtures/projects/prepare.py $(BUILD) --run $(BUILD)/unit-tests $(ARGS)
+
 # Unit and CLI tests start the worker next to their executables.
 test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(BUILD)/retain-probe
 	$(BUILD)/type-depth-probe
-	$(BUILD)/unit-tests
+	python3 test/fixtures/projects/prepare.py $(BUILD) --run $(BUILD)/unit-tests
 	python3 test/fixtures/projects/test_cleanup.py
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp

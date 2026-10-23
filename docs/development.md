@@ -14,9 +14,12 @@
 git submodule update --init --recursive   # if you cloned without --recurse-submodules
 make            # builds build/virgil-lsp and build/virgil-lsp-worker
 make test       # builds and runs the default suites listed below
+make test-unit  # only the unit tests; ARGS='ProjectExpansion:*' runs a subset
 make test-nvim  # only the headless Neovim smoke test (see Neovim testing below)
 make clean
 ```
+
+`make test` and `make test-unit` restore owner read, write, and execute permission on `build/project-fixtures/unreadable-directories/blocked` and `ignored-entries/build` when they finish, including after a failing test or an interrupt, so the worktree can be removed with `rm -rf` without `make clean` or `chmod` first. The directories are unreadable only while the unit tests run.
 
 Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` and `-print-compiler` print the target and the Aeneas binary it would use. It accepts these overrides:
 
@@ -100,8 +103,8 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | --- | --- | --- |
 | `test/analysis/RetainProbe.v3` | Fresh-process live-heap regression for dropped analysis snapshots, including errors | `build/retain-probe [source.v3 ...]` (no arguments runs generated fixtures; see [measurements](architecture.md#adapter-retention-workaround-and-regression-probe)) |
 | `test/analysis/TypeDepthProbe.v3` | Analysis and subsequent tiny analysis of 100,000 inferred array and tuple levels, including lazy snapshot bindings | `build/type-depth-probe` (1 GB heap, default stack) |
-| `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory for compiler crash and hang cases; the crash traces on stderr are expected. Result-budget and malformed-result cases use the unit-test executable as a synthetic worker on the same pipes. | `build/unit-tests [glob]` |
-| `test/fixtures/projects/test_cleanup.py` | Fixture permission restoration and removal through `make clean`, independent of the build directory | `python3 test/fixtures/projects/test_cleanup.py` |
+| `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory for compiler crash and hang cases; the crash traces on stderr are expected. Result-budget and malformed-result cases use the unit-test executable as a synthetic worker on the same pipes. | `make test-unit` (with `ARGS='glob'` for a subset); `build/unit-tests [glob]` for suites that don't need unreadable fixtures |
+| `test/fixtures/projects/test_cleanup.py` | Fixture permission restoration after passing and failing runs, and removal through `make clean`, independent of the build directory | `python3 test/fixtures/projects/test_cleanup.py` |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, the `repair` command's report on a few corpus cases, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/worker.py` | Interactive transcripts: concurrent replies during startup/hangs, compiler crash, retained snapshots, 20 Aeneas analyses using the default time limit with an elapsed-time summary, separate short-limit hang sessions, lifecycle cleanup, and large JSON alongside analysis allocations and snapshot replacement | `python3 test/protocol/worker.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/coordinates.py` | Exact worker diagnostic, declaration, and occurrence byte ranges, compiler-coordinate binding exports, CLI and stdio compatibility, allocation rejection/recovery, and bounded malformed-string replay | `python3 test/protocol/coordinates.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
@@ -140,7 +143,7 @@ def test_does_something(t: Tester) {
 }
 ```
 
-Run a subset with `build/unit-tests 'Thing:*'`. `make build/unit-tests` also prepares host-filesystem fixtures under `build/project-fixtures` (sparse oversized source, symlink cycle, linked file/directory, and FIFO). `ProjectExpansion:*`, `WorkspaceProjects:*`, and `LspProjectAnalysis:*` run on both Linux and macOS CI; they reuse the version-1 project fixtures, including the file shared by two programs.
+Run a subset with `make test-unit ARGS='Thing:*'`. `make build/unit-tests` also prepares host-filesystem fixtures under `build/project-fixtures` (sparse oversized source, symlink cycle, linked file/directory, and FIFO). `ProjectExpansion:*`, `WorkspaceProjects:*`, and `LspProjectAnalysis:*` run on both Linux and macOS CI; they reuse the version-1 project fixtures, including the file shared by two programs. The `ProjectExpansion` cases that need unreadable directories require `make test` or `make test-unit`, which make two fixture directories unreadable for the test process and restore them afterwards; a bare `build/unit-tests` run leaves them readable and those cases fail.
 
 ## Learning the compiler front end
 
