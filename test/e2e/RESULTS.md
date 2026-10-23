@@ -121,7 +121,7 @@ If the warning is observed there, it is an `xpass`, which fails the run, so that
 
 ## Validating a stream
 
-`scripts/editor-results.py validate` checks streams, each of one run, against `coverage.json` and `results-v1.schema.json` in this directory, or the files that `--manifest` and `--schema` name, by the rules above:
+`scripts/editor-results.py validate` requires Python 3.9 or later and uses only the standard library. It checks streams, each of one run, against `coverage.json` and `results-v1.schema.json` in this directory, or the files that `--manifest` and `--schema` name, by the rules above:
 
 ```sh
 python3 scripts/editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
