@@ -150,9 +150,11 @@ deadline() {
 # descendants PIDS: prints those of the PIDS, separated by spaces or
 # newlines, that are running, and the PIDs of all their descendants. Zombies
 # don't count. The PIDS go through the environment: macOS's awk rejects a
-# newline in a -v value.
+# newline in a -v value. Fails if the processes can't be listed.
 descendants() {
-  ps -ax -o pid=,ppid=,stat= | R=$1 awk '
+  local table
+  table=$(ps -ax -o pid=,ppid=,stat=) && [[ -n $table ]] || return 1
+  printf '%s\n' "$table" | R=$1 awk '
     $3 !~ /^Z/ { parent[$1] = $2 }
     END {
       n = split(ENVIRON["R"], list, " ")
@@ -170,25 +172,33 @@ descendants() {
 # process group of each Neovim that it recorded, which keeps what Neovim
 # started, such as a parser build, also once Neovim has exited and they no
 # longer descend from it; and any process whose command line holds the work
-# directory.
+# directory. It reads the process table once, and fails if it can't; a
+# recorded process that is gone is just not printed.
 run_processes() {
-  {
-    cat "$work"/*.pids 2>/dev/null | while read -r pid name; do
-      if [[ $name == nvim ]]; then
-        ps -ax -o pgid=,pid=,command= | G=$pid awk '$1 == ENVIRON["G"] { sub(/^ *[0-9]+ +/, ""); print }'
-      else
-        ps -p "$pid" -o pid=,command= 2>/dev/null | grep virgil-lsp || true
-      fi
-    done
-    ps -ax -o pid=,command= | W=$work/ awk 'index($0, ENVIRON["W"])'
-  } | sed 's/^ *//' | sort -u
+  local table
+  table=$(ps -ax -o pid=,pgid=,command=) && [[ -n $table ]] || return 1
+  printf '%s\n' "$table" | P=$(cat "$work"/*.pids 2>/dev/null || true) W=$work/ awk '
+    BEGIN {
+      n = split(ENVIRON["P"], line, "\n")
+      for (i = 1; i <= n; i++) {
+        if (split(line[i], f, " ") < 2) continue
+        if (f[2] == "nvim") group[f[1]] = 1; else server[f[1]] = 1
+      }
+    }
+    {
+      cmd = $0
+      sub(/^ *[0-9]+ +[0-9]+ +/, "", cmd)
+      if (($2 in group) || (($1 in server) && index(cmd, "virgil-lsp")) || index(cmd, ENVIRON["W"]))
+        print $1, cmd
+    }'
 }
 
 # run_trees PIDS: prints the running PIDS, the processes that run_processes
 # finds, and all their descendants; fails if the processes can't be listed.
 run_trees() {
   local roots
-  roots=$(run_processes | awk '{ print $1 }') && descendants "$1 $roots"
+  roots=$(run_processes) || return 1
+  descendants "$1 $(printf '%s\n' "$roots" | awk '{ print $1 }')"
 }
 
 # stopping is 1 while stop_processes runs, and pending then holds the exit
