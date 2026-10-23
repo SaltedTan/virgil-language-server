@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import resource
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,10 @@ SETUPS = {setup["id"]: setup for setup in MANIFEST_DATA["setups"]}
 RULE = MANIFEST_DATA["xfails"][0]
 STATUSES = ("pass", "fail", "xfail", "xpass", "skip")
 OTHER_COMMIT = "0" * 40
+# The address space of the command that CommandTest runs, on Linux, so that
+# a regression that sizes its work by a number in a stream fails rather than
+# filling the machine's memory.
+MEMORY = 1 << 30
 
 
 def sha(text):
@@ -1134,9 +1139,12 @@ class CommandTest(unittest.TestCase):
         return name
 
     def run_command(self, *args):
+        def limit():
+            resource.setrlimit(resource.RLIMIT_AS, (MEMORY, MEMORY))
+
         # From another directory, so the manifest and schema are found beside the script.
         result = subprocess.run([sys.executable, str(SCRIPT), "validate", *args], cwd=self.directory,
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, preexec_fn=limit if sys.platform == "linux" else None)
         return result.returncode, result.stdout, result.stderr
 
     def test_exit_statuses_and_output(self):
@@ -1158,6 +1166,18 @@ class CommandTest(unittest.TestCase):
                          self.run_command(invalid, passed, failed))
         self.assertEqual((2, f"{failed_line}missing.jsonl: invalid: can't read it: No such file or directory\n", ""),
                          self.run_command(failed, "missing.jsonl"))
+
+    def test_a_huge_iteration(self):
+        # Finding the first missing iteration doesn't count up to the last.
+        events = stream("remote-ssh")
+        events[0]["expected"] = [{"id": "ssh.identity.remote-host", "profile": "single-file", "iteration": 10 ** 30}]
+        huge = self.write("huge.jsonl", events[:1])
+        passed = self.write("passed.jsonl", stream("nvim"))
+        self.assertEqual((2, f"{huge}: invalid: line 1: expected has profile single-file in iterations {10 ** 30}, "
+                             "without iteration 1\n"
+                             f"{passed}: valid, run passed (21 of 21 observations): 21 pass, 0 fail, 0 xfail, "
+                             "0 xpass, 0 skip\n", ""),
+                         self.run_command(huge, passed))
 
     def test_options(self):
         manifest = self.write("coverage.json", MANIFEST_BYTES + b" ")

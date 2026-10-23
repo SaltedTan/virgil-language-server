@@ -615,8 +615,10 @@ def plan_of(start, manifest):
     iterations = {}
     for profile in sorted(found):
         numbers = sorted(found[profile])
-        if numbers != list(range(1, len(numbers) + 1)):
-            gap = min(set(range(1, numbers[-1] + 1)) - found[profile])
+        # The first number out of place is the first gap; an iteration from
+        # the stream mustn't size the search.
+        gap = next((wanted for wanted, number in enumerate(numbers, 1) if number != wanted), None)
+        if gap is not None:
             raise Invalid(1, f"expected has profile {profile} in iterations "
                              f"{', '.join(map(str, numbers))}, without iteration {gap}")
         iterations[profile] = len(numbers)
