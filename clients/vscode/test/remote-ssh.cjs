@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The Remote-SSH test's teardown, process groups, leak check, and bootstrap
-// (e2e/remote-ssh/), with a fake /proc, clock, and VS Code: nothing is started
-// or signaled.
+// (e2e/remote-ssh/), mostly with a fake /proc, clock, and VS Code. Staging
+// checks run fixture executables; Linux archive checks also run tar with the
+// real process-group tracker.
 
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
