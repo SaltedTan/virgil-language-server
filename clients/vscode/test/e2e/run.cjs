@@ -240,12 +240,14 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
     // its keeper, or is no longer the run's; returns whether it has.
     const finish = () => {
       if (finished) return true;
-      if (exited === undefined || (group.look() ?? []).length > 0) return false;
+      if (exited === undefined || group.look()?.empty === false) return false;
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
-      signal.removeEventListener('abort', interrupt);
-      void group.release().then(() => resolve({ ...exited, stopped }));
+      void group.release().then(() => {
+        signal.removeEventListener('abort', interrupt);
+        resolve({ ...exited, stopped });
+      });
       return true;
     };
     const stop = (reason) => {

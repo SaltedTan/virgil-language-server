@@ -30,13 +30,17 @@ function processInfo(pid) {
   }
 }
 
-// Every process, as processInfo gives it.
+// Every process, as processInfo gives it, and whether all listed PIDs were read.
 function processTable() {
-  if (process.platform !== 'linux') return psTable(['-A']);
-  return fs.readdirSync('/proc').flatMap((name) => {
-    const info = /^[0-9]+$/.test(name) ? processInfo(name) : undefined;
+  if (process.platform !== 'linux') return { processes: psTable(['-A']), complete: true };
+  let complete = true;
+  const processes = fs.readdirSync('/proc').flatMap((name) => {
+    if (!/^[0-9]+$/.test(name)) return [];
+    const info = processInfo(name);
+    if (info === undefined) complete = false;
     return info === undefined ? [] : [info];
   });
+  return { processes, complete };
 }
 
 // The processes that ps lists with selection, which -p's exit status of 1
@@ -231,9 +235,9 @@ function startGroup(command, args, { env, stdio, onExit }) {
     reported = true;
     onExit(result);
   };
-  // The group's processes other than the keeper, and not zombies, while the
-  // group is the run's, which the runner then remembers; undefined once it
-  // isn't. The group is the run's while the keeper hasn't been reaped, or,
+  // The group's live processes other than the keeper, which the runner then
+  // remembers, and whether it is empty; undefined once it isn't the run's.
+  // The group is the run's while the keeper hasn't been reaped, or,
   // once it has, while a process that the runner saw there in an earlier look
   // is still in it, the same process by PID and start time, alive or a zombie:
   // it has kept the number since, as a process can't come back to a session
@@ -242,7 +246,9 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // look, so that it covers the whole look.
   const look = () => {
     if (lost) return undefined;
-    const found = processTable().filter((p) => p.group === number && p.state !== 'Z' && p.pid !== number);
+    const { processes, complete } = processTable();
+    const members = processes.filter((p) => p.group === number && p.pid !== number);
+    const found = members.filter((p) => p.state !== 'Z');
     const held = ([pid, start]) => {
       const info = processInfo(pid);
       return info?.start === start && info.group === number;
@@ -252,7 +258,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
-    return found;
+    return { processes: found, empty: complete && members.length === 0 };
   };
   // Sends a signal to each process that the runner saw in the group, wherever
   // it is now, and, with alsoKeeper, last to the keeper, if it hasn't been

@@ -97,7 +97,7 @@ test('without /proc, processes and their start times come from ps, and signals f
   const table = new Map([[10, { start, group: 10 }], [11, { start, group: 10, state: 'Z+' }], [12, { start: 'Thu Oct 23 17:14:02 2026', group: 12 }]]);
   const kills = [];
   const fake = fakeProcesses(new Map(), { platform: 'darwin', ps: fakePs(table), kill: (pid, name) => kills.push([pid, name]) });
-  assert.deepEqual(JSON.parse(JSON.stringify(fake.processTable())), [
+  assert.deepEqual(JSON.parse(JSON.stringify(fake.processTable().processes)), [
     { pid: 10, state: 'S', ppid: 1, group: 10, start }, { pid: 11, state: 'Z', ppid: 1, group: 10, start },
     { pid: 12, state: 'S', ppid: 1, group: 12, start: 'Thu Oct 23 17:14:02 2026' },
   ]);
@@ -203,7 +203,7 @@ test('the keeper stops its group when the runner goes without releasing it (real
     const { startGroup } = require(${JSON.stringify(path.join(__dirname, 'e2e/processes.cjs'))});
     const group = startGroup('sh', ['-c', 'sleep 30 & exec sleep 30'], { env: process.env, stdio: ['ignore', 'ignore', 'ignore'], onExit() {} });
     const report = () => {
-      const found = group.look() ?? [];
+      const found = group.look()?.processes ?? [];
       if (found.length < 2) return setTimeout(report, 50);
       console.log(JSON.stringify({ keeper: group.pid, found }));
     };
@@ -261,10 +261,10 @@ test('the keeper sends its group the signals that the runner asks for (real proc
   });
   let found = [];
   try {
-    await wait(() => (found = group.look() ?? []).length === 2);
+    await wait(() => (found = group.look()?.processes ?? []).length === 2);
     group.signal('SIGTERM');
     await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(group.look().length, 2);
+    assert.equal(group.look().processes.length, 2);
     assert.deepEqual(helpers.filter((command) => command === 'python3'), []);
     // The keeper ends with its group, before it can say that it sent SIGKILL,
     // so the runner also sends it to the processes that it saw there, which
@@ -305,7 +305,7 @@ test('both runners stop a group whose keeper has been stopped, keeper and all, w
     let found = [];
     let keeper;
     try {
-      assert.ok(await wait(() => (found = processes.processTable().filter((p) => p.group === group.pid && p.pid !== group.pid)).length > 0, 5000), file);
+      assert.ok(await wait(() => (found = processes.processTable().processes.filter((p) => p.group === group.pid && p.pid !== group.pid)).length > 0, 5000), file);
       keeper = processes.processInfo(group.pid);
       processes.signalProcesses([keeper], 'SIGSTOP');
       assert.ok(await wait(() => processes.processInfo(keeper.pid)?.state === 'T', 2000), file);
@@ -365,21 +365,105 @@ test('a group whose keeper Node.js has reaped is never signaled by its number, e
 // remote-ssh/run.cjs: fake processes, by default from a fake /proc, or from
 // ps with platform 'darwin', and a fake clock and group (see fakeGroup), whose
 // keeper is PID 50.
-function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [] } = {}) {
+function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [], file = 'run.cjs', proc, ps = fakePs(table) } = {}) {
   const { keeper, kill, deliver, signals } = fakeGroup(table);
   const clock = fakeClock();
-  const ps = fakePs(table);
-  const runner = load('run.cjs', {
-    './processes.cjs': fakeProcesses(table, { keeper, kill, deliver, pidfd, signals, platform, ps, globals: clock.globals }),
+  const runner = load(file, {
+    [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fakeProcesses(table, { keeper, kill, deliver, pidfd, signals, platform, ps, proc, globals: clock.globals }),
     'node:child_process': { spawnSync: () => ({ status: 0, stdout: [...table].map(([pid, p]) => `${pid} ${p.group} ${p.args ?? 'x'}\n`).join('') }) },
   }, { pid: 1, kill, platform }, clock.globals);
   const controller = new AbortController();
   let result;
-  runner.runGroup('code', [], { env: {}, stdin: 'ignore', signal: controller.signal, servers }).then((value) => { result = value; });
+  runner.runGroup('code', [], { env: {}, stdin: 'ignore', timeout: 60000, signal: controller.signal, servers }).then((value) => { result = value; });
   return {
     signals, keeper, advance: clock.advance, interrupt: () => controller.abort(),
     result: () => new Promise((resolve) => setImmediate(() => resolve(result))),
   };
+}
+
+for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
+  for (const state of ['gone', 'Z']) {
+    test(`${file} rescans when a listed helper forks and becomes ${state} before its stat is read`, async () => {
+      const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }]]);
+      const proc = fakeProc(table);
+      let racing = false;
+      const read = proc.readFileSync;
+      proc.readFileSync = (name) => {
+        if (racing && name === '/proc/52/stat') {
+          racing = false;
+          table.set(53, { start: '120', group: 50, on: () => table.delete(53) });
+          if (state === 'gone') table.delete(52);
+          else table.get(52).state = 'Z';
+        }
+        return read(name);
+      };
+      const run = localRunGroup(table, { file, proc });
+      run.keeper.command(51);
+      table.set(52, { start: '110', group: 50 });
+      table.delete(51);
+      racing = true;
+      run.keeper.exit(0, null);
+      run.keeper.close();
+      assert.equal(run.keeper.released, undefined);
+      run.advance(50);
+      assert.equal(await run.result(), undefined);
+      table.delete(52);
+      run.interrupt();
+      run.advance(50);
+      assert.equal((await run.result()).stopped, 'was interrupted');
+      assert.deepEqual(run.signals, [['keeper', 'SIGTERM']]);
+      assert.equal(table.has(53), false);
+    });
+  }
+
+  test(`${file} rescans a macOS snapshot with a zombie helper and finds its surviving child`, async () => {
+    const start = 'Thu Oct 23 17:13:01 2026';
+    const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+    const snapshot = fakePs(table);
+    let racing = false;
+    const ps = (args) => {
+      const result = snapshot(args);
+      if (racing && args[0] === '-A') {
+        racing = false;
+        table.delete(52);
+        table.set(53, { start, group: 50 });
+      }
+      return result;
+    };
+    const run = localRunGroup(table, { file, platform: 'darwin', ps });
+    run.keeper.command(51);
+    table.delete(51);
+    table.set(52, { start, group: 50, state: 'Z' });
+    racing = true;
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    assert.equal(run.keeper.released, undefined);
+    run.advance(50);
+    assert.equal(await run.result(), undefined);
+    table.delete(53);
+    run.advance(50);
+    assert.equal((await run.result()).code, 0);
+    assert.deepEqual(run.signals, []);
+  });
+
+  test(`${file} observes an interrupt during the keeper release wait`, async () => {
+    const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }]]);
+    const run = localRunGroup(table, { file });
+    run.keeper.command(51);
+    run.keeper.stopped = true;
+    table.delete(51);
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    assert.equal(run.keeper.released, 'release\n');
+    run.advance(500);
+    run.interrupt();
+    run.advance(499);
+    assert.equal(await run.result(), undefined);
+    run.advance(1);
+    const result = await run.result();
+    assert.deepEqual([result.stopped, result.code, result.signal], ['was interrupted', 0, null]);
+    assert.deepEqual(run.signals, [[50, 'SIGKILL']]);
+  });
 }
 
 test('the Extension Host test has the keeper signal its group, and waits for the group', async () => {

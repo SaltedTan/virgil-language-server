@@ -258,15 +258,17 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
       },
     });
     const finish = () => {
-      if (finished || exited === undefined || open > 0 || (group.look() ?? []).length > 0) return;
+      if (finished || exited === undefined || open > 0 || group.look()?.empty === false) return;
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
-      signal.removeEventListener('abort', interrupt);
-      void group.release().then(() => resolve({
-        ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
-        stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
-      }));
+      void group.release().then(() => {
+        signal.removeEventListener('abort', interrupt);
+        resolve({
+          ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
+          stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
+        });
+      });
     };
     const stop = (reason) => {
       if (stopped !== undefined || group.pid === undefined) return;
@@ -275,11 +277,11 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
       deadline = Date.now() + STOP_GRACE_MS;
     };
     const poll = setInterval(() => {
-      const left = group.look() ?? [];
+      const empty = group.look()?.empty !== false;
       if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
-      } else if (exited !== undefined && left.length === 0) {
+      } else if (exited !== undefined && empty) {
         finish();
       } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
         groupLeft = true;
