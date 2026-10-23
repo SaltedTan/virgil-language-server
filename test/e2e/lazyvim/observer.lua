@@ -94,25 +94,67 @@ end
 -- $VIRGIL_DRIVER_PIDS as "PID NAME", so that run.sh can check that none
 -- outlives the run wherever the server is installed. Neovim starts the server
 -- in its own process group, so it would otherwise escape a killed session.
+-- Neovim's own PID comes first, as "PID nvim ANCHOR": run.sh also stops what
+-- is left in its process group. ANCHOR is the PID of a sleep that Neovim
+-- starts in its group, named $VIRGIL_DRIVER_ANCHOR, and that outlives it: a
+-- group's number isn't reused while the group has a process, so run.sh takes
+-- the group for Neovim's only while the anchor runs in it. Without an anchor,
+-- the line is "PID nvim", and run.sh fails rather than guess at the group. A
+-- scan reads one ps listing, without waiting for it: nvim_get_proc runs ps
+-- twice for each process and waits for it in a nested event loop, so with
+-- the dozens of processes of a parser build, scans outlasted their interval,
+-- nested in each other, and held the driver's requests past their timeouts.
 local pids_file = vim.env.VIRGIL_DRIVER_PIDS
 if pids_file then
-  local seen = {}
-  local function scan(pid)
-    for _, child in ipairs(vim.api.nvim_get_proc_children(pid)) do
-      local proc = vim.api.nvim_get_proc(child)
-      if not seen[child] and proc and proc.name and proc.name:find("virgil-lsp", 1, true) then
-        seen[child] = true
-        local f = io.open(pids_file, "a")
-        if f then
-          f:write(child, " ", proc.name, "\n")
-          f:close()
-        end
-      end
-      scan(child)
+  local function record(pid, name)
+    local f = io.open(pids_file, "a")
+    if f then
+      f:write(pid, " ", name, "\n")
+      f:close()
     end
   end
+  local root, seen, scanning = vim.fn.getpid(), {}, false
+  -- A day bounds the anchor if run.sh is killed before it stops the anchor.
+  local handle, anchor
+  if vim.env.VIRGIL_DRIVER_ANCHOR then
+    handle, anchor = vim.uv.spawn("bash", {
+      args = { "-c", 'exec -a "$0" sleep 86400', vim.env.VIRGIL_DRIVER_ANCHOR },
+    }, function() handle:close() end)
+  end
+  record(root, handle and "nvim " .. anchor or "nvim")
+  local function found(listing)
+    local children = {}
+    for line in listing:gmatch("[^\n]+") do
+      local pid, ppid, name = line:match("^%s*(%d+)%s+(%d+)%s+(.-)%s*$")
+      if pid then
+        children[tonumber(ppid)] = children[tonumber(ppid)] or {}
+        table.insert(children[tonumber(ppid)], { pid = tonumber(pid), name = name:gsub("^.*/", "") })
+      end
+    end
+    local todo = { root }
+    while #todo > 0 do
+      for _, child in ipairs(children[table.remove(todo)] or {}) do
+        if not seen[child.pid] and child.name:find("virgil-lsp", 1, true) then
+          seen[child.pid] = true
+          record(child.pid, child.name)
+        end
+        table.insert(todo, child.pid)
+      end
+    end
+  end
+  local function scan()
+    if scanning then return end
+    scanning = true
+    local ok = pcall(vim.system, { "ps", "-ax", "-o", "pid=,ppid=,comm=" }, { text = true }, function(r)
+      vim.schedule(function()
+        scanning = false
+        if r.code == 0 then pcall(found, r.stdout) end
+      end)
+    end)
+    if not ok then scanning = false end
+  end
   local timer = assert(vim.uv.new_timer())
-  timer:start(0, 500, vim.schedule_wrap(function() pcall(scan, vim.fn.getpid()) end))
-  vim.api.nvim_create_autocmd("LspAttach", { callback = function() pcall(scan, vim.fn.getpid()) end })
+  timer:start(0, 500, vim.schedule_wrap(scan))
+  vim.api.nvim_create_autocmd("LspAttach", { callback = scan })
   vim.api.nvim_create_autocmd("VimLeavePre", { callback = function() timer:stop() end })
 end

@@ -19,7 +19,7 @@ starter_commit=803bc181d7c0d6d5eeba9274d9be49b287294d99
 starter_url=https://github.com/LazyVim/starter
 lazy_url=https://github.com/folke/lazy.nvim.git
 lazyvim_url=https://github.com/LazyVim/LazyVim.git
-# Deadlines in seconds: for installing the plugins, and for each run.
+# Deadlines in seconds: for installing the plugins and parsers, and for each run.
 install_timeout=${VIRGIL_LAZYVIM_INSTALL_TIMEOUT:-600}
 run_timeout=${VIRGIL_LAZYVIM_RUN_TIMEOUT:-240}
 
@@ -150,9 +150,11 @@ deadline() {
 # descendants PIDS: prints those of the PIDS, separated by spaces or
 # newlines, that are running, and the PIDs of all their descendants. Zombies
 # don't count. The PIDS go through the environment: macOS's awk rejects a
-# newline in a -v value.
+# newline in a -v value. Fails if the processes can't be listed.
 descendants() {
-  ps -ax -o pid=,ppid=,stat= | R=$1 awk '
+  local table
+  table=$(ps -ax -o pid=,ppid=,stat=) && [[ -n $table ]] || return 1
+  printf '%s\n' "$table" | R=$1 awk '
     $3 !~ /^Z/ { parent[$1] = $2 }
     END {
       n = split(ENVIRON["R"], list, " ")
@@ -165,23 +167,69 @@ descendants() {
     }'
 }
 
-# Prints "PID COMMAND" for each process of the runs still running: the server
-# and worker processes that observer.lua recorded, and any process whose
-# command line holds the work directory.
+# Prints "RUN PID NAME [ANCHOR]" for each line that observer.lua wrote to
+# RUN.pids.
+records() {
+  local file name
+  for file in "$work"/*.pids; do
+    [[ -f $file ]] || continue
+    name=${file##*/}
+    awk -v r="${name%.pids}" '{ print r, $0 }' "$file"
+  done
+}
+
+# run_processes [groups]: prints "PID COMMAND" for each process of the runs
+# still running: the server and worker processes that observer.lua recorded;
+# the processes in the process group of each Neovim that it recorded, which
+# keeps what Neovim started, such as a parser build, also once Neovim has
+# exited and they no longer descend from it; and any process whose command
+# line holds the work directory. A Neovim's group counts only while the anchor
+# that observer.lua recorded with it runs in it, under its name: once a group
+# is empty, its number can be any new group's. With groups, it prints instead
+# "+ RUN ANCHOR" for each run whose Neovim's group counts, and "- RUN" for each
+# other, except the runs in checked. It reads the process table once, and
+# fails if it can't; a recorded process that is gone is just not printed.
 run_processes() {
-  {
-    cat "$work"/*.pids 2>/dev/null | while read -r pid name; do
-      ps -p "$pid" -o pid=,command= 2>/dev/null | grep virgil-lsp || true
-    done
-    ps -ax -o pid=,command= | W=$work/ awk 'index($0, ENVIRON["W"])'
-  } | sort -u
+  local table
+  table=$(ps -ax -o pid=,pgid=,stat=,command=) && [[ -n $table ]] || return 1
+  printf '%s\n' "$table" | M=${1:-} P=$(records) C=$checked W=$work/ awk '
+    BEGIN {
+      n = split(ENVIRON["P"], line, "\n")
+      for (i = 1; i <= n; i++) {
+        if (split(line[i], f, " ") < 3) continue
+        if (f[3] != "nvim") server[f[2]] = 1
+        else { nvim[f[1]] = f[2]; anchor[f[1]] = f[4]; if (f[4] != "") run[f[4]] = f[1] }
+      }
+    }
+    {
+      cmd = $0
+      sub(/^ *[0-9]+ +[0-9]+ +[^ ]+ +/, "", cmd)
+      pid[NR] = $1; pgid[NR] = $2; command[NR] = cmd
+      if (($1 in run) && $2 == nvim[run[$1]] && $3 !~ /^Z/ && cmd == (ENVIRON["W"] run[$1] ".anchor 86400"))
+        counts[run[$1]] = 1
+    }
+    END {
+      if (ENVIRON["M"] == "groups") {
+        for (r in nvim) {
+          if (index(ENVIRON["C"], " " r " ")) continue
+          if (r in counts) print "+", r, anchor[r]; else print "-", r
+        }
+        exit
+      }
+      for (r in counts) group[nvim[r]] = 1
+      for (i = 1; i <= NR; i++)
+        if ((pgid[i] in group) || ((pid[i] in server) && index(command[i], "virgil-lsp")) ||
+          index(command[i], ENVIRON["W"]))
+          print pid[i], command[i]
+    }'
 }
 
 # run_trees PIDS: prints the running PIDS, the processes that run_processes
 # finds, and all their descendants; fails if the processes can't be listed.
 run_trees() {
   local roots
-  roots=$(run_processes | awk '{ print $1 }') && descendants "$1 $roots"
+  roots=$(run_processes) || return 1
+  descendants "$1 $(printf '%s\n' "$roots" | awk '{ print $1 }')"
 }
 
 # stopping is 1 while stop_processes runs, and pending then holds the exit
@@ -192,6 +240,8 @@ stopping=0 pending='' frozen=' '
 # parents unseen, so a later call that finds none doesn't make the teardown
 # complete.
 lost=0
+# checked holds the runs whose Neovim's process group a call has checked.
+checked=' '
 
 # Stops each tmux server and every process of the runs: the servers' process
 # trees, the processes that run_processes finds, and all their descendants.
@@ -205,12 +255,16 @@ lost=0
 # tries again after 0.2 seconds, up to five times, with those found so far
 # still frozen. Then every 0.2 seconds it looks again and kills any process
 # it finds; if any is left after five seconds, or the processes couldn't be
-# listed, it prints so and fails. A signal meanwhile exits only after that,
+# listed, it prints so and fails. Before the kills, it checks each Neovim's
+# process group that no call has checked: if the group doesn't count, what
+# Neovim left in it can't be found, and it fails; if it does, its anchor is
+# killed last, once nothing else is left, so that the looks until then still
+# find the group's processes. A signal meanwhile exits only after that,
 # and a stopped tmux server would answer no query: so a query that gets no
 # answer in two seconds is given up, and if a call didn't finish, the next
 # kills what it froze without asking the servers.
 stop_processes() {
-  local list new pids sock pid tries=0 fails=0 listed=1 rc=0
+  local list new pids sock pid groups state name anchors left tries=0 fails=0 listed=1 rc=0
   stopping=1
   if [[ $frozen == ' ' ]]; then
     for sock in "$work"/*.sock; do
@@ -241,24 +295,53 @@ stop_processes() {
     for pid in $new; do kill -STOP "$pid" 2>/dev/null || true; done
     tries=$((tries + 1))
   done
+  anchors=' '
+  if (( listed )); then
+    if groups=$(run_processes groups); then
+      while read -r state name pid; do
+        [[ -n $state ]] || continue
+        checked="$checked$name "
+        if [[ $state == + ]]; then
+          anchors="$anchors$pid "
+        else
+          echo "FAIL: $name's Neovim has no anchor in its process group, so what Neovim left there can't be found"
+          rc=1
+        fi
+      done <<< "$groups"
+    else
+      listed=0
+    fi
+  fi
   pids=$frozen tries=0
   while :; do
-    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
-    frozen=' '
+    for pid in $pids; do
+      [[ $anchors == *" $pid "* ]] || kill -KILL "$pid" 2>/dev/null || true
+    done
+    frozen=$anchors
     if ! pids=$(run_trees "$pids"); then
       listed=0
       break
     fi
+    left=''
+    for pid in $pids; do
+      [[ $anchors == *" $pid "* ]] || left="$left$pid "
+    done
+    if [[ -z $left && $anchors != ' ' ]]; then
+      anchors=' '
+      continue
+    fi
     [[ -n $pids ]] || break
     if (( tries == 25 )); then
       echo "FAIL: processes still running after SIGKILL:"
-      for pid in $pids; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
+      for pid in $left; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
       rc=1
       break
     fi
     sleep 0.2
     tries=$((tries + 1))
   done
+  for pid in $anchors; do kill -KILL "$pid" 2>/dev/null || true; done
+  frozen=' '
   if (( ! listed )); then
     echo "FAIL: could not list the processes of the runs"
     rc=1
@@ -441,7 +524,7 @@ else
   action=restore
 fi
 echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
-started=$SECONDS
+install_started=$SECONDS started=$SECONDS
 rc=0
 deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
 (( rc != 124 )) || die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
@@ -480,15 +563,44 @@ fi
 cat "$work/plugins.txt" >> "$out/provenance.txt"
 cat "$work/plugins.txt"
 
+# nvim-treesitter's parsers, installed by parsers.lua as LazyVim installs them
+# at a first start, under what is left of the deadline for installing the
+# plugins. Otherwise LazyVim would download and build them in the background
+# during main. Meanwhile, a plugin spec leaves LazyVim's configuration of
+# nvim-treesitter only its setup, so that LazyVim starts no install of its own.
+cat > "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua" <<'LUA'
+return { { "nvim-treesitter/nvim-treesitter", config = function(_, opts) require("nvim-treesitter").setup(opts) end } }
+LUA
+echo "-- installing nvim-treesitter's parsers; log in $out/parsers-install.log"
+started=$SECONDS
+left=$((install_timeout - (SECONDS - install_started)))
+(( left > 0 )) || die "installing the plugins and parsers exceeded $install_timeout seconds"
+rc=0
+VIRGIL_PARSERS_OUT=$work/parsers.txt deadline "$left" nvim --headless \
+  -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/parsers.lua")' > "$out/parsers-install.log" 2>&1 || rc=$?
+(( rc != 124 )) ||
+  die "installing the plugins and parsers exceeded $install_timeout seconds; see $out/parsers-install.log"
+(( rc == 0 )) || die "installing the parsers failed with status $rc; see $out/parsers-install.log"
+rm "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua"
+echo "   done in $((SECONDS - started)) s"
+cat "$work/parsers.txt" >> "$out/provenance.txt"
+cat "$work/parsers.txt"
+
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
 # One run: Neovim with the observer and the driver, then its exit status,
-# which the pane also exits with.
+# which the pane also exits with. The status file appears whole, once.
 cat > "$work/pane.sh" <<'SH'
 TERM=xterm-256color nvim -n --cmd 'lua dofile(vim.env.VIRGIL_HARNESS .. "/observer.lua")' \
   -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/driver.lua")' "$VIRGIL_DRIVER_FILE"
 status=$?
-echo "$status" > "$VIRGIL_DRIVER_STATUS"
+echo "$status" > "$VIRGIL_DRIVER_STATUS.tmp"
+mv "$VIRGIL_DRIVER_STATUS.tmp" "$VIRGIL_DRIVER_STATUS"
 exit "$status"
+SH
+# wait.sh STATUS_FILE PANE_PID: waits until pane.sh has written its status,
+# or the pane's shell is gone without one.
+cat > "$work/wait.sh" <<'SH'
+while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null; do sleep 0.2; done
 SH
 
 summary=''
@@ -498,6 +610,7 @@ run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
   local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
   local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
+  local tmux_pid='' pane_pid='' anchor_pid=''
   current=$name
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
@@ -506,16 +619,20 @@ run() {
     export VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
     export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$results
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
-    export VIRGIL_DRIVER_STATUS=$work/$name.status
+    export VIRGIL_DRIVER_ANCHOR=$work/$name.anchor VIRGIL_DRIVER_STATUS=$work/$name.status
     # The pane stays open when Neovim exits, for its screen, and keeps the
-    # tmux server running until stop_processes; the hook then wakes wait-for,
-    # whether before or after it starts waiting. The script's path is an
+    # tmux server running until stop_processes. The script's path is an
     # argument of its own, not split by a shell.
     tmux -S "$sock" -f /dev/null set-option -g remain-on-exit on \; \
-      set-hook -g pane-died "wait-for -S $name" \; \
-      new-session -d -s "$name" -x 200 -y 50 -c "$work/project" /bin/sh "$work/pane.sh"
-  )
-  deadline "$run_timeout" tmux -S "$sock" wait-for "$name" || rc=$?
+      new-session -d -P -F '#{pid} #{pane_pid}' -s "$name" -x 200 -y 50 -c "$work/project" \
+      /bin/sh "$work/pane.sh"
+  ) > "$work/$name.tmux"
+  read -r tmux_pid pane_pid < "$work/$name.tmux" || true
+  # The run ends once Neovim has exited and pane.sh has written its status, or
+  # the pane's shell is gone without one. It doesn't wait for tmux to find the
+  # pane dead: Ubuntu 24.04's tmux 3.4, built with utempter, can miss the
+  # shell's exit and then never does (tmux/tmux#4559).
+  deadline "$run_timeout" /bin/sh "$work/wait.sh" "$work/$name.status" "$pane_pid" || rc=$?
   if (( rc == 124 )); then
     echo "FAIL: $name exceeded $run_timeout seconds; screen in $out/$name.screen.txt"
     save_screen "$name" "when the run timed out"
@@ -560,6 +677,15 @@ run() {
     echo "FAIL: processes left running after $name:"
     echo "$left" | sed 's/^/   /'
     verdict=FAIL
+  fi
+  # What else Neovim left running, such as a plugin's download, is named but
+  # doesn't fail the run: it isn't the server's. Its anchor isn't listed.
+  anchor_pid=$(awk '$2 == "nvim" { print $3; exit }' "$work/$name.pids" 2>/dev/null || true)
+  left=$(run_processes | awk -v t="$tmux_pid" -v p="$pane_pid" -v a="$anchor_pid" \
+    '$1 != t && $1 != p && $1 != a { print "   " $0 }' || true)
+  if [[ -n $left ]]; then
+    echo "-- left running after Neovim exited, and stopped:"
+    echo "$left"
   fi
   stop_processes || verdict=FAIL
   if [[ $complete == 0 || $exit_status != 0 || $failed != 0 || $xfail != "$expected_xfail" ]]; then

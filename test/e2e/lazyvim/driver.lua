@@ -109,9 +109,22 @@ local function codes(publication)
   return table.concat(result, ",")
 end
 
+-- Waits for the reply between main-loop turns, as wait_for does. request_sync
+-- waits in a nested event loop instead, which can't return before the loops
+-- nested in it do: plugins nest their own, such as lazy.nvim's check for
+-- updates, and observer.lua's process scans once held one past its timeout
+-- after the reply had come.
 local function request(client, method, params, bufnr)
-  local response, err = client:request_sync(method, params, 10000, bufnr)
-  assert(response, method .. " failed: " .. vim.inspect(err))
+  local response
+  local sent, id = client:request(method, params, function(err, result)
+    response = { err = err, result = result }
+  end, bufnr)
+  assert(sent, method .. " was not sent")
+  local ok, err = pcall(wait_for, "the " .. method .. " reply", function() return response end)
+  if not ok then
+    client:cancel_request(id)
+    error(err, 0)
+  end
   assert(not response.err, method .. " error: " .. vim.inspect(response.err))
   return response.result
 end
