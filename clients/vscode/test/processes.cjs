@@ -1,0 +1,303 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The test runners' process groups and signals (e2e/processes.cjs and
+// e2e/keeper.cjs), and the Extension Host test's runGroup (e2e/run.cjs),
+// mostly with a fake /proc or ps, clock, and keeper (see support/fakes.cjs);
+// some checks run real processes.
+
+const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const { test } = require('node:test');
+const { fakeClock, fakeKeeper, fakeProcesses, load } = require('./support/fakes.cjs');
+
+const processes = require('./e2e/processes.cjs');
+
+const pidfdSkip = process.platform !== 'linux' ? 'pidfds are a Linux feature'
+  : processes.pidfdSupport() === true ? false : `no pidfds here: ${processes.pidfdSupport()}`;
+
+// ps's output for a fake process table on a system without /proc: each
+// process has a start time, as ps prints it, and may have a state and a group.
+function fakePs(table) {
+  return (args) => {
+    const selected = args[0] === '-p' ? [[Number(args[1]), table.get(Number(args[1]))]].filter(([, p]) => p) : [...table];
+    const lines = selected.map(([pid, p]) => `${String(pid).padStart(5)} ${String(p.group ?? 0).padStart(5)} ${p.state ?? 'Ss'}   ${p.start}`);
+    // ps -A always lists ps itself; -p fails for a process that has gone.
+    return { status: args[0] === '-p' && lines.length === 0 ? 1 : 0, stdout: lines.map((line) => `${line}\n`).join(''), stderr: '' };
+  };
+}
+
+test('signals to processes go through a pidfd where Python and the kernel have them, and otherwise follow a check', () => {
+  const table = () => new Map([[10, { start: '500' }], [11, { start: '510', state: 'Z' }], [12, { start: '999' }]]);
+  const targets = [{ pid: 10, start: '500' }, { pid: 11, start: '510' }, { pid: 12, start: '520' }, { pid: 13, start: '530' }];
+  // With pidfds, the helper gets every target, and nothing else signals.
+  let signals = [];
+  let fake = fakeProcesses(table(), { pidfd: true, signals, kill: (pid, name) => signals.push([pid, name]) });
+  fake.signalProcesses(targets, 'SIGTERM');
+  assert.deepEqual(signals, [['pidfd', 'SIGTERM', [[10, '500'], [11, '510'], [12, '520'], [13, '530']]]]);
+  assert.equal(fake.pidfdSupport(), true);
+  // Without them, only a process that still has its start time, and isn't a
+  // zombie, is signaled, and the helper isn't tried again.
+  signals = [];
+  fake = fakeProcesses(table(), { signals, kill: (pid, name) => signals.push([pid, name]) });
+  fake.signalProcesses(targets, 'SIGTERM');
+  fake.signalProcesses(targets, 'SIGKILL');
+  assert.deepEqual(signals, [[10, 'SIGTERM'], [10, 'SIGKILL']]);
+  assert.equal(fake.pidfdSupport(), 'python3 is not on PATH');
+});
+
+test('the pidfd helper\'s answer decides whether signals go through pidfds', () => {
+  for (const [helper, support] of [
+    [{ status: 0, stdout: 'null\n' }, 'python3 or the kernel has no pidfds'],
+    [{ status: 1, stdout: '', stderr: 'Traceback\n' }, 'the pidfd helper failed: Traceback'],
+    [{ status: 0, stdout: '["sent"]\n' }, true],
+  ]) {
+    const kills = [];
+    const fake = load('processes.cjs', {
+      'node:fs': require('./support/fakes.cjs').fakeProc(new Map([[10, { start: '500' }]])),
+      'node:child_process': { spawnSync: () => helper },
+    }, { pid: 1, platform: 'linux', kill: (pid, name) => kills.push([pid, name]) });
+    fake.signalProcesses([{ pid: 10, start: '500' }], 'SIGTERM');
+    assert.equal(fake.pidfdSupport(), support);
+    assert.deepEqual(kills, support === true ? [] : [[10, 'SIGTERM']]);
+  }
+});
+
+test('without /proc, processes and their start times come from ps, and signals follow a check', () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[10, { start, group: 10 }], [11, { start, group: 10, state: 'Z+' }], [12, { start: 'Thu Oct 23 17:14:02 2026', group: 12 }]]);
+  const kills = [];
+  const fake = fakeProcesses(new Map(), { platform: 'darwin', ps: fakePs(table), kill: (pid, name) => kills.push([pid, name]) });
+  assert.deepEqual(JSON.parse(JSON.stringify(fake.processTable())), [
+    { pid: 10, state: 'S', group: 10, start }, { pid: 11, state: 'Z', group: 10, start }, { pid: 12, state: 'S', group: 12, start: 'Thu Oct 23 17:14:02 2026' },
+  ]);
+  assert.equal(fake.processInfo(13), undefined);
+  fake.signalProcesses([{ pid: 10, start }, { pid: 11, start }, { pid: 12, start }, { pid: 13, start }], 'SIGTERM');
+  assert.deepEqual(kills, [[10, 'SIGTERM']]);
+  assert.equal(fake.pidfdSupport(), 'pidfds are a Linux feature');
+});
+
+// Starts a real process that the test owns, and returns it with its start
+// time, once it runs.
+async function ownProcess(command, args) {
+  const child = spawn(command, args, { stdio: 'ignore' });
+  await new Promise((resolve) => child.on('spawn', resolve));
+  const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve(signal ?? code)));
+  return { child, exited, start: processes.processInfo(child.pid).start };
+}
+
+test('the pidfd helper signals a process only while it has its start time (real processes)', { skip: pidfdSkip }, async () => {
+  const { child, exited, start } = await ownProcess('sleep', ['30']);
+  try {
+    processes.signalProcesses([{ pid: child.pid, start: String(Number(start) - 1) }], 'SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(child.exitCode, null);
+    assert.equal(child.signalCode, null);
+    processes.signalProcesses([{ pid: child.pid, start }], 'SIGTERM');
+    assert.equal(await exited, 'SIGTERM');
+    assert.equal(processes.pidfdSupport(), true);
+  } finally {
+    child.kill('SIGKILL');
+  }
+});
+
+test('a command in a group gets the runner\'s own standard streams where they are inherited (real processes)', async () => {
+  const runner = spawn(process.execPath, ['-e', `
+    const { runGroup } = require(${JSON.stringify(path.join(__dirname, 'e2e/run.cjs'))});
+    runGroup('sh', ['-c', 'echo out; echo err >&2; read line; echo "got $line"; exit 4'], {
+      env: process.env, stdin: 'inherit', signal: new AbortController().signal,
+    }).then((result) => console.log(JSON.stringify(result)));
+  `], { stdio: ['pipe', 'pipe', 'pipe'] });
+  runner.stdin.end('typed\n');
+  const output = { stdout: '', stderr: '' };
+  runner.stdout.on('data', (data) => { output.stdout += data; });
+  runner.stderr.on('data', (data) => { output.stderr += data; });
+  await new Promise((resolve) => runner.on('close', resolve));
+  assert.deepEqual(output.stdout.trim().split('\n'), ['out', 'got typed', '{"code":4,"signal":null}']);
+  assert.equal(output.stderr, 'err\n');
+});
+
+test('the keeper stops its group when the runner goes without releasing it (real processes)', async () => {
+  // A runner that starts a group with a command that leaves a process
+  // running, prints the group's processes, and waits; the test then kills it.
+  const runner = spawn(process.execPath, ['-e', `
+    const { startGroup } = require(${JSON.stringify(path.join(__dirname, 'e2e/processes.cjs'))});
+    const group = startGroup('sh', ['-c', 'sleep 30 & exec sleep 30'], { env: process.env, stdio: ['ignore', 'ignore', 'ignore'], onExit() {} });
+    const report = () => {
+      const found = group.look() ?? [];
+      if (found.length < 2) return setTimeout(report, 50);
+      console.log(JSON.stringify({ keeper: group.pid, found }));
+    };
+    report();
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const { keeper, found } = await new Promise((resolve) => {
+    let text = '';
+    runner.stdout.on('data', (data) => {
+      text += data;
+      if (text.includes('\n')) resolve(JSON.parse(text));
+    });
+  });
+  const running = (p) => processes.processInfo(p.pid)?.start === p.start && processes.processInfo(p.pid).state !== 'Z';
+  const keeperInfo = { pid: keeper, start: processes.processInfo(keeper).start };
+  try {
+    runner.kill('SIGKILL');
+    for (const deadline = Date.now() + 3000; found.some(running) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(found.filter(running), []);
+    // The keeper follows with the group's SIGKILL, five seconds later.
+    for (const deadline = Date.now() + 8000; running(keeperInfo) && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(running(keeperInfo), false);
+  } finally {
+    processes.signalProcesses([...found, keeperInfo], 'SIGKILL');
+  }
+});
+
+// run.cjs's runGroup, as remote-ssh.cjs's runGroup does it for
+// remote-ssh/run.cjs: fake processes, by default from a fake /proc, or from
+// ps with platform 'darwin', and a fake clock and keeper, PID 50.
+function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [] } = {}) {
+  const signals = [];
+  const keeper = fakeKeeper(50);
+  const kill = (target, name) => {
+    signals.push([target, name]);
+    for (const [pid, p] of [...table]) {
+      if (pid !== target && p.group !== -target) continue;
+      if (pid === 50 && name !== 'SIGKILL') continue;
+      p.on?.(name);
+      if (name !== 'SIGKILL') continue;
+      table.delete(pid);
+      if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
+    }
+  };
+  const clock = fakeClock();
+  const ps = fakePs(table);
+  const runner = load('run.cjs', {
+    './processes.cjs': fakeProcesses(table, { keeper, kill, pidfd, signals, platform, ps }),
+    'node:child_process': { spawnSync: () => ({ status: 0, stdout: [...table].map(([pid, p]) => `${pid} ${p.group} ${p.args ?? 'x'}\n`).join('') }) },
+  }, { pid: 1, kill, platform }, clock.globals);
+  const controller = new AbortController();
+  let result;
+  runner.runGroup('code', [], { env: {}, stdin: 'ignore', signal: controller.signal, servers }).then((value) => { result = value; });
+  return {
+    signals, keeper, advance: clock.advance, interrupt: () => controller.abort(),
+    result: () => new Promise((resolve) => setImmediate(() => resolve(result))),
+  };
+}
+
+test('the Extension Host test signals its group by number while the keeper runs, and waits for the group', async () => {
+  for (const platform of ['linux', 'darwin']) {
+    const start = platform === 'linux' ? '100' : 'Thu Oct 23 17:13:01 2026';
+    // VS Code ignores SIGTERM, and a process that it started just before it
+    // exits outlives it.
+    const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+    table.get(51).on = () => {};
+    const run = localRunGroup(table, { platform });
+    run.keeper.command(51);
+    run.interrupt();
+    assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+    table.set(52, { start, group: 50, on: () => {} });
+    table.delete(51);
+    run.keeper.exit(0, null);
+    run.advance(4000);
+    assert.equal(await run.result(), undefined);
+    run.advance(1100);
+    assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']], platform);
+    await run.result();
+    run.advance(100);
+    const result = await run.result();
+    assert.equal(result.stopped, 'was interrupted');
+    assert.equal(result.code, 0);
+    assert.deepEqual([...table.keys()], []);
+  }
+});
+
+test('the Extension Host test waits for its group to empty, then releases the keeper, and stops servers left running', async () => {
+  // VS Code exits; its server exits a second later.
+  let table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50, args: '/build/virgil-lsp --stdio' }]]);
+  let run = localRunGroup(table, { servers: ['/build/virgil-lsp'] });
+  run.keeper.command(51);
+  table.delete(51);
+  run.keeper.exit(0, null);
+  run.advance(1000);
+  assert.equal(await run.result(), undefined);
+  table.delete(52);
+  run.advance(100);
+  assert.equal((await run.result()).code, 0);
+  assert.deepEqual(run.signals, []);
+  assert.equal(run.keeper.released, 'release\n');
+
+  // The server stays: after SERVER_EXIT_MS the group is stopped.
+  table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50, args: '/build/virgil-lsp --stdio' }]]);
+  table.get(52).on = (name) => {
+    if (name === 'SIGTERM') table.delete(52);
+  };
+  run = localRunGroup(table, { servers: ['/build/virgil-lsp'] });
+  run.keeper.command(51);
+  table.delete(51);
+  run.keeper.exit(0, null);
+  // The check for servers waits on the clock between its looks.
+  for (let i = 0; i < 60; i++) {
+    await run.result();
+    run.advance(100);
+  }
+  const result = await run.result();
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  assert.match(result.stopped, /^left virgil-lsp \(pid 52\) running 5 seconds after VS Code exited$/);
+});
+
+test('once its keeper has gone, the Extension Host test never signals the group\'s number, only the processes it saw there', async () => {
+  for (const pidfd of [false, true]) {
+    // Something kills the keeper; a process of VS Code's leaves the group;
+    // VS Code exits; another process is given the group's number, and makes
+    // a group of it with another process.
+    const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50 }]]);
+    const run = localRunGroup(table, { pidfd });
+    run.keeper.command(51);
+    table.delete(50);
+    run.keeper.reap('SIGKILL');
+    await run.result();
+    table.set(52, { start: '110', group: 52 });
+    table.delete(51);
+    table.set(50, { start: '200', group: 50 });
+    table.set(53, { start: '210', group: 50 });
+    run.advance(100);
+    const result = await run.result();
+    assert.match(result.error.message, /keeper exited with SIGKILL first/);
+    run.interrupt();
+    assert.deepEqual(run.signals, []);
+    assert.equal(table.has(50) && table.has(53), true);
+  }
+  // While a process that it saw is still in the group, it is waited for, and
+  // the processes that it saw are stopped one by one.
+  const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }]]);
+  table.get(51).on = () => {};
+  const run = localRunGroup(table);
+  run.keeper.command(51);
+  table.delete(50);
+  run.keeper.reap('SIGKILL');
+  await run.result();
+  run.interrupt();
+  run.advance(5100);
+  await run.result();
+  run.advance(100);
+  assert.deepEqual(run.signals, [[51, 'SIGTERM'], [51, 'SIGKILL']]);
+  assert.equal((await run.result()).stopped, 'was interrupted');
+});
+
+test('the Extension Host test waits for a process that joins its group just before the command exits (real processes)', async () => {
+  const { runGroup } = require('./e2e/run.cjs');
+  const started = Date.now();
+  const marker = path.join(fs.mkdtempSync(path.join(__dirname, '.processes-')), 'done');
+  try {
+    const result = await runGroup('sh', ['-c', `(sleep 0.5; touch '${marker}') & exit 3`], {
+      env: process.env, stdin: 'ignore', signal: new AbortController().signal,
+    });
+    assert.equal(result.code, 3);
+    assert.ok(Date.now() - started >= 450, `resolved after ${Date.now() - started} ms`);
+    assert.ok(fs.existsSync(marker));
+  } finally {
+    fs.rmSync(path.dirname(marker), { recursive: true, force: true });
+  }
+});

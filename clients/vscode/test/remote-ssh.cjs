@@ -2,72 +2,45 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The Remote-SSH test's teardown, process groups, leak check, and bootstrap
-// (e2e/remote-ssh/), mostly with a fake /proc, clock, and VS Code. Staging
-// checks run fixture executables; Linux archive checks also run tar with the
-// real process-group tracker.
+// (e2e/remote-ssh/), mostly with a fake /proc, clock,
+// keeper, and VS Code (see support/fakes.cjs). Staging checks run fixture
+// executables; archive checks also run tar in a real process group.
 
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
-const { createRequire } = require('node:module');
 const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
+const fakes = require('./support/fakes.cjs');
 
+const { fakeClock, fakeKeeper, fakeProc, fakeProcesses } = fakes;
 const dir = path.join(__dirname, 'e2e/remote-ssh');
-const linuxArchiveSkip = process.platform === 'linux' ? false : 'Archive extraction requires Linux /proc process-group tracking';
 
 // Loads a module of the Remote-SSH test with some modules, process
 // properties, and globals replaced.
-function load(file, modules, overrides, globals = {}) {
-  const module = { exports: {} };
-  const localRequire = createRequire(path.join(dir, file));
-  vm.runInNewContext(fs.readFileSync(path.join(dir, file), 'utf8'), {
-    module, exports: module.exports, __dirname: dir, Buffer, AbortController, setTimeout, clearTimeout,
-    process: Object.create(process, Object.getOwnPropertyDescriptors(overrides)),
-    require: (name) => modules[name] ?? localRequire(name),
-    ...globals,
-  });
-  return module.exports;
-}
-
-// node:fs with a fake /proc of processes, by PID: each has a start time, and
-// may have a state, a parent, a process group, an executable, and an
-// environment.
-function fakeProc(processes) {
-  const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
-  const entry = (file) => {
-    const [, pid, name] = /^\/proc\/(\d+)\/(\w+)$/.exec(file) ?? [];
-    const p = processes.get(Number(pid));
-    if (p === undefined) throw missing(file);
-    return [Number(pid), p, name];
-  };
-  return {
-    ...fs,
-    readdirSync: (name) => (name === '/proc' ? [...processes.keys()].map(String) : fs.readdirSync(name)),
-    readFileSync: (file) => {
-      const [pid, p, name] = entry(file);
-      if (name === 'stat') return `${pid} (x) ${p.state ?? 'S'} ${p.ppid ?? 1} ${p.group ?? 0} ${Array(16).fill(0).join(' ')} ${p.start} 0 0`;
-      if (name === 'environ') return (p.environ ?? []).join('\0');
-      return '';
-    },
-    readlinkSync: (file) => entry(file)[1].exe ?? '/usr/bin/other',
-  };
-}
+const load = (file, ...rest) => fakes.load(path.join('remote-ssh', file), ...rest);
 
 // localhost.cjs's teardown over fake processes (see fakeProc), each of which
-// may say what happens when it gets a signal. Processes go on SIGKILL.
-function teardown(processes, started) {
+// may say what happens when it gets a signal. Processes go on SIGKILL. With
+// pidfd, signals go through the fake pidfd helper (see fakeProcesses).
+function teardown(processes, started, { pidfd = false } = {}) {
   const signals = [];
-  const kill = (pid, name) => {
-    signals.push([pid, name]);
+  const deliver = (pid, name) => {
     const p = processes.get(pid);
     p?.on?.(name);
     if (name === 'SIGKILL') processes.delete(pid);
   };
-  const localhost = load('localhost.cjs', { 'node:fs': fakeProc(processes) }, { pid: 1, kill });
+  const kill = (pid, name) => {
+    signals.push([pid, name]);
+    deliver(pid, name);
+  };
+  const localhost = load('localhost.cjs', {
+    'node:fs': fakeProc(processes),
+    '../processes.cjs': fakeProcesses(processes, { kill, pidfd, signals, deliver }),
+  }, { pid: 1, kill });
   const result = localhost.teardown({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started, port: undefined });
   return result.then((value) => ({ result: value, signals }));
 }
@@ -113,74 +86,78 @@ test('the teardown stops a running Xvfb last, with SIGTERM', async () => {
   assert.equal(result.ok, true);
 });
 
-// run.cjs's runGroup, over fake processes (see fakeProc) and a fake clock, for
-// a command whose first process has the PID 50, which exits when the test calls
-// exit(). Processes go on SIGKILL, and may say what happens on other signals.
-function runGroup(processes, timeout = 60000) {
+test('the teardown sends its signals through pidfds where they are available', async () => {
+  const processes = new Map([[100, { start: '500' }], [200, { start: '600', exe: '/work/remote/virgil-lsp' }]]);
+  processes.get(100).on = (name) => {
+    if (name === 'SIGTERM') processes.delete(100);
+  };
+  const { result, signals } = await teardown(processes, [
+    { name: 'Xvfb', child: child(100), identity: { pid: 100, start: '500' } },
+  ], { pidfd: true });
+  // The last SIGKILL finds that Xvfb has gone.
+  assert.deepEqual(signals, [
+    ['pidfd', 'SIGSTOP', [[200, '600']]], ['pidfd', 'SIGKILL', [[200, '600']]],
+    ['pidfd', 'SIGTERM', [[100, '500']]], ['pidfd', 'SIGKILL', [[100, '500']]],
+  ]);
+  assert.equal(result.ok, true);
+});
+
+// run.cjs's runGroup, over fake processes (see fakeProc) and a fake clock and
+// keeper (see support/fakes.cjs), for a command whose group's keeper has the
+// PID 50, and is in processes. The keeper ignores signals other than SIGKILL.
+// Other processes go on SIGKILL, and may say what happens on other signals.
+// With pidfd, signals to single processes go through the fake pidfd helper.
+function runGroup(processes, timeout = 60000, { pidfd = false } = {}) {
   const signals = [];
+  const keeper = fakeKeeper(50);
   const kill = (target, name) => {
     signals.push([target, name]);
     for (const [pid, p] of [...processes]) {
       if (pid !== target && p.group !== -target) continue;
+      if (pid === 50 && name !== 'SIGKILL') continue;
       p.on?.(name);
-      if (name === 'SIGKILL') processes.delete(pid);
+      if (name !== 'SIGKILL') continue;
+      processes.delete(pid);
+      if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
     }
   };
-  let now = 0;
-  let next = 1;
-  const timers = new Map();
-  const add = (fn, ms, every) => {
-    timers.set(next, { at: now + ms, fn, every });
-    return next++;
-  };
-  const clear = (id) => timers.delete(id);
-  const child = Object.assign(new EventEmitter(), { pid: 50, stdout: new EventEmitter(), stderr: new EventEmitter() });
+  const clock = fakeClock();
   const run = load('run.cjs', {
-    'node:fs': fakeProc(processes),
-    'node:child_process': { spawn: () => child },
+    '../processes.cjs': fakeProcesses(processes, { keeper, kill, pidfd, signals }),
     '../run.cjs': require('./e2e/run.cjs'),
     './localhost.cjs': {},
-  }, { pid: 1, kill }, {
-    Date: { now: () => now },
-    setTimeout: (fn, ms) => add(fn, ms), setInterval: (fn, ms) => add(fn, ms, ms), clearTimeout: clear, clearInterval: clear,
-  });
+  }, { pid: 1, kill }, clock.globals);
   const controller = new AbortController();
   let result;
   run.runGroup('command', [], { env: {}, timeout, signal: controller.signal }).then((value) => { result = value; });
   return {
     signals,
+    keeper,
     interrupt: () => controller.abort(),
+    command: (pid) => keeper.command(pid),
     exit: (code, signal, close = true) => {
-      child.emit('exit', code, signal);
-      if (close) child.emit('close', code, signal);
+      keeper.exit(code, signal);
+      if (close) keeper.close();
     },
-    close: () => child.emit('close'),
-    data: (name, text) => child[name].emit('data', Buffer.from(text)),
-    // Runs the timers that are due in the next ms milliseconds.
-    advance: (ms) => {
-      const end = now + ms;
-      for (;;) {
-        const [id, timer] = [...timers].filter(([, t]) => t.at <= end).sort(([, a], [, b]) => a.at - b.at)[0] ?? [];
-        if (timer === undefined) break;
-        now = timer.at;
-        if (timer.every === undefined) timers.delete(id);
-        else timer.at += timer.every;
-        timer.fn();
-      }
-      now = end;
-    },
+    close: () => keeper.close(),
+    data: (name, text) => keeper.data(name, text),
+    advance: clock.advance,
     // runGroup's result, once it has resolved.
     result: () => new Promise((resolve) => setImmediate(() => resolve(result))),
   };
 }
 
+// The keeper in a fake process table.
+const KEEPER = { start: '90', group: 50 };
+
 const ignoreTerm = (processes, pid) => Object.assign(processes.get(pid), { on: () => {} });
 
 test('a command waits for both output pipes after exit and retains their trailing bytes', async () => {
-  const processes = new Map([[50, { start: '100', group: 50 }]]);
+  const processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }]]);
   const run = runGroup(processes);
+  run.command(51);
   run.data('stdout', 'archive prefix');
-  processes.delete(50);
+  processes.delete(51);
   run.exit(0, null, false);
   run.advance(100);
   assert.equal(await run.result(), undefined);
@@ -191,6 +168,7 @@ test('a command waits for both output pipes after exit and retains their trailin
   assert.equal(result.stdout.toString(), 'archive prefix and tail');
   assert.equal(result.stderr, 'final diagnostic');
   assert.equal(result.at, 0);
+  assert.equal(run.keeper.released, 'release\n');
 });
 
 test('a command that cannot spawn still completes after its pipes close', async () => {
@@ -203,86 +181,127 @@ test('a command that cannot spawn still completes after its pipes close', async 
   assert.equal(result.stderr, '');
 });
 
-test('a command\'s process group is stopped by its number while it is the run\'s', async () => {
-  // A command that ignores SIGTERM and exceeds its timeout.
-  let processes = new Map([[50, { start: '100', group: 50 }]]);
+test('a command runs under a keeper that leads its process group, with only its own standard streams', async () => {
+  const { runGroup } = require(path.join(dir, 'run.cjs'));
+  const script = 'echo "$$ $(ps -o pgid= -p $$) $PPID"; cat; ls /dev/fd/ >&2';
+  const result = await runGroup('sh', ['-c', script], { input: 'input\n', timeout: 10000, signal: new AbortController().signal });
+  assert.equal(result.code, 0);
+  const [pid, group, parent, input] = result.stdout.toString().trim().split(/\s+/);
+  assert.notEqual(group, pid);
+  assert.equal(group, parent);
+  assert.equal(input, 'input');
+  // ls's own directory descriptor, if any, comes after 0, 1, and 2.
+  assert.deepEqual(result.stderr.trim().split(/\s+/).slice(0, 3), ['0', '1', '2']);
+  assert.ok(result.stderr.trim().split(/\s+/).length <= 4, result.stderr);
+});
+
+test('a command\'s process group is stopped by its number while its keeper runs', async () => {
+  // A command that ignores SIGTERM and exceeds its timeout; the group's
+  // SIGKILL ends the keeper too, before it can say how the command ended.
+  let processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }]]);
   let run = runGroup(processes, 1000);
-  ignoreTerm(processes, 50);
+  ignoreTerm(processes, 51);
+  run.command(51);
   run.advance(1050);
   assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
   run.advance(5100);
   assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
-  run.exit(null, 'SIGKILL');
-  assert.equal((await run.result()).stopped, 'exceeded 1 seconds');
+  await run.result();
+  run.close();
+  run.advance(100);
+  let result = await run.result();
+  assert.equal(result.stopped, 'exceeded 1 seconds');
+  assert.equal(result.signal, 'SIGKILL');
 
   // A command that exits, and leaves a process that ignores SIGTERM in its
   // group, which the runner saw there.
-  processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
+  processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50 }]]);
   run = runGroup(processes);
-  ignoreTerm(processes, 51);
+  ignoreTerm(processes, 52);
+  run.command(51);
   run.advance(50);
-  processes.delete(50);
+  processes.delete(51);
   run.exit(0, null);
   run.advance(10100);
   assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
   run.advance(5100);
   assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  await run.result();
   run.advance(100);
-  const result = await run.result();
+  result = await run.result();
   assert.equal(result.groupLeft, true);
   assert.equal(result.code, 0);
 });
 
-test('a process group whose number has passed to another group is never signaled', async () => {
-  // The command and a process that it started exit at once, and an unrelated
-  // process is given the command's PID, and makes a group of it, before the
-  // runner looks again.
-  let processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
-  let run = runGroup(processes);
-  run.advance(50);
-  processes.clear();
-  processes.set(50, { start: '200', group: 50 });
-  processes.set(52, { start: '210', group: 50 });
-  run.exit(0, null);
-  run.advance(20000);
-  assert.deepEqual(run.signals, []);
-  assert.equal((await run.result()).groupLeft, false);
-
-  // The command exits and leaves a process in its group, which SIGTERM stops;
-  // then an unrelated process is given the number before SIGKILL would follow.
-  processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
-  run = runGroup(processes);
-  processes.get(51).on = (name) => {
-    if (name !== 'SIGTERM') return;
+test('a process that joins the group just before the command exits is waited for, and stopped with the group', async () => {
+  // The command starts a process in its group and exits before the runner
+  // looks again, so the runner has never seen it, and every process that it
+  // has seen there is gone.
+  for (const leaves of [true, false]) {
+    const processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }]]);
+    const run = runGroup(processes);
+    run.command(51);
+    run.advance(50);
+    processes.set(52, { start: '120', group: 50 });
+    processes.get(52).on = (name) => {
+      if (name === 'SIGTERM') processes.delete(52);
+    };
     processes.delete(51);
-    processes.set(50, { start: '200', group: 50 });
-  };
-  run.advance(50);
-  processes.delete(50);
-  run.exit(0, null);
-  run.advance(10100);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
-  run.advance(20000);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
-  assert.equal((await run.result()).groupLeft, true);
+    run.exit(0, null);
+    run.advance(5000);
+    assert.equal(await run.result(), undefined);
+    if (leaves) processes.delete(52);
+    run.advance(5100);
+    const result = await run.result();
+    assert.equal(result.groupLeft, !leaves);
+    assert.deepEqual(run.signals, leaves ? [] : [[-50, 'SIGTERM']]);
+    assert.equal(run.keeper.released, 'release\n');
+  }
 });
 
-test('once a process group is no longer the run\'s, its processes are stopped one by one', async () => {
-  // The command exits and leaves a process in its group, which then makes a
-  // session of its own; an unrelated process is given the number, and the
-  // run is interrupted before the runner looks again.
-  const processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
-  const run = runGroup(processes);
-  run.advance(50);
-  processes.delete(50);
-  run.exit(0, null);
-  processes.set(51, { start: '110', group: 51 });
-  processes.set(50, { start: '200', group: 50 });
-  run.interrupt();
-  assert.deepEqual(run.signals, [[51, 'SIGTERM']]);
-  run.advance(20000);
-  assert.deepEqual(run.signals, [[51, 'SIGTERM']]);
-  assert.equal((await run.result()).stopped, 'was interrupted');
+test('once the keeper has gone, the group is never signaled by its number, only the processes seen there', async () => {
+  for (const pidfd of [false, true]) {
+    // Something else kills the keeper. The command's own process then makes a
+    // session of its own, the command exits, and an unrelated process is given
+    // the group's number, and makes a group of it, with another process.
+    const processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50 }]]);
+    const run = runGroup(processes, 60000, { pidfd });
+    run.command(51);
+    run.advance(50);
+    processes.delete(50);
+    run.keeper.reap('SIGKILL');
+    run.advance(50);
+    assert.equal(await run.result(), undefined);
+    processes.set(52, { start: '110', group: 52 });
+    processes.delete(51);
+    processes.set(50, { start: '200', group: 50 });
+    processes.set(53, { start: '210', group: 50 });
+    run.interrupt();
+    run.advance(5100);
+    run.close();
+    run.advance(100);
+    const result = await run.result();
+    const seen = [[51, '100'], [52, '110']];
+    assert.deepEqual(run.signals, pidfd
+      ? [['pidfd', 'SIGTERM', seen], ['pidfd', 'SIGKILL', seen]]
+      : [[52, 'SIGTERM'], [52, 'SIGKILL']]);
+    assert.equal(result.stopped, 'was interrupted');
+    assert.match(result.error.message, /keeper exited with SIGKILL first/);
+    assert.equal(processes.has(50) && processes.has(53), true);
+  }
+});
+
+test('a process that joins the group just before the command exits is waited for (real processes)', async () => {
+  const { runGroup } = require(path.join(dir, 'run.cjs'));
+  const started = Date.now();
+  // The sleep doesn't hold the output pipes, which runGroup waits for anyway.
+  const command = 'sleep 0.5 </dev/null >/dev/null 2>&1 & echo $!; exit 0';
+  const result = await runGroup('sh', ['-c', command], { timeout: 10000, signal: new AbortController().signal });
+  assert.equal(result.code, 0);
+  assert.equal(result.groupLeft, false);
+  assert.ok(Date.now() - started >= 450, `resolved after ${Date.now() - started} ms`);
+  const sleep = Number(result.stdout.toString().trim());
+  assert.throws(() => process.kill(sleep, 0), (error) => error.code === 'ESRCH' || error.code === 'EPERM');
 });
 
 test('server staging preserves a selected alternate executable and its resolved worker', async (t) => {
@@ -308,7 +327,7 @@ test('server staging preserves a selected alternate executable and its resolved 
     }
     assert.equal(staged.details.server, server);
   }
-  await t.test('archive input preserves packaged executables', { skip: linuxArchiveSkip }, async () => {
+  await t.test('archive input preserves packaged executables', async () => {
     const archive = path.join(root, 'build.tar.gz');
     execFileSync('tar', ['-czf', archive, '-C', root, 'build']);
     const work = fs.mkdtempSync(path.join(root, 'work-'));
@@ -327,7 +346,7 @@ test('missing product executables fail before an upload, for direct and archive 
   for (const present of [[], ['virgil-lsp'], ['virgil-lsp-worker']]) {
     for (const name of present) fs.writeFileSync(path.join(build, name), name);
     for (const kind of ['server', 'archive']) {
-      await t.test(`${kind} input with ${present.join(', ') || 'no executables'}`, { skip: kind === 'archive' && linuxArchiveSkip }, async () => {
+      await t.test(`${kind} input with ${present.join(', ') || 'no executables'}`, async () => {
         const values = kind === 'server' ? { server: path.join(build, 'virgil-lsp') } : { archive: path.join(root, 'build.tar.gz') };
         if (kind === 'archive') execFileSync('tar', ['-czf', values.archive, '-C', root, 'build']);
         const work = fs.mkdtempSync(path.join(root, 'work-'));
@@ -468,7 +487,16 @@ test('launch samples at client exit and preserves deadlines across reports and h
       now = end;
       await new Promise(setImmediate);
     };
-    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    const keeper = fakeKeeper(50);
+    const spawn = keeper.spawn;
+    keeper.spawn = (...args) => {
+      queueMicrotask(() => {
+        keeper.exit(0, null);
+        keeper.data('stdout', 'PASS: suite\n');
+        add(() => keeper.close(), 1500);
+      });
+      return spawn(...args);
+    };
     const sampleTimes = [];
     const notes = [];
     const failures = [];
@@ -476,14 +504,7 @@ test('launch samples at client exit and preserves deadlines across reports and h
     let reportStarted;
     const runner = load('run.cjs', {
       'node:fs': { ...fs, mkdirSync() {}, writeFileSync() {}, openSync: () => 42, writeSync() {}, closeSync() {} },
-      'node:child_process': { spawn: () => {
-        queueMicrotask(() => {
-          child.emit('exit', 0, null);
-          child.stdout.emit('data', Buffer.from('PASS: suite\n'));
-          add(() => child.emit('close', 0, null), 1500);
-        });
-        return child;
-      } },
+      '../processes.cjs': fakeProcesses(new Map([[50, KEEPER]]), { keeper, kill() {} }),
     }, {}, {
       Date: { now: () => now },
       setTimeout: (fn, ms) => add(fn, ms), setInterval: (fn, ms) => add(fn, ms, ms),
@@ -586,18 +607,20 @@ test('launch settings and every launch-log operation classify filesystem failure
         if (operation === 'close') fail();
       },
     };
-    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    const keeper = fakeKeeper(50);
+    const spawn = keeper.spawn;
+    keeper.spawn = (...args) => {
+      queueMicrotask(() => {
+        keeper.exit(0, null);
+        keeper.data('stdout', 'trailing output');
+        keeper.close();
+      });
+      return spawn(...args);
+    };
     const runner = load('run.cjs', {
       'node:fs': files,
       '../run.cjs': require('./e2e/run.cjs'),
-      'node:child_process': { spawn: () => {
-        queueMicrotask(() => {
-          child.emit('exit', 0, null);
-          child.stdout.emit('data', Buffer.from('trailing output'));
-          child.emit('close', 0, null);
-        });
-        return child;
-      } },
+      '../processes.cjs': fakeProcesses(new Map([[50, KEEPER]]), { keeper, kill() {} }),
     }, {}, { setInterval, clearInterval });
     const run = {
       target: { alias: 'host' }, work: '/work', evidence: '/evidence', settings: {},
@@ -645,13 +668,22 @@ test('scratch-directory failures produce an INFRA manifest and exit status', asy
 });
 
 // run.cjs's program that lists and signals processes on the host, over fake
-// processes (see fakeProc), with options as run.cjs gives it them.
-function remoteProcesses(processes, options) {
+// processes (see fakeProc), with options as run.cjs gives it them. With
+// pidfd, the host's pidfd helper "runs" (see fakeProcesses); without it,
+// python3 isn't found there.
+function remoteProcesses(processes, options, { pidfd = false } = {}) {
   const signals = [];
   const output = [];
   const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+  const spawnSync = (command, args) => {
+    if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
+    const [name, targets] = JSON.parse(args.at(-1));
+    signals.push(['pidfd', name, targets]);
+    return { status: 0, stdout: JSON.stringify(targets.map(() => 'sent')) };
+  };
+  const modules = { 'node:fs': fakeProc(processes), 'node:child_process': { spawnSync } };
   vm.runInNewContext(REMOTE_PROCESSES, {
-    require: (name) => (name === 'node:fs' ? fakeProc(processes) : require(name)),
+    require: (name) => modules[name] ?? require(name),
     process: { pid: 1, argv: [process.execPath, JSON.stringify({ kill: [], ...options })], kill: (pid, name) => signals.push([pid, name]) },
     console: { log: (line) => output.push(JSON.parse(line)) },
   });
@@ -681,6 +713,26 @@ test('the leak check signals a remote extension host only by its PID, start time
   }
   // Leftovers are killed by PID and start time, and never the VS Code Server's.
   assert.deepEqual(remoteProcesses(processes, { ...options, kill: ['20@600', '21@611', '10@500'] }).signals, [[20, 'SIGKILL']]);
+  // Where the host has pidfds, the same signals go through them.
+  assert.deepEqual(remoteProcesses(processes, { ...options, host, signal: 'SIGTERM', kill: ['20@600', '21@611'] }, { pidfd: true }).signals,
+    [['pidfd', 'SIGTERM', [[10, '500']]], ['pidfd', 'SIGKILL', [[20, '600']]]]);
+  // Without pidfds, a process that has since exited, and whose PID another
+  // process has been given, is not signaled.
+  const reused = new Map(processes);
+  const sent = [];
+  const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+  vm.runInNewContext(REMOTE_PROCESSES, {
+    require: (name) => ({
+      'node:fs': fakeProc(reused),
+      'node:child_process': { spawnSync: () => {
+        reused.set(20, { start: '900', exe: '/remote/virgil-lsp/virgil-lsp' });
+        return { status: 0, stdout: 'null\n' };
+      } },
+    })[name],
+    process: { pid: 1, argv: [process.execPath, JSON.stringify({ ...options, kill: ['20@600'] })], kill: (pid, name) => sent.push([pid, name]) },
+    console: { log() {} },
+  });
+  assert.deepEqual(sent, []);
 });
 
 // bootstrap.cjs for a launch in mode, in a window with the workspace folders

@@ -17,13 +17,14 @@
 // runs the suite against the installed copy. Without a display, run it under
 // xvfb-run on Linux.
 
-const { spawn, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
+const { startGroup } = require('./processes.cjs');
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
 // Each launch, including VS Code's own startup, must finish within this time,
@@ -216,41 +217,55 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
 // then SIGKILL, and the promise resolves only after the whole group has exited,
 // before the caller removes the temporary directory. If the group still runs
 // one of the servers SERVER_EXIT_MS after the command itself has exited, the
-// group is stopped as well.
+// group is stopped as well. The group's keeper (see startGroup in
+// processes.cjs) keeps the group's number the run's until then, or until the
+// group's SIGKILL; if it goes before, the test signals only the processes that
+// it saw in the group, each by its PID and start time.
 function runGroup(command, args, { env, stdin, signal, servers = [] }) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { env, stdio: [stdin, 'inherit', 'inherit'], detached: true });
     let stopped;
     let exited;
     let deadline;
-    const finish = (result) => {
+    let finished = false;
+    const group = startGroup(command, args, {
+      env,
+      stdio: [stdin, 'inherit', 'inherit'],
+      onExit: (result) => {
+        exited = result;
+        if (!finish() && result.error === undefined && servers.length > 0) void expectServersGone();
+      },
+    });
+    // Resolves once the command has exited and the group holds no process but
+    // its keeper, or is no longer the run's; returns whether it has.
+    const finish = () => {
+      if (finished) return true;
+      if (exited === undefined || (group.look() ?? []).length > 0) return false;
+      finished = true;
       clearTimeout(timer);
       clearInterval(poll);
       signal.removeEventListener('abort', interrupt);
-      resolve({ ...result, stopped });
+      void group.release().then(() => resolve({ ...exited, stopped }));
+      return true;
     };
     const stop = (reason) => {
-      // Without a pid, the process didn't start, and its error event follows.
-      if (stopped !== undefined || child.pid === undefined) return;
+      // Without a pid, the keeper didn't start, and its result follows.
+      if (stopped !== undefined || group.pid === undefined) return;
       stopped = reason;
-      signalGroup(child.pid, 'SIGTERM');
+      group.signal('SIGTERM');
       deadline = Date.now() + STOP_GRACE_MS;
     };
     const poll = setInterval(() => {
-      if (exited !== undefined && !groupExists(child.pid)) {
-        finish(exited);
-      } else if (deadline !== undefined && Date.now() > deadline) {
+      if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
-        signalGroup(child.pid, 'SIGKILL');
+        group.signal('SIGKILL');
+      } else {
+        finish();
       }
     }, 50);
     const timer = setTimeout(() => stop(`exceeded ${LAUNCH_TIMEOUT_MS / 1000} seconds`), LAUNCH_TIMEOUT_MS);
     const interrupt = () => stop('was interrupted');
     signal.addEventListener('abort', interrupt);
-    child.on('spawn', () => {
-      if (signal.aborted) interrupt();
-    });
-    child.on('error', (error) => finish({ error }));
+    if (signal.aborted) interrupt();
     // VS Code starts the servers in its own group, where they outlive it only
     // if they don't exit.
     const expectServersGone = async () => {
@@ -258,7 +273,7 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       for (;;) {
         let running;
         try {
-          running = groupProcesses(child.pid, servers);
+          running = groupProcesses(group.pid, servers);
         } catch (error) {
           stop(`could not be checked for servers left running: ${error.message}`);
           return;
@@ -272,11 +287,6 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     };
-    child.on('exit', (code, exitSignal) => {
-      exited = { code, signal: exitSignal };
-      if (!groupExists(child.pid)) finish(exited);
-      else if (servers.length > 0) void expectServersGone();
-    });
   });
 }
 
@@ -291,23 +301,6 @@ function groupProcesses(pgid, executables) {
     const executable = executables.find((file) => args === file || args?.startsWith(`${file} `));
     return Number(group) === pgid && executable !== undefined ? [{ pid: Number(pid), executable }] : [];
   });
-}
-
-function signalGroup(pid, name) {
-  try {
-    process.kill(-pid, name);
-  } catch (error) {
-    if (error.code !== 'ESRCH') throw error;
-  }
-}
-
-function groupExists(pid) {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== 'ESRCH';
-  }
 }
 
 function succeeded(result) {
@@ -424,4 +417,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { VSCODE_VERSION, isolatedEnv };
+module.exports = { VSCODE_VERSION, isolatedEnv, runGroup };
