@@ -19,6 +19,15 @@ component LspAnalysisCapture {
 	// Aggregate paths, source bytes, and a conservative metadata allowance.
 	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 
+	def matchesSources(versions: Array<AnalysisDocumentVersion>, sources: Array<ProjectSource>) -> bool {
+		if (versions.length != sources.length) return false;
+		for (i < versions.length) {
+			var key = DocumentUri.normalize(ProjectFiles.uri(sources[i].path));
+			if (key == null || !Strings.equal(key, versions[i].uri)) return false;
+		}
+		return true;
+	}
+
 	// Returns the inputs for canonical document URIs {keys}, or null and the
 	// reason they cannot be captured.
 	def capture(store: DocumentStore, keys: Array<string>, project: bool) -> (LspAnalysisInputs, string) {
@@ -59,7 +68,7 @@ component LspAnalysisCapture {
 	}
 	// The text that produced source {i} of {snapshot} (see
 	// AnalysisSnapshot.documentIndex), or null if it is not available: the
-	// overlay if the same accepted record is still open, or the disk file if
+	// overlay if the analyzed identity is still open, or the disk file if
 	// it still has the captured length and hash. The file is read again within
 	// that length, without following symlinks. Null for an index out of range,
 	// so for an unrecorded URI too. Only that source is checked; the caller

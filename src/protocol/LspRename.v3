@@ -247,9 +247,10 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			var j = p.files[f], v = s.documentVersions[j], positions = p.ranges[f];
 			var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
 			doc["uri"] = JsonValue.String(v.uri);
-			// An open document's version, which the client checks before it
-			// edits; null for a closed file, which has none.
-			doc["version"] = if(v.identity != null, JsonValue.Int(v.version), JsonValue.Null);
+			// An open document's current version, including a version-only
+			// change's, which the client checks before it edits; null for a
+			// closed file, which has none.
+			doc["version"] = if(v.identity != null, JsonValue.Int(v.reportedVersion(store)), JsonValue.Null);
 			var textEdits = Array<JsonValue>.new(positions.length / 4);
 			for (k < textEdits.length) {
 				var e = Strings.newMap<JsonValue>();

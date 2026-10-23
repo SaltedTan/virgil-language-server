@@ -97,16 +97,22 @@ def test_diagnostics_rejected(t: Tester) {
 	open(t, server, URI, 1, "component C {}");
 	open(t, server, URI, 2, "bad");
 	for (v in [1, 0, -1]) replace(t, server, v, "bad");
-	for (c in ["[]", "[{\"text\":\"bad\"},{\"range\":{},\"text\":\"bad\"}]", "[{\"text\":42}]"]) change(t, server, 2, c);
+	// An empty batch is a version-only update: the text is unchanged and the
+	// current diagnostics republish at the notification's version.
+	change(t, server, 2, "[]");
+	t.asserti(0, publication(t, rec, 1, URI, 2).length);
+	for (c in ["[{\"text\":\"bad\"},{\"range\":{},\"text\":\"bad\"}]", "[{\"text\":42}]"]) change(t, server, 3, c);
 	notify(t, server, "didChange", "{\"textDocument\":{\"uri\":\"untitled:diagnostics\",\"version\":1.5},\"contentChanges\":[{\"text\":\"bad\"}]}");
 	notify(t, server, "didSave", ID);
-	t.asserti(1, rec.payloads.length);
+	t.asserti(2, rec.payloads.length);
 	replace(t, server, 2, "bad");
-	t.asserti(1, publication(t, rec, 1, URI, 2).length);
-	notify(t, server, "didClose", ID);
-	notify(t, server, "didClose", ID);
+	t.asserti(2, rec.payloads.length);
 	replace(t, server, 3, "bad");
-	t.asserti(3, rec.payloads.length);
+	t.asserti(1, publication(t, rec, 2, URI, 3).length);
+	notify(t, server, "didClose", ID);
+	notify(t, server, "didClose", ID);
+	replace(t, server, 4, "bad");
+	t.asserti(4, rec.payloads.length);
 }
 def test_diagnostics_lifecycle(t: Tester) {
 	var rec = DiagnosticRecorder.new(), server = LspServer.new(DocumentLimits.MAX_BYTES);

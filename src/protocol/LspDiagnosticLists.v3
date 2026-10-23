@@ -7,41 +7,66 @@ class LspUriDiagnostics(uri: string) {
 	var semantic: Array<LspDiagnostic> = [];
 	// The context whose analysis supplied {semantic}, or null.
 	var owner: ProjectContext;
+	// The source stamps that analysis captured, so that a later version-only
+	// change can tell whether it still describes the current sources.
+	var sources: Array<AnalysisDocumentVersion>;
 	// The last publication, or null if the client holds no diagnostics.
 	var sent: Array<byte>;
+	// Drops the semantic diagnostics and their provenance together, so that a
+	// later publication never restates one without the analysis it came from.
+	def dropSemantic() {
+		semantic = [];
+		owner = null;
+		sources = null;
+	}
 }
 
 // publishDiagnostics replaces a URI's whole list, so every list for a URI is
 // published here: its current parser diagnostics followed by the semantic
 // diagnostics of the newest analysis still current for it, without
 // repeating a parser diagnostic. Parser updates always publish, as before;
-// semantic updates publish only when the list changes. Open documents carry
-// their overlay version; closed project files carry none.
+// semantic updates publish only when the list changes. A version-only change
+// publishes the list at its new version, keeping semantic diagnostics only
+// while the analysis that produced them is still current. Open documents
+// carry their overlay version; closed project files carry none.
 class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// By canonical URI, in byte order; see OrderedStringMap.
 	private def lists = OrderedStringMap<LspUriDiagnostics>.new();
 
-	// An accepted open or change. Earlier semantic results described other
-	// text, so they no longer apply until a new analysis completes.
+	// An accepted open or full-text change invalidates earlier semantic
+	// results until a new analysis completes, even if the bytes are unchanged.
 	def parsed(doc: DocumentOverlay, diagnostics: Array<LspDiagnostic>) {
 		var list = get(doc.uri);
 		list.parser = diagnostics;
-		list.semantic = [];
-		list.owner = null;
+		list.dropSemantic();
 		publish(list, doc, true);
+	}
+	// An accepted version-only change: the text is unchanged, so the list is
+	// too, and only the version the client checks moves. Semantic diagnostics
+	// are restamped only while the analysis that produced them is still
+	// current; otherwise they are dropped. A stale TypeError must not
+	// reappear with a fresh version. Returns true if it dropped them, so the
+	// server can schedule their replacement: nothing else is guaranteed to.
+	def versioned(doc: DocumentOverlay, owner: ProjectContext) -> bool {
+		var list = lists[doc.uri];
+		if (list == null) return false;
+		var dropped = list.semantic.length > 0 && (list.owner != owner || !fresh(list.owner, list.sources));
+		if (dropped) list.dropSemantic();
+		publish(list, doc, false);
+		return dropped;
 	}
 	// An accepted close publishes an empty list with the last open version,
 	// without reading the disk; a later analysis may report the file again.
 	def closed(doc: DocumentOverlay) {
 		var list = get(doc.uri);
 		list.parser = [];
-		list.semantic = [];
-		list.owner = null;
+		list.dropSemantic();
 		publish(list, doc, true);
 		lists.remove(doc.uri);
 	}
-	// Replaces the semantic diagnostics of canonical {uri} with {owner}'s.
-	def semantic(uri: string, owner: ProjectContext, diagnostics: Array<LspDiagnostic>) {
+	// Replaces the semantic diagnostics of canonical {uri} with {owner}'s,
+	// whose analysis captured {sources}.
+	def semantic(uri: string, owner: ProjectContext, sources: Array<AnalysisDocumentVersion>, diagnostics: Array<LspDiagnostic>) {
 		var list = lists[uri];
 		if (list == null) {
 			if (diagnostics.length == 0) return;
@@ -49,7 +74,16 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 		}
 		list.semantic = diagnostics;
 		list.owner = if(diagnostics.length > 0, owner);
+		list.sources = if(diagnostics.length > 0, sources);
 		publish(list, store.overlay(uri), false);
+	}
+	// Uses the completed-analysis freshness rule; see
+	// docs/architecture.md#semantic-diagnostics.
+	private def fresh(owner: ProjectContext, sources: Array<AnalysisDocumentVersion>) -> bool {
+		if (owner == null || !owner.config.current || sources == null) return false;
+		if (!LspAnalysisCapture.matchesSources(sources, owner.sources)) return false;
+		for (v in sources) if (!v.matchesDocument(store)) return false;
+		return true;
 	}
 	// Clears semantic diagnostics owned by {owner} for URIs not in {keep}, or
 	// by any context whose configuration revision is no longer current when
@@ -58,7 +92,7 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 		for (uri in uris()) {
 			var list = lists[uri], o = list.owner;
 			if (o == null || (keep != null && keep.has(uri))) continue;
-			if (if(owner != null, o == owner, !o.config.current)) semantic(uri, null, []);
+			if (if(owner != null, o == owner, !o.config.current)) semantic(uri, null, null, []);
 		}
 	}
 	// The URIs in ProjectFiles.before order, the map's own.

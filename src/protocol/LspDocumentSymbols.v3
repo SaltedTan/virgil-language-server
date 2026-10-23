@@ -68,8 +68,8 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		var owner = projects.forDocument(overlay.uri);
 		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text, owner.compilerArgs());
 		var s = if(owner.active != null, owner.active.snapshot);
-		// Details need the same overlay version and record, whose text has
-		// the snapshot's byte ranges.
+		// Details need the analyzed overlay identity, whose text has the
+		// snapshot's byte ranges even after a version-only change.
 		if (s != null && !s.matchesDocument(store, overlay.uri)) s = null;
 		var path = if(s != null, s.paths[s.documentIndex(overlay.uri)]);
 		if (hierarchy) return JsonRpcReply.Result(encodeSymbols(symbols, map, s, path));

@@ -16,6 +16,11 @@ def X = [
 	T("LspSemanticDiagnostics:configuration_edits_drop_obsolete_waiters", test_configuration_edits_drop_obsolete_waiters),
 	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
+	T("LspSemanticDiagnostics:version_only_update", test_version_only_update),
+	T("LspSemanticDiagnostics:stale_version_only_reanalyzes", test_stale_version_only_reanalyzes),
+	T("LspSemanticDiagnostics:source_membership_version_only", test_source_membership_version_only),
+	T("LspSemanticDiagnostics:source_membership_running", test_source_membership_running),
+	T("LspSemanticDiagnostics:ownership_version_only", test_ownership_version_only),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
 	T("LspSemanticDiagnostics:urgent_context_starts_first", test_urgent_context_starts_first),
@@ -56,6 +61,18 @@ class SemanticTestSession {
 		doc["version"] = JsonValue.Int(version);
 		change["text"] = JsonValue.String(text);
 		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def versionOnly(name: string, version: int) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		notify("textDocument/didChange", doc, []);
+	}
+	// Reports files changed on disk, as the client's watcher does.
+	def watched(changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["changes"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
 	}
 	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
 		var params = Strings.newMap<JsonValue>();
@@ -185,6 +202,20 @@ def test_development_request_rejected_when_busy(t: Tester) {
 	t.asserti(1, s.supervisor.snapshot.generation);
 	s.server.close();
 }
+// The parameters of the last publication of {uri} in {messages}, or null.
+def lastPublication(messages: Array<HashMap<string, JsonValue>>, uri: string) -> HashMap<string, JsonValue> {
+	var result: HashMap<string, JsonValue>;
+	for (m in messages) {
+		if (!Strings.equal("textDocument/publishDiagnostics", method(m))) continue;
+		var p = params(m);
+		if (Strings.equal(uri, JsonValue.String.!(p["uri"]).v)) result = p;
+	}
+	return result;
+}
+// The JSON of {v}, for comparing published lists.
+def rendered(v: JsonValue) -> string {
+	return JsonRpcJson.render(StringBuilder.new(), v).toString();
+}
 def test_debounce_timeout(t: Tester) {
 	var s = SemanticTestSession.new();
 	s.open("main.v3", 1, s.main);
@@ -226,6 +257,88 @@ class InfoRecorder {
 	def messages = Vector<string>.new();
 	def info(msg: string) { messages.put(msg); }
 }
+def test_version_only_update(t: Tester) {
+	var s = SemanticTestSession.new(), uri = s.uri("main.v3");
+	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
+	s.settle();
+	var messages = s.take(), first = lastPublication(messages, uri);
+	t.assert(first != null, "the open document's diagnostics were published");
+	if (first == null) return s.server.close();
+	t.asserti(1, JsonValue.Int.!(first["version"]).v);
+	var list = JsonValue.JArray.!(first["diagnostics"]).v;
+	t.assert(list.length > 0, "the type error is published");
+	t.assert_string("aeneas", JsonValue.String.!(field(list[0], "source")).v);
+	var generation = s.supervisor.snapshot.generation;
+	// A version-only change keeps the text, its analysis, and the list's
+	// provenance; it republishes that list at the new version without analyzing.
+	s.versionOnly("main.v3", 2);
+	t.assertz(false, s.server.analyzing());
+	messages = s.take();
+	var second = lastPublication(messages, uri);
+	t.assert(second != null, "the diagnostics were republished");
+	if (second == null) return s.server.close();
+	t.asserti(2, JsonValue.Int.!(second["version"]).v);
+	var same = JsonValue.JArray.!(second["diagnostics"]).v;
+	t.assert_string(rendered(JsonValue.JArray(list)), rendered(JsonValue.JArray(same)));
+	t.assert_string("aeneas", JsonValue.String.!(field(same[0], "source")).v);
+	t.asserti(generation, s.supervisor.snapshot.generation);
+	t.asserti(0, count(messages, "window/showMessage"));
+	s.server.close();
+}
+// A version-only change that drops stale semantic diagnostics must schedule
+// their replacement. The regression: 8,193 unrelated file reports overflow
+// DocumentStore's disk stamps, so the analysis that published main.v3's type
+// error no longer describes the closed shapes.v3; empty changes then clear the
+// still-valid error, and no watched-file event affects the project. The error
+// must return without another edit or save.
+def test_stale_version_only_reanalyzes(t: Tester) {
+	var s = SemanticTestSession.new(), uri = s.uri("main.v3"), dependency = s.uri("shapes.v3");
+	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
+	s.settle();
+	var messages = s.take(), first = lastPublication(messages, uri);
+	t.assert(first != null, "the open document's type error was published");
+	if (first == null) return s.server.close();
+	t.asserti(1, JsonValue.Int.!(first["version"]).v);
+	t.assert(JsonValue.JArray.!(first["diagnostics"]).v.length > 0, "the type error is published");
+	var generation = s.supervisor.snapshot.generation, stamp = s.server.documents.diskStamp(dependency);
+	// The last report fills every slot and then replaces every stamp,
+	// including the analysis's stamp for shapes.v3, without naming a file
+	// either project contains.
+	var changes = Array<JsonValue>.new(DocumentLimits.MAX_DISK_STAMPS + 1);
+	for (i < changes.length) {
+		var change = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(ProjectFiles.uri(ProjectFiles.join(s.base, Strings.format1("noise/%d.v3", i))));
+		change["type"] = JsonValue.Int(2);
+		changes[i] = JsonValue.JObject(change);
+	}
+	s.watched(changes);
+	t.assert(s.server.documents.diskStamp(dependency) != stamp, "the overflow replaced the dependency's stamp");
+	s.settle();
+	t.asserti(generation, s.supervisor.snapshot.generation);
+	s.take();
+	// Each empty change republishes only parser diagnostics, since the
+	// analysis can no longer vouch for the semantic list. None is an edit or
+	// a save.
+	for (version = 2; version <= 5; version++) s.versionOnly("main.v3", version);
+	var cleared = lastPublication(s.take(), uri);
+	t.assert(cleared != null, "the empty changes published");
+	if (cleared == null) return s.server.close();
+	t.asserti(5, JsonValue.Int.!(cleared["version"]).v);
+	t.asserti(0, JsonValue.JArray.!(cleared["diagnostics"]).v.length);
+	// The drop must schedule a replacement analysis whose result returns the
+	// still-valid error without another edit or save.
+	s.settle();
+	messages = s.take();
+	var restored = lastPublication(messages, uri);
+	t.assert(restored != null, "the replacement analysis published");
+	if (restored == null) return s.server.close();
+	t.asserti(5, JsonValue.Int.!(restored["version"]).v);
+	var list = JsonValue.JArray.!(restored["diagnostics"]).v;
+	t.assert(list.length > 0, "the still-valid type error is back");
+	if (list.length > 0) t.assert_string("aeneas", JsonValue.String.!(field(list[0], "source")).v);
+	t.asserti(generation + 1, s.supervisor.snapshot.generation);
+	s.server.close();
+}
 def test_shutdown_stops_scheduling(t: Tester) {
 	var s = SemanticTestSession.new();
 	s.open("main.v3", 1, s.main);
@@ -237,6 +350,134 @@ def test_shutdown_stops_scheduling(t: Tester) {
 	s.take();
 	s.server.onPoll();
 	t.asserti(0, s.take().length);
+	s.server.close();
+}
+def test_source_membership_version_only(t: Tester) {
+	sourceMembership(t, false);
+}
+def test_source_membership_running(t: Tester) {
+	sourceMembership(t, true);
+}
+def sourceMembership(t: Tester, running: bool) {
+	var fixture = if(running, "semantic-membership-running", "semantic-membership");
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), ProjectFiles.join("project-fixtures", fixture));
+	var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(ProjectFiles.join(base, "shapes.v3"), "\x00")], [0, 1, 2]);
+	t.assert(pid > 0, "fixture reset started");
+	if (pid <= 0) return;
+	var status = Array<int>.new(1);
+	t.asserti(pid, HostOs.wait(pid, status));
+	t.asserti(0, status[0]);
+	var s = OwnershipTestSession.new(fixture);
+	var uri = s.uri("main.v3"), infos = InfoRecorder.new();
+	s.server.infoAnalysis = infos.info;
+	s.open("main.v3", 1, System.fileLoad(ProjectFiles.join(s.base, "main.v3")));
+	if (running) t.assert(s.supervisor.busy(), "the old source set is being analyzed without polling");
+	else {
+		s.settle();
+		var first = published(s.messages.extract(), uri);
+		t.assert(first != null && first.length > 0, "the missing Shapes component is reported");
+		if (first != null && first.length > 0) t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(first[0], "code")).v);
+	}
+	var ctx = s.server.projects.forDocument(uri).active, revision = ctx.config;
+	var generation = if(running, 0, s.supervisor.snapshot.generation);
+	t.asserti(1, ctx.sources.length);
+	var text = "component Shapes { def answer() -> int { return 3; } }\n";
+	var fd = System.fileOpen(ProjectFiles.join(s.base, "shapes.v3"), false);
+	t.assert(fd >= 0, "the new source is created");
+	if (fd < 0) return s.server.close();
+	System.fileWriteK(fd, text, 0, text.length);
+	System.fileClose(fd);
+	var event = Strings.newMap<JsonValue>(), watched = Strings.newMap<JsonValue>();
+	event["uri"] = JsonValue.String(s.uri("shapes.v3"));
+	event["type"] = JsonValue.Int(1);
+	watched["changes"] = JsonValue.JArray([JsonValue.JObject(event)]);
+	s.server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(watched)).encode());
+	t.assert(ctx.config == revision && revision.current, "source membership changes without replacing the configuration");
+	t.asserti(2, ctx.sources.length);
+	t.assert(s.server.analyzing(), "the CREATED event schedules a replacement before the empty change");
+	var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(uri);
+	doc["version"] = JsonValue.Int(2);
+	change["textDocument"] = JsonValue.JObject(doc);
+	change["contentChanges"] = JsonValue.JArray([]);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didChange", JsonRpcParams.ByName(change)).encode());
+	var cleared = lastPublication(s.messages.extract(), uri);
+	t.assert(cleared != null, "the empty change publishes at the new version");
+	if (cleared != null) {
+		t.asserti(2, JsonValue.Int.!(cleared["version"]).v);
+		t.asserti(0, JsonValue.JArray.!(cleared["diagnostics"]).v.length);
+	}
+	s.settle();
+	for (m in s.messages.extract()) {
+		var p = lastPublication([m], uri);
+		if (p == null) continue;
+		t.asserti(2, JsonValue.Int.!(p["version"]).v);
+		t.asserti(0, JsonValue.JArray.!(p["diagnostics"]).v.length);
+	}
+	t.asserti(generation + if(running, 2, 1), ctx.snapshot.generation);
+	t.asserti(2, ctx.snapshot.documentVersions.length);
+	t.assert(ctx.snapshot.verified && ctx.snapshot.diagnostics.length == 0, "the replacement completes with correct empty diagnostics");
+	var discarded = 0;
+	for (i < infos.messages.length) if (Strings.startsWith(infos.messages[i], "discarded analysis ")) discarded++;
+	t.asserti(if(running, 1, 0), discarded);
+	s.server.close();
+}
+def test_ownership_version_only(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/ownership-version");
+	var config = ProjectFiles.join(base, "sub/.virgil-lsp.json");
+	var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(config, "\x00")], [0, 1, 2]);
+	t.assert(pid > 0, "fixture reset started");
+	if (pid <= 0) return;
+	var status = Array<int>.new(1);
+	t.asserti(pid, HostOs.wait(pid, status));
+	t.asserti(0, status[0]);
+	var s = OwnershipTestSession.new("ownership-version"), uri = s.uri("sub/main.v3");
+	s.open("sub/main.v3", 1, System.fileLoad(ProjectFiles.join(base, "sub/main.v3")));
+	s.settle();
+	var first = published(s.messages.extract(), uri);
+	t.assert(first != null && first.length > 0, "the excluded Shapes component is unresolved");
+	if (first != null && first.length > 0) t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(first[0], "code")).v);
+	var parent = s.server.projects.forDocument(uri).active, snapshot = parent.snapshot;
+	t.assert_string("parent", parent.definition.name);
+	var text = "{\"version\":1,\"projects\":[{\"name\":\"child\",\"sources\":[\"main.v3\",\"shapes.v3\"]}]}";
+	var fd = System.fileOpen(config, false);
+	t.assert(fd >= 0, "the child configuration is created");
+	if (fd < 0) return s.server.close();
+	System.fileWriteK(fd, text, 0, text.length);
+	System.fileClose(fd);
+	var event = Strings.newMap<JsonValue>(), watched = Strings.newMap<JsonValue>();
+	event["uri"] = JsonValue.String(s.uri("sub/.virgil-lsp.json"));
+	event["type"] = JsonValue.Int(1);
+	watched["changes"] = JsonValue.JArray([JsonValue.JObject(event)]);
+	s.server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(watched)).encode());
+	var child = s.server.projects.forDocument(uri).active;
+	t.assert_string("child", child.definition.name);
+	t.assert(child != parent && parent.config.current, "ownership changes without retiring the parent");
+	t.assert(LspAnalysisCapture.matchesSources(snapshot.documentVersions, parent.sources), "the parent's captured membership still matches");
+	for (v in snapshot.documentVersions) t.assert(v.matchesDocument(s.server.documents), "the parent's captured stamps still match");
+	t.assert(child.snapshot == null, "the child analysis has not completed");
+	var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(uri);
+	doc["version"] = JsonValue.Int(2);
+	change["textDocument"] = JsonValue.JObject(doc);
+	change["contentChanges"] = JsonValue.JArray([]);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didChange", JsonRpcParams.ByName(change)).encode());
+	var cleared = lastPublication(s.messages.extract(), uri);
+	t.assert(cleared != null, "the empty change publishes at the new version");
+	if (cleared != null) {
+		t.asserti(2, JsonValue.Int.!(cleared["version"]).v);
+		t.asserti(0, JsonValue.JArray.!(cleared["diagnostics"]).v.length);
+	}
+	s.settle();
+	var replacement = lastPublication(s.messages.extract(), uri);
+	t.assert(replacement != null, "the child publishes its correct diagnostics without another edit");
+	if (replacement != null) {
+		t.asserti(2, JsonValue.Int.!(replacement["version"]).v);
+		var diagnostics = JsonValue.JArray.!(replacement["diagnostics"]).v;
+		t.asserti(1, diagnostics.length);
+		if (diagnostics.length == 1) t.assert_string("TypeError", JsonValue.String.!(field(diagnostics[0], "code")).v);
+	}
+	t.assert(child.snapshot != null && child.snapshot.documentVersions.length == 2, "the replacement analyzes both child sources");
 	s.server.close();
 }
 def test_closed_shared_owner(t: Tester) {

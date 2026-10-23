@@ -1,0 +1,26 @@
+# A didChange with an empty contentChanges array only moves the version: the text, its analysis,
+# and its diagnostics stay unchanged. The document is opened, updated that way, and renamed; the
+# edit carries version 2. As a control, a full-text change with the same bytes still invalidates
+# the analysis, so the next rename reports the version that was analyzed (3).
+{"write":[".virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"*.v3\"]}]}"]}
+{"write":["main.v3","component Main {\n\tdef main() -> int {\n\t\tvar value = 1;\n\t\treturn value;\n\t}\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}},"textDocument":{"rename":{"prepareSupport":true}}}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/main.v3","languageId":"virgil","version":1,"text":"component Main {\n\tdef main() -> int {\n\t\tvar value = 1;\n\t\treturn value;\n\t}\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":1}}}
+# No content changes: the list and its provenance are republished at version 2 without reanalysis.
+{"send":{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@TMP@/main.v3","version":2},"contentChanges":[]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":2}}}
+# The retained analysis of the same text still answers, and reports the live version.
+{"send":{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":9},"newName":"total"}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"documentChanges":[{"textDocument":{"uri":"@TMP@/main.v3","version":2},"edits":[{"range":{"start":{"line":2,"character":6},"end":{"line":2,"character":11}},"newText":"total"},{"range":{"start":{"line":3,"character":9},"end":{"line":3,"character":14}},"newText":"total"}]}]}}}
+# Control: the same full text is a real change, so the version-3 analysis is a new one.
+{"send":{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@TMP@/main.v3","version":3},"contentChanges":[{"text":"component Main {\n\tdef main() -> int {\n\t\tvar value = 1;\n\t\treturn value;\n\t}\n}\n"}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":3}}}
+{"send":{"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":9},"newName":"total"}}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":{"documentChanges":[{"textDocument":{"uri":"@TMP@/main.v3","version":3},"edits":[{"range":{"start":{"line":2,"character":6},"end":{"line":2,"character":11}},"newText":"total"},{"range":{"start":{"line":3,"character":9},"end":{"line":3,"character":14}},"newText":"total"}]}]}}}
+{"send":{"jsonrpc":"2.0","id":4,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":4,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}

@@ -6,6 +6,7 @@
 def T = UnitTests.register;
 def X = [
 	T("AnalysisDocumentVersions:pending_change", test_pending_change),
+	T("AnalysisDocumentVersions:version_only", test_version_only),
 	T("AnalysisDocumentVersions:pending_close", test_pending_close),
 	T("AnalysisDocumentVersions:disk_policy", test_disk_policy),
 	T("AnalysisDocumentVersions:rejected_events", test_rejected_events),
@@ -84,6 +85,24 @@ def test_pending_change(t: Tester) {
 	checkStamp(t, s.inspect(), true, -9, true);
 	t.assertz(false, snapshot.matchesDocument(store, "untitled:absent"));
 	t.assertz(false, snapshot.matchesDocument(store, "file://remote/a"));
+	s.close();
+}
+def test_version_only(t: Tester) {
+	var s = VersionTestSession.new(), store = s.server.documents;
+	store.open(URI, "virgil", 1, "def overlay = 1;");
+	s.begin(t);
+	// A version-only change keeps the accepted record, so the pending
+	// analysis still describes the text; the reported version is the new one.
+	t.assert(store.changeVersion(ALIAS, 2) == null, "accepted version-only change while pending");
+	var snapshot = s.complete(t);
+	if (snapshot == null) return s.close();
+	t.assertz(true, snapshot.matchesDocument(store, URI));
+	checkStamp(t, replyResult(s.response), true, 2, true);
+	checkStamp(t, s.inspect(), true, 2, true);
+	// A full-text change replaces the record, even with the same bytes.
+	t.assert(store.change(URI, 3, "def overlay = 1;") == null, "accepted full-text change");
+	t.assertz(false, snapshot.matchesDocument(store, URI));
+	checkStamp(t, s.inspect(), true, 1, false);
 	s.close();
 }
 def test_pending_close(t: Tester) {
