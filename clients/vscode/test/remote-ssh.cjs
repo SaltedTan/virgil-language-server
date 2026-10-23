@@ -6,8 +6,11 @@
 // or signaled.
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const { createRequire } = require('node:module');
 const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
@@ -18,10 +21,11 @@ const dir = path.join(__dirname, 'e2e/remote-ssh');
 // properties, and globals replaced.
 function load(file, modules, overrides, globals = {}) {
   const module = { exports: {} };
+  const localRequire = createRequire(path.join(dir, file));
   vm.runInNewContext(fs.readFileSync(path.join(dir, file), 'utf8'), {
-    module, exports: module.exports, __dirname: dir, Buffer, setTimeout, clearTimeout,
+    module, exports: module.exports, __dirname: dir, Buffer, AbortController, setTimeout, clearTimeout,
     process: Object.create(process, Object.getOwnPropertyDescriptors(overrides)),
-    require: (name) => modules[name] ?? require(name),
+    require: (name) => modules[name] ?? localRequire(name),
     ...globals,
   });
   return module.exports;
@@ -144,7 +148,12 @@ function runGroup(processes, timeout = 60000) {
   return {
     signals,
     interrupt: () => controller.abort(),
-    exit: (code, signal) => child.emit('exit', code, signal),
+    exit: (code, signal, close = true) => {
+      child.emit('exit', code, signal);
+      if (close) child.emit('close', code, signal);
+    },
+    close: () => child.emit('close'),
+    data: (name, text) => child[name].emit('data', Buffer.from(text)),
     // Runs the timers that are due in the next ms milliseconds.
     advance: (ms) => {
       const end = now + ms;
@@ -164,6 +173,33 @@ function runGroup(processes, timeout = 60000) {
 }
 
 const ignoreTerm = (processes, pid) => Object.assign(processes.get(pid), { on: () => {} });
+
+test('a command waits for both output pipes after exit and retains their trailing bytes', async () => {
+  const processes = new Map([[50, { start: '100', group: 50 }]]);
+  const run = runGroup(processes);
+  run.data('stdout', 'archive prefix');
+  processes.delete(50);
+  run.exit(0, null, false);
+  run.advance(100);
+  assert.equal(await run.result(), undefined);
+  run.data('stdout', ' and tail');
+  run.data('stderr', 'final diagnostic');
+  run.close();
+  const result = await run.result();
+  assert.equal(result.stdout.toString(), 'archive prefix and tail');
+  assert.equal(result.stderr, 'final diagnostic');
+  assert.equal(result.at, 0);
+});
+
+test('a command that cannot spawn still completes after its pipes close', async () => {
+  const { runGroup } = require(path.join(dir, 'run.cjs'));
+  const result = await runGroup(path.join(dir, 'nonexistent-command'), [], {
+    timeout: 1000, signal: new AbortController().signal,
+  });
+  assert.equal(result.error.code, 'ENOENT');
+  assert.equal(result.stdout.length, 0);
+  assert.equal(result.stderr, '');
+});
 
 test('a command\'s process group is stopped by its number while it is the run\'s', async () => {
   // A command that ignores SIGTERM and exceeds its timeout.
@@ -245,6 +281,206 @@ test('once a process group is no longer the run\'s, its processes are stopped on
   run.advance(20000);
   assert.deepEqual(run.signals, [[51, 'SIGTERM']]);
   assert.equal((await run.result()).stopped, 'was interrupted');
+});
+
+test('server staging preserves a selected alternate executable and its resolved worker', async (t) => {
+  const root = fs.mkdtempSync(path.join(__dirname, '.remote-ssh-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const build = path.join(root, 'build');
+  fs.mkdirSync(build);
+  for (const [name, value] of [['virgil-lsp', 'wrong'], ['candidate', 'selected'], ['virgil-lsp-worker', 'worker']]) {
+    fs.writeFileSync(path.join(build, name), `#!/bin/sh\nprintf '${value}'\n`, { mode: 0o755 });
+  }
+  const link = path.join(root, 'server-link');
+  fs.symlinkSync(path.join(build, 'candidate'), link);
+  fs.writeFileSync(path.join(root, 'virgil-lsp-worker'), 'wrong worker');
+  const { serverFiles } = require(path.join(dir, 'run.cjs'));
+  for (const server of [path.join(build, 'candidate'), link]) {
+    const work = fs.mkdtempSync(path.join(root, 'work-'));
+    const run = { values: { server }, work, manifest: {} };
+    const staged = await serverFiles(run);
+    assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp'), { encoding: 'utf8' }), 'selected');
+    assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp-worker'), { encoding: 'utf8' }), 'worker');
+    for (const name of staged.names) {
+      assert.equal(staged.details.sha256[name], crypto.createHash('sha256').update(fs.readFileSync(path.join(staged.dir, name))).digest('hex'));
+    }
+    assert.equal(staged.details.server, server);
+  }
+  const archive = path.join(root, 'build.tar.gz');
+  execFileSync('tar', ['-czf', archive, '-C', root, 'build']);
+  const work = fs.mkdtempSync(path.join(root, 'work-'));
+  const staged = await serverFiles({ values: { archive }, work, env: process.env, signal: new AbortController().signal, checkpoint() {}, manifest: {} });
+  assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp'), { encoding: 'utf8' }), 'wrong');
+  assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp-worker'), { encoding: 'utf8' }), 'worker');
+});
+
+test('missing product executables fail before an upload, for direct and archive inputs', async (t) => {
+  const root = fs.mkdtempSync(path.join(__dirname, '.remote-ssh-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const build = path.join(root, 'build');
+  fs.mkdirSync(build);
+  const { serverFiles } = require(path.join(dir, 'run.cjs'));
+  for (const present of [[], ['virgil-lsp'], ['virgil-lsp-worker']]) {
+    for (const name of present) fs.writeFileSync(path.join(build, name), name);
+    const archive = path.join(root, 'build.tar.gz');
+    execFileSync('tar', ['-czf', archive, '-C', root, 'build']);
+    for (const values of [{ server: path.join(build, 'virgil-lsp') }, { archive }]) {
+      const work = fs.mkdtempSync(path.join(root, 'work-'));
+      const run = { values, work, env: process.env, signal: new AbortController().signal, checkpoint() {}, manifest: {} };
+      await assert.rejects(serverFiles(run), (error) => error.kind === 'fail' && /missing server executable/.test(error.message));
+      for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
+        assert.equal(run.manifest.server.sha256[name] === null, !present.includes(name));
+      }
+    }
+    for (const name of present) fs.unlinkSync(path.join(build, name));
+  }
+});
+
+test('leak checks use the client-exit or host-stop time rather than the retrieval time', async () => {
+  for (const at of [0, 10000]) {
+    let now = at + 3000;
+    const run = load('run.cjs', { '../run.cjs': require('./e2e/run.cjs') }, {}, {
+      Date: { now: () => now },
+      setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+    });
+    const server = { pid: 20, start: '600', exe: '/remote/virgil-lsp/virgil-lsp' };
+    const remote = {
+      target: { root: '/remote' },
+      remote: async () => ({ stdout: JSON.stringify({ found: now < at + 6000 ? [server] : [], host: false }) }),
+    };
+    const result = await run.settle(remote, { agent: '/remote/server', serverNode: '/node' }, at);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.left)), [server]);
+    assert.ok(now <= at + 5200);
+  }
+});
+
+test('host containment retains the signal timestamp across slow SSH responses', async () => {
+  for (const stubborn of [false, true]) {
+    let now = 1000;
+    let signals = 0;
+    let stoppedAt;
+    const run = load('run.cjs', { '../run.cjs': require('./e2e/run.cjs') }, {}, {
+      Date: { now: () => now },
+      setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+    });
+    const remote = {
+      target: { root: '/remote' },
+      remote: async (command) => {
+        const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+        const signaled = options.signal !== undefined;
+        if (signaled) {
+          signals++;
+          stoppedAt = now;
+        }
+        const host = signaled || (stubborn && signals < 2);
+        const stdout = JSON.stringify({ found: [], host, signaledAt: signaled ? now : undefined });
+        now += 1000;
+        return { stdout };
+      },
+    };
+    const result = await run.stopHost(remote, { agent: '/remote/server', serverNode: '/node' }, { pid: 10, start: '500', exe: '/node' });
+    assert.equal(result.signal, stubborn ? 'SIGKILL' : 'SIGTERM');
+    assert.equal(result.at, stoppedAt);
+    assert.ok(result.at < now - 1000);
+  }
+});
+
+test('output-directory filesystem failures are infrastructure errors', () => {
+  for (const operation of ['mkdirSync', 'readdirSync', 'realpathSync']) {
+    const files = {
+      ...fs,
+      existsSync: () => true,
+      realpathSync: (file) => file,
+      mkdirSync() {},
+      readdirSync: () => [],
+      [operation]: (file) => {
+        if (operation === 'realpathSync' && file !== '/out') return file;
+        throw new Error('ENOSPC');
+      },
+    };
+    const run = load('run.cjs', {
+      'node:fs': files,
+      'node:util': { parseArgs: () => ({ values: { vsix: '/test.vsix', 'virgil-root': '/virgil', 'work-dir': '/work', out: '/out', repeat: '1', sshd: '/sshd' } }) },
+      '../run.cjs': require('./e2e/run.cjs'),
+    }, {});
+    assert.throws(() => run.options(), (error) => error.kind === 'infra' && error.message.includes('ENOSPC'));
+  }
+});
+
+test('launch settings and every launch-log operation classify filesystem failures as infrastructure', async () => {
+  for (const operation of ['settings', 'mkdir', 'open', 'header', 'data', 'close']) {
+    let writes = 0;
+    let closes = 0;
+    const fail = () => { throw new Error('ENOSPC'); };
+    const files = {
+      ...fs,
+      mkdirSync: (file) => { if (operation === 'mkdir' && file.includes('launches')) fail(); },
+      writeFileSync: () => { if (operation === 'settings') fail(); },
+      openSync: () => (operation === 'open' ? fail() : 42),
+      writeSync: () => {
+        writes++;
+        if ((operation === 'header' && writes === 1) || (operation === 'data' && writes > 1)) fail();
+      },
+      closeSync: () => {
+        closes++;
+        if (operation === 'close') fail();
+      },
+    };
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    const runner = load('run.cjs', {
+      'node:fs': files,
+      '../run.cjs': require('./e2e/run.cjs'),
+      'node:child_process': { spawn: () => {
+        queueMicrotask(() => {
+          child.emit('exit', 0, null);
+          child.stdout.emit('data', Buffer.from('trailing output'));
+          child.emit('close', 0, null);
+        });
+        return child;
+      } },
+    }, {}, { setInterval, clearInterval });
+    const run = {
+      target: { alias: 'host' }, work: '/work', evidence: '/evidence', settings: {},
+      manifest: { launches: [] }, signal: new AbortController().signal,
+      remote: async () => ({}), checkpoint() {},
+    };
+    const layout = { results: '/results', data: '/data', project: '/project', tests: '/tests' };
+    await assert.rejects(runner.launch(run, 'probe', 'probe', { executable: '/code', layout, vsix: { version: '1' } }),
+      (error) => error.kind === 'infra' && error.message.includes('ENOSPC'));
+    assert.equal(run.manifest.launches[0].result, 'INFRA');
+    assert.equal(closes, ['header', 'data', 'close'].includes(operation) ? 1 : 0);
+  }
+});
+
+test('scratch-directory failures produce an INFRA manifest and exit status', async () => {
+  for (const operation of ['mkdtempSync', 'mkdirSync']) {
+    const written = new Map();
+    let status;
+    const exited = new Error('exit');
+    const runner = load('run.cjs', {
+      'node:fs': {
+        ...fs,
+        existsSync: () => true,
+        accessSync() {}, realpathSync: (file) => file,
+        readdirSync: () => [], mkdirSync() {},
+        mkdtempSync: (prefix) => `${prefix}test`, rmSync() {},
+        writeFileSync: (file, data) => written.set(path.basename(file), data),
+        [operation]: (file) => {
+          if (operation === 'mkdirSync' && file === '/out') return;
+          throw new Error('ENOSPC');
+        },
+      },
+      'node:util': { parseArgs: () => ({ values: { vsix: '/test.vsix', 'virgil-root': '/virgil', 'work-dir': '/work', out: '/out', repeat: '1', sshd: '/sshd' } }) },
+      'node:child_process': { execFileSync: () => 'commit' },
+      '../run.cjs': require('./e2e/run.cjs'),
+    }, {
+      on() {}, stdout: new EventEmitter(), stderr: new EventEmitter(),
+      exit: (value) => { status = value; throw exited; },
+    });
+    await assert.rejects(runner.main(), (error) => error === exited);
+    assert.equal(status, 3);
+    assert.equal(JSON.parse(written.get('manifest.json')).result, 'INFRA');
+  }
 });
 
 // run.cjs's program that lists and signals processes on the host, over fake

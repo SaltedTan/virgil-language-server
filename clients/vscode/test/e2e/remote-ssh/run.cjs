@@ -79,6 +79,15 @@ class Failure extends Error {
 }
 const infra = (message) => new Failure('infra', message);
 
+function infrastructure(what, step) {
+  try {
+    return step();
+  } catch (error) {
+    if (error instanceof Failure) throw error;
+    throw infra(`could not ${what}: ${error.message}`);
+  }
+}
+
 class UsageError extends Error {}
 
 const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH] '
@@ -140,9 +149,12 @@ function options() {
   }
   if (!path.isAbsolute(values.sshd)) throw new UsageError(`--sshd must be an absolute path: ${values.sshd}`);
   if (values.out !== undefined) {
-    fs.mkdirSync(values.out, { recursive: true });
-    if (fs.readdirSync(values.out).length > 0) throw new UsageError(`the output directory is not empty: ${values.out}`);
-    values.out = fs.realpathSync(values.out);
+    const entries = infrastructure('prepare the output directory', () => {
+      fs.mkdirSync(values.out, { recursive: true });
+      values.out = fs.realpathSync(values.out);
+      return fs.readdirSync(values.out);
+    });
+    if (entries.length > 0) throw new UsageError(`the output directory is not empty: ${values.out}`);
     // The work directory holds the run's keys and Microsoft's software.
     if (`${values.workDir}/`.startsWith(`${values.out}/`)) {
       throw new UsageError(`the work directory can't be in the output directory: ${values.workDir}`);
@@ -317,15 +329,19 @@ function runGroup(command, args, { env, input, timeout, signal, onData }) {
     const output = { stdout: [], stderr: [] };
     let stopped;
     let exited;
+    let closed = false;
+    let finished = false;
     let deadline;
     let groupLeft = false;
     const started = Date.now();
-    const finish = (result) => {
+    const finish = () => {
+      if (finished || exited === undefined || !closed || (group.look() ?? []).length > 0) return;
+      finished = true;
       clearTimeout(timer);
       clearInterval(poll);
       signal.removeEventListener('abort', interrupt);
       resolve({
-        ...result, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
+        ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
         stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
       });
     };
@@ -338,7 +354,7 @@ function runGroup(command, args, { env, input, timeout, signal, onData }) {
     const poll = setInterval(() => {
       const left = group.look() ?? [];
       if (exited !== undefined && left.length === 0) {
-        finish(exited);
+        finish();
       } else if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
@@ -363,11 +379,17 @@ function runGroup(command, args, { env, input, timeout, signal, onData }) {
       child.stdin.on('error', () => {});
       child.stdin.end(input);
     }
-    child.on('error', (error) => finish({ error }));
+    child.on('error', (error) => {
+      exited ??= { error, at: Date.now() };
+    });
+    child.on('close', () => {
+      closed = true;
+      finish();
+    });
     child.on('exit', (code, exitSignal) => {
       exited = { code, signal: exitSignal, at: Date.now() };
       group.reaped();
-      if ((group.look() ?? []).length === 0) finish(exited);
+      finish();
     });
   });
 }
@@ -502,20 +524,17 @@ function osDetails() {
   };
 }
 
-// The server under test, in a local directory to upload: the build's
-// directory's two executables, or the archive's one directory. Missing
-// executables are reported, not refused: the suite then fails, as it does
-// for a broken server.
 async function serverFiles(run) {
   const { server, archive } = run.values;
   const details = {};
   let dir;
   let names;
+  let sources;
   if (archive !== undefined) {
     details.archive = archive;
     details.archiveSha256 = sha256(archive);
     const extracted = path.join(run.work, 'input');
-    fs.mkdirSync(extracted);
+    infrastructure('prepare the server input directory', () => fs.mkdirSync(extracted));
     const result = await runGroup('tar', ['-x', '-z', '-f', archive, '-C', extracted], { env: run.env, timeout: SSH_TIMEOUT_MS, signal: run.signal });
     run.checkpoint();
     if (!succeeded(result)) throw new Failure('fail', `could not extract ${archive}: ${outcome(result)}: ${result.stderr}`);
@@ -523,22 +542,32 @@ async function serverFiles(run) {
     if (fs.readdirSync(extracted).join() !== top) throw new Failure('fail', `${archive} does not hold just the directory ${top}`);
     dir = path.join(extracted, top);
     names = fs.readdirSync(dir);
+    sources = Object.fromEntries(['virgil-lsp', 'virgil-lsp-worker'].map((name) => [name, path.join(dir, name)]));
   } else {
     // The server starts the worker beside its own resolved path.
     const resolved = fs.existsSync(server) ? fs.realpathSync(server) : server;
     details.server = server;
-    dir = path.dirname(resolved);
-    names = ['virgil-lsp', 'virgil-lsp-worker'].filter((name) => fs.existsSync(path.join(dir, name)));
+    sources = { 'virgil-lsp': resolved, 'virgil-lsp-worker': path.join(path.dirname(resolved), 'virgil-lsp-worker') };
+    dir = path.join(run.work, 'input');
+    names = Object.keys(sources);
   }
   details.sha256 = {};
   for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
-    const file = path.join(dir, name);
+    const file = sources[name];
     if (fs.existsSync(file)) {
       details.sha256[name] = sha256(file);
     } else {
       details.sha256[name] = null;
-      console.log(`WARNING: there is no ${name} in ${dir}; the suite will fail`);
     }
+  }
+  run.manifest.server = details;
+  const missing = Object.keys(details.sha256).filter((name) => details.sha256[name] === null);
+  if (missing.length > 0) throw new Failure('fail', `missing server executable(s): ${missing.map((name) => sources[name]).join(', ')}`);
+  if (archive === undefined) {
+    infrastructure('stage the server executables', () => {
+      fs.mkdirSync(dir);
+      for (const [name, file] of Object.entries(sources)) fs.copyFileSync(file, path.join(dir, name));
+    });
   }
   return { dir, names, details };
 }
@@ -640,6 +669,7 @@ const fs = require('node:fs');
 const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
 const found = [];
 let hostRuns = false;
+let signaledAt;
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
     const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
@@ -649,14 +679,17 @@ for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)
     if (!exe.startsWith(root + '/')) continue;
     const start = fields[19];
     if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) {
-      if (signal) process.kill(Number(pid), signal);
+      if (signal) {
+        signaledAt = Date.now();
+        process.kill(Number(pid), signal);
+      }
       hostRuns = true;
     }
     if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) process.kill(Number(pid), 'SIGKILL');
     found.push({ pid: Number(pid), ppid: Number(fields[1]), start, exe });
   } catch {}
 }
-console.log(JSON.stringify({ found, host: hostRuns }));`;
+console.log(JSON.stringify({ found, host: hostRuns, signaledAt }));`;
 
 // The target's processes that run an executable from its work directory,
 // other than the VS Code Server's, which stays running between windows:
@@ -673,7 +706,7 @@ async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
     throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
   }
   const server = (p) => p.exe.startsWith(`${layout.agent}/`);
-  return { left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length, host: listing.host };
+  return { left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length, host: listing.host, signaledAt: listing.signaledAt };
 }
 
 // The remote extension host that bootstrap.cjs ran in, by its PID, start
@@ -686,11 +719,11 @@ function extensionHost(evidence, layout) {
 
 // Waits up to SERVER_EXIT_MS for the language servers to exit, and for host
 // too, if given; returns what still runs then.
-async function settle(run, layout, host) {
-  const deadline = Date.now() + SERVER_EXIT_MS;
+async function settle(run, layout, at, host) {
+  const deadline = at + SERVER_EXIT_MS;
   for (;;) {
     const processes = await remoteProcesses(run, layout, { host });
-    if ((processes.left.length === 0 && !processes.host) || Date.now() > deadline) return processes;
+    if ((processes.left.length === 0 && !processes.host) || Date.now() >= deadline) return processes;
     await sleep(200);
   }
 }
@@ -719,18 +752,19 @@ function descendants(processes, pid) {
 async function stopHost(run, layout, host) {
   const started = Date.now();
   let sent = null;
+  let at = started;
   for (const signal of ['SIGTERM', 'SIGKILL']) {
-    if (!(await remoteProcesses(run, layout, { host, signal })).host) break;
+    const processes = await remoteProcesses(run, layout, { host, signal });
+    if (!processes.host) return { signal: sent, seconds: (Date.now() - started) / 1000, at };
     sent = signal;
+    at = processes.signaledAt;
     for (const deadline = Date.now() + HOST_STOP_MS; Date.now() < deadline;) {
       await sleep(100);
-      if (!(await remoteProcesses(run, layout, { host })).host) return { signal, seconds: (Date.now() - started) / 1000 };
+      const stopped = await remoteProcesses(run, layout, { host });
+      if (!stopped.host) return { signal, seconds: (Date.now() - started) / 1000, at };
     }
   }
-  if (sent === 'SIGKILL') {
-    throw infra(`the remote extension host (pid ${host.pid}) that VS Code left running still ran ${HOST_STOP_MS / 1000} seconds after SIGKILL`);
-  }
-  return { signal: sent, seconds: (Date.now() - started) / 1000 };
+  throw infra(`the remote extension host (pid ${host.pid}) that VS Code left running still ran ${HOST_STOP_MS / 1000} seconds after SIGKILL`);
 }
 
 // What happened to a launch's remote extension host that VS Code left
@@ -791,8 +825,10 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   // Each launch has new client user data, so that VS Code doesn't restore
   // the previous window.
   const userData = path.join(run.work, 'client', name, 'user-data');
-  fs.mkdirSync(path.join(userData, 'User'), { recursive: true });
-  fs.writeFileSync(path.join(userData, 'User', 'settings.json'), JSON.stringify(run.settings, null, 2));
+  infrastructure(`prepare ${name}'s client settings`, () => {
+    fs.mkdirSync(path.join(userData, 'User'), { recursive: true });
+    fs.writeFileSync(path.join(userData, 'User', 'settings.json'), JSON.stringify(run.settings, null, 2));
+  });
   const args = [
     `--user-data-dir=${userData}`,
     `--extensions-dir=${run.clientExtensions}`,
@@ -812,25 +848,31 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     '--disable-gpu-sandbox',
   ];
   const logFile = path.join(run.evidence, 'launches', `${name}.log`);
-  fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  const log = fs.openSync(logFile, 'w');
-  fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`);
+  const log = infrastructure(`open launches/${name}.log`, () => {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    return fs.openSync(logFile, 'w');
+  });
   const print = suiteLines();
   console.log(`== ${name}`);
   const timeout = mode === 'probe' ? PROBE_TIMEOUT_MS : LAUNCH_TIMEOUT_MS;
   let unwritten;
-  const exit = await runGroup(executable, args, {
-    env: run.env, timeout, signal: run.signal,
-    onData: (data) => {
-      try {
-        fs.writeSync(log, data);
-      } catch (error) {
-        unwritten ??= error;
-      }
-      print(data);
-    },
-  });
-  fs.closeSync(log);
+  let exit;
+  try {
+    infrastructure(`write launches/${name}.log`, () => fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`));
+    exit = await runGroup(executable, args, {
+      env: run.env, timeout, signal: run.signal,
+      onData: (data) => {
+        try {
+          fs.writeSync(log, data);
+        } catch (error) {
+          unwritten ??= error;
+        }
+        print(data);
+      },
+    });
+  } finally {
+    infrastructure(`close launches/${name}.log`, () => fs.closeSync(log));
+  }
   record.seconds = exit.seconds;
   record.exit = exit.error?.message ?? exit.stopped ?? exit.code ?? exit.signal;
   run.checkpoint();
@@ -860,7 +902,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   // during a later launch.
   if (mode !== 'probe') {
     const host = extensionHost(evidence, layout);
-    let processes = await settle(run, layout, host);
+    let processes = await settle(run, layout, exit.at, host);
     if (host !== undefined) record.remoteExtensionHost = { pid: host.pid, start: host.start, leftRunning: processes.host };
     if (processes.host) {
       record.remoteExtensionHost.processes = descendants(processes.left, host.pid);
@@ -868,7 +910,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
       run.note(`${name}: ${record.info[0]}`);
       const stopped = await stopHost(run, layout, host);
       Object.assign(record.remoteExtensionHost, { stoppedWith: stopped.signal, stopSeconds: stopped.seconds });
-      processes = await settle(run, layout);
+      processes = await settle(run, layout, stopped.at);
     }
     record.leftRunning = processes.left;
     record.vscodeServerProcesses = processes.vscodeServer;
@@ -927,7 +969,6 @@ async function test(run) {
   if (vsix.id !== EXTENSION_ID) throw new Failure('fail', `${values.vsix} holds ${vsix.id}, not ${EXTENSION_ID}`);
   run.manifest.vsix = vsix;
   const server = await serverFiles(run);
-  run.manifest.server = server.details;
   run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
   const suite = path.join(__dirname, '..', 'suite.cjs');
   run.manifest.tests = { suiteSha256: sha256(suite), bootstrapSha256: sha256(path.join(__dirname, 'bootstrap.cjs')) };
@@ -985,7 +1026,7 @@ async function test(run) {
     `--extensions-dir=${run.clientExtensions}`,
     ...REMOTE_SSH.flatMap(({ id, version }) => ['--install-extension', `${id}@${version}`]),
   ], { env: run.env, timeout: INSTALL_TIMEOUT_MS, signal: run.signal });
-  fs.writeFileSync(path.join(run.evidence, 'remote-ssh-install.log'), install.stdout.toString() + install.stderr);
+  infrastructure('write remote-ssh-install.log', () => fs.writeFileSync(path.join(run.evidence, 'remote-ssh-install.log'), install.stdout.toString() + install.stderr));
   run.checkpoint();
   if (!succeeded(install)) throw infra(`installing Remote-SSH ${REMOTE_SSH_VERSION} ${outcome(install)}; see remote-ssh-install.log`);
   const installed = fs.readdirSync(run.clientExtensions).filter((name) => name !== 'extensions.json' && !name.startsWith('.')).sort();
@@ -1034,7 +1075,7 @@ async function test(run) {
   const installation = await run.remote(`${sh(layout.cli)} ${flags} --install-extension ${sh(remoteVsix)} --force`, {
     timeout: INSTALL_TIMEOUT_MS, allowFailure: true,
   });
-  fs.writeFileSync(path.join(run.evidence, 'vsix-install.log'), installation.stdout + installation.stderr);
+  infrastructure('write vsix-install.log', () => fs.writeFileSync(path.join(run.evidence, 'vsix-install.log'), installation.stdout + installation.stderr));
   if (installation.code !== 0) throw new Failure('fail', `installing ${remoteVsix} on ${target.alias} exited with ${installation.code}; see vsix-install.log`);
   const listed = (await run.remote(`${sh(layout.cli)} ${flags} --list-extensions --show-versions`)).stdout.split('\n').map((line) => line.trim());
   const manifest = JSON.parse((await run.remote(`cat ${sh(path.posix.join(layout.extensionPath, 'package.json'))}`, { allowFailure: true })).stdout || '{}');
@@ -1215,8 +1256,10 @@ async function main() {
     process.exitCode = STATUS.USAGE;
     return;
   }
-  if (values.out === undefined) values.out = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-remote-ssh-results-'));
-  values.out = fs.realpathSync(values.out);
+  infrastructure('prepare the output directory', () => {
+    if (values.out === undefined) values.out = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-remote-ssh-results-'));
+    values.out = fs.realpathSync(values.out);
+  });
   const run = new Run(values);
   // A signal stops the test's current step. During the log collection and
   // the teardown, it waits for them; either way the run's processes are
@@ -1242,7 +1285,7 @@ async function main() {
   let teardown;
   try {
     try {
-      prepare(run);
+      infrastructure('prepare isolated directories', () => prepare(run));
       await test(run);
     } catch (error) {
       run.record(error);
@@ -1338,10 +1381,10 @@ if (require.main === module) {
   main().catch((error) => {
     // Only a fault in the runner itself, before the run starts or after its
     // teardown, gets here.
-    console.error(`run.cjs: ${error.stack}\nRESULT: FAIL`);
-    process.exit(STATUS.FAIL);
+    const result = error.kind === 'infra' ? 'INFRA' : 'FAIL';
+    console.error(`run.cjs: ${error.stack}\nRESULT: ${result}`);
+    process.exit(STATUS[result]);
   });
 }
 
-// REMOTE_PROCESSES and runGroup are exported for test/remote-ssh.cjs.
-module.exports = { REMOTE_PROCESSES, runGroup };
+module.exports = { REMOTE_PROCESSES, runGroup, serverFiles, settle, stopHost, options, launch, main };
