@@ -36,6 +36,7 @@ let queue: Promise<void> = Promise.resolve();
 class QueuedLanguageClient extends LanguageClient {
   // The client stops listening to its file watchers but doesn't dispose them.
   watchers: vscode.Disposable[] = [];
+  private readonly pendingNotifications = new Set<Promise<void>>();
 
   override start(): Promise<void> {
     // The client also calls start before each request and notification. While
@@ -50,6 +51,24 @@ class QueuedLanguageClient extends LanguageClient {
 
   startInQueue(): Promise<void> {
     return super.start();
+  }
+
+  override async sendNotification(type: any, params?: any): Promise<void> {
+    const sending = super.sendNotification(type, params);
+    if (this.state !== State.Starting && this.state !== State.Running) return sending;
+    this.pendingNotifications.add(sending);
+    try {
+      await sending;
+    } finally {
+      this.pendingNotifications.delete(sending);
+    }
+  }
+
+  async stopInQueue(): Promise<void> {
+    while (this.pendingNotifications.size > 0) {
+      await Promise.allSettled(this.pendingNotifications);
+    }
+    await super.stop();
   }
 }
 
@@ -137,7 +156,7 @@ async function stop(): Promise<void> {
   client = undefined;
   if (running === undefined) return;
   try {
-    if (running.isRunning()) await running.stop();
+    if (running.isRunning()) await running.stopInQueue();
   } catch (error) {
     output.error(`Stopping the server failed: ${describe(error)}`);
   } finally {

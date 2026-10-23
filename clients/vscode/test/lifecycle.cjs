@@ -19,7 +19,8 @@ function deferred() {
 const State = { Stopped: 1, Running: 2, Starting: 3, StartFailed: 4 };
 
 // `documents` are open in the editor, so each client opens them as it starts.
-function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
+function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [] } = {}) {
+  const openDocuments = [...new Set([...documents, ...diffEditors.flatMap(({ original, modified }) => [original, modified])])];
   const clients = [];
   const commands = new Map();
   const events = [];
@@ -34,6 +35,7 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
   let configurationChanged;
   let nextStart;
   let nextStop;
+  let nextNotification;
   const values = { 'virgil.server.path': '/server/virgil-lsp', ...settings };
   const warnings = [];
   const watchers = [];
@@ -42,6 +44,7 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
       this.options = clientOptions;
       this.id = clients.length;
       this.$state = 'initial';
+      this.pendingOpenNotifications = new Map();
       clients.push(this);
     }
     get state() {
@@ -58,9 +61,14 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
       nextStart = undefined;
       this.starting = (gate?.promise ?? Promise.resolve()).then(() => {
         this.$state = 'running';
+        this.connection = { closed: false };
         // Document sync opens each open document before the start resolves.
-        for (const document of documents) {
-          this.sendNotification(`didOpen ${document}`).catch((error) => errors.push(error.message));
+        for (const document of openDocuments) {
+          if (this.visibleDocuments.isVisible(document)) {
+            this.sendNotification(`didOpen ${document}`).catch((error) => errors.push(error.message));
+          } else {
+            this.pendingOpenNotifications.set(document, document);
+          }
         }
       }, (error) => {
         this.$state = 'startFailed';
@@ -71,13 +79,24 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
     // Like each request and notification, this calls start first.
     async sendNotification(method) {
       if (['startFailed', 'stopping', 'stopped'].includes(this.$state)) throw new Error('Client is not running');
-      await this.$start();
+      const gate = nextNotification;
+      nextNotification = undefined;
+      const connection = await this.$start();
+      await this.sendPendingOpenNotifications();
+      if (gate) await gate.promise;
+      if (connection.closed) throw new Error(`Sending ${method} failed`);
       events.push(`${method}:${this.id}`);
+    }
+    async sendPendingOpenNotifications() {
+      const pending = [...this.pendingOpenNotifications.values()];
+      this.pendingOpenNotifications.clear();
+      for (const document of pending) await this.sendNotification(`didOpen ${document}`);
     }
     async $start() {
       if (this.$state === 'startFailed') throw new Error('Previous start failed');
       await this.start();
       if (this.$state !== 'running') throw new Error('Starting server failed');
+      return this.connection;
     }
     isRunning() { return this.$state === 'running'; }
     get visibleDocuments() {
@@ -87,7 +106,10 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
           vscode.window.tabGroups.onDidChangeTabs(scan),
           vscode.window.onDidChangeVisibleTextEditors(scan),
         ];
-        this.visibility = { dispose: () => subscriptions.forEach((item) => item.dispose()) };
+        this.visibility = {
+          isVisible: (document) => documents.includes(document) || diffEditors.some(({ modified }) => modified === document),
+          dispose: () => subscriptions.forEach((item) => item.dispose()),
+        };
       }
       return this.visibility;
     }
@@ -95,16 +117,20 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
       assert.equal(this.$state, 'running');
       events.push(`shutdown:${this.id}`);
       this.$state = 'stopping';
+      this.pendingOpenNotifications.clear();
       const gate = nextStop;
       nextStop = undefined;
       if (gate) await gate.promise;
       events.push(`exit:${this.id}`);
+      this.connection.closed = true;
       this.$state = 'stopped';
       this.starting = undefined;
       if (this.failStop) throw new Error('shutdown failed');
     }
     connectionClosed() {
       this.$state = 'initial';
+      this.connection.closed = true;
+      this.pendingOpenNotifications.clear();
       this.starting = undefined;
       return this.start();
     }
@@ -156,6 +182,7 @@ function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
     }),
     pauseStart() { nextStart = deferred(); return nextStart; },
     pauseStop() { nextStop = deferred(); return nextStop; },
+    pauseNotification() { nextNotification = deferred(); return nextNotification; },
     changeVisibility() {
       for (const callback of tabListeners) callback();
       for (const callback of editorListeners) callback();
@@ -229,6 +256,56 @@ for (const action of ['restart', 'configure', 'deactivate']) {
     await host.extension.deactivate();
   });
 }
+
+for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'deactivate']) {
+  test(`diff-editor pending opens survive recovery followed by ${action}`, async () => {
+    const host = extensionHost({
+      diffEditors: [
+        { original: 'original.v3', modified: 'modified.v3' },
+        { original: 'other-original.v3', modified: 'other-modified.v3' },
+      ],
+    });
+    await host.activate();
+    await settle();
+    assert.deepEqual(host.errors, []);
+    const gate = host.pauseStart();
+    const recovery = host.clients[0].connectionClosed();
+    await settle();
+    const requested = action === 'deactivate' ? host.extension.deactivate()
+      : action === 'restart' ? host.restart() : host.configure(action);
+    await settle();
+    assert.deepEqual(host.events.filter((event) => event === 'shutdown:0'), []);
+    gate.resolve();
+    await recovery;
+    await requested;
+    await settle();
+    assert.deepEqual(host.errors, []);
+    const recovered = host.events.slice(host.events.lastIndexOf('start:0') + 1, host.events.indexOf('shutdown:0'));
+    assert.deepEqual(recovered.sort(), [
+      'didOpen modified.v3:0', 'didOpen original.v3:0',
+      'didOpen other-modified.v3:0', 'didOpen other-original.v3:0',
+    ].sort());
+    assert.equal(host.clients.filter((client) => client.isRunning()).length, action === 'deactivate' ? 0 : 1);
+    await host.extension.deactivate();
+  });
+}
+
+test('restart drains a failed notification without hiding its failure or blocking shutdown', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const gate = host.pauseNotification();
+  const sent = host.clients[0].sendNotification('didChange');
+  const rejected = assert.rejects(sent, /write failed/);
+  await settle();
+  const restart = host.restart();
+  await settle();
+  assert.deepEqual(host.events, ['start:0']);
+  gate.reject(new Error('write failed'));
+  await rejected;
+  await restart;
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  await host.extension.deactivate();
+});
 
 test('a message while a restart stops the client is refused at once, and nothing starts it again', async () => {
   const host = extensionHost();
