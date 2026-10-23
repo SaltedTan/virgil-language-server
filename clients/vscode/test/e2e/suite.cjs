@@ -746,19 +746,27 @@ function recorded(directory, name) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [];
 }
 
-// The methods of the requests and notifications in a server's input, as the
-// script copied it, in order, without the responses to the server's requests.
-function methods(input) {
+// The requests and notifications in a server's input, as the script copied it,
+// in order, without the responses to the server's requests.
+function messages(input) {
   const found = [];
   let rest = input;
   for (;;) {
     const end = rest.indexOf('\r\n\r\n');
     const length = Number(/Content-Length: *(\d+)/i.exec(rest.subarray(0, Math.max(end, 0)).toString())?.[1]);
     if (end < 0 || !(rest.length >= end + 4 + length)) return found;
-    const { method } = JSON.parse(rest.subarray(end + 4, end + 4 + length).toString());
-    if (method !== undefined) found.push(method);
+    const message = JSON.parse(rest.subarray(end + 4, end + 4 + length).toString());
+    if (message.method !== undefined) found.push(message);
     rest = rest.subarray(end + 4 + length);
   }
+}
+
+// Whether a list of requests and notifications has a didOpen for uri before
+// the last exit.
+function openedBeforeExit(received, uri) {
+  const exit = received.findLastIndex((message) => message.method === 'exit');
+  return received.some((message, index) => index < exit
+    && message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri === uri);
 }
 
 // The methods that a server received from shutdown on, without the didOpen
@@ -772,14 +780,21 @@ function fromShutdown(received) {
 }
 
 // Throws unless the held start with PID held received initialize first, then
-// initialized, so the recovery had finished, and shutdown and exit last, and
-// then exited with status 0.
+// initialized, so the recovery had finished, and the didOpen for the open
+// bad.v3, then shutdown and exit last, and then exited with status 0. The
+// didOpen may come on either side of shutdown, because a slow write can follow
+// it, but it must reach the server before exit.
 function expectStoppedAfterRecovery(directory, held) {
-  const received = methods(fs.readFileSync(path.join(directory, `input-${held}`)));
-  assert.equal(received[0], 'initialize', `the recovered server's input: ${received}`);
-  assert.ok(received.indexOf('initialized') > 0, `the recovered server got no initialized: ${received}`);
-  assert.deepEqual(fromShutdown(received), ['shutdown', 'exit'],
-    `the recovered server did not get shutdown and then exit last: ${received}`);
+  const input = fs.readFileSync(path.join(directory, `input-${held}`));
+  const received = messages(input);
+  const methods = received.map((message) => message.method);
+  assert.equal(methods[0], 'initialize', `the recovered server's input: ${methods}`);
+  assert.ok(methods.indexOf('initialized') > 0, `the recovered server got no initialized: ${methods}`);
+  assert.deepEqual(fromShutdown(methods), ['shutdown', 'exit'],
+    `the recovered server did not get shutdown and then exit last: ${methods}`);
+  const document = vscode.Uri.file(path.join(project, 'bad.v3')).toString();
+  assert.ok(openedBeforeExit(received, document),
+    `the recovered server got no textDocument/didOpen for the open bad.v3 before exit: ${methods}`);
   assert.deepEqual(recorded(directory, 'exits'), [`${held} 0`], 'the recovered server did not exit with status 0');
 }
 

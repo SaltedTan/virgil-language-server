@@ -21,9 +21,9 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
-
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
 // Each launch, including VS Code's own startup, must finish within this time,
@@ -184,14 +184,16 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
     return false;
   }
   if (records !== undefined) {
-    const problem = recoveryProblem(records, userData);
+    const document = pathToFileURL(path.join(project, 'bad.v3')).href;
+    const problem = recoveryProblem(records, userData, document);
     if (problem !== undefined) {
       console.error(`FAIL: VS Code window close during the recovery (${name} launch): ${problem}`);
       printChannelLogs(userData);
       return false;
     }
-    console.log(`PASS: VS Code window close during the recovery (${name} launch): the recovery finished, then the `
-      + 'recovered server got shutdown and exit and exited with status 0, and no virgil-lsp or virgil-lsp-worker was left running');
+    console.log(`PASS: VS Code window close during the recovery (${name} launch): the recovery finished, the recovered server `
+      + 'got a textDocument/didOpen for the open bad.v3 before exit, then shutdown and exit and exited with status 0, and no '
+      + 'virgil-lsp or virgil-lsp-worker was left running');
     return true;
   }
   // Closing the window deactivates the extension, which sends shutdown and
@@ -350,8 +352,9 @@ function lastServerExit(userData) {
 // extension host logged that it was terminating; see closeDuringRecovery in
 // suite.cjs. The output channel closes when the extension deactivates, before
 // the recovered server stops, so the script's records of that server's input
-// and exit status tell what reached it.
-function recoveryProblem(directory, userData) {
+// and exit status tell what reached it. The server must have received the
+// didOpen for the open bad.v3, whose URI is document, before exit.
+function recoveryProblem(directory, userData, document) {
   const recorded = (name) => {
     const file = path.join(directory, name);
     return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [];
@@ -365,32 +368,44 @@ function recoveryProblem(directory, userData) {
   if (released !== `${held} terminating`) {
     return `the recovery's start went on before the extension host was terminating, not just after (${released || 'never'})`;
   }
-  const received = methods(fs.readFileSync(path.join(directory, `input-${held}`)));
-  if (received[0] !== 'initialize' || !(received.indexOf('initialized') > 0)) {
-    return `the recovery did not finish before the window closed; the recovered server received ${received.join(', ')}`;
+  const input = fs.readFileSync(path.join(directory, `input-${held}`));
+  const received = messages(input);
+  const methods = received.map((message) => message.method);
+  if (methods[0] !== 'initialize' || !(methods.indexOf('initialized') > 0)) {
+    return `the recovery did not finish before the window closed; the recovered server received ${methods.join(', ')}`;
   }
-  if (fromShutdown(received).join() !== 'shutdown,exit') {
-    return `the recovered server did not receive shutdown and then exit last, but ${received.join(', ')}`;
+  if (fromShutdown(methods).join() !== 'shutdown,exit') {
+    return `the recovered server did not receive shutdown and then exit last, but ${methods.join(', ')}`;
+  }
+  if (!openedBeforeExit(received, document)) {
+    return `the recovered server got no textDocument/didOpen for the open bad.v3 before exit; it received ${methods.join(', ')}`;
   }
   const exits = recorded('exits').join(', ');
   if (exits !== `${held} 0`) return `the recovered server did not exit with status 0: ${exits || 'no exit recorded'}`;
   return undefined;
 }
 
-// The methods of the requests and notifications in input, a server's input as
-// the script in suite.cjs copied it, in order, without the responses to the
-// server's requests.
-function methods(input) {
+// The requests and notifications in input, a server's input as the script in
+// suite.cjs copied it, in order, without the responses to the server's
+// requests.
+function messages(input) {
   const found = [];
   let rest = input;
   for (;;) {
     const end = rest.indexOf('\r\n\r\n');
     const length = Number(/Content-Length: *(\d+)/i.exec(rest.subarray(0, Math.max(end, 0)).toString())?.[1]);
     if (end < 0 || !(rest.length >= end + 4 + length)) return found;
-    const { method } = JSON.parse(rest.subarray(end + 4, end + 4 + length).toString());
-    if (method !== undefined) found.push(method);
+    const message = JSON.parse(rest.subarray(end + 4, end + 4 + length).toString());
+    if (message.method !== undefined) found.push(message);
     rest = rest.subarray(end + 4 + length);
   }
+}
+
+// Whether a server's input has a didOpen for uri before its last exit.
+function openedBeforeExit(input, uri) {
+  const exit = input.findLastIndex((message) => message.method === 'exit');
+  return input.some((message, index) => index < exit
+    && message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri === uri);
 }
 
 // The methods that a server received from shutdown on, without the didOpen
