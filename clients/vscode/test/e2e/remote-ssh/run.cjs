@@ -1,0 +1,1010 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Runs the Extension Host suite, ../suite.cjs, unchanged, in the remote
+// extension host of a VS Code Remote-SSH window: official VS Code with
+// Microsoft's Remote-SSH extension connects to an SSH host, the packaged
+// extension is installed on that host with the VS Code Server's own CLI, and
+// the language server runs there. Usage, from clients/vscode on Linux:
+//
+//   node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH]
+//     [--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work]
+//     [--sshd PATH]
+//
+// localhost.cjs provisions the host: an SSH server of the test's own on
+// 127.0.0.1, under the same user, with its own keys, and a private X display.
+// Everything after provisioning reaches the host only through SSH, and
+// bootstrap.cjs runs the suite there. See the README's "Remote-SSH test".
+//
+// Exit status: 0 if every check passed, 1 if a check failed (the suite, the
+// remote installation, or a language server left running), 2 for bad
+// arguments, 3 for an infrastructure failure (a prerequisite, a download, the
+// SSH server, or the connection), 130 or 143 when interrupted. The last line
+// of output, and manifest.json in the output directory, say which.
+
+const { execFileSync, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { parseArgs } = require('node:util');
+const zlib = require('node:zlib');
+const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
+const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
+const localhost = require('./localhost.cjs');
+
+// The Remote-SSH extension that the client installs from the Marketplace,
+// and the members of its extension pack, which VS Code's CLI would otherwise
+// install at their latest versions, with the SHA-256 of each VSIX that the CLI
+// downloads. Recheck the connection settings in clientSettings when changing
+// Remote-SSH's version.
+const REMOTE_SSH = [
+  { id: 'ms-vscode-remote.remote-ssh-edit', version: '0.87.0', sha256: 'c9e5fa440265d3b77e4ae63219014b64d714cd5280b263c5c932849fecb71ae3' },
+  { id: 'ms-vscode.remote-explorer', version: '0.5.0', sha256: '04db277ada5d771bf763d323644454e633aad48da0e81345175ac3ec08299abf' },
+  { id: 'ms-vscode-remote.remote-ssh', version: '0.129.2026100915', sha256: '11b085290fea80fb486f67679802b47dc52cb1107bd1f1f91f888b5ae33287d5' },
+];
+const REMOTE_SSH_VERSION = REMOTE_SSH.at(-1).version;
+const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
+// Deadlines: the first connection, which downloads the VS Code Server; each
+// later launch; each installation; and each other command over SSH.
+const PROBE_TIMEOUT_MS = 300000;
+const LAUNCH_TIMEOUT_MS = 180000;
+const INSTALL_TIMEOUT_MS = 180000;
+const SSH_TIMEOUT_MS = 60000;
+// How long a stopped process group gets after SIGTERM before SIGKILL, and how
+// long the rest of a group gets after its first process has exited.
+const STOP_GRACE_MS = 5000;
+const GROUP_EXIT_MS = 10000;
+// How long the language servers get to exit after their window has closed.
+const SERVER_EXIT_MS = 5000;
+
+const STATUS = { PASS: 0, FAIL: 1, USAGE: 2, INFRA: 3 };
+const SIGNAL_STATUS = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+
+const extension = path.resolve(__dirname, '../../..');
+const repo = path.resolve(extension, '../..');
+
+// A failure that ends the run: 'infra' for the environment, 'fail' for the
+// product, or 'interrupted'.
+class Failure extends Error {
+  constructor(kind, message) {
+    super(message);
+    this.kind = kind;
+  }
+}
+const infra = (message) => new Failure('infra', message);
+
+class UsageError extends Error {}
+
+const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH] '
+  + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH]';
+
+function options() {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      options: {
+        vsix: { type: 'string' },
+        server: { type: 'string' },
+        archive: { type: 'string' },
+        'virgil-root': { type: 'string' },
+        out: { type: 'string' },
+        repeat: { type: 'string', default: '1' },
+        'work-dir': { type: 'string' },
+        'keep-work': { type: 'boolean', default: false },
+        sshd: { type: 'string', default: '/usr/sbin/sshd' },
+      },
+    }).values;
+  } catch (error) {
+    throw new UsageError(error.message);
+  }
+  if (process.platform !== 'linux') throw new UsageError('the Remote-SSH test runs on Linux only');
+  // npm runs scripts in clients/vscode; relative arguments are relative to
+  // where npm was started.
+  const cwd = process.env.INIT_CWD ?? process.cwd();
+  const resolve = (value) => (value === undefined ? undefined : path.resolve(cwd, value));
+  const values = {
+    vsix: resolve(parsed.vsix),
+    server: resolve(parsed.server),
+    archive: resolve(parsed.archive),
+    virgilRoot: resolve(parsed['virgil-root']) ?? path.join(repo, 'vendor/virgil'),
+    out: resolve(parsed.out),
+    workDir: resolve(parsed['work-dir']) ?? os.tmpdir(),
+    keepWork: parsed['keep-work'],
+    sshd: parsed.sshd,
+  };
+  if (values.vsix === undefined) throw new UsageError('--vsix is required');
+  if (!fs.existsSync(values.vsix)) throw new UsageError(`no VSIX at ${values.vsix}; package the extension first`);
+  if (values.server !== undefined && values.archive !== undefined) throw new UsageError('give --server or --archive, not both');
+  if (values.archive === undefined) values.server ??= path.join(repo, 'build/virgil-lsp');
+  if (values.archive !== undefined && !/\.tar\.gz$/.test(values.archive)) throw new UsageError(`not a .tar.gz archive: ${values.archive}`);
+  if (values.archive !== undefined && !fs.existsSync(values.archive)) throw new UsageError(`no archive at ${values.archive}`);
+  if (values.server !== undefined && !fs.existsSync(path.dirname(values.server))) throw new UsageError(`no directory ${path.dirname(values.server)}`);
+  if (!/^[1-9][0-9]*$/.test(parsed.repeat)) throw new UsageError(`--repeat takes a positive whole number, not ${parsed.repeat}`);
+  values.repeat = Number(parsed.repeat);
+  if (!fs.existsSync(path.join(values.virgilRoot, 'lib/util/StringBuilder.v3'))) {
+    throw new UsageError(`no Virgil sources at ${values.virgilRoot}; run: git submodule update --init vendor/virgil`);
+  }
+  values.virgilRoot = fs.realpathSync(values.virgilRoot);
+  if (!fs.existsSync(values.workDir)) throw new UsageError(`no directory ${values.workDir}`);
+  values.workDir = fs.realpathSync(values.workDir);
+  // Remote-SSH's installation script and the SSH configuration take these
+  // paths unquoted in places.
+  if (!/^[A-Za-z0-9._/-]+$/.test(values.workDir)) {
+    throw new UsageError(`the work directory's path must have only letters, digits, and . _ / -: ${values.workDir}; use --work-dir`);
+  }
+  if (!path.isAbsolute(values.sshd)) throw new UsageError(`--sshd must be an absolute path: ${values.sshd}`);
+  if (values.out !== undefined) {
+    fs.mkdirSync(values.out, { recursive: true });
+    if (fs.readdirSync(values.out).length > 0) throw new UsageError(`the output directory is not empty: ${values.out}`);
+  }
+  return values;
+}
+
+function findOnPath(name) {
+  for (const dir of (process.env.PATH ?? '').split(':')) {
+    const file = path.join(dir || '.', name);
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return file;
+    } catch {
+      // Not in this directory.
+    }
+  }
+  return undefined;
+}
+
+function sha256(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+// A digest of a directory tree: the SHA-256 of its sorted "<sha256>  <path>"
+// lines, with a symbolic link's target in place of its contents.
+function treeSha256(dir) {
+  const lines = fs.readdirSync(dir, { recursive: true }).sort().flatMap((name) => {
+    const file = path.join(dir, name);
+    const stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink()) return [`link ${fs.readlinkSync(file)}  ${name}\n`];
+    return stat.isFile() ? [`${sha256(file)}  ${name}\n`] : [];
+  });
+  return crypto.createHash('sha256').update(lines.join('')).digest('hex');
+}
+
+// One file from a zip archive, such as a VSIX: its central directory gives
+// the entry's local header, whose data is stored or deflated.
+function readZipEntry(file, name) {
+  const zip = fs.readFileSync(file);
+  let end = zip.length - 22;
+  while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end--;
+  if (end < 0) throw new Error(`${file} is not a zip archive`);
+  let at = zip.readUInt32LE(end + 16);
+  for (let i = zip.readUInt16LE(end + 10); i > 0; i--) {
+    if (zip.readUInt32LE(at) !== 0x02014b50) throw new Error(`${file} has a damaged central directory`);
+    const method = zip.readUInt16LE(at + 10);
+    const size = zip.readUInt32LE(at + 20);
+    const nameLength = zip.readUInt16LE(at + 28);
+    const local = zip.readUInt32LE(at + 42);
+    if (zip.toString('utf8', at + 46, at + 46 + nameLength) === name) {
+      const data = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+      const raw = zip.subarray(data, data + size);
+      return method === 0 ? raw : zlib.inflateRawSync(raw);
+    }
+    at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+  }
+  throw new Error(`${file} has no ${name}`);
+}
+
+// Quotes a word for the POSIX shell that runs a command over SSH.
+function sh(word) {
+  return `'${String(word).replaceAll("'", "'\\''")}'`;
+}
+
+function signalGroup(pid, name) {
+  try {
+    process.kill(-pid, name);
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error;
+  }
+}
+
+function groupExists(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== 'ESRCH';
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Runs command in a process group of its own, with input on its standard
+// input, and collects its output, which onData also receives. A timeout or an
+// interrupt stops the group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If
+// the group outlives the command by GROUP_EXIT_MS, it is stopped the same way
+// and the result's groupLeft says so. Resolves once the whole group has gone.
+function runGroup(command, args, { env, input, timeout, signal, onData }) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true,
+    });
+    const output = { stdout: [], stderr: [] };
+    let stopped;
+    let exited;
+    let deadline;
+    let groupLeft = false;
+    const started = Date.now();
+    const finish = (result) => {
+      clearTimeout(timer);
+      clearInterval(poll);
+      signal.removeEventListener('abort', interrupt);
+      resolve({
+        ...result, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
+        stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
+      });
+    };
+    const stop = (reason) => {
+      if (stopped !== undefined || child.pid === undefined) return;
+      stopped = reason;
+      signalGroup(child.pid, 'SIGTERM');
+      deadline = Date.now() + STOP_GRACE_MS;
+    };
+    const poll = setInterval(() => {
+      if (exited !== undefined && !groupExists(child.pid)) {
+        finish(exited);
+      } else if (deadline !== undefined && Date.now() > deadline) {
+        deadline = undefined;
+        signalGroup(child.pid, 'SIGKILL');
+      } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
+        groupLeft = true;
+        stop(`left processes running ${GROUP_EXIT_MS / 1000} seconds after it exited`);
+      }
+    }, 50);
+    const timer = setTimeout(() => stop(`exceeded ${timeout / 1000} seconds`), timeout);
+    const interrupt = () => stop('was interrupted');
+    signal.addEventListener('abort', interrupt);
+    child.on('spawn', () => {
+      if (signal.aborted) interrupt();
+    });
+    for (const name of ['stdout', 'stderr']) {
+      child[name].on('data', (data) => {
+        output[name].push(data);
+        onData?.(data);
+      });
+    }
+    if (input !== undefined) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
+    child.on('error', (error) => finish({ error }));
+    child.on('exit', (code, exitSignal) => {
+      exited = { code, signal: exitSignal, at: Date.now() };
+      if (!groupExists(child.pid)) finish(exited);
+    });
+  });
+}
+
+function succeeded(result) {
+  return result.error === undefined && result.stopped === undefined && result.code === 0;
+}
+
+function outcome(result) {
+  if (result.error !== undefined) return `could not start: ${result.error.message}`;
+  return result.stopped ?? `exited with ${result.code ?? result.signal}`;
+}
+
+// The test's run: its inputs, environment, and evidence.
+class Run {
+  constructor(values) {
+    this.values = values;
+    this.controller = new AbortController();
+    this.signal = this.controller.signal;
+    this.marker = `VIRGIL_REMOTE_SSH_RUN=${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+    this.failures = [];
+    this.manifest = {
+      result: undefined,
+      started: new Date().toISOString(),
+      repository: repository(),
+      notCovered: [
+        'Checklist step 17: forced server crashes, and restart, configuration changes, and closing the window during recovery',
+        'What VS Code shows: the status bar, views, popups, notifications, prompts, and the suggestion list',
+        'A macOS client: Remote-SSH from a Mac to Linux is checked separately',
+      ],
+      launches: [],
+    };
+  }
+
+  // Throws if the run was interrupted, so that the next step doesn't start.
+  checkpoint() {
+    if (this.signal.aborted) throw new Failure('interrupted', `interrupted by ${this.interrupted}`);
+  }
+
+  // Waits for promise, unless the run is interrupted first.
+  async abortable(promise) {
+    this.checkpoint();
+    let onAbort;
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(new Failure('interrupted', `interrupted by ${this.interrupted}`));
+      this.signal.addEventListener('abort', onAbort);
+    });
+    try {
+      return await Promise.race([promise, aborted]);
+    } finally {
+      this.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  fail(message) {
+    this.failures.push(message);
+    console.log(`FAIL: ${message}`);
+  }
+
+  // Runs command over SSH on the target, in the user's login shell there.
+  // An SSH error (status 255) is an infrastructure failure.
+  async remote(command, { input, timeout = SSH_TIMEOUT_MS, allowFailure = false, signal = this.signal } = {}) {
+    const result = await runGroup('ssh', ['-F', this.target.sshConfig, this.target.alias, '--', command], {
+      env: this.env, input, timeout, signal,
+    });
+    if (signal === this.signal) this.checkpoint();
+    result.data = result.stdout;
+    result.stdout = result.stdout.toString();
+    if (result.error !== undefined || result.stopped !== undefined || result.code === 255) {
+      throw infra(`SSH to ${this.target.alias} ${outcome(result)}: ${result.stderr.trim()}`);
+    }
+    if (result.code !== 0 && !allowFailure) {
+      throw new Failure('fail', `on ${this.target.alias}, ${command.slice(0, 200)} exited with ${result.code}: ${result.stderr.trim()}`);
+    }
+    return result;
+  }
+
+  // Copies the names in localDir into remoteDir on the target, through tar.
+  async upload(localDir, names, remoteDir) {
+    const archive = await runGroup('tar', ['-c', '-h', '-f', '-', '-C', localDir, '--', ...names], {
+      env: this.env, timeout: SSH_TIMEOUT_MS, signal: this.signal,
+    });
+    this.checkpoint();
+    if (!succeeded(archive)) throw infra(`tar of ${names.join(', ')} in ${localDir} ${outcome(archive)}: ${archive.stderr}`);
+    await this.remote(`mkdir -p ${sh(remoteDir)} && tar -x -f - -C ${sh(remoteDir)}`, { input: archive.stdout });
+  }
+}
+
+function repository() {
+  const git = (...args) => {
+    try {
+      return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return undefined;
+    }
+  };
+  const commit = git('rev-parse', 'HEAD');
+  return { path: repo, commit: commit ?? null, modified: commit === undefined ? null : git('--no-optional-locks', 'status', '--porcelain') !== '' };
+}
+
+function osDetails() {
+  const release = fs.existsSync('/etc/os-release') ? fs.readFileSync('/etc/os-release', 'utf8') : '';
+  const cpu = fs.existsSync('/proc/cpuinfo') ? /^model name\s*:\s*(.*)$/m.exec(fs.readFileSync('/proc/cpuinfo', 'utf8'))?.[1] : undefined;
+  return {
+    name: /^PRETTY_NAME="?(.*?)"?$/m.exec(release)?.[1] ?? null,
+    kernel: `${os.type()} ${os.release()} ${os.machine()}`,
+    cpu: cpu ?? null,
+  };
+}
+
+// The server under test, in a local directory to upload: the build's
+// directory's two executables, or the archive's one directory. Missing
+// executables are reported, not refused: the suite then fails, as it does
+// for a broken server.
+async function serverFiles(run) {
+  const { server, archive } = run.values;
+  const details = {};
+  let dir;
+  let names;
+  if (archive !== undefined) {
+    details.archive = archive;
+    details.archiveSha256 = sha256(archive);
+    const extracted = path.join(run.work, 'input');
+    fs.mkdirSync(extracted);
+    const result = await runGroup('tar', ['-x', '-z', '-f', archive, '-C', extracted], { env: run.env, timeout: SSH_TIMEOUT_MS, signal: run.signal });
+    run.checkpoint();
+    if (!succeeded(result)) throw new Failure('fail', `could not extract ${archive}: ${outcome(result)}: ${result.stderr}`);
+    const top = path.basename(archive, '.tar.gz');
+    if (fs.readdirSync(extracted).join() !== top) throw new Failure('fail', `${archive} does not hold just the directory ${top}`);
+    dir = path.join(extracted, top);
+    names = fs.readdirSync(dir);
+  } else {
+    // The server starts the worker beside its own resolved path.
+    const resolved = fs.existsSync(server) ? fs.realpathSync(server) : server;
+    details.server = server;
+    dir = path.dirname(resolved);
+    names = ['virgil-lsp', 'virgil-lsp-worker'].filter((name) => fs.existsSync(path.join(dir, name)));
+  }
+  details.sha256 = {};
+  for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
+    const file = path.join(dir, name);
+    if (fs.existsSync(file)) {
+      details.sha256[name] = sha256(file);
+    } else {
+      details.sha256[name] = null;
+      console.log(`WARNING: there is no ${name} in ${dir}; the suite will fail`);
+    }
+  }
+  return { dir, names, details };
+}
+
+// The client's user settings. Remote-SSH reads only its application settings
+// from the client: the run's SSH configuration, the VS Code Server under the
+// target's work directory, and a connection without the local server or the
+// exec server, which the prototype of this test proved, with no extensions
+// to add remotely. The Virgil settings are machine settings, so they go in
+// the remote's settings instead (see launch).
+function clientSettings(target, sshPath) {
+  return {
+    'remote.SSH.configFile': target.sshConfig,
+    'remote.SSH.path': sshPath,
+    'remote.SSH.serverInstallPath': { [target.alias]: path.posix.join(target.root, 'server') },
+    'remote.SSH.remotePlatform': { [target.alias]: 'linux' },
+    'remote.SSH.useLocalServer': false,
+    'remote.SSH.useExecServer': false,
+    'remote.SSH.localServerDownload': 'off',
+    'remote.SSH.connectTimeout': 60,
+    'remote.SSH.showLoginTerminal': false,
+    'remote.SSH.enableRemoteCommand': false,
+    'remote.SSH.defaultExtensions': [],
+    'telemetry.telemetryLevel': 'off',
+    'chat.disableAIFeatures': true,
+    'update.mode': 'none',
+    'extensions.autoCheckUpdates': false,
+    'extensions.autoUpdate': false,
+    'workbench.startupEditor': 'none',
+    'files.autoSave': 'off',
+    // Where the server offers no completion items, as in a comment, VS Code
+    // would offer the document's words instead.
+    'editor.wordBasedSuggestions': 'off',
+  };
+}
+
+// The files on the target, under its work directory. With
+// remote.SSH.useExecServer off, Remote-SSH installs the VS Code Server in
+// .vscode-server under remote.SSH.serverInstallPath.
+function remoteLayout(root, commit, vsix) {
+  const agent = path.posix.join(root, 'server', '.vscode-server');
+  const extensions = path.posix.join(agent, 'extensions');
+  return {
+    agent,
+    serverNode: path.posix.join(agent, 'bin', commit, 'node'),
+    cli: path.posix.join(agent, 'bin', commit, 'bin', 'code-server'),
+    product: path.posix.join(agent, 'bin', commit, 'product.json'),
+    data: path.posix.join(agent, 'data'),
+    machineSettings: path.posix.join(agent, 'data', 'Machine', 'settings.json'),
+    extensions,
+    extensionPath: path.posix.join(extensions, `${vsix.id}-${vsix.version}`.toLowerCase()),
+    server: path.posix.join(root, 'virgil-lsp'),
+    virgilRoot: path.posix.join(root, 'virgil'),
+    fixture: path.posix.join(root, 'fixture'),
+    project: path.posix.join(root, 'project'),
+    tests: path.posix.join(root, 'tests'),
+    results: path.posix.join(root, 'results'),
+    inputs: path.posix.join(root, 'inputs'),
+  };
+}
+
+function remoteUri(target, file) {
+  return `vscode-remote://ssh-remote+${target.alias}${file.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+// Prints the suite's PASS and FAIL lines, and a failure's stack, as VS Code
+// passes them on from the remote extension host.
+function suiteLines() {
+  let pending = '';
+  let failing = false;
+  return (data) => {
+    pending += data;
+    const lines = pending.split('\n');
+    pending = lines.pop();
+    for (const line of lines) {
+      if (/^(PASS|FAIL): /.test(line)) {
+        failing = line.startsWith('FAIL');
+        console.log(`   ${line}`);
+      } else if (failing && /^\s+\S/.test(line)) {
+        console.log(`   ${line}`);
+      } else {
+        failing = false;
+      }
+    }
+  };
+}
+
+// A Node.js program for the target's VS Code Server: it prints, as JSON, the
+// processes that run an executable under the directory in its first argument,
+// other than itself and zombies. It kills those of the PIDs after the second
+// argument, the VS Code Server's directory, that still run an executable
+// under the first and not under the second: exactly those, never processes
+// found by name.
+const REMOTE_PROCESSES = `
+const fs = require('node:fs');
+const [root, agent, ...kill] = process.argv.slice(1);
+const found = [];
+for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
+  try {
+    const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+    if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z')) continue;
+    const exe = fs.readlinkSync('/proc/' + pid + '/exe');
+    if (!exe.startsWith(root + '/')) continue;
+    if (kill.includes(pid) && !exe.startsWith(agent + '/')) process.kill(Number(pid), 'SIGKILL');
+    found.push({ pid: Number(pid), exe });
+  } catch {}
+}
+console.log(JSON.stringify(found));`;
+
+// The target's processes that run an executable from its work directory,
+// other than the VS Code Server's, which stays running between windows:
+// language servers and workers, and anything else that the tests started.
+// The processes in kill are killed first.
+async function remoteProcesses(run, layout, kill = []) {
+  const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(run.target.root)} ${sh(layout.agent)}`
+    + kill.map((p) => ` ${p.pid}`).join(''), { allowFailure: true });
+  let all;
+  try {
+    all = JSON.parse(result.stdout);
+  } catch {
+    throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
+  }
+  const server = (p) => p.exe.startsWith(`${layout.agent}/`);
+  return { left: all.filter((p) => !server(p)), vscodeServer: all.filter(server).length };
+}
+
+// One start of VS Code in a Remote-SSH window, which runs bootstrap.cjs in
+// the remote extension host and exits when it finishes. mode is 'probe',
+// 'single-file', or 'workspace'. Returns the launch's record for the
+// manifest; an infrastructure failure throws.
+async function launch(run, name, mode, options) {
+  const record = { name, mode };
+  run.manifest.launches.push(record);
+  try {
+    return await launchSteps(run, record, options);
+  } catch (error) {
+    record.result ??= { infra: 'INFRA', interrupted: 'INTERRUPTED' }[error.kind] ?? 'FAIL';
+    throw error;
+  }
+}
+
+async function launchSteps(run, record, { executable, layout, vsix }) {
+  const { target } = run;
+  const { name, mode } = record;
+  const result = path.posix.join(layout.results, `${name}.json`);
+  const config = {
+    launch: name,
+    mode,
+    result,
+    serverNode: layout.serverNode,
+    serverLogs: path.posix.join(layout.data, 'logs'),
+    extensionPath: layout.extensionPath,
+    extensionVersion: vsix.version,
+    project: layout.project,
+  };
+  // A fresh copy of the fixture, and the Virgil settings in the remote's
+  // machine settings, which the suite changes and restores.
+  if (mode !== 'probe') {
+    await run.remote(`rm -rf ${sh(layout.project)} && cp -R ${sh(layout.fixture)} ${sh(layout.project)} `
+      + `&& mkdir -p ${sh(path.posix.dirname(layout.machineSettings))} && cat > ${sh(layout.machineSettings)}`, {
+      input: `${JSON.stringify({
+        'virgil.server.path': path.posix.join(layout.server, 'virgil-lsp'),
+        'virgil.virgilRoot': layout.virgilRoot,
+      }, null, 2)}\n`,
+    });
+  }
+  await run.remote(`cat > ${sh(path.posix.join(layout.tests, 'run-config.json'))}`, { input: JSON.stringify(config, null, 2) });
+
+  // Each launch has new client user data, so that VS Code doesn't restore
+  // the previous window.
+  const userData = path.join(run.work, 'client', name, 'user-data');
+  fs.mkdirSync(path.join(userData, 'User'), { recursive: true });
+  fs.writeFileSync(path.join(userData, 'User', 'settings.json'), JSON.stringify(run.settings, null, 2));
+  const args = [
+    `--user-data-dir=${userData}`,
+    `--extensions-dir=${run.clientExtensions}`,
+    '--remote', `ssh-remote+${target.alias}`,
+    ...(mode === 'workspace' ? ['--folder-uri', remoteUri(target, layout.project)] : ['--new-window']),
+    // The development path, an empty directory, puts VS Code in test mode
+    // without loading an extension from it. Both URIs are remote, so the
+    // tests run in the remote extension host. --disable-extensions would
+    // disable Remote-SSH too.
+    `--extensionDevelopmentPath=${remoteUri(target, path.posix.join(layout.tests, 'no-extension'))}`,
+    `--extensionTestsPath=${remoteUri(target, path.posix.join(layout.tests, 'bootstrap.cjs'))}`,
+    '--disable-workspace-trust',
+    '--disable-updates',
+    '--skip-welcome',
+    '--skip-release-notes',
+    '--no-sandbox',
+    '--disable-gpu-sandbox',
+  ];
+  const logFile = path.join(run.values.out, 'launches', `${name}.log`);
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const log = fs.openSync(logFile, 'w');
+  fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`);
+  const print = suiteLines();
+  console.log(`== ${name}`);
+  const timeout = mode === 'probe' ? PROBE_TIMEOUT_MS : LAUNCH_TIMEOUT_MS;
+  const exit = await runGroup(executable, args, {
+    env: run.env, timeout, signal: run.signal,
+    onData: (data) => {
+      fs.writeSync(log, data);
+      print(data);
+    },
+  });
+  fs.closeSync(log);
+  record.seconds = exit.seconds;
+  record.exit = exit.error?.message ?? exit.stopped ?? exit.code ?? exit.signal;
+  run.checkpoint();
+
+  const report = await run.remote(`cat ${sh(result)}`, { allowFailure: true });
+  let evidence;
+  try {
+    if (report.code === 0) evidence = JSON.parse(report.stdout);
+  } catch {
+    evidence = { outcome: 'unreadable', error: `${result} is not JSON` };
+  }
+  record.bootstrap = evidence ?? null;
+  const output = exit.stdout.toString() + exit.stderr;
+  record.passLines = (output.match(/^PASS: /gm) ?? []).length;
+  record.failLines = (output.match(/^FAIL: /gm) ?? []).length;
+  record.suiteSeconds = evidence?.seconds ?? null;
+
+  // Closing the window ends the extension host, whose extension stops its
+  // language server: none may be left SERVER_EXIT_MS later.
+  if (mode !== 'probe') {
+    const deadline = Date.now() + SERVER_EXIT_MS;
+    let processes;
+    for (;;) {
+      processes = await remoteProcesses(run, layout);
+      if (processes.left.length === 0 || Date.now() > deadline) break;
+      await sleep(200);
+    }
+    record.leftRunning = processes.left;
+    record.vscodeServerProcesses = processes.vscodeServer;
+    if (processes.left.length > 0) await remoteProcesses(run, layout, processes.left);
+  }
+
+  const problems = [];
+  if (evidence === undefined) {
+    // The connection, or VS Code itself, failed before the tests started.
+    if (!succeeded(exit)) {
+      throw infra(`${name}: VS Code ${outcome(exit)} before the tests started in the remote extension host; see launches/${name}.log`);
+    }
+    problems.push('no test ran: VS Code exited with 0, but bootstrap.cjs never started in the remote extension host');
+  } else {
+    if (!succeeded(exit)) problems.push(`VS Code ${outcome(exit)}`);
+    if (evidence.outcome !== 'pass') {
+      problems.push(`the tests ${evidence.outcome === 'started' ? 'did not finish' : 'failed'}: ${evidence.error ?? ''}`.trim());
+    }
+    if (mode !== 'probe' && record.passLines === 0) problems.push('the suite printed no PASS line');
+    if (record.failLines > 0) problems.push(`the suite printed ${record.failLines} FAIL line(s)`);
+  }
+  if (exit.groupLeft) problems.push(`VS Code's processes outlived it by ${GROUP_EXIT_MS / 1000} seconds`);
+  if (record.leftRunning?.length > 0) {
+    problems.push(`left running ${SERVER_EXIT_MS / 1000} seconds after the window closed, then killed: `
+      + record.leftRunning.map((p) => `${p.exe} (pid ${p.pid})`).join(', '));
+  }
+  record.result = problems.length === 0 ? 'PASS' : 'FAIL';
+  record.problems = problems;
+  const suite = record.suiteSeconds === null || mode === 'probe' ? '' : `, suite ${record.suiteSeconds.toFixed(1)} s`;
+  const left = record.leftRunning?.length === 0 ? '; no language server left running' : '';
+  console.log(`-- ${name}: ${record.result} in ${record.seconds.toFixed(1)} s${suite}${left}`);
+  if (mode === 'probe' && record.result !== 'PASS') {
+    throw infra(`the first connection did not run its probe in the VS Code Server: ${problems.join('; ')}`);
+  }
+  for (const problem of problems) run.fail(`${name}: ${problem}`);
+  return record;
+}
+
+async function test(run) {
+  const { values } = run;
+  const vsixManifest = JSON.parse(readZipEntry(values.vsix, 'extension/package.json'));
+  const vsix = {
+    path: values.vsix,
+    sha256: sha256(values.vsix),
+    id: `${vsixManifest.publisher}.${vsixManifest.name}`,
+    version: vsixManifest.version,
+    extensionKind: vsixManifest.extensionKind ?? null,
+  };
+  if (vsix.id !== EXTENSION_ID) throw new Failure('fail', `${values.vsix} holds ${vsix.id}, not ${EXTENSION_ID}`);
+  run.manifest.vsix = vsix;
+  const server = await serverFiles(run);
+  run.manifest.server = server.details;
+  run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
+  const suite = path.join(__dirname, '..', 'suite.cjs');
+  run.manifest.tests = { suiteSha256: sha256(suite), bootstrapSha256: sha256(path.join(__dirname, 'bootstrap.cjs')) };
+  console.log(`VS Code Remote-SSH test: VS Code ${VSCODE_VERSION}, Remote-SSH ${REMOTE_SSH_VERSION}, `
+    + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.archive ?? values.server}`);
+
+  let executable;
+  try {
+    executable = await run.abortable(downloadAndUnzipVSCode({ version: VSCODE_VERSION, cachePath: path.join(extension, '.vscode-test') }));
+  } catch (error) {
+    if (error instanceof Failure) throw error;
+    throw infra(`could not download VS Code ${VSCODE_VERSION}: ${error.message}`);
+  }
+  const product = JSON.parse(fs.readFileSync(path.join(path.dirname(executable), 'resources/app/product.json'), 'utf8'));
+  run.manifest.client = {
+    os: osDetails(),
+    node: process.version,
+    vscode: { version: product.version, commit: product.commit, quality: product.quality, executable },
+  };
+
+  // The target, and the SSH client that reaches it.
+  const sshPath = findOnPath('ssh');
+  const sshVersion = await runGroup(sshPath, ['-V'], { env: run.env, timeout: SSH_TIMEOUT_MS, signal: run.signal });
+  run.manifest.client.ssh = { path: sshPath, version: sshVersion.stderr.trim() };
+  // Provisioning takes seconds, so an interrupt waits for it; the teardown
+  // then stops what it started.
+  const target = localhost.create({
+    work: run.work, sockets: run.sockets, env: run.env, marker: run.marker, sshd: values.sshd,
+    log: (line) => console.log(line),
+  });
+  run.target = target;
+  try {
+    await target.start();
+  } catch (error) {
+    throw infra(`could not provision the host: ${error.message}`);
+  }
+  run.checkpoint();
+  run.env = { ...run.env, ...target.clientEnv };
+  const preflight = await run.remote('printf "%s\\n" "$HOME" "$VIRGIL_REMOTE_SSH_RUN"; uname -srm; '
+    + 'sed -n "s/^PRETTY_NAME=//p" /etc/os-release | tr -d \'"\'');
+  const [home, marker, kernel, name] = preflight.stdout.split('\n');
+  if (home !== path.posix.join(target.root, 'home') || `VIRGIL_REMOTE_SSH_RUN=${marker}` !== run.marker) {
+    throw infra(`the SSH session's environment is not the run's: HOME=${home}`);
+  }
+  run.connected = true;
+  run.manifest.target = { mode: target.mode, alias: target.alias, root: target.root, ...target.details, os: { name, kernel } };
+  console.log(`-- connected over SSH to ${target.details.user}@${target.details.host}:${target.details.port}: ${name}, ${kernel}`);
+
+  // Remote-SSH on the client, from the Marketplace, with VS Code's own CLI.
+  run.clientExtensions = path.join(run.work, 'client', 'extensions');
+  const installUserData = path.join(run.work, 'client', 'install');
+  const cli = resolveCliPathFromVSCodeExecutablePath(executable);
+  const install = await runGroup(cli, [
+    `--user-data-dir=${installUserData}`,
+    `--extensions-dir=${run.clientExtensions}`,
+    ...REMOTE_SSH.flatMap(({ id, version }) => ['--install-extension', `${id}@${version}`]),
+  ], { env: run.env, timeout: INSTALL_TIMEOUT_MS, signal: run.signal });
+  fs.writeFileSync(path.join(values.out, 'remote-ssh-install.log'), install.stdout.toString() + install.stderr);
+  run.checkpoint();
+  if (!succeeded(install)) throw infra(`installing Remote-SSH ${REMOTE_SSH_VERSION} ${outcome(install)}; see remote-ssh-install.log`);
+  const installed = fs.readdirSync(run.clientExtensions).filter((name) => name !== 'extensions.json' && !name.startsWith('.')).sort();
+  run.manifest.client.extensions = REMOTE_SSH.map(({ id, version, sha256: expected }) => {
+    const vsixFile = path.join(installUserData, 'CachedExtensionVSIXs', `${id}-${version}`);
+    const actual = fs.existsSync(vsixFile) ? sha256(vsixFile) : null;
+    if (actual !== expected) throw infra(`the Marketplace's ${id} ${version} has SHA-256 ${actual}, not ${expected}`);
+    return { id, version, sha256: actual };
+  });
+  const expected = REMOTE_SSH.map(({ id, version }) => `${id}-${version}`).sort();
+  if (JSON.stringify(installed) !== JSON.stringify(expected)) {
+    throw infra(`VS Code's CLI installed ${installed.join(', ')}, not ${expected.join(', ')}`);
+  }
+  run.settings = clientSettings(target, sshPath);
+  run.manifest.client.settings = run.settings;
+  console.log(`-- installed ${REMOTE_SSH.map(({ id, version }) => `${id} ${version}`).join(', ')}, each with its pinned SHA-256`);
+
+  // The files that the tests need on the target.
+  const layout = remoteLayout(target.root, product.commit, vsix);
+  await run.upload(server.dir, server.names, layout.server);
+  await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
+  await run.upload(path.join(repo, 'test/e2e/nvim/fixture'), ['.'], layout.fixture);
+  await run.upload(path.dirname(suite), ['suite.cjs'], layout.tests);
+  await run.upload(__dirname, ['bootstrap.cjs'], layout.tests);
+  await run.upload(path.dirname(values.vsix), [path.basename(values.vsix)], layout.inputs);
+  await run.remote(`mkdir -p ${sh(path.posix.join(layout.tests, 'no-extension'))} ${sh(layout.results)}`);
+  const version = await run.remote(`${sh(path.posix.join(layout.server, 'virgil-lsp'))} --version`, { allowFailure: true });
+  run.manifest.server.version = version.code === 0 ? version.stdout.trim() : null;
+  console.log(`-- uploaded the server, the Virgil root's lib, the fixture, and the tests to ${target.root}`);
+  if (version.code !== 0) run.fail(`virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+
+  // The first connection installs the VS Code Server that matches the
+  // client's commit, which the VSIX installation needs.
+  const probe = await launch(run, 'probe', 'probe', { executable, layout, vsix });
+  run.manifest.probe = { seconds: probe.seconds };
+  const serverProduct = JSON.parse((await run.remote(`cat ${sh(layout.product)}`)).stdout);
+  run.manifest.target.vscodeServer = {
+    version: serverProduct.version, commit: serverProduct.commit, quality: serverProduct.quality, path: path.posix.dirname(layout.product),
+  };
+  if (serverProduct.commit !== product.commit) throw infra(`the VS Code Server's commit is ${serverProduct.commit}, not the client's ${product.commit}`);
+
+  // The VSIX, installed on the target with the VS Code Server's CLI, as in a
+  // remote terminal.
+  const remoteVsix = path.posix.join(layout.inputs, path.basename(values.vsix));
+  const flags = `--extensions-dir=${sh(layout.extensions)} --user-data-dir=${sh(layout.data)}`;
+  const installation = await run.remote(`${sh(layout.cli)} ${flags} --install-extension ${sh(remoteVsix)} --force`, {
+    timeout: INSTALL_TIMEOUT_MS, allowFailure: true,
+  });
+  fs.writeFileSync(path.join(values.out, 'vsix-install.log'), installation.stdout + installation.stderr);
+  if (installation.code !== 0) throw new Failure('fail', `installing ${remoteVsix} on ${target.alias} exited with ${installation.code}; see vsix-install.log`);
+  const listed = (await run.remote(`${sh(layout.cli)} ${flags} --list-extensions --show-versions`)).stdout.split('\n').map((line) => line.trim());
+  const manifest = JSON.parse((await run.remote(`cat ${sh(path.posix.join(layout.extensionPath, 'package.json'))}`, { allowFailure: true })).stdout || '{}');
+  const checks = {
+    listed: listed.includes(`${vsix.id}@${vsix.version}`),
+    path: layout.extensionPath,
+    version: manifest.version ?? null,
+    extensionKind: manifest.extensionKind ?? null,
+  };
+  run.manifest.target.extension = checks;
+  if (!checks.listed || checks.version !== vsix.version || JSON.stringify(checks.extensionKind) !== '["workspace"]') {
+    throw new Failure('fail', `the installed extension on ${target.alias} is not ${vsix.id} ${vsix.version} with extensionKind ["workspace"] `
+      + `at ${layout.extensionPath}: ${JSON.stringify(checks)}`);
+  }
+  console.log(`-- installed ${vsix.id} ${vsix.version} on ${target.alias} at ${layout.extensionPath}, extensionKind ["workspace"]`);
+
+  for (let repetition = 1; repetition <= values.repeat; repetition++) {
+    for (const mode of ['single-file', 'workspace']) {
+      const record = await launch(run, `${repetition}-${mode}`, mode, { executable, layout, vsix });
+      record.repetition = repetition;
+    }
+  }
+}
+
+// Copies the client's and the remote's logs into the output directory, and
+// removes the VS Code Server's connection tokens from them. A signal doesn't
+// stop this; each command over SSH has its own timeout.
+async function collectLogs(run) {
+  const { out } = run.values;
+  const signal = new AbortController().signal;
+  const tokens = new Set();
+  for (const [name, file] of run.target?.logs ?? []) {
+    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(out, name));
+  }
+  const clients = path.join(run.work ?? '', 'client');
+  for (const name of run.work !== undefined && fs.existsSync(clients) ? fs.readdirSync(clients) : []) {
+    const logs = path.join(clients, name, 'user-data', 'logs');
+    if (fs.existsSync(logs)) fs.cpSync(logs, path.join(out, 'client', name), { recursive: true });
+  }
+  if (run.connected) {
+    try {
+      const agent = path.posix.join(run.target.root, 'server', '.vscode-server');
+      const found = await run.remote(`cd ${sh(agent)} 2>/dev/null && cat .*.token`, { allowFailure: true, signal });
+      for (const token of found.stdout.split(/\s+/)) if (token.length >= 8) tokens.add(token);
+      const remote = path.join(out, 'remote');
+      fs.mkdirSync(remote, { recursive: true });
+      const archive = await run.remote(`cd ${sh(run.target.root)} && tar -c -f - $(ls -d results `
+        + 'server/.vscode-server/data/logs server/.vscode-server/.*.log 2>/dev/null)', { allowFailure: true, signal });
+      const extract = await runGroup('tar', ['-x', '-f', '-', '-C', remote], {
+        env: run.env, input: archive.data, timeout: SSH_TIMEOUT_MS, signal,
+      });
+      if (!succeeded(extract)) console.log(`WARNING: could not unpack the remote logs: ${extract.stderr}`);
+    } catch (error) {
+      console.log(`WARNING: could not collect the remote logs: ${error.message}`);
+    }
+  }
+  // Remote-SSH's installation script, which VS Code logs in several places,
+  // and its log name a connection token for each connection, in several
+  // spellings and escapes, and only the last is in a token file. So every
+  // value after any of them is removed from every file.
+  const files = fs.readdirSync(out, { recursive: true }).map((name) => path.join(out, name)).filter((file) => fs.statSync(file).isFile());
+  const named = /(?:connection_?token|tkn)\W{1,6}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+  for (const file of files) {
+    for (const match of fs.readFileSync(file, 'latin1').matchAll(named)) tokens.add(match[1]);
+  }
+  for (const file of files) {
+    const text = fs.readFileSync(file, 'latin1');
+    let redacted = text;
+    for (const token of tokens) redacted = redacted.replaceAll(token, '<redacted>');
+    if (redacted !== text) fs.writeFileSync(file, redacted, 'latin1');
+  }
+}
+
+async function main() {
+  let values;
+  try {
+    values = options();
+  } catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    console.error(`run.cjs: ${error.message}\n${usage}`);
+    process.exitCode = STATUS.USAGE;
+    return;
+  }
+  if (values.out === undefined) values.out = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-remote-ssh-results-'));
+  values.out = fs.realpathSync(values.out);
+  const run = new Run(values);
+  // A signal stops the run's current step; during the evidence collection and
+  // the teardown that follow, a signal only changes the exit status.
+  let tearingDown = false;
+  const onSignal = (name) => {
+    console.error(`run.cjs: interrupted by ${name}`);
+    run.interrupted ??= name;
+    if (!tearingDown) run.controller.abort();
+  };
+  for (const name of Object.keys(SIGNAL_STATUS)) process.on(name, () => onSignal(name));
+  console.log(`results: ${values.out}`);
+
+  let error;
+  try {
+    for (const tool of ['ssh', 'ssh-keygen', 'Xvfb', 'tar']) {
+      if (findOnPath(tool) === undefined) throw infra(`${tool} is not on PATH; the Remote-SSH test needs OpenSSH's client and server, Xvfb, and tar`);
+    }
+    try {
+      fs.accessSync(values.sshd, fs.constants.X_OK);
+    } catch {
+      throw infra(`no SSH server at ${values.sshd}; install OpenSSH's server, or pass --sshd`);
+    }
+    // VS Code's state, the SSH keys, and the remote's files go in a work
+    // directory; Unix sockets, whose paths must be short, in /tmp.
+    run.work = fs.mkdtempSync(path.join(values.workDir, 'virgil-remote-ssh-'));
+    run.sockets = fs.mkdtempSync('/tmp/vrs-');
+    console.log(`work directory: ${run.work}`);
+    const home = path.join(run.work, 'client', 'home');
+    fs.mkdirSync(path.join(run.sockets, 'c'), { mode: 0o700 });
+    for (const dir of ['config', 'cache', 'data', 'state']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    // Every process of the run gets the marker, and a home and directories
+    // of its own, so that neither VS Code nor SSH uses the user's.
+    const [markerName, markerValue] = run.marker.split('=');
+    run.env = isolatedEnv({
+      HOME: home,
+      XDG_CONFIG_HOME: path.join(home, 'config'),
+      XDG_CACHE_HOME: path.join(home, 'cache'),
+      XDG_DATA_HOME: path.join(home, 'data'),
+      XDG_STATE_HOME: path.join(home, 'state'),
+      XDG_RUNTIME_DIR: path.join(run.sockets, 'c'),
+      TMPDIR: path.join(run.sockets, 'c'),
+      [markerName]: markerValue,
+      // Inside WSL, bin/code asks for confirmation unless this is set.
+      DONT_PROMPT_WSL_INSTALL: '1',
+    });
+    for (const name of ['SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY']) {
+      delete run.env[name];
+    }
+    await test(run);
+  } catch (caught) {
+    error = caught;
+  }
+  tearingDown = true;
+  if (run.signal.aborted) error = new Failure('interrupted', `interrupted by ${run.interrupted}`);
+  if (error !== undefined && !(error instanceof Failure)) error = new Failure('fail', `the runner failed: ${error.stack}`);
+  if (error !== undefined && error.kind !== 'interrupted') console.log(`${error.kind === 'infra' ? 'INFRA' : 'FAIL'}: ${error.message}`);
+
+  // The evidence first, while the target is still up.
+  await collectLogs(run);
+  const teardown = run.target === undefined ? undefined : await run.target.teardown();
+  run.manifest.teardown = teardown ?? null;
+  let keep = values.keepWork;
+  if (teardown !== undefined && !teardown.ok) {
+    keep = true;
+    console.log(`INFRA: the teardown could not confirm that nothing of the run is left${teardown.error ? `: ${teardown.error}` : ''}`
+      + `${teardown.left.map((p) => `\n   pid ${p.pid}: ${p.command}`).join('')}`
+      + `${teardown.portClosed === false ? `\n   port ${run.target.details.port} is still open` : ''}`);
+  } else if (teardown !== undefined) {
+    const port = run.target.details.port === undefined ? '' : `, and port ${run.target.details.port} is closed`;
+    console.log(`-- teardown: stopped ${teardown.stopped.length} processes of the run; none left${port}`);
+  }
+  if (run.work !== undefined) {
+    if (keep) console.log(`work directory kept: ${run.work}`);
+    else fs.rmSync(run.work, { recursive: true, force: true });
+  }
+  if (run.sockets !== undefined && !keep) fs.rmSync(run.sockets, { recursive: true, force: true });
+
+  let result;
+  let status;
+  if (error?.kind === 'interrupted') {
+    [result, status] = ['INTERRUPTED', SIGNAL_STATUS[run.interrupted]];
+  } else if (error?.kind === 'fail' || run.failures.length > 0) {
+    [result, status] = ['FAIL', STATUS.FAIL];
+  } else if (error?.kind === 'infra' || (teardown !== undefined && !teardown.ok)) {
+    [result, status] = ['INFRA', STATUS.INFRA];
+  } else {
+    [result, status] = ['PASS', STATUS.PASS];
+  }
+  const reasons = [...run.failures, ...(error === undefined ? [] : [error.message])];
+  if (teardown !== undefined && !teardown.ok) reasons.push('the teardown could not confirm that nothing of the run is left');
+  Object.assign(run.manifest, { result, exitStatus: status, reasons, finished: new Date().toISOString() });
+  fs.writeFileSync(path.join(values.out, 'manifest.json'), `${JSON.stringify(run.manifest, null, 2)}\n`);
+  const summary = [
+    ...run.manifest.launches.map((l) => `${l.name}: ${l.result ?? 'not finished'}, ${l.seconds?.toFixed(1) ?? '?'} s`
+      + `${l.suiteSeconds == null || l.mode === 'probe' ? '' : ` (suite ${l.suiteSeconds.toFixed(1)} s)`}`
+      + `${l.leftRunning === undefined ? '' : `, ${l.leftRunning.length} language server process(es) left running`}`),
+    ...reasons.map((reason) => `reason: ${reason}`),
+    `VS Code Remote-SSH test: ${result}`,
+  ].join('\n');
+  fs.writeFileSync(path.join(values.out, 'summary.txt'), `${summary}\n`);
+  console.log(`== summary\n${summary}\nresults: ${values.out}\nRESULT: ${result}`);
+  process.exit(status);
+}
+
+main();

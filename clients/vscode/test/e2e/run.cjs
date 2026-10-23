@@ -325,7 +325,13 @@ function lastServerExit(userData) {
   return lines.slice(start + 1).find((line) => /Server process exited|the input ended before a shutdown request/.test(line));
 }
 
-main().catch((error) => {
-  console.error(`FAIL: ${error.message}`);
-  process.exitCode = 1;
-});
+// The Remote-SSH test, remote-ssh/run.cjs, uses the same VS Code version and
+// isolation.
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`FAIL: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { VSCODE_VERSION, isolatedEnv };
