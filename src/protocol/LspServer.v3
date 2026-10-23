@@ -176,10 +176,15 @@ class LspServer {
 	// A didChange with no content changes. The text is byte-for-byte the same,
 	// so analyses, diagnostics, and cached queries still describe it. Only the
 	// version that clients check in edits and diagnostics changed: republish
-	// the current list at that version, without parsing or analyzing again.
-	// Project files have configuration diagnostics, which carry no version.
+	// the current list at that version. If the list's semantic diagnostics are
+	// stale, the republished list leaves them out, so schedule the document's
+	// current projects to analyze its sources again; otherwise this analyzes
+	// nothing. Project files have configuration diagnostics, which carry no
+	// version.
 	private def documentVersionChanged(doc: DocumentOverlay) {
-		if (!isProjectFile(doc)) parserDiagnostics.versioned(doc);
+		if (isProjectFile(doc)) return;
+		if (!parserDiagnostics.versioned(doc) || semanticDiagnostics == null) return;
+		semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
 	}
 	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
 		invalidateQueries();

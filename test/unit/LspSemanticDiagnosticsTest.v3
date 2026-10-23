@@ -17,6 +17,7 @@ def X = [
 	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
 	T("LspSemanticDiagnostics:version_only_update", test_version_only_update),
+	T("LspSemanticDiagnostics:stale_version_only_reanalyzes", test_stale_version_only_reanalyzes),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
 	T("LspSemanticDiagnostics:urgent_context_starts_first", test_urgent_context_starts_first),
@@ -63,6 +64,12 @@ class SemanticTestSession {
 		doc["uri"] = JsonValue.String(uri(name));
 		doc["version"] = JsonValue.Int(version);
 		notify("textDocument/didChange", doc, []);
+	}
+	// Reports files changed on disk, as the client's watcher does.
+	def watched(changes: Array<JsonValue>) {
+		var params = Strings.newMap<JsonValue>();
+		params["changes"] = JsonValue.JArray(changes);
+		server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
 	}
 	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
 		var params = Strings.newMap<JsonValue>();
@@ -273,6 +280,60 @@ def test_version_only_update(t: Tester) {
 	t.assert_string("aeneas", JsonValue.String.!(field(same[0], "source")).v);
 	t.asserti(generation, s.supervisor.snapshot.generation);
 	t.asserti(0, count(messages, "window/showMessage"));
+	s.server.close();
+}
+// A version-only change that drops stale semantic diagnostics must schedule
+// their replacement. The regression: 8,193 unrelated file reports overflow
+// DocumentStore's disk stamps, so the analysis that published main.v3's type
+// error no longer describes the closed shapes.v3; empty changes then clear the
+// still-valid error, and no watched-file event affects the project. The error
+// must return without another edit or save.
+def test_stale_version_only_reanalyzes(t: Tester) {
+	var s = SemanticTestSession.new(), uri = s.uri("main.v3"), dependency = s.uri("shapes.v3");
+	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
+	s.settle();
+	var messages = s.take(), first = lastPublication(messages, uri);
+	t.assert(first != null, "the open document's type error was published");
+	if (first == null) return s.server.close();
+	t.asserti(1, JsonValue.Int.!(first["version"]).v);
+	t.assert(JsonValue.JArray.!(first["diagnostics"]).v.length > 0, "the type error is published");
+	var generation = s.supervisor.snapshot.generation, stamp = s.server.documents.diskStamp(dependency);
+	// The last report fills every slot and then replaces every stamp,
+	// including the analysis's stamp for shapes.v3, without naming a file
+	// either project contains.
+	var changes = Array<JsonValue>.new(DocumentLimits.MAX_DISK_STAMPS + 1);
+	for (i < changes.length) {
+		var change = Strings.newMap<JsonValue>();
+		change["uri"] = JsonValue.String(ProjectFiles.uri(ProjectFiles.join(s.base, Strings.format1("noise/%d.v3", i))));
+		change["type"] = JsonValue.Int(2);
+		changes[i] = JsonValue.JObject(change);
+	}
+	s.watched(changes);
+	t.assert(s.server.documents.diskStamp(dependency) != stamp, "the overflow replaced the dependency's stamp");
+	s.settle();
+	t.asserti(generation, s.supervisor.snapshot.generation);
+	s.take();
+	// Each empty change republishes only parser diagnostics, since the
+	// analysis can no longer vouch for the semantic list. None is an edit or
+	// a save.
+	for (version = 2; version <= 5; version++) s.versionOnly("main.v3", version);
+	var cleared = lastPublication(s.take(), uri);
+	t.assert(cleared != null, "the empty changes published");
+	if (cleared == null) return s.server.close();
+	t.asserti(5, JsonValue.Int.!(cleared["version"]).v);
+	t.asserti(0, JsonValue.JArray.!(cleared["diagnostics"]).v.length);
+	// The drop must schedule a replacement analysis whose result returns the
+	// still-valid error without another edit or save.
+	s.settle();
+	messages = s.take();
+	var restored = lastPublication(messages, uri);
+	t.assert(restored != null, "the replacement analysis published");
+	if (restored == null) return s.server.close();
+	t.asserti(5, JsonValue.Int.!(restored["version"]).v);
+	var list = JsonValue.JArray.!(restored["diagnostics"]).v;
+	t.assert(list.length > 0, "the still-valid type error is back");
+	if (list.length > 0) t.assert_string("aeneas", JsonValue.String.!(field(list[0], "source")).v);
+	t.asserti(generation + 1, s.supervisor.snapshot.generation);
 	s.server.close();
 }
 def test_shutdown_stops_scheduling(t: Tester) {

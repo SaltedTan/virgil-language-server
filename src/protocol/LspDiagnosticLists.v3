@@ -44,14 +44,16 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// An accepted version-only change: the text is unchanged, so the list is
 	// too, and only the version the client checks moves. Semantic diagnostics
 	// are restamped only while the analysis that produced them is still
-	// current; otherwise they are dropped, and the analysis their staleness
-	// scheduled publishes replacements. A stale TypeError must not reappear
-	// with a fresh version.
-	def versioned(doc: DocumentOverlay) {
+	// current; otherwise they are dropped. A stale TypeError must not
+	// reappear with a fresh version. Returns true if it dropped them, so the
+	// server can schedule their replacement: nothing else is guaranteed to.
+	def versioned(doc: DocumentOverlay) -> bool {
 		var list = lists[doc.uri];
-		if (list == null) return;
-		if (list.semantic.length > 0 && !fresh(list.owner, list.sources)) list.dropSemantic();
+		if (list == null) return false;
+		var dropped = list.semantic.length > 0 && !fresh(list.owner, list.sources);
+		if (dropped) list.dropSemantic();
 		publish(list, doc, false);
+		return dropped;
 	}
 	// An accepted close publishes an empty list with the last open version,
 	// without reading the disk; a later analysis may report the file again.
