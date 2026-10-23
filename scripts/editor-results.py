@@ -774,15 +774,13 @@ class _Reader:
         for index, name in enumerate(names):
             if name in names[:index]:
                 raise Invalid(1, f"provenance.pins[{index}] repeats the name {show(name)}")
+        # Which profiles must have a digest depends on the checks, so the
+        # run-end checks that.
         digests = provenance["configurationSha256"]
-        configured = sorted(set(self.plan.iterations) - {WRAPPER})
         for profile in digests:
-            if profile not in configured:
+            if profile == WRAPPER or profile not in self.plan.iterations:
                 raise Invalid(1, f"provenance.configurationSha256 has profile {profile}, " + (
                     "which runs outside the editor" if profile == WRAPPER else "which the plan doesn't have"))
-        for profile in configured:
-            if profile not in digests:
-                raise Invalid(1, f"provenance.configurationSha256 lacks profile {profile}, which the plan has")
         profiles = manifest.profiles[suite]
         for profile, digest in digests.items():
             for other, other_digest in digests.items():
@@ -850,6 +848,15 @@ class _Reader:
         self.checks.append(check)
 
     def _end(self, number, end):
+        # A profile in which no check ran may lack its configuration's digest,
+        # as when the run failed before it created the configuration.
+        digests = self.start["provenance"]["configurationSha256"]
+        for check in self.checks:
+            profile = check["profile"]
+            if check["status"] != "skip" and profile != WRAPPER and profile not in digests:
+                line = self.lines[(check["id"], profile, check["iteration"])]
+                raise Invalid(1, f"provenance.configurationSha256 lacks profile {profile}, but the check on line "
+                                 f"{line} ran in it: only a profile in which no check ran may lack a digest")
         # The prerequisites of an xfail, or of a fail that the rule may
         # excuse, may come after it.
         statuses = {(check["id"], check["profile"], check["iteration"]): check["status"] for check in self.checks}
@@ -910,7 +917,7 @@ def validate_stream(data, manifest, schema):
     """Validates one stream, the bytes of a file. Returns its Run if it is
     valid, and raises Invalid at the first error that it finds otherwise. The
     prerequisites of an xfail are checked at the run-end, since they may come
-    after it."""
+    after it, and so are the configuration digests that the checks require."""
     lines = data.split(b"\n")
     cut = None
     if lines[-1] == b"":

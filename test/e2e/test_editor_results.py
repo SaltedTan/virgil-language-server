@@ -900,9 +900,12 @@ class ProvenanceTest(ValidatorTest):
         digests[RULE["workaroundProfile"]] = digests["noroot"]
         self.assertInvalid(events, 1, f"gives the workaround profile {RULE['workaroundProfile']} the digest of "
                                       "profile noroot")
+        # A passing run has a digest for each profile but the wrapper, since a check ran in each.
         del digests[RULE["workaroundProfile"]]
+        line = next(index for index, event in enumerate(events)
+                    if event["event"] == "check" and event["profile"] == RULE["workaroundProfile"]) + 1
         self.assertInvalid(events, 1, f"provenance.configurationSha256 lacks profile {RULE['workaroundProfile']}, "
-                                      "which the plan has")
+                                      f"but the check on line {line} ran in it")
         events = stream("nvim")
         events[0]["provenance"]["configurationSha256"]["wrapper"] = sha("wrapper")
         self.assertInvalid(events, 1, "provenance.configurationSha256 has profile wrapper, which runs outside "
@@ -910,6 +913,53 @@ class ProvenanceTest(ValidatorTest):
         events = stream("nvim")
         events[0]["provenance"]["configurationSha256"]["noroot"] = sha("noroot")
         self.assertInvalid(events, 1, "has profile noroot, which the plan doesn't have")
+
+    def preflight_failed(self):
+        """A LazyVim run whose preflight failed before it created any editor
+        configuration: it skipped every check but the cleanup's, and has no
+        configuration digests."""
+        events = stream("lazyvim")
+        events.insert(1, events.pop(find(events, "lazyvim.infrastructure.preflight")))
+        fail(events, 1)
+        for event in events[2:-1]:
+            if event["id"] != "lazyvim.infrastructure.cleanup":
+                event.update(status="skip", reason="Neovim is missing", expectation=None, failureCode=None)
+        provenance = events[0]["provenance"]
+        provenance.update(configurationSha256={}, pins=[],
+                          fixtureSha256={"value": None, "unavailable": "the preflight failed"})
+        provenance["editor"]["version"] = None
+        return rebuild(events, status="unavailable", exitCode=2)
+
+    def test_a_profile_in_which_no_check_ran_may_lack_its_digest(self):
+        run = self.assertValid(self.preflight_failed(), passed=False)
+        self.assertIn("valid, run unavailable", run.summary())
+        self.assertEqual(1, run.end["counts"]["fail"])
+        self.assertEqual(run.end["checkCount"] - 2, run.end["counts"]["skip"])
+        # A digest that is there is still checked, against the others that are there.
+        events = self.preflight_failed()
+        events[0]["provenance"]["configurationSha256"] = {RULE["workaroundProfile"]: sha("noroot")}
+        self.assertValid(events, passed=False)
+        events[0]["provenance"]["configurationSha256"]["noroot"] = sha("noroot")
+        self.assertInvalid(events, 1, f"gives the workaround profile {RULE['workaroundProfile']} the digest")
+        # A check that wasn't skipped ran in its profile, whether it passed or not.
+        for status in ("pass", "fail"):
+            with self.subTest(status):
+                events = self.preflight_failed()
+                index = find(events, "lazyvim.hover.response", "main")
+                if status == "fail":
+                    fail(events, index)
+                else:
+                    events[index].update(status="pass", reason=None)
+                self.assertInvalid(rebuild(events), 1, "provenance.configurationSha256 lacks profile main, but "
+                                                       f"the check on line {index + 1} ran in it")
+        # Nor did a check run that the stream lacks, in a run that stopped before it.
+        events = stream("lazyvim")
+        later = ("noroot", RULE["workaroundProfile"])
+        events[1:-1] = [event for event in events[1:-1] if event["profile"] not in later]
+        for profile in later:
+            del events[0]["provenance"]["configurationSha256"][profile]
+        self.assertValid(rebuild(events, status="aborted", exitCode=None, signal="SIGTERM", cleanup="unknown"),
+                         passed=False)
 
 
 def mini(schema):
