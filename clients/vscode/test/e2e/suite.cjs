@@ -5,6 +5,7 @@
 // and act only through VS Code APIs and commands, as a user's edits would.
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -511,6 +512,8 @@ async function workspace(extension) {
   await noVirgilRoot(failures, words);
   await missingServer(failures, words);
   await missingWorker(failures, words);
+  await actionDuringRecovery(failures, words, 'restart');
+  await actionDuringRecovery(failures, words, 'configuration');
   assert.deepEqual(failures, [], 'scenarios failed');
 }
 
@@ -553,12 +556,13 @@ async function projectFileOnDisk(failures, bad, words) {
 // messages. The test sets the level as the Output view's log level menu does,
 // on the channel that VS Code names after the extension and its log file. The
 // menu's commands end in the level's number.
+async function level(value) {
+  await vscode.commands.executeCommand('workbench.output.action.switchBetweenOutputs', `${EXTENSION_ID}.${CHANNEL_LOG}`);
+  await vscode.commands.executeCommand(`workbench.action.output.activeOutputLogLevel.${value}`);
+}
+
 async function trace(failures, words) {
   const unedited = words.document.getText();
-  const level = async (value) => {
-    await vscode.commands.executeCommand('workbench.output.action.switchBetweenOutputs', `${EXTENSION_ID}.${CHANNEL_LOG}`);
-    await vscode.commands.executeCommand(`workbench.action.output.activeOutputLogLevel.${value}`);
-  };
   await scenario(failures, 'message trace at the Trace log level, with textDocument/didChange', async () => {
     const log = logFromHere();
     await level(vscode.LogLevel.Trace);
@@ -686,6 +690,294 @@ async function missingWorker(failures, words) {
   });
 }
 
+// Checklist step 17 makes a killed server's automatic recovery race with a
+// restart, a configuration change, or closing the window. The recovery start
+// must be under way when the action comes, so the scenarios start the server
+// from a script, written by recoveryServer, that holds a start, before it
+// runs the server, for as long as a file "hold" in its directory exists:
+// the client has then spawned the recovery's server and sent initialize,
+// which the held server doesn't read yet. A held start runs the server with
+// its input copied to input-PID, PID being the script's, and records its exit
+// status. The server exits with status 0 only after shutdown and then exit.
+
+function shellWord(word) {
+  return `'${word.replaceAll("'", "'\\''")}'`;
+}
+
+// Writes the script, virgil-lsp in directory, which runs server. Each start
+// appends its PID to "starts". A held start writes its PID to "held", and
+// when it goes on, "PID removed" to "released" if the hold file is gone, or
+// "PID terminating" if the hold file names a log that says the extension host
+// is terminating; after 20 seconds, it goes on anyway. It appends "PID
+// status" to "exits" when the server exits. Any other start runs the server
+// in its place, with the script's PID. The client looks for the worker beside
+// the script, so a link to the real one is there.
+function recoveryServer(directory, server) {
+  const script = path.join(directory, 'virgil-lsp');
+  fs.writeFileSync(script, `#!/bin/sh
+state=${shellWord(directory)}
+echo $$ >> "$state/starts"
+if [ -e "$state/hold" ]; then
+  echo $$ > "$state/held"
+  log=$(cat "$state/hold")
+  reason=timeout
+  waited=0
+  while [ $waited -lt 400 ]; do
+    if [ ! -e "$state/hold" ]; then reason=removed; break; fi
+    if [ -n "$log" ] && grep -q 'Extension host terminating' "$log" 2>/dev/null; then reason=terminating; break; fi
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  echo "$$ $reason" >> "$state/released"
+  tee "$state/input-$$" | ${shellWord(server)} "$@"
+  status=$?
+  echo "$$ $status" >> "$state/exits"
+  exit $status
+fi
+exec ${shellWord(server)} "$@"
+`, { mode: 0o755 });
+  fs.symlinkSync(path.join(path.dirname(fs.realpathSync(server)), 'virgil-lsp-worker'), path.join(directory, 'virgil-lsp-worker'));
+  return script;
+}
+
+// The lines of the file name in directory that the script writes.
+function recorded(directory, name) {
+  const file = path.join(directory, name);
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [];
+}
+
+// The methods of the requests and notifications in a server's input, as the
+// script copied it, in order, without the responses to the server's requests.
+function methods(input) {
+  const found = [];
+  let rest = input;
+  for (;;) {
+    const end = rest.indexOf('\r\n\r\n');
+    const length = Number(/Content-Length: *(\d+)/i.exec(rest.subarray(0, Math.max(end, 0)).toString())?.[1]);
+    if (end < 0 || !(rest.length >= end + 4 + length)) return found;
+    const { method } = JSON.parse(rest.subarray(end + 4, end + 4 + length).toString());
+    if (method !== undefined) found.push(method);
+    rest = rest.subarray(end + 4 + length);
+  }
+}
+
+// The methods that a server received from shutdown on, without the didOpen
+// notifications before the last one. The client sends a didOpen for each open
+// document once it is running, and one whose check that the client is running
+// passed just before a stop began can still follow shutdown, on the
+// connection, which stays open until exit.
+function fromShutdown(received) {
+  const rest = received.slice(received.indexOf('shutdown'));
+  return [...rest.slice(0, -1).filter((method) => method !== 'textDocument/didOpen'), ...rest.slice(-1)];
+}
+
+// Throws unless the held start with PID held received initialize first, then
+// initialized, so the recovery had finished, and shutdown and exit last, and
+// then exited with status 0.
+function expectStoppedAfterRecovery(directory, held) {
+  const received = methods(fs.readFileSync(path.join(directory, `input-${held}`)));
+  assert.equal(received[0], 'initialize', `the recovered server's input: ${received}`);
+  assert.ok(received.indexOf('initialized') > 0, `the recovered server got no initialized: ${received}`);
+  assert.deepEqual(fromShutdown(received), ['shutdown', 'exit'],
+    `the recovered server did not get shutdown and then exit last: ${received}`);
+  assert.deepEqual(recorded(directory, 'exits'), [`${held} 0`], 'the recovered server did not exit with status 0');
+}
+
+// The processes in this extension host's process group, which the servers
+// that the client starts join, with each one's parent and its arguments,
+// which start with the path of the executable that the client or the server
+// started. As run.cjs does, by ps, which macOS has too.
+function groupProcesses() {
+  const ps = (args) => {
+    const result = spawnSync('ps', args, { encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(`ps failed: ${result.error?.message ?? result.stderr}`);
+    return result.stdout;
+  };
+  const group = Number(ps(['-o', 'pgid=', '-p', String(process.pid)]));
+  return ps(['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'args=']).split('\n').flatMap((line) => {
+    const [, pid, ppid, pgid, args] = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line) ?? [];
+    return Number(pgid) === group ? [{ pid: Number(pid), ppid: Number(ppid), args }] : [];
+  });
+}
+
+function runs(entry, executable) {
+  return entry.args === executable || entry.args.startsWith(`${executable} `);
+}
+
+// Kills the server that the client started with PID pid, after checking that
+// it is the client's: this extension host's child, running server.
+function killServer(pid, server) {
+  const target = groupProcesses().find((p) => p.pid === pid);
+  assert.ok(target !== undefined && target.ppid === process.pid && runs(target, server),
+    `pid ${pid} is not a virgil-lsp that this extension host started: ${JSON.stringify(target)}`);
+  process.kill(pid, 'SIGKILL');
+}
+
+// Waits until this extension host runs exactly one server, which isn't one
+// of retired, the worker only as that server's child, and nothing from
+// directory, and returns that server's PID.
+async function expectOneServer(server, directory, retired) {
+  const worker = path.join(path.dirname(fs.realpathSync(server)), 'virgil-lsp-worker');
+  let processes;
+  const one = () => {
+    processes = groupProcesses();
+    const servers = processes.filter((p) => runs(p, server));
+    return servers.length === 1 && !retired.includes(servers[0].pid)
+      && processes.every((p) => (!runs(p, worker) || p.ppid === servers[0].pid) && !p.args.includes(directory))
+      && servers[0].pid;
+  };
+  try {
+    return await waitFor('one virgil-lsp left', one, 5000);
+  } catch (error) {
+    const listed = processes.filter((p) => runs(p, server) || runs(p, worker) || p.args.includes(directory));
+    throw new Error(`${error.message}; running: ${JSON.stringify(listed)}`);
+  }
+}
+
+// Points virgil.server.path at a recoveryServer script in directory, waits
+// for the server to start from it, and returns the script and the server's
+// PID.
+async function startRecoveryServer(server, directory) {
+  const script = recoveryServer(directory, server);
+  const log = logFromHere();
+  await setSetting('virgil.server.path', script);
+  await waitFor('the server to start from the script', () => {
+    expectNoServerError(log);
+    const text = log();
+    return text.includes(`Starting ${script} --stdio`) && text.includes('Started virgil-lsp ');
+  }, 20000);
+  const [pid] = recorded(directory, 'starts').map(Number);
+  return { script, pid };
+}
+
+// Kills the server with PID pid, and waits until the client's recovery
+// start is held. Returns the held start's PID and the log since the kill.
+async function killAndHold(directory, pid, server, release = '') {
+  fs.writeFileSync(path.join(directory, 'hold'), release);
+  const log = logFromHere();
+  killServer(pid, server);
+  const held = await waitFor('the recovery to start the server again', () => {
+    const [start] = recorded(directory, 'held');
+    return log().includes('Connection to server got closed. Server will restart.') && start !== undefined && Number(start);
+  });
+  return { held, log };
+}
+
+// Throws unless each of lines is in text, in order.
+function expectInOrder(text, lines) {
+  let at = 0;
+  for (const [index, line] of lines.entries()) {
+    const found = text.indexOf(line, at);
+    assert.ok(found >= 0, `"${line}" is not ${index === 0 ? 'in the log' : `after "${lines[index - 1]}"`}:\n${text}`);
+    at = found + line.length;
+  }
+}
+
+// Kills the server, and while the recovery start is held, runs the
+// Restart Language Server command or changes virgil.server.path back from the
+// script to the server. In the message trace, the action waits for the
+// recovery's initialize and initialized; then the client sends the recovered
+// server shutdown and exit, and only then starts one replacement. The client
+// counts a server as stopped once it has sent exit, so the recovered server's
+// exit can be logged after the replacement's start.
+async function actionDuringRecovery(failures, words, action) {
+  const server = setting('virgil.server.path');
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
+  const name = action === 'restart'
+    ? 'server killed, and Virgil: Restart Language Server during the recovery'
+    : 'server killed, and virgil.server.path changed during the recovery';
+  await scenario(failures, `${name}: the recovery, then shutdown and exit, then one replacement`, async () => {
+    // The trace starts before the server that is killed, so that no
+    // $/setTrace is on its way to it then.
+    const traced = logFromHere();
+    await level(vscode.LogLevel.Trace);
+    await waitFor('the trace to start', () => traced().includes("Sending notification '$/setTrace'"));
+    const { script, pid } = await startRecoveryServer(server, directory);
+    const { held, log } = await killAndHold(directory, pid, server);
+    let done;
+    if (action === 'restart') {
+      // VS Code runs a command of an extension in the same extension host
+      // before executeCommand returns, so the restart is queued now.
+      done = vscode.commands.executeCommand('virgil.server.restart');
+    } else {
+      done = setSetting('virgil.server.path', server);
+      await waitFor('the configuration change', () => log().includes('virgil.server.path changed; restarting the server'));
+    }
+    // Nothing has stopped the recovering client or started another.
+    assert.ok(!/Sending request 'shutdown|Starting /.test(log()), `the action did not wait for the recovery:\n${log()}`);
+    const released = logFromHere();
+    fs.rmSync(path.join(directory, 'hold'));
+    await done;
+    const replacement = action === 'restart' ? script : server;
+    await waitFor('the replacement to start, and the recovered server to exit', () => {
+      const text = log();
+      return text.includes(`Starting ${replacement} --stdio`) && text.includes('Started virgil-lsp ')
+        && recorded(directory, 'exits').length > 0;
+    }, 20000);
+    expectStoppedAfterRecovery(directory, held);
+    assert.deepEqual(recorded(directory, 'released'), [`${held} removed`]);
+    const text = log();
+    expectInOrder(text, [
+      "Received response 'initialize",
+      "Sending notification 'initialized'",
+      "Sending request 'shutdown",
+      "Sending notification 'exit'",
+      `Starting ${replacement} --stdio`,
+      "Sending request 'initialize",
+      'Started virgil-lsp ',
+    ]);
+    assert.deepEqual([count(text, "Sending request 'shutdown"), count(text, '[info] Starting '), count(text, 'Started virgil-lsp ')], [1, 1, 1], text);
+    // The killed server's exit and the recovered server's are the only ones.
+    assert.deepEqual(text.match(/Server process exited .*/g), ['Server process exited with signal SIGKILL.', 'Server process exited successfully']);
+    const remaining = await expectOneServer(server, directory, [pid, held]);
+    if (action === 'restart') assert.equal(remaining, Number(recorded(directory, 'starts')[2]));
+    // Once the recovery went on, no request or notification failed, which the
+    // client would also show as an error notification, by the time the
+    // replacement has opened the documents and analyzed words/Words.v3. The
+    // kill itself can fail a message on its way to the killed server.
+    await waitFor('the type error in words/Words.v3 from the replacement', () => hasTypeError(words), 40000);
+    assert.deepEqual(released().match(/ \[error\] (Sending|Request) .* failed.*/g) ?? [], [], 'the client reported failures');
+  }, async () => {
+    try {
+      fs.rmSync(path.join(directory, 'hold'), { force: true });
+      await level(vscode.LogLevel.Info);
+      await restoreServer(server, words);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+// The log of this extension host, whose termination releases the held
+// start in closeDuringRecovery: the exthost.log that names this process.
+function extensionHostLog() {
+  const logs = process.env.VIRGIL_E2E_LOGS;
+  const started = `Extension host with pid ${process.pid} started`;
+  const found = fs.readdirSync(logs, { recursive: true })
+    .filter((file) => path.basename(file) === 'exthost.log')
+    .map((file) => path.join(logs, file))
+    .filter((file) => fs.readFileSync(file, 'utf8').includes(started));
+  assert.equal(found.length, 1, `expected one extension host log in ${logs} that says "${started}"`);
+  return found[0];
+}
+
+// The launch that closes the window during the recovery, which run.cjs
+// starts with VIRGIL_E2E_RECOVERY set to a new directory for the script.
+// The suite kills the server and ends while the recovery start is held,
+// which closes the window. The extension host logs that it is terminating
+// and then deactivates the extension, before it can read the held server's
+// answer to initialize: so the start goes on only when the extension's stop
+// is queued. run.cjs checks the result once the window has closed.
+async function closeDuringRecovery(extension, directory) {
+  await waitFor('activation by the workspace project file', () => extension.isActive);
+  await waitFor('the server to start', () => channelLog().includes('Started virgil-lsp '));
+  const server = setting('virgil.server.path');
+  const { pid } = await startRecoveryServer(server, directory);
+  await expectParserDiagnostic(await open('bad.v3'));
+  await killAndHold(directory, pid, server, extensionHostLog());
+  console.log('PASS: VS Code server killed; closing the window during the recovery');
+}
+
 async function run() {
   const extension = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(extension, `${EXTENSION_ID} is not loaded`);
@@ -695,7 +987,9 @@ async function run() {
     assert.equal(path.dirname(extension.extensionPath), installed,
       `${EXTENSION_ID} was loaded from ${extension.extensionPath}, not from the installed VSIX`);
   }
-  if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
+  const recovery = process.env.VIRGIL_E2E_RECOVERY;
+  if (recovery !== undefined) await closeDuringRecovery(extension, recovery);
+  else if (vscode.workspace.workspaceFolders === undefined) await singleFile(extension);
   else await workspace(extension);
 }
 

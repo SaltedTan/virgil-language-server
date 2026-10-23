@@ -3,7 +3,9 @@
 
 // Runs suite.cjs in a real VS Code Extension Host against the built server, on
 // a copy of the Neovim smoke test's fixture: once with the fixture's bad.v3
-// opened without a folder, and once with the fixture as the workspace folder.
+// opened without a folder, once with the fixture as the workspace folder, and
+// once more with the folder to close the window while the client recovers
+// from a server that the suite killed.
 // Usage, from clients/vscode after `npm run compile`:
 //
 //   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [path/to/virgil-lsp]
@@ -92,6 +94,7 @@ async function main() {
     const options = { executable, settings, project, vsix, servers, signal: controller.signal };
     let passed = await launch(options, path.join(work, 'single-file'));
     if (passed) passed = await launch(options, path.join(work, 'workspace'), project);
+    if (passed) passed = await launch(options, path.join(work, 'recovery-close'), project, true);
     if (!passed) process.exitCode = 1;
   } finally {
     process.off('SIGINT', interrupt).off('SIGTERM', interrupt);
@@ -118,10 +121,14 @@ function isolatedEnv(variables) {
 
 // Starts VS Code with its own user data and extensions directories under dir,
 // and returns whether the suite passed. The suite opens a folder only if it is
-// given one.
-async function launch({ executable, settings, project, vsix, servers, signal }, dir, folder) {
+// given one. With recovery, the suite closes the window during a recovery,
+// with a virgil.server.path in dir/recovery, whose records are checked after
+// the window has closed.
+async function launch({ executable, settings, project, vsix, servers, signal }, dir, folder, recovery = false) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
+  const records = recovery ? path.join(dir, 'recovery') : undefined;
+  if (records !== undefined) fs.mkdirSync(records, { recursive: true });
   // VS Code runs the suite only in extension development mode. With a VSIX,
   // the development path is an empty directory, which holds no extension.
   const development = vsix === undefined ? extension : path.join(dir, 'no-extension');
@@ -149,6 +156,7 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
     VIRGIL_E2E_LOGS: path.join(userData, 'logs'),
     // The suite checks that VS Code loaded the installed copy.
     ...(vsix === undefined ? {} : { VIRGIL_E2E_EXTENSIONS_DIR: extensions }),
+    ...(records === undefined ? {} : { VIRGIL_E2E_RECOVERY: records }),
   });
   const name = path.basename(dir);
   if (vsix !== undefined) {
@@ -174,6 +182,17 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
     console.error(`FAIL: ${name} launch ${outcome(result)}`);
     printChannelLogs(userData);
     return false;
+  }
+  if (records !== undefined) {
+    const problem = recoveryProblem(records, userData);
+    if (problem !== undefined) {
+      console.error(`FAIL: VS Code window close during the recovery (${name} launch): ${problem}`);
+      printChannelLogs(userData);
+      return false;
+    }
+    console.log(`PASS: VS Code window close during the recovery (${name} launch): the recovery finished, then the `
+      + 'recovered server got shutdown and exit and exited with status 0, and no virgil-lsp or virgil-lsp-worker was left running');
+    return true;
   }
   // Closing the window deactivates the extension, which sends shutdown and
   // exit. The channel may close before the server exits, so its log need not
@@ -323,6 +342,62 @@ function lastServerExit(userData) {
   const lines = channelLogs(userData).flatMap((file) => fs.readFileSync(file, 'utf8').split('\n'));
   const start = lines.findLastIndex((line) => line.includes(' [info] Starting '));
   return lines.slice(start + 1).find((line) => /Server process exited|the input ended before a shutdown request/.test(line));
+}
+
+// What is wrong with the records of the recovery-close launch, if anything.
+// The suite started the server from the script in directory, killed it, and
+// closed the window while the client's recovery start was held, until the
+// extension host logged that it was terminating; see closeDuringRecovery in
+// suite.cjs. The output channel closes when the extension deactivates, before
+// the recovered server stops, so the script's records of that server's input
+// and exit status tell what reached it.
+function recoveryProblem(directory, userData) {
+  const recorded = (name) => {
+    const file = path.join(directory, name);
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [];
+  };
+  const starts = recorded('starts');
+  if (starts.length !== 2) return `expected the killed server's start and the recovery's, not these starts: ${starts.join(', ')}`;
+  const held = starts[1];
+  const log = channelLogs(userData).map((file) => fs.readFileSync(file, 'utf8')).join('');
+  if (!log.includes('Connection to server got closed. Server will restart.')) return 'the client did not start a recovery';
+  const released = recorded('released').join(', ');
+  if (released !== `${held} terminating`) {
+    return `the recovery's start went on before the extension host was terminating, not just after (${released || 'never'})`;
+  }
+  const received = methods(fs.readFileSync(path.join(directory, `input-${held}`)));
+  if (received[0] !== 'initialize' || !(received.indexOf('initialized') > 0)) {
+    return `the recovery did not finish before the window closed; the recovered server received ${received.join(', ')}`;
+  }
+  if (fromShutdown(received).join() !== 'shutdown,exit') {
+    return `the recovered server did not receive shutdown and then exit last, but ${received.join(', ')}`;
+  }
+  const exits = recorded('exits').join(', ');
+  if (exits !== `${held} 0`) return `the recovered server did not exit with status 0: ${exits || 'no exit recorded'}`;
+  return undefined;
+}
+
+// The methods of the requests and notifications in input, a server's input as
+// the script in suite.cjs copied it, in order, without the responses to the
+// server's requests.
+function methods(input) {
+  const found = [];
+  let rest = input;
+  for (;;) {
+    const end = rest.indexOf('\r\n\r\n');
+    const length = Number(/Content-Length: *(\d+)/i.exec(rest.subarray(0, Math.max(end, 0)).toString())?.[1]);
+    if (end < 0 || !(rest.length >= end + 4 + length)) return found;
+    const { method } = JSON.parse(rest.subarray(end + 4, end + 4 + length).toString());
+    if (method !== undefined) found.push(method);
+    rest = rest.subarray(end + 4 + length);
+  }
+}
+
+// The methods that a server received from shutdown on, without the didOpen
+// notifications before the last one, as fromShutdown in suite.cjs.
+function fromShutdown(received) {
+  const rest = received.slice(received.indexOf('shutdown'));
+  return [...rest.slice(0, -1).filter((method) => method !== 'textDocument/didOpen'), ...rest.slice(-1)];
 }
 
 // The Remote-SSH test, remote-ssh/run.cjs, uses the same VS Code version and

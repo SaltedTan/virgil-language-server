@@ -427,7 +427,8 @@ class Run {
       started: new Date().toISOString(),
       repository: repository(),
       notCovered: [
-        'Checklist step 17: forced server crashes, and restart, configuration changes, and closing the window during recovery',
+        'Checklist step 17\'s window close during a recovery: VS Code sometimes quits before it tells the remote extension host to terminate, '
+          + 'so the extension need not deactivate',
         'What VS Code shows: the status bar, views, popups, notifications, prompts, and the suggestion list',
         'A macOS client: Remote-SSH from a Mac to Linux is checked separately',
       ],
