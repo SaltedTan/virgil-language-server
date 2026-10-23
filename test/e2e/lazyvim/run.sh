@@ -19,7 +19,7 @@ starter_commit=803bc181d7c0d6d5eeba9274d9be49b287294d99
 starter_url=https://github.com/LazyVim/starter
 lazy_url=https://github.com/folke/lazy.nvim.git
 lazyvim_url=https://github.com/LazyVim/LazyVim.git
-# Deadlines in seconds: for installing the plugins, and for each run.
+# Deadlines in seconds: for installing the plugins and parsers, and for each run.
 install_timeout=${VIRGIL_LAZYVIM_INSTALL_TIMEOUT:-600}
 run_timeout=${VIRGIL_LAZYVIM_RUN_TIMEOUT:-240}
 

@@ -54,14 +54,14 @@ jobs:
     # Runs the LazyVim test against the server that test built and tested,
     # rather than building Virgil again. It is a separate job, not a step of
     # test, so that it is not a required check: it installs the pinned starter
-    # and plugins from GitHub, and stays advisory until it has passed 20 runs
-    # in a row. A failure still shows in the pull request. See
+    # and plugins from GitHub. A failure still shows in the pull request. See
     # docs/compatibility.md for CI policy and test/e2e/lazyvim/README.md#ci.
     name: LazyVim test (built server, linux)
     needs: test
     runs-on: ubuntu-24.04
     # A run takes about a minute after setup; the test's own deadlines, 600
-    # seconds to install the plugins and 240 for each run, end a stuck one sooner.
+    # seconds to install the plugins and parsers and 240 for each run, end a
+    # stuck one sooner.
     timeout-minutes: 20
     steps:
       # The test's fixture project uses the pinned Virgil checkout's libraries.
