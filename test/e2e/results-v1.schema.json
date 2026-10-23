@@ -1,0 +1,431 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SaltedTan/virgil-language-server/blob/main/test/e2e/results-v1.schema.json",
+  "title": "Editor test results, version 1",
+  "description": "One event of a JSON Lines results stream: one run-start, a check for each planned observation, and one run-end. test/e2e/RESULTS.md describes the stream's rules, and test/e2e/coverage.json the checks.",
+  "oneOf": [
+    {"$ref": "#/$defs/runStart"},
+    {"$ref": "#/$defs/check"},
+    {"$ref": "#/$defs/runEnd"}
+  ],
+  "$defs": {
+    "schema": {"const": 1},
+    "runId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$", "maxLength": 128},
+    "time": {
+      "description": "A UTC time, as RFC 3339 with the Z suffix.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,6})?Z$"
+    },
+    "nonEmpty": {"type": "string", "minLength": 1},
+    "nullableString": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/nonEmpty"}]},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "unavailableProvenance": {
+      "description": "A prerequisite failure prevented obtaining this value; the run cannot pass.",
+      "type": "object",
+      "properties": {
+        "value": {"type": "null"},
+        "unavailable": {"$ref": "#/$defs/nonEmpty"}
+      },
+      "required": ["value", "unavailable"],
+      "additionalProperties": false
+    },
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "nullableCommit": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/commit"}]},
+    "name": {
+      "description": "A manifest key, such as a setup, a profile, or an expected-failure rule.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "checkId": {
+      "description": "A check ID from test/e2e/coverage.json: harness, area, and subcase.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "suite": {"enum": ["nvim", "lazyvim", "vscode", "remote-ssh", "manual"]},
+    "status": {"enum": ["pass", "fail", "xfail", "xpass", "skip"]},
+    "level": {
+      "description": "The evidence level of a check, from the check's entry in coverage.json. Each title is the exact wording of a passing cell or check at that level in generated tables; a bare Pass is never generated.",
+      "oneOf": [
+        {"const": "api", "title": "Pass (API)"},
+        {"const": "ui-state", "title": "Pass (UI state)"},
+        {"const": "api-ui-state", "title": "Pass (API + UI state)"},
+        {"const": "api-process", "title": "Pass (API + process)"},
+        {"const": "process", "title": "Pass (process)"},
+        {"const": "configuration", "title": "Pass (configuration)"},
+        {"const": "manual", "title": "Pass (manual)"}
+      ]
+    },
+    "key": {
+      "description": "One planned observation: a check in a profile, in a repetition counted from 1.",
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "#/$defs/checkId"},
+        "profile": {"$ref": "#/$defs/name"},
+        "iteration": {"type": "integer", "minimum": 1}
+      },
+      "required": ["id", "profile", "iteration"],
+      "additionalProperties": false
+    },
+    "machine": {
+      "type": "object",
+      "properties": {
+        "os": {"enum": ["linux", "macos", "windows", "wsl"]},
+        "release": {"$ref": "#/$defs/nonEmpty"},
+        "arch": {"$ref": "#/$defs/nonEmpty"},
+        "cpu": {"$ref": "#/$defs/nullableString"},
+        "translation": {
+          "description": "A binary translator that runs the server, such as rosetta-2, or null.",
+          "$ref": "#/$defs/nullableString"
+        }
+      },
+      "required": ["os", "release", "arch", "cpu", "translation"],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "description": "What was tested, with what, and where. Every field is present. Unknown or inapplicable values use null where allowed; prerequisite failures use unavailableProvenance where allowed.",
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "object",
+          "properties": {
+            "versionText": {
+              "description": "The output of virgil-lsp --version, verbatim.",
+              "oneOf": [{"$ref": "#/$defs/nonEmpty"}, {"$ref": "#/$defs/unavailableProvenance"}]
+            },
+            "version": {"$ref": "#/$defs/nullableString"},
+            "sourceRevision": {"$ref": "#/$defs/nullableString"},
+            "virgilRevision": {"$ref": "#/$defs/nullableString"},
+            "target": {"oneOf": [{"enum": ["x86-64-linux", "x86-64-darwin"]}, {"$ref": "#/$defs/unavailableProvenance"}]},
+            "sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]},
+            "workerSha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]}
+          },
+          "required": ["versionText", "version", "sourceRevision", "virgilRevision", "target", "sha256", "workerSha256"],
+          "additionalProperties": false
+        },
+        "archive": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "properties": {
+                "name": {"$ref": "#/$defs/nonEmpty"},
+                "sha256": {"$ref": "#/$defs/sha256"},
+                "manifestSha256": {
+                  "description": "The SHA-256 of the archive's manifest.json.",
+                  "$ref": "#/$defs/nullableSha256"
+                }
+              },
+              "required": ["name", "sha256", "manifestSha256"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "vsix": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "properties": {
+                "name": {"$ref": "#/$defs/nonEmpty"},
+                "sha256": {"$ref": "#/$defs/sha256"},
+                "version": {"$ref": "#/$defs/nonEmpty"}
+              },
+              "required": ["name", "sha256", "version"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "clientMode": {
+          "description": "How the editor's client was installed: none for Neovim, source or vsix for VS Code, manual for a person's setup.",
+          "enum": ["none", "source", "vsix", "manual"]
+        },
+        "harness": {
+          "description": "The checkout that ran the test: its HEAD commit and tree, and whether it had changes.",
+          "type": "object",
+          "properties": {
+            "revision": {"$ref": "#/$defs/nullableCommit"},
+            "tree": {"$ref": "#/$defs/nullableCommit"},
+            "dirty": {"oneOf": [{"type": "null"}, {"type": "boolean"}]}
+          },
+          "required": ["revision", "tree", "dirty"],
+          "additionalProperties": false
+        },
+        "editor": {
+          "type": "object",
+          "properties": {
+            "name": {"enum": ["nvim", "vscode"]},
+            "version": {"$ref": "#/$defs/nullableString"},
+            "commit": {"$ref": "#/$defs/nullableCommit"},
+            "arch": {"$ref": "#/$defs/nullableString"}
+          },
+          "required": ["name", "version", "commit", "arch"],
+          "additionalProperties": false
+        },
+        "client": {
+          "description": "The machine with the editor's window.",
+          "$ref": "#/$defs/machine"
+        },
+        "host": {
+          "description": "The machine that runs the server, and VS Code's extension host.",
+          "$ref": "#/$defs/machine"
+        },
+        "transport": {
+          "type": "object",
+          "properties": {
+            "kind": {"enum": ["local", "ssh", "wsl"]},
+            "topology": {"enum": ["local", "loopback", "separate-host"]},
+            "extensionHost": {"oneOf": [{"type": "null"}, {"enum": ["local", "remote"]}]}
+          },
+          "required": ["kind", "topology", "extensionHost"],
+          "additionalProperties": false
+        },
+        "pins": {
+          "description": "The versions that the test pins and found, such as the LazyVim starter, each plugin, and the Remote-SSH extensions. Names are unique.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"$ref": "#/$defs/nonEmpty"},
+              "version": {"$ref": "#/$defs/nullableString"},
+              "commit": {"$ref": "#/$defs/nullableCommit"},
+              "sha256": {"$ref": "#/$defs/nullableSha256"}
+            },
+            "required": ["name", "version", "commit", "sha256"],
+            "additionalProperties": false
+          }
+        },
+        "configurationSha256": {
+          "description": "For each profile that ran, the SHA-256 of the editor configuration it used, including any change the profile makes, such as a workaround.",
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/name"},
+          "additionalProperties": {"$ref": "#/$defs/sha256"}
+        },
+        "fixtureSha256": {
+          "description": "The tree digest of test/e2e/nvim/fixture as copied for the run.",
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]
+        },
+        "virgilRootSha256": {
+          "description": "The tree digest of the Virgil root's lib directory, or null for a run without a root.",
+          "$ref": "#/$defs/nullableSha256"
+        },
+        "runtimes": {
+          "description": "Versions of the tools the test used, such as node, python3, bash, tmux, and ssh.",
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/nonEmpty"}
+        },
+        "ci": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "properties": {
+                "runUrl": {"$ref": "#/$defs/nonEmpty"},
+                "jobUrl": {"$ref": "#/$defs/nullableString"},
+                "attempt": {"type": "integer", "minimum": 1},
+                "runnerImage": {"$ref": "#/$defs/nullableString"}
+              },
+              "required": ["runUrl", "jobUrl", "attempt", "runnerImage"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "server", "archive", "vsix", "clientMode", "harness", "editor", "client", "host", "transport",
+        "pins", "configurationSha256", "fixtureSha256", "virgilRootSha256", "runtimes", "ci"
+      ],
+      "additionalProperties": false
+    },
+    "attestation": {
+      "description": "A manual record's statement by the person who made the observations. Manual records are optional.",
+      "type": "object",
+      "properties": {
+        "tester": {"$ref": "#/$defs/nonEmpty"},
+        "observedAt": {"$ref": "#/$defs/time"},
+        "recordedAt": {"$ref": "#/$defs/time"},
+        "statement": {"$ref": "#/$defs/nonEmpty"},
+        "reviewUrl": {"$ref": "#/$defs/nullableString"}
+      },
+      "required": ["tester", "observedAt", "recordedAt", "statement", "reviewUrl"],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "A relative path in the results directory, without . or .. segments.",
+          "type": "string",
+          "pattern": "^\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*(/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*)*$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["path", "sha256"],
+      "additionalProperties": false
+    },
+    "runStart": {
+      "type": "object",
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema"},
+        "event": {"const": "run-start"},
+        "runId": {"$ref": "#/$defs/runId"},
+        "seq": {"const": 0},
+        "time": {"$ref": "#/$defs/time"},
+        "release": {
+          "description": "The release that the run is evidence for, as in docs/manual-testing.md, or null.",
+          "$ref": "#/$defs/nullableString"
+        },
+        "purpose": {"enum": ["release", "development", "compatibility", "canary", "demo"]},
+        "suite": {"$ref": "#/$defs/suite"},
+        "setup": {"$ref": "#/$defs/name"},
+        "lane": {
+          "description": "The CI job's ID, such as lazyvim-linux, or local.",
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "command": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/nonEmpty"}},
+        "coverageSha256": {
+          "description": "The SHA-256 of the coverage.json that planned the run.",
+          "$ref": "#/$defs/sha256"
+        },
+        "expected": {
+          "description": "Every planned observation, sorted by id, profile, then iteration.",
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/key"}
+        },
+        "provenance": {"$ref": "#/$defs/provenance"},
+        "attestation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/attestation"}]}
+      },
+      "required": [
+        "schema", "event", "runId", "seq", "time", "release", "purpose", "suite", "setup", "lane",
+        "command", "coverageSha256", "expected", "provenance", "attestation"
+      ],
+      "additionalProperties": false,
+      "if": {"properties": {"suite": {"const": "manual"}}},
+      "then": {"properties": {"attestation": {"$ref": "#/$defs/attestation"}}},
+      "else": {"properties": {"attestation": {"type": "null"}}}
+    },
+    "check": {
+      "type": "object",
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema"},
+        "event": {"const": "check"},
+        "runId": {"$ref": "#/$defs/runId"},
+        "seq": {"type": "integer", "minimum": 1},
+        "time": {
+          "description": "When the check ended.",
+          "$ref": "#/$defs/time"
+        },
+        "id": {"$ref": "#/$defs/checkId"},
+        "profile": {"$ref": "#/$defs/name"},
+        "iteration": {"type": "integer", "minimum": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "level": {"$ref": "#/$defs/level"},
+        "startedAt": {"$ref": "#/$defs/time"},
+        "durationMs": {"type": "integer", "minimum": 0},
+        "reason": {
+          "description": "Why the check didn't pass; null or a note for a pass.",
+          "$ref": "#/$defs/nullableString"
+        },
+        "expectation": {
+          "description": "The expected-failure rule that applies, for an xfail or an xpass; otherwise null.",
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/name"}]
+        },
+        "failureCode": {
+          "description": "A short, stable code for how the check failed, or null.",
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/name"}]
+        },
+        "observation": {
+          "description": "What the check observed, whatever its status.",
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}}
+      },
+      "required": [
+        "schema", "event", "runId", "seq", "time", "id", "profile", "iteration", "status", "level",
+        "startedAt", "durationMs", "reason", "expectation", "failureCode", "observation", "artifacts"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "pass"}}},
+          "then": {"properties": {"expectation": {"type": "null"}, "failureCode": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["fail", "xfail", "xpass", "skip"]}}},
+          "then": {"properties": {"reason": {"$ref": "#/$defs/nonEmpty"}}}
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["fail", "skip"]}}},
+          "then": {"properties": {"expectation": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "xfail"}}},
+          "then": {"properties": {"expectation": {"$ref": "#/$defs/name"}, "failureCode": {"$ref": "#/$defs/name"}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "xpass"}}},
+          "then": {"properties": {"expectation": {"$ref": "#/$defs/name"}, "failureCode": {"type": "null"}}}
+        }
+      ]
+    },
+    "runEnd": {
+      "type": "object",
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema"},
+        "event": {"const": "run-end"},
+        "runId": {"$ref": "#/$defs/runId"},
+        "seq": {"type": "integer", "minimum": 1},
+        "time": {"$ref": "#/$defs/time"},
+        "complete": {
+          "description": "Whether every planned observation has exactly one check event and the launcher finished its own checks and teardown.",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "A pass means: complete, every planned observation reported, none failed, was skipped, or passed unexpectedly, exit code 0, no signal, and verified cleanup.",
+          "enum": ["pass", "fail", "aborted", "unavailable"]
+        },
+        "durationMs": {"type": "integer", "minimum": 0},
+        "expectedCount": {"type": "integer", "minimum": 0},
+        "checkCount": {"type": "integer", "minimum": 0},
+        "counts": {
+          "description": "The observations in each status. A passing run has fail, xpass, and skip at 0; conditions keep irrelevant checks out of expected, so a pass has no legitimate skips.",
+          "type": "object",
+          "properties": {
+            "pass": {"type": "integer", "minimum": 0},
+            "fail": {"type": "integer", "minimum": 0},
+            "xfail": {"type": "integer", "minimum": 0},
+            "xpass": {"type": "integer", "minimum": 0},
+            "skip": {"type": "integer", "minimum": 0}
+          },
+          "required": ["pass", "fail", "xfail", "xpass", "skip"],
+          "additionalProperties": false
+        },
+        "exitCode": {"oneOf": [{"type": "null"}, {"type": "integer"}]},
+        "signal": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^SIG[A-Z0-9]+$"}]},
+        "cleanup": {"enum": ["verified", "failed", "unknown"]},
+        "issues": {
+          "description": "Problems outside the checks, such as a deadline, a missing check event, or a failed teardown.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/nonEmpty"}
+        }
+      },
+      "required": [
+        "schema", "event", "runId", "seq", "time", "complete", "status", "durationMs", "expectedCount",
+        "checkCount", "counts", "exitCode", "signal", "cleanup", "issues"
+      ],
+      "additionalProperties": false,
+      "if": {"properties": {"status": {"const": "pass"}}},
+      "then": {
+        "properties": {
+          "complete": {"const": true},
+          "counts": {"properties": {"fail": {"const": 0}, "xpass": {"const": 0}, "skip": {"const": 0}}},
+          "exitCode": {"const": 0},
+          "signal": {"type": "null"},
+          "cleanup": {"const": "verified"},
+          "issues": {"maxItems": 0}
+        }
+      }
+    }
+  }
+}
