@@ -3,14 +3,16 @@ name: Editor tests (weekly)
 # Runs the editor tests in full, where pull request CI runs only part of them:
 # the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS, the
 # Extension Host test on macOS against a packaged VSIX, and the same suite
-# through VS Code Remote-SSH on Linux. The LazyVim test installs the pinned
-# starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
-# and the VS Code Server from Microsoft, without a cache. Failures here do not
-# block merges; they signal that an editor, a plugin, or a runner image now
-# behaves differently with the server. It also runs by hand before each
-# release, which needs the Remote-SSH test to pass. See
-# test/e2e/lazyvim/README.md#ci, clients/vscode/README.md#remote-ssh-test, and
-# docs/manual-testing.md for coverage.
+# through VS Code Remote-SSH on Linux. It builds the server archives from
+# source and packages the VSIX as the release workflow does, then runs the
+# jobs of editor-test-suites.yml on them, which the release workflow also runs
+# on each release's own files. The LazyVim test installs the pinned starter
+# and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH, and the
+# VS Code Server from Microsoft, without a cache. Failures here do not block
+# merges; they signal that an editor, a plugin, or a runner image now behaves
+# differently with the server. See test/e2e/lazyvim/README.md#ci,
+# clients/vscode/README.md#remote-ssh-test, and docs/manual-testing.md for
+# coverage.
 
 on:
   schedule:
@@ -20,302 +22,97 @@ on:
 permissions:
   contents: read
 
-# A group of its own, so that these runs never cancel or wait for CI.
+# A group of its own, so that these runs never cancel or wait for CI or the
+# release workflow.
 concurrency:
   group: editor-tests-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-linux:
-    name: Build (pinned Virgil, linux x86-64)
-    runs-on: ubuntu-24.04
+  build:
+    # Packages the server with the release workflow's script, without the
+    # release's tests. Apple Silicon runs the x86-64-darwin build under
+    # Rosetta 2 until Virgil supports arm64-darwin (ADR-0003).
+    name: Build and package (pinned Virgil, ${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux x86-64
+            os: ubuntu-24.04
+            target: x86-64-linux
+          - platform: macOS Apple Silicon via Rosetta 2
+            os: macos-15
+            target: x86-64-darwin
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0 # full history so --version reports a described revision
-      - name: Show pinned Virgil revision
-        run: git -C vendor/virgil log -1 --format='%H %cs %s'
-      - name: Build
-        run: make
-      - name: Version
-        run: build/virgil-lsp --version
-      - uses: actions/upload-artifact@v7
-        with:
-          name: server-linux
-          path: |
-            build/virgil-lsp
-            build/virgil-lsp-worker
-          if-no-files-found: error
-          retention-days: 3
-
-  lazyvim-linux:
-    name: LazyVim test (built server, linux, Neovim ${{ matrix.nvim }})
-    needs: build-linux
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - nvim: 0.11.6
-            sha256: 2fc90b962327f73a78afbfb8203fd19db8db9cdf4ee5e2bef84704339add89cc
-          - nvim: 0.12.6
-            sha256: 474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87
-    env:
-      NVIM_VERSION: ${{ matrix.nvim }}
-      NVIM_SHA256: ${{ matrix.sha256 }}
-    steps:
-      # The test's fixture project uses the pinned Virgil checkout's libraries.
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - name: Install Neovim ${{ matrix.nvim }}
-        run: |
-          curl --fail --location --retry 3 \
-            "https://github.com/neovim/neovim/releases/download/v$NVIM_VERSION/nvim-linux-x86_64.tar.gz" \
-            -o "$RUNNER_TEMP/nvim.tar.gz"
-          echo "$NVIM_SHA256  $RUNNER_TEMP/nvim.tar.gz" | sha256sum --check --strict
-          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Install tmux
-        run: |
-          if ! command -v tmux >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends tmux
-          fi
-      - name: Show versions
-        run: |
-          sed -n 's/^PRETTY_NAME=//p' /etc/os-release
-          nvim --version | head -n 1
-          tmux -V
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-linux
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
-        run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
-          build/virgil-lsp --version
-      - name: LazyVim test
-        run: |
-          set -o pipefail
-          mkdir "$RUNNER_TEMP/lazyvim"
-          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" build/virgil-lsp 2>&1 |
-            tee "$RUNNER_TEMP/lazyvim/run.log"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: lazyvim-linux-nvim-${{ matrix.nvim }}
-          path: ${{ runner.temp }}/lazyvim
-          if-no-files-found: warn
-          retention-days: 30
-
-  vscode-remote-ssh-linux:
-    # VS Code with Microsoft's Remote-SSH extension connects to this runner
-    # through an SSH server of the test's own on 127.0.0.1, installs the
-    # packaged VSIX there, and runs the Extension Host suite in the remote
-    # extension host, three times. The artifact holds the test's logs and
-    # manifest, never Microsoft's downloads or the test's keys.
-    name: VS Code Remote-SSH test (packaged VSIX, built server, linux)
-    needs: build-linux
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      # The test's fixture project uses the pinned Virgil checkout's libraries.
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - name: Install an SSH server and Xvfb if missing
-        # The test starts its own SSH server; it never uses or changes the
-        # runner's.
-        run: |
-          packages=()
-          [[ -x /usr/sbin/sshd ]] || packages+=(openssh-server)
-          command -v Xvfb >/dev/null || packages+=(xvfb)
-          if (( ${#packages[@]} > 0 )); then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends "${packages[@]}"
-          fi
-      - name: Create the SSH server's privilege separation directory if missing
-        # OpenSSH 9.6 may refuse to start without it, even as the runner's
-        # user. The runner's SSH service creates it only when it runs.
-        run: |
-          [[ -d /run/sshd ]] || sudo install -d -m 0755 /run/sshd
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-linux
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
-        run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
-          build/virgil-lsp --version
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
-      - name: Show versions
-        run: |
-          sed -n 's/^PRETTY_NAME=//p' /etc/os-release
-          node --version
-          ssh -V
-          command -v Xvfb
-          grep -m 1 "VSCODE_VERSION = " clients/vscode/test/e2e/run.cjs
-          grep -m 1 "id: 'ms-vscode-remote.remote-ssh'," clients/vscode/test/e2e/remote-ssh/run.cjs
-      - name: Install client dependencies from the lockfile
-        working-directory: clients/vscode
-        run: npm ci
-      - name: Package the VSIX
-        working-directory: clients/vscode
-        run: |
-          npm run package
-          mkdir "$RUNNER_TEMP/remote-ssh"
-          cp virgil-lsp-vscode-*.vsix "$RUNNER_TEMP/remote-ssh/"
-      - name: Remote-SSH test against the packaged VSIX
-        working-directory: clients/vscode
-        run: |
-          set -o pipefail
-          npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-*.vsix --repeat 3 \
-            --out "$RUNNER_TEMP/remote-ssh/results" 2>&1 | tee "$RUNNER_TEMP/remote-ssh/run.log"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: vscode-remote-ssh-linux
-          path: ${{ runner.temp }}/remote-ssh
-          if-no-files-found: warn
-          retention-days: 30
-
-  build-macos:
-    # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
-    # supports arm64-darwin (ADR-0003).
-    name: Build (pinned Virgil, macOS Apple Silicon via Rosetta 2)
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          fetch-depth: 0
       - name: Install Rosetta 2
+        if: runner.os == 'macOS'
         run: sudo softwareupdate --install-rosetta --agree-to-license
       - name: Show host and pinned Virgil revision
         run: |
           uname -sm
           vendor/virgil/bin/dev/sense_host
           git -C vendor/virgil log -1 --format='%H %cs %s'
-      - name: Build
-        run: make
-      - name: Version
+      - name: Package
         run: |
-          build/virgil-lsp --version
-          file build/virgil-lsp
+          scripts/package-release.sh build/release
+          cat build/release/*.manifest.json
       - uses: actions/upload-artifact@v7
         with:
-          name: server-macos
-          path: |
-            build/virgil-lsp
-            build/virgil-lsp-worker
+          name: archive-${{ matrix.target }}
+          path: build/release/
           if-no-files-found: error
           retention-days: 3
 
-  lazyvim-macos:
-    name: LazyVim test (built server, macOS Apple Silicon via Rosetta 2, Homebrew Neovim)
-    needs: build-macos
-    runs-on: macos-15
-    timeout-minutes: 20
+  vsix:
+    name: Package the VS Code extension
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      file: ${{ steps.package.outputs.file }}
+      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - name: Install Rosetta 2
-        run: sudo softwareupdate --install-rosetta --agree-to-license
-      - name: Install Neovim and tmux (Homebrew)
-        run: brew install neovim tmux
-      - name: Show versions
-        run: |
-          sw_vers
-          uname -sm
-          nvim --version | head -n 1
-          tmux -V
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-macos
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
-        run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
-          build/virgil-lsp --version
-      - name: LazyVim test
-        run: |
-          set -o pipefail
-          mkdir "$RUNNER_TEMP/lazyvim"
-          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" build/virgil-lsp 2>&1 |
-            tee "$RUNNER_TEMP/lazyvim/run.log"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: lazyvim-macos
-          path: ${{ runner.temp }}/lazyvim
-          if-no-files-found: warn
-          retention-days: 30
-
-  vscode-vsix-macos:
-    # CI runs the Extension Host test on macOS only on the extension from
-    # source; this job packages the VSIX and runs it on the installed copy.
-    # macOS needs no virtual display.
-    name: VS Code Extension Host test (installed VSIX, built server, macOS Apple Silicon via Rosetta 2)
-    needs: build-macos
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - name: Install Rosetta 2
-        run: sudo softwareupdate --install-rosetta --agree-to-license
-      - uses: actions/download-artifact@v8
-        with:
-          name: server-macos
-          path: build
-      - name: Restore executable permissions
-        # Artifacts don't preserve file permissions.
-        run: |
-          chmod +x build/virgil-lsp build/virgil-lsp-worker
-          build/virgil-lsp --version
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: clients/vscode/package-lock.json
-      - name: Show versions
-        run: |
-          sw_vers
-          uname -sm
-          node --version
-          grep -m 1 "VSCODE_VERSION = " clients/vscode/test/e2e/run.cjs
-      - name: Install client dependencies from the lockfile
+      - name: Install dependencies from the lockfile
         working-directory: clients/vscode
         run: npm ci
+      - name: Record the server's version, which names the archives
+        id: version
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
       - name: Package the VSIX
+        id: package
         working-directory: clients/vscode
         run: |
           npm run package
-          mkdir "$RUNNER_TEMP/vscode"
-          cp virgil-lsp-vscode-*.vsix "$RUNNER_TEMP/vscode/"
-      - name: Extension Host test against the installed VSIX
-        working-directory: clients/vscode
-        run: |
-          set -o pipefail
-          npm run test:e2e -- --vsix virgil-lsp-vscode-*.vsix 2>&1 | tee "$RUNNER_TEMP/vscode/test.log"
+          file=virgil-lsp-vscode-$(node -p 'require("./package.json").version').vsix
+          sha256=$(sha256sum "$file" | cut -d ' ' -f 1)
+          echo "$sha256  $file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
-        if: always()
         with:
-          name: vscode-vsix-macos
-          path: ${{ runner.temp }}/vscode
-          if-no-files-found: warn
-          retention-days: 30
+          name: vsix
+          path: clients/vscode/${{ steps.package.outputs.file }}
+          if-no-files-found: error
+          retention-days: 3
+
+  editor-tests:
+    name: Editor tests
+    needs: [build, vsix]
+    uses: ./.github/workflows/editor-test-suites.yml
+    with:
+      version: ${{ needs.vsix.outputs.version }}
+      vsix-file: ${{ needs.vsix.outputs.file }}
+      vsix-sha256: ${{ needs.vsix.outputs.sha256 }}

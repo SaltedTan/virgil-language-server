@@ -5,10 +5,13 @@ name: Release
 
 # A version tag builds, tests, packages, and smoke-tests the server archives on
 # both supported hosts, packages the VS Code extension and tests that VSIX
-# against the Linux archive's server, writes SHA256SUMS, and publishes them as
-# a GitHub prerelease. Running the workflow by hand, or on a pull request that
-# changes the release files, is a dry run: the same jobs without publishing,
-# with the release files kept as a workflow artifact. See docs/releasing.md.
+# against the Linux archive's server, runs the editor tests of
+# editor-test-suites.yml on those archives and that VSIX (the LazyVim test on
+# Linux and macOS, the Extension Host test on macOS, and the Remote-SSH test on
+# Linux), writes SHA256SUMS, and publishes them as a GitHub prerelease. Running
+# the workflow by hand, or on a pull request that changes the release files or
+# the editor tests, is a dry run: the same jobs without publishing, with the
+# release files kept as a workflow artifact. See docs/releasing.md.
 
 on:
   push:
@@ -17,20 +20,26 @@ on:
   # that change the release path dry-run it before it is merged.
   pull_request:
     paths:
+      - .github/workflows/editor-test-suites.yml
       - .github/workflows/release.yml
       - clients/vscode/.vscodeignore
       - clients/vscode/package-lock.json
       - clients/vscode/package.json
+      - clients/vscode/test/e2e/**
       - scripts/check-release.sh
       - scripts/check-vsix.py
       - scripts/package-release.sh
       - scripts/release-notes.py
       - scripts/smoke-test-release.sh
+      - test/e2e/lazyvim/**
+      - test/e2e/nvim/fixture/**
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# The editor tests' jobs run under this group too; the weekly editor tests
+# workflow has a group of its own.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -206,9 +215,21 @@ jobs:
           path: clients/vscode/${{ steps.package.outputs.file }}
           if-no-files-found: error
 
+  editor-tests:
+    # The jobs that the weekly editor-tests.yml also runs, here on this run's
+    # own files: the build jobs' archives and the vsix job's VSIX, which they
+    # check against its recorded SHA-256. They never build or package again.
+    name: Editor tests
+    needs: [check, build, vsix]
+    uses: ./.github/workflows/editor-test-suites.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+      vsix-file: ${{ needs.vsix.outputs.file }}
+      vsix-sha256: ${{ needs.vsix.outputs.sha256 }}
+
   checksums:
     name: Write and verify SHA256SUMS
-    needs: [check, build, vsix]
+    needs: [check, build, vsix, editor-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -251,7 +272,7 @@ jobs:
 
   publish:
     name: Publish prerelease
-    needs: [check, build, vsix, checksums]
+    needs: [check, build, vsix, editor-tests, checksums]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

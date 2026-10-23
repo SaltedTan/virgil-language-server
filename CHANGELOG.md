@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - The [LazyVim test](test/e2e/lazyvim/README.md#ci) now runs in CI on Linux for every pull request as an advisory check, and weekly on Linux and macOS. The weekly workflow also runs the [Extension Host test](clients/vscode/README.md#extension-host-test) on an installed VSIX on macOS.
+- The [release workflow](docs/releasing.md#how-the-workflow-works) now runs the editor tests on each release's own archives and VSIX, and publishes only if they pass: the LazyVim test on Linux with Neovim 0.11.6 and 0.12.6 and on macOS, the Extension Host test on macOS, and the Remote-SSH test on Linux. The weekly editor tests workflow runs the same jobs on archives and a VSIX that it builds, and a release no longer needs a separate run of it ([Making a release](docs/releasing.md#making-a-release)).
 
 ### Fixed
 
