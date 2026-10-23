@@ -16,21 +16,23 @@ const KEEPER = path.join(__dirname, 'keeper.cjs');
 const KEEPER_REPLY_MS = 1000;
 
 // A process's state, parent, process group, and start time; undefined if it
-// has gone. On Linux they are the third, fourth, fifth, and 22nd fields of
-// /proc/<pid>/stat, and the start time is in clock ticks after boot;
-// elsewhere ps gives them, and the start time only to the second.
+// has gone, null if inaccessible. On Linux they are the third, fourth, fifth,
+// and 22nd fields of /proc/<pid>/stat, and the start time is in clock ticks
+// after boot; elsewhere ps gives them, and the start time only to the second.
 function processInfo(pid) {
   if (process.platform !== 'linux') return psTable(['-p', String(pid)]).find((p) => p.pid === Number(pid));
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
     return { pid: Number(pid), state: fields[0], ppid: Number(fields[1]), group: Number(fields[2]), start: fields[19] };
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined;
+    if (['EACCES', 'EPERM'].includes(error.code)) return null;
+    throw error;
   }
 }
 
-// Every process, as processInfo gives it, and whether all listed PIDs were read.
+// Every readable process, and whether no listed PID disappeared.
 function processTable() {
   if (process.platform !== 'linux') return { processes: psTable(['-A']), complete: true };
   let complete = true;
@@ -38,7 +40,7 @@ function processTable() {
     if (!/^[0-9]+$/.test(name)) return [];
     const info = processInfo(name);
     if (info === undefined) complete = false;
-    return info === undefined ? [] : [info];
+    return info == null ? [] : [info];
   });
   return { processes, complete };
 }
@@ -148,7 +150,7 @@ function pidfdSupport() {
 // what happened, as PIDFD_SIGNAL does, or "failed" and the error's code.
 function checkedSignal({ pid, start }, name) {
   const info = processInfo(pid);
-  if (info === undefined || info.state === 'Z') return 'gone';
+  if (info == null || info.state === 'Z') return 'gone';
   if (info.start !== start) return 'other';
   try {
     process.kill(pid, name);
@@ -216,7 +218,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   const requested = [];
   // Whether the keeper has failed to answer a request in time.
   let unresponsive = false;
-  let lost = leader === undefined;
+  let lost = leader == null;
   let killed = false;
   let reported = false;
   let keeperGone = false;
@@ -228,7 +230,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // which the keeper started.
   const led = () => {
     const info = processInfo(number);
-    return info !== undefined && info.start === leader.start && info.ppid === leader.ppid;
+    return leader != null && info != null && info.start === leader.start && info.ppid === leader.ppid;
   };
   const report = (result) => {
     if (reported) return;
@@ -266,7 +268,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   const signalSeen = (name, alsoKeeper = false) => {
     look();
     const targets = [...seen].map(([pid, start]) => ({ pid, start }));
-    if (alsoKeeper && leader !== undefined && led()) targets.push({ pid: number, start: leader.start });
+    if (alsoKeeper && led()) targets.push({ pid: number, start: leader.start });
     signalProcesses(targets, name);
   };
   // The keeper hasn't answered the first of the requests in time, so it can't

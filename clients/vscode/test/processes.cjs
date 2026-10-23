@@ -92,6 +92,30 @@ test('the pidfd helper\'s answer decides whether signals go through pidfds', () 
   }
 });
 
+for (const code of ['EACCES', 'EPERM']) {
+  test(`identity-checked signals skip a process whose stat returns ${code}`, () => {
+    const table = new Map([[99, { start: '100' }]]);
+    const proc = fakeProc(table);
+    proc.readFileSync = () => { throw Object.assign(new Error(code), { code }); };
+    const signals = [];
+    const fake = fakeProcesses(table, { proc, kill: (...args) => signals.push(args) });
+    assert.deepEqual(fake.signalProcesses([{ pid: 99, start: '100' }], 'SIGTERM'), ['gone']);
+    assert.deepEqual(signals, []);
+  });
+}
+
+for (const code of ['EIO', undefined]) {
+  test(`process stat lookups and scans surface unexpected errors (${code})`, () => {
+    const table = new Map([[99, { start: '100' }]]);
+    const proc = fakeProc(table);
+    const error = Object.assign(new Error('stat failed'), { code });
+    proc.readFileSync = () => { throw error; };
+    const fake = fakeProcesses(table, { proc });
+    assert.throws(() => fake.processInfo(99), (caught) => caught === error);
+    assert.throws(() => fake.processTable(), (caught) => caught === error);
+  });
+}
+
 test('without /proc, processes and their start times come from ps, and signals follow a check', () => {
   const start = 'Thu Oct 23 17:13:01 2026';
   const table = new Map([[10, { start, group: 10 }], [11, { start, group: 10, state: 'Z+' }], [12, { start: 'Thu Oct 23 17:14:02 2026', group: 12 }]]);
@@ -382,7 +406,30 @@ function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [],
 }
 
 for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
-  for (const state of ['gone', 'Z']) {
+  for (const code of ['EACCES', 'EPERM']) {
+    test(`${file} completes successfully with a foreign stat entry returning ${code}`, async () => {
+      const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [99, { start: '200', group: 99 }]]);
+      const proc = fakeProc(table);
+      const read = proc.readFileSync;
+      proc.readFileSync = (name) => {
+        if (name === '/proc/99/stat') throw Object.assign(new Error(code), { code });
+        return read(name);
+      };
+      const run = localRunGroup(table, { file, proc });
+      run.keeper.command(51);
+      table.delete(51);
+      run.keeper.exit(0, null);
+      run.keeper.close();
+      const result = await run.result();
+      assert.equal(result?.code, 0);
+      assert.equal(result.stopped, undefined);
+      assert.equal(run.keeper.released, 'release\n');
+      assert.deepEqual(run.signals, []);
+      assert.equal(table.has(99), true);
+    });
+  }
+
+  for (const state of ['ENOENT', 'ESRCH', 'Z']) {
     test(`${file} rescans when a listed helper forks and becomes ${state} before its stat is read`, async () => {
       const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }]]);
       const proc = fakeProc(table);
@@ -392,8 +439,11 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
         if (racing && name === '/proc/52/stat') {
           racing = false;
           table.set(53, { start: '120', group: 50, on: () => table.delete(53) });
-          if (state === 'gone') table.delete(52);
-          else table.get(52).state = 'Z';
+          if (state === 'Z') table.get(52).state = 'Z';
+          else {
+            table.delete(52);
+            if (state === 'ESRCH') throw Object.assign(new Error(state), { code: state });
+          }
         }
         return read(name);
       };
