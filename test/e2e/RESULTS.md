@@ -6,7 +6,7 @@ The editor tests give each of their checks a stable ID, and will record what eac
 - [`results-v1.schema.json`](results-v1.schema.json), the JSON Schema of version 1 of the result events.
 - [`test_coverage.py`](test_coverage.py), which `make test` runs, checks that the two files are consistent.
 
-The tests don't write results yet; they still print their `PASS` and `FAIL` lines. Writers in the tests, a validator and renderer, and generated tables for the new release in `docs/manual-testing.md` come in later changes, which follow this page's rules. Past results and prose stay hand-written.
+The tests don't write results yet; they still print their `PASS` and `FAIL` lines. [`scripts/editor-results.py`](../../scripts/editor-results.py) [validates a stream](#validating-a-stream) against both files. Writers in the tests, a renderer, and generated tables for the new release in `docs/manual-testing.md` come in later changes, which follow this page's rules. Past results and prose stay hand-written.
 
 ## Check IDs
 
@@ -82,20 +82,30 @@ Only the outer launcher writes the stream, such as `run.sh` or `run.cjs`; code i
 - `seq`, 0 for the `run-start`, then counting up by one;
 - `time`, in UTC: when the check ended for a `check` event, or when the event was written for `run-start` and `run-end`.
 
-`run-start` comes first. It names the `suite`, the matrix `setup`, the `lane`, the `purpose` (`release`, `development`, `compatibility`, `canary` for unreviewed newer editor or plugin versions, or `demo` for test data), the `release` it is evidence for, the `command`, the SHA-256 of `coverage.json`, and `expected`: every planned observation, sorted. The plan is each check of the suite, in each of its profiles that the run includes, if its condition holds, once per repetition of a repeated profile. `provenance` records the server's `--version` output and SHA-256s, the archive or VSIX, the checkout, the editor, the client and the host, the transport, the pinned versions, each profile's configuration, and the fixture and Virgil root; a tree digest is the SHA-256 of LF-terminated `<sha256>  <path>` lines, sorted by path relative to the tree's root, with `link <target>` in place of the file digest for a symbolic link, as the Remote-SSH test computes it. A manual run's `attestation` names the person and their statement; other runs have none.
+`run-start` comes first. It names the `suite`, the matrix `setup`, the `lane`, the `purpose` (`release`, `development`, `compatibility`, `canary` for unreviewed newer editor or plugin versions, or `demo` for test data), the `release` it is evidence for, the `command`, the SHA-256 of `coverage.json`, and `expected`: every planned observation, sorted. The plan is each check of the suite, in each of its profiles that the run includes, if its condition holds, once per repetition of a repeated profile. `provenance` records the server's `--version` output and SHA-256s, the archive or VSIX, the checkout, the editor, the client and the host, the transport, the pinned versions, each profile's configuration, and the fixture and Virgil root; a tree digest is the SHA-256 of LF-terminated `<sha256>  <path>` lines, sorted by path relative to the tree's root, with `link <target>` in place of the file digest for a symbolic link, as the Remote-SSH test computes it. The client's and the host's `os` are the setup's. `configurationSha256` has a digest for each profile in `expected` but `wrapper`, and a workaround profile's digest differs from every other profile's. A manual run's `attestation` names the person and their statement; other runs have none.
 
-If a prerequisite check fails before provenance can be obtained, exactly these fields may use `{"value": null, "unavailable": "<reason>"}` instead of their normal value: `provenance.server.versionText`, `provenance.server.target`, `provenance.server.sha256`, `provenance.server.workerSha256`, and `provenance.fixtureSha256`. Both members are required, and the reason must be a nonempty string explaining why the value could not be obtained. For example, a missing worker prevents obtaining `workerSha256`, and a failure before fixture copying prevents obtaining `fixtureSha256`. Every other field retains its existing form. A run with any unavailable provenance cannot pass. The stream validator in the next PR must enforce this across `run-start` and `run-end`; a single-event schema cannot see the run's outcome.
+If a prerequisite check fails before provenance can be obtained, exactly these fields may use `{"value": null, "unavailable": "<reason>"}` instead of their normal value: `provenance.server.versionText`, `provenance.server.target`, `provenance.server.sha256`, `provenance.server.workerSha256`, and `provenance.fixtureSha256`. Both members are required, and the reason must be a nonempty string explaining why the value could not be obtained. For example, a missing worker prevents obtaining `workerSha256`, and a failure before fixture copying prevents obtaining `fixtureSha256`. Every other field retains its existing form. A run with any unavailable provenance cannot pass. The [validator](#validating-a-stream) enforces this across `run-start` and `run-end`, since a single-event schema cannot see the run's outcome.
 
 A `check` reports one observation:
 
-- `status` is `pass`, `fail`, `xfail` (the expected failure), `xpass` (an expected failure that passed), or `skip` (not run, because an earlier check that it needs failed). Every status but `pass` has a `reason`.
+- `status` is `pass`, `fail`, `xfail` (the expected failure), `xpass` (an expected failure that passed), or `skip` (not run, because an earlier check that it needs failed, so a `fail` comes before it in the stream, in any profile or iteration). Every status but `pass` has a `reason`.
 - `level` is the check's level in the manifest.
 - `observation` is what the check observed, whatever its status; `failureCode` is a short, stable code for how it failed.
 - `expectation` names the expected-failure rule, for `xfail` and `xpass` only.
 
-`run-end` comes last, written only after the editor has exited or been stopped at its deadline, and the launcher has finished its own checks and teardown. It says whether the run is `complete`, its `status` (`pass`, `fail`, `aborted`, or `unavailable`), the counts of expected and reported observations and of each status, the exit code or signal, whether the `cleanup` was verified, and any `issues` outside the checks. A run passes only if it is complete, every planned observation has exactly one `check`, none failed, was skipped, or passed unexpectedly, it exited with 0 and no signal, and the cleanup was verified.
+`run-end` comes last, written only after the editor has exited or been stopped at its deadline, and the launcher has finished its own checks and teardown. It says whether the run is `complete` (every planned observation has its `check`), its `status` (`pass`, `fail`, `aborted`, or `unavailable`), the counts of expected and reported observations and of each status, the exit code or signal, whether the `cleanup` was verified, and any `issues` outside the checks. A run passes if, and only if, it is complete, every planned observation has exactly one `check`, none failed, was skipped, or passed unexpectedly, it exited with 0 and no signal, the cleanup was verified, it has no `issues`, and none of its provenance is unavailable: its `status` is `pass` exactly then.
 
-A stream is valid only if it has one `run-start` first and one `run-end` last, with the same `runId`, `seq` counts without gaps, `expected` is the manifest's plan, no observation is missing, repeated, or unplanned, each `level` is the manifest's, and the counts agree with the events. A missing observation is never a pass. A killed run has no `run-end`, and its stream is incomplete.
+A stream is valid only if it has one `run-start` first and one `run-end` last, with the same `runId`, `seq` counts without gaps, `expected` is the manifest's plan, no observation is repeated or unplanned, each `level` is the manifest's, `complete` is true exactly when no observation is missing, and the counts agree with the events. A missing observation is never a pass. A killed run has no `run-end`, and its stream is incomplete.
+
+The `run-start` doesn't say which conditions held or which profiles ran, so `expected` is the manifest's plan if:
+
+- each key's check is one of the suite's, in one of the check's profiles, and the keys are sorted by `id`, `profile`, then `iteration`, comparing strings by code point, without duplicates;
+- for each profile in `expected`, every check of the suite in that profile is there, apart from those with a condition;
+- of each pair of alternatives, the run plans one side's checks, all of them, and none of the other side's; it plans neither only if a side has no checks in the run's profiles;
+- a condition without an alternative is planned for all of its checks in the run's profiles or for none of them, and the `vsix` checks, if the run's profiles have any, are planned exactly when `provenance.clientMode` is `vsix`;
+- a repeated profile has iterations 1 to N, each with all of its checks, with the same N for every repeated profile of the run, and any other profile has iteration 1 only.
+
+Which profiles and repetitions a release requires comes with the release gate.
 
 ## Expected failures and workaround profiles
 
@@ -105,12 +115,28 @@ The only expected failure, `noice-1074-7bfd942`, is the missing-root warning in 
 - the warning wasn't observed, with the `failureCode` `warning-not-observed`;
 - `lazyvim.startup.ui-ready`, `lazyvim.configuration.rootless-attach`, and `lazyvim.configuration.missing-root` passed in the same profile and iteration.
 
-If the warning is observed there, it is an `xpass`, which fails the run, so that the plugin update gets reviewed. The `noroot-noice-workaround` profile, with noice's LSP message handler turned off, is a separate profile with its own configuration digest: every check in it must pass, and its passes never count for the stock configuration. A lock update that changes noice.nvim changes the rule with it.
+If the warning is observed there, it is an `xpass`, which fails the run, so that the plugin update gets reviewed. A stream that records a `pass` there, or a `fail` with that `failureCode` where all three hold, is invalid. The `noroot-noice-workaround` profile, with noice's LSP message handler turned off, is a separate profile with its own configuration digest: every check in it must pass, and its passes never count for the stock configuration. A lock update that changes noice.nvim changes the rule with it.
+
+## Validating a stream
+
+`scripts/editor-results.py validate` checks streams, each of one run, against `coverage.json` and `results-v1.schema.json` in this directory, or the files that `--manifest` and `--schema` name, by the rules above:
+
+```sh
+python3 scripts/editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
+```
+
+It reads the schema itself, with draft 2020-12's meaning for the keywords that the schema uses, and refuses a schema with any other keyword. A `pattern` is an ECMA-262 regular expression, an `integer` is written without a fraction or an exponent, and a `time`'s date must exist. It prints a line for each stream: `valid`, with whether the run passed and the count of each status, or `invalid`, with the line of the first error it finds. It exits with:
+
+- 0 if every stream is valid and its run passed;
+- 1 if every stream is valid, but a run failed, was aborted, or was unavailable;
+- 2 if a stream is invalid, or the manifest or the schema can't be used.
+
+[`test_editor_results.py`](test_editor_results.py), which `make test` runs, builds a passing stream for each suite from the manifest, and breaks each rule in turn.
 
 ## Adding a check
 
 1. Choose an ID as [above](#check-ids), and add the check to `checks` with the suites and profiles that run it, its level, its condition, and a description of what it asserts.
 2. Add it to the matrix cell of its feature for each automated setup whose suite runs it, and to the checklist steps it covers; remove the gaps that it now covers, and update each cell's `level`.
-3. Run `python3 test/e2e/test_coverage.py`, or `make test`.
+3. Run `python3 test/e2e/test_coverage.py` and `python3 test/e2e/test_editor_results.py`, or `make test`.
 
-The test checks that the files parse; that keys and IDs are unique and well formed, with known areas, suites, profiles, levels, and conditions; that each level has its wording, as the schema has it; that no required check is manual; that every cell of every setup is mapped, not covered, or out of scope; that the checklist's steps are 1 to 17 and each maps to checks, is not covered, or is out of scope; that every check of a feature is in its cells; that each gap is used; that the expected-failure rule is the approved warning-only exception, with its check, plugin, exact commit and issue URL, failure code, profiles, and prerequisites; that unavailable prerequisite provenance requires a reason; that a passing `run-end` has no failures, unexpected passes, or skips; and that the schema's references resolve. It reads only the two files, not the tests that they describe, so keeping `source` and the descriptions true is the reviewer's job.
+`test_coverage.py` checks that the files parse; that keys and IDs are unique and well formed, with known areas, suites, profiles, levels, and conditions; that each level has its wording, as the schema has it; that no required check is manual; that every cell of every setup is mapped, not covered, or out of scope; that the checklist's steps are 1 to 17 and each maps to checks, is not covered, or is out of scope; that every check of a feature is in its cells; that each gap is used; that the expected-failure rule is the approved warning-only exception, with its check, plugin, exact commit and issue URL, failure code, profiles, and prerequisites; that unavailable prerequisite provenance requires a reason; that a passing `run-end` has no failures, unexpected passes, or skips; and that the schema's references resolve. It reads only the two files, not the tests that they describe, so keeping `source` and the descriptions true is the reviewer's job.
