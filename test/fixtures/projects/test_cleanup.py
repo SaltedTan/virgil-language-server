@@ -6,6 +6,7 @@ being removed, after passing and failing test runs."""
 from contextlib import contextmanager
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -42,7 +43,6 @@ sys.exit(status)
 # The command that make's run-unit-tests recipe wraps in the test below. It
 # records the modes it sees so the assertion does not depend on output parsing.
 STAND_IN = """\
-#!{python}
 import json
 import os
 import stat
@@ -58,6 +58,12 @@ bad = {{path: mode for path, mode in modes.items() if mode != 0}}
 if bad:
     sys.exit(f"accessible while running: {{bad}}")
 sys.exit({status})
+"""
+# Runs the stand-in through a shell, not a shebang naming the interpreter, so an
+# interpreter path with spaces or past the kernel's shebang limit still works.
+TRAMPOLINE = """\
+#!/bin/sh
+exec {python} {script} "$@"
 """
 
 
@@ -85,13 +91,20 @@ class FixtureCleanupTest(unittest.TestCase):
 
     def stand_in(self, directory, build, status):
         report = directory / f"stand-in-{status}.json"
-        script = directory / f"stand-in-{status}"
-        script.write_text(
+        source = directory / f"stand-in-{status}.py"
+        source.write_text(
             STAND_IN.format(
-                python=sys.executable,
                 paths=[str(path) for path in self.restricted(build)],
                 report=str(report),
                 status=status,
+            ),
+            encoding="utf-8",
+        )
+        script = directory / f"stand-in-{status}"
+        script.write_text(
+            TRAMPOLINE.format(
+                python=shlex.quote(sys.executable),
+                script=shlex.quote(str(source)),
             ),
             encoding="utf-8",
         )
