@@ -7,7 +7,7 @@
 // executables; archive checks also run tar in a real process group.
 
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
@@ -178,11 +178,12 @@ test('a command runs under a keeper that leads its process group, with only its 
   assert.notEqual(group, pid);
   assert.equal(group, parent);
   assert.equal(input, 'input');
-  // Sort numerically: ls's own directory descriptor, if any, can sort
-  // lexically before 2 (for example, 142).
-  const descriptors = result.stderr.trim().split(/\s+/).map(Number).sort((a, b) => a - b);
-  assert.deepEqual(descriptors.slice(0, 3), [0, 1, 2]);
-  assert.ok(descriptors.length <= 4, result.stderr);
+  // The environment may already pass open descriptors to every child. The
+  // keeper must add none of its private pipes to a direct launch's set.
+  const direct = spawnSync('sh', ['-c', script], { input: 'input\n', encoding: 'utf8' });
+  assert.equal(direct.status, 0, direct.stderr);
+  const descriptors = (stderr) => stderr.trim().split(/\s+/).map(Number).sort((a, b) => a - b);
+  assert.deepEqual(descriptors(result.stderr), descriptors(direct.stderr));
 });
 
 test('a command\'s process group is stopped by its keeper, never by the runner with its number', async () => {
