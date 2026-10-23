@@ -1,6 +1,6 @@
-Content-Length: 152
+Content-Length: 249
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":false}}}}}Content-Length: 219
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":false,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}}}}}}Content-Length: 219
 
 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///not-on-disk/flat.v3","languageId":"virgil","version":1,"text":"type V {\n  case A(x: int);\n}\ncomponent C {\n  def f() {}\n}"}}}Content-Length: 127
 

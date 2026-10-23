@@ -801,6 +801,10 @@ def test_members_items(t: Tester) {
 	result = s.result(t, complete0(t, s, inScale("\t\tvar x = int.$max;")));
 	t.assert_string("def max: int", stringAt(itemOf(result, "max"), "detail"));
 	t.asserti(5, intAt(itemOf(result, "max"), "kind"));
+	// An enum case is an EnumMember, which the session's
+	// completionItemKind declares.
+	result = s.result(t, complete0(t, s, inScale("\t\tvar c = Color.$RED;")));
+	t.asserti(20, intAt(itemOf(result, "RED"), "kind"));
 	s.server.close();
 }
 // A text that does not parse is repaired after the ".", as a scope query's

@@ -340,6 +340,10 @@ class LspServer {
 		var documentSymbol = member(textDocument, "documentSymbol");
 		documentSymbols.hierarchy = documentSymbol != null
 			&& documentSymbol["hierarchicalDocumentSymbolSupport"] == JsonValue.Bool(true);
+		documentSymbols.clientKinds = LspSymbolKind.symbols(member(documentSymbol, "symbolKind"));
+		var workspaceSymbol = member(member(member(params, "capabilities"), "workspace"), "symbol");
+		workspaceSymbols.clientKinds = LspSymbolKind.symbols(member(workspaceSymbol, "symbolKind"));
+		completion.clientKinds = LspSymbolKind.completions(member(member(textDocument, "completion"), "completionItemKind"));
 		var workspaceEdit = member(member(member(params, "capabilities"), "workspace"), "workspaceEdit");
 		rename.documentChanges = workspaceEdit != null && workspaceEdit["documentChanges"] == JsonValue.Bool(true);
 		var renaming = member(textDocument, "rename");

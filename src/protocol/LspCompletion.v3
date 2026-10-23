@@ -292,6 +292,8 @@ class LspCompletion extends LspQueryRequests {
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"
 	def CLASS_KIND = 7;	// CompletionItemKind.Class, for builtin types
 	def MODULE_KIND = 9;	// CompletionItemKind.Module, for System
+	// The client's textDocument.completion.completionItemKind.
+	var clientKinds = LspSymbolKind.completions(null);
 
 	new(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) super(store, projects, send, "completion") { }
 
@@ -424,7 +426,7 @@ class LspCompletion extends LspQueryRequests {
 		edit["range"] = range;
 		edit["newText"] = JsonValue.String(label);
 		item["label"] = JsonValue.String(label);
-		item["kind"] = JsonValue.Int(kind);
+		item["kind"] = JsonValue.Int(clientKinds.send(kind));
 		if (detail != null) item["detail"] = JsonValue.String(detail);
 		if (sortText != null) item["sortText"] = JsonValue.String(sortText);
 		item["textEdit"] = JsonValue.JObject(edit);
