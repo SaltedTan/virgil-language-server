@@ -6,7 +6,7 @@ The editor tests give each of their checks a stable ID, and will record what eac
 - [`results-v1.schema.json`](results-v1.schema.json), the JSON Schema of version 1 of the result events.
 - [`test_coverage.py`](test_coverage.py), which `make test` runs, checks that the two files are consistent.
 
-The tests don't write results yet; they still print their `PASS` and `FAIL` lines. Writers in the tests, a validator and renderer, and generated tables for the new release in `docs/manual-testing.md` come in later changes, which follow this page's rules.
+The tests don't write results yet; they still print their `PASS` and `FAIL` lines. Writers in the tests, a validator and renderer, and generated tables for the new release in `docs/manual-testing.md` come in later changes, which follow this page's rules. Past results and prose stay hand-written.
 
 ## Check IDs
 
@@ -61,7 +61,7 @@ A run's lane is the ID of the CI job that ran it, such as `lazyvim-linux`, `vsco
 
 ## Coverage of the matrix and the checklist
 
-A cell's checks must all pass, in every profile and repetition that runs them; a workaround profile never counts toward a cell. A cell can hold both checks of a pair of alternatives, of which a run plans one.
+A cell's checks must all pass or satisfy the [expected-failure rule](#expected-failures-and-workaround-profiles), in every profile and repetition that runs them; a workaround profile never counts toward a cell. A cell can hold both checks of a pair of alternatives, of which a run plans one.
 
 What a cell or a checklist step doesn't cover is in its `notCovered`, as gaps. "Not covered" is an explicit label, not a pending result:
 
@@ -72,7 +72,7 @@ A cell with no checks reads "Not covered". Setups outside the automated scope ha
 
 ## Result events
 
-A run writes one stream: UTF-8 JSON Lines, one object per line, each line ending in LF, without a byte order mark or blank lines. Duplicate keys, `NaN`, and `Infinity` make a stream invalid. Every field in the schema is present; what is unknown is `null`. Logs and screens stay in files of their own, which a check can list in `artifacts` with their SHA-256.
+A run writes one stream: UTF-8 JSON Lines, one object per line, each line ending in LF, without a byte order mark or blank lines. Duplicate keys, `NaN`, and `Infinity` make a stream invalid. Every required field in the event's schema is present; unknown or inapplicable values use `null` only where the schema allows it. Logs and screens stay in files of their own, which a check can list in `artifacts` with their SHA-256.
 
 Only the outer launcher writes the stream, such as `run.sh` or `run.cjs`; code inside the editor passes its observations to it. Each event has:
 
@@ -80,7 +80,7 @@ Only the outer launcher writes the stream, such as `run.sh` or `run.cjs`; code i
 - `event`, `run-start`, `check`, or `run-end`;
 - `runId`, unique to the run, never reused for a retry;
 - `seq`, 0 for the `run-start`, then counting up by one;
-- `time`, when the event was written, in UTC.
+- `time`, in UTC: when the check ended for a `check` event, or when the event was written for `run-start` and `run-end`.
 
 `run-start` comes first. It names the `suite`, the matrix `setup`, the `lane`, the `purpose` (`release`, `development`, `compatibility`, `canary` for unreviewed newer editor or plugin versions, or `demo` for test data), the `release` it is evidence for, the `command`, the SHA-256 of `coverage.json`, and `expected`: every planned observation, sorted. The plan is each check of the suite, in each of its profiles that the run includes, if its condition holds, once per repetition of a repeated profile. `provenance` records the server's `--version` output and SHA-256s, the archive or VSIX, the checkout, the editor, the client and the host, the transport, the pinned versions, each profile's configuration, and the fixture and Virgil root; a tree digest is the SHA-256 of the sorted `<sha256>  <path>` lines of the tree's files, with `link <target>` for a symbolic link, as the Remote-SSH test computes it. A manual run's `attestation` names the person and their statement; other runs have none.
 

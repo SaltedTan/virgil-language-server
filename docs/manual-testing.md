@@ -1,6 +1,6 @@
 # Manual testing
 
-In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration, in CI on Linux, on Linux and macOS in a weekly workflow and in the release workflow, and locally. Those two workflows also run the VS Code test through Remote-SSH on Linux. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
+In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration, in CI on Linux, on Linux and macOS in a weekly workflow and in the release workflow, and locally. Those two workflows also run the VS Code test through Remote-SSH on Linux. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations for optional manual checks, how to check each feature, and the results for each release. The [editor evidence contract](../test/e2e/RESULTS.md#the-release-gate) owns release evidence requirements.
 
 ## What the automated tests cover
 
@@ -27,7 +27,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-Try each setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, workspace symbols, rename, completion, configuration changes, and restart.
+For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 
 Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS. Its steps check the features as follows: diagnostics in steps 3, 4, 6, and 7; document symbols in step 5; definition, hover, signature help, references, and workspace symbols in step 7; rename in step 8; completion in step 9; configuration changes in steps 10 to 12; and restart in step 13. Steps 1, 2, and 14 to 17 check startup, startup errors, the message trace, and recovery.
 
-For VS Code Remote-SSH, each release needs a passing automated run instead of a manual session: the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), with official VS Code and Microsoft's Remote-SSH extension, from a Linux client, against the release branch's VSIX and Linux server. The release workflow runs it on its own VSIX and Linux archive, in the dry run of the release branch and in the tag's run, and publishes only if it passes ([Making a release](releasing.md#making-a-release)). See its [coverage limits](../clients/vscode/README.md#remote-ssh-test) for the remaining manual checks. A Remote-SSH check from a Mac client to Linux, automated where possible, runs quarterly and after relevant changes, such as to the extension, the server's startup or shutdown, or the Remote-SSH test; record it under [Results](#results).
+For VS Code Remote-SSH, see the [release workflow](releasing.md#how-the-workflow-works) for the automated run and the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist) for the deferred Mac-client lane and explicit coverage gaps. Record any optional manual observations under [Results](#results).
 
 ### Neovim and LazyVim
 
