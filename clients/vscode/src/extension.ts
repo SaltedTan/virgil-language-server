@@ -4,11 +4,13 @@
 import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { clearTimeout, setTimeout } from 'node:timers';
 import * as vscode from 'vscode';
 import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
+  State,
   TransportKind,
 } from 'vscode-languageclient/node';
 
@@ -23,6 +25,8 @@ const WORKER_NAME = 'virgil-lsp-worker';
 // Files whose changes on disk the server needs to hear about: project files
 // and sources. The server registers the same watchers dynamically.
 const WATCHED_FILES = ['**/.virgil-lsp.json', '**/*.v3'];
+// Matches vscode-languageclient 10.1.2's default stop() shutdown timeout.
+const NOTIFICATION_DRAIN_TIMEOUT_MS = 2000;
 
 // A startup problem the user can fix. Its message says how.
 class StartupError extends Error {}
@@ -35,8 +39,15 @@ let queue: Promise<void> = Promise.resolve();
 class QueuedLanguageClient extends LanguageClient {
   // The client stops listening to its file watchers but doesn't dispose them.
   watchers: vscode.Disposable[] = [];
+  notificationDrainTimeout = NOTIFICATION_DRAIN_TIMEOUT_MS;
+  private readonly pendingNotifications = new Set<Promise<void>>();
 
   override start(): Promise<void> {
+    // The client also calls start before each request and notification. While
+    // it is starting or running, that call only waits for the current start,
+    // and must not wait behind a restart that stops this client. Other calls,
+    // such as automatic recovery, start a server, so they join the queue.
+    if (this.state === State.Starting || this.state === State.Running) return super.start();
     return enqueue(async () => {
       if (client === this) await this.startInQueue();
     });
@@ -44,6 +55,40 @@ class QueuedLanguageClient extends LanguageClient {
 
   startInQueue(): Promise<void> {
     return super.start();
+  }
+
+  override async sendNotification(type: any, params?: any): Promise<void> {
+    const sending = super.sendNotification(type, params);
+    if (this.state !== State.Starting && this.state !== State.Running) return sending;
+    this.pendingNotifications.add(sending);
+    try {
+      await sending;
+    } finally {
+      this.pendingNotifications.delete(sending);
+    }
+  }
+
+  async stopInQueue(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        output.warn(`Notification drain timed out (${this.pendingNotifications.size} still pending); stopping the server`);
+        resolve();
+      }, this.notificationDrainTimeout);
+    });
+    try {
+      await Promise.race([
+        (async () => {
+          while (this.pendingNotifications.size > 0) {
+            await Promise.allSettled(this.pendingNotifications);
+          }
+        })(),
+        deadline,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    await super.stop();
   }
 }
 
@@ -131,7 +176,7 @@ async function stop(): Promise<void> {
   client = undefined;
   if (running === undefined) return;
   try {
-    if (running.isRunning()) await running.stop();
+    if (running.isRunning()) await running.stopInQueue();
   } catch (error) {
     output.error(`Stopping the server failed: ${describe(error)}`);
   } finally {
