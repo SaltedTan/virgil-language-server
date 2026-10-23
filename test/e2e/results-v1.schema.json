@@ -20,6 +20,16 @@
     "nullableString": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/nonEmpty"}]},
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "nullableSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "unavailableProvenance": {
+      "description": "A prerequisite failure prevented obtaining this value; the run cannot pass.",
+      "type": "object",
+      "properties": {
+        "value": {"type": "null"},
+        "unavailable": {"$ref": "#/$defs/nonEmpty"}
+      },
+      "required": ["value", "unavailable"],
+      "additionalProperties": false
+    },
     "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "nullableCommit": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/commit"}]},
     "name": {
@@ -73,7 +83,7 @@
       "additionalProperties": false
     },
     "provenance": {
-      "description": "What was tested, with what, and where. Every field is present; what is unknown is null.",
+      "description": "What was tested, with what, and where. Every field is present. Unknown or inapplicable values use null where allowed; prerequisite failures use unavailableProvenance where allowed.",
       "type": "object",
       "properties": {
         "server": {
@@ -81,14 +91,14 @@
           "properties": {
             "versionText": {
               "description": "The output of virgil-lsp --version, verbatim.",
-              "$ref": "#/$defs/nonEmpty"
+              "oneOf": [{"$ref": "#/$defs/nonEmpty"}, {"$ref": "#/$defs/unavailableProvenance"}]
             },
             "version": {"$ref": "#/$defs/nullableString"},
             "sourceRevision": {"$ref": "#/$defs/nullableString"},
             "virgilRevision": {"$ref": "#/$defs/nullableString"},
-            "target": {"enum": ["x86-64-linux", "x86-64-darwin"]},
-            "sha256": {"$ref": "#/$defs/sha256"},
-            "workerSha256": {"$ref": "#/$defs/sha256"}
+            "target": {"oneOf": [{"enum": ["x86-64-linux", "x86-64-darwin"]}, {"$ref": "#/$defs/unavailableProvenance"}]},
+            "sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]},
+            "workerSha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]}
           },
           "required": ["versionText", "version", "sourceRevision", "virgilRevision", "target", "sha256", "workerSha256"],
           "additionalProperties": false
@@ -193,7 +203,7 @@
         },
         "fixtureSha256": {
           "description": "The tree digest of test/e2e/nvim/fixture as copied for the run.",
-          "$ref": "#/$defs/sha256"
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"$ref": "#/$defs/unavailableProvenance"}]
         },
         "virgilRootSha256": {
           "description": "The tree digest of the Virgil root's lib directory, or null for a run without a root.",

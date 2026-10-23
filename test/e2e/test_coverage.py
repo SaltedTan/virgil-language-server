@@ -4,6 +4,7 @@
 """Checks that coverage.json and results-v1.schema.json, beside this file, are
 consistent with themselves and with each other (RESULTS.md). It reads only
 those two files, never the tests that they describe."""
+import copy
 import json
 import re
 import unittest
@@ -282,6 +283,8 @@ class CoverageTest(unittest.TestCase):
             "check": "lazyvim.configuration.warning",
             "profile": "noroot",
             "plugin": "noice.nvim",
+            "commit": "7bfd942445fb63089b59f97ca487d605e715f155",
+            "issue": "https://github.com/folke/noice.nvim/issues/1074",
             "failureCode": "warning-not-observed",
             "workaroundProfile": "noroot-noice-workaround",
             "requires": {
@@ -299,9 +302,8 @@ class CoverageTest(unittest.TestCase):
                 problems.append(
                     f"{field}: {found!r}, not the approved {value!r}; the maintainer approved only "
                     "the noice.nvim missing-root exception (2026-10-23)")
-        # The commit is format-checked only, not pinned here: bumping noice.nvim's pin changes
-        # it, and pinning a new commit also means updating this rule after the XFAIL is
-        # re-verified.
+        # A noice.nvim pin bump changes coverage.json and this guard together, after the
+        # XFAIL is re-verified.
         self.assertIsInstance(rule["check"], str, "a rule names exactly one check")
         self.assertIsInstance(rule["commit"], str, "a rule names exactly one commit")
         self.assertRegex(rule["commit"], COMMIT.pattern + r"\Z")
@@ -324,6 +326,43 @@ class CoverageTest(unittest.TestCase):
         if not rule["requires"]:
             problems.append("the rule requires no checks to pass beside it")
         self.assertEqual([], problems)
+
+    def test_changed_expected_failure_identity_is_rejected(self):
+        for field, value in [("commit", "0" * 40),
+                             ("issue", "https://github.com/folke/noice.nvim/issues/1075")]:
+            with self.subTest(field=field):
+                mutant = CoverageTest("test_the_expected_failure_rule")
+                mutant.manifest = copy.deepcopy(self.manifest)
+                mutant.manifest["xfails"][0][field] = value
+                with self.assertRaisesRegex(AssertionError, "not the approved"):
+                    mutant.test_the_expected_failure_rule()
+
+    def test_unavailable_provenance_contract(self):
+        defs = self.schema["$defs"]
+        self.assertEqual({"$ref": "#/$defs/provenance"},
+                         defs["runStart"]["properties"]["provenance"])
+        self.assertEqual({
+            "type": "object",
+            "properties": {
+                "value": {"type": "null"},
+                "unavailable": {"$ref": "#/$defs/nonEmpty"},
+            },
+            "required": ["value", "unavailable"],
+            "additionalProperties": False,
+        }, {key: value for key, value in defs["unavailableProvenance"].items()
+            if key != "description"})
+        provenance = defs["provenance"]["properties"]
+        server = provenance["server"]["properties"]
+        fields = [
+            (server["versionText"], {"$ref": "#/$defs/nonEmpty"}),
+            (server["target"], {"enum": ["x86-64-linux", "x86-64-darwin"]}),
+            (server["sha256"], {"$ref": "#/$defs/sha256"}),
+            (server["workerSha256"], {"$ref": "#/$defs/sha256"}),
+            (provenance["fixtureSha256"], {"$ref": "#/$defs/sha256"}),
+        ]
+        for field, available in fields:
+            self.assertEqual([available, {"$ref": "#/$defs/unavailableProvenance"}],
+                             field["oneOf"])
 
     def test_schema_agrees_with_the_manifest(self):
         defs = self.schema["$defs"]
