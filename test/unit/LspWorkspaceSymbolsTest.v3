@@ -28,6 +28,9 @@ def X = [
 ];
 def CONFIG = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"one/*.v3\"],\"dependencies\":[\"shared/*.v3\",\"lib/*.v3\"]},{\"name\":\"two\",\"sources\":[\"two/*.v3\",\"shared/*.v3\"]}]}";
 def CONFIG_ONE = "{\"version\":1,\"projects\":[{\"name\":\"one\",\"sources\":[\"one/*.v3\"],\"dependencies\":[\"shared/*.v3\",\"lib/*.v3\"]}]}";
+// The client capabilities: every SymbolKind of LSP 3.17 for workspace symbols
+// alone, so that each kind is sent as it is, and only from this capability.
+def CAPABILITIES = "{\"workspace\":{\"symbol\":{\"symbolKind\":{\"valueSet\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}}}}";
 // Each kind of declaration, none of them used, and names that match "par"
 // exactly (Par, par), as a prefix (parse, Parser, partial), as a substring
 // (compare, SPARE), and as a subsequence (Pair, PackRow); pa and rap don't.
@@ -76,6 +79,7 @@ class WorkspaceSymbolTestSession {
 		HostOs.ignoreSigpipe();
 		var params = Strings.newMap<JsonValue>();
 		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		params["capabilities"] = JsonRpcJsonParser.new(CAPABILITIES).parseDocument();
 		server.handle(JsonRpcMessage.Request(JsonRpcId.Int(0), "initialize", JsonRpcParams.ByName(params)).encode());
 	}
 	def path(name: string) -> string { return ProjectFiles.join(base, name); }

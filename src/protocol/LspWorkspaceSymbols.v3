@@ -9,6 +9,8 @@
 class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	// The most symbols a reply holds: the first matches in rank order.
 	def MAX_RESULTS = 1000;
+	// The client's workspace.symbol.symbolKind.
+	var clientKinds = LspSymbolKind.symbols(null);
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("workspace/symbol", workspaceSymbol);
@@ -36,7 +38,7 @@ class LspWorkspaceSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		location["range"] = range(file.lines, d.range.beginOffset, d.range.endOffset);
 		var obj = Strings.newMap<JsonValue>();
 		obj["name"] = JsonValue.String(d.name);
-		obj["kind"] = JsonValue.Int(LspSymbolKind.of(d.kind));
+		obj["kind"] = JsonValue.Int(clientKinds.send(LspSymbolKind.of(d.kind)));
 		obj["location"] = JsonValue.JObject(location);
 		return JsonValue.JObject(obj);
 	}

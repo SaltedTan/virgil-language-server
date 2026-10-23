@@ -1,0 +1,11 @@
+Content-Length: 151
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true}}}}}Content-Length: 377
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///not-on-disk/outline.v3","languageId":"virgil","version":1,"text":"component C {\n  def field = \"{};\";\n  def method() { if (true) { return; } }\n}\nclass K { var field: int; }\nenum E { A, B }\nlayout L { +0 field: int; =4; }\npacking P(x: 1): 2 = 0b0x;\ntype V { case A(x: int); }"}}}Content-Length: 130
+
+{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///not-on-disk/outline.v3"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 45
+
+{"jsonrpc":"2.0","method":"exit","params":{}}

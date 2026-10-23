@@ -5,7 +5,8 @@
 // document symbols and later workspace symbols. Variants and data types are
 // classes, and file-scope methods and fields are members of the file's
 // synthetic component, so they map as a component's members do. See
-// docs/architecture.md#document-symbols.
+// docs/architecture.md#document-symbols. Each reply sends these kinds
+// through the client's LspClientKinds.
 component LspSymbolKind {
 	def of(kind: AnalysisDeclKind) -> int {
 		match (kind) {
@@ -39,6 +40,70 @@ component LspSymbolKind {
 			_ => return 1;		// Text
 		}
 	}
+	// The SymbolKind sent in place of {kind} to a client that doesn't support
+	// it, or {kind} if there is none. Each is an LSP 3.0 kind.
+	def symbolFallback(kind: int) -> int {
+		match (kind) {
+			22 => return 14;	// EnumMember: Constant
+			23 => return 5;		// Struct: Class
+			26 => return 5;		// TypeParameter: Class, since it is a type
+			_ => return kind;
+		}
+	}
+	// The CompletionItemKind sent in place of {kind}, as for symbolFallback.
+	def completionFallback(kind: int) -> int {
+		match (kind) {
+			20 => return 12;	// EnumMember: Value
+			22 => return 7;		// Struct: Class
+			25 => return 7;		// TypeParameter: Class
+			_ => return kind;
+		}
+	}
+	// The SymbolKinds that a client supports, from {capability}, its
+	// textDocument.documentSymbol.symbolKind or workspace.symbol.symbolKind,
+	// which may be null.
+	def symbols(capability: HashMap<string, JsonValue>) -> LspClientKinds {
+		return LspClientKinds.new(18, symbolFallback).read(capability);	// File to Array
+	}
+	// The CompletionItemKinds that a client supports, from {capability}, its
+	// textDocument.completion.completionItemKind, which may be null.
+	def completions(capability: HashMap<string, JsonValue>) -> LspClientKinds {
+		return LspClientKinds.new(18, completionFallback).read(capability);	// Text to Reference
+	}
+}
+
+// The kinds of one LSP enumeration, SymbolKind or CompletionItemKind, that a
+// client supports, and the kind sent for each. Without a valueSet a client
+// supports only the kinds of LSP 3.0, 1 to {initial}; with one, the integers
+// it lists. A kind it doesn't support is sent as its fallback, if the client
+// supports that. Otherwise it is sent unchanged, since a client that lists
+// its kinds handles others gracefully. See docs/architecture.md#client-kinds.
+class LspClientKinds(initial: int, fallback: int -> int) {
+	// The highest kind that LspSymbolKind gives: TypeParameter's SymbolKind.
+	def MAX_KIND = 26;
+	// The listed kinds up to MAX_KIND, indexed by kind; null without a valueSet.
+	private var listed: Array<bool>;
+
+	// Reads the valueSet of {capability}, if it is an array.
+	def read(capability: HashMap<string, JsonValue>) -> this {
+		if (capability == null || !JsonValue.JArray.?(capability["valueSet"])) return;
+		listed = Array<bool>.new(MAX_KIND + 1);
+		for (v in JsonValue.JArray.!(capability["valueSet"]).v) {
+			if (!JsonValue.Int.?(v)) continue;
+			var k = JsonValue.Int.!(v).v;
+			if (k > 0 && k <= MAX_KIND) listed[k] = true;
+		}
+	}
+	def supports(kind: int) -> bool {
+		if (listed == null) return kind > 0 && kind <= initial;
+		return kind > 0 && kind <= MAX_KIND && listed[kind];
+	}
+	// The kind sent for {kind}.
+	def send(kind: int) -> int {
+		if (supports(kind)) return kind;
+		var f = fallback(kind);
+		return if(supports(f), f, kind);
+	}
 }
 
 // Outlines parse the overlay with the language options of the document's
@@ -51,6 +116,8 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	// True if the client's initialize declared
 	// textDocument.documentSymbol.hierarchicalDocumentSymbolSupport: true.
 	var hierarchy: bool;
+	// The client's textDocument.documentSymbol.symbolKind.
+	var clientKinds = LspSymbolKind.symbols(null);
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
@@ -85,7 +152,7 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		for (sym in symbols) {
 			var obj = Strings.newMap<JsonValue>();
 			obj["name"] = JsonValue.String(sym.name);
-			obj["kind"] = JsonValue.Int(LspSymbolKind.of(sym.kind));
+			obj["kind"] = JsonValue.Int(clientKinds.send(LspSymbolKind.of(sym.kind)));
 			obj["range"] = range(map, sym.begin, sym.end);
 			obj["selectionRange"] = range(map, sym.nameBegin, sym.nameEnd);
 			var signature = if(s != null, signatureOf(s, path, sym));
@@ -112,7 +179,7 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 			location["range"] = range(map, sym.begin, sym.end);
 			var obj = Strings.newMap<JsonValue>();
 			obj["name"] = JsonValue.String(sym.name);
-			obj["kind"] = JsonValue.Int(LspSymbolKind.of(sym.kind));
+			obj["kind"] = JsonValue.Int(clientKinds.send(LspSymbolKind.of(sym.kind)));
 			obj["location"] = JsonValue.JObject(location);
 			if (container != null) obj["containerName"] = JsonValue.String(container);
 			result.put(JsonValue.JObject(obj));

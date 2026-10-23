@@ -1,6 +1,6 @@
-Content-Length: 151
+Content-Length: 248
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true}}}}}Content-Length: 377
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}}}}}}Content-Length: 377
 
 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///not-on-disk/outline.v3","languageId":"virgil","version":1,"text":"component C {\n  def field = \"{};\";\n  def method() { if (true) { return; } }\n}\nclass K { var field: int; }\nenum E { A, B }\nlayout L { +0 field: int; =4; }\npacking P(x: 1): 2 = 0b0x;\ntype V { case A(x: int); }"}}}Content-Length: 128
 

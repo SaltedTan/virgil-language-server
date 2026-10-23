@@ -96,7 +96,7 @@ def frame(msg, result_sorted=False):
 
 inputs = [
     request(1, "initialize", dict(capabilities=dict(textDocument=dict(documentSymbol=dict(
-        hierarchicalDocumentSymbolSupport=True))))),
+        hierarchicalDocumentSymbolSupport=True, symbolKind=dict(valueSet=list(range(1, 27)))))))),
     notify("textDocument/didOpen", dict(textDocument=dict(uri=URI, languageId="virgil", version=1, text=TEXT))),
     request(2, "textDocument/documentSymbol", dict(textDocument=dict(uri="file:/not-on-disk/outline.v3"))),
     notify("textDocument/didChange", dict(textDocument=dict(uri=URI, version=2), contentChanges=[dict(text="class Edited {}")])),
