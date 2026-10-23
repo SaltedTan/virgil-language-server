@@ -151,6 +151,11 @@
       "matrix": false
     },
     {
+      "id": "recovery",
+      "label": "Crash recovery",
+      "matrix": false
+    },
+    {
       "id": "keymaps",
       "label": "Key mappings",
       "matrix": false
@@ -1449,6 +1454,26 @@
       "description": "A copy of virgil-lsp without virgil-lsp-worker beside it is reported as missing its worker, and nothing starts; restoring the setting starts the server again."
     },
     {
+      "id": "vscode.recovery.restart",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The test kills the server with SIGKILL, then runs Virgil: Restart Language Server while the recovery's start is held, and nothing stops the recovering client or starts another before the hold is released. The recovered server's input starts with initialize, then has initialized, and ends with exactly one shutdown and one exit, with exit last; it gets the open bad.v3 in a didOpen before exit, on either side of shutdown, and exits with status 0. The replacement starts, the type error returns, exactly one virgil-lsp is left with no worker but its own, and no request or notification fails."
+    },
+    {
+      "id": "vscode.recovery.server-path",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The test kills the server with SIGKILL, then changes virgil.server.path back from the recovery script to the server while the recovery's start is held, and nothing stops the recovering client or starts another before the hold is released. The recovered server's input starts with initialize, then has initialized, and ends with exactly one shutdown and one exit, with exit last; it gets the open bad.v3 in a didOpen before exit, on either side of shutdown, and exits with status 0. The original server starts as the replacement, the type error returns, exactly one virgil-lsp is left with no worker but its own, and no request or notification fails."
+    },
+    {
       "id": "vscode.infrastructure.preflight",
       "suites": ["vscode"],
       "profiles": ["wrapper"],
@@ -1487,6 +1512,16 @@
       "required": true,
       "source": "clients/vscode/test/e2e/run.cjs",
       "description": "After the window closes, no virgil-lsp or virgil-lsp-worker is left in VS Code's process group within 5 seconds, and the last server exit in the log, if logged, is clean."
+    },
+    {
+      "id": "vscode.recovery.window-close",
+      "suites": ["vscode"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/run.cjs",
+      "description": "The third launch opens the fixture; the suite kills the server and ends while the recovery's start is held, which closes the window, and the script records exactly the killed server's start and the recovery's. Only the extension host's terminating log releases the start, and the client logged the recovery. The recovered server received initialize and initialized, the open bad.v3 in a didOpen before exit, exactly one shutdown and a final exit, and exited with status 0."
     },
     {
       "id": "ssh.identity.remote-host",
@@ -2267,8 +2302,8 @@
       {
         "step": 17,
         "summary": "Forced crashes, and restart, configuration changes, and closing the window during recovery.",
-        "checks": [],
-        "notCovered": ["vscode.crash-recovery"]
+        "checks": ["vscode.recovery.restart", "vscode.recovery.server-path", "vscode.recovery.window-close"],
+        "notCovered": ["ssh.window-close-recovery"]
       }
     ]
   },
@@ -2346,10 +2381,10 @@
       "planned": null
     },
     {
-      "id": "vscode.crash-recovery",
+      "id": "ssh.window-close-recovery",
       "kind": "behavior",
-      "what": "forced server crashes, and restart, configuration changes, and closing the window during recovery",
-      "planned": "https://github.com/SaltedTan/virgil-language-server/issues/185"
+      "what": "closing the window during a server's recovery through Remote-SSH, where VS Code sometimes quits before it tells the remote extension host to terminate",
+      "planned": null
     },
     {
       "id": "nvim.diagnostics-display",

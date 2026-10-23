@@ -13,7 +13,7 @@ The tests don't write results yet; they still print their `PASS` and `FAIL` line
 An ID is `<harness>.<area>.<subcase>`, in lowercase words joined by hyphens, such as `nvim.rename.apply-undo` or `lazyvim.signature.unclosed`:
 
 - The harness is `nvim` ([headless Neovim test](../../editors/nvim/README.md#headless-smoke-test)), `lazyvim` ([LazyVim test](lazyvim/README.md)), `vscode` ([Extension Host test](../../clients/vscode/README.md#extension-host-test)), `ssh` ([Remote-SSH test](../../clients/vscode/README.md#remote-ssh-test)), or `manual`.
-- The area is one of the matrix's features, in the order of its results table, or `startup`, `startup-errors`, `trace`, `shutdown`, `keymaps`, `identity`, or `infrastructure`.
+- The area is one of the matrix's features, in the order of its results table, or `startup`, `startup-errors`, `trace`, `shutdown`, `recovery`, `keymaps`, `identity`, or `infrastructure`.
 - The subcase names what the group checks.
 
 Each ID labels one existing group of assertions that pass or fail together, such as a LazyVim step, a VS Code scenario, or a launcher's check. Checks that differ get their own IDs, even for the same feature: `nvim.hover.response` and `lazyvim.hover.response` are separate. The same assertions keep one ID wherever they run: `suite.cjs`'s `vscode.*` checks run unchanged in the local and the remote extension host.
@@ -66,7 +66,7 @@ A cell's checks must all pass or satisfy the [expected-failure rule](#expected-f
 What a cell or a checklist step doesn't cover is in its `notCovered`, as gaps. "Not covered" is an explicit label, not a pending result:
 
 - A `visual` gap is what the editor shows, which automation can't observe: rendered views, popups, menus, notifications, prompts, and layout. It stays not covered.
-- A `behavior` gap is behavior that no check exercises, such as restarting the server from plain Neovim. It stays not covered until a check is added; `planned` names the issue that adds it, if any. Checklist step 17, forced crashes and recovery, has no check yet ([#185](https://github.com/SaltedTan/virgil-language-server/issues/185)).
+- A `behavior` gap is behavior that no check exercises, such as restarting the server from plain Neovim. It stays not covered until a check is added; `planned` names the issue that adds it, if any. Closing the window during a server's recovery through Remote-SSH is one: VS Code sometimes quits before it tells the remote extension host to terminate, so only the Extension Host test, which closes a local window, covers it automatically.
 
 A cell with no checks reads "Not covered". Setups outside the automated scope have no cells, and nothing requires them: WSL 2 is best effort ("Not tested (best effort)"), and Remote-SSH from a Mac client is deferred ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186), "Not tested (deferred)").
 
