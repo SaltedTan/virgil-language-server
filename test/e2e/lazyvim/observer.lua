@@ -94,10 +94,12 @@ end
 -- $VIRGIL_DRIVER_PIDS as "PID NAME", so that run.sh can check that none
 -- outlives the run wherever the server is installed. Neovim starts the server
 -- in its own process group, so it would otherwise escape a killed session.
--- A scan reads one ps listing, without waiting for it: nvim_get_proc runs ps
--- twice for each process and waits for it in a nested event loop, so with the
--- dozens of processes of a parser build, scans outlasted their interval,
--- nested in each other, and held the driver's requests past their timeouts.
+-- Neovim's own PID comes first, as "PID nvim": run.sh also stops what is left
+-- in its process group. A scan reads one ps listing, without waiting for it:
+-- nvim_get_proc runs ps twice for each process and waits for it in a nested
+-- event loop, so with the dozens of processes of a parser build, scans
+-- outlasted their interval, nested in each other, and held the driver's
+-- requests past their timeouts.
 local pids_file = vim.env.VIRGIL_DRIVER_PIDS
 if pids_file then
   local function record(pid, name)
@@ -108,6 +110,7 @@ if pids_file then
     end
   end
   local root, seen, scanning = vim.fn.getpid(), {}, false
+  record(root, "nvim")
   local function found(listing)
     local children = {}
     for line in listing:gmatch("[^\n]+") do

@@ -166,15 +166,22 @@ descendants() {
 }
 
 # Prints "PID COMMAND" for each process of the runs still running: the server
-# and worker processes that observer.lua recorded, and any process whose
-# command line holds the work directory.
+# and worker processes that observer.lua recorded; the processes in the
+# process group of each Neovim that it recorded, which keeps what Neovim
+# started, such as a parser build, also once Neovim has exited and they no
+# longer descend from it; and any process whose command line holds the work
+# directory.
 run_processes() {
   {
     cat "$work"/*.pids 2>/dev/null | while read -r pid name; do
-      ps -p "$pid" -o pid=,command= 2>/dev/null | grep virgil-lsp || true
+      if [[ $name == nvim ]]; then
+        ps -ax -o pgid=,pid=,command= | G=$pid awk '$1 == ENVIRON["G"] { sub(/^ *[0-9]+ +/, ""); print }'
+      else
+        ps -p "$pid" -o pid=,command= 2>/dev/null | grep virgil-lsp || true
+      fi
     done
     ps -ax -o pid=,command= | W=$work/ awk 'index($0, ENVIRON["W"])'
-  } | sort -u
+  } | sed 's/^ *//' | sort -u
 }
 
 # run_trees PIDS: prints the running PIDS, the processes that run_processes
@@ -504,7 +511,7 @@ run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
   local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
   local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
-  local pane_pid=''
+  local tmux_pid='' pane_pid=''
   current=$name
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
@@ -518,10 +525,10 @@ run() {
     # tmux server running until stop_processes. The script's path is an
     # argument of its own, not split by a shell.
     tmux -S "$sock" -f /dev/null set-option -g remain-on-exit on \; \
-      new-session -d -P -F '#{pane_pid}' -s "$name" -x 200 -y 50 -c "$work/project" \
+      new-session -d -P -F '#{pid} #{pane_pid}' -s "$name" -x 200 -y 50 -c "$work/project" \
       /bin/sh "$work/pane.sh"
   ) > "$work/$name.tmux"
-  read -r pane_pid < "$work/$name.tmux" || true
+  read -r tmux_pid pane_pid < "$work/$name.tmux" || true
   # The run ends once Neovim has exited and pane.sh has written its status, or
   # the pane's shell is gone without one. It doesn't wait for tmux to find the
   # pane dead: Ubuntu 24.04's tmux 3.4, built with utempter, can miss the
@@ -571,6 +578,13 @@ run() {
     echo "FAIL: processes left running after $name:"
     echo "$left" | sed 's/^/   /'
     verdict=FAIL
+  fi
+  # What else Neovim left running, such as a plugin's download, is named but
+  # doesn't fail the run: it isn't the server's.
+  left=$(run_processes | awk -v t="$tmux_pid" -v p="$pane_pid" '$1 != t && $1 != p { print "   " $0 }' || true)
+  if [[ -n $left ]]; then
+    echo "-- left running after Neovim exited, and stopped:"
+    echo "$left"
   fi
   stop_processes || verdict=FAIL
   if [[ $complete == 0 || $exit_status != 0 || $failed != 0 || $xfail != "$expected_xfail" ]]; then
