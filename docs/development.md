@@ -19,7 +19,7 @@ make test-nvim  # only the headless Neovim smoke test (see Neovim testing below)
 make clean
 ```
 
-See the [project fixtures](../test/fixtures/projects/README.md) for fixture permission handling and cleanup.
+`make test` and `make test-unit` leave the build directory removable with a plain `rm -rf` or `git worktree remove`, even after a failing test or an interrupt, with no `make clean` or `chmod` first. Two fixture directories are unreadable only while the unit tests run; the [project fixtures](../test/fixtures/projects/README.md) describe how.
 
 Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` and `-print-compiler` print the target and the Aeneas binary it would use. It accepts these overrides:
 
