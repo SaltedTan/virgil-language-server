@@ -205,7 +205,7 @@ run_processes() {
       cmd = $0
       sub(/^ *[0-9]+ +[0-9]+ +[^ ]+ +/, "", cmd)
       pid[NR] = $1; pgid[NR] = $2; command[NR] = cmd
-      if (($1 in run) && $2 == nvim[run[$1]] && $3 !~ /^Z/ && $4 == (ENVIRON["W"] run[$1] ".anchor"))
+      if (($1 in run) && $2 == nvim[run[$1]] && $3 !~ /^Z/ && cmd == (ENVIRON["W"] run[$1] ".anchor 86400"))
         counts[run[$1]] = 1
     }
     END {
@@ -610,7 +610,7 @@ run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
   local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
   local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
-  local tmux_pid='' pane_pid=''
+  local tmux_pid='' pane_pid='' anchor_pid=''
   current=$name
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
@@ -679,11 +679,10 @@ run() {
     verdict=FAIL
   fi
   # What else Neovim left running, such as a plugin's download, is named but
-  # doesn't fail the run: it isn't the server's. Its anchor isn't listed, and
-  # its name goes through the environment: on awk's command line, it would
-  # name the work directory, and be listed.
-  left=$(run_processes | A=$work/$name.anchor awk -v t="$tmux_pid" -v p="$pane_pid" \
-    '$1 != t && $1 != p && $2 != ENVIRON["A"] { print "   " $0 }' || true)
+  # doesn't fail the run: it isn't the server's. Its anchor isn't listed.
+  anchor_pid=$(awk '$2 == "nvim" { print $3; exit }' "$work/$name.pids" 2>/dev/null || true)
+  left=$(run_processes | awk -v t="$tmux_pid" -v p="$pane_pid" -v a="$anchor_pid" \
+    '$1 != t && $1 != p && $1 != a { print "   " $0 }' || true)
   if [[ -n $left ]]; then
     echo "-- left running after Neovim exited, and stopped:"
     echo "$left"
