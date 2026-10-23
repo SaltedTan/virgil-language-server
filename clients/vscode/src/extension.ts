@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import { clearTimeout, setTimeout } from 'node:timers';
 import * as vscode from 'vscode';
 import {
+  ErrorAction,
+  ErrorHandler,
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
@@ -41,6 +43,31 @@ class QueuedLanguageClient extends LanguageClient {
   watchers: vscode.Disposable[] = [];
   notificationDrainTimeout = NOTIFICATION_DRAIN_TIMEOUT_MS;
   private readonly pendingNotifications = new Set<Promise<void>>();
+
+  constructor(id: string, name: string, serverOptions: ServerOptions, clientOptions: LanguageClientOptions) {
+    // The library's default handler, created once the client exists, keeps
+    // its count of crashes for the client's whole life.
+    let defaultHandler: ErrorHandler | undefined;
+    super(id, name, serverOptions, {
+      ...clientOptions,
+      errorHandler: {
+        // The default handler stops the client on an error without a count,
+        // such as the EPIPE of a write to a server that has just died (#216),
+        // and a stopping client ignores the connection's close, which is what
+        // restarts a crashed server. A failed write destroys the server's
+        // input stream, which closes the connection at once, even if the
+        // server still runs; so does the server's exit. The close decides
+        // instead. A message from the server that the client can't parse is
+        // dropped, and the client reads on. The library still logs each
+        // error, without a notification.
+        error: () => ({ action: ErrorAction.Continue, handled: true }),
+        // The library's policy: restart, unless the server crashed 5 times in
+        // 3 minutes; then stop, with its message.
+        closed: () => defaultHandler!.closed(),
+      },
+    });
+    defaultHandler = this.createDefaultErrorHandler();
+  }
 
   override start(): Promise<void> {
     // The client also calls start before each request and notification. While

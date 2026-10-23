@@ -514,6 +514,8 @@ async function workspace(extension) {
   await missingWorker(failures, words);
   await actionDuringRecovery(failures, words, 'restart');
   await actionDuringRecovery(failures, words, 'configuration');
+  await writeAfterServerDied(failures, bad, words);
+  await crashLimit(failures, bad, words);
   await pendingEditRestart(failures, bad, words);
   assert.deepEqual(failures, [], 'scenarios failed');
 }
@@ -712,9 +714,14 @@ function shellWord(word) {
 // is terminating; after 20 seconds, it goes on anyway. A held start, and any
 // start while a file "record" is in directory, runs the server with its input
 // copied to input-PID, and appends "PID status" to "exits" when the server
-// exits. Any other start runs the server in its place, with the script's PID.
-// The client looks for the worker beside the script, so a link to the real
-// one is there.
+// exits. A start that finds a file "linger" renames it to "lingering", runs
+// the server as its child, which alone reads the client's input, writes the
+// child's PID to "child", and appends "PID status" to "exits" when it exits;
+// then, keeping the client's output open, the script runs on until
+// "lingering" is gone, or for 20 seconds, writes "PID removed" or
+// "PID timeout" to "released", and exits with status 0. Any other start runs
+// the server in its place, with the script's PID. The client looks for the
+// worker beside the script, so a link to the real one is there.
 function recoveryServer(directory, server) {
   const script = path.join(directory, 'virgil-lsp');
   fs.writeFileSync(script, `#!/bin/sh
@@ -732,6 +739,24 @@ if [ -e "$state/hold" ]; then
     waited=$((waited + 1))
   done
   echo "$$ $reason" >> "$state/released"
+elif [ -e "$state/linger" ]; then
+  mv "$state/linger" "$state/lingering"
+  exec 3<&0 0</dev/null
+  ${shellWord(server)} "$@" <&3 3<&- &
+  child=$!
+  exec 3<&-
+  echo $child > "$state/child"
+  wait $child
+  echo "$$ $?" >> "$state/exits"
+  reason=timeout
+  waited=0
+  while [ $waited -lt 400 ]; do
+    if [ ! -e "$state/lingering" ]; then reason=removed; break; fi
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  echo "$$ $reason" >> "$state/released"
+  exit 0
 elif [ ! -e "$state/record" ]; then
   exec ${shellWord(server)} "$@"
 fi
@@ -830,12 +855,12 @@ function runs(entry, executable) {
   return entry.args === executable || entry.args.startsWith(`${executable} `);
 }
 
-// Kills the server that the client started with PID pid, after checking that
-// it is the client's: this extension host's child, running server.
-function killServer(pid, server) {
+// Kills the server with PID pid, after checking that it is the one that
+// parent, by default the client, started: parent's child, running server.
+function killServer(pid, server, parent = process.pid) {
   const target = groupProcesses().find((p) => p.pid === pid);
-  assert.ok(target !== undefined && target.ppid === process.pid && runs(target, server),
-    `pid ${pid} is not a virgil-lsp that this extension host started: ${JSON.stringify(target)}`);
+  assert.ok(target !== undefined && target.ppid === parent && runs(target, server),
+    `pid ${pid} is not a virgil-lsp that ${parent === process.pid ? 'this extension host' : `pid ${parent}`} started: ${JSON.stringify(target)}`);
   process.kill(pid, 'SIGKILL');
 }
 
@@ -974,6 +999,128 @@ async function actionDuringRecovery(failures, words, action) {
       await level(vscode.LogLevel.Info);
       await restoreServer(server, words);
       await setSetting('breadcrumbs.enabled', breadcrumbs);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+// A server that dies while the client writes to it fails the write with
+// EPIPE, which vscode-jsonrpc reports without a count, and the client can see
+// the failed write before the connection's close. vscode-languageclient's
+// default error handler then stopped the client, which never restarted the
+// server (#216). The server starts from a recoveryServer script that lingers:
+// the server, its child, alone reads the client's input, and the script keeps
+// the client's output open after the server has died. Once the test has
+// killed the server, the connection stays open until the client writes, and
+// that write fails every time. The client must restart the server exactly
+// once, from the same script, which copies the restarted server's input.
+async function writeAfterServerDied(failures, bad, words) {
+  const server = setting('virgil.server.path');
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'write-error-'));
+  const documents = [bad.document, words.document];
+  await scenario(failures, 'server killed, then a write to it fails with EPIPE: one restart, which gets the open documents', async () => {
+    fs.writeFileSync(path.join(directory, 'record'), '');
+    fs.writeFileSync(path.join(directory, 'linger'), '');
+    const { pid } = await startRecoveryServer(server, directory);
+    await expectParserDiagnostic(bad);
+    const [child] = recorded(directory, 'child').map(Number);
+    const log = logFromHere();
+    killServer(child, server, pid);
+    await waitFor('the killed server to exit', () => recorded(directory, 'exits').length > 0);
+    assert.deepEqual(recorded(directory, 'exits'), [`${pid} 137`]);
+    // Nothing has closed the connection, so the client writes the request.
+    await vscode.commands.executeCommand('vscode.executeHoverProvider', bad.document.uri, new vscode.Position(0, 0))
+      .then(() => {}, () => {});
+    const replacement = await waitFor('the client to restart the server', () => {
+      const starts = recorded(directory, 'starts');
+      return log().includes('Connection to server got closed. Server will restart.') && starts.length > 1 && Number(starts[1]);
+    }).catch((error) => { throw new Error(`${error.message}; the log since the kill:\n${log()}`); });
+    // The restarted server gets initialize, then initialized, and each open
+    // document in a didOpen, with the editor's text and version.
+    await waitFor('the restarted server to get the open documents', () => {
+      const received = serverInput(directory, replacement);
+      return received[0]?.method === 'initialize' && received.some((m) => m.method === 'initialized')
+        && documents.every((d) => received.some((m) => m.method === 'textDocument/didOpen' && m.params.textDocument.uri === d.uri.toString()));
+    });
+    for (const document of documents) {
+      const opened = serverInput(directory, replacement)
+        .find((m) => m.method === 'textDocument/didOpen' && m.params.textDocument.uri === document.uri.toString());
+      assert.deepEqual([opened.params.textDocument.text, opened.params.textDocument.version], [document.getText(), document.version]);
+    }
+    await expectParserDiagnostic(bad);
+    await waitFor('the type error in words/Words.v3 from the restarted server', () => hasTypeError(words), 40000);
+    // The write failed, and the client neither stopped nor restarted twice.
+    const text = log();
+    assert.ok(text.includes('connection to server is erroring.\nwrite EPIPE'), `no write failed with EPIPE:\n${text}`);
+    assert.deepEqual([count(text, 'Server will restart.'), count(text, 'Shutting down server.'), count(text, 'will not be restarted')], [1, 0, 0], text);
+    assert.equal(recorded(directory, 'starts').length, 2, 'the client started more than one replacement');
+    // Released, the lingering script exits, and the replacement's server is
+    // the only one left, with no worker but its own.
+    fs.rmSync(path.join(directory, 'lingering'));
+    await waitFor('the lingering script to exit', () => recorded(directory, 'released').length > 0
+      && !groupProcesses().some((p) => p.pid === pid));
+    assert.deepEqual(recorded(directory, 'released'), [`${pid} removed`]);
+    const worker = path.join(path.dirname(fs.realpathSync(server)), 'virgil-lsp-worker');
+    const processes = groupProcesses();
+    const servers = processes.filter((p) => runs(p, server));
+    assert.deepEqual(servers.map((p) => p.ppid), [replacement], `running: ${JSON.stringify(servers)}`);
+    assert.ok(processes.every((p) => !runs(p, worker) || p.ppid === servers[0].pid), `a stray worker: ${JSON.stringify(processes)}`);
+  }, async () => {
+    try {
+      fs.rmSync(path.join(directory, 'linger'), { force: true });
+      fs.rmSync(path.join(directory, 'lingering'), { force: true });
+      await restoreServer(server, words);
+      await expectParserDiagnostic(bad);
+      // Each start records its exit once its server has exited, and the
+      // lingering one releases once its file is gone.
+      const lingered = fs.existsSync(path.join(directory, 'child')) ? 1 : 0;
+      await waitFor('the servers started from the script to exit',
+        () => recorded(directory, 'exits').length === recorded(directory, 'starts').length
+          && recorded(directory, 'released').length === lingered);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+// vscode-languageclient restarts a crashed server up to 4 times in 3 minutes,
+// and stops the client at the fifth crash, with its message; the extension
+// keeps that policy. The test kills the server 5 times in a row, each time
+// once the server that the client started has published bad.v3's diagnostic.
+async function crashLimit(failures, bad, words) {
+  const server = setting('virgil.server.path');
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'crashes-'));
+  const limit = 'The Virgil Language Server server crashed 5 times in the last 3 minutes. '
+    + 'The server will not be restarted. See the output for more information.';
+  await scenario(failures, 'server killed 5 times in a row: 4 restarts, then the crash limit and no client', async () => {
+    let { pid } = await startRecoveryServer(server, directory);
+    const log = logFromHere();
+    for (let crash = 1; crash <= 4; crash++) {
+      await expectParserDiagnostic(bad);
+      killServer(pid, server);
+      pid = await waitFor(`restart ${crash}`, () => {
+        const starts = recorded(directory, 'starts');
+        return count(log(), 'Server will restart.') === crash && starts.length === crash + 1 && Number(starts[crash]);
+      });
+    }
+    await expectParserDiagnostic(bad);
+    killServer(pid, server);
+    await waitFor('the crash limit, and the five exits', () => log().includes(limit)
+      && count(log(), 'Server process exited with signal SIGKILL.') === 5);
+    const text = log();
+    assert.deepEqual([count(text, 'Server will restart.'), count(text, limit)], [4, 1], text);
+    assert.equal(recorded(directory, 'starts').length, 5);
+    // The stopped client's diagnostics went with it, and nothing is left
+    // running.
+    assert.deepEqual(diagnostics(bad), []);
+    const worker = path.join(path.dirname(fs.realpathSync(server)), 'virgil-lsp-worker');
+    await waitFor('no virgil-lsp or virgil-lsp-worker', () => !groupProcesses().some((p) => runs(p, server) || runs(p, worker)));
+    assert.equal(recorded(directory, 'starts').length, 5, 'a server started after the crash limit');
+  }, async () => {
+    try {
+      await restoreServer(server, words);
+      await expectParserDiagnostic(bad);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
