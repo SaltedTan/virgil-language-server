@@ -30,8 +30,8 @@ function load(file, modules = {}, overrides = {}, globals = {}) {
 }
 
 // node:fs with a fake /proc of processes, by PID: each has a start time, and
-// may have a state, a parent, a process group, an executable, and an
-// environment.
+// may have a state, a parent, a process group, a number of threads, an
+// executable, and an environment.
 function fakeProc(processes) {
   const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   const entry = (file) => {
@@ -45,7 +45,7 @@ function fakeProc(processes) {
     readdirSync: (name) => (name === '/proc' ? [...processes.keys()].map(String) : fs.readdirSync(name)),
     readFileSync: (file) => {
       const [pid, p, name] = entry(file);
-      if (name === 'stat') return `${pid} (x) ${p.state ?? 'S'} ${p.ppid ?? 1} ${p.group ?? 0} ${Array(16).fill(0).join(' ')} ${p.start} 0 0`;
+      if (name === 'stat') return `${pid} (x) ${p.state ?? 'S'} ${p.ppid ?? 1} ${p.group ?? 0} ${Array(14).fill(0).join(' ')} ${p.threads ?? 1} 0 ${p.start} 0 0`;
       if (name === 'environ') return (p.environ ?? []).join('\0');
       return '';
     },
@@ -92,18 +92,27 @@ function fakeClock() {
 // is Node.js reaping the keeper and running its exit listeners, which it
 // does as soon as the keeper is released, before a fake clock can run out
 // the keeper's time to exit (see KEEPER_REPLY_MS in processes.cjs). A signal
-// that the runner asks for goes to group(name), which returns whether the
-// keeper was there to send it; the keeper then says that it sent it, unless
-// it was SIGKILL. A keeper that has been stopped, with stopped, does
-// neither, and doesn't exit once released. spawned holds spawn's arguments.
+// that the runner asks for is added to requests, and goes to group(name),
+// which returns whether the keeper was there to send it; the keeper then says
+// that it sent it, unless it was SIGKILL. A keeper that has been stopped, with
+// stopped, does neither, and doesn't exit once released, until resume(), as
+// SIGCONT would resume it: it then sends the signals that it was asked for
+// meanwhile, in order, says so, and exits if released. spawned holds spawn's
+// arguments.
 function fakeKeeper(pid) {
   const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
   const pipe = () => Object.assign(new EventEmitter(), { end() {} });
+  // The signals that the keeper was asked for while it was stopped.
+  const waiting = [];
+  const send = (name) => {
+    if (fake.group(name) && name !== 'SIGKILL') line({ signaled: name });
+  };
   const fake = {
     keeper,
     released: undefined,
     spawned: undefined,
     stopped: false,
+    requests: [],
     group: () => false,
     spawn: (...args) => {
       fake.spawned = args;
@@ -125,12 +134,19 @@ function fakeKeeper(pid) {
       keeper.emit('exit', keeper.exitCode, keeper.signalCode);
       keeper.stdout.emit('close');
     },
+    resume: () => {
+      fake.stopped = false;
+      for (const name of waiting.splice(0)) send(name);
+      if (fake.released !== undefined) fake.reap(null);
+    },
   };
   const stdin = Object.assign(new EventEmitter(), {
     writable: true,
     write: (text) => {
       for (const name of String(text).split('\n').filter(Boolean)) {
-        if (!fake.stopped && fake.group(name) && name !== 'SIGKILL') line({ signaled: name });
+        fake.requests.push(name);
+        if (fake.stopped) waiting.push(name);
+        else send(name);
       }
     },
     end: (text) => {

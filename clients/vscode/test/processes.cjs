@@ -8,7 +8,7 @@
 // processes.
 
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
@@ -18,15 +18,21 @@ const processes = require('./e2e/processes.cjs');
 
 const pidfdSkip = process.platform !== 'linux' ? 'pidfds are a Linux feature'
   : processes.pidfdSupport() === true ? false : `no pidfds here: ${processes.pidfdSupport()}`;
+const pythonSkip = spawnSync('python3', ['-I', '-c', '']).status === 0 ? false : 'python3 is not on PATH';
 
 // ps's output for a fake process table on a system without /proc: each
 // process has a start time, as ps prints it, and may have a state, a parent,
-// and a group.
-function fakePs(table) {
+// and a group. As on macOS, ps -A has the kernel list the PIDs, then look up
+// each process, leaving out one that has gone by then; looking(pid), if
+// given, runs just before each lookup.
+function fakePs(table, looking = () => {}) {
   return (args) => {
-    const selected = args[0] === '-p' ? [[Number(args[1]), table.get(Number(args[1]))]].filter(([, p]) => p) : [...table];
-    const lines = selected.map(([pid, p]) => [pid, p.ppid ?? 1, p.group ?? 0].map((n) => String(n).padStart(5)).join(' ')
-      + ` ${p.state ?? 'Ss'}   ${p.start}`);
+    const all = args[0] !== '-p';
+    const lines = (all ? [...table.keys()] : [Number(args[1])]).flatMap((pid) => {
+      if (all) looking(pid);
+      const p = table.get(pid);
+      return p === undefined ? [] : [[pid, p.ppid ?? 1, p.group ?? 0].map((n) => String(n).padStart(5)).join(' ') + ` ${p.state ?? 'Ss'}   ${p.start}`];
+    });
     // ps -A always lists ps itself; -p fails for a process that has gone.
     return { status: args[0] === '-p' && lines.length === 0 ? 1 : 0, stdout: lines.map((line) => `${line}\n`).join(''), stderr: '' };
   };
@@ -350,6 +356,149 @@ test('both runners stop a group whose keeper has been stopped, keeper and all, w
   assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
 });
 
+// A command, in Python, for a runner's group: it starts a helper, which starts
+// a child and then leaves the group, as a daemon might, and never reaps the
+// child, which stays there; with the argument linger, it also starts a process
+// that stays in the group and ignores SIGTERM. Once the helper has given the
+// child's PID, the command writes each process's PID, as JSON, to pids in
+// directory, its first argument, and exits. The child exits once directory has
+// exit, and the helper reaps it and exits once directory has reap. None of them
+// holds the runner's output, or waits for a file longer than 30 seconds, and
+// the lingering process ends after 30 seconds.
+const ZOMBIE_COMMAND = `
+import json, os, signal, sys, time
+directory, linger = sys.argv[1], sys.argv[2] == 'linger'
+def wait(name):
+    until = time.monotonic() + 30
+    while not os.path.exists(os.path.join(directory, name)):
+        if time.monotonic() > until:
+            os._exit(1)
+        time.sleep(0.01)
+def write(name, value):
+    with open(os.path.join(directory, name + '.tmp'), 'w') as file:
+        json.dump(value, file)
+    os.rename(os.path.join(directory, name + '.tmp'), os.path.join(directory, name))
+def quiet():
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+pids = {'helper': os.fork()}
+if pids['helper'] == 0:
+    quiet()
+    child = os.fork()
+    if child == 0:
+        wait('exit')
+        os._exit(0)
+    os.setpgid(0, 0)
+    write('child', child)
+    wait('reap')
+    os.waitpid(child, 0)
+    os._exit(0)
+if linger:
+    pids['linger'] = os.fork()
+    if pids['linger'] == 0:
+        quiet()
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.alarm(30)
+        while True:
+            signal.pause()
+wait('child')
+with open(os.path.join(directory, 'child')) as file:
+    pids['child'] = json.load(file)
+write('pids', pids)
+`;
+
+// Waits up to ms milliseconds for done() to return a truthy value, and returns
+// its last value.
+async function until(done, ms) {
+  for (const deadline = Date.now() + ms; ; await new Promise((resolve) => setTimeout(resolve, 20))) {
+    const value = done();
+    if (value || Date.now() > deadline) return value;
+  }
+}
+
+// Runs ZOMBIE_COMMAND, with linger or not, under file's runGroup. Once a look
+// of the runner's has found the helper's child alive in the group, so that the
+// runner remembers it, the child exits, and stays a zombie there; with linger,
+// the run is then interrupted. Checks that the run finishes all the same,
+// within 3 seconds, or with linger within 8, which covers the 5 seconds before
+// SIGKILL, and leaves the zombie and the helper as they were.
+async function zombieRun(file, linger) {
+  const directory = fs.mkdtempSync(path.join(__dirname, '.processes-'));
+  const mark = (name) => fs.writeFileSync(path.join(directory, name), '');
+  // The processes that the runner's looks have found alive, by PID and start
+  // time; and the keeper.
+  const found = new Set();
+  let keeper;
+  const fake = {
+    ...processes,
+    startGroup: (...args) => {
+      const group = processes.startGroup(...args);
+      keeper = processes.processInfo(group.pid);
+      const look = group.look;
+      group.look = () => {
+        const result = look();
+        for (const p of result?.processes ?? []) found.add(`${p.pid} ${p.start}`);
+        return result;
+      };
+      return group;
+    },
+  };
+  const runner = load(file, { [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fake }, {}, { setInterval, clearInterval });
+  const controller = new AbortController();
+  let result;
+  const running = runner.runGroup('python3', ['-I', '-c', ZOMBIE_COMMAND, directory, linger ? 'linger' : 'alone'], {
+    env: process.env, stdin: 'ignore', timeout: 60000, signal: controller.signal,
+  }).then((value) => { result = value; });
+  // p's state, while it is still that process.
+  const state = (p) => {
+    const info = processes.processInfo(p.pid);
+    return info?.start === p.start ? info.state : undefined;
+  };
+  const alive = (p) => ![undefined, 'Z'].includes(state(p));
+  let started = [];
+  try {
+    const pids = await until(() => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(directory, 'pids'), 'utf8'));
+      } catch {
+        return undefined;
+      }
+    }, 5000);
+    assert.notEqual(pids, undefined, `${file}: the command didn't start its processes`);
+    const { helper, child, linger: lingering } = Object.fromEntries(Object.entries(pids).map(([name, pid]) => [name, processes.processInfo(pid)]));
+    started = [helper, child, lingering].filter(Boolean);
+    assert.ok(await until(() => found.has(`${child.pid} ${child.start}`), 5000), `${file}: no look found the child`);
+    mark('exit');
+    assert.ok(await until(() => state(child) === 'Z', 5000), `${file}: the child didn't exit`);
+    const at = Date.now();
+    if (linger) controller.abort();
+    await Promise.race([running, new Promise((resolve) => setTimeout(resolve, linger ? 8000 : 3000))]);
+    assert.notEqual(result, undefined, `${file} hadn't finished ${Date.now() - at} ms after ${linger ? 'the interrupt' : 'the child exited'}`);
+    assert.deepEqual([result.code, result.stopped], [0, linger ? 'was interrupted' : undefined], file);
+    // The keeper has gone, and so has the lingering process, which ignores
+    // SIGTERM; the child is still a zombie, which the helper hasn't reaped.
+    assert.deepEqual([keeper, lingering].filter((p) => p !== undefined && alive(p)), [], file);
+    assert.deepEqual([state(child), alive(helper)], ['Z', true], file);
+  } finally {
+    mark('reap');
+    controller.abort();
+    processes.signalProcesses(started, 'SIGKILL');
+    await running;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test('both runners finish when all that is left in the group is a zombie that its parent never reaps (real processes)', { skip: pythonSkip }, async () => {
+  const outcomes = await Promise.allSettled(['run.cjs', 'remote-ssh/run.cjs'].map((file) => zombieRun(file, false)));
+  assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
+});
+
+test('both runners stop an interrupted group within the grace period when it holds a zombie that its parent never reaps (real processes)', { skip: pythonSkip }, async () => {
+  const outcomes = await Promise.allSettled(['run.cjs', 'remote-ssh/run.cjs'].map((file) => zombieRun(file, true)));
+  assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
+});
+
 test('a group whose keeper Node.js has reaped is never signaled by its number, even before the keeper\'s exit event (real processes)', async (t) => {
   // Two keepers exit together. Node.js reaps both before it runs the first
   // one's exit listeners, so the second's ChildProcess still looks unreaped
@@ -466,33 +615,107 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
     });
   }
 
-  test(`${file} rescans a macOS snapshot with a zombie helper and finds its surviving child`, async () => {
+  test(`${file} rescans when a macOS helper forks and becomes a zombie during a ps listing, and finds its child`, async () => {
     const start = 'Thu Oct 23 17:13:01 2026';
     const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
-    const snapshot = fakePs(table);
     let racing = false;
-    const ps = (args) => {
-      const result = snapshot(args);
-      if (racing && args[0] === '-A') {
+    // The kernel has listed 52's PID; 52 starts 53, which the listing misses,
+    // and exits before ps looks it up.
+    const ps = fakePs(table, (pid) => {
+      if (racing && pid === 52) {
         racing = false;
-        table.delete(52);
+        table.get(52).state = 'Z';
         table.set(53, { start, group: 50 });
       }
-      return result;
-    };
+    });
     const run = localRunGroup(table, { file, platform: 'darwin', ps });
     run.keeper.command(51);
     table.delete(51);
-    table.set(52, { start, group: 50, state: 'Z' });
+    table.set(52, { start, group: 50 });
     racing = true;
     run.keeper.exit(0, null);
     run.keeper.close();
     assert.equal(run.keeper.released, undefined);
     run.advance(50);
     assert.equal(await run.result(), undefined);
+    table.delete(52);
     table.delete(53);
     run.advance(50);
     assert.equal((await run.result()).code, 0);
+    assert.deepEqual(run.signals, []);
+  });
+
+  test(`${file} misses the child of a macOS helper that forks and is reaped during a ps listing`, async () => {
+    // A limitation, which clients/vscode/README.md describes: the kernel has
+    // listed 52's PID; 52 starts 53, which the listing misses, and is reaped
+    // before ps looks it up, so ps leaves it out without saying so. The group
+    // looks empty while 53 runs.
+    const start = 'Thu Oct 23 17:13:01 2026';
+    const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+    let racing = false;
+    const ps = fakePs(table, (pid) => {
+      if (racing && pid === 52) {
+        racing = false;
+        table.delete(52);
+        table.set(53, { start, group: 50 });
+      }
+    });
+    const run = localRunGroup(table, { file, platform: 'darwin', ps });
+    run.keeper.command(51);
+    table.delete(51);
+    table.set(52, { start, group: 50 });
+    racing = true;
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    assert.equal((await run.result())?.code, 0);
+    assert.equal(run.keeper.released, 'release\n');
+    assert.deepEqual(run.signals, []);
+    assert.equal(table.has(53), true);
+  });
+
+  test(`${file} counts a zombie as exited once a later look finds it still a zombie`, async () => {
+    for (const platform of ['linux', 'darwin']) {
+      const start = platform === 'linux' ? '100' : 'Thu Oct 23 17:13:01 2026';
+      // 52 and 53 are in the group, and their parents have left it.
+      const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }], [52, { start, ppid: 60, group: 50 }], [53, { start, ppid: 61, group: 50 }]]);
+      const run = localRunGroup(table, { file, platform });
+      run.keeper.command(51);
+      // They exit as VS Code does. The first look to find them zombies can't
+      // tell whether they started a process, which it missed, before they did.
+      table.delete(51);
+      table.get(52).state = 'Z';
+      table.get(53).state = 'Z';
+      run.keeper.exit(0, null);
+      run.keeper.close();
+      assert.equal(run.keeper.released, undefined, platform);
+      // 52's parent reaps it before the next look; 53's never does.
+      table.delete(52);
+      run.advance(50);
+      const result = await run.result();
+      assert.deepEqual([result?.code, result?.stopped], [0, undefined], platform);
+      assert.equal(run.keeper.released, 'release\n', platform);
+      assert.deepEqual(run.signals, [], platform);
+      assert.equal(table.get(53).state, 'Z', platform);
+    }
+  });
+
+  test(`${file} waits for a process whose main thread has exited until its other threads have`, async () => {
+    // Linux lists the process as a zombie meanwhile.
+    const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [52, { start: '110', ppid: 60, group: 50 }]]);
+    const run = localRunGroup(table, { file });
+    run.keeper.command(51);
+    table.delete(51);
+    Object.assign(table.get(52), { state: 'Z', threads: 2 });
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    run.advance(1000);
+    assert.equal(await run.result(), undefined);
+    // Its last thread exits, and its parent never reaps it.
+    table.get(52).threads = 1;
+    run.advance(50);
+    assert.equal(await run.result(), undefined);
+    run.advance(50);
+    assert.equal((await run.result())?.code, 0);
     assert.deepEqual(run.signals, []);
   });
 
@@ -594,6 +817,35 @@ test('a keeper that doesn\'t answer in time, as when it has been stopped, gets t
   assert.deepEqual(run.signals, [[50, 'SIGKILL']]);
   const result = await run.result();
   assert.deepEqual([result.stopped, result.code, result.signal], [undefined, 0, null]);
+});
+
+test('a keeper\'s answer that comes after its second has passed is credited to no request, and later signals still go to the processes seen there', async () => {
+  for (const pidfd of [false, true]) {
+    // As above, the keeper is stopped, VS Code ignores SIGTERM, and an
+    // interrupt's SIGTERM goes to them a second after the request.
+    const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50, on: () => {} }]]);
+    const run = localRunGroup(table, { pidfd });
+    run.keeper.command(51);
+    run.keeper.stopped = true;
+    table.get(50).state = 'T';
+    run.interrupt();
+    run.advance(1050);
+    const both = (name) => (pidfd ? [['pidfd', name, [[51, '100'], [50, '90']]]] : [[51, name], [50, name]]);
+    assert.deepEqual(run.signals, both('SIGTERM'));
+    // The keeper resumes, sends its group the SIGTERM that it was asked for,
+    // and says so, too late: the runner takes that as an answer to nothing,
+    // and still doesn't ask the keeper for SIGKILL, which comes on time.
+    table.get(50).state = 'S';
+    run.keeper.resume();
+    run.advance(3900);
+    assert.deepEqual(run.signals, [...both('SIGTERM'), ['keeper', 'SIGTERM']]);
+    run.advance(200);
+    assert.deepEqual(run.signals, [...both('SIGTERM'), ['keeper', 'SIGTERM'], ...both('SIGKILL')]);
+    assert.deepEqual(run.keeper.requests, ['SIGTERM']);
+    const result = await run.result();
+    assert.deepEqual([result.stopped, result.code, result.signal], ['was interrupted', null, 'SIGKILL']);
+    assert.deepEqual([...table.keys()], []);
+  }
 });
 
 test('without /proc, the keeper is known by its parent as well as by its start time, which ps gives only to the second', async () => {

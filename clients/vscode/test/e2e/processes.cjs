@@ -15,16 +15,17 @@ const KEEPER = path.join(__dirname, 'keeper.cjs');
 // How long a group's keeper gets to answer a request (see startGroup).
 const KEEPER_REPLY_MS = 1000;
 
-// A process's state, parent, process group, and start time; undefined if it
-// has gone, null if inaccessible. On Linux they are the third, fourth, fifth,
-// and 22nd fields of /proc/<pid>/stat, and the start time is in clock ticks
-// after boot; elsewhere ps gives them, and the start time only to the second.
+// A process's state, parent, process group, and start time, and on Linux its
+// number of threads; undefined if it has gone, null if inaccessible. On Linux
+// they are the third, fourth, fifth, 22nd, and 20th fields of /proc/<pid>/stat,
+// and the start time is in clock ticks after boot; elsewhere ps gives them,
+// and the start time only to the second.
 function processInfo(pid) {
   if (process.platform !== 'linux') return psTable(['-p', String(pid)]).find((p) => p.pid === Number(pid));
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return { pid: Number(pid), state: fields[0], ppid: Number(fields[1]), group: Number(fields[2]), start: fields[19] };
+    return { pid: Number(pid), state: fields[0], ppid: Number(fields[1]), group: Number(fields[2]), start: fields[19], threads: Number(fields[17]) };
   } catch (error) {
     if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined;
     if (['EACCES', 'EPERM'].includes(error.code)) return null;
@@ -32,7 +33,10 @@ function processInfo(pid) {
   }
 }
 
-// Every readable process, and whether no listed PID disappeared.
+// Every readable process, and whether no listed PID disappeared. Off Linux, ps
+// can't tell: on macOS, the kernel lists the PIDs, then looks up each process,
+// and leaves out one that has been reaped in between, so a process that starts
+// another and is reaped during the listing hides both.
 function processTable() {
   if (process.platform !== 'linux') return { processes: psTable(['-A']), complete: true };
   let complete = true;
@@ -213,6 +217,9 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // The processes that the runner has seen in the group, other than the
   // keeper, each by PID and start time.
   const seen = new Map();
+  // The zombies that the last look found in the group, each by PID and start
+  // time (see look).
+  let zombies = new Map();
   // The signals that the runner has asked the keeper for, in order, and that
   // the keeper hasn't said it sent, each with the timer for its answer.
   const requested = [];
@@ -246,6 +253,15 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // that it has left. Once neither is, another process may have been given the
   // number, and the group is never the run's again. That is checked after the
   // look, so that it covers the whole look.
+  // The group is empty if the look read every process that it listed, and
+  // found none in the group but zombies that the last look found there too. A
+  // process could start another and exit between the listing and the read,
+  // which then finds it gone, or a zombie, while the listing misses the other.
+  // But a zombie that the last look found was one before this look's listing,
+  // and a zombie can't start a process, so one whose parent never reaps it
+  // doesn't keep the group from emptying. On Linux, a process whose main
+  // thread has exited is listed as a zombie while its other threads run, and
+  // counts as one only once they have exited too.
   const look = () => {
     if (lost) return undefined;
     const { processes, complete } = processTable();
@@ -260,7 +276,10 @@ function startGroup(command, args, { env, stdio, onExit }) {
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
-    return { processes: found, empty: complete && members.length === 0 };
+    const zombie = (p) => p.state === 'Z' && !(p.threads > 1);
+    const empty = complete && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
+    zombies = new Map(members.filter(zombie).map((p) => [p.pid, p.start]));
+    return { processes: found, empty };
   };
   // Sends a signal to each process that the runner saw in the group, wherever
   // it is now, and, with alsoKeeper, last to the keeper, if it hasn't been
