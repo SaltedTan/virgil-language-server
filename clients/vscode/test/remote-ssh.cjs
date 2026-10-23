@@ -561,7 +561,7 @@ test('output-directory filesystem failures are infrastructure errors', () => {
       'node:fs': files,
       'node:util': { parseArgs: () => ({ values: { vsix: '/test.vsix', 'virgil-root': '/virgil', 'work-dir': '/work', out: '/out', repeat: '1', sshd: '/sshd' } }) },
       '../run.cjs': require('./e2e/run.cjs'),
-    }, {});
+    }, { platform: 'linux' });
     assert.throws(() => run.options(), (error) => error.kind === 'infra' && error.message.includes('ENOSPC'));
   }
 });
@@ -633,6 +633,7 @@ test('scratch-directory failures produce an INFRA manifest and exit status', asy
       'node:child_process': { execFileSync: () => 'commit' },
       '../run.cjs': require('./e2e/run.cjs'),
     }, {
+      platform: 'linux',
       on() {}, stdout: new EventEmitter(), stderr: new EventEmitter(),
       exit: (value) => { status = value; throw exited; },
     });
