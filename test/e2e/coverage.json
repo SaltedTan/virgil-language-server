@@ -1474,6 +1474,16 @@
       "description": "The test kills the server with SIGKILL, then changes virgil.server.path back from the recovery script to the server while the recovery's start is held, and nothing stops the recovering client or starts another before the hold is released. The recovered server's input starts with initialize, then has initialized, and ends with exactly one shutdown and one exit, with exit last; it gets the open bad.v3 in a didOpen before exit, on either side of shutdown, and exits with status 0. The original server starts as the replacement, the type error returns, exactly one virgil-lsp is left with no worker but its own, and no request or notification fails."
     },
     {
+      "id": "vscode.restart.pending-edit",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The test starts the server from a script that records its input, makes an unsaved edit that replaces bad.v3 with a component RestartLatest, and at once, with no request or notification between, runs Virgil: Restart Language Server; exactly one replacement starts. The old server got bad.v3's saved text in a didOpen and no didChange with RestartLatest, which would mean that the edit wasn't pending, and exited with status 0. The replacement's didOpen has the buffer's exact text and version, and the document symbols are RestartLatest alone. A later unsaved edit, to RestartLater, reaches the replacement in a didChange with its exact text and version, and the symbols become RestartLater alone."
+    },
+    {
       "id": "vscode.infrastructure.preflight",
       "suites": ["vscode"],
       "profiles": ["wrapper"],
@@ -1697,7 +1707,7 @@
         "setup": "vscode-linux",
         "feature": "restart",
         "level": "api",
-        "checks": ["vscode.restart.clean"],
+        "checks": ["vscode.restart.clean", "vscode.restart.pending-edit"],
         "notCovered": []
       },
       {
@@ -1774,7 +1784,7 @@
         "setup": "vscode-macos",
         "feature": "restart",
         "level": "api",
-        "checks": ["vscode.restart.clean"],
+        "checks": ["vscode.restart.clean", "vscode.restart.pending-edit"],
         "notCovered": []
       },
       {
@@ -1851,7 +1861,7 @@
         "setup": "ssh-linux-client",
         "feature": "restart",
         "level": "api",
-        "checks": ["vscode.restart.clean"],
+        "checks": ["vscode.restart.clean", "vscode.restart.pending-edit"],
         "notCovered": []
       },
       {
