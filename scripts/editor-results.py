@@ -64,9 +64,9 @@ UNAVAILABLE = "/$defs/unavailableProvenance"
 # The definition of a UTC time, whose date must also exist: its pattern
 # accepts February 30.
 TIME = "/$defs/time"
-# The conditions that a field of the run-start's provenance decides: each
-# holds exactly when the field has the value.
-DECIDED_BY_PROVENANCE = {"vsix": ("clientMode", "vsix")}
+# The conditions that fields of the run-start's provenance decide: each holds
+# exactly when every one of its fields passes its test.
+DECIDED_BY_PROVENANCE = {"vsix": {"clientMode": lambda mode: mode == "vsix", "vsix": lambda vsix: vsix is not None}}
 # A manual record may observe any setup; every other suite's runs observe
 # the setups of their own suite.
 MANUAL = "manual"
@@ -77,7 +77,7 @@ WRAPPER = "wrapper"
 MANIFEST_FIELDS = {
     "checks": ("id", "suites", "profiles", "level", "when"),
     "suites": ("id", "profiles"),
-    "conditions": ("id", "alternative"),
+    "conditions": ("id", "alternative", "always"),
     "setups": ("id", "suite", "client", "host"),
     "xfails": ("id", "check", "profile", "plugin", "commit", "failureCode", "requires"),
 }
@@ -641,7 +641,10 @@ def plan_of(start, manifest):
         """The keys of the condition's checks in the run's profiles and iterations."""
         return set(planned({condition_id})) - unconditional
 
-    holds = {manifest.checks[check_id]["when"] for check_id, _, _ in keys} - {None}
+    # The conditions that hold in every run of the suite hold in this one,
+    # whether or not it plans their checks.
+    always = {condition_id for condition_id, condition in manifest.conditions.items() if suite in condition["always"]}
+    holds = ({manifest.checks[check_id]["when"] for check_id, _, _ in keys} - {None}) | always
     for condition_id, condition in manifest.conditions.items():
         other = condition["alternative"]
         if other is None:
@@ -659,15 +662,20 @@ def plan_of(start, manifest):
         when = manifest.checks[check_id]["when"]
         raise Invalid(1, f"expected lacks {observation(missing[0])}, " + (
             f"a check of suite {suite} in that profile" if when is None else
+            f"which has the condition {when}: {when} holds in every run of suite {suite}" if when in always else
             f"which has the condition {when}: a run plans all of a condition's checks or none"))
 
+    # Whether a condition holds is known if the run's profiles have its
+    # checks, or if it holds in every run of the suite.
     provenance = start["provenance"]
-    for condition_id, (field, value) in DECIDED_BY_PROVENANCE.items():
-        if condition_id in manifest.conditions and conditional(condition_id):
+    for condition_id, fields in DECIDED_BY_PROVENANCE.items():
+        if condition_id in always or conditional(condition_id):
             held = condition_id in holds
-            if held != (provenance[field] == value):
-                raise Invalid(1, f"expected {'has' if held else 'lacks'} the {condition_id} checks, but "
-                                 f"provenance.{field} is {show(provenance[field])}")
+            for field, test in fields.items():
+                if test(provenance[field]) != held:
+                    raise Invalid(1, (f"{condition_id} holds in every run of suite {suite}" if condition_id in always
+                                      else f"expected {'has' if held else 'lacks'} the {condition_id} checks")
+                                  + f", but provenance.{field} is {show(provenance[field])}")
     return Plan(set(keys), iterations, holds)
 
 

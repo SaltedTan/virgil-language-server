@@ -171,6 +171,16 @@ def fail(events, index, failure="failed"):
     events[index].update(status="fail", reason="it failed", failureCode=failure, expectation=None)
 
 
+def only(events, profiles):
+    """Leaves out every profile but these, with its observations and digest."""
+    events[0]["expected"] = [key for key in events[0]["expected"] if key["profile"] in profiles]
+    events[1:-1] = [event for event in events[1:-1] if event["profile"] in profiles]
+    provenance = events[0]["provenance"]
+    provenance["configurationSha256"] = {profile: digest for profile, digest
+                                         in provenance["configurationSha256"].items() if profile in profiles}
+    return rebuild(events)
+
+
 def encode(events):
     return b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events)
 
@@ -459,14 +469,45 @@ class PlanTest(ValidatorTest):
         self.assertInvalid(events, 1, "expected lacks vscode.infrastructure.vsix-install")
 
     def test_condition_and_provenance_agree(self):
-        events = stream("vscode-vsix")
-        events[0]["provenance"].update(clientMode="source", vsix=None)
-        self.assertInvalid(events, 1, 'expected has the vsix checks, but provenance.clientMode is "source"')
-        events = stream("vscode")
+        vsix = stream("vscode-vsix")[0]["provenance"]["vsix"]
+        for variant, fields, message in (
+                ("vscode-vsix", {"clientMode": "source", "vsix": None},
+                 'expected has the vsix checks, but provenance.clientMode is "source"'),
+                ("vscode-vsix", {"vsix": None}, "expected has the vsix checks, but provenance.vsix is null"),
+                ("vscode", {"clientMode": "vsix"},
+                 'expected lacks the vsix checks, but provenance.clientMode is "vsix"'),
+                ("vscode", {"vsix": vsix}, "expected lacks the vsix checks, but provenance.vsix is an object")):
+            with self.subTest(message):
+                events = stream(variant)
+                events[0]["provenance"].update(fields)
+                self.assertInvalid(events, 1, message)
+        # Without the checks in its profiles, a run's provenance doesn't say
+        # whether the condition held.
+        events = only(stream("vscode"), {"wrapper"})
         events[0]["provenance"]["clientMode"] = "vsix"
-        self.assertInvalid(events, 1, 'expected lacks the vsix checks, but provenance.clientMode is "vsix"')
-        events = self.drop(stream("remote-ssh"), "vscode.startup.installed-copy")
-        self.assertInvalid(events, 1, 'expected lacks the vsix checks, but provenance.clientMode is "vsix"')
+        self.assertValid(events)
+
+    def test_a_condition_that_always_holds(self):
+        # coverage.json says that every Remote-SSH run installs the VSIX.
+        events = stream("remote-ssh")
+        for check_id, check in CHECKS.items():
+            if check["when"] == "vsix":
+                events = self.drop(events, check_id)
+        events[0]["provenance"].update(clientMode="source", vsix=None)
+        self.assertInvalid(events, 1, "expected lacks vscode.startup.installed-copy in profile single-file, "
+                                      "iteration 1, which has the condition vsix: vsix holds in every run of "
+                                      "suite remote-ssh")
+        events = self.drop(stream("remote-ssh"), "vscode.startup.installed-copy", "workspace")
+        self.assertInvalid(events, 1, "expected lacks vscode.startup.installed-copy in profile workspace")
+        # Its provenance must say so, whichever profiles the run has.
+        for profiles in (("probe", "single-file", "workspace", "wrapper"), ("probe", "wrapper")):
+            for fields, found in (({"clientMode": "source", "vsix": None}, 'provenance.clientMode is "source"'),
+                                  ({"vsix": None}, "provenance.vsix is null")):
+                with self.subTest(profiles=profiles, found=found):
+                    events = only(stream("remote-ssh"), profiles)
+                    self.assertValid(copy.deepcopy(events))
+                    events[0]["provenance"].update(fields)
+                    self.assertInvalid(events, 1, f"vsix holds in every run of suite remote-ssh, but {found}")
 
     def test_check_of_another_suite(self):
         events = self.add(stream("nvim"), ("lazyvim.hover.response", "main", 1))

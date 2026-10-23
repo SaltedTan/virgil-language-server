@@ -269,7 +269,36 @@ class CoverageTest(unittest.TestCase):
                 problems.append(f"condition {condition['id']}: no check uses it")
             if other is not None and (other not in self.conditions or self.conditions[other]["alternative"] != condition["id"]):
                 problems.append(f"condition {condition['id']}: its alternative {other} doesn't name it back")
+            # The suites in which the condition holds in every run.
+            if repeated(condition["always"]):
+                problems.append(f"condition {condition['id']}: always repeats a suite")
+            for suite in condition["always"]:
+                if suite not in self.suites:
+                    problems.append(f"condition {condition['id']}: always names the unknown suite {suite}")
+                elif not any(check["when"] == condition["id"] and suite in check["suites"]
+                             for check in self.manifest["checks"]):
+                    problems.append(f"condition {condition['id']}: always names suite {suite}, "
+                                    "which runs none of its checks")
+                elif other in self.conditions and suite in self.conditions[other]["always"]:
+                    problems.append(f"condition {condition['id']} and its alternative {other} both always hold "
+                                    f"in suite {suite}")
         self.assertEqual([], problems)
+
+    def test_a_condition_always_holds_only_in_suites_that_run_its_checks(self):
+        for changes, message in (
+                ({"vsix": ["remote-ssh", "remote-ssh"]}, "always repeats a suite"),
+                ({"vsix": ["nowhere"]}, "always names the unknown suite nowhere"),
+                ({"vsix": ["nvim"]}, "always names suite nvim, which runs none of its checks"),
+                ({"file-watching": ["lazyvim"], "no-file-watching": ["lazyvim"]},
+                 "both always hold in suite lazyvim")):
+            with self.subTest(changes=changes):
+                mutant = CoverageTest("test_gaps_and_conditions")
+                mutant.manifest = copy.deepcopy(self.manifest)
+                mutant.conditions = by_id(mutant.manifest["conditions"])
+                for condition_id, always in changes.items():
+                    mutant.conditions[condition_id]["always"] = always
+                with self.assertRaisesRegex(AssertionError, message):
+                    mutant.test_gaps_and_conditions()
 
     def test_the_expected_failure_rule(self):
         rules = self.manifest["xfails"]
