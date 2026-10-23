@@ -180,7 +180,9 @@ jobs:
 
   vscode-extension-host:
     # The runner image includes xvfb-run. The test downloads its pinned VS Code
-    # version; see clients/vscode/README.md#extension-host-test.
+    # version; see clients/vscode/README.md#extension-host-test. If a launch
+    # fails, the job uploads that launch's VS Code logs, one artifact for each
+    # attempt of the run.
     name: VS Code Extension Host test (built server, linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -200,19 +202,27 @@ jobs:
         run: npm ci
       - name: Extension Host test
         working-directory: clients/vscode
-        run: xvfb-run -a npm run test:e2e
+        run: xvfb-run -a npm run test:e2e -- --logs "$RUNNER_TEMP/vscode-logs/source"
       - name: Package the VSIX
         working-directory: clients/vscode
         run: npm run package
       - name: Extension Host test against the installed VSIX
         working-directory: clients/vscode
-        run: xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-*.vsix
+        run: xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-*.vsix --logs "$RUNNER_TEMP/vscode-logs/vsix"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: vscode-extension-host-logs-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vscode-logs
+          if-no-files-found: warn
+          retention-days: 30
 
   vscode-extension-host-macos:
     # Runs the test against the server that test-macos built and tested, rather
     # than building Virgil again. It is a separate job, not a step of
     # test-macos, so that it is not yet a required check; see
-    # docs/compatibility.md for CI policy. macOS needs no virtual display.
+    # docs/compatibility.md for CI policy. macOS needs no virtual display. It
+    # uploads a failed launch's VS Code logs as the Linux job does.
     name: VS Code Extension Host test (built server, macOS Apple Silicon via Rosetta 2)
     needs: test-macos
     runs-on: macos-15
@@ -243,4 +253,11 @@ jobs:
         run: npm ci
       - name: Extension Host test
         working-directory: clients/vscode
-        run: npm run test:e2e
+        run: npm run test:e2e -- --logs "$RUNNER_TEMP/vscode-logs/source"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: vscode-extension-host-macos-logs-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vscode-logs
+          if-no-files-found: warn
+          retention-days: 30

@@ -8,13 +8,15 @@
 // from a server that the suite killed.
 // Usage, from clients/vscode after `npm run compile`:
 //
-//   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [path/to/virgil-lsp]
+//   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [--logs DIR] [path/to/virgil-lsp]
 //
 // The default is build/virgil-lsp at the repository root. By default VS Code
 // loads the extension from this directory as an extension under development.
 // With --vsix, each launch instead installs the packaged extension into its
 // empty extensions directory with --install-extension, as a user would, and
-// runs the suite against the installed copy. Without a display, run it under
+// runs the suite against the installed copy. With --logs, a new or empty
+// directory, a launch or installation that fails leaves its VS Code and
+// Chromium logs there (see keepLogs). Without a display, run it under
 // xvfb-run on Linux.
 
 const { spawnSync } = require('node:child_process');
@@ -36,12 +38,17 @@ const STOP_GRACE_MS = 5000;
 // How long the servers that a launch started get to exit after VS Code has.
 const SERVER_EXIT_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
+// Chromium's own log, among VS Code's, with --logs (see launch).
+const CHROMIUM_LOG = 'chromium.log';
 
 const extension = path.resolve(__dirname, '../..');
 const repo = path.resolve(extension, '../..');
 
 async function main() {
-  const { values, positionals } = parseArgs({ options: { vsix: { type: 'string' } }, allowPositionals: true });
+  const { values, positionals } = parseArgs({
+    options: { vsix: { type: 'string' }, logs: { type: 'string' } },
+    allowPositionals: true,
+  });
   // npm runs scripts in clients/vscode; relative arguments are relative to
   // where npm was started.
   const cwd = process.env.INIT_CWD ?? process.cwd();
@@ -49,6 +56,12 @@ async function main() {
   const vsix = values.vsix === undefined ? undefined : path.resolve(cwd, values.vsix);
   if (vsix !== undefined && !fs.existsSync(vsix)) {
     throw new Error(`package the extension before running the test: ${vsix} is missing`);
+  }
+  // New or empty, so that a run's logs never mix with another's; created only
+  // when a launch fails.
+  const logs = values.logs === undefined ? undefined : path.resolve(cwd, values.logs);
+  if (logs !== undefined && fs.existsSync(logs) && !(fs.statSync(logs).isDirectory() && fs.readdirSync(logs).length === 0)) {
+    throw new Error(`--logs takes a new or empty directory, and ${logs} is not one`);
   }
   // The server starts the worker beside its own resolved path.
   const server = fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
@@ -93,10 +106,20 @@ async function main() {
     console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
     const servers = [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
-    const options = { executable, settings, project, vsix, servers, signal: controller.signal };
-    let passed = await launch(options, path.join(work, 'single-file'));
-    if (passed) passed = await launch(options, path.join(work, 'workspace'), project);
-    if (passed) passed = await launch(options, path.join(work, 'recovery-close'), project, true);
+    const options = { executable, settings, project, vsix, servers, keep: logs !== undefined, signal: controller.signal };
+    // A launch fails if it returns false or throws.
+    const attempt = async (name, ...rest) => {
+      let passed = false;
+      try {
+        passed = await launch(options, path.join(work, name), ...rest);
+      } finally {
+        if (!passed && logs !== undefined) keepLogs(path.join(work, name), path.join(logs, name));
+      }
+      return passed;
+    };
+    let passed = await attempt('single-file');
+    if (passed) passed = await attempt('workspace', project);
+    if (passed) passed = await attempt('recovery-close', project, true);
     if (!passed) process.exitCode = 1;
   } finally {
     process.off('SIGINT', interrupt).off('SIGTERM', interrupt);
@@ -125,8 +148,9 @@ function isolatedEnv(variables) {
 // and returns whether the suite passed. The suite opens a folder only if it is
 // given one. With recovery, the suite closes the window during a recovery,
 // with a virgil.server.path in dir/recovery, whose records are checked after
-// the window has closed.
-async function launch({ executable, settings, project, vsix, servers, signal }, dir, folder, recovery = false) {
+// the window has closed. With keep, Chromium's own log goes among VS Code's
+// logs, for keepLogs.
+async function launch({ executable, settings, project, vsix, servers, keep, signal }, dir, folder, recovery = false) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
   const records = recovery ? path.join(dir, 'recovery') : undefined;
@@ -137,6 +161,13 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
   fs.mkdirSync(development, { recursive: true });
   fs.mkdirSync(path.join(userData, 'User'), { recursive: true });
   fs.writeFileSync(path.join(userData, 'User', 'settings.json'), JSON.stringify(settings, null, 2));
+  // Chromium's log holds the renderer's console messages, which VS Code's
+  // logs don't, and the warnings and errors of Chromium's processes, which
+  // then no longer go to standard error. Electron reads these variables as
+  // --enable-logging=file and --log-file, which VS Code would warn about on
+  // every launch. The file's directory must exist before VS Code starts.
+  const chromium = keep ? { ELECTRON_ENABLE_LOGGING: 'file', ELECTRON_LOG_FILE: path.join(userData, 'logs', CHROMIUM_LOG) } : {};
+  if (keep) fs.mkdirSync(path.join(userData, 'logs'), { recursive: true });
   const args = [
     ...(folder === undefined ? [] : [folder]),
     `--user-data-dir=${userData}`,
@@ -156,6 +187,7 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
   const env = isolatedEnv({
     VIRGIL_E2E_PROJECT: project,
     VIRGIL_E2E_LOGS: path.join(userData, 'logs'),
+    ...chromium,
     // The suite checks that VS Code loaded the installed copy.
     ...(vsix === undefined ? {} : { VIRGIL_E2E_EXTENSIONS_DIR: extensions }),
     ...(records === undefined ? {} : { VIRGIL_E2E_RECOVERY: records }),
@@ -334,6 +366,28 @@ function printChannelLogs(userData) {
   }
 }
 
+// Copies the VS Code logs of the launch in dir, dir/user-data/logs, to
+// target, and says where: the logs of the main process, the shared process,
+// each window, and its extension host, with the output channels', and
+// Chromium's (see launch). Nothing else of the launch, such as its
+// extensions, caches, or workspace, is copied. A copy that fails is
+// reported, and leaves the launch's result as it is.
+function keepLogs(dir, target) {
+  const name = path.basename(dir);
+  const logs = path.join(dir, 'user-data', 'logs');
+  try {
+    if (!fs.existsSync(logs)) {
+      console.error(`No VS Code logs of the ${name} launch to keep: ${logs} is missing`);
+      return;
+    }
+    fs.mkdirSync(target, { recursive: true });
+    fs.cpSync(logs, target, { recursive: true });
+    console.error(`Kept the VS Code logs of the ${name} launch in ${target}`);
+  } catch (error) {
+    console.error(`Could not keep the VS Code logs of the ${name} launch in ${target}: ${error.message}`);
+  }
+}
+
 // The line of the output channel's log that records how the last server to
 // start exited, if any: the client's report of its exit status, or the
 // server's error for input that ended before shutdown.
@@ -421,4 +475,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { VSCODE_VERSION, isolatedEnv, runGroup };
+module.exports = { VSCODE_VERSION, isolatedEnv, keepLogs, runGroup };
