@@ -1,10 +1,12 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// The Remote-SSH test's teardown, leak check, and bootstrap (e2e/remote-ssh/),
-// with a fake /proc and a fake VS Code: nothing is started or signaled.
+// The Remote-SSH test's teardown, process groups, leak check, and bootstrap
+// (e2e/remote-ssh/), with a fake /proc, clock, and VS Code: nothing is started
+// or signaled.
 
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
@@ -12,20 +14,22 @@ const vm = require('node:vm');
 
 const dir = path.join(__dirname, 'e2e/remote-ssh');
 
-// Loads a module of the Remote-SSH test with some modules and process
-// properties replaced.
-function load(file, modules, overrides) {
+// Loads a module of the Remote-SSH test with some modules, process
+// properties, and globals replaced.
+function load(file, modules, overrides, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(dir, file), 'utf8'), {
     module, exports: module.exports, __dirname: dir, Buffer, setTimeout, clearTimeout,
     process: Object.create(process, Object.getOwnPropertyDescriptors(overrides)),
     require: (name) => modules[name] ?? require(name),
+    ...globals,
   });
   return module.exports;
 }
 
 // node:fs with a fake /proc of processes, by PID: each has a start time, and
-// may have a parent, an executable, and an environment.
+// may have a state, a parent, a process group, an executable, and an
+// environment.
 function fakeProc(processes) {
   const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   const entry = (file) => {
@@ -39,7 +43,7 @@ function fakeProc(processes) {
     readdirSync: (name) => (name === '/proc' ? [...processes.keys()].map(String) : fs.readdirSync(name)),
     readFileSync: (file) => {
       const [pid, p, name] = entry(file);
-      if (name === 'stat') return `${pid} (x) S ${p.ppid ?? 1} ${Array(17).fill(0).join(' ')} ${p.start} 0 0`;
+      if (name === 'stat') return `${pid} (x) ${p.state ?? 'S'} ${p.ppid ?? 1} ${p.group ?? 0} ${Array(16).fill(0).join(' ')} ${p.start} 0 0`;
       if (name === 'environ') return (p.environ ?? []).join('\0');
       return '';
     },
@@ -101,6 +105,146 @@ test('the teardown stops a running Xvfb last, with SIGTERM', async () => {
   ]);
   assert.deepEqual(signals, [[200, 'SIGSTOP'], [200, 'SIGKILL'], [100, 'SIGTERM']]);
   assert.equal(result.ok, true);
+});
+
+// run.cjs's runGroup, over fake processes (see fakeProc) and a fake clock, for
+// a command whose first process has the PID 50, which exits when the test calls
+// exit(). Processes go on SIGKILL, and may say what happens on other signals.
+function runGroup(processes, timeout = 60000) {
+  const signals = [];
+  const kill = (target, name) => {
+    signals.push([target, name]);
+    for (const [pid, p] of [...processes]) {
+      if (pid !== target && p.group !== -target) continue;
+      p.on?.(name);
+      if (name === 'SIGKILL') processes.delete(pid);
+    }
+  };
+  let now = 0;
+  let next = 1;
+  const timers = new Map();
+  const add = (fn, ms, every) => {
+    timers.set(next, { at: now + ms, fn, every });
+    return next++;
+  };
+  const clear = (id) => timers.delete(id);
+  const child = Object.assign(new EventEmitter(), { pid: 50, stdout: new EventEmitter(), stderr: new EventEmitter() });
+  const run = load('run.cjs', {
+    'node:fs': fakeProc(processes),
+    'node:child_process': { spawn: () => child },
+    '../run.cjs': require('./e2e/run.cjs'),
+    './localhost.cjs': {},
+  }, { pid: 1, kill }, {
+    Date: { now: () => now },
+    setTimeout: (fn, ms) => add(fn, ms), setInterval: (fn, ms) => add(fn, ms, ms), clearTimeout: clear, clearInterval: clear,
+  });
+  const controller = new AbortController();
+  let result;
+  run.runGroup('command', [], { env: {}, timeout, signal: controller.signal }).then((value) => { result = value; });
+  return {
+    signals,
+    interrupt: () => controller.abort(),
+    exit: (code, signal) => child.emit('exit', code, signal),
+    // Runs the timers that are due in the next ms milliseconds.
+    advance: (ms) => {
+      const end = now + ms;
+      for (;;) {
+        const [id, timer] = [...timers].filter(([, t]) => t.at <= end).sort(([, a], [, b]) => a.at - b.at)[0] ?? [];
+        if (timer === undefined) break;
+        now = timer.at;
+        if (timer.every === undefined) timers.delete(id);
+        else timer.at += timer.every;
+        timer.fn();
+      }
+      now = end;
+    },
+    // runGroup's result, once it has resolved.
+    result: () => new Promise((resolve) => setImmediate(() => resolve(result))),
+  };
+}
+
+const ignoreTerm = (processes, pid) => Object.assign(processes.get(pid), { on: () => {} });
+
+test('a command\'s process group is stopped by its number while it is the run\'s', async () => {
+  // A command that ignores SIGTERM and exceeds its timeout.
+  let processes = new Map([[50, { start: '100', group: 50 }]]);
+  let run = runGroup(processes, 1000);
+  ignoreTerm(processes, 50);
+  run.advance(1050);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  run.advance(5100);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  run.exit(null, 'SIGKILL');
+  assert.equal((await run.result()).stopped, 'exceeded 1 seconds');
+
+  // A command that exits, and leaves a process that ignores SIGTERM in its
+  // group, which the runner saw there.
+  processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
+  run = runGroup(processes);
+  ignoreTerm(processes, 51);
+  run.advance(50);
+  processes.delete(50);
+  run.exit(0, null);
+  run.advance(10100);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  run.advance(5100);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  run.advance(100);
+  const result = await run.result();
+  assert.equal(result.groupLeft, true);
+  assert.equal(result.code, 0);
+});
+
+test('a process group whose number has passed to another group is never signaled', async () => {
+  // The command and a process that it started exit at once, and an unrelated
+  // process is given the command's PID, and makes a group of it, before the
+  // runner looks again.
+  let processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
+  let run = runGroup(processes);
+  run.advance(50);
+  processes.clear();
+  processes.set(50, { start: '200', group: 50 });
+  processes.set(52, { start: '210', group: 50 });
+  run.exit(0, null);
+  run.advance(20000);
+  assert.deepEqual(run.signals, []);
+  assert.equal((await run.result()).groupLeft, false);
+
+  // The command exits and leaves a process in its group, which SIGTERM stops;
+  // then an unrelated process is given the number before SIGKILL would follow.
+  processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
+  run = runGroup(processes);
+  processes.get(51).on = (name) => {
+    if (name !== 'SIGTERM') return;
+    processes.delete(51);
+    processes.set(50, { start: '200', group: 50 });
+  };
+  run.advance(50);
+  processes.delete(50);
+  run.exit(0, null);
+  run.advance(10100);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  run.advance(20000);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  assert.equal((await run.result()).groupLeft, true);
+});
+
+test('once a process group is no longer the run\'s, its processes are stopped one by one', async () => {
+  // The command exits and leaves a process in its group, which then makes a
+  // session of its own; an unrelated process is given the number, and the
+  // run is interrupted before the runner looks again.
+  const processes = new Map([[50, { start: '100', group: 50 }], [51, { start: '110', group: 50 }]]);
+  const run = runGroup(processes);
+  run.advance(50);
+  processes.delete(50);
+  run.exit(0, null);
+  processes.set(51, { start: '110', group: 51 });
+  processes.set(50, { start: '200', group: 50 });
+  run.interrupt();
+  assert.deepEqual(run.signals, [[51, 'SIGTERM']]);
+  run.advance(20000);
+  assert.deepEqual(run.signals, [[51, 'SIGTERM']]);
+  assert.equal((await run.result()).stopped, 'was interrupted');
 });
 
 // run.cjs's program that lists and signals processes on the host, over fake

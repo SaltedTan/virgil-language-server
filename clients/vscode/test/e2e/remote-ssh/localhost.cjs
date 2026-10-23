@@ -17,7 +17,9 @@
 // here, never processes found by name. It knows each by its PID and start
 // time, and checks both again just before each signal, so that a PID that a
 // process of the run had and another process has since been given is never
-// signaled.
+// signaled, unless that happens in the few system calls between the check and
+// the signal; Linux's pidfds would close that gap, but Node.js doesn't offer
+// them.
 
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');

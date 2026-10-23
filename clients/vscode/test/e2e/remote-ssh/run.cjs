@@ -209,21 +209,92 @@ function sh(word) {
   return `'${String(word).replaceAll("'", "'\\''")}'`;
 }
 
-function signalGroup(pid, name) {
+// Sends a signal to a process, or to a process group by its negated number,
+// which may have just gone.
+function send(target, name) {
   try {
-    process.kill(-pid, name);
+    process.kill(target, name);
   } catch (error) {
     if (error.code !== 'ESRCH') throw error;
   }
 }
 
-function groupExists(pid) {
+// A local process's state, process group, and start time, in clock ticks
+// after boot, from /proc/<pid>/stat: its third, fifth, and 22nd fields;
+// undefined if it has gone.
+function procStat(pid) {
   try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== 'ESRCH';
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return { state: fields[0], group: Number(fields[2]), start: fields[19] };
+  } catch {
+    return undefined;
   }
+}
+
+// The process group that runGroup starts, and the processes that the runner
+// has seen in it, each by PID and start time. The group's number is its first
+// process's PID, which Linux gives no other process while any process has it
+// as its PID, group, or session. So the number is the run's group's:
+// - until Node.js has reaped the first process, which runGroup notes with
+//   reaped(): alive or a zombie, it keeps its PID, and as its session's leader
+//   it can't leave the group;
+// - after that, while a process that the runner saw in the group in an
+//   earlier look is still in it, the same process by PID and start time, alive
+//   or a zombie: it has kept the number since, as a process can't come back to
+//   a session that it has left. Once none is, another process may have been
+//   given the number, and the group is never the run's again.
+// That is checked after each look at the group's processes, so that it covers
+// the whole look, and a signal to the group follows a look at once. Once the
+// first process has been reaped, that leaves a gap of a few system calls: if
+// the last process of the group's session exits in it, and Linux gives the
+// number to another process, which makes a group of it, that group gets the
+// signal. Linux's pidfds would close the gap, but Node.js doesn't offer them.
+function processGroup(pid) {
+  const seen = new Map();
+  let reaped = false;
+  let lost = pid === undefined;
+  const look = () => {
+    if (lost) return undefined;
+    const found = [];
+    for (const name of fs.readdirSync('/proc')) {
+      const stat = /^[0-9]+$/.test(name) ? procStat(name) : undefined;
+      if (stat?.group === pid && stat.state !== 'Z') found.push({ pid: Number(name), start: stat.start });
+    }
+    const held = (p, start) => {
+      const stat = procStat(p);
+      return stat?.start === start && stat.group === pid;
+    };
+    if (reaped && ![...seen].some(([p, start]) => held(p, start))) {
+      lost = true;
+      return undefined;
+    }
+    for (const p of found) seen.set(p.pid, p.start);
+    return found;
+  };
+  return {
+    // The group's processes, other than zombies, while it is the run's, which
+    // the runner then remembers; undefined once it isn't.
+    look,
+    reaped: () => {
+      reaped = true;
+    },
+    // Sends a signal to the group while it is the run's. Once it isn't, it
+    // sends it instead to each process that the runner saw in the group, and
+    // that is still that process, by PID and start time, wherever it is now;
+    // the same gap remains between that check and the signal.
+    signal: (name) => {
+      const found = look();
+      if (found === undefined) {
+        for (const [p, start] of seen) {
+          const stat = procStat(p);
+          if (stat?.start === start && stat.state !== 'Z') send(p, name);
+        }
+      } else if (!reaped || found.length > 0) {
+        send(-pid, name);
+      }
+    },
+  };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -232,12 +303,17 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // input, and collects its output, which onData also receives. A timeout or an
 // interrupt stops the group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If
 // the group outlives the command by GROUP_EXIT_MS, it is stopped the same way
-// and the result's groupLeft says so. Resolves once the whole group has gone.
+// and the result's groupLeft says so. Resolves once the whole group has gone,
+// or is no longer the run's (see processGroup), which it looks at every 50
+// milliseconds: a process that joins the group less than that before the
+// command exits, and outlives every process that the runner saw there, isn't
+// waited for or signaled.
 function runGroup(command, args, { env, input, timeout, signal, onData }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true,
     });
+    const group = processGroup(child.pid);
     const output = { stdout: [], stderr: [] };
     let stopped;
     let exited;
@@ -256,15 +332,16 @@ function runGroup(command, args, { env, input, timeout, signal, onData }) {
     const stop = (reason) => {
       if (stopped !== undefined || child.pid === undefined) return;
       stopped = reason;
-      signalGroup(child.pid, 'SIGTERM');
+      group.signal('SIGTERM');
       deadline = Date.now() + STOP_GRACE_MS;
     };
     const poll = setInterval(() => {
-      if (exited !== undefined && !groupExists(child.pid)) {
+      const left = group.look() ?? [];
+      if (exited !== undefined && left.length === 0) {
         finish(exited);
       } else if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
-        signalGroup(child.pid, 'SIGKILL');
+        group.signal('SIGKILL');
       } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
         groupLeft = true;
         stop(`left processes running ${GROUP_EXIT_MS / 1000} seconds after it exited`);
@@ -289,7 +366,8 @@ function runGroup(command, args, { env, input, timeout, signal, onData }) {
     child.on('error', (error) => finish({ error }));
     child.on('exit', (code, exitSignal) => {
       exited = { code, signal: exitSignal, at: Date.now() };
-      if (!groupExists(child.pid)) finish(exited);
+      group.reaped();
+      if ((group.look() ?? []).length === 0) finish(exited);
     });
   });
 }
@@ -1246,5 +1324,5 @@ if (require.main === module) {
   });
 }
 
-// REMOTE_PROCESSES is exported for test/remote-ssh.cjs.
-module.exports = { REMOTE_PROCESSES };
+// REMOTE_PROCESSES and runGroup are exported for test/remote-ssh.cjs.
+module.exports = { REMOTE_PROCESSES, runGroup };
