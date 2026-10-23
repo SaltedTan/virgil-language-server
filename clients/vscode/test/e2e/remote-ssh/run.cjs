@@ -315,11 +315,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // input, and collects its output, which onData also receives. A timeout or an
 // interrupt stops the group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If
 // the group outlives the command by GROUP_EXIT_MS, it is stopped the same way
-// and the result's groupLeft says so. Resolves once the whole group has gone,
-// or is no longer the run's (see processGroup), which it looks at every 50
-// milliseconds: a process that joins the group less than that before the
-// command exits, and outlives every process that the runner saw there, isn't
-// waited for or signaled.
+// and the result's groupLeft says so. Also waits for the output pipes to close,
+// so buffered archive bytes and diagnostics aren't lost after command exit.
+// Resolves once the whole group has gone, or is no longer the run's (see
+// processGroup), which it looks at every 50 milliseconds. A process that
+// joins the group less than that before the command exits, and outlives every
+// process that the runner saw there, isn't waited for or signaled.
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
