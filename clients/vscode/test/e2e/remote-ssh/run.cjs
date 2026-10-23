@@ -1013,10 +1013,16 @@ async function collectLogs(run) {
       const agent = path.posix.join(run.target.root, 'server', '.vscode-server');
       const found = await run.remote(`cd ${sh(agent)} 2>/dev/null && cat .*.token`, { allowFailure: true, signal });
       for (const token of found.stdout.split(/\s+/)) if (token.length >= 8) run.tokens.add(token);
-      // Some of these, or all, don't exist if the test stopped early.
+      // Some of these, or all, don't exist if the test stopped early. tar
+      // still archives the others when it can't read one, but exits with 2,
+      // so what it sent is kept, and the failure recorded.
       const archive = await run.remote(`cd ${sh(run.target.root)} && files=$(ls -d results `
         + 'server/.vscode-server/data/logs server/.vscode-server/.*.log 2>/dev/null); [ -z "$files" ] || tar -c -f - $files',
       { allowFailure: true, signal });
+      if (archive.code !== 0) {
+        run.record(infra(`could not collect all of the remote logs: their archive on ${run.target.alias} `
+          + `exited with ${archive.code}: ${archive.stderr.trim()}`));
+      }
       if (archive.data.length === 0) return;
       const remote = path.join(run.evidence, 'remote');
       fs.mkdirSync(remote, { recursive: true });
