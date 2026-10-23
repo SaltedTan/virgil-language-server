@@ -64,6 +64,18 @@ if mode == "--run":
 if mode is not None:
     sys.exit(f"error: unknown option {mode}")
 closed_shared = root / "closed-shared"
+ownership_version = root / "ownership-version"
+(ownership_version / "sub").mkdir(parents=True, exist_ok=True)
+(ownership_version / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"parent","sources":["sub/main.v3"]}]}', encoding="utf-8",
+)
+(ownership_version / "sub" / "main.v3").write_text(
+    "component Main { def main() -> int { return Shapes.answer(); } }\n", encoding="utf-8",
+)
+(ownership_version / "sub" / "shapes.v3").write_text(
+    "component Shapes { def answer() -> bool { return true; } }\n", encoding="utf-8",
+)
+(ownership_version / "sub" / ".virgil-lsp.json").unlink(missing_ok=True)
 for name in ["semantic-membership", "semantic-membership-running"]:
     base = root / name
     base.mkdir(parents=True, exist_ok=True)

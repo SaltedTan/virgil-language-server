@@ -183,8 +183,9 @@ class LspServer {
 	// version.
 	private def documentVersionChanged(doc: DocumentOverlay) {
 		if (isProjectFile(doc)) return;
-		if (!parserDiagnostics.versioned(doc) || semanticDiagnostics == null) return;
-		semanticDiagnostics.schedule(projects.forDocument(doc.uri).contexts, false);
+		var mapping = projects.forDocument(doc.uri);
+		if (!parserDiagnostics.versioned(doc, mapping.active) || semanticDiagnostics == null) return;
+		semanticDiagnostics.schedule(mapping.contexts, false);
 	}
 	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
 		invalidateQueries();

@@ -31,8 +31,8 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 	// published list still describe it, so only their version moves. Returns
 	// true if stale semantic diagnostics were dropped and need a replacement
 	// analysis.
-	def versioned(doc: DocumentOverlay) -> bool {
-		return lists.versioned(doc);
+	def versioned(doc: DocumentOverlay, owner: ProjectContext) -> bool {
+		return lists.versioned(doc, owner);
 	}
 	// The path that names {doc} in its diagnostics: its file's, or its URI.
 	private def pathOf(doc: DocumentOverlay) -> string {

@@ -20,6 +20,7 @@ def X = [
 	T("LspSemanticDiagnostics:stale_version_only_reanalyzes", test_stale_version_only_reanalyzes),
 	T("LspSemanticDiagnostics:source_membership_version_only", test_source_membership_version_only),
 	T("LspSemanticDiagnostics:source_membership_running", test_source_membership_running),
+	T("LspSemanticDiagnostics:ownership_version_only", test_ownership_version_only),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
 	T("LspSemanticDiagnostics:urgent_context_starts_first", test_urgent_context_starts_first),
@@ -419,6 +420,64 @@ def sourceMembership(t: Tester, running: bool) {
 	var discarded = 0;
 	for (i < infos.messages.length) if (Strings.startsWith(infos.messages[i], "discarded analysis ")) discarded++;
 	t.asserti(if(running, 1, 0), discarded);
+	s.server.close();
+}
+def test_ownership_version_only(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/ownership-version");
+	var config = ProjectFiles.join(base, "sub/.virgil-lsp.json");
+	var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(config, "\x00")], [0, 1, 2]);
+	t.assert(pid > 0, "fixture reset started");
+	if (pid <= 0) return;
+	var status = Array<int>.new(1);
+	t.asserti(pid, HostOs.wait(pid, status));
+	t.asserti(0, status[0]);
+	var s = OwnershipTestSession.new("ownership-version"), uri = s.uri("sub/main.v3");
+	s.open("sub/main.v3", 1, System.fileLoad(ProjectFiles.join(base, "sub/main.v3")));
+	s.settle();
+	var first = published(s.messages.extract(), uri);
+	t.assert(first != null && first.length > 0, "the excluded Shapes component is unresolved");
+	if (first != null && first.length > 0) t.assert_string("UnresolvedIdentifier", JsonValue.String.!(field(first[0], "code")).v);
+	var parent = s.server.projects.forDocument(uri).active, snapshot = parent.snapshot;
+	t.assert_string("parent", parent.definition.name);
+	var text = "{\"version\":1,\"projects\":[{\"name\":\"child\",\"sources\":[\"main.v3\",\"shapes.v3\"]}]}";
+	var fd = System.fileOpen(config, false);
+	t.assert(fd >= 0, "the child configuration is created");
+	if (fd < 0) return s.server.close();
+	System.fileWriteK(fd, text, 0, text.length);
+	System.fileClose(fd);
+	var event = Strings.newMap<JsonValue>(), watched = Strings.newMap<JsonValue>();
+	event["uri"] = JsonValue.String(s.uri("sub/.virgil-lsp.json"));
+	event["type"] = JsonValue.Int(1);
+	watched["changes"] = JsonValue.JArray([JsonValue.JObject(event)]);
+	s.server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(watched)).encode());
+	var child = s.server.projects.forDocument(uri).active;
+	t.assert_string("child", child.definition.name);
+	t.assert(child != parent && parent.config.current, "ownership changes without retiring the parent");
+	t.assert(LspAnalysisCapture.matchesSources(snapshot.documentVersions, parent.sources), "the parent's captured membership still matches");
+	for (v in snapshot.documentVersions) t.assert(v.matchesDocument(s.server.documents), "the parent's captured stamps still match");
+	t.assert(child.snapshot == null, "the child analysis has not completed");
+	var doc = Strings.newMap<JsonValue>(), change = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(uri);
+	doc["version"] = JsonValue.Int(2);
+	change["textDocument"] = JsonValue.JObject(doc);
+	change["contentChanges"] = JsonValue.JArray([]);
+	s.server.handle(JsonRpcMessage.Notification("textDocument/didChange", JsonRpcParams.ByName(change)).encode());
+	var cleared = lastPublication(s.messages.extract(), uri);
+	t.assert(cleared != null, "the empty change publishes at the new version");
+	if (cleared != null) {
+		t.asserti(2, JsonValue.Int.!(cleared["version"]).v);
+		t.asserti(0, JsonValue.JArray.!(cleared["diagnostics"]).v.length);
+	}
+	s.settle();
+	var replacement = lastPublication(s.messages.extract(), uri);
+	t.assert(replacement != null, "the child publishes its correct diagnostics without another edit");
+	if (replacement != null) {
+		t.asserti(2, JsonValue.Int.!(replacement["version"]).v);
+		var diagnostics = JsonValue.JArray.!(replacement["diagnostics"]).v;
+		t.asserti(1, diagnostics.length);
+		if (diagnostics.length == 1) t.assert_string("TypeError", JsonValue.String.!(field(diagnostics[0], "code")).v);
+	}
+	t.assert(child.snapshot != null && child.snapshot.documentVersions.length == 2, "the replacement analyzes both child sources");
 	s.server.close();
 }
 def test_closed_shared_owner(t: Tester) {

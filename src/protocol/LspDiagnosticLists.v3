@@ -47,10 +47,10 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// current; otherwise they are dropped. A stale TypeError must not
 	// reappear with a fresh version. Returns true if it dropped them, so the
 	// server can schedule their replacement: nothing else is guaranteed to.
-	def versioned(doc: DocumentOverlay) -> bool {
+	def versioned(doc: DocumentOverlay, owner: ProjectContext) -> bool {
 		var list = lists[doc.uri];
 		if (list == null) return false;
-		var dropped = list.semantic.length > 0 && !fresh(list.owner, list.sources);
+		var dropped = list.semantic.length > 0 && (list.owner != owner || !fresh(list.owner, list.sources));
 		if (dropped) list.dropSemantic();
 		publish(list, doc, false);
 		return dropped;
