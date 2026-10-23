@@ -149,7 +149,8 @@ jobs:
     # Packages the VSIX once, as CI's vscode-client job does, and runs the
     # Extension Host test against that file with the server from the Linux
     # archive, extracted as a user would. The checksums job attaches the same
-    # file, which it checks against the SHA-256 recorded here.
+    # file, which it checks against the SHA-256 recorded here. If a launch of
+    # the test fails, the job uploads that launch's VS Code logs.
     name: Package and test the VS Code extension
     needs: [check, build]
     runs-on: ubuntu-24.04
@@ -202,7 +203,16 @@ jobs:
         working-directory: clients/vscode
         env:
           VSIX: ${{ steps.package.outputs.file }}
-        run: xvfb-run -a npm run test:e2e -- --vsix "$VSIX" "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp"
+        run: |
+          xvfb-run -a npm run test:e2e -- --vsix "$VSIX" --logs "$RUNNER_TEMP/vscode-logs" \
+            "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: vsix-extension-host-logs-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vscode-logs
+          if-no-files-found: warn
+          retention-days: 30
       - name: Check that the VSIX is unchanged
         working-directory: clients/vscode
         env:
