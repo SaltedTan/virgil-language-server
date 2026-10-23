@@ -253,7 +253,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // that it has left. Once neither is, another process may have been given the
   // number, and the group is never the run's again. That is checked after the
   // look, so that it covers the whole look.
-  // The group is empty if the look read every process that it listed, and
+  // The group is empty if no listed PID disappeared during the look, and it
   // found none in the group but zombies that the last look found there too. A
   // process could start another and exit between the listing and the read,
   // which then finds it gone, or a zombie, while the listing misses the other.
