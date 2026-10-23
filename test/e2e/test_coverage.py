@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+"""Checks that coverage.json and results-v1.schema.json, beside this file, are
+consistent with themselves and with each other (RESULTS.md). It reads only
+those two files, never the tests that they describe."""
+import json
+import re
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+CHECK_ID = re.compile(rf"({NAME.pattern})\.({NAME.pattern})\.({NAME.pattern})")
+GAP_ID = re.compile(rf"({NAME.pattern})\.{NAME.pattern}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+ISSUE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/[0-9]+")
+
+
+def load(name):
+    """Parses a JSON file, rejecting duplicate keys and NaN or Infinity."""
+    def pairs(items):
+        keys = [key for key, _ in items]
+        repeated = sorted({key for key in keys if keys.count(key) > 1})
+        if repeated:
+            raise ValueError(f"{name}: duplicate keys {repeated}")
+        return dict(items)
+
+    def constant(value):
+        raise ValueError(f"{name}: {value} is not JSON")
+
+    with (HERE / name).open(encoding="utf-8") as f:
+        return json.load(f, object_pairs_hook=pairs, parse_constant=constant)
+
+
+def by_id(items):
+    return {item["id"]: item for item in items}
+
+
+def repeated(values):
+    return sorted({value for value in values if values.count(value) > 1})
+
+
+class CoverageTest(unittest.TestCase):
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = load("coverage.json")
+        cls.schema = load("results-v1.schema.json")
+        m = cls.manifest
+        cls.evidence = by_id(m["evidence"])
+        cls.levels = by_id(m["levels"])
+        cls.areas = by_id(m["areas"])
+        cls.suites = by_id(m["suites"])
+        cls.profiles = {s["id"]: by_id(s["profiles"]) for s in m["suites"]}
+        cls.conditions = by_id(m["conditions"])
+        cls.scopes = by_id(m["scopes"])
+        cls.setups = by_id(m["setups"])
+        cls.checks = by_id(m["checks"])
+        cls.gaps = by_id(m["gaps"])
+        cls.features = [a["id"] for a in m["areas"] if a["matrix"]]
+
+    def area(self, check_id):
+        match = CHECK_ID.fullmatch(check_id)
+        return match and match.group(2)
+
+    def test_versions(self):
+        self.assertEqual(1, self.manifest["version"])
+        self.assertEqual({"const": 1}, self.schema["$defs"]["schema"])
+
+    def test_keys_are_unique(self):
+        m = self.manifest
+        problems = []
+        for section in ["evidence", "levels", "areas", "suites", "conditions", "scopes", "setups",
+                        "checks", "gaps", "gapKinds", "xfails"]:
+            ids = [item["id"] for item in m[section]]
+            problems += [f"{section}: {key} repeated" for key in repeated(ids)]
+            problems += [f"{section}: {key} is not a name" for key in ids
+                         if section not in ("checks", "gaps") and not NAME.fullmatch(key)]
+        prefixes = {prefix for suite in m["suites"] for prefix in suite["prefixes"]}
+        for gap in m["gaps"]:
+            match = GAP_ID.fullmatch(gap["id"])
+            if not match or match.group(1) not in prefixes:
+                problems.append(f"gaps: {gap['id']} is not a harness prefix and a name")
+        for suite in m["suites"]:
+            ids = [p["id"] for p in suite["profiles"]]
+            problems += [f"suite {suite['id']}: profile {key} repeated" for key in repeated(ids)]
+            problems += [f"suite {suite['id']}: profile {key} is not a name" for key in ids if not NAME.fullmatch(key)]
+        self.assertEqual([], problems)
+
+    def test_check_ids_are_well_formed(self):
+        problems = []
+        for check in self.manifest["checks"]:
+            key = check["id"]
+            match = CHECK_ID.fullmatch(key)
+            if not match:
+                problems.append(f"{key}: not harness.area.subcase in lowercase words and hyphens")
+                continue
+            prefix, area, _ = match.groups()
+            if area not in self.areas:
+                problems.append(f"{key}: unknown area {area}")
+            if not check["suites"] or repeated(check["suites"]):
+                problems.append(f"{key}: suites must be a nonempty list without repeats")
+            for suite in check["suites"]:
+                if suite not in self.suites:
+                    problems.append(f"{key}: unknown suite {suite}")
+                    continue
+                if prefix not in self.suites[suite]["prefixes"]:
+                    problems.append(f"{key}: suite {suite} doesn't run {prefix}.* checks")
+                problems += [f"{key}: suite {suite} has no profile {p}" for p in check["profiles"]
+                             if p not in self.profiles[suite]]
+            if not check["profiles"] or repeated(check["profiles"]):
+                problems.append(f"{key}: profiles must be a nonempty list without repeats")
+            if check["level"] not in self.levels:
+                problems.append(f"{key}: unknown level {check['level']}")
+            if check["when"] is not None and check["when"] not in self.conditions:
+                problems.append(f"{key}: unknown condition {check['when']}")
+            if not isinstance(check["required"], bool):
+                problems.append(f"{key}: required must be true or false")
+            if not check["source"] or not check["description"]:
+                problems.append(f"{key}: source and description must not be empty")
+            if key in self.manifest["retired"]:
+                problems.append(f"{key}: retired IDs can't be reused")
+        problems += [f"retired {key}: not a check ID" for key in self.manifest["retired"]
+                     if not CHECK_ID.fullmatch(key)]
+        self.assertEqual([], problems)
+
+    def test_every_level_has_its_wording(self):
+        order = [e["id"] for e in self.manifest["evidence"]]
+        problems = []
+        for level in self.manifest["levels"]:
+            tokens = level["evidence"]
+            if not tokens or any(t not in self.evidence for t in tokens):
+                problems.append(f"level {level['id']}: unknown or no evidence {tokens}")
+                continue
+            if tokens != sorted(set(tokens), key=order.index):
+                problems.append(f"level {level['id']}: evidence must be unique, in the catalogue's order")
+            wording = "Pass (" + " + ".join(self.evidence[t]["label"] for t in tokens) + ")"
+            if level["wording"] != wording:
+                problems.append(f"level {level['id']}: wording {level['wording']!r}, not {wording!r}")
+        sets = [tuple(level["evidence"]) for level in self.manifest["levels"]]
+        problems += [f"two levels have the evidence {list(s)}" for s in repeated(sets)]
+        problems += [f"two levels have the wording {w!r}" for w in
+                     repeated([level["wording"] for level in self.manifest["levels"]])]
+        titles = [(choice["const"], choice["title"]) for choice in self.schema["$defs"]["level"]["oneOf"]]
+        manifest = [(level["id"], level["wording"]) for level in self.manifest["levels"]]
+        if titles != manifest:
+            problems.append(f"the schema's levels {titles} differ from the manifest's {manifest}")
+        self.assertEqual([], problems)
+
+    def test_no_required_check_is_manual_only(self):
+        manual = {t for t, e in self.evidence.items() if e["manual"]}
+        problems = []
+        for check in self.manifest["checks"]:
+            level = self.levels.get(check["level"])
+            manual_only = level is not None and set(level["evidence"]) <= manual
+            if check["required"] and manual_only:
+                problems.append(f"{check['id']}: required, but its level {check['level']} is manual only")
+            if check["required"] and "manual" in check["suites"]:
+                problems.append(f"{check['id']}: required, but a manual record")
+        self.assertEqual([], problems)
+
+    def test_every_matrix_cell_is_mapped_not_covered_or_out_of_scope(self):
+        matrix = self.manifest["matrix"]
+        shown = {t for t, e in self.evidence.items() if e["matrix"]}
+        problems = []
+        cells = {}
+        for cell in matrix["cells"]:
+            where = f"cell {cell['setup']}/{cell['feature']}"
+            if (cell["setup"], cell["feature"]) in cells:
+                problems.append(f"{where}: repeated")
+            cells[(cell["setup"], cell["feature"])] = cell
+            setup = self.setups.get(cell["setup"])
+            if setup is None or cell["feature"] not in self.features:
+                problems.append(f"{where}: unknown setup or a feature outside the matrix")
+                continue
+            for key in cell["checks"]:
+                check = self.checks.get(key)
+                if check is None:
+                    problems.append(f"{where}: unknown check {key}")
+                elif setup["suite"] not in check["suites"] or self.area(key) != cell["feature"]:
+                    problems.append(f"{where}: {key} doesn't run in {setup['suite']} for {cell['feature']}")
+            problems += [f"{where}: unknown gap {g}" for g in cell["notCovered"] if g not in self.gaps]
+            problems += [f"{where}: {k} repeated" for k in repeated(cell["checks"] + cell["notCovered"])]
+            if not cell["checks"]:
+                if cell["level"] is not None or not cell["notCovered"]:
+                    problems.append(f"{where}: with no checks, the level must be null and a gap not covered")
+                continue
+            evidence = set()
+            for key in cell["checks"]:
+                if key in self.checks and self.checks[key]["level"] in self.levels:
+                    evidence |= set(self.levels[self.checks[key]["level"]]["evidence"]) & shown
+            level = self.levels.get(cell["level"])
+            if level is None or set(level["evidence"]) != evidence:
+                problems.append(f"{where}: level {cell['level']}, but its checks give the evidence {sorted(evidence)}")
+        for setup in self.manifest["setups"]:
+            scope = self.scopes.get(setup["scope"])
+            if scope is None or setup["suite"] not in self.suites:
+                problems.append(f"setup {setup['id']}: unknown scope or suite")
+                continue
+            present = [f for f in self.features if (setup["id"], f) in cells]
+            if setup["scope"] == "automated":
+                problems += [f"setup {setup['id']}: no cell for {f}" for f in self.features if f not in present]
+            else:
+                problems += [f"setup {setup['id']}: out of scope ({setup['scope']}), but has a cell for {f}" for f in present]
+                if not scope["wording"]:
+                    problems.append(f"scope {scope['id']}: an out-of-scope row needs its wording")
+            if setup["scope"] == "deferred" and not (setup["issue"] and ISSUE.fullmatch(setup["issue"])):
+                problems.append(f"setup {setup['id']}: deferred without an issue")
+        # A matrix check counts in every automated setup that runs it.
+        for check in self.manifest["checks"]:
+            feature = self.area(check["id"])
+            if feature not in self.features:
+                continue
+            for setup in self.manifest["setups"]:
+                cell = cells.get((setup["id"], feature))
+                if setup["scope"] == "automated" and setup["suite"] in check["suites"] \
+                        and (cell is None or check["id"] not in cell["checks"]):
+                    problems.append(f"{check['id']}: missing from cell {setup['id']}/{feature}")
+        self.assertEqual([], problems)
+
+    def test_every_checklist_step_is_mapped_or_not_covered(self):
+        checklist = self.manifest["checklist"]
+        steps = [step["step"] for step in checklist["steps"]]
+        self.assertTrue(steps, "no checklist steps")
+        self.assertEqual(list(range(1, len(steps) + 1)), steps, "steps must be numbered from 1, in order")
+        problems = []
+        for suite in checklist["suites"]:
+            if suite not in self.suites:
+                problems.append(f"checklist: unknown suite {suite}")
+        for step in checklist["steps"]:
+            where = f"step {step['step']}"
+            if not step["summary"]:
+                problems.append(f"{where}: no summary")
+            for key in step["checks"]:
+                check = self.checks.get(key)
+                if check is None or not set(check["suites"]) & set(checklist["suites"]):
+                    problems.append(f"{where}: {key} is not a check of {checklist['suites']}")
+            problems += [f"{where}: unknown gap {g}" for g in step["notCovered"] if g not in self.gaps]
+            problems += [f"{where}: {k} repeated" for k in repeated(step["checks"] + step["notCovered"])]
+            for suite in checklist["suites"]:
+                if not step["notCovered"] and not any(
+                        suite in self.checks[key]["suites"] for key in step["checks"] if key in self.checks):
+                    problems.append(f"{where}: neither a check of {suite} nor a gap not covered")
+        self.assertEqual([], problems)
+
+    def test_gaps_and_conditions(self):
+        kinds = {kind["id"] for kind in self.manifest["gapKinds"]}
+        used = {g for cell in self.manifest["matrix"]["cells"] for g in cell["notCovered"]}
+        used |= {g for step in self.manifest["checklist"]["steps"] for g in step["notCovered"]}
+        problems = []
+        for gap in self.manifest["gaps"]:
+            if gap["kind"] not in kinds or not gap["what"]:
+                problems.append(f"gap {gap['id']}: unknown kind or no description")
+            if gap["planned"] is not None and not ISSUE.fullmatch(gap["planned"]):
+                problems.append(f"gap {gap['id']}: planned must be null or an issue URL")
+            if gap["id"] not in used:
+                problems.append(f"gap {gap['id']}: not used by a cell or a step")
+        when = {check["when"] for check in self.manifest["checks"]}
+        for condition in self.manifest["conditions"]:
+            other = condition["alternative"]
+            if condition["id"] not in when:
+                problems.append(f"condition {condition['id']}: no check uses it")
+            if other is not None and (other not in self.conditions or self.conditions[other]["alternative"] != condition["id"]):
+                problems.append(f"condition {condition['id']}: its alternative {other} doesn't name it back")
+        self.assertEqual([], problems)
+
+    def test_the_expected_failure_rule(self):
+        rules = self.manifest["xfails"]
+        self.assertEqual(1, len(rules), "the only expected failure is noice.nvim's missing-root warning")
+        rule = rules[0]
+        self.assertIsInstance(rule["check"], str, "a rule names exactly one check")
+        self.assertIsInstance(rule["commit"], str, "a rule names exactly one commit")
+        self.assertRegex(rule["commit"], COMMIT.pattern + r"\Z")
+        self.assertRegex(rule["failureCode"], NAME.pattern + r"\Z")
+        self.assertRegex(rule["issue"], ISSUE.pattern + r"\Z")
+        self.assertTrue(rule["plugin"])
+        check = self.checks.get(rule["check"])
+        self.assertIsNotNone(check, f"unknown check {rule['check']}")
+        problems = []
+        for suite in check["suites"]:
+            profiles = self.profiles[suite]
+            stock, workaround = profiles.get(rule["profile"]), profiles.get(rule["workaroundProfile"])
+            if stock is None or stock["workaround"] or rule["profile"] not in check["profiles"]:
+                problems.append(f"profile {rule['profile']}: must be a stock profile of {rule['check']}")
+            if workaround is None or not workaround["workaround"] or rule["workaroundProfile"] not in check["profiles"]:
+                problems.append(f"profile {rule['workaroundProfile']}: must be a workaround profile of {rule['check']}")
+        for key in rule["requires"]:
+            other = self.checks.get(key)
+            if other is None or key == rule["check"] or rule["profile"] not in other["profiles"]:
+                problems.append(f"requires {key}: must be another check in the profile {rule['profile']}")
+        if not rule["requires"]:
+            problems.append("the rule requires no checks to pass beside it")
+        self.assertEqual([], problems)
+
+    def test_schema_agrees_with_the_manifest(self):
+        defs = self.schema["$defs"]
+        self.assertEqual([s["id"] for s in self.manifest["suites"]], defs["suite"]["enum"])
+        references = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if "$ref" in node:
+                    references.append(node["$ref"])
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(self.schema)
+        names = {ref.removeprefix("#/$defs/") for ref in references}
+        self.assertEqual([], sorted(ref for ref in references if not ref.startswith("#/$defs/")))
+        self.assertEqual([], sorted(names - set(defs)), "references to missing definitions")
+        self.assertEqual([], sorted(set(defs) - names), "unused definitions")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -23,6 +23,8 @@ The editor tests don't cover:
 - Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
 - What the editor shows. The tests read diagnostics, symbols, locations, hover text, signature help, and completion items through editor APIs, not from the Problems view, the outline, a hover popup, a signature popup, a completion menu, or a notification. The LazyVim test reads the text of noice.nvim's hover and signature windows and blink.cmp's menu items, but not how they look.
 
+[Editor test results](../test/e2e/RESULTS.md) gives each automated check a stable ID, maps the checks to the matrix below and the VS Code checklist, and lists what no test covers.
+
 ## Matrix
 
 Try each setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, workspace symbols, rename, completion, configuration changes, and restart.

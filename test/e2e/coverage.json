@@ -1,0 +1,2499 @@
+{
+  "version": 1,
+  "evidence": [
+    {
+      "id": "editor-api",
+      "label": "API",
+      "manual": false,
+      "matrix": true,
+      "description": "The check reads the server's result through the editor's API or its LSP client: requests, providers, published diagnostics, and the extension's output channel."
+    },
+    {
+      "id": "ui-state",
+      "label": "UI state",
+      "manual": false,
+      "matrix": true,
+      "description": "The check drives the editor through its keys and reads the state of its UI: windows and their text, menus and their items, mappings, the mode, and message histories. It doesn't see how they look."
+    },
+    {
+      "id": "process",
+      "label": "process",
+      "manual": false,
+      "matrix": false,
+      "description": "The check observes processes: exit statuses, deadlines, process groups, and what is left running."
+    },
+    {
+      "id": "configuration",
+      "label": "configuration",
+      "manual": false,
+      "matrix": false,
+      "description": "The check verifies the test's own inputs and setup: prerequisites, pinned versions, installations, key mappings, and the evidence it keeps."
+    },
+    {
+      "id": "manual",
+      "label": "manual",
+      "manual": true,
+      "matrix": true,
+      "description": "A person observed it. Manual records are optional: the release gate never requires one."
+    }
+  ],
+  "levels": [
+    {
+      "id": "api",
+      "evidence": ["editor-api"],
+      "wording": "Pass (API)"
+    },
+    {
+      "id": "ui-state",
+      "evidence": ["ui-state"],
+      "wording": "Pass (UI state)"
+    },
+    {
+      "id": "api-ui-state",
+      "evidence": ["editor-api", "ui-state"],
+      "wording": "Pass (API + UI state)"
+    },
+    {
+      "id": "api-process",
+      "evidence": ["editor-api", "process"],
+      "wording": "Pass (API + process)"
+    },
+    {
+      "id": "process",
+      "evidence": ["process"],
+      "wording": "Pass (process)"
+    },
+    {
+      "id": "configuration",
+      "evidence": ["configuration"],
+      "wording": "Pass (configuration)"
+    },
+    {
+      "id": "manual",
+      "evidence": ["manual"],
+      "wording": "Pass (manual)"
+    }
+  ],
+  "areas": [
+    {
+      "id": "diagnostics",
+      "label": "Diagnostics",
+      "matrix": true
+    },
+    {
+      "id": "symbols",
+      "label": "Document symbols",
+      "matrix": true
+    },
+    {
+      "id": "definition",
+      "label": "Definition",
+      "matrix": true
+    },
+    {
+      "id": "hover",
+      "label": "Hover",
+      "matrix": true
+    },
+    {
+      "id": "configuration",
+      "label": "Configuration changes",
+      "matrix": true
+    },
+    {
+      "id": "restart",
+      "label": "Restart",
+      "matrix": true
+    },
+    {
+      "id": "references",
+      "label": "References",
+      "matrix": true
+    },
+    {
+      "id": "workspace-symbols",
+      "label": "Workspace symbols",
+      "matrix": true
+    },
+    {
+      "id": "signature",
+      "label": "Signature help",
+      "matrix": true
+    },
+    {
+      "id": "rename",
+      "label": "Rename",
+      "matrix": true
+    },
+    {
+      "id": "completion",
+      "label": "Completion",
+      "matrix": true
+    },
+    {
+      "id": "startup",
+      "label": "Startup",
+      "matrix": false
+    },
+    {
+      "id": "startup-errors",
+      "label": "Startup errors",
+      "matrix": false
+    },
+    {
+      "id": "trace",
+      "label": "Message trace",
+      "matrix": false
+    },
+    {
+      "id": "shutdown",
+      "label": "Shutdown",
+      "matrix": false
+    },
+    {
+      "id": "keymaps",
+      "label": "Key mappings",
+      "matrix": false
+    },
+    {
+      "id": "identity",
+      "label": "Remote identity",
+      "matrix": false
+    },
+    {
+      "id": "infrastructure",
+      "label": "Test infrastructure",
+      "matrix": false
+    }
+  ],
+  "suites": [
+    {
+      "id": "nvim",
+      "label": "Headless Neovim test",
+      "prefixes": ["nvim"],
+      "harness": ["test/e2e/nvim/run.sh", "test/e2e/nvim/check.lua"],
+      "profiles": [
+        {
+          "id": "main",
+          "workaround": false,
+          "repeated": false,
+          "description": "check.lua in headless Neovim, with VIRGIL_LOC set, opening bad.v3."
+        },
+        {
+          "id": "wrapper",
+          "workaround": false,
+          "repeated": false,
+          "description": "run.sh, outside Neovim."
+        }
+      ]
+    },
+    {
+      "id": "lazyvim",
+      "label": "Scripted LazyVim test",
+      "prefixes": ["lazyvim"],
+      "harness": ["test/e2e/lazyvim/run.sh", "test/e2e/lazyvim/driver.lua"],
+      "profiles": [
+        {
+          "id": "main",
+          "workaround": false,
+          "repeated": false,
+          "description": "The stock configuration, with VIRGIL_LOC set, opening bad.v3."
+        },
+        {
+          "id": "noroot",
+          "workaround": false,
+          "repeated": false,
+          "description": "The stock configuration, with VIRGIL_LOC unset, opening .virgil-lsp.json."
+        },
+        {
+          "id": "noroot-noice-workaround",
+          "workaround": true,
+          "repeated": false,
+          "description": "As noroot, with noice.nvim's LSP message handler turned off (lsp.message.enabled = false), the documented workaround for folke/noice.nvim#1074."
+        },
+        {
+          "id": "wrapper",
+          "workaround": false,
+          "repeated": false,
+          "description": "run.sh, outside Neovim."
+        }
+      ]
+    },
+    {
+      "id": "vscode",
+      "label": "Extension Host test",
+      "prefixes": ["vscode"],
+      "harness": ["clients/vscode/test/e2e/run.cjs", "clients/vscode/test/e2e/suite.cjs"],
+      "profiles": [
+        {
+          "id": "single-file",
+          "workaround": false,
+          "repeated": false,
+          "description": "A launch with no folder, opening bad.v3."
+        },
+        {
+          "id": "workspace",
+          "workaround": false,
+          "repeated": false,
+          "description": "A launch with the fixture as the workspace folder."
+        },
+        {
+          "id": "wrapper",
+          "workaround": false,
+          "repeated": false,
+          "description": "run.cjs, outside VS Code."
+        }
+      ]
+    },
+    {
+      "id": "remote-ssh",
+      "label": "Remote-SSH test",
+      "prefixes": ["ssh", "vscode"],
+      "harness": ["clients/vscode/test/e2e/remote-ssh/run.cjs", "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs", "clients/vscode/test/e2e/suite.cjs"],
+      "profiles": [
+        {
+          "id": "probe",
+          "workaround": false,
+          "repeated": false,
+          "description": "The first connection, which installs the VS Code Server, without the extension."
+        },
+        {
+          "id": "single-file",
+          "workaround": false,
+          "repeated": true,
+          "description": "A launch with no folder, in the remote extension host; once per repetition (--repeat)."
+        },
+        {
+          "id": "workspace",
+          "workaround": false,
+          "repeated": true,
+          "description": "A launch with the remote fixture as the folder; once per repetition (--repeat)."
+        },
+        {
+          "id": "wrapper",
+          "workaround": false,
+          "repeated": false,
+          "description": "remote-ssh/run.cjs, outside VS Code."
+        }
+      ]
+    },
+    {
+      "id": "manual",
+      "label": "Manual record",
+      "prefixes": ["manual"],
+      "harness": [],
+      "profiles": [
+        {
+          "id": "observation",
+          "workaround": false,
+          "repeated": false,
+          "description": "A person's observations of a setup, with their attestation. Optional: no check of this suite is required."
+        }
+      ]
+    }
+  ],
+  "conditions": [
+    {
+      "id": "vsix",
+      "alternative": null,
+      "description": "The extension is installed from a VSIX: run.cjs with --vsix, and every Remote-SSH launch. Without it, run.cjs loads the extension from source, and the check doesn't run."
+    },
+    {
+      "id": "file-watching",
+      "alternative": "no-file-watching",
+      "description": "The client declares workspace.didChangeWatchedFiles.dynamicRegistration, as Neovim does on macOS, so the server registers file watchers."
+    },
+    {
+      "id": "no-file-watching",
+      "alternative": "file-watching",
+      "description": "The client doesn't declare file watching, as Neovim on Linux doesn't; the server notices a change on disk at the next .v3 change."
+    },
+    {
+      "id": "builtin-lsp-command",
+      "alternative": "lspconfig-restart-command",
+      "description": "Neovim has its built-in :lsp command (0.12 and later), and nvim-lspconfig defines no :LspRestart."
+    },
+    {
+      "id": "lspconfig-restart-command",
+      "alternative": "builtin-lsp-command",
+      "description": "Neovim has no built-in :lsp command (0.11), and restarts use nvim-lspconfig's :LspRestart."
+    }
+  ],
+  "scopes": [
+    {
+      "id": "automated",
+      "wording": null,
+      "description": "Automated tests run this setup. Each of its cells maps to checks, gaps, or both."
+    },
+    {
+      "id": "best-effort",
+      "wording": "Not tested (best effort)",
+      "description": "No automated test runs this setup, and nothing requires it."
+    },
+    {
+      "id": "deferred",
+      "wording": "Not tested (deferred)",
+      "description": "A test for this setup is planned, but nothing requires it yet."
+    }
+  ],
+  "setups": [
+    {
+      "id": "vscode-linux",
+      "label": "VS Code, Linux",
+      "suite": "vscode",
+      "client": "linux",
+      "host": "linux",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "vscode-macos",
+      "label": "VS Code, macOS",
+      "suite": "vscode",
+      "client": "macos",
+      "host": "macos",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "ssh-linux-client",
+      "label": "VS Code Remote-SSH, Linux client",
+      "suite": "remote-ssh",
+      "client": "linux",
+      "host": "linux",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "ssh-mac-client",
+      "label": "VS Code Remote-SSH, Mac client",
+      "suite": "remote-ssh",
+      "client": "macos",
+      "host": "linux",
+      "scope": "deferred",
+      "issue": "https://github.com/SaltedTan/virgil-language-server/issues/186"
+    },
+    {
+      "id": "vscode-wsl",
+      "label": "VS Code Remote-WSL",
+      "suite": "vscode",
+      "client": "windows",
+      "host": "wsl",
+      "scope": "best-effort",
+      "issue": null
+    },
+    {
+      "id": "nvim-linux",
+      "label": "Neovim, Linux",
+      "suite": "nvim",
+      "client": "linux",
+      "host": "linux",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "nvim-macos",
+      "label": "Neovim, macOS",
+      "suite": "nvim",
+      "client": "macos",
+      "host": "macos",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "nvim-wsl",
+      "label": "Neovim, WSL 2",
+      "suite": "nvim",
+      "client": "wsl",
+      "host": "wsl",
+      "scope": "best-effort",
+      "issue": null
+    },
+    {
+      "id": "lazyvim-linux",
+      "label": "LazyVim, Linux",
+      "suite": "lazyvim",
+      "client": "linux",
+      "host": "linux",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "lazyvim-macos",
+      "label": "LazyVim, macOS",
+      "suite": "lazyvim",
+      "client": "macos",
+      "host": "macos",
+      "scope": "automated",
+      "issue": null
+    },
+    {
+      "id": "lazyvim-wsl",
+      "label": "LazyVim, WSL 2",
+      "suite": "lazyvim",
+      "client": "wsl",
+      "host": "wsl",
+      "scope": "best-effort",
+      "issue": null
+    }
+  ],
+  "checks": [
+    {
+      "id": "nvim.startup.attach",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "The client initializes on bad.v3, with the root directory of the fixture's .virgil-lsp.json and the server's name, virgil-lsp."
+    },
+    {
+      "id": "nvim.diagnostics.parser",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "bad.v3 has exactly one diagnostic, the parser's \"invalid start of expression\" from aeneas, an error at line 3, column 27."
+    },
+    {
+      "id": "nvim.symbols.broken-empty",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "bad.v3, which doesn't parse, has no document symbols."
+    },
+    {
+      "id": "nvim.diagnostics.unsaved-clear",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "An unsaved edit that fixes bad.v3 publishes, for a newer version, no diagnostics, and vim.diagnostic has none."
+    },
+    {
+      "id": "nvim.symbols.hierarchy",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "After the edit, document symbols are the component C and the variant V, with its case A as its child, selecting A's name."
+    },
+    {
+      "id": "nvim.configuration.valid-root",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "The configuration passes VIRGIL_LOC as initializationOptions.virgilRoot, and the project file has no diagnostics."
+    },
+    {
+      "id": "nvim.diagnostics.semantic",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "words/Words.v3 has exactly one diagnostic, the TypeError \"expected int in var initialization, got Array<byte>\"; its line and severity aren't checked."
+    },
+    {
+      "id": "nvim.definition.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "A definition request on StringBuilder returns the name of class StringBuilder in lib/util/StringBuilder.v3."
+    },
+    {
+      "id": "nvim.hover.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "A hover request there returns class StringBuilder in a virgil code block, with the use's range."
+    },
+    {
+      "id": "nvim.signature.complete",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Signature help just after the ( of .puts(a) returns def puts(s: Array<byte>) -> this, with its parameter active, at label offsets 9 to 23."
+    },
+    {
+      "id": "nvim.workspace-symbols.join",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "A workspace symbol request for join returns first the method join in words/Words.v3, with its range."
+    },
+    {
+      "id": "nvim.references.library",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "References of StringBuilder, with its declaration, are the use, the class's name, and uses in other lib/util files, each spelling the name, sorted, without repeats."
+    },
+    {
+      "id": "nvim.rename.apply-undo",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "After an unsaved fix, vim.lsp.buf.rename renames both uses of the local line to text; one undo restores them, and another restores the type error's text."
+    },
+    {
+      "id": "nvim.completion.keyword",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Completion after an unsaved whi offers the keyword while, whose edit replaces the prefix; applying it gives while, and undo restores the line."
+    },
+    {
+      "id": "nvim.completion.local",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Completion after li ranks line, a, b, this, and join first; line is a Variable with the detail var line: int and sortText 0000; applying it and undo restore the line."
+    },
+    {
+      "id": "nvim.completion.member",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Completion after a., with the trigger character ., returns only length, a Field with the detail def length: int; applying it and undo restore the line."
+    },
+    {
+      "id": "nvim.configuration.json-routing",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "The client attaches to .virgil-lsp.json, and no client attaches to package.json."
+    },
+    {
+      "id": "nvim.configuration.unsaved",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "An unsaved \"bogus\": 1 in .virgil-lsp.json gives an UnknownField diagnostic, which clears when the line is removed."
+    },
+    {
+      "id": "nvim.shutdown.clean",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Stopping the client makes the server exit with code 0 and signal 0, and the client is removed."
+    },
+    {
+      "id": "nvim.infrastructure.preflight",
+      "suites": ["nvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/run.sh",
+      "description": "Neovim 0.11 or later is on PATH, and the server and its worker are executable; without Neovim the test is skipped unless REQUIRE_NVIM=1."
+    },
+    {
+      "id": "nvim.infrastructure.completed",
+      "suites": ["nvim"],
+      "profiles": ["wrapper"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/run.sh",
+      "description": "Headless Neovim exits with status 0 within the 120-second deadline."
+    },
+    {
+      "id": "lazyvim.startup.ui-ready",
+      "suites": ["lazyvim"],
+      "profiles": ["main", "noroot", "noroot-noice-workaround"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A UI is attached, UIEnter and LazyVim's VeryLazy fired, and noice.nvim is loaded."
+    },
+    {
+      "id": "lazyvim.startup.attach",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "The client initializes on bad.v3 with the fixture's root directory, the server's name, the command virgil-lsp --stdio, and VIRGIL_LOC as virgilRoot."
+    },
+    {
+      "id": "lazyvim.diagnostics.parser",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "bad.v3 has exactly one diagnostic, the parser's error at line 3, column 27, and no document symbols."
+    },
+    {
+      "id": "lazyvim.diagnostics.unsaved-cycle",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "An unsaved edit clears the diagnostic for a newer version; undo restores the text and the parser diagnostic; redo reapplies the edit."
+    },
+    {
+      "id": "lazyvim.symbols.hierarchy",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "After the edit, document symbols are C and V, with its case A as its child, selecting A's name."
+    },
+    {
+      "id": "lazyvim.configuration.valid-root",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "The project file, with lib/util from VIRGIL_LOC, has no diagnostics."
+    },
+    {
+      "id": "lazyvim.diagnostics.semantic",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "words/Words.v3, attached to the project's client, has exactly one diagnostic, the expected TypeError."
+    },
+    {
+      "id": "lazyvim.symbols.words",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Document symbols of words/Words.v3 are the component Words with its method join."
+    },
+    {
+      "id": "lazyvim.definition.response",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A definition request on StringBuilder returns the name of class StringBuilder in lib/util/StringBuilder.v3."
+    },
+    {
+      "id": "lazyvim.definition.gd",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's buffer mapping gd, pressed on StringBuilder, opens lib/util/StringBuilder.v3 at the class, which gets a client of its own."
+    },
+    {
+      "id": "lazyvim.hover.response",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A hover request there returns class StringBuilder in a virgil code block, with the use's range."
+    },
+    {
+      "id": "lazyvim.hover.popup",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "K opens a floating window whose text has class StringBuilder, and it closes when the cursor moves."
+    },
+    {
+      "id": "lazyvim.signature.complete",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Signature help just after the ( of .puts(a) returns def puts with its parameter at label offsets 9 to 23, and nothing just past the )."
+    },
+    {
+      "id": "lazyvim.workspace-symbols.join",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A workspace symbol request for join returns first the method join in words/Words.v3, with its range."
+    },
+    {
+      "id": "lazyvim.references.library",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "References of StringBuilder are the use, the class's name, and uses in other lib/util files, each spelling the name, sorted, without repeats."
+    },
+    {
+      "id": "lazyvim.rename.refusal",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "While the type error stands, <leader>cr shows the server's reason in noice's message history, opens no prompt, and changes nothing."
+    },
+    {
+      "id": "lazyvim.rename.prompt-apply-undo",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "After an unsaved fix clears the diagnostics, <leader>cr's prompt offers line; entering text renames both uses; one u restores them, a second the TypeError."
+    },
+    {
+      "id": "lazyvim.signature.auto-open",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Typing ( after .puts makes noice request signature help and show def puts in a window; a request at the cursor returns it with its parameter active."
+    },
+    {
+      "id": "lazyvim.diagnostics.words-restored",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Restoring words/Words.v3's text publishes the TypeError alone again."
+    },
+    {
+      "id": "lazyvim.signature.insert-key",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "In Insert mode, <C-k> from a closed window sends a request answered with def puts and shows it in a window."
+    },
+    {
+      "id": "lazyvim.keymaps.save",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Insert mode's <C-s> is LazyVim's Save File, not signature help; the test doesn't press it."
+    },
+    {
+      "id": "lazyvim.signature.normal-key",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "In Normal mode, gK sends a request answered with def puts and shows it in a window."
+    },
+    {
+      "id": "lazyvim.completion.keyword",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Typing w shows blink.cmp's menu with the server's keyword while; after whi the menu starts with while and lacks return; Enter gives while, and undo restores the file."
+    },
+    {
+      "id": "lazyvim.completion.local",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Typing li shows a menu that starts with the server's line, a Variable with var line: int; Enter gives line, and undo restores the file."
+    },
+    {
+      "id": "lazyvim.completion.member",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Typing a. makes blink.cmp ask with the trigger character ., and the server's only item is length, a Field with def length: int; Enter gives a.length, and undo restores the file."
+    },
+    {
+      "id": "lazyvim.completion.comment",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "In the comment, after a word and after ., the menu has no item from the server, and every request seen there was answered with none; zero requests also pass."
+    },
+    {
+      "id": "lazyvim.signature.unclosed",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "In Ints.max(1, with no ), typing , shows max with b: int highlighted, a request at the cursor has the second parameter active, and <C-k> shows it again."
+    },
+    {
+      "id": "lazyvim.signature.autopaired",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "In Ints.max(1, ) that mini.pairs closed, typing , shows max with b: int highlighted, and a request at the cursor has the second parameter active."
+    },
+    {
+      "id": "lazyvim.configuration.disk-watch",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": "file-watching",
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "With the project file never opened, \"bogus\": 1 written on disk gives UnknownField without a .v3 change; restoring the file clears it, and the TypeError returns."
+    },
+    {
+      "id": "lazyvim.configuration.disk-next-edit",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": "no-file-watching",
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "\"bogus\": 1 written on disk gives no UnknownField within 3 seconds, and gives it after the next .v3 change; restoring the file clears it, and the TypeError returns."
+    },
+    {
+      "id": "lazyvim.configuration.unsaved",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "The client attaches to .virgil-lsp.json and not to package.json; an unsaved \"bogus\": 1 gives UnknownField on its line, and undo clears it."
+    },
+    {
+      "id": "lazyvim.restart.builtin",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-process",
+      "when": "builtin-lsp-command",
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A bare :lsp restart replaces only the current buffer's clients, which exit with code 0 and signal 0 or 15; the new client reattaches and republishes the TypeError; others keep running."
+    },
+    {
+      "id": "lazyvim.restart.legacy",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-process",
+      "when": "lspconfig-restart-command",
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A bare :LspRestart replaces every client, each exiting with code 0 and signal 0 or 15; the new client reattaches and republishes the TypeError."
+    },
+    {
+      "id": "lazyvim.restart.named-clean",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "A restart naming virgil_lsp, with :lsp restart or :LspRestart as the Neovim version has, replaces the clients, each exiting with code 0 and signal 0, and the new client republishes the TypeError."
+    },
+    {
+      "id": "lazyvim.shutdown.clean",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Stopping every client makes each server exit with code 0 and signal 0, and the clients are removed."
+    },
+    {
+      "id": "lazyvim.configuration.rootless-attach",
+      "suites": ["lazyvim"],
+      "profiles": ["noroot", "noroot-noice-workaround"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "With VIRGIL_LOC unset, a client initializes on .virgil-lsp.json."
+    },
+    {
+      "id": "lazyvim.configuration.missing-root",
+      "suites": ["lazyvim"],
+      "profiles": ["noroot", "noroot-noice-workaround"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "The project file gets a MissingVirgilRoot diagnostic on its virgilDependencies line, which vim.diagnostic has too."
+    },
+    {
+      "id": "lazyvim.configuration.warning",
+      "suites": ["lazyvim"],
+      "profiles": ["noroot", "noroot-noice-workaround"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "noice.nvim's message history has the server's Invalid project file warning within 5 seconds; in the stock profile the noice-1074-7bfd942 rule expects it to fail."
+    },
+    {
+      "id": "lazyvim.shutdown.rootless-clean",
+      "suites": ["lazyvim"],
+      "profiles": ["noroot", "noroot-noice-workaround"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Stopping the client makes the server exit with code 0 and signal 0."
+    },
+    {
+      "id": "lazyvim.infrastructure.preflight",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "The arguments, the archive or the server with its worker, an empty output directory, nvim, tmux, git, and python3, Neovim 0.11 or later, and the pinned Virgil sources."
+    },
+    {
+      "id": "lazyvim.infrastructure.artifact-start",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "A supplied archive holds just its named directory, and the selected virgil-lsp --version runs."
+    },
+    {
+      "id": "lazyvim.infrastructure.starter",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "The LazyVim starter is checked out at its pinned commit."
+    },
+    {
+      "id": "lazyvim.infrastructure.plugins-install",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": ":Lazy! restore, or sync with --update-lock, exits with status 0 within the install deadline."
+    },
+    {
+      "id": "lazyvim.infrastructure.pins-before",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "Every plugin in lazy-lock.json is installed at its commit, and the lock that lazy.nvim wrote back lists the same plugins and commits."
+    },
+    {
+      "id": "lazyvim.infrastructure.parsers-ready",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "nvim-treesitter's parsers install with status 0 within what is left of the install deadline."
+    },
+    {
+      "id": "lazyvim.infrastructure.profile-complete",
+      "suites": ["lazyvim"],
+      "profiles": ["main", "noroot", "noroot-noice-workaround"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "Within the run deadline, Neovim exits with status 0, the results end with one whole DONE line, nothing failed, and the expected-failure count is the profile's."
+    },
+    {
+      "id": "lazyvim.infrastructure.profile-processes",
+      "suites": ["lazyvim"],
+      "profiles": ["main", "noroot", "noroot-noice-workaround"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "No virgil-lsp process of the run is left within 10 seconds after Neovim exits, and stopping the run's other processes succeeds."
+    },
+    {
+      "id": "lazyvim.infrastructure.pins-after",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "The plugins are still at the locked commits after all profiles."
+    },
+    {
+      "id": "lazyvim.infrastructure.cleanup",
+      "suites": ["lazyvim"],
+      "profiles": ["wrapper"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/run.sh",
+      "description": "On exit, every process of the runs is stopped and none is left, and no earlier teardown failed."
+    },
+    {
+      "id": "vscode.startup.installed-copy",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["single-file", "workspace"],
+      "level": "api",
+      "when": "vsix",
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "VS Code loaded the extension from the extensions directory that the VSIX was installed into."
+    },
+    {
+      "id": "vscode.startup.activation",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["single-file"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "With no folder, the extension is inactive until bad.v3 opens with the language virgil, which activates it, and the output channel logs Starting <virgil.server.path> --stdio."
+    },
+    {
+      "id": "vscode.diagnostics.single-file-parser",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["single-file"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "With no folder, bad.v3 has exactly one diagnostic: ParseError from aeneas, \"invalid start of expression\", an error with the empty range at line 3, column 27."
+    },
+    {
+      "id": "vscode.startup.workspace-activation",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The fixture's project file activates the extension before any Virgil document opens, and the output channel logs Started virgil-lsp and the Virgil root from virgil.virgilRoot."
+    },
+    {
+      "id": "vscode.diagnostics.parser",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "In the workspace, bad.v3 has exactly the parser diagnostic, with its code, source, message, severity, and range."
+    },
+    {
+      "id": "vscode.symbols.broken-empty",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "bad.v3, which doesn't parse, has no document symbols."
+    },
+    {
+      "id": "vscode.diagnostics.unsaved-cycle",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "An unsaved edit clears the diagnostic, and undo restores the saved text and the parser diagnostic."
+    },
+    {
+      "id": "vscode.symbols.hierarchy",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "After the edit, document symbols are C and V, with its case A as its child, selecting A's name."
+    },
+    {
+      "id": "vscode.diagnostics.semantic",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "words/Words.v3 has exactly one diagnostic, the TypeError from aeneas with its message, on line 7."
+    },
+    {
+      "id": "vscode.definition.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The definition provider on StringBuilder returns the name of class StringBuilder in lib/util/StringBuilder.v3."
+    },
+    {
+      "id": "vscode.hover.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The hover provider there returns class StringBuilder in a virgil code block, with the use's range."
+    },
+    {
+      "id": "vscode.signature.complete",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The signature help provider just after the ( of .puts(a) returns def puts with its parameter active, at label offsets 9 to 23."
+    },
+    {
+      "id": "vscode.workspace-symbols.join",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The workspace symbol provider for join returns first the method join in words/Words.v3, with its range."
+    },
+    {
+      "id": "vscode.references.library",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The reference provider returns the use, the class's name, and uses in other lib/util files, each spelling StringBuilder."
+    },
+    {
+      "id": "vscode.rename.refusal",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "While the type error stands, vscode.prepareRename and the rename provider both fail with the server's reason."
+    },
+    {
+      "id": "vscode.rename.apply-undo",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "After an unsaved fix, the rename provider returns exactly the two edits of line to text; applying them renames both uses; one undo restores them, another the type error."
+    },
+    {
+      "id": "vscode.completion.keyword",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "After an unsaved whi, the Keyword items are the statement keywords in order, and while replaces the prefix; applying it gives while, and two undos restore the file."
+    },
+    {
+      "id": "vscode.completion.local",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "After li, the ranked items start line, a, b, this, join; line is a Variable with var line: int and sortText 0000 that replaces li; applying it and two undos restore the file."
+    },
+    {
+      "id": "vscode.completion.member",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "After a., with the trigger character ., the only item is length, a Field with def length: int that inserts after the .; applying it and two undos restore the file."
+    },
+    {
+      "id": "vscode.signature.unclosed-first",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "In an unsaved StringBuilder.new().puts( with no ), signature help at its end returns def puts with its parameter active."
+    },
+    {
+      "id": "vscode.signature.unclosed-second",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "In an unsaved var n = Ints.max(1, with no ), signature help at its end returns def max(a: int, b: int) -> int with the second parameter active."
+    },
+    {
+      "id": "vscode.completion.comment-invoked",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Completion invoked after the word StringBuilder in the comment on line 3 returns no items; run.cjs turns off word-based suggestions."
+    },
+    {
+      "id": "vscode.completion.comment-dot",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Completion after a . typed in that comment, with the trigger character ., returns no items, and undo restores the file."
+    },
+    {
+      "id": "vscode.configuration.disk-watch",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "With the project file closed, no editor open, and no analysis pending, \"bogus\": 1 written on disk gives UnknownField on line 2; restoring the file clears it, and the TypeError returns."
+    },
+    {
+      "id": "vscode.configuration.unsaved",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "An unsaved \"bogus\": 1 in .virgil-lsp.json gives UnknownField from virgil-lsp on line 2, and undo clears it."
+    },
+    {
+      "id": "vscode.restart.clean",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Virgil: Restart Language Server logs exactly one Server process exited successfully, then a second start; the new server republishes the TypeError and answers document symbols."
+    },
+    {
+      "id": "vscode.trace.did-change",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "At the output channel's Trace log level, the channel logs $/setTrace, then textDocument/didChange after an edit; the level and text are restored."
+    },
+    {
+      "id": "vscode.configuration.rootless-log",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "With VIRGIL_LOC unset, clearing virgil.virgilRoot restarts the server, and the output channel says there is no Virgil root; restoring it restarts with the root."
+    },
+    {
+      "id": "vscode.configuration.rootless-live",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Without a root, .virgil-lsp.json gets MissingVirgilRoot on line 7, the server starts and reports its version with no unclean exit, and answers document symbols; restoring clears the diagnostic."
+    },
+    {
+      "id": "vscode.startup-errors.missing-server",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "A nonexistent virgil.server.path is reported in the output channel, nothing starts, and diagnostics and symbols are gone; restoring it starts the server again."
+    },
+    {
+      "id": "vscode.startup-errors.missing-worker",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "A copy of virgil-lsp without virgil-lsp-worker beside it is reported as missing its worker, and nothing starts; restoring the setting starts the server again."
+    },
+    {
+      "id": "vscode.infrastructure.preflight",
+      "suites": ["vscode"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/run.cjs",
+      "description": "A supplied VSIX exists, the server and its worker are executable, and the pinned VS Code downloads."
+    },
+    {
+      "id": "vscode.infrastructure.vsix-install",
+      "suites": ["vscode"],
+      "profiles": ["single-file", "workspace"],
+      "level": "configuration",
+      "when": "vsix",
+      "required": true,
+      "source": "clients/vscode/test/e2e/run.cjs",
+      "description": "VS Code's --install-extension installs the VSIX into the launch's empty extensions directory, exiting with status 0 within 120 seconds."
+    },
+    {
+      "id": "vscode.infrastructure.launch",
+      "suites": ["vscode"],
+      "profiles": ["single-file", "workspace"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/run.cjs",
+      "description": "VS Code, with the suite in its Extension Host, exits with status 0 within 120 seconds, and its process group exits."
+    },
+    {
+      "id": "vscode.shutdown.window-close",
+      "suites": ["vscode"],
+      "profiles": ["single-file", "workspace"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/run.cjs",
+      "description": "After the window closes, no virgil-lsp or virgil-lsp-worker is left in VS Code's process group within 5 seconds, and the last server exit in the log, if logged, is clean."
+    },
+    {
+      "id": "ssh.identity.remote-host",
+      "suites": ["remote-ssh"],
+      "profiles": ["probe", "single-file", "workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs",
+      "description": "The tests run in a Remote-SSH window (remoteName ssh-remote), in the VS Code Server's node under test, on Linux."
+    },
+    {
+      "id": "ssh.identity.folder-mode",
+      "suites": ["remote-ssh"],
+      "profiles": ["probe", "single-file", "workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs",
+      "description": "The window's workspace folders are the launch's: none, or the remote fixture."
+    },
+    {
+      "id": "ssh.identity.extension-copy",
+      "suites": ["remote-ssh"],
+      "profiles": ["single-file", "workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs",
+      "description": "VS Code loaded the copy installed from the VSIX on the host, of the VSIX's version, with the Workspace extension kind."
+    },
+    {
+      "id": "ssh.identity.host-log",
+      "suites": ["remote-ssh"],
+      "profiles": ["single-file", "workspace"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/bootstrap.cjs",
+      "description": "Exactly one remoteexthost.log names this extension host's PID, so the suite reads its own output channel's log."
+    },
+    {
+      "id": "ssh.infrastructure.preflight",
+      "suites": ["remote-ssh"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "ssh, ssh-keygen, Xvfb, tar, and the SSH server are present; the VSIX holds the extension; the server executables exist; the pinned VS Code downloads; the host starts; and the SSH session has the run's home and marker."
+    },
+    {
+      "id": "ssh.infrastructure.client-pins",
+      "suites": ["remote-ssh"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "Remote-SSH and its extension pack install at their pinned versions, each VSIX with its pinned SHA-256, and nothing else."
+    },
+    {
+      "id": "ssh.infrastructure.artifact-start",
+      "suites": ["remote-ssh"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "The uploaded virgil-lsp --version runs on the host."
+    },
+    {
+      "id": "ssh.infrastructure.probe",
+      "suites": ["remote-ssh"],
+      "profiles": ["probe"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "The first connection runs the probe in the remote extension host and passes, and the VS Code Server it installed has the client's commit."
+    },
+    {
+      "id": "ssh.infrastructure.remote-install",
+      "suites": ["remote-ssh"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "The VS Code Server's CLI installs the VSIX on the host, and lists it at its version, at the expected path, with extensionKind [\"workspace\"]."
+    },
+    {
+      "id": "ssh.infrastructure.launch",
+      "suites": ["remote-ssh"],
+      "profiles": ["single-file", "workspace"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "bootstrap.cjs started and passed, VS Code exited with status 0, the suite printed a PASS line and no FAIL line, and VS Code's processes didn't outlive it."
+    },
+    {
+      "id": "ssh.shutdown.remote-host-exit",
+      "suites": ["remote-ssh"],
+      "profiles": ["single-file", "workspace"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "No language server is left on the host 5 seconds after the window's client exits, or after the test stops a remote extension host that VS Code left running."
+    },
+    {
+      "id": "ssh.infrastructure.evidence",
+      "suites": ["remote-ssh"],
+      "profiles": ["wrapper"],
+      "level": "configuration",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "The client's and the host's logs are collected before the teardown, connection tokens are removed from the copies, and summary.txt and manifest.json are written."
+    },
+    {
+      "id": "ssh.infrastructure.teardown",
+      "suites": ["remote-ssh"],
+      "profiles": ["wrapper"],
+      "level": "process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
+      "description": "The teardown stops every process of the run and confirms that none is left and the SSH server's port is closed."
+    }
+  ],
+  "retired": [],
+  "matrix": {
+    "document": "docs/manual-testing.md#matrix",
+    "cells": [
+      {
+        "setup": "vscode-linux",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["vscode.symbols.broken-empty", "vscode.symbols.hierarchy"],
+        "notCovered": ["vscode.outline-view"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "definition",
+        "level": "api",
+        "checks": ["vscode.definition.response"],
+        "notCovered": ["vscode.definition-editor"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "hover",
+        "level": "api",
+        "checks": ["vscode.hover.response"],
+        "notCovered": ["vscode.hover-popup"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "configuration",
+        "level": "api",
+        "checks": ["vscode.configuration.disk-watch", "vscode.configuration.unsaved", "vscode.configuration.rootless-log", "vscode.configuration.rootless-live"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "restart",
+        "level": "api",
+        "checks": ["vscode.restart.clean"],
+        "notCovered": []
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "references",
+        "level": "api",
+        "checks": ["vscode.references.library"],
+        "notCovered": ["vscode.references-view"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["vscode.workspace-symbols.join"],
+        "notCovered": ["vscode.symbol-picker"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "signature",
+        "level": "api",
+        "checks": ["vscode.signature.complete", "vscode.signature.unclosed-first", "vscode.signature.unclosed-second"],
+        "notCovered": ["vscode.parameter-hints"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "rename",
+        "level": "api",
+        "checks": ["vscode.rename.refusal", "vscode.rename.apply-undo"],
+        "notCovered": ["vscode.rename-ui"]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "completion",
+        "level": "api",
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "notCovered": ["vscode.suggestion-list"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["vscode.symbols.broken-empty", "vscode.symbols.hierarchy"],
+        "notCovered": ["vscode.outline-view"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "definition",
+        "level": "api",
+        "checks": ["vscode.definition.response"],
+        "notCovered": ["vscode.definition-editor"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "hover",
+        "level": "api",
+        "checks": ["vscode.hover.response"],
+        "notCovered": ["vscode.hover-popup"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "configuration",
+        "level": "api",
+        "checks": ["vscode.configuration.disk-watch", "vscode.configuration.unsaved", "vscode.configuration.rootless-log", "vscode.configuration.rootless-live"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "restart",
+        "level": "api",
+        "checks": ["vscode.restart.clean"],
+        "notCovered": []
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "references",
+        "level": "api",
+        "checks": ["vscode.references.library"],
+        "notCovered": ["vscode.references-view"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["vscode.workspace-symbols.join"],
+        "notCovered": ["vscode.symbol-picker"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "signature",
+        "level": "api",
+        "checks": ["vscode.signature.complete", "vscode.signature.unclosed-first", "vscode.signature.unclosed-second"],
+        "notCovered": ["vscode.parameter-hints"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "rename",
+        "level": "api",
+        "checks": ["vscode.rename.refusal", "vscode.rename.apply-undo"],
+        "notCovered": ["vscode.rename-ui"]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "completion",
+        "level": "api",
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "notCovered": ["vscode.suggestion-list"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["vscode.symbols.broken-empty", "vscode.symbols.hierarchy"],
+        "notCovered": ["vscode.outline-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "definition",
+        "level": "api",
+        "checks": ["vscode.definition.response"],
+        "notCovered": ["vscode.definition-editor"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "hover",
+        "level": "api",
+        "checks": ["vscode.hover.response"],
+        "notCovered": ["vscode.hover-popup"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "configuration",
+        "level": "api",
+        "checks": ["vscode.configuration.disk-watch", "vscode.configuration.unsaved", "vscode.configuration.rootless-log", "vscode.configuration.rootless-live"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "restart",
+        "level": "api",
+        "checks": ["vscode.restart.clean"],
+        "notCovered": []
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "references",
+        "level": "api",
+        "checks": ["vscode.references.library"],
+        "notCovered": ["vscode.references-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["vscode.workspace-symbols.join"],
+        "notCovered": ["vscode.symbol-picker"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "signature",
+        "level": "api",
+        "checks": ["vscode.signature.complete", "vscode.signature.unclosed-first", "vscode.signature.unclosed-second"],
+        "notCovered": ["vscode.parameter-hints"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "rename",
+        "level": "api",
+        "checks": ["vscode.rename.refusal", "vscode.rename.apply-undo"],
+        "notCovered": ["vscode.rename-ui"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "completion",
+        "level": "api",
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "notCovered": ["vscode.suggestion-list"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["nvim.diagnostics.parser", "nvim.diagnostics.unsaved-clear", "nvim.diagnostics.semantic"],
+        "notCovered": ["nvim.parser-undo", "nvim.diagnostics-display"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["nvim.symbols.broken-empty", "nvim.symbols.hierarchy"],
+        "notCovered": ["nvim.symbols-list"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "definition",
+        "level": "api",
+        "checks": ["nvim.definition.response"],
+        "notCovered": ["nvim.definition-jump"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "hover",
+        "level": "api",
+        "checks": ["nvim.hover.response"],
+        "notCovered": ["nvim.hover-window"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "configuration",
+        "level": "api",
+        "checks": ["nvim.configuration.valid-root", "nvim.configuration.json-routing", "nvim.configuration.unsaved"],
+        "notCovered": ["nvim.configuration-disk", "nvim.missing-root"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "restart",
+        "level": null,
+        "checks": [],
+        "notCovered": ["nvim.restart"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "references",
+        "level": "api",
+        "checks": ["nvim.references.library"],
+        "notCovered": ["nvim.references-list"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["nvim.workspace-symbols.join"],
+        "notCovered": ["nvim.workspace-symbols-list"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "signature",
+        "level": "api",
+        "checks": ["nvim.signature.complete"],
+        "notCovered": ["nvim.signature-unclosed", "nvim.signature-window"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "rename",
+        "level": "api",
+        "checks": ["nvim.rename.apply-undo"],
+        "notCovered": ["nvim.rename-refusal"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "completion",
+        "level": "api",
+        "checks": ["nvim.completion.keyword", "nvim.completion.local", "nvim.completion.member"],
+        "notCovered": ["nvim.completion-comment", "nvim.completion-menu"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["nvim.diagnostics.parser", "nvim.diagnostics.unsaved-clear", "nvim.diagnostics.semantic"],
+        "notCovered": ["nvim.parser-undo", "nvim.diagnostics-display"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["nvim.symbols.broken-empty", "nvim.symbols.hierarchy"],
+        "notCovered": ["nvim.symbols-list"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "definition",
+        "level": "api",
+        "checks": ["nvim.definition.response"],
+        "notCovered": ["nvim.definition-jump"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "hover",
+        "level": "api",
+        "checks": ["nvim.hover.response"],
+        "notCovered": ["nvim.hover-window"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "configuration",
+        "level": "api",
+        "checks": ["nvim.configuration.valid-root", "nvim.configuration.json-routing", "nvim.configuration.unsaved"],
+        "notCovered": ["nvim.configuration-disk", "nvim.missing-root"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "restart",
+        "level": null,
+        "checks": [],
+        "notCovered": ["nvim.restart"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "references",
+        "level": "api",
+        "checks": ["nvim.references.library"],
+        "notCovered": ["nvim.references-list"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["nvim.workspace-symbols.join"],
+        "notCovered": ["nvim.workspace-symbols-list"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "signature",
+        "level": "api",
+        "checks": ["nvim.signature.complete"],
+        "notCovered": ["nvim.signature-unclosed", "nvim.signature-window"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "rename",
+        "level": "api",
+        "checks": ["nvim.rename.apply-undo"],
+        "notCovered": ["nvim.rename-refusal"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "completion",
+        "level": "api",
+        "checks": ["nvim.completion.keyword", "nvim.completion.local", "nvim.completion.member"],
+        "notCovered": ["nvim.completion-comment", "nvim.completion-menu"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored"],
+        "notCovered": ["lazyvim.diagnostics-display"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["lazyvim.symbols.hierarchy", "lazyvim.symbols.words"],
+        "notCovered": ["lazyvim.symbols-list"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "definition",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.definition.response", "lazyvim.definition.gd"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "hover",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.hover.response", "lazyvim.hover.popup"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "configuration",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.configuration.valid-root", "lazyvim.configuration.disk-watch", "lazyvim.configuration.disk-next-edit", "lazyvim.configuration.unsaved", "lazyvim.configuration.rootless-attach", "lazyvim.configuration.missing-root", "lazyvim.configuration.warning"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "restart",
+        "level": "api",
+        "checks": ["lazyvim.restart.builtin", "lazyvim.restart.legacy", "lazyvim.restart.named-clean"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "references",
+        "level": "api",
+        "checks": ["lazyvim.references.library"],
+        "notCovered": ["lazyvim.references-list"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["lazyvim.workspace-symbols.join"],
+        "notCovered": ["lazyvim.workspace-symbols-list"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "signature",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.signature.complete", "lazyvim.signature.auto-open", "lazyvim.signature.insert-key", "lazyvim.signature.normal-key", "lazyvim.signature.unclosed", "lazyvim.signature.autopaired"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "rename",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.rename.refusal", "lazyvim.rename.prompt-apply-undo"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "completion",
+        "level": "ui-state",
+        "checks": ["lazyvim.completion.keyword", "lazyvim.completion.local", "lazyvim.completion.member", "lazyvim.completion.comment"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "diagnostics",
+        "level": "api",
+        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored"],
+        "notCovered": ["lazyvim.diagnostics-display"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "symbols",
+        "level": "api",
+        "checks": ["lazyvim.symbols.hierarchy", "lazyvim.symbols.words"],
+        "notCovered": ["lazyvim.symbols-list"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "definition",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.definition.response", "lazyvim.definition.gd"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "hover",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.hover.response", "lazyvim.hover.popup"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "configuration",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.configuration.valid-root", "lazyvim.configuration.disk-watch", "lazyvim.configuration.disk-next-edit", "lazyvim.configuration.unsaved", "lazyvim.configuration.rootless-attach", "lazyvim.configuration.missing-root", "lazyvim.configuration.warning"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "restart",
+        "level": "api",
+        "checks": ["lazyvim.restart.builtin", "lazyvim.restart.legacy", "lazyvim.restart.named-clean"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "references",
+        "level": "api",
+        "checks": ["lazyvim.references.library"],
+        "notCovered": ["lazyvim.references-list"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "workspace-symbols",
+        "level": "api",
+        "checks": ["lazyvim.workspace-symbols.join"],
+        "notCovered": ["lazyvim.workspace-symbols-list"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "signature",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.signature.complete", "lazyvim.signature.auto-open", "lazyvim.signature.insert-key", "lazyvim.signature.normal-key", "lazyvim.signature.unclosed", "lazyvim.signature.autopaired"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "rename",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.rename.refusal", "lazyvim.rename.prompt-apply-undo"],
+        "notCovered": ["lazyvim.layout"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "completion",
+        "level": "ui-state",
+        "checks": ["lazyvim.completion.keyword", "lazyvim.completion.local", "lazyvim.completion.member", "lazyvim.completion.comment"],
+        "notCovered": ["lazyvim.layout"]
+      }
+    ]
+  },
+  "checklist": {
+    "document": "clients/vscode/README.md#manual-checklist",
+    "suites": ["vscode", "remote-ssh"],
+    "steps": [
+      {
+        "step": 1,
+        "summary": "Opening bad.v3 activates the extension; the status bar shows Virgil.",
+        "checks": ["vscode.startup.activation", "vscode.startup.workspace-activation"],
+        "notCovered": ["vscode.status-bar"]
+      },
+      {
+        "step": 2,
+        "summary": "The output channel shows the Virgil root, the server's start, and its version; with a remote, on the remote.",
+        "checks": ["vscode.startup.activation", "vscode.startup.workspace-activation", "ssh.identity.remote-host"],
+        "notCovered": []
+      },
+      {
+        "step": 3,
+        "summary": "bad.v3 has the parser error at line 3, column 27.",
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "step": 4,
+        "summary": "An unsaved edit clears the error.",
+        "checks": ["vscode.diagnostics.unsaved-cycle"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "step": 5,
+        "summary": "The Outline shows C and V, with its case A.",
+        "checks": ["vscode.symbols.hierarchy"],
+        "notCovered": ["vscode.outline-view"]
+      },
+      {
+        "step": 6,
+        "summary": "Undo brings the error back.",
+        "checks": ["vscode.diagnostics.unsaved-cycle"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "step": 7,
+        "summary": "words/Words.v3: the type error, definition, hover, parameter hints, references, and workspace symbols.",
+        "checks": ["vscode.diagnostics.semantic", "vscode.definition.response", "vscode.hover.response", "vscode.signature.complete", "vscode.references.library", "vscode.workspace-symbols.join"],
+        "notCovered": ["vscode.problems-view", "vscode.definition-editor", "vscode.hover-popup", "vscode.parameter-hints", "vscode.references-view", "vscode.symbol-picker"]
+      },
+      {
+        "step": 8,
+        "summary": "Rename is refused while the type error stands, then renames both uses after a fix; undo restores them.",
+        "checks": ["vscode.rename.refusal", "vscode.rename.apply-undo"],
+        "notCovered": ["vscode.rename-ui"]
+      },
+      {
+        "step": 9,
+        "summary": "Completion of a keyword, a local, and a member, and none in a comment.",
+        "checks": ["vscode.completion.keyword", "vscode.completion.local", "vscode.completion.member", "vscode.completion.comment-invoked", "vscode.completion.comment-dot"],
+        "notCovered": ["vscode.suggestion-list"]
+      },
+      {
+        "step": 10,
+        "summary": "An unsaved edit to .virgil-lsp.json gives UnknownField; undo clears it.",
+        "checks": ["vscode.configuration.unsaved"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "step": 11,
+        "summary": "A change to the closed project file on disk gives UnknownField; restoring it clears it.",
+        "checks": ["vscode.configuration.disk-watch"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "step": 12,
+        "summary": "Clearing virgil.virgilRoot restarts the server without a root, and the project file gets MissingVirgilRoot.",
+        "checks": ["vscode.configuration.rootless-log", "vscode.configuration.rootless-live"],
+        "notCovered": ["vscode.problems-view"]
+      },
+      {
+        "step": 13,
+        "summary": "Restart logs a clean exit and a new start; closing the window stops the server.",
+        "checks": ["vscode.restart.clean", "vscode.shutdown.window-close", "ssh.shutdown.remote-host-exit"],
+        "notCovered": ["vscode.close-exit-status"]
+      },
+      {
+        "step": 14,
+        "summary": "A nonexistent virgil.server.path is reported, with an error notification.",
+        "checks": ["vscode.startup-errors.missing-server"],
+        "notCovered": ["vscode.error-notification"]
+      },
+      {
+        "step": 15,
+        "summary": "A server without its worker beside it is reported.",
+        "checks": ["vscode.startup-errors.missing-worker"],
+        "notCovered": []
+      },
+      {
+        "step": 16,
+        "summary": "At the Trace log level, the channel shows the LSP messages, including textDocument/didChange.",
+        "checks": ["vscode.trace.did-change"],
+        "notCovered": []
+      },
+      {
+        "step": 17,
+        "summary": "Forced crashes, and restart, configuration changes, and closing the window during recovery.",
+        "checks": [],
+        "notCovered": ["vscode.crash-recovery"]
+      }
+    ]
+  },
+  "gaps": [
+    {
+      "id": "vscode.status-bar",
+      "kind": "visual",
+      "what": "the status bar's language",
+      "planned": null
+    },
+    {
+      "id": "vscode.problems-view",
+      "kind": "visual",
+      "what": "the Problems view",
+      "planned": null
+    },
+    {
+      "id": "vscode.outline-view",
+      "kind": "visual",
+      "what": "the Outline view",
+      "planned": null
+    },
+    {
+      "id": "vscode.definition-editor",
+      "kind": "visual",
+      "what": "the editor that Go to Definition opens",
+      "planned": null
+    },
+    {
+      "id": "vscode.hover-popup",
+      "kind": "visual",
+      "what": "the hover popup",
+      "planned": null
+    },
+    {
+      "id": "vscode.parameter-hints",
+      "kind": "visual",
+      "what": "the parameter hints popup",
+      "planned": null
+    },
+    {
+      "id": "vscode.references-view",
+      "kind": "visual",
+      "what": "the references list",
+      "planned": null
+    },
+    {
+      "id": "vscode.symbol-picker",
+      "kind": "visual",
+      "what": "the Go to Symbol in Workspace list",
+      "planned": null
+    },
+    {
+      "id": "vscode.rename-ui",
+      "kind": "visual",
+      "what": "the refusal's notification and the rename prompt",
+      "planned": null
+    },
+    {
+      "id": "vscode.suggestion-list",
+      "kind": "visual",
+      "what": "the suggestion list",
+      "planned": null
+    },
+    {
+      "id": "vscode.error-notification",
+      "kind": "visual",
+      "what": "the error notification",
+      "planned": null
+    },
+    {
+      "id": "vscode.close-exit-status",
+      "kind": "behavior",
+      "what": "the server's exit status when the window closes, which the output channel usually closes too early to log",
+      "planned": null
+    },
+    {
+      "id": "vscode.crash-recovery",
+      "kind": "behavior",
+      "what": "forced server crashes, and restart, configuration changes, and closing the window during recovery",
+      "planned": "https://github.com/SaltedTan/virgil-language-server/issues/185"
+    },
+    {
+      "id": "nvim.diagnostics-display",
+      "kind": "visual",
+      "what": "how Neovim shows diagnostics",
+      "planned": null
+    },
+    {
+      "id": "nvim.parser-undo",
+      "kind": "behavior",
+      "what": "undoing the fix of bad.v3, which brings the parser error back",
+      "planned": null
+    },
+    {
+      "id": "nvim.symbols-list",
+      "kind": "visual",
+      "what": "the symbols list",
+      "planned": null
+    },
+    {
+      "id": "nvim.definition-jump",
+      "kind": "behavior",
+      "what": "the jump with CTRL-]",
+      "planned": null
+    },
+    {
+      "id": "nvim.hover-window",
+      "kind": "visual",
+      "what": "the hover window",
+      "planned": null
+    },
+    {
+      "id": "nvim.configuration-disk",
+      "kind": "behavior",
+      "what": "a change to the project file on disk",
+      "planned": null
+    },
+    {
+      "id": "nvim.missing-root",
+      "kind": "behavior",
+      "what": "a missing Virgil root, with its MissingVirgilRoot diagnostic and Invalid project file warning",
+      "planned": null
+    },
+    {
+      "id": "nvim.restart",
+      "kind": "behavior",
+      "what": "restarting the server, which the test only stops",
+      "planned": null
+    },
+    {
+      "id": "nvim.references-list",
+      "kind": "visual",
+      "what": "the references list",
+      "planned": null
+    },
+    {
+      "id": "nvim.workspace-symbols-list",
+      "kind": "visual",
+      "what": "the workspace symbol list",
+      "planned": null
+    },
+    {
+      "id": "nvim.signature-unclosed",
+      "kind": "behavior",
+      "what": "a call still being typed, and nothing just past the )",
+      "planned": null
+    },
+    {
+      "id": "nvim.signature-window",
+      "kind": "visual",
+      "what": "the signature window",
+      "planned": null
+    },
+    {
+      "id": "nvim.rename-refusal",
+      "kind": "behavior",
+      "what": "the refusal while the type error stands",
+      "planned": null
+    },
+    {
+      "id": "nvim.completion-comment",
+      "kind": "behavior",
+      "what": "no completion from the server in a comment",
+      "planned": null
+    },
+    {
+      "id": "nvim.completion-menu",
+      "kind": "visual",
+      "what": "the completion menu",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.diagnostics-display",
+      "kind": "visual",
+      "what": "how LazyVim shows diagnostics",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.symbols-list",
+      "kind": "visual",
+      "what": "the symbols list",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.references-list",
+      "kind": "visual",
+      "what": "the references list",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.workspace-symbols-list",
+      "kind": "visual",
+      "what": "the workspace symbol list",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.layout",
+      "kind": "visual",
+      "what": "how windows, menus, prompts, and messages look, beyond their text and state",
+      "planned": null
+    }
+  ],
+  "gapKinds": [
+    {
+      "id": "visual",
+      "description": "What the editor shows, which automation can't observe: rendered views, popups, menus, notifications, prompts, and layout. A permanent gap."
+    },
+    {
+      "id": "behavior",
+      "description": "Behavior that no automated check exercises. It stays not covered until a check that exercises it is added, which planned names when one is."
+    }
+  ],
+  "xfails": [
+    {
+      "id": "noice-1074-7bfd942",
+      "check": "lazyvim.configuration.warning",
+      "profile": "noroot",
+      "plugin": "noice.nvim",
+      "commit": "7bfd942445fb63089b59f97ca487d605e715f155",
+      "failureCode": "warning-not-observed",
+      "issue": "https://github.com/folke/noice.nvim/issues/1074",
+      "requires": ["lazyvim.startup.ui-ready", "lazyvim.configuration.rootless-attach", "lazyvim.configuration.missing-root"],
+      "workaroundProfile": "noroot-noice-workaround",
+      "description": "noice.nvim at this commit drops every server's window/showMessage, so the stock configuration never shows the Invalid project file warning. The check is expected to fail only in the noroot profile, only at this commit, only by not observing the warning, and only when the required checks pass in the same profile and iteration. Observing the warning is an XPASS, which fails. The workaround profile must pass the check normally."
+    }
+  ]
+}
