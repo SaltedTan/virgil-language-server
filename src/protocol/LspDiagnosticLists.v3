@@ -33,8 +33,8 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// By canonical URI, in byte order; see OrderedStringMap.
 	private def lists = OrderedStringMap<LspUriDiagnostics>.new();
 
-	// An accepted open or change. Earlier semantic results described other
-	// text, so they no longer apply until a new analysis completes.
+	// An accepted open or full-text change invalidates earlier semantic
+	// results until a new analysis completes, even if the bytes are unchanged.
 	def parsed(doc: DocumentOverlay, diagnostics: Array<LspDiagnostic>) {
 		var list = get(doc.uri);
 		list.parser = diagnostics;
@@ -77,9 +77,8 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 		list.sources = if(diagnostics.length > 0, sources);
 		publish(list, store.overlay(uri), false);
 	}
-	// True if {owner}'s configuration revision and every source its analysis
-	// captured are still current, the guard LspSemanticDiagnostics.publish
-	// applies before accepting a completed analysis.
+	// Uses the completed-analysis freshness rule; see
+	// docs/architecture.md#semantic-diagnostics.
 	private def fresh(owner: ProjectContext, sources: Array<AnalysisDocumentVersion>) -> bool {
 		if (owner == null || !owner.config.current || sources == null) return false;
 		if (!LspAnalysisCapture.matchesSources(sources, owner.sources)) return false;

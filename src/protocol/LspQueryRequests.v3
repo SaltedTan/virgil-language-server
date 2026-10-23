@@ -53,8 +53,8 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 // other jobs and the projects' analyses. One request waits for the worker,
 // and one runs: a newer request replaces the one that waits, which gets its
 // fallback reply. The last reply with an answer is kept for its document
-// version and cursor. See docs/architecture.md#completion and
-// docs/architecture.md#signature-help.
+// identity and cursor, including across version-only changes. See
+// docs/architecture.md#completion and docs/architecture.md#signature-help.
 class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void, what: string) {
 	// Starts the analyses, or null without an analysis worker.
 	var scheduler: LspSemanticDiagnostics;
@@ -66,13 +66,13 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 	// Counts the events that can change a request's sources or project
 	// (invalidate): an analysis that began in an older generation is stale.
 	private var generation: int;
-	// The last reply with an answer, for its document version and cursor.
+	// The last reply with an answer, for its document identity and cursor.
 	private var cachedUri: string;
 	private var cachedIdentity: DocumentVersionIdentity;
 	private var cachedCursor: int;
 	private var cachedResult: JsonValue;
 
-	// The last reply with an answer for {overlay}'s version at {cursor}, or
+	// The last reply with an answer for {overlay}'s identity at {cursor}, or
 	// Null.
 	def cached(overlay: DocumentOverlay, cursor: int) -> JsonValue {
 		if (cachedIdentity == null || cachedIdentity != overlay.identity || cachedCursor != cursor
@@ -127,8 +127,8 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		// No occurrences: the result holds only the answer's declarations.
 		return supervisor.beginTemporary(inputs.sources, ctx.definition.compilerArgs, 0, query);
 	}
-	// Whether {r}'s document is open at the version it was requested at, in
-	// the same current project.
+	// Whether {r}'s document is open with the identity it was requested at,
+	// including across version-only changes, in the same current project.
 	private def current(r: LspQueryRequest) -> bool {
 		var overlay = store.overlay(r.uri), ctx = projects.forDocument(r.uri).active;
 		return overlay != null && overlay.identity == r.identity && ctx == r.context && ctx.config.current;

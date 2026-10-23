@@ -68,7 +68,7 @@ component LspAnalysisCapture {
 	}
 	// The text that produced source {i} of {snapshot} (see
 	// AnalysisSnapshot.documentIndex), or null if it is not available: the
-	// overlay if the same accepted record is still open, or the disk file if
+	// overlay if the analyzed identity is still open, or the disk file if
 	// it still has the captured length and hash. The file is read again within
 	// that length, without following symlinks. Null for an index out of range,
 	// so for an unrecorded URI too. Only that source is checked; the caller
