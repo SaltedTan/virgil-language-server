@@ -4,6 +4,7 @@
 import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { clearTimeout, setTimeout } from 'node:timers';
 import * as vscode from 'vscode';
 import {
   LanguageClient,
@@ -24,6 +25,8 @@ const WORKER_NAME = 'virgil-lsp-worker';
 // Files whose changes on disk the server needs to hear about: project files
 // and sources. The server registers the same watchers dynamically.
 const WATCHED_FILES = ['**/.virgil-lsp.json', '**/*.v3'];
+// Matches vscode-languageclient 10.1.2's default stop() shutdown timeout.
+const NOTIFICATION_DRAIN_TIMEOUT_MS = 2000;
 
 // A startup problem the user can fix. Its message says how.
 class StartupError extends Error {}
@@ -36,6 +39,7 @@ let queue: Promise<void> = Promise.resolve();
 class QueuedLanguageClient extends LanguageClient {
   // The client stops listening to its file watchers but doesn't dispose them.
   watchers: vscode.Disposable[] = [];
+  notificationDrainTimeout = NOTIFICATION_DRAIN_TIMEOUT_MS;
   private readonly pendingNotifications = new Set<Promise<void>>();
 
   override start(): Promise<void> {
@@ -65,8 +69,24 @@ class QueuedLanguageClient extends LanguageClient {
   }
 
   async stopInQueue(): Promise<void> {
-    while (this.pendingNotifications.size > 0) {
-      await Promise.allSettled(this.pendingNotifications);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        output.warn(`Notification drain timed out (${this.pendingNotifications.size} still pending); stopping the server`);
+        resolve();
+      }, this.notificationDrainTimeout);
+    });
+    try {
+      await Promise.race([
+        (async () => {
+          while (this.pendingNotifications.size > 0) {
+            await Promise.allSettled(this.pendingNotifications);
+          }
+        })(),
+        deadline,
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
     await super.stop();
   }

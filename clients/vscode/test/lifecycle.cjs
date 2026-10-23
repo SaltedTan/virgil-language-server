@@ -26,6 +26,8 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
   const events = [];
   // Failures the language client reports, each with an error notification.
   const errors = [];
+  const outputWarnings = [];
+  const pendingTimers = new Set();
   const tabListeners = new Set();
   const editorListeners = new Set();
   const subscribe = (listeners) => (callback) => {
@@ -135,7 +137,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       return this.start();
     }
   }
-  const channel = { info() {}, warn() {}, error() {}, show() {} };
+  const channel = { info() {}, warn(message) { outputWarnings.push(message); }, error() {}, show() {} };
   const vscode = {
     window: {
       createOutputChannel: () => channel,
@@ -162,6 +164,20 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
     module, exports: module.exports,
     process: Object.assign(Object.create(process), { env }),
     require(name) {
+      if (name === 'node:timers') return {
+        setTimeout(callback, delay) {
+          const timer = setTimeout(() => {
+            pendingTimers.delete(timer);
+            callback();
+          }, delay);
+          pendingTimers.add(timer);
+          return timer;
+        },
+        clearTimeout(timer) {
+          pendingTimers.delete(timer);
+          clearTimeout(timer);
+        },
+      };
       if (name === 'vscode') return vscode;
       if (name === 'vscode-languageclient/node') return { LanguageClient, State, TransportKind: { stdio: 0 } };
       if (name === 'node:fs/promises') return {
@@ -173,7 +189,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
     },
   });
   return {
-    extension: module.exports, clients, events, errors, values, warnings, watchers,
+    extension: module.exports, clients, events, errors, values, warnings, watchers, outputWarnings, pendingTimers,
     activate: () => module.exports.activate({ subscriptions: [] }),
     restart: () => commands.get('virgil.server.restart')(),
     // Changes the given setting, or every setting.
@@ -304,6 +320,55 @@ test('restart drains a failed notification without hiding its failure or blockin
   await rejected;
   await restart;
   assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  await host.extension.deactivate();
+});
+
+for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'deactivate']) {
+  test(`${action} proceeds after a recovery notification write never settles`, { timeout: 1000 }, async () => {
+    const host = extensionHost({ documents: ['a.v3'] });
+    await host.activate();
+    await settle();
+    const recovering = host.clients[0];
+    recovering.notificationDrainTimeout = 1;
+    const startup = host.pauseStart();
+    const recovery = recovering.connectionClosed();
+    await settle();
+    host.pauseNotification();
+    const requested = action === 'deactivate' ? host.extension.deactivate()
+      : action === 'restart' ? host.restart() : host.configure(action);
+    const following = action === 'deactivate' ? requested : host.restart();
+    startup.resolve();
+    await recovery;
+    await following;
+    await settle();
+    assert.equal(recovering.$state, 'stopped');
+    assert.deepEqual(host.events.slice(host.events.lastIndexOf('start:0') + 1), action === 'deactivate'
+      ? ['shutdown:0', 'exit:0']
+      : ['shutdown:0', 'exit:0', 'start:1', 'didOpen a.v3:1', 'shutdown:1', 'exit:1', 'start:2', 'didOpen a.v3:2']);
+    assert.deepEqual(host.outputWarnings, ['Notification drain timed out (1 still pending); stopping the server']);
+    assert.deepEqual(host.errors, []);
+    assert.equal(host.pendingTimers.size, 0);
+    await host.extension.deactivate();
+  });
+}
+
+test('a notification settling before the drain deadline is sent before stop and clears the timer', async () => {
+  const host = extensionHost();
+  await host.activate();
+  assert.equal(host.clients[0].notificationDrainTimeout, 2000);
+  const write = host.pauseNotification();
+  const sent = host.clients[0].sendNotification('didChange');
+  await settle();
+  const restart = host.restart();
+  await settle();
+  assert.deepEqual(host.events, ['start:0']);
+  assert.equal(host.pendingTimers.size, 1);
+  write.resolve();
+  await sent;
+  await restart;
+  assert.deepEqual(host.events, ['start:0', 'didChange:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.deepEqual(host.outputWarnings, []);
+  assert.equal(host.pendingTimers.size, 0);
   await host.extension.deactivate();
 });
 
