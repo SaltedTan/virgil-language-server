@@ -12,6 +12,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const KEEPER = path.join(__dirname, 'keeper.cjs');
+// How long a group's keeper gets to answer a request (see startGroup).
+const KEEPER_REPLY_MS = 1000;
 
 // A process's state, parent, process group, and start time; undefined if it
 // has gone. On Linux they are the third, fourth, fifth, and 22nd fields of
@@ -179,14 +181,18 @@ function signalProcesses(processes, name) {
 // keeper's standard input, and the keeper, which is in the group as it
 // signals it, signals its own group. If the keeper has gone, or goes before
 // it says that it has sent the signal, the runner signals instead each process
-// that it saw in the group (see signalProcesses). The keeper survives SIGINT,
-// SIGTERM, and SIGHUP, which the rest of the group gets as usual, so the group
-// stays the run's until the runner releases the keeper, or asks for SIGKILL;
-// if the runner goes, the keeper stops the group. stdio is spawn's for the
-// command's standard input, output, and error, each 'pipe', 'inherit', or
-// 'ignore'; the returned group's stdin, stdout, and stderr are the pipes.
-// onExit gets the command's exit as { code, signal }, or { error } if it
-// didn't start.
+// that it saw in the group (see signalProcesses). If the keeper does neither
+// within KEEPER_REPLY_MS, as when it has been stopped, the runner signals
+// those processes and the keeper itself, by its PID and start time, and sends
+// every later signal the same way; SIGKILL ends a stopped keeper too. A keeper
+// that hasn't exited KEEPER_REPLY_MS after its release gets SIGKILL the same
+// way. The keeper survives SIGINT, SIGTERM, and SIGHUP, which the rest of the
+// group gets as usual, so the group stays the run's until the runner releases
+// the keeper, or asks for SIGKILL; if the runner goes, the keeper stops the
+// group. stdio is spawn's for the command's standard input, output, and
+// error, each 'pipe', 'inherit', or 'ignore'; the returned group's stdin,
+// stdout, and stderr are the pipes. onExit gets the command's exit as
+// { code, signal }, or { error } if it didn't start.
 function startGroup(command, args, { env, stdio, onExit }) {
   // For the keeper, 'inherit' would mean the runner's descriptors 3 to 5; the
   // command's are the runner's own standard streams.
@@ -202,8 +208,10 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // keeper, each by PID and start time.
   const seen = new Map();
   // The signals that the runner has asked the keeper for, in order, and that
-  // the keeper hasn't said it sent.
+  // the keeper hasn't said it sent, each with the timer for its answer.
   const requested = [];
+  // Whether the keeper has failed to answer a request in time.
+  let unresponsive = false;
   let lost = leader === undefined;
   let killed = false;
   let reported = false;
@@ -247,10 +255,23 @@ function startGroup(command, args, { env, stdio, onExit }) {
     return found;
   };
   // Sends a signal to each process that the runner saw in the group, wherever
-  // it is now (see signalProcesses).
-  const signalSeen = (name) => {
+  // it is now, and, with alsoKeeper, last to the keeper, if it hasn't been
+  // reaped (see signalProcesses).
+  const signalSeen = (name, alsoKeeper = false) => {
     look();
-    signalProcesses([...seen].map(([pid, start]) => ({ pid, start })), name);
+    const targets = [...seen].map(([pid, start]) => ({ pid, start }));
+    if (alsoKeeper && leader !== undefined && led()) targets.push({ pid: number, start: leader.start });
+    signalProcesses(targets, name);
+  };
+  // The keeper hasn't answered the first of the requests in time, so it can't
+  // answer any of them: they go to the processes that the runner saw in the
+  // group and to the keeper instead, as every later one does.
+  const unanswered = () => {
+    unresponsive = true;
+    for (const { name, timer } of requested.splice(0)) {
+      clearTimeout(timer);
+      signalSeen(name, true);
+    }
   };
   // The keeper has gone without saying how the command ended: the group's
   // SIGKILL ended both, or something else ended the keeper.
@@ -272,7 +293,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
         continue;
       }
       if (message.spawn !== undefined) look();
-      else if (message.signaled !== undefined) requested.shift();
+      else if (message.signaled !== undefined) clearTimeout(requested.shift()?.timer);
       else if (message.exit !== undefined) report({ code: message.exit[0], signal: message.exit[1] });
       else if (message.error !== undefined) report({ error: Object.assign(new Error(message.error.message), message.error) });
     }
@@ -280,7 +301,10 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // The keeper has gone, and every report of its has been read.
   keeper.stdout?.on('close', () => {
     reportsEnded = true;
-    for (const name of requested.splice(0)) signalSeen(name);
+    for (const { name, timer } of requested.splice(0)) {
+      clearTimeout(timer);
+      signalSeen(name);
+    }
     keeperEnded();
   });
   keeper.stdin?.on('error', () => {});
@@ -300,14 +324,18 @@ function startGroup(command, args, { env, stdio, onExit }) {
     stderr: keeper.stdio[5],
     look,
     // Asks the keeper to send a signal to the group; once the keeper has gone,
-    // sends it instead to each process that the runner saw in the group.
+    // sends it instead to each process that the runner saw in the group, and
+    // once it has failed to answer, to those and to the keeper. The keeper
+    // answers SIGKILL by going.
     signal: (name) => {
       killed ||= name === 'SIGKILL';
-      if (!reportsEnded && keeper.stdin?.writable) {
-        requested.push(name);
-        keeper.stdin.write(`${name}\n`);
-      } else {
+      if (reportsEnded || !keeper.stdin?.writable) {
         signalSeen(name);
+      } else if (unresponsive) {
+        signalSeen(name, true);
+      } else {
+        requested.push({ name, timer: setTimeout(unanswered, KEEPER_REPLY_MS) });
+        keeper.stdin.write(`${name}\n`);
       }
     },
     // Lets the keeper exit, once the runner has seen the command exit and no
@@ -317,7 +345,13 @@ function startGroup(command, args, { env, stdio, onExit }) {
         resolve();
         return;
       }
-      keeper.on('exit', () => resolve());
+      const timer = setTimeout(() => {
+        if (led()) signalProcesses([{ pid: number, start: leader.start }], 'SIGKILL');
+      }, KEEPER_REPLY_MS);
+      keeper.on('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
       keeper.stdin.end('release\n');
     }),
   };

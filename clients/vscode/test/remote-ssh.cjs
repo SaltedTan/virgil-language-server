@@ -111,7 +111,7 @@ function runGroup(processes, timeout = 60000, { pidfd = false } = {}) {
   const { keeper, kill, deliver, signals } = fakeGroup(processes);
   const clock = fakeClock();
   const run = load('run.cjs', {
-    '../processes.cjs': fakeProcesses(processes, { keeper, kill, deliver, pidfd, signals }),
+    '../processes.cjs': fakeProcesses(processes, { keeper, kill, deliver, pidfd, signals, globals: clock.globals }),
     '../run.cjs': require('./e2e/run.cjs'),
     './localhost.cjs': {},
   }, { pid: 1, kill }, clock.globals);
@@ -334,7 +334,7 @@ function download() {
   const { keeper, kill, signals } = fakeGroup(processes);
   const clock = fakeClock();
   const runner = load('run.cjs', {
-    '../processes.cjs': fakeProcesses(processes, { keeper, kill, signals }),
+    '../processes.cjs': fakeProcesses(processes, { keeper, kill, signals, globals: clock.globals }),
     '../run.cjs': require('./e2e/run.cjs'),
     './localhost.cjs': {},
   }, { pid: 1, kill, stderr: { write() {} } }, clock.globals);

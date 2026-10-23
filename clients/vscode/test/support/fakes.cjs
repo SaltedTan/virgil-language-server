@@ -90,10 +90,12 @@ function fakeClock() {
 // fail(code) report the command's start, exit, or failure, as the keeper
 // does; data(name, text) and close() are the command's output; reap(signal)
 // is Node.js reaping the keeper and running its exit listeners, which it
-// does, after a microtask, once the keeper is released. A signal that the
-// runner asks for goes to group(name), which returns whether the keeper was
-// there to send it; the keeper then says that it sent it, unless it was
-// SIGKILL. spawned holds spawn's arguments.
+// does as soon as the keeper is released, before a fake clock can run out
+// the keeper's time to exit (see KEEPER_REPLY_MS in processes.cjs). A signal
+// that the runner asks for goes to group(name), which returns whether the
+// keeper was there to send it; the keeper then says that it sent it, unless
+// it was SIGKILL. A keeper that has been stopped, with stopped, does
+// neither, and doesn't exit once released. spawned holds spawn's arguments.
 function fakeKeeper(pid) {
   const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
   const pipe = () => Object.assign(new EventEmitter(), { end() {} });
@@ -101,6 +103,7 @@ function fakeKeeper(pid) {
     keeper,
     released: undefined,
     spawned: undefined,
+    stopped: false,
     group: () => false,
     spawn: (...args) => {
       fake.spawned = args;
@@ -127,13 +130,13 @@ function fakeKeeper(pid) {
     writable: true,
     write: (text) => {
       for (const name of String(text).split('\n').filter(Boolean)) {
-        if (fake.group(name) && name !== 'SIGKILL') line({ signaled: name });
+        if (!fake.stopped && fake.group(name) && name !== 'SIGKILL') line({ signaled: name });
       }
     },
     end: (text) => {
       stdin.writable = false;
       fake.released = String(text);
-      queueMicrotask(() => fake.reap(null));
+      if (!fake.stopped) fake.reap(null);
     },
   });
   keeper.stdin = stdin;
@@ -148,8 +151,9 @@ function fakeKeeper(pid) {
 // signals gets ['pidfd', name, targets] for each call, and deliver(pid, name)
 // each signal to a target that is still that process, alive; without it,
 // python3 isn't found. platform is process.platform, and ps, if given, gives
-// spawnSync's result for ps's arguments.
-function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps } = {}) {
+// spawnSync's result for ps's arguments; globals, such as a fake clock's, are
+// load()'s.
+function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps, globals } = {}) {
   const spawnSync = (command, args) => {
     if (command === 'ps') return ps(args);
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
@@ -167,7 +171,7 @@ function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], d
   return load('processes.cjs', {
     'node:fs': fakeProc(processes),
     'node:child_process': { spawn: (...args) => keeper.spawn(...args), spawnSync },
-  }, { pid: 1, kill, platform });
+  }, { pid: 1, kill, platform }, globals);
 }
 
 // A fake keeper, with the PID 50, of a group among fake processes (see
