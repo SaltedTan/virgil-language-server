@@ -306,7 +306,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		var keep = OrderedStringMap<bool>.new();
 		for (i < paths.length) {
 			if (owners[i] != ctx || !keep.add(run.keys[i], true)) continue;
-			lists.semantic(run.keys[i], ctx, if(found[i] != null, found[i].extract(), []));
+			lists.semantic(run.keys[i], ctx, inputs.versions, if(found[i] != null, found[i].extract(), []));
 		}
 		lists.clearOwned(ctx, keep);
 	}

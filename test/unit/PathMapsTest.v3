@@ -152,8 +152,8 @@ def diagnosticLists(t: Tester, n: int) {
 	var uris = collidingUris(n), store = DocumentStore.new(null, 64 * 1024 * 1024);
 	var sent = PublishedUris.new(), lists = LspDiagnosticLists.new(store, sent.send);
 	var d = [LspDiagnostic.new("0:1::x", JsonValue.Int(0))];
-	for (i < n) lists.semantic(uris[(i * 7) % n], null, d);
-	for (i < n) lists.semantic(uris[(i * 7) % n], null, d);
+	for (i < n) lists.semantic(uris[(i * 7) % n], null, null, d);
+	for (i < n) lists.semantic(uris[(i * 7) % n], null, null, d);
 	lists.clearOwned(null, null);
 	t.asserti(n, sent.uris.length);
 	for (i < n) {
@@ -162,8 +162,8 @@ def diagnosticLists(t: Tester, n: int) {
 	}
 	sent.uris.resize(0);
 	sent.lengths.resize(0);
-	for (i < n) lists.semantic(uris[i], null, []);
-	for (i < n) lists.semantic(uris[i], null, []);
+	for (i < n) lists.semantic(uris[i], null, null, []);
+	for (i < n) lists.semantic(uris[i], null, null, []);
 	t.asserti(n, sent.uris.length);
 	for (i < sent.lengths.length) t.asserti(0, sent.lengths[i]);
 }
