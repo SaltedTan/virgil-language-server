@@ -1,21 +1,68 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Create host-filesystem cases (including sparse files and FIFOs) for both CI hosts."""
+"""Create host-filesystem cases (including sparse files and FIFOs) for both CI hosts.
+
+The two directories that must be unreadable stay writable until --restrict;
+--run applies it for the duration of a command and restores it afterwards, and
+--cleanup restores it on its own.
+"""
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import shutil
+import subprocess
 import sys
 
-root = Path(sys.argv[1]) / "project-fixtures"
-if len(sys.argv) == 3 and sys.argv[2] == "--cleanup":
-    for relative in ["unreadable-directories/blocked", "ignored-entries/build"]:
+build = Path(sys.argv[1])
+root = build / "project-fixtures"
+restricted = ["unreadable-directories/blocked", "ignored-entries/build"]
+
+
+def restrict():
+    for relative in restricted:
+        directory = root / relative
+        if directory.is_symlink() or not directory.is_dir():
+            sys.exit(f"error: {directory} is missing; prepare the fixtures with prepare.py {build} first")
+        directory.chmod(0)
+
+
+def restore():
+    for relative in restricted:
         directory = root / relative
         if not directory.is_symlink() and directory.is_dir():
             directory.chmod(0o700)
+
+
+mode = sys.argv[2] if len(sys.argv) > 2 else None
+if mode == "--cleanup":
+    restore()
     sys.exit(0)
+if mode == "--restrict":
+    restrict()
+    sys.exit(0)
+if mode == "--run":
+    command = sys.argv[3:]
+    if not command:
+        sys.exit("usage: prepare.py BUILD --run COMMAND [ARGUMENT ...]")
+
+    def stop(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
+    try:
+        restrict()
+        status = subprocess.run(command).returncode
+    except KeyboardInterrupt:
+        status = 128 + signal.SIGINT
+    finally:
+        restore()
+    sys.exit(128 - status if status < 0 else status)
+if mode is not None:
+    sys.exit(f"error: unknown option {mode}")
 closed_shared = root / "closed-shared"
 shutil.copytree(Path(__file__).parent / "two-programs", closed_shared, dirs_exist_ok=True)
 shared = closed_shared / "shared" / "Greeting.v3"
@@ -415,7 +462,6 @@ for name in ["readable", "blocked"]:
     directory.mkdir(exist_ok=True)
     directory.chmod(0o700)
     (directory / "A.v3").write_text("def value = 1;\n", encoding="utf-8")
-(unreadable_directories / "blocked").chmod(0)
 
 ignored_entries = root / "ignored-entries"
 ignored_entries.mkdir(exist_ok=True)
@@ -430,7 +476,6 @@ excluded_directory = ignored_entries / "build"
 excluded_directory.mkdir(exist_ok=True)
 excluded_directory.chmod(0o700)
 (excluded_directory / "Generated.v3").write_text("def generated = 1;\n", encoding="utf-8")
-excluded_directory.chmod(0)
 
 unrelated_files = root / "unrelated-files"
 unrelated_files.mkdir(exist_ok=True)
