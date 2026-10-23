@@ -38,6 +38,78 @@ jobs:
         run: make test
       - name: Version
         run: build/virgil-lsp --version
+      # Only lazyvim-linux uses this artifact, so a failed upload mustn't fail
+      # this required job; lazyvim-linux then fails at its download instead.
+      - uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: server-linux
+          path: |
+            build/virgil-lsp
+            build/virgil-lsp-worker
+          if-no-files-found: error
+          retention-days: 3
+
+  lazyvim-linux:
+    # Runs the LazyVim test against the server that test built and tested,
+    # rather than building Virgil again. It is a separate job, not a step of
+    # test, so that it is not a required check: it installs the pinned starter
+    # and plugins from GitHub, and stays advisory until it has passed 20 runs
+    # in a row. A failure still shows in the pull request. See
+    # docs/compatibility.md for CI policy and test/e2e/lazyvim/README.md#ci.
+    name: LazyVim test (built server, linux)
+    needs: test
+    runs-on: ubuntu-24.04
+    # A run takes about a minute after setup; the test's own deadlines, 600
+    # seconds to install the plugins and 240 for each run, end a stuck one sooner.
+    timeout-minutes: 20
+    steps:
+      # The test's fixture project uses the pinned Virgil checkout's libraries.
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install Neovim 0.11.6
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
+            -o "$RUNNER_TEMP/nvim.tar.gz"
+          echo "2fc90b962327f73a78afbfb8203fd19db8db9cdf4ee5e2bef84704339add89cc  $RUNNER_TEMP/nvim.tar.gz" |
+            sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Install tmux
+        run: |
+          if ! command -v tmux >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends tmux
+          fi
+      - name: Show versions
+        run: |
+          sed -n 's/^PRETTY_NAME=//p' /etc/os-release
+          nvim --version | head -n 1
+          tmux -V
+      - uses: actions/download-artifact@v8
+        with:
+          name: server-linux
+          path: build
+      - name: Restore executable permissions
+        # Artifacts don't preserve file permissions.
+        run: |
+          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          build/virgil-lsp --version
+      - name: LazyVim test
+        run: |
+          set -o pipefail
+          mkdir "$RUNNER_TEMP/lazyvim"
+          test/e2e/lazyvim/run.sh --out "$RUNNER_TEMP/lazyvim/results" build/virgil-lsp 2>&1 |
+            tee "$RUNNER_TEMP/lazyvim/run.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lazyvim-linux
+          path: ${{ runner.temp }}/lazyvim
+          if-no-files-found: warn
+          retention-days: 14
 
   test-macos:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil

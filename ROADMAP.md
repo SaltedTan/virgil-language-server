@@ -249,7 +249,7 @@ Deliverables:
 
 Exit criteria:
 
-- The same server binary supplies diagnostics, symbols, definition, and hover in LazyVim and VS Code. *(present for plain Neovim and VS Code, whose automated tests the [release workflow](docs/releasing.md#how-the-workflow-works) runs with the same Linux executables; the LazyVim configuration passed a scripted run on Linux for v0.1.0-alpha.1 but isn't tested in CI)*
+- The same server binary supplies diagnostics, symbols, definition, and hover in LazyVim and VS Code. *(present for plain Neovim and VS Code, whose automated tests the [release workflow](docs/releasing.md#how-the-workflow-works) runs with the same Linux executables; see the [LazyVim test](test/e2e/lazyvim/README.md#ci) for its CI coverage)*
 - Definition results are semantic, not name-only text searches. *(present; [occurrence index](docs/architecture.md#compiler-adapter))*
 - Requests against stale snapshots fail safely or return a newer matching snapshot. *(present; [freshness](docs/architecture.md#definition))*
 - The alpha has known limitations and a reproducible issue template. *(present; [known limitations](docs/known-limitations.md) and the [bug report form](.github/ISSUE_TEMPLATE/bug_report.yml))*

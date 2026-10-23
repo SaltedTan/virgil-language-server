@@ -89,8 +89,8 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
 
-# Local only, not part of `make test`: needs tmux and GitHub access, and takes
-# about a minute (test/e2e/lazyvim/README.md).
+# Not part of `make test`: needs tmux and GitHub access, and takes about a
+# minute. CI runs it in a job of its own (test/e2e/lazyvim/README.md#ci).
 test-lazyvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	test/e2e/lazyvim/run.sh $(BUILD)/virgil-lsp
 
