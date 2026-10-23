@@ -1301,16 +1301,31 @@ async function main() {
     ...reasons.map((reason) => `reason: ${reason}`),
     `VS Code Remote-SSH test: ${result}`,
   ].join('\n');
-  try {
-    Object.assign(run.manifest, {
-      result, exitStatus: status, reasons, info: run.notes, interrupted: run.interrupted ?? null, finished: new Date().toISOString(),
-    });
-    fs.writeFileSync(path.join(values.out, 'manifest.json'), `${JSON.stringify(run.manifest, null, 2)}\n`);
-    fs.writeFileSync(path.join(values.out, 'summary.txt'), `${summary()}\n`);
-  } catch (error) {
-    reasons.push(`could not write the results into ${values.out}: ${error.message}`);
-    if (status === STATUS.PASS) [result, status] = ['INFRA', STATUS.INFRA];
-  }
+  // A results file that can't be written makes a passing run's result INFRA,
+  // and is removed, so that no part of it says otherwise. The summary goes
+  // first, so that the manifest, last, has the result that its failure makes;
+  // if the manifest fails, the summary is written again, with that result.
+  const write = (name, text) => {
+    const file = path.join(values.out, name);
+    try {
+      fs.writeFileSync(file, text);
+      return true;
+    } catch (error) {
+      reasons.push(`could not write ${name} into ${values.out}: ${error.message}`);
+      if (status === STATUS.PASS) [result, status] = ['INFRA', STATUS.INFRA];
+      try {
+        fs.rmSync(file, { force: true });
+      } catch {
+        // The console still has the result.
+      }
+      return false;
+    }
+  };
+  const summaryWritten = write('summary.txt', `${summary()}\n`);
+  Object.assign(run.manifest, {
+    result, exitStatus: status, reasons, info: run.notes, interrupted: run.interrupted ?? null, finished: new Date().toISOString(),
+  });
+  if (!write('manifest.json', `${JSON.stringify(run.manifest, null, 2)}\n`) && summaryWritten) write('summary.txt', `${summary()}\n`);
   console.log(`== summary\n${summary()}\nresults: ${values.out}\nRESULT: ${result}`);
   process.exit(status);
 }
