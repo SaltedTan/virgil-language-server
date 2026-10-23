@@ -15,11 +15,12 @@
 // teardown stops exactly the processes that have the marker, run an
 // executable from the work directory, or descend from the servers started
 // here, never processes found by name. It knows each by its PID and start
-// time, and checks both again just before each signal, so that a PID that a
-// process of the run had and another process has since been given is never
-// signaled, unless that happens in the few system calls between the check and
-// the signal; Linux's pidfds would close that gap, but Node.js doesn't offer
-// them.
+// time, and sends each signal through a pidfd that it opens before it checks
+// both again (see ../processes.cjs), so that a PID that a process of the run
+// had and another process has since been given is never signaled. Where
+// pidfds aren't available, or one can't be used for a process, the check is a
+// few system calls before the signal, and the PID could be given to another
+// process in between.
 
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -27,6 +28,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const { signalProcesses } = require('../processes.cjs');
 
 const ALIAS = 'virgil-remote-ssh-test';
 const HOST = '127.0.0.1';
@@ -316,17 +318,10 @@ function running({ child, identity }) {
 }
 
 // Sends a signal to each of the processes, by identity, that still runs; it
-// skips the others, whose PIDs may now be other processes'.
+// skips the others, whose PIDs may now be other processes'. The teardown's
+// last look finds one that couldn't be signaled.
 function signal(processes, name) {
-  for (const p of processes) {
-    if (!same(p)) continue;
-    try {
-      process.kill(p.pid, name);
-    } catch {
-      // It has just exited, or it can't be signaled; the teardown's last look
-      // finds what's left.
-    }
-  }
+  signalProcesses(processes, name);
 }
 
 // The run's processes: those whose environment has the marker, those that

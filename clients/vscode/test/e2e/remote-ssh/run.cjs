@@ -24,15 +24,16 @@
 // for. The last line of output, and manifest.json in the output directory,
 // say which.
 
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
-const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
+const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
+const { PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -47,8 +48,10 @@ const REMOTE_SSH = [
 ];
 const REMOTE_SSH_VERSION = REMOTE_SSH.at(-1).version;
 const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
-// Deadlines: the first connection, which downloads the VS Code Server; each
-// later launch; each installation; and each other command over SSH.
+// Deadlines: VS Code's download; the first connection, which downloads the
+// VS Code Server; each later launch; each installation; and each other
+// command over SSH.
+const DOWNLOAD_TIMEOUT_MS = 600000;
 const PROBE_TIMEOUT_MS = 300000;
 const LAUNCH_TIMEOUT_MS = 180000;
 const INSTALL_TIMEOUT_MS = 180000;
@@ -221,144 +224,65 @@ function sh(word) {
   return `'${String(word).replaceAll("'", "'\\''")}'`;
 }
 
-// Sends a signal to a process, or to a process group by its negated number,
-// which may have just gone.
-function send(target, name) {
-  try {
-    process.kill(target, name);
-  } catch (error) {
-    if (error.code !== 'ESRCH') throw error;
-  }
-}
-
-// A local process's state, process group, and start time, in clock ticks
-// after boot, from /proc/<pid>/stat: its third, fifth, and 22nd fields;
-// undefined if it has gone.
-function procStat(pid) {
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return { state: fields[0], group: Number(fields[2]), start: fields[19] };
-  } catch {
-    return undefined;
-  }
-}
-
-// The process group that runGroup starts, and the processes that the runner
-// has seen in it, each by PID and start time. The group's number is its first
-// process's PID, which Linux gives no other process while any process has it
-// as its PID, group, or session. So the number is the run's group's:
-// - until Node.js has reaped the first process, which runGroup notes with
-//   reaped(): alive or a zombie, it keeps its PID, and as its session's leader
-//   it can't leave the group;
-// - after that, while a process that the runner saw in the group in an
-//   earlier look is still in it, the same process by PID and start time, alive
-//   or a zombie: it has kept the number since, as a process can't come back to
-//   a session that it has left. Once none is, another process may have been
-//   given the number, and the group is never the run's again.
-// That is checked after each look at the group's processes, so that it covers
-// the whole look, and a signal to the group follows a look at once. Once the
-// first process has been reaped, that leaves a gap of a few system calls: if
-// the last process of the group's session exits in it, and Linux gives the
-// number to another process, which makes a group of it, that group gets the
-// signal. Linux's pidfds would close the gap, but Node.js doesn't offer them.
-function processGroup(pid) {
-  const seen = new Map();
-  let reaped = false;
-  let lost = pid === undefined;
-  const look = () => {
-    if (lost) return undefined;
-    const found = [];
-    for (const name of fs.readdirSync('/proc')) {
-      const stat = /^[0-9]+$/.test(name) ? procStat(name) : undefined;
-      if (stat?.group === pid && stat.state !== 'Z') found.push({ pid: Number(name), start: stat.start });
-    }
-    const held = (p, start) => {
-      const stat = procStat(p);
-      return stat?.start === start && stat.group === pid;
-    };
-    if (reaped && ![...seen].some(([p, start]) => held(p, start))) {
-      lost = true;
-      return undefined;
-    }
-    for (const p of found) seen.set(p.pid, p.start);
-    return found;
-  };
-  return {
-    // The group's processes, other than zombies, while it is the run's, which
-    // the runner then remembers; undefined once it isn't.
-    look,
-    reaped: () => {
-      reaped = true;
-    },
-    // Sends a signal to the group while it is the run's. Once it isn't, it
-    // sends it instead to each process that the runner saw in the group, and
-    // that is still that process, by PID and start time, wherever it is now;
-    // the same gap remains between that check and the signal.
-    signal: (name) => {
-      const found = look();
-      if (found === undefined) {
-        for (const [p, start] of seen) {
-          const stat = procStat(p);
-          if (stat?.start === start && stat.state !== 'Z') send(p, name);
-        }
-      } else if (!reaped || found.length > 0) {
-        send(-pid, name);
-      }
-    },
-  };
-}
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Runs command in a process group of its own, with input on its standard
-// input, and collects its output, which onData also receives. A timeout or an
-// interrupt stops the group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If
-// the group outlives the command by GROUP_EXIT_MS, it is stopped the same way
-// and the result's groupLeft says so. Also waits for the output pipes to close,
-// so buffered archive bytes and diagnostics aren't lost after command exit.
-// Resolves once the whole group has gone, or is no longer the run's (see
-// processGroup), which it looks at every 50 milliseconds. A process that
-// joins the group less than that before the command exits, and outlives every
-// process that the runner saw there, isn't waited for or signaled.
+// Runs command in a process group of its own (see startGroup in
+// ../processes.cjs), with input on its standard input, and collects its
+// output, which onData also receives, with the stream's name. A timeout or an
+// interrupt stops the group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If the
+// group outlives the command by GROUP_EXIT_MS, it is stopped the same way and
+// the result's groupLeft says so. Also waits for the output pipes to close, so
+// buffered archive bytes and diagnostics aren't lost after command exit.
+// Resolves once the whole group has gone, which it looks at every 50
+// milliseconds, or is no longer the run's. The group's keeper stays until
+// then, or until the group's SIGKILL, so the group stays the run's: a process
+// that joins it, even just before the command exits, is waited for, and
+// stopped with the group.
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true,
-    });
-    const group = processGroup(child.pid);
     const output = { stdout: [], stderr: [] };
     let stopped;
     let exited;
-    let closed = false;
+    let open = 2;
     let finished = false;
     let deadline;
     let groupLeft = false;
     const started = Date.now();
+    const group = startGroup(command, args, {
+      env,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      onExit: (result) => {
+        exited = { ...result, at: Date.now() };
+        if (result.error === undefined) onExit?.(exited);
+        finish();
+      },
+    });
     const finish = () => {
-      if (finished || exited === undefined || !closed || (group.look() ?? []).length > 0) return;
+      if (finished || exited === undefined || open > 0 || group.look()?.empty === false) return;
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
-      signal.removeEventListener('abort', interrupt);
-      resolve({
-        ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
-        stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
+      void group.release().then(() => {
+        signal.removeEventListener('abort', interrupt);
+        resolve({
+          ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
+          stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
+        });
       });
     };
     const stop = (reason) => {
-      if (stopped !== undefined || child.pid === undefined) return;
+      if (stopped !== undefined || group.pid === undefined) return;
       stopped = reason;
       group.signal('SIGTERM');
       deadline = Date.now() + STOP_GRACE_MS;
     };
     const poll = setInterval(() => {
-      const left = group.look() ?? [];
-      if (exited !== undefined && left.length === 0) {
-        finish();
-      } else if (deadline !== undefined && Date.now() > deadline) {
+      const empty = group.look()?.empty !== false;
+      if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
+      } else if (exited !== undefined && empty) {
+        finish();
       } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
         groupLeft = true;
         stop(`left processes running ${GROUP_EXIT_MS / 1000} seconds after it exited`);
@@ -367,32 +291,26 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
     const timer = setTimeout(() => stop(`exceeded ${timeout / 1000} seconds`), timeout);
     const interrupt = () => stop('was interrupted');
     signal.addEventListener('abort', interrupt);
-    child.on('spawn', () => {
-      if (signal.aborted) interrupt();
-    });
+    if (signal.aborted) interrupt();
     for (const name of ['stdout', 'stderr']) {
-      child[name].on('data', (data) => {
+      const stream = group[name];
+      if (stream === null) {
+        open--;
+        continue;
+      }
+      stream.on('data', (data) => {
         output[name].push(data);
-        onData?.(data);
+        onData?.(data, name);
+      });
+      stream.on('close', () => {
+        open--;
+        finish();
       });
     }
     if (input !== undefined) {
-      child.stdin.on('error', () => {});
-      child.stdin.end(input);
+      group.stdin.on('error', () => {});
+      group.stdin.end(input);
     }
-    child.on('error', (error) => {
-      exited ??= { error, at: Date.now() };
-    });
-    child.on('close', () => {
-      closed = true;
-      finish();
-    });
-    child.on('exit', (code, exitSignal) => {
-      exited = { code, signal: exitSignal, at: Date.now() };
-      group.reaped();
-      onExit?.(exited);
-      finish();
-    });
   });
 }
 
@@ -439,21 +357,6 @@ class Run {
   // Throws if the run was interrupted, so that the next step doesn't start.
   checkpoint() {
     if (this.signal.aborted) throw this.signal.reason;
-  }
-
-  // Waits for promise, unless the run is interrupted first.
-  async abortable(promise) {
-    this.checkpoint();
-    let onAbort;
-    const aborted = new Promise((_, reject) => {
-      onAbort = () => reject(this.signal.reason);
-      this.signal.addEventListener('abort', onAbort);
-    });
-    try {
-      return await Promise.race([promise, aborted]);
-    } finally {
-      this.signal.removeEventListener('abort', onAbort);
-    }
   }
 
   fail(message) {
@@ -575,6 +478,27 @@ async function serverFiles(run) {
   return { dir, names, details };
 }
 
+// Downloads VS Code into the Extension Host test's cache, unless it is there,
+// with ../download.cjs, in a process group of its own (see runGroup): an
+// interrupt then stops the download, and the tar that extracts it, before the
+// runner exits. @vscode/test-electron marks a finished extraction, and
+// replaces a version's directory that has no mark, as one that an interrupt
+// stopped. Returns VS Code's executable.
+async function downloadVSCode(run) {
+  const result = await runGroup(process.execPath, [path.join(__dirname, '..', 'download.cjs'), VSCODE_VERSION, path.join(extension, '.vscode-test')], {
+    env: run.env, timeout: DOWNLOAD_TIMEOUT_MS, signal: run.signal,
+    onData: (data, name) => {
+      if (name === 'stderr') process.stderr.write(data);
+    },
+  });
+  run.checkpoint();
+  const executable = result.stdout.toString().trim();
+  if (!succeeded(result) || executable === '') {
+    throw infra(`could not download VS Code ${VSCODE_VERSION}: download.cjs ${outcome(result)}: ${result.stderr.trim()}`);
+  }
+  return executable;
+}
+
 // The client's user settings. Remote-SSH reads only its application settings
 // from the client: the run's SSH configuration, the VS Code Server under the
 // target's work directory, and a connection without the local server or the
@@ -666,32 +590,55 @@ function suiteLines() {
 // processes in kill, each given as PID@start, that still have that start time
 // and run an executable under root and not under agent, the VS Code Server's
 // directory: exactly those, never processes found by name or another process
-// that now has the PID.
+// that now has the PID. Each signal goes through a pidfd where the target's
+// Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
+// otherwise, or where a pidfd couldn't be opened for that process or couldn't
+// signal it, follows a second check of the start time.
 const REMOTE_PROCESSES = `
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
 const found = [];
+const killed = [];
 let hostRuns = false;
 let signaledAt;
+const stat = (pid) => {
+  const text = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+  return text.slice(text.lastIndexOf(')') + 2).split(' ');
+};
+const send = (name, targets) => {
+  if (targets.length === 0) return;
+  const helper = spawnSync('python3', ['-I', '-c', ${JSON.stringify(PIDFD_SIGNAL)}, JSON.stringify([name, targets])], { encoding: 'utf8' });
+  let results;
+  try {
+    results = helper.status === 0 ? JSON.parse(helper.stdout) : undefined;
+  } catch {}
+  const complete = Array.isArray(results) && results.length === targets.length;
+  targets.forEach(([pid, start], i) => {
+    if (complete && ${JSON.stringify(SETTLED)}.includes(results[i])) return;
+    try {
+      const fields = stat(pid);
+      if (fields[0] !== 'Z' && fields[19] === start) process.kill(pid, name);
+    } catch {}
+  });
+};
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
-    const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const fields = stat(pid);
     if (fields[0] === 'Z') continue;
     const exe = fs.readlinkSync('/proc/' + pid + '/exe');
     if (!exe.startsWith(root + '/')) continue;
     const start = fields[19];
-    if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) {
-      if (signal) {
-        signaledAt = Date.now();
-        process.kill(Number(pid), signal);
-      }
-      hostRuns = true;
-    }
-    if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) process.kill(Number(pid), 'SIGKILL');
+    if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) hostRuns = true;
+    if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) killed.push([Number(pid), start]);
     found.push({ pid: Number(pid), ppid: Number(fields[1]), start, exe });
   } catch {}
 }
+if (hostRuns && signal) {
+  signaledAt = Date.now();
+  send(signal, [[host.pid, host.start]]);
+}
+send('SIGKILL', killed);
 console.log(JSON.stringify({ found, host: hostRuns, signaledAt, sampledAt: Date.now() }));`;
 
 // The target's processes that run an executable from its work directory,
@@ -1001,18 +948,13 @@ async function test(run) {
   console.log(`VS Code Remote-SSH test: VS Code ${VSCODE_VERSION}, Remote-SSH ${REMOTE_SSH_VERSION}, `
     + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.archive ?? values.server}`);
 
-  let executable;
-  try {
-    executable = await run.abortable(downloadAndUnzipVSCode({ version: VSCODE_VERSION, cachePath: path.join(extension, '.vscode-test') }));
-  } catch (error) {
-    if (error instanceof Failure) throw error;
-    throw infra(`could not download VS Code ${VSCODE_VERSION}: ${error.message}`);
-  }
+  const executable = await downloadVSCode(run);
   const product = JSON.parse(fs.readFileSync(path.join(path.dirname(executable), 'resources/app/product.json'), 'utf8'));
   run.manifest.client = {
     os: osDetails(),
     node: process.version,
     vscode: { version: product.version, commit: product.commit, quality: product.quality, executable },
+    pidfds: pidfdSupport(),
   };
 
   // The target, and the SSH client that reaches it.
@@ -1413,4 +1355,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { REMOTE_PROCESSES, runGroup, serverFiles, settle, stopHost, options, launch, main };
+module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, settle, stopHost, options, launch, main };
