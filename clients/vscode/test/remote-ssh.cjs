@@ -178,9 +178,11 @@ test('a command runs under a keeper that leads its process group, with only its 
   assert.notEqual(group, pid);
   assert.equal(group, parent);
   assert.equal(input, 'input');
-  // ls's own directory descriptor, if any, comes after 0, 1, and 2.
-  assert.deepEqual(result.stderr.trim().split(/\s+/).slice(0, 3), ['0', '1', '2']);
-  assert.ok(result.stderr.trim().split(/\s+/).length <= 4, result.stderr);
+  // Sort numerically: ls's own directory descriptor, if any, can sort
+  // lexically before 2 (for example, 142).
+  const descriptors = result.stderr.trim().split(/\s+/).map(Number).sort((a, b) => a - b);
+  assert.deepEqual(descriptors.slice(0, 3), [0, 1, 2]);
+  assert.ok(descriptors.length <= 4, result.stderr);
 });
 
 test('a command\'s process group is stopped by its keeper, never by the runner with its number', async () => {

@@ -25,6 +25,7 @@ const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { startGroup } = require('./processes.cjs');
+
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
 // Each launch, including VS Code's own startup, must finish within this time,
