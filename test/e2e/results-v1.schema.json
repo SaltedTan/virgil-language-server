@@ -133,7 +133,8 @@
               },
               "required": ["name", "sha256", "version"],
               "additionalProperties": false
-            }
+            },
+            {"$ref": "#/$defs/unavailableProvenance"}
           ]
         },
         "clientMode": {

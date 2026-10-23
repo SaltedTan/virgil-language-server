@@ -382,16 +382,30 @@ class CoverageTest(unittest.TestCase):
             if key != "description"})
         provenance = defs["provenance"]["properties"]
         server = provenance["server"]["properties"]
+        vsix = {
+            "type": "object",
+            "properties": {
+                "name": {"$ref": "#/$defs/nonEmpty"},
+                "sha256": {"$ref": "#/$defs/sha256"},
+                "version": {"$ref": "#/$defs/nonEmpty"},
+            },
+            "required": ["name", "sha256", "version"],
+            "additionalProperties": False,
+        }
         fields = [
-            (server["versionText"], {"$ref": "#/$defs/nonEmpty"}),
-            (server["target"], {"enum": ["x86-64-linux", "x86-64-darwin"]}),
-            (server["sha256"], {"$ref": "#/$defs/sha256"}),
-            (server["workerSha256"], {"$ref": "#/$defs/sha256"}),
-            (provenance["fixtureSha256"], {"$ref": "#/$defs/sha256"}),
+            (server["versionText"], [{"$ref": "#/$defs/nonEmpty"}]),
+            (server["target"], [{"enum": ["x86-64-linux", "x86-64-darwin"]}]),
+            (server["sha256"], [{"$ref": "#/$defs/sha256"}]),
+            (server["workerSha256"], [{"$ref": "#/$defs/sha256"}]),
+            (provenance["vsix"], [{"type": "null"}, vsix]),
+            (provenance["fixtureSha256"], [{"$ref": "#/$defs/sha256"}]),
         ]
         for field, available in fields:
-            self.assertEqual([available, {"$ref": "#/$defs/unavailableProvenance"}],
+            self.assertEqual(available + [{"$ref": "#/$defs/unavailableProvenance"}],
                              field["oneOf"])
+        # RESULTS.md lists exactly these fields.
+        self.assertEqual(len(fields), json.dumps(self.schema).count('"#/$defs/unavailableProvenance"'),
+                         "a field outside RESULTS.md's list may be unavailable")
 
     def test_schema_agrees_with_the_manifest(self):
         defs = self.schema["$defs"]

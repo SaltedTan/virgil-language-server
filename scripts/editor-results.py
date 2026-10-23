@@ -65,7 +65,9 @@ UNAVAILABLE = "/$defs/unavailableProvenance"
 # accepts February 30.
 TIME = "/$defs/time"
 # The conditions that fields of the run-start's provenance decide: each holds
-# exactly when every one of its fields passes its test.
+# exactly when every one of its fields passes its test. A run given a VSIX that
+# it couldn't read still used a VSIX, so an unavailable vsix says that vsix
+# holds; being unavailable keeps the run from passing.
 DECIDED_BY_PROVENANCE = {"vsix": {"clientMode": lambda mode: mode == "vsix", "vsix": lambda vsix: vsix is not None}}
 # A manual record may observe any setup; every other suite's runs observe
 # the setups of their own suite.

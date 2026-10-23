@@ -186,6 +186,28 @@ def only(events, profiles):
     return rebuild(events)
 
 
+# The provenance of a VSIX that a run was given but couldn't read, and the
+# profiles of the Remote-SSH runs that tests stop at their preflight for it:
+# the launcher's alone, with the probe's, and every profile.
+UNREADABLE_VSIX = {"value": None, "unavailable": "the VSIX isn't a ZIP archive, so it has no extension/package.json"}
+UNREADABLE_VSIX_PROFILES = (("wrapper",), ("probe", "wrapper"), ("probe", "single-file", "workspace", "wrapper"))
+
+
+def unreadable_vsix(profiles, vsix=UNREADABLE_VSIX):
+    """A Remote-SSH run of these profiles, given a VSIX that it couldn't read:
+    its preflight failed before it had the VSIX's metadata, it skipped every
+    check after it but the teardown, which passed, and it created no
+    configuration. vsix is what its provenance records for the VSIX."""
+    events = only(stream("remote-ssh"), profiles)
+    events.insert(1, events.pop(find(events, "ssh.infrastructure.preflight")))
+    fail(events, 1, "unreadable-vsix")
+    for event in events[2:-1]:
+        if event["id"] != "ssh.infrastructure.teardown":
+            event.update(status="skip", reason="the preflight failed", failureCode=None)
+    events[0]["provenance"].update(vsix=copy.deepcopy(vsix), configurationSha256={})
+    return rebuild(events, status="fail", exitCode=1)
+
+
 def encode(events):
     return b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events)
 
@@ -406,6 +428,8 @@ class SchemaTest(ValidatorTest):
              "attestation"),
             ("unavailable without a reason", 0, server(workerSha256={"value": None}), "workerSha256"),
             ("unavailable with a value", 0, server(sha256={"value": sha("x"), "unavailable": "r"}), "sha256"),
+            ("unavailable vsix without a reason", 0,
+             lambda event: event["provenance"].update(vsix={"value": None, "unavailable": ""}), "provenance.vsix"),
             ("unavailable elsewhere", 0,
              lambda event: event["provenance"].update(virgilRootSha256={"value": None, "unavailable": "r"}),
              "virgilRootSha256"),
@@ -1007,6 +1031,30 @@ class ProvenanceTest(ValidatorTest):
         self.assertValid(rebuild(events, status="aborted", exitCode=None, signal="SIGTERM", cleanup="unknown"),
                          passed=False)
 
+    def test_a_vsix_that_cant_be_read(self):
+        # A Remote-SSH run still used a VSIX, so its vsix is unavailable,
+        # never null, and its client mode is still vsix.
+        for profiles in UNREADABLE_VSIX_PROFILES:
+            with self.subTest(profiles=profiles):
+                run = self.assertValid(unreadable_vsix(profiles), passed=False)
+                self.assertEqual(["provenance.vsix"], run.unavailable)
+                self.assertInvalid(unreadable_vsix(profiles, vsix=None), 1,
+                                   "vsix holds in every run of suite remote-ssh, but provenance.vsix is null")
+                events = unreadable_vsix(profiles)
+                events[0]["provenance"]["clientMode"] = "source"
+                self.assertInvalid(events, 1, "vsix holds in every run of suite remote-ssh, but "
+                                              'provenance.clientMode is "source"')
+
+    def test_an_unavailable_vsix_keeps_a_run_from_passing(self):
+        # Wherever the vsix checks are planned, as in a VS Code run from a VSIX.
+        for variant in ("remote-ssh", "vscode-vsix"):
+            with self.subTest(variant):
+                events = stream(variant)
+                events[0]["provenance"]["vsix"] = copy.deepcopy(UNREADABLE_VSIX)
+                self.assertInvalid(events, len(events), "status is pass, but the run-start's provenance.vsix is "
+                                                        "unavailable")
+                self.assertValid(rebuild(events, status="unavailable"), passed=False)
+
 
 def mini(schema):
     """A schema document for the interpreter, with the definitions that the
@@ -1178,6 +1226,22 @@ class CommandTest(unittest.TestCase):
                              f"{passed}: valid, run passed (21 of 21 observations): 21 pass, 0 fail, 0 xfail, "
                              "0 xpass, 0 skip\n", ""),
                          self.run_command(huge, passed))
+
+    def test_a_vsix_that_cant_be_read(self):
+        # Remote-SSH runs stopped at their preflight: valid failed runs, unless
+        # they record the VSIX as null.
+        for vsix, code in ((UNREADABLE_VSIX, 1), (None, 2)):
+            with self.subTest(vsix=vsix):
+                names, out = [], ""
+                for profiles in UNREADABLE_VSIX_PROFILES:
+                    events = unreadable_vsix(profiles, vsix)
+                    names.append(self.write("-".join(profiles) + ".jsonl", events))
+                    n = len(events) - 2
+                    out += f"{names[-1]}: " + (
+                        f"valid, run failed ({n} of {n} observations): 1 pass, 1 fail, 0 xfail, 0 xpass, {n - 2} skip\n"
+                        if vsix else "invalid: line 1: vsix holds in every run of suite remote-ssh, but provenance.vsix "
+                                     "is null\n")
+                self.assertEqual((code, out, ""), self.run_command(*names))
 
     def test_options(self):
         manifest = self.write("coverage.json", MANIFEST_BYTES + b" ")
