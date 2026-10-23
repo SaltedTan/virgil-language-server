@@ -4,12 +4,13 @@
 // The extension tests that run.cjs starts in the remote extension host of a
 // Remote-SSH window. VS Code doesn't pass the client's environment to the
 // remote, so this module reads the launch's settings from run-config.json
-// beside it, checks that it runs remotely in the VS Code Server and that VS
-// Code loaded the extension installed from the VSIX there, gives suite.cjs
-// the remote paths through the environment variables that run.cjs sets
-// locally, and runs it unchanged. It writes what it found to the launch's
-// result file, first when it starts and again when it ends, so that run.cjs
-// can tell a suite that failed from one that never started.
+// beside it, checks that it runs remotely in the VS Code Server, with the
+// launch's workspace folders, and that VS Code loaded the extension installed
+// from the VSIX there, gives suite.cjs the remote paths through the
+// environment variables that run.cjs sets locally, and runs it unchanged. It
+// writes what it found to the launch's result file, first when it starts and
+// again when it ends, so that run.cjs can tell a suite that failed from one
+// that never started.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -53,6 +54,10 @@ async function run() {
     assert.equal(vscode.env.remoteName, 'ssh-remote', 'the tests do not run in a Remote-SSH window');
     assert.equal(process.execPath, config.serverNode, 'the tests do not run in the VS Code Server under test');
     assert.equal(process.platform, 'linux');
+    // suite.cjs runs its single-file tests when VS Code has no workspace
+    // folders, and its workspace tests otherwise.
+    assert.equal(JSON.stringify(result.folders), JSON.stringify(config.folders), `scenario mismatch: the ${config.mode} launch `
+      + `has the workspace folders ${JSON.stringify(result.folders)}, not ${JSON.stringify(config.folders)}`);
     if (config.mode === 'probe') {
       result.outcome = 'pass';
       return;

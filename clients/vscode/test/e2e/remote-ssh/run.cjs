@@ -19,8 +19,10 @@
 // Exit status: 0 if every check passed, 1 if a check failed (the suite, the
 // remote installation, or a language server left running), 2 for bad
 // arguments, 3 for an infrastructure failure (a prerequisite, a download, the
-// SSH server, or the connection), 130 or 143 when interrupted. The last line
-// of output, and manifest.json in the output directory, say which.
+// SSH server, the connection, or the evidence), 130 or 143 when interrupted,
+// even during the log collection or the teardown, which an interrupt waits
+// for. The last line of output, and manifest.json in the output directory,
+// say which.
 
 const { execFileSync, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -137,6 +139,11 @@ function options() {
   if (values.out !== undefined) {
     fs.mkdirSync(values.out, { recursive: true });
     if (fs.readdirSync(values.out).length > 0) throw new UsageError(`the output directory is not empty: ${values.out}`);
+    values.out = fs.realpathSync(values.out);
+    // The work directory holds the run's keys and Microsoft's software.
+    if (`${values.workDir}/`.startsWith(`${values.out}/`)) {
+      throw new UsageError(`the work directory can't be in the output directory: ${values.workDir}`);
+    }
   }
   return values;
 }
@@ -301,6 +308,13 @@ class Run {
     this.signal = this.controller.signal;
     this.marker = `VIRGIL_REMOTE_SSH_RUN=${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
     this.failures = [];
+    // What ended the test, or spoiled its evidence, as Failures.
+    this.errors = [];
+    // The test, then the log collection and the teardown, which a signal
+    // doesn't stop, and the report.
+    this.phase = 'test';
+    // The VS Code Server's connection tokens, which the output mustn't hold.
+    this.tokens = new Set();
     this.manifest = {
       result: undefined,
       started: new Date().toISOString(),
@@ -316,7 +330,7 @@ class Run {
 
   // Throws if the run was interrupted, so that the next step doesn't start.
   checkpoint() {
-    if (this.signal.aborted) throw new Failure('interrupted', `interrupted by ${this.interrupted}`);
+    if (this.signal.aborted) throw this.signal.reason;
   }
 
   // Waits for promise, unless the run is interrupted first.
@@ -324,7 +338,7 @@ class Run {
     this.checkpoint();
     let onAbort;
     const aborted = new Promise((_, reject) => {
-      onAbort = () => reject(new Failure('interrupted', `interrupted by ${this.interrupted}`));
+      onAbort = () => reject(this.signal.reason);
       this.signal.addEventListener('abort', onAbort);
     });
     try {
@@ -337,6 +351,16 @@ class Run {
   fail(message) {
     this.failures.push(message);
     console.log(`FAIL: ${message}`);
+  }
+
+  // Records what ended the test or spoiled its evidence: a Failure as it is,
+  // anything else as the runner's own failure. The signal handler records
+  // interrupts.
+  record(error) {
+    const failure = error instanceof Failure ? error : new Failure('fail', `the runner failed: ${error.stack}`);
+    if (failure.kind === 'interrupted' || this.errors.includes(failure)) return;
+    this.errors.push(failure);
+    console.log(`${failure.kind === 'infra' ? 'INFRA' : 'FAIL'}: ${failure.message}`);
   }
 
   // Runs command over SSH on the target, in the user's login shell there.
@@ -516,10 +540,11 @@ function suiteLines() {
 
 // A Node.js program for the target's VS Code Server: it prints, as JSON, the
 // processes that run an executable under the directory in its first argument,
-// other than itself and zombies. It kills those of the PIDs after the second
-// argument, the VS Code Server's directory, that still run an executable
-// under the first and not under the second: exactly those, never processes
-// found by name.
+// other than itself and zombies, with their start times. It kills those of
+// the processes after the second argument, the VS Code Server's directory,
+// each given as PID@start, that still have that start time and run an
+// executable under the first and not under the second: exactly those, never
+// processes found by name or another process that now has the PID.
 const REMOTE_PROCESSES = `
 const fs = require('node:fs');
 const [root, agent, ...kill] = process.argv.slice(1);
@@ -527,11 +552,13 @@ const found = [];
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
     const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
-    if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z')) continue;
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    if (fields[0] === 'Z') continue;
     const exe = fs.readlinkSync('/proc/' + pid + '/exe');
     if (!exe.startsWith(root + '/')) continue;
-    if (kill.includes(pid) && !exe.startsWith(agent + '/')) process.kill(Number(pid), 'SIGKILL');
-    found.push({ pid: Number(pid), exe });
+    const start = fields[19];
+    if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) process.kill(Number(pid), 'SIGKILL');
+    found.push({ pid: Number(pid), start, exe });
   } catch {}
 }
 console.log(JSON.stringify(found));`;
@@ -542,7 +569,7 @@ console.log(JSON.stringify(found));`;
 // The processes in kill are killed first.
 async function remoteProcesses(run, layout, kill = []) {
   const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(run.target.root)} ${sh(layout.agent)}`
-    + kill.map((p) => ` ${p.pid}`).join(''), { allowFailure: true });
+    + kill.map((p) => ` ${p.pid}@${p.start}`).join(''), { allowFailure: true });
   let all;
   try {
     all = JSON.parse(result.stdout);
@@ -581,6 +608,10 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     extensionPath: layout.extensionPath,
     extensionVersion: vsix.version,
     project: layout.project,
+    // The workspace folders that VS Code must have, as the remote extension
+    // host sees them: suite.cjs runs its single-file tests without any, and
+    // its workspace tests otherwise.
+    folders: mode === 'workspace' ? [`file://${layout.project}`] : null,
   };
   // A fresh copy of the fixture, and the Virgil settings in the remote's
   // machine settings, which the suite changes and restores.
@@ -618,17 +649,22 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     '--no-sandbox',
     '--disable-gpu-sandbox',
   ];
-  const logFile = path.join(run.values.out, 'launches', `${name}.log`);
+  const logFile = path.join(run.evidence, 'launches', `${name}.log`);
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const log = fs.openSync(logFile, 'w');
   fs.writeSync(log, `${JSON.stringify([executable, ...args])}\n`);
   const print = suiteLines();
   console.log(`== ${name}`);
   const timeout = mode === 'probe' ? PROBE_TIMEOUT_MS : LAUNCH_TIMEOUT_MS;
+  let unwritten;
   const exit = await runGroup(executable, args, {
     env: run.env, timeout, signal: run.signal,
     onData: (data) => {
-      fs.writeSync(log, data);
+      try {
+        fs.writeSync(log, data);
+      } catch (error) {
+        unwritten ??= error;
+      }
       print(data);
     },
   });
@@ -636,6 +672,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   record.seconds = exit.seconds;
   record.exit = exit.error?.message ?? exit.stopped ?? exit.code ?? exit.signal;
   run.checkpoint();
+  if (unwritten !== undefined) throw infra(`could not write launches/${name}.log: ${unwritten.message}`);
 
   const report = await run.remote(`cat ${sh(result)}`, { allowFailure: true });
   let evidence;
@@ -672,6 +709,10 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
       throw infra(`${name}: VS Code ${outcome(exit)} before the tests started in the remote extension host; see launches/${name}.log`);
     }
     problems.push('no test ran: VS Code exited with 0, but bootstrap.cjs never started in the remote extension host');
+  } else if (JSON.stringify(evidence.folders) !== JSON.stringify(config.folders)) {
+    // bootstrap.cjs refuses to run the suite then.
+    problems.push(`scenario mismatch: the ${mode} launch had the workspace folders ${JSON.stringify(evidence.folders)}, `
+      + `not ${JSON.stringify(config.folders)}, so suite.cjs would have run the wrong tests`);
   } else {
     if (!succeeded(exit)) problems.push(`VS Code ${outcome(exit)}`);
     if (evidence.outcome !== 'pass') {
@@ -768,7 +809,7 @@ async function test(run) {
     `--extensions-dir=${run.clientExtensions}`,
     ...REMOTE_SSH.flatMap(({ id, version }) => ['--install-extension', `${id}@${version}`]),
   ], { env: run.env, timeout: INSTALL_TIMEOUT_MS, signal: run.signal });
-  fs.writeFileSync(path.join(values.out, 'remote-ssh-install.log'), install.stdout.toString() + install.stderr);
+  fs.writeFileSync(path.join(run.evidence, 'remote-ssh-install.log'), install.stdout.toString() + install.stderr);
   run.checkpoint();
   if (!succeeded(install)) throw infra(`installing Remote-SSH ${REMOTE_SSH_VERSION} ${outcome(install)}; see remote-ssh-install.log`);
   const installed = fs.readdirSync(run.clientExtensions).filter((name) => name !== 'extensions.json' && !name.startsWith('.')).sort();
@@ -817,7 +858,7 @@ async function test(run) {
   const installation = await run.remote(`${sh(layout.cli)} ${flags} --install-extension ${sh(remoteVsix)} --force`, {
     timeout: INSTALL_TIMEOUT_MS, allowFailure: true,
   });
-  fs.writeFileSync(path.join(values.out, 'vsix-install.log'), installation.stdout + installation.stderr);
+  fs.writeFileSync(path.join(run.evidence, 'vsix-install.log'), installation.stdout + installation.stderr);
   if (installation.code !== 0) throw new Failure('fail', `installing ${remoteVsix} on ${target.alias} exited with ${installation.code}; see vsix-install.log`);
   const listed = (await run.remote(`${sh(layout.cli)} ${flags} --list-extensions --show-versions`)).stdout.split('\n').map((line) => line.trim());
   const manifest = JSON.parse((await run.remote(`cat ${sh(path.posix.join(layout.extensionPath, 'package.json'))}`, { allowFailure: true })).stdout || '{}');
@@ -842,53 +883,140 @@ async function test(run) {
   }
 }
 
-// Copies the client's and the remote's logs into the output directory, and
-// removes the VS Code Server's connection tokens from them. A signal doesn't
-// stop this; each command over SSH has its own timeout.
+// Gathers the client's and the remote's logs, and the SSH server's and
+// Xvfb's, into the evidence directory beside the launches' output, while the
+// target is still up. A signal doesn't stop this; each command over SSH has
+// its own timeout. What can't be gathered is an infrastructure failure, and
+// the rest is still gathered.
 async function collectLogs(run) {
-  const { out } = run.values;
+  if (run.evidence === undefined) return;
   const signal = new AbortController().signal;
-  const tokens = new Set();
+  const gather = async (what, step) => {
+    try {
+      await step();
+    } catch (error) {
+      run.record(infra(`could not collect ${what}: ${error.message}`));
+    }
+  };
   for (const [name, file] of run.target?.logs ?? []) {
-    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(out, name));
+    await gather(name, () => {
+      if (fs.existsSync(file)) fs.copyFileSync(file, path.join(run.evidence, name));
+    });
   }
-  const clients = path.join(run.work ?? '', 'client');
-  for (const name of run.work !== undefined && fs.existsSync(clients) ? fs.readdirSync(clients) : []) {
+  const clients = path.join(run.work, 'client');
+  for (const name of fs.existsSync(clients) ? fs.readdirSync(clients) : []) {
     const logs = path.join(clients, name, 'user-data', 'logs');
-    if (fs.existsSync(logs)) fs.cpSync(logs, path.join(out, 'client', name), { recursive: true });
+    await gather(`the client's logs of ${name}`, () => {
+      if (fs.existsSync(logs)) fs.cpSync(logs, path.join(run.evidence, 'client', name), { recursive: true });
+    });
   }
   if (run.connected) {
-    try {
+    await gather('the remote logs', async () => {
       const agent = path.posix.join(run.target.root, 'server', '.vscode-server');
       const found = await run.remote(`cd ${sh(agent)} 2>/dev/null && cat .*.token`, { allowFailure: true, signal });
-      for (const token of found.stdout.split(/\s+/)) if (token.length >= 8) tokens.add(token);
-      const remote = path.join(out, 'remote');
+      for (const token of found.stdout.split(/\s+/)) if (token.length >= 8) run.tokens.add(token);
+      // Some of these, or all, don't exist if the test stopped early.
+      const archive = await run.remote(`cd ${sh(run.target.root)} && files=$(ls -d results `
+        + 'server/.vscode-server/data/logs server/.vscode-server/.*.log 2>/dev/null); [ -z "$files" ] || tar -c -f - $files',
+      { allowFailure: true, signal });
+      if (archive.data.length === 0) return;
+      const remote = path.join(run.evidence, 'remote');
       fs.mkdirSync(remote, { recursive: true });
-      const archive = await run.remote(`cd ${sh(run.target.root)} && tar -c -f - $(ls -d results `
-        + 'server/.vscode-server/data/logs server/.vscode-server/.*.log 2>/dev/null)', { allowFailure: true, signal });
       const extract = await runGroup('tar', ['-x', '-f', '-', '-C', remote], {
         env: run.env, input: archive.data, timeout: SSH_TIMEOUT_MS, signal,
       });
-      if (!succeeded(extract)) console.log(`WARNING: could not unpack the remote logs: ${extract.stderr}`);
-    } catch (error) {
-      console.log(`WARNING: could not collect the remote logs: ${error.message}`);
-    }
+      if (!succeeded(extract)) throw new Error(`tar ${outcome(extract)}: ${extract.stderr.trim()}`);
+    });
   }
-  // Remote-SSH's installation script, which VS Code logs in several places,
-  // and its log name a connection token for each connection, in several
-  // spellings and escapes, and only the last is in a token file. So every
-  // value after any of them is removed from every file.
-  const files = fs.readdirSync(out, { recursive: true }).map((name) => path.join(out, name)).filter((file) => fs.statSync(file).isFile());
+}
+
+// Copies the evidence into the output directory without the VS Code Server's
+// connection tokens. Remote-SSH's installation script, which VS Code logs in
+// several places, and its log name a connection token for each connection,
+// in several spellings and escapes, and only the last is in a token file. So
+// every value after any of them is removed from every file. Only redacted
+// copies reach the output directory, which CI uploads whatever happens: every
+// file is read and searched before any is written, so one that can't be read
+// keeps all of them out.
+function publishLogs(run) {
+  if (run.evidence === undefined || !fs.existsSync(run.evidence)) return;
+  const { out } = run.values;
+  const names = fs.readdirSync(run.evidence, { recursive: true })
+    .filter((name) => fs.lstatSync(path.join(run.evidence, name)).isFile());
   const named = /(?:connection_?token|tkn)\W{1,6}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
-  for (const file of files) {
-    for (const match of fs.readFileSync(file, 'latin1').matchAll(named)) tokens.add(match[1]);
+  for (const name of names) {
+    for (const match of fs.readFileSync(path.join(run.evidence, name), 'latin1').matchAll(named)) run.tokens.add(match[1]);
   }
-  for (const file of files) {
-    const text = fs.readFileSync(file, 'latin1');
-    let redacted = text;
-    for (const token of tokens) redacted = redacted.replaceAll(token, '<redacted>');
-    if (redacted !== text) fs.writeFileSync(file, redacted, 'latin1');
+  for (const name of names) {
+    let text = fs.readFileSync(path.join(run.evidence, name), 'latin1');
+    for (const token of run.tokens) text = text.replaceAll(token, '<redacted>');
+    fs.mkdirSync(path.dirname(path.join(out, name)), { recursive: true });
+    fs.writeFileSync(path.join(out, name), text, 'latin1');
   }
+}
+
+// Checks the prerequisites, and makes the run's directories and environment.
+function prepare(run) {
+  const { values } = run;
+  for (const tool of ['ssh', 'ssh-keygen', 'Xvfb', 'tar']) {
+    if (findOnPath(tool) === undefined) throw infra(`${tool} is not on PATH; the Remote-SSH test needs OpenSSH's client and server, Xvfb, and tar`);
+  }
+  try {
+    fs.accessSync(values.sshd, fs.constants.X_OK);
+  } catch {
+    throw infra(`no SSH server at ${values.sshd}; install OpenSSH's server, or pass --sshd`);
+  }
+  // VS Code's state, the SSH keys, the remote's files, and the evidence until
+  // it is redacted go in a work directory; Unix sockets, whose paths must be
+  // short, in /tmp.
+  run.work = fs.mkdtempSync(path.join(values.workDir, 'virgil-remote-ssh-'));
+  run.sockets = fs.mkdtempSync('/tmp/vrs-');
+  console.log(`work directory: ${run.work}`);
+  run.evidence = path.join(run.work, 'evidence');
+  fs.mkdirSync(run.evidence);
+  const home = path.join(run.work, 'client', 'home');
+  fs.mkdirSync(path.join(run.sockets, 'c'), { mode: 0o700 });
+  for (const dir of ['config', 'cache', 'data', 'state']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+  // Every process of the run gets the marker, and a home and directories
+  // of its own, so that neither VS Code nor SSH uses the user's.
+  const [markerName, markerValue] = run.marker.split('=');
+  run.env = isolatedEnv({
+    HOME: home,
+    XDG_CONFIG_HOME: path.join(home, 'config'),
+    XDG_CACHE_HOME: path.join(home, 'cache'),
+    XDG_DATA_HOME: path.join(home, 'data'),
+    XDG_STATE_HOME: path.join(home, 'state'),
+    XDG_RUNTIME_DIR: path.join(run.sockets, 'c'),
+    TMPDIR: path.join(run.sockets, 'c'),
+    [markerName]: markerValue,
+    // Inside WSL, bin/code asks for confirmation unless this is set.
+    DONT_PROMPT_WSL_INSTALL: '1',
+  });
+  for (const name of ['SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY']) {
+    delete run.env[name];
+  }
+}
+
+// Stops the target, if the run made one, and returns what the teardown found;
+// one that throws confirmed nothing.
+async function stopTarget(run) {
+  if (run.target === undefined) return undefined;
+  try {
+    return await run.target.teardown();
+  } catch (error) {
+    return { ok: false, stopped: [], left: [], portClosed: null, error: error.message };
+  }
+}
+
+// The run's result and exit status, once its processes are stopped: an
+// interrupt's first, whatever else happened, then a failed check's, then an
+// infrastructure failure's, which includes evidence that couldn't be
+// collected and a teardown that couldn't confirm that nothing is left.
+function verdict(run, teardown) {
+  if (run.interrupted !== undefined) return ['INTERRUPTED', SIGNAL_STATUS[run.interrupted.signal]];
+  if (run.failures.length > 0 || run.errors.some((error) => error.kind === 'fail')) return ['FAIL', STATUS.FAIL];
+  if (run.errors.length > 0 || (teardown !== undefined && !teardown.ok)) return ['INFRA', STATUS.INFRA];
+  return ['PASS', STATUS.PASS];
 }
 
 async function main() {
@@ -904,65 +1032,46 @@ async function main() {
   if (values.out === undefined) values.out = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-remote-ssh-results-'));
   values.out = fs.realpathSync(values.out);
   const run = new Run(values);
-  // A signal stops the run's current step; during the evidence collection and
-  // the teardown that follow, a signal only changes the exit status.
-  let tearingDown = false;
+  // A signal stops the test's current step. During the log collection and
+  // the teardown, it waits for them; either way the run's processes are
+  // stopped before the runner exits, and the signal decides its exit status.
   const onSignal = (name) => {
     console.error(`run.cjs: interrupted by ${name}`);
-    run.interrupted ??= name;
-    if (!tearingDown) run.controller.abort();
+    run.interrupted ??= { signal: name, during: run.phase };
+    if (run.phase === 'test') run.controller.abort(new Failure('interrupted', `interrupted by ${name}`));
   };
   for (const name of Object.keys(SIGNAL_STATUS)) process.on(name, () => onSignal(name));
+  // An exception that nothing catches, as from an event handler, is the
+  // runner's failure, which stops the test as a signal does. Output that
+  // can't be written, as to a pipe whose reader has gone, is dropped; the
+  // output directory still gets the results.
+  process.on('uncaughtException', (error) => {
+    const failure = new Failure('fail', `the runner failed: ${error.stack}`);
+    if (run.phase === 'test' && !run.signal.aborted) run.controller.abort(failure);
+    else run.record(failure);
+  });
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {});
   console.log(`results: ${values.out}`);
 
-  let error;
+  let teardown;
   try {
-    for (const tool of ['ssh', 'ssh-keygen', 'Xvfb', 'tar']) {
-      if (findOnPath(tool) === undefined) throw infra(`${tool} is not on PATH; the Remote-SSH test needs OpenSSH's client and server, Xvfb, and tar`);
-    }
     try {
-      fs.accessSync(values.sshd, fs.constants.X_OK);
-    } catch {
-      throw infra(`no SSH server at ${values.sshd}; install OpenSSH's server, or pass --sshd`);
+      prepare(run);
+      await test(run);
+    } catch (error) {
+      run.record(error);
     }
-    // VS Code's state, the SSH keys, and the remote's files go in a work
-    // directory; Unix sockets, whose paths must be short, in /tmp.
-    run.work = fs.mkdtempSync(path.join(values.workDir, 'virgil-remote-ssh-'));
-    run.sockets = fs.mkdtempSync('/tmp/vrs-');
-    console.log(`work directory: ${run.work}`);
-    const home = path.join(run.work, 'client', 'home');
-    fs.mkdirSync(path.join(run.sockets, 'c'), { mode: 0o700 });
-    for (const dir of ['config', 'cache', 'data', 'state']) fs.mkdirSync(path.join(home, dir), { recursive: true });
-    // Every process of the run gets the marker, and a home and directories
-    // of its own, so that neither VS Code nor SSH uses the user's.
-    const [markerName, markerValue] = run.marker.split('=');
-    run.env = isolatedEnv({
-      HOME: home,
-      XDG_CONFIG_HOME: path.join(home, 'config'),
-      XDG_CACHE_HOME: path.join(home, 'cache'),
-      XDG_DATA_HOME: path.join(home, 'data'),
-      XDG_STATE_HOME: path.join(home, 'state'),
-      XDG_RUNTIME_DIR: path.join(run.sockets, 'c'),
-      TMPDIR: path.join(run.sockets, 'c'),
-      [markerName]: markerValue,
-      // Inside WSL, bin/code asks for confirmation unless this is set.
-      DONT_PROMPT_WSL_INSTALL: '1',
-    });
-    for (const name of ['SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY']) {
-      delete run.env[name];
-    }
-    await test(run);
-  } catch (caught) {
-    error = caught;
+    if (run.signal.aborted) run.record(run.signal.reason);
+    // The evidence first, while the target is still up.
+    run.phase = 'log collection';
+    await collectLogs(run);
+  } catch (error) {
+    run.record(infra(`could not collect the logs: ${error.message}`));
+  } finally {
+    run.phase = 'teardown';
+    teardown = await stopTarget(run);
   }
-  tearingDown = true;
-  if (run.signal.aborted) error = new Failure('interrupted', `interrupted by ${run.interrupted}`);
-  if (error !== undefined && !(error instanceof Failure)) error = new Failure('fail', `the runner failed: ${error.stack}`);
-  if (error !== undefined && error.kind !== 'interrupted') console.log(`${error.kind === 'infra' ? 'INFRA' : 'FAIL'}: ${error.message}`);
-
-  // The evidence first, while the target is still up.
-  await collectLogs(run);
-  const teardown = run.target === undefined ? undefined : await run.target.teardown();
+  run.phase = 'report';
   run.manifest.teardown = teardown ?? null;
   let keep = values.keepWork;
   if (teardown !== undefined && !teardown.ok) {
@@ -974,37 +1083,55 @@ async function main() {
     const port = run.target.details.port === undefined ? '' : `, and port ${run.target.details.port} is closed`;
     console.log(`-- teardown: stopped ${teardown.stopped.length} processes of the run; none left${port}`);
   }
-  if (run.work !== undefined) {
-    if (keep) console.log(`work directory kept: ${run.work}`);
-    else fs.rmSync(run.work, { recursive: true, force: true });
+  try {
+    publishLogs(run);
+  } catch (error) {
+    run.record(infra(`could not copy the logs into ${values.out}: ${error.message}`));
   }
-  if (run.sockets !== undefined && !keep) fs.rmSync(run.sockets, { recursive: true, force: true });
+  try {
+    if (run.work !== undefined) {
+      if (keep) console.log(`work directory kept: ${run.work}`);
+      else fs.rmSync(run.work, { recursive: true, force: true });
+    }
+    if (run.sockets !== undefined && !keep) fs.rmSync(run.sockets, { recursive: true, force: true });
+  } catch (error) {
+    run.record(infra(`could not remove the work directory: ${error.message}`));
+  }
 
-  let result;
-  let status;
-  if (error?.kind === 'interrupted') {
-    [result, status] = ['INTERRUPTED', SIGNAL_STATUS[run.interrupted]];
-  } else if (error?.kind === 'fail' || run.failures.length > 0) {
-    [result, status] = ['FAIL', STATUS.FAIL];
-  } else if (error?.kind === 'infra' || (teardown !== undefined && !teardown.ok)) {
-    [result, status] = ['INFRA', STATUS.INFRA];
-  } else {
-    [result, status] = ['PASS', STATUS.PASS];
-  }
-  const reasons = [...run.failures, ...(error === undefined ? [] : [error.message])];
+  // A signal that came during the steps above, which don't wait for events,
+  // is handled while this waits.
+  await sleep(100);
+  let [result, status] = verdict(run, teardown);
+  const reasons = [
+    ...(run.interrupted === undefined ? [] : [`interrupted by ${run.interrupted.signal} during the ${run.interrupted.during}`]),
+    ...run.failures,
+    ...run.errors.map((error) => error.message),
+  ];
   if (teardown !== undefined && !teardown.ok) reasons.push('the teardown could not confirm that nothing of the run is left');
-  Object.assign(run.manifest, { result, exitStatus: status, reasons, finished: new Date().toISOString() });
-  fs.writeFileSync(path.join(values.out, 'manifest.json'), `${JSON.stringify(run.manifest, null, 2)}\n`);
-  const summary = [
+  const summary = () => [
     ...run.manifest.launches.map((l) => `${l.name}: ${l.result ?? 'not finished'}, ${l.seconds?.toFixed(1) ?? '?'} s`
       + `${l.suiteSeconds == null || l.mode === 'probe' ? '' : ` (suite ${l.suiteSeconds.toFixed(1)} s)`}`
       + `${l.leftRunning === undefined ? '' : `, ${l.leftRunning.length} language server process(es) left running`}`),
     ...reasons.map((reason) => `reason: ${reason}`),
     `VS Code Remote-SSH test: ${result}`,
   ].join('\n');
-  fs.writeFileSync(path.join(values.out, 'summary.txt'), `${summary}\n`);
-  console.log(`== summary\n${summary}\nresults: ${values.out}\nRESULT: ${result}`);
+  try {
+    Object.assign(run.manifest, {
+      result, exitStatus: status, reasons, interrupted: run.interrupted ?? null, finished: new Date().toISOString(),
+    });
+    fs.writeFileSync(path.join(values.out, 'manifest.json'), `${JSON.stringify(run.manifest, null, 2)}\n`);
+    fs.writeFileSync(path.join(values.out, 'summary.txt'), `${summary()}\n`);
+  } catch (error) {
+    reasons.push(`could not write the results into ${values.out}: ${error.message}`);
+    if (status === STATUS.PASS) [result, status] = ['INFRA', STATUS.INFRA];
+  }
+  console.log(`== summary\n${summary()}\nresults: ${values.out}\nRESULT: ${result}`);
   process.exit(status);
 }
 
-main();
+main().catch((error) => {
+  // Only a fault in the runner itself, before the run starts or after its
+  // teardown, gets here.
+  console.error(`run.cjs: ${error.stack}\nRESULT: FAIL`);
+  process.exit(STATUS.FAIL);
+});

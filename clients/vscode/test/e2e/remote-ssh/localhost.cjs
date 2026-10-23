@@ -14,7 +14,10 @@
 // VS Code Server and the language servers that it starts have it too. The
 // teardown stops exactly the processes that have the marker, run an
 // executable from the work directory, or descend from the servers started
-// here, never processes found by name.
+// here, never processes found by name. It knows each by its PID and start
+// time, and checks both again just before each signal, so that a PID that a
+// process of the run had and another process has since been given is never
+// signaled.
 
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -95,7 +98,7 @@ async function startXvfb(work, env, started) {
     env, stdio: ['ignore', output, output, 'pipe'], detached: true,
   });
   fs.closeSync(output);
-  started.push({ name: 'Xvfb', child });
+  started.push({ name: 'Xvfb', child, identity: identify(child.pid) });
   const number = await new Promise((resolve, reject) => {
     let text = '';
     const timer = setTimeout(() => reject(new Error(`Xvfb did not report a display within ${START_TIMEOUT_MS / 1000} seconds`)), START_TIMEOUT_MS);
@@ -188,13 +191,17 @@ SetEnv ${[
       marker,
     ].map(quoted).join(' ')}
 `);
-    await check([sshd, '-t', '-f', config], env);
+    try {
+      await check([sshd, '-t', '-f', config], env);
+    } catch (error) {
+      throw new Error(`${error.message}${privsepHint(error.message)}`);
+    }
     const logFile = path.join(path.dirname(ssh), 'sshd.log');
     const output = fs.openSync(logFile, 'a');
     // sshd needs its absolute path to re-execute itself.
     const child = spawn(sshd, ['-D', '-e', '-f', config], { env, stdio: ['ignore', output, output], detached: true });
     fs.closeSync(output);
-    const entry = { name: 'sshd', child };
+    const entry = { name: 'sshd', child, identity: identify(child.pid) };
     started.push(entry);
     const version = await new Promise((resolve) => {
       const deadline = Date.now() + START_TIMEOUT_MS;
@@ -209,12 +216,21 @@ SetEnv ${[
       void poll();
     });
     if (version !== undefined) return { port, version };
-    stop(child, 'SIGKILL');
-    started.splice(started.indexOf(entry), 1);
+    // The teardown covers it too, if it's still running then.
+    if (running(entry)) signal([entry.identity], 'SIGKILL');
     const text = fs.readFileSync(logFile, 'utf8');
     if (attempt < 3 && /Address already in use/.test(text)) continue;
-    throw new Error(`the SSH server did not start on ${HOST}:${port}; see sshd.log`);
+    throw new Error(`the SSH server did not start on ${HOST}:${port}; see sshd.log${privsepHint(text)}`);
   }
+}
+
+// OpenSSH refuses to start where it needs its privilege separation directory,
+// such as /run/sshd, and that is missing. The system's SSH service makes it
+// when it starts, and only root can.
+function privsepHint(text) {
+  const missing = /Missing privilege separation directory: (\S+)/.exec(text);
+  return missing === null ? ''
+    : `; the SSH server needs its privilege separation directory, ${missing[1]}, which root must create, as CI does: sudo install -d -m 0755 ${missing[1]}`;
 }
 
 function freePort() {
@@ -266,29 +282,66 @@ function check(command, env) {
   });
 }
 
-function stop(child, signal) {
+// A process's state, its parent's PID, and its start time, in clock ticks
+// after boot, from /proc/<pid>/stat: its third, fourth, and 22nd fields.
+function readStat(pid) {
+  const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+  return { state: fields[0], ppid: Number(fields[1]), start: fields[19] };
+}
+
+// A process's identity: its PID and its start time, which a later process
+// with the same PID doesn't share. Undefined if the process has gone or is a
+// zombie.
+function identify(pid) {
   try {
-    if (child.pid !== undefined) process.kill(child.pid, signal);
-  } catch (error) {
-    if (error.code !== 'ESRCH') throw error;
+    const { state, start } = readStat(pid);
+    return state === 'Z' ? undefined : { pid, start };
+  } catch {
+    return undefined;
+  }
+}
+
+// Whether the process with this identity still runs.
+function same({ pid, start }) {
+  return identify(pid)?.start === start;
+}
+
+// Whether a process that start() started still runs: Node hasn't seen it
+// exit, and its PID is still that process's.
+function running({ child, identity }) {
+  return child.exitCode === null && child.signalCode === null && identity !== undefined && same(identity);
+}
+
+// Sends a signal to each of the processes, by identity, that still runs; it
+// skips the others, whose PIDs may now be other processes'.
+function signal(processes, name) {
+  for (const p of processes) {
+    if (!same(p)) continue;
+    try {
+      process.kill(p.pid, name);
+    } catch {
+      // It has just exited, or it can't be signaled; the teardown's last look
+      // finds what's left.
+    }
   }
 }
 
 // The run's processes: those whose environment has the marker, those that
 // run an executable from the work directory or the sockets directory, the
-// servers that start() started, and all their descendants. The SSH server
-// and its sessions write their titles over their environment, so only
-// descent finds those. The /proc entries of other users' processes can't be
-// read, and processes that exit meanwhile are skipped; zombies don't count.
-// Throws if /proc itself can't be listed.
+// servers that start() started and that still run, and all their
+// descendants, each with its identity. The SSH server and its sessions write
+// their titles over their environment, so only descent finds those. The /proc
+// entries of other users' processes can't be read, and processes that exit
+// meanwhile are skipped; zombies don't count. Throws if /proc itself can't be
+// listed.
 function runProcesses({ work, sockets, marker, started }) {
   const table = new Map();
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
     const dir = path.join('/proc', name);
     try {
-      const stat = fs.readFileSync(path.join(dir, 'stat'), 'utf8');
-      const [state, ppid] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      const { state, ppid, start } = readStat(name);
       if (state === 'Z') continue;
       let exe = '';
       try {
@@ -298,13 +351,14 @@ function runProcesses({ work, sockets, marker, started }) {
       }
       const owned = [work, sockets].some((root) => exe.startsWith(`${root}/`))
         || fs.readFileSync(path.join(dir, 'environ'), 'latin1').split('\0').includes(marker);
-      table.set(Number(name), { ppid: Number(ppid), exe, owned, dir });
+      table.set(Number(name), { ppid, start, exe, owned, dir });
     } catch (error) {
       if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
     }
   }
-  for (const { child } of started) {
-    if (child.exitCode === null && child.signalCode === null && table.has(child.pid)) table.get(child.pid).owned = true;
+  for (const { child, identity } of started) {
+    const entry = identity === undefined ? undefined : table.get(identity.pid);
+    if (child.exitCode === null && child.signalCode === null && entry?.start === identity.start) entry.owned = true;
   }
   for (let added = true; added;) {
     added = false;
@@ -315,25 +369,15 @@ function runProcesses({ work, sockets, marker, started }) {
       }
     }
   }
-  return [...table].filter(([, entry]) => entry.owned).map(([pid, { exe, dir }]) => {
+  return [...table].filter(([, entry]) => entry.owned).map(([pid, { start, exe, dir }]) => {
     let command = '';
     try {
       command = fs.readFileSync(path.join(dir, 'cmdline'), 'utf8').replaceAll('\0', ' ').trim();
     } catch {
       // It has exited.
     }
-    return { pid, exe, command };
+    return { pid, start, exe, command };
   });
-}
-
-function signal(pids, name) {
-  for (const pid of pids) {
-    try {
-      process.kill(pid, name);
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-    }
-  }
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -347,11 +391,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // file. If the processes can't be listed, it tries again five times.
 async function teardown({ work, sockets, marker, started, port }) {
   const result = { ok: true, stopped: [], left: [], portClosed: null };
-  const xvfb = started.find((entry) => entry.name === 'Xvfb')?.child.pid;
+  const display = started.find((entry) => entry.name === 'Xvfb');
+  const xvfb = display !== undefined && running(display) ? display.identity : undefined;
+  const key = (p) => `${p.pid}@${p.start}`;
   const list = async () => {
     for (let tries = 1; ; tries++) {
       try {
-        return runProcesses({ work, sockets, marker, started }).filter((p) => p.pid !== xvfb);
+        return runProcesses({ work, sockets, marker, started }).filter((p) => xvfb === undefined || key(p) !== key(xvfb));
       } catch (error) {
         if (tries === 5) throw error;
         await sleep(200);
@@ -361,13 +407,13 @@ async function teardown({ work, sockets, marker, started, port }) {
   try {
     const frozen = new Map();
     for (let round = 0; round < 25; round++) {
-      const fresh = (await list()).filter((p) => !frozen.has(p.pid));
+      const fresh = (await list()).filter((p) => !frozen.has(key(p)));
       if (fresh.length === 0) break;
-      signal(fresh.map((p) => p.pid), 'SIGSTOP');
-      for (const p of fresh) frozen.set(p.pid, p);
+      signal(fresh, 'SIGSTOP');
+      for (const p of fresh) frozen.set(key(p), p);
     }
     result.stopped = [...frozen.values()];
-    signal(frozen.keys(), 'SIGKILL');
+    signal(result.stopped, 'SIGKILL');
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     for (;;) {
       const left = await list();
@@ -377,15 +423,15 @@ async function teardown({ work, sockets, marker, started, port }) {
         result.left = left;
         break;
       }
-      signal(left.map((p) => p.pid), 'SIGKILL');
+      signal(left, 'SIGKILL');
       await sleep(200);
     }
-    if (xvfb !== undefined && fs.existsSync(`/proc/${xvfb}`) && !isZombie(xvfb)) {
-      result.stopped.push({ pid: xvfb, exe: 'Xvfb', command: 'Xvfb' });
+    if (xvfb !== undefined && same(xvfb)) {
+      result.stopped.push({ ...xvfb, exe: 'Xvfb', command: 'Xvfb' });
       signal([xvfb], 'SIGTERM');
       const limit = Date.now() + STOP_TIMEOUT_MS;
-      while (fs.existsSync(`/proc/${xvfb}`) && !isZombie(xvfb) && Date.now() < limit) await sleep(100);
-      if (fs.existsSync(`/proc/${xvfb}`) && !isZombie(xvfb)) signal([xvfb], 'SIGKILL');
+      while (same(xvfb) && Date.now() < limit) await sleep(100);
+      signal([xvfb], 'SIGKILL');
     }
     const left = runProcesses({ work, sockets, marker, started });
     if (left.length > 0) {
@@ -403,13 +449,5 @@ async function teardown({ work, sockets, marker, started, port }) {
   return result;
 }
 
-function isZombie(pid) {
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z');
-  } catch {
-    return true;
-  }
-}
-
-module.exports = { create };
+// teardown is exported for test/remote-ssh.cjs.
+module.exports = { create, teardown };
