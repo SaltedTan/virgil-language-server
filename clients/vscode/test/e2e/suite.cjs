@@ -908,11 +908,16 @@ function expectInOrder(text, lines) {
 // exit can be logged after the replacement's start.
 async function actionDuringRecovery(failures, words, action) {
   const server = setting('virgil.server.path');
+  const breadcrumbs = setting('breadcrumbs.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
   const name = action === 'restart'
     ? 'server killed, and Virgil: Restart Language Server during the recovery'
     : 'server killed, and virgil.server.path changed during the recovery';
   await scenario(failures, `${name}: the recovery, then shutdown and exit, then one replacement`, async () => {
+    // Breadcrumbs request document symbols when the recovered client's
+    // provider registers. That request and its cancellation can race with
+    // shutdown; this scenario checks the recovery and stop, without UI work.
+    await setSetting('breadcrumbs.enabled', false);
     // The trace starts before the server that is killed, so that no
     // $/setTrace is on its way to it then.
     const traced = logFromHere();
@@ -968,6 +973,7 @@ async function actionDuringRecovery(failures, words, action) {
       fs.rmSync(path.join(directory, 'hold'), { force: true });
       await level(vscode.LogLevel.Info);
       await restoreServer(server, words);
+      await setSetting('breadcrumbs.enabled', breadcrumbs);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
