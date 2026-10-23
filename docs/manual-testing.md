@@ -1,6 +1,6 @@
 # Manual testing
 
-In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration, in CI on Linux, on Linux and macOS in a weekly workflow and in the release workflow, and locally. Those two workflows also run the VS Code test through Remote-SSH on Linux. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations for optional manual checks, how to check each feature, and the results for each release. The [editor evidence contract](../test/e2e/RESULTS.md#the-release-gate) owns release evidence requirements.
+In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration, in CI on Linux, on Linux and macOS in a weekly workflow and in the release workflow, and locally. Those two workflows also run the VS Code test through Remote-SSH on Linux. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations for optional manual checks, how to check each feature, and the results for each release. A release needs automated evidence only: the [release workflow](releasing.md#how-the-workflow-works) runs the editor tests on the release's own archives and VSIX and publishes only if they pass, and the [editor evidence contract](../test/e2e/RESULTS.md#the-release-gate) defines what counts as evidence. Manual checks are optional.
 
 ## What the automated tests cover
 
@@ -17,7 +17,7 @@ The editor tests use the same fixture, [`test/e2e/nvim/fixture`](../test/e2e/nvi
 The editor tests don't cover:
 
 - VS Code Remote-WSL. Nothing runs inside WSL 2.
-- VS Code Remote-SSH from a Mac, or to another machine. See the [Remote-SSH test's coverage limits](../clients/vscode/README.md#remote-ssh-test), including the window close during recovery from checklist step 17.
+- VS Code Remote-SSH from a Mac, or to another machine. The Remote-SSH test connects a Linux client to the same machine. Of checklist step 17, it checks a restart and a configuration change during a server's recovery, but not closing the window during it, which only the Extension Host test checks.
 - An installed VSIX on macOS on every pull request. CI runs the Extension Host test there only on the extension from source; the weekly editor tests and the release workflow run it on an installed VSIX, including the release dry run of a pull request that changes the release path or the editor tests.
 - In plain Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, and the LazyVim test covers them in LazyVim.
 - Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
@@ -56,7 +56,7 @@ For optional manual checks, try each selected setup with each feature: diagnosti
 
 Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS. Its steps check the features as follows: diagnostics in steps 3, 4, 6, and 7; document symbols in step 5; definition, hover, signature help, references, and workspace symbols in step 7; rename in step 8; completion in step 9; configuration changes in steps 10 to 12; and restart in step 13. Steps 1, 2, and 14 to 17 check startup, startup errors, the message trace, and recovery.
 
-For VS Code Remote-SSH, see the [release workflow](releasing.md#how-the-workflow-works) for the automated run and the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist) for the deferred Mac-client lane and explicit coverage gaps. Record any optional manual observations under [Results](#results).
+For VS Code Remote-SSH, each release needs a passing automated run instead of a manual session: the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), with official VS Code and Microsoft's Remote-SSH extension, from a Linux client, against the release's own VSIX and Linux server. The release workflow runs it in the dry run of the release branch and in the tag's run, and publishes only if it passes ([Making a release](releasing.md#making-a-release)). Of checklist step 17, it checks a restart and a configuration change during a server's recovery, but not closing the window during it; that, and what VS Code shows, are gaps that the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist) lists. A check from a Mac client is deferred ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)) and no release requires it. Record any optional manual observations under [Results](#results).
 
 ### Neovim and LazyVim
 
