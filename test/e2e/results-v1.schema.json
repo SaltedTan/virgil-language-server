@@ -371,11 +371,15 @@
           "description": "Whether every planned observation has exactly one check event and the launcher finished its own checks and teardown.",
           "type": "boolean"
         },
-        "status": {"enum": ["pass", "fail", "aborted", "unavailable"]},
+        "status": {
+          "description": "A pass means: complete, every planned observation reported, none failed, was skipped, or passed unexpectedly, exit code 0, no signal, and verified cleanup.",
+          "enum": ["pass", "fail", "aborted", "unavailable"]
+        },
         "durationMs": {"type": "integer", "minimum": 0},
         "expectedCount": {"type": "integer", "minimum": 0},
         "checkCount": {"type": "integer", "minimum": 0},
         "counts": {
+          "description": "The observations in each status. A passing run has fail, xpass, and skip at 0; conditions keep irrelevant checks out of expected, so a pass has no legitimate skips.",
           "type": "object",
           "properties": {
             "pass": {"type": "integer", "minimum": 0},
@@ -405,7 +409,7 @@
       "then": {
         "properties": {
           "complete": {"const": true},
-          "counts": {"properties": {"fail": {"const": 0}, "xpass": {"const": 0}}},
+          "counts": {"properties": {"fail": {"const": 0}, "xpass": {"const": 0}, "skip": {"const": 0}}},
           "exitCode": {"const": 0},
           "signal": {"type": "null"},
           "cleanup": {"const": "verified"},

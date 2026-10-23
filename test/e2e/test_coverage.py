@@ -15,6 +15,10 @@ CHECK_ID = re.compile(rf"({NAME.pattern})\.({NAME.pattern})\.({NAME.pattern})")
 GAP_ID = re.compile(rf"({NAME.pattern})\.{NAME.pattern}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 ISSUE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/[0-9]+")
+# Steps 1 to 17 of the VS Code manual checklist (clients/vscode/README.md#manual-checklist),
+# described in docs/manual-testing.md#vs-code. Declared here, apart from the manifest's steps,
+# so that deleting a step fails the test; change it together with the checklist.
+CHECKLIST_STEPS = range(1, 18)
 
 
 def load(name):
@@ -223,8 +227,8 @@ class CoverageTest(unittest.TestCase):
     def test_every_checklist_step_is_mapped_or_not_covered(self):
         checklist = self.manifest["checklist"]
         steps = [step["step"] for step in checklist["steps"]]
-        self.assertTrue(steps, "no checklist steps")
-        self.assertEqual(list(range(1, len(steps) + 1)), steps, "steps must be numbered from 1, in order")
+        self.assertEqual(list(CHECKLIST_STEPS), steps,
+                         "the checklist must have every step from 1 to 17, in order")
         problems = []
         for suite in checklist["suites"]:
             if suite not in self.suites:
@@ -270,6 +274,34 @@ class CoverageTest(unittest.TestCase):
         rules = self.manifest["xfails"]
         self.assertEqual(1, len(rules), "the only expected failure is noice.nvim's missing-root warning")
         rule = rules[0]
+        # The maintainer approved only this warning-only exception (2026-10-23). These are
+        # literals, not values read from the manifest, so that moving the rule to another check
+        # or changing what it excuses is a deliberate edit.
+        approved = {
+            "id": "noice-1074-7bfd942",
+            "check": "lazyvim.configuration.warning",
+            "profile": "noroot",
+            "plugin": "noice.nvim",
+            "failureCode": "warning-not-observed",
+            "workaroundProfile": "noroot-noice-workaround",
+            "requires": {
+                "lazyvim.startup.ui-ready",
+                "lazyvim.configuration.rootless-attach",
+                "lazyvim.configuration.missing-root",
+            },
+        }
+        problems = []
+        for field, value in approved.items():
+            found = rule.get(field)
+            if field == "requires":
+                found = set(found or [])
+            if found != value:
+                problems.append(
+                    f"{field}: {found!r}, not the approved {value!r}; the maintainer approved only "
+                    "the noice.nvim missing-root exception (2026-10-23)")
+        # The commit is format-checked only, not pinned here: bumping noice.nvim's pin changes
+        # it, and pinning a new commit also means updating this rule after the XFAIL is
+        # re-verified.
         self.assertIsInstance(rule["check"], str, "a rule names exactly one check")
         self.assertIsInstance(rule["commit"], str, "a rule names exactly one commit")
         self.assertRegex(rule["commit"], COMMIT.pattern + r"\Z")
@@ -278,7 +310,6 @@ class CoverageTest(unittest.TestCase):
         self.assertTrue(rule["plugin"])
         check = self.checks.get(rule["check"])
         self.assertIsNotNone(check, f"unknown check {rule['check']}")
-        problems = []
         for suite in check["suites"]:
             profiles = self.profiles[suite]
             stock, workaround = profiles.get(rule["profile"]), profiles.get(rule["workaroundProfile"])
@@ -314,6 +345,15 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual([], sorted(ref for ref in references if not ref.startswith("#/$defs/")))
         self.assertEqual([], sorted(names - set(defs)), "references to missing definitions")
         self.assertEqual([], sorted(set(defs) - names), "unused definitions")
+
+    def test_a_passing_run_has_no_failures_unexpected_passes_or_skips(self):
+        run_end = self.schema["$defs"]["runEnd"]
+        self.assertEqual({"const": "pass"}, run_end["if"]["properties"]["status"],
+                         "the run-end pass constraints must apply when status is pass")
+        counts = run_end["then"]["properties"]["counts"]["properties"]
+        for status in ["fail", "xpass", "skip"]:
+            self.assertEqual({"const": 0}, counts.get(status),
+                             f"a passing run must constrain counts.{status} to 0")
 
 
 if __name__ == "__main__":
