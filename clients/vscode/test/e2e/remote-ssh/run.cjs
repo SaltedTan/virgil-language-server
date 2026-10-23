@@ -31,7 +31,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
-const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
+const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
 const { PIDFD_SIGNAL, pidfdSupport, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
@@ -48,8 +48,10 @@ const REMOTE_SSH = [
 ];
 const REMOTE_SSH_VERSION = REMOTE_SSH.at(-1).version;
 const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
-// Deadlines: the first connection, which downloads the VS Code Server; each
-// later launch; each installation; and each other command over SSH.
+// Deadlines: VS Code's download; the first connection, which downloads the
+// VS Code Server; each later launch; each installation; and each other
+// command over SSH.
+const DOWNLOAD_TIMEOUT_MS = 600000;
 const PROBE_TIMEOUT_MS = 300000;
 const LAUNCH_TIMEOUT_MS = 180000;
 const INSTALL_TIMEOUT_MS = 180000;
@@ -226,15 +228,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Runs command in a process group of its own (see startGroup in
 // ../processes.cjs), with input on its standard input, and collects its
-// output, which onData also receives. A timeout or an interrupt stops the
-// group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If the group outlives the
-// command by GROUP_EXIT_MS, it is stopped the same way and the result's
-// groupLeft says so. Also waits for the output pipes to close, so buffered
-// archive bytes and diagnostics aren't lost after command exit. Resolves once
-// the whole group has gone, which it looks at every 50 milliseconds, or is no
-// longer the run's. The group's keeper stays until then, or until the group's
-// SIGKILL, so the group stays the run's: a process that joins it, even just
-// before the command exits, is waited for, and stopped with the group.
+// output, which onData also receives, with the stream's name. A timeout or an
+// interrupt stops the group: SIGTERM, then SIGKILL after STOP_GRACE_MS. If the
+// group outlives the command by GROUP_EXIT_MS, it is stopped the same way and
+// the result's groupLeft says so. Also waits for the output pipes to close, so
+// buffered archive bytes and diagnostics aren't lost after command exit.
+// Resolves once the whole group has gone, which it looks at every 50
+// milliseconds, or is no longer the run's. The group's keeper stays until
+// then, or until the group's SIGKILL, so the group stays the run's: a process
+// that joins it, even just before the command exits, is waited for, and
+// stopped with the group.
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const output = { stdout: [], stderr: [] };
@@ -295,7 +298,7 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
       }
       stream.on('data', (data) => {
         output[name].push(data);
-        onData?.(data);
+        onData?.(data, name);
       });
       stream.on('close', () => {
         open--;
@@ -352,21 +355,6 @@ class Run {
   // Throws if the run was interrupted, so that the next step doesn't start.
   checkpoint() {
     if (this.signal.aborted) throw this.signal.reason;
-  }
-
-  // Waits for promise, unless the run is interrupted first.
-  async abortable(promise) {
-    this.checkpoint();
-    let onAbort;
-    const aborted = new Promise((_, reject) => {
-      onAbort = () => reject(this.signal.reason);
-      this.signal.addEventListener('abort', onAbort);
-    });
-    try {
-      return await Promise.race([promise, aborted]);
-    } finally {
-      this.signal.removeEventListener('abort', onAbort);
-    }
   }
 
   fail(message) {
@@ -486,6 +474,27 @@ async function serverFiles(run) {
     });
   }
   return { dir, names, details };
+}
+
+// Downloads VS Code into the Extension Host test's cache, unless it is there,
+// with ../download.cjs, in a process group of its own (see runGroup): an
+// interrupt then stops the download, and the tar that extracts it, before the
+// runner exits. @vscode/test-electron marks a finished extraction, and
+// replaces a version's directory that has no mark, as one that an interrupt
+// stopped. Returns VS Code's executable.
+async function downloadVSCode(run) {
+  const result = await runGroup(process.execPath, [path.join(__dirname, '..', 'download.cjs'), VSCODE_VERSION, path.join(extension, '.vscode-test')], {
+    env: run.env, timeout: DOWNLOAD_TIMEOUT_MS, signal: run.signal,
+    onData: (data, name) => {
+      if (name === 'stderr') process.stderr.write(data);
+    },
+  });
+  run.checkpoint();
+  const executable = result.stdout.toString().trim();
+  if (!succeeded(result) || executable === '') {
+    throw infra(`could not download VS Code ${VSCODE_VERSION}: download.cjs ${outcome(result)}: ${result.stderr.trim()}`);
+  }
+  return executable;
 }
 
 // The client's user settings. Remote-SSH reads only its application settings
@@ -933,13 +942,7 @@ async function test(run) {
   console.log(`VS Code Remote-SSH test: VS Code ${VSCODE_VERSION}, Remote-SSH ${REMOTE_SSH_VERSION}, `
     + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.archive ?? values.server}`);
 
-  let executable;
-  try {
-    executable = await run.abortable(downloadAndUnzipVSCode({ version: VSCODE_VERSION, cachePath: path.join(extension, '.vscode-test') }));
-  } catch (error) {
-    if (error instanceof Failure) throw error;
-    throw infra(`could not download VS Code ${VSCODE_VERSION}: ${error.message}`);
-  }
+  const executable = await downloadVSCode(run);
   const product = JSON.parse(fs.readFileSync(path.join(path.dirname(executable), 'resources/app/product.json'), 'utf8'));
   run.manifest.client = {
     os: osDetails(),
@@ -1346,4 +1349,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { REMOTE_PROCESSES, runGroup, serverFiles, settle, stopHost, options, launch, main };
+module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, settle, stopHost, options, launch, main };

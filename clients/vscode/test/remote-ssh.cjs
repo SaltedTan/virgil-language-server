@@ -1,8 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// The Remote-SSH test's teardown, process groups, leak check, and bootstrap
-// (e2e/remote-ssh/), mostly with a fake /proc, clock,
+// The Remote-SSH test's teardown, process groups, leak check, VS Code
+// download, and bootstrap (e2e/remote-ssh/), mostly with a fake /proc, clock,
 // keeper, and VS Code (see support/fakes.cjs). Staging checks run fixture
 // executables; archive checks also run tar in a real process group.
 
@@ -12,6 +12,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 const { test } = require('node:test');
 const vm = require('node:vm');
 const fakes = require('./support/fakes.cjs');
@@ -302,6 +303,132 @@ test('a process that joins the group just before the command exits is waited for
   assert.ok(Date.now() - started >= 450, `resolved after ${Date.now() - started} ms`);
   const sleep = Number(result.stdout.toString().trim());
   assert.throws(() => process.kill(sleep, 0), (error) => error.code === 'ESRCH' || error.code === 'EPERM');
+});
+
+// run.cjs's downloadVSCode over fake processes and a fake clock and keeper,
+// as runGroup above, where the keeper runs download.cjs, PID 51, and its tar,
+// PID 52, which ignores SIGTERM.
+function download() {
+  const processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50 }]]);
+  processes.get(51).on = (name) => {
+    if (name === 'SIGTERM') processes.delete(51);
+  };
+  ignoreTerm(processes, 52);
+  const signals = [];
+  const keeper = fakeKeeper(50);
+  const kill = (target, name) => {
+    signals.push([target, name]);
+    for (const [pid, p] of [...processes]) {
+      if (pid !== target && p.group !== -target) continue;
+      if (pid === 50 && name !== 'SIGKILL') continue;
+      p.on?.(name);
+      if (name !== 'SIGKILL') continue;
+      processes.delete(pid);
+      if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
+    }
+  };
+  const clock = fakeClock();
+  const runner = load('run.cjs', {
+    '../processes.cjs': fakeProcesses(processes, { keeper, kill, signals }),
+    '../run.cjs': require('./e2e/run.cjs'),
+    './localhost.cjs': {},
+  }, { pid: 1, kill, stderr: { write() {} } }, clock.globals);
+  const controller = new AbortController();
+  const run = {
+    env: {}, signal: controller.signal,
+    checkpoint() {
+      if (controller.signal.aborted) throw controller.signal.reason;
+    },
+  };
+  let outcome;
+  runner.downloadVSCode(run).then((value) => { outcome = { value }; }, (error) => { outcome = { error }; });
+  return { processes, signals, keeper, controller, advance: clock.advance, outcome: () => new Promise((resolve) => setImmediate(() => resolve(outcome))) };
+}
+
+test('an interrupt during the VS Code download stops it and its tar before the runner goes on', async () => {
+  const run = download();
+  const [, [keeperFile, options]] = run.keeper.spawned;
+  assert.equal(keeperFile, path.join(__dirname, 'e2e/keeper.cjs'));
+  const { command, args } = JSON.parse(options);
+  assert.equal(command, process.execPath);
+  assert.deepEqual(args.slice(0, 2), [path.join(__dirname, 'e2e/download.cjs'), require('./e2e/run.cjs').VSCODE_VERSION]);
+  run.keeper.command(51);
+  run.advance(50);
+  const interrupted = Object.assign(new Error('interrupted by SIGTERM'), { kind: 'interrupted' });
+  run.controller.abort(interrupted);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  run.advance(4000);
+  assert.equal(await run.outcome(), undefined);
+  assert.equal(run.processes.has(52), true);
+  run.advance(1100);
+  assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  await run.outcome();
+  run.keeper.close();
+  run.advance(100);
+  assert.equal((await run.outcome()).error, interrupted);
+  assert.deepEqual([...run.processes.keys()], []);
+});
+
+test('a failed VS Code download is an infrastructure failure, with download.cjs\'s message', async () => {
+  const run = download();
+  run.keeper.command(51);
+  run.keeper.data('stderr', 'Failed to download and unzip VS Code 1.142.0\n');
+  run.processes.delete(51);
+  run.processes.delete(52);
+  run.keeper.exit(1, null);
+  run.keeper.close();
+  run.advance(100);
+  const { error } = await run.outcome();
+  assert.equal(error.kind, 'infra');
+  assert.match(error.message, /download\.cjs exited with 1: Failed to download and unzip VS Code 1\.142\.0$/);
+});
+
+// The pinned @vscode/test-electron, with its HTTP requests answered with a
+// .tar.gz of archive's files, under the top-level directory that VS Code's
+// archives have; returns what it requested.
+function testElectron(archive) {
+  const requests = [];
+  const real = require('@vscode/test-electron/out/request');
+  const request = {
+    ...real,
+    getStream: async (url) => {
+      requests.push(url);
+      if (requests.length === 1) {
+        return Object.assign(Readable.from([]), { statusCode: 302, headers: { location: 'https://example.invalid/code.tar.gz' } });
+      }
+      return Object.assign(Readable.from([archive]), { statusCode: 200, headers: { 'content-length': String(archive.length) } });
+    },
+  };
+  const file = require.resolve('@vscode/test-electron/out/download.js');
+  const localRequire = require('node:module').createRequire(file);
+  const module = { exports: {} };
+  vm.runInThisContext(`(function (exports, require, module, __filename, __dirname) {${fs.readFileSync(file, 'utf8')}\n})`)(
+    module.exports, (name) => (name === './request' ? request : localRequire(name)), module, file, path.dirname(file));
+  return { download: module.exports.download, requests };
+}
+
+test('a VS Code that an interrupt left half-extracted in the cache is replaced, not used', async (t) => {
+  const root = fs.mkdtempSync(path.join(__dirname, '.remote-ssh-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'VSCode-linux-x64'));
+  fs.writeFileSync(path.join(root, 'VSCode-linux-x64', 'code'), 'new');
+  const archive = execFileSync('tar', ['-czf', '-', '-C', root, 'VSCode-linux-x64']);
+  const cache = path.join(root, 'cache');
+  const version = require('./e2e/run.cjs').VSCODE_VERSION;
+  const installed = path.join(cache, `vscode-linux-x64-${version}`);
+  fs.mkdirSync(installed, { recursive: true });
+  fs.writeFileSync(path.join(installed, 'code'), 'half');
+  const { SilentReporter } = require('@vscode/test-electron');
+  const options = { version, cachePath: cache, platform: 'linux-x64', reporter: new SilentReporter() };
+  let electron = testElectron(archive);
+  assert.equal(await electron.download(options), path.join(installed, 'code'));
+  assert.equal(electron.requests.length, 2);
+  assert.equal(fs.readFileSync(path.join(installed, 'code'), 'utf8'), 'new');
+  assert.ok(fs.existsSync(path.join(installed, 'is-complete')));
+  // A finished one is used without a request.
+  electron = testElectron(archive);
+  assert.equal(await electron.download(options), path.join(installed, 'code'));
+  assert.equal(electron.requests.length, 0);
 });
 
 test('server staging preserves a selected alternate executable and its resolved worker', async (t) => {
