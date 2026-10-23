@@ -4,6 +4,7 @@
 """Check that the fixture permissions never keep the build directory from
 being removed, after passing and failing test runs."""
 from contextlib import contextmanager
+import json
 import os
 import shutil
 import stat
@@ -14,6 +15,7 @@ import unittest
 from pathlib import Path
 
 PREPARE = Path(__file__).resolve().with_name("prepare.py")
+ROOT = Path(__file__).resolve().parents[3]
 RESTRICTED = [
     "unreadable-directories/blocked",
     "ignored-entries/build",
@@ -37,6 +39,26 @@ for path in sys.argv[1:-1]:
         sys.exit(f"{path} is accessible")
 sys.exit(status)
 """
+# The command that make's run-unit-tests recipe wraps in the test below. It
+# records the modes it sees so the assertion does not depend on output parsing.
+STAND_IN = """\
+#!{python}
+import json
+import os
+import stat
+import sys
+
+paths = {paths!r}
+modes = {{}}
+for path in paths:
+    modes[path] = stat.S_IMODE(os.stat(path).st_mode)
+with open({report!r}, "w", encoding="utf-8") as output:
+    json.dump(modes, output)
+bad = {{path: mode for path, mode in modes.items() if mode != 0}}
+if bad:
+    sys.exit(f"accessible while running: {{bad}}")
+sys.exit({status})
+"""
 
 
 class FixtureCleanupTest(unittest.TestCase):
@@ -59,6 +81,33 @@ class FixtureCleanupTest(unittest.TestCase):
                 sys.executable, "-c", CONSUMER, *paths, str(status),
             ],
             check=False,
+        )
+
+    def stand_in(self, directory, build, status):
+        report = directory / f"stand-in-{status}.json"
+        script = directory / f"stand-in-{status}"
+        script.write_text(
+            STAND_IN.format(
+                python=sys.executable,
+                paths=[str(path) for path in self.restricted(build)],
+                report=str(report),
+                status=status,
+            ),
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return script, report
+
+    def run_unit_tests(self, build, consumer):
+        return subprocess.run(
+            [
+                "make", "--no-print-directory", "run-unit-tests",
+                f"BUILD={build}", f"UNIT_TESTS={consumer}",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
         )
 
     @contextmanager
@@ -119,6 +168,25 @@ class FixtureCleanupTest(unittest.TestCase):
             result = self.run_consumer(build, 3)
             self.assertEqual(3, result.returncode)
             self.assert_build_is_removable(build)
+
+    def test_run_unit_tests_wrapper_restores_permissions(self):
+        for status in [0, 3]:
+            with self.subTest(status=status):
+                with self.build_directory(f"project-wrapper-{status}-") as build:
+                    self.prepare(build)
+                    script, report = self.stand_in(build.parent, build, status)
+                    result = self.run_unit_tests(build, script)
+                    output = result.stdout + result.stderr
+                    if status == 0:
+                        self.assertEqual(0, result.returncode, output)
+                    else:
+                        self.assertNotEqual(0, result.returncode, output)
+                    self.assertEqual(
+                        {str(path): 0 for path in self.restricted(build)},
+                        json.loads(report.read_text(encoding="utf-8")),
+                        output,
+                    )
+                    self.assert_build_is_removable(build)
 
 
 if __name__ == "__main__":

@@ -30,8 +30,11 @@ WORKER_HEAP ?= 384m
 # test/unit/main.v3 holds the test entry point and must be passed first.
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
+# The command run-unit-tests wraps. A plain = lets a command-line override work,
+# and test_cleanup.py uses that to exercise the wrapper without the real tests.
+UNIT_TESTS  = $(BUILD)/unit-tests
 
-.PHONY: all test test-unit test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -72,16 +75,20 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 
 # The unit tests need two fixture directories to be unreadable. --run applies
 # that for the test process only and restores it however the process ends, so
-# the build directory stays removable. Pass a glob with ARGS, e.g.
-# `make test-unit ARGS='ProjectExpansion:*'`.
-test-unit: $(BUILD)/unit-tests
-	python3 test/fixtures/projects/prepare.py $(BUILD) --run $(BUILD)/unit-tests $(ARGS)
+# the build directory stays removable. set -f keeps ARGS patterns away from the
+# shell's pathname expansion while word splitting still separates several of
+# them. Pass a glob with ARGS, e.g. `make test-unit ARGS='ProjectExpansion:*'`.
+run-unit-tests:
+	set -f; python3 test/fixtures/projects/prepare.py $(BUILD) --run $(UNIT_TESTS) $(ARGS)
+
+test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
+	$(MAKE) --no-print-directory run-unit-tests
 
 # Unit and CLI tests start the worker next to their executables.
 test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(BUILD)/retain-probe
 	$(BUILD)/type-depth-probe
-	python3 test/fixtures/projects/prepare.py $(BUILD) --run $(BUILD)/unit-tests
+	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/fixtures/projects/test_cleanup.py
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp
