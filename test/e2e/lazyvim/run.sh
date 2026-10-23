@@ -448,7 +448,7 @@ else
   action=restore
 fi
 echo "-- installing the plugins (:Lazy! $action); log in $out/lazy-install.log"
-started=$SECONDS
+install_started=$SECONDS started=$SECONDS
 rc=0
 deadline "$install_timeout" nvim --headless "+Lazy! $action" +qa > "$out/lazy-install.log" 2>&1 || rc=$?
 (( rc != 124 )) || die "installing the plugins exceeded $install_timeout seconds; see $out/lazy-install.log"
@@ -486,6 +486,29 @@ if ! verify_plugins > "$work/plugins.txt"; then
 fi
 cat "$work/plugins.txt" >> "$out/provenance.txt"
 cat "$work/plugins.txt"
+
+# nvim-treesitter's parsers, installed by parsers.lua as LazyVim installs them
+# at a first start, under what is left of the deadline for installing the
+# plugins. Otherwise LazyVim would download and build them in the background
+# during main. Meanwhile, a plugin spec leaves LazyVim's configuration of
+# nvim-treesitter only its setup, so that LazyVim starts no install of its own.
+cat > "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua" <<'LUA'
+return { { "nvim-treesitter/nvim-treesitter", config = function(_, opts) require("nvim-treesitter").setup(opts) end } }
+LUA
+echo "-- installing nvim-treesitter's parsers; log in $out/parsers-install.log"
+started=$SECONDS
+left=$((install_timeout - (SECONDS - install_started)))
+(( left > 0 )) || die "installing the plugins and parsers exceeded $install_timeout seconds"
+rc=0
+VIRGIL_PARSERS_OUT=$work/parsers.txt deadline "$left" nvim --headless \
+  -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/parsers.lua")' > "$out/parsers-install.log" 2>&1 || rc=$?
+(( rc != 124 )) ||
+  die "installing the plugins and parsers exceeded $install_timeout seconds; see $out/parsers-install.log"
+(( rc == 0 )) || die "installing the parsers failed with status $rc; see $out/parsers-install.log"
+rm "$XDG_CONFIG_HOME/nvim/lua/plugins/zz-install-parsers.lua"
+echo "   done in $((SECONDS - started)) s"
+cat "$work/parsers.txt" >> "$out/provenance.txt"
+cat "$work/parsers.txt"
 
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
 # One run: Neovim with the observer and the driver, then its exit status,

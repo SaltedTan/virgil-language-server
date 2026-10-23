@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The [LazyVim test](test/e2e/lazyvim/README.md#ci) now runs in CI on Linux for every pull request as an advisory check, and weekly on Linux and macOS. The weekly workflow also runs the [Extension Host test](clients/vscode/README.md#extension-host-test) on an installed VSIX on macOS.
 
+### Fixed
+
+- The LazyVim test's first weekly run failed on all three platforms, though the server had passed every check. A run now ends when Neovim exits: on Linux, Ubuntu 24.04's tmux 3.4 can miss the exit of the shell that runs Neovim ([tmux/tmux#4559](https://github.com/tmux/tmux/issues/4559)), and two runs waited for their 240-second deadline. The test's observer no longer lists processes in a way that blocks the editor: with dozens of parser builds running on macOS, it held a request until it timed out, after the server had replied. The test also installs nvim-treesitter's parsers before its runs, as LazyVim would at a first start, rather than downloading and building them during the first run, and it names and stops what Neovim leaves running ([LazyVim test](test/e2e/lazyvim/README.md#outputs)).
+
 ## [0.1.0-alpha.3] - 2026-10-23
 
 ### Added
