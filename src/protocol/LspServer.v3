@@ -322,6 +322,9 @@ class LspServer {
 		var parameterInformation = member(member(member(textDocument, "signatureHelp"), "signatureInformation"), "parameterInformation");
 		signatureHelp.labelOffsets = parameterInformation != null
 			&& parameterInformation["labelOffsetSupport"] == JsonValue.Bool(true);
+		var documentSymbol = member(textDocument, "documentSymbol");
+		documentSymbols.hierarchy = documentSymbol != null
+			&& documentSymbol["hierarchicalDocumentSymbolSupport"] == JsonValue.Bool(true);
 		var workspaceEdit = member(member(member(params, "capabilities"), "workspace"), "workspaceEdit");
 		rename.documentChanges = workspaceEdit != null && workspaceEdit["documentChanges"] == JsonValue.Bool(true);
 		var renaming = member(textDocument, "rename");

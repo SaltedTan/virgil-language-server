@@ -74,8 +74,19 @@ def reply(id, result):
     return dict(jsonrpc="2.0", id=id, result=result)
 
 
+def publish(version, diagnostics=None):
+    return notify("textDocument/publishDiagnostics",
+                  dict(diagnostics=diagnostics if diagnostics is not None else [],
+                       uri=URI, version=version))
+
+
+PARSE_ERROR = dict(code="ParseError", message="invalid start of expression",
+                   range=dict(end=dict(character=25, line=0), start=dict(character=25, line=0)),
+                   severity=1, source="aeneas")
+
+
 def frame(msg, result_sorted=False):
-    if result_sorted:
+    if result_sorted and "result" in msg:
         payload = ('{"jsonrpc":"2.0","id":' + str(msg["id"]) + ',"result":' +
                    json.dumps(msg["result"], separators=(",", ":"), sort_keys=True) + '}').encode()
     else:
@@ -84,7 +95,8 @@ def frame(msg, result_sorted=False):
 
 
 inputs = [
-    request(1, "initialize", {}),
+    request(1, "initialize", dict(capabilities=dict(textDocument=dict(documentSymbol=dict(
+        hierarchicalDocumentSymbolSupport=True))))),
     notify("textDocument/didOpen", dict(textDocument=dict(uri=URI, languageId="virgil", version=1, text=TEXT))),
     request(2, "textDocument/documentSymbol", dict(textDocument=dict(uri="file:/not-on-disk/outline.v3"))),
     notify("textDocument/didChange", dict(textDocument=dict(uri=URI, version=2), contentChanges=[dict(text="class Edited {}")])),
@@ -97,15 +109,20 @@ inputs = [
     notify("exit", {}),
 ]
 outputs = [
-    reply(1, dict(capabilities=dict(completionProvider={}, definitionProvider=True, documentSymbolProvider=True, hoverProvider=True, referencesProvider=True, renameProvider=True,
+    reply(1, dict(capabilities=dict(completionProvider=dict(triggerCharacters=["."]), definitionProvider=True, documentSymbolProvider=True, hoverProvider=True, referencesProvider=True, renameProvider=True,
                                    signatureHelpProvider=dict(retriggerCharacters=[")"], triggerCharacters=["(", ","]),
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
                                    workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True)),
                                    workspaceSymbolProvider=True),
                   serverInfo=dict(name="virgil-lsp", version="@VERSION@"))),
+    publish(1),
     reply(2, OUTLINE),
+    publish(2),
     reply(3, [symbol("Edited", 5, 0, 0, 0, 15, 0, 6)]),
-    reply(4, []), reply(5, []), reply(6, None),
+    publish(3, [PARSE_ERROR]),
+    reply(4, []),
+    publish(3),
+    reply(5, []), reply(6, None),
 ]
 (HERE / "input").write_bytes(b"".join(frame(m) for m in inputs))
 (HERE / "output").write_bytes(b"".join(frame(m, True) for m in outputs))
