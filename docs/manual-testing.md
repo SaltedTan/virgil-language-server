@@ -85,7 +85,7 @@ Report a failed check with the [bug report form](https://github.com/SaltedTan/vi
 
 ## Results
 
-For each release, record every run with its date, the server's source revision, and the editor's version. Mark a feature *Pass*, or *Fail* with an issue link, only after checking it, and leave the rest *Not yet run*. A passing automated run counts for the features it checks.
+Follow the [editor evidence contract](../test/e2e/RESULTS.md) for new release results, including evidence labels and coverage gaps. Record optional manual observations with their date, the server's source revision, and the editor's version. The historical results below keep their hand-written labels.
 
 ### 0.1.0-alpha.3
 
