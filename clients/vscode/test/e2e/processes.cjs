@@ -4,8 +4,8 @@
 // Process groups and signals for the VS Code test runners, run.cjs and
 // remote-ssh/run.cjs, and the Remote-SSH test's teardown: a command in a
 // process group of its own that a runner can stop as a whole, and signals to
-// processes known by their PID and start time, neither of which can reach a
-// process or group that another program has since been given the number of.
+// processes known by their PID and start time. See startGroup for group-number
+// safety and signalProcesses for the limits of signals to single processes.
 
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
