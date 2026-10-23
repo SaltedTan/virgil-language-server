@@ -1,0 +1,15 @@
+Content-Length: 152
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":false}}}}}Content-Length: 219
+
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///not-on-disk/flat.v3","languageId":"virgil","version":1,"text":"type V {\n  case A(x: int);\n}\ncomponent C {\n  def f() {}\n}"}}}Content-Length: 127
+
+{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///not-on-disk/flat.v3"}}}Content-Length: 158
+
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///not-on-disk/flat.v3","version":2},"contentChanges":[{"text":""}]}}Content-Length: 127
+
+{"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///not-on-disk/flat.v3"}}}Content-Length: 44
+
+{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 45
+
+{"jsonrpc":"2.0","method":"exit","params":{}}

@@ -1,6 +1,6 @@
-Content-Length: 58
+Content-Length: 151
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 170
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true}}}}}Content-Length: 170
 
 {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:row-20","languageId":"virgil","version":1,"text":"def f() { xs[0x ...]; }\n"}}}Content-Length: 115
 

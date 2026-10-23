@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `textDocument/documentSymbol` now returns flat `SymbolInformation[]` unless the client declares `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport: true`, with the whole declaration's range in each `location` and each nested symbol's parent in `containerName`. Clients that declare exactly `true` get the same hierarchical `DocumentSymbol[]` as before ([Document symbols](docs/architecture.md#document-symbols), [#188](https://github.com/SaltedTan/virgil-language-server/issues/188)).
 - Fixed hangs, false request timeouts, and incomplete process cleanup in the [LazyVim test](test/e2e/lazyvim/README.md#outputs). Its parsers now install before the test runs ([pins](test/e2e/lazyvim/README.md#pins)).
 
 ## [0.1.0-alpha.3] - 2026-10-23

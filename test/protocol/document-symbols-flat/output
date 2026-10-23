@@ -1,0 +1,13 @@
+Content-Length: 555
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":true,"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}Content-Length: 136
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///not-on-disk/flat.v3","version":1}}Content-Length: 824
+
+{"jsonrpc":"2.0","id":2,"result":[{"kind":5,"location":{"range":{"end":{"character":1,"line":2},"start":{"character":0,"line":0}},"uri":"file:///not-on-disk/flat.v3"},"name":"V"},{"containerName":"V","kind":22,"location":{"range":{"end":{"character":17,"line":1},"start":{"character":2,"line":1}},"uri":"file:///not-on-disk/flat.v3"},"name":"A"},{"containerName":"A","kind":8,"location":{"range":{"end":{"character":15,"line":1},"start":{"character":9,"line":1}},"uri":"file:///not-on-disk/flat.v3"},"name":"x"},{"kind":3,"location":{"range":{"end":{"character":1,"line":5},"start":{"character":0,"line":3}},"uri":"file:///not-on-disk/flat.v3"},"name":"C"},{"containerName":"C","kind":6,"location":{"range":{"end":{"character":12,"line":4},"start":{"character":2,"line":4}},"uri":"file:///not-on-disk/flat.v3"},"name":"f"}]}Content-Length: 136
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///not-on-disk/flat.v3","version":2}}Content-Length: 36
+
+{"jsonrpc":"2.0","id":3,"result":[]}Content-Length: 38
+
+{"jsonrpc":"2.0","id":4,"result":null}

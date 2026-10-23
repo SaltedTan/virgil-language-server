@@ -42,10 +42,16 @@ component LspSymbolKind {
 }
 
 // Outlines parse the overlay with the language options of the document's
-// active project, as its syntax diagnostics do. A symbol's detail is its
-// declaration's signature, from the active project's snapshot, but only if
-// that snapshot analyzed this very overlay; the outline never waits for one.
+// active project, as its syntax diagnostics do. A hierarchical symbol's detail
+// is its declaration's signature, from the active project's snapshot, but only
+// if that snapshot analyzed this very overlay; the outline never waits for one.
+// Reply shapes follow the client's capabilities; see
+// docs/architecture.md#document-symbols.
 class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
+	// True if the client's initialize declared
+	// textDocument.documentSymbol.hierarchicalDocumentSymbolSupport: true.
+	var hierarchy: bool;
+
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
 	}
@@ -66,7 +72,8 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		// the snapshot's byte ranges.
 		if (s != null && !s.matchesDocument(store, overlay.uri)) s = null;
 		var path = if(s != null, s.paths[s.documentIndex(overlay.uri)]);
-		return JsonRpcReply.Result(encodeSymbols(symbols, map, s, path));
+		if (hierarchy) return JsonRpcReply.Result(encodeSymbols(symbols, map, s, path));
+		return JsonRpcReply.Result(encodeSymbolInformation(overlay.uri, symbols, map));
 	}
 	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
 		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
@@ -87,6 +94,30 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 			result.put(JsonValue.JObject(obj));
 		}
 		return JsonValue.JArray(result.extract());
+	}
+	// SymbolInformation[]: the same tree in pre-order, so that each symbol
+	// follows its parent. Each entry has its full declaration range, not just
+	// its name's, and its parent's name. Details belong to DocumentSymbol, so
+	// this shape has none.
+	private def encodeSymbolInformation(uri: string, symbols: Array<AnalysisDocumentSymbol>, map: PositionMap) -> JsonValue {
+		var result = Vector<JsonValue>.new();
+		flatten(uri, symbols, null, map, result);
+		return JsonValue.JArray(result.extract());
+	}
+	private def flatten(uri: string, symbols: Array<AnalysisDocumentSymbol>, container: string, map: PositionMap,
+			result: Vector<JsonValue>) {
+		for (sym in symbols) {
+			var location = Strings.newMap<JsonValue>();
+			location["uri"] = JsonValue.String(uri);
+			location["range"] = range(map, sym.begin, sym.end);
+			var obj = Strings.newMap<JsonValue>();
+			obj["name"] = JsonValue.String(sym.name);
+			obj["kind"] = JsonValue.Int(LspSymbolKind.of(sym.kind));
+			obj["location"] = JsonValue.JObject(location);
+			if (container != null) obj["containerName"] = JsonValue.String(container);
+			result.put(JsonValue.JObject(obj));
+			flatten(uri, sym.children, sym.name, map, result);
+		}
 	}
 	// The signature of the declaration named by exactly {sym}'s name token,
 	// or null. Names repeat across scopes; the token does not. A data type
