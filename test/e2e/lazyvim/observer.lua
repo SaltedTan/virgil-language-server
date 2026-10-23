@@ -94,12 +94,16 @@ end
 -- $VIRGIL_DRIVER_PIDS as "PID NAME", so that run.sh can check that none
 -- outlives the run wherever the server is installed. Neovim starts the server
 -- in its own process group, so it would otherwise escape a killed session.
--- Neovim's own PID comes first, as "PID nvim": run.sh also stops what is left
--- in its process group. A scan reads one ps listing, without waiting for it:
--- nvim_get_proc runs ps twice for each process and waits for it in a nested
--- event loop, so with the dozens of processes of a parser build, scans
--- outlasted their interval, nested in each other, and held the driver's
--- requests past their timeouts.
+-- Neovim's own PID comes first, as "PID nvim ANCHOR": run.sh also stops what
+-- is left in its process group. ANCHOR is the PID of a sleep that Neovim
+-- starts in its group, named $VIRGIL_DRIVER_ANCHOR, and that outlives it: a
+-- group's number isn't reused while the group has a process, so run.sh takes
+-- the group for Neovim's only while the anchor runs in it. Without an anchor,
+-- the line is "PID nvim", and run.sh fails rather than guess at the group. A
+-- scan reads one ps listing, without waiting for it: nvim_get_proc runs ps
+-- twice for each process and waits for it in a nested event loop, so with
+-- the dozens of processes of a parser build, scans outlasted their interval,
+-- nested in each other, and held the driver's requests past their timeouts.
 local pids_file = vim.env.VIRGIL_DRIVER_PIDS
 if pids_file then
   local function record(pid, name)
@@ -110,7 +114,14 @@ if pids_file then
     end
   end
   local root, seen, scanning = vim.fn.getpid(), {}, false
-  record(root, "nvim")
+  -- A day bounds the anchor if run.sh is killed before it stops the anchor.
+  local handle, anchor
+  if vim.env.VIRGIL_DRIVER_ANCHOR then
+    handle, anchor = vim.uv.spawn("bash", {
+      args = { "-c", 'exec -a "$0" sleep 86400', vim.env.VIRGIL_DRIVER_ANCHOR },
+    }, function() handle:close() end)
+  end
+  record(root, handle and "nvim " .. anchor or "nvim")
   local function found(listing)
     local children = {}
     for line in listing:gmatch("[^\n]+") do

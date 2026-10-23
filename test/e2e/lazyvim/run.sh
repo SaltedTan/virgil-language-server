@@ -167,29 +167,60 @@ descendants() {
     }'
 }
 
-# Prints "PID COMMAND" for each process of the runs still running: the server
-# and worker processes that observer.lua recorded; the processes in the
-# process group of each Neovim that it recorded, which keeps what Neovim
-# started, such as a parser build, also once Neovim has exited and they no
-# longer descend from it; and any process whose command line holds the work
-# directory. It reads the process table once, and fails if it can't; a
-# recorded process that is gone is just not printed.
+# Prints "RUN PID NAME [ANCHOR]" for each line that observer.lua wrote to
+# RUN.pids.
+records() {
+  local file name
+  for file in "$work"/*.pids; do
+    [[ -f $file ]] || continue
+    name=${file##*/}
+    awk -v r="${name%.pids}" '{ print r, $0 }' "$file"
+  done
+}
+
+# run_processes [groups]: prints "PID COMMAND" for each process of the runs
+# still running: the server and worker processes that observer.lua recorded;
+# the processes in the process group of each Neovim that it recorded, which
+# keeps what Neovim started, such as a parser build, also once Neovim has
+# exited and they no longer descend from it; and any process whose command
+# line holds the work directory. A Neovim's group counts only while the anchor
+# that observer.lua recorded with it runs in it, under its name: once a group
+# is empty, its number can be any new group's. With groups, it prints instead
+# "+ RUN ANCHOR" for each run whose Neovim's group counts, and "- RUN" for each
+# other, except the runs in checked. It reads the process table once, and
+# fails if it can't; a recorded process that is gone is just not printed.
 run_processes() {
   local table
-  table=$(ps -ax -o pid=,pgid=,command=) && [[ -n $table ]] || return 1
-  printf '%s\n' "$table" | P=$(cat "$work"/*.pids 2>/dev/null || true) W=$work/ awk '
+  table=$(ps -ax -o pid=,pgid=,stat=,command=) && [[ -n $table ]] || return 1
+  printf '%s\n' "$table" | M=${1:-} P=$(records) C=$checked W=$work/ awk '
     BEGIN {
       n = split(ENVIRON["P"], line, "\n")
       for (i = 1; i <= n; i++) {
-        if (split(line[i], f, " ") < 2) continue
-        if (f[2] == "nvim") group[f[1]] = 1; else server[f[1]] = 1
+        if (split(line[i], f, " ") < 3) continue
+        if (f[3] != "nvim") server[f[2]] = 1
+        else { nvim[f[1]] = f[2]; anchor[f[1]] = f[4]; if (f[4] != "") run[f[4]] = f[1] }
       }
     }
     {
       cmd = $0
-      sub(/^ *[0-9]+ +[0-9]+ +/, "", cmd)
-      if (($2 in group) || (($1 in server) && index(cmd, "virgil-lsp")) || index(cmd, ENVIRON["W"]))
-        print $1, cmd
+      sub(/^ *[0-9]+ +[0-9]+ +[^ ]+ +/, "", cmd)
+      pid[NR] = $1; pgid[NR] = $2; command[NR] = cmd
+      if (($1 in run) && $2 == nvim[run[$1]] && $3 !~ /^Z/ && $4 == (ENVIRON["W"] run[$1] ".anchor"))
+        counts[run[$1]] = 1
+    }
+    END {
+      if (ENVIRON["M"] == "groups") {
+        for (r in nvim) {
+          if (index(ENVIRON["C"], " " r " ")) continue
+          if (r in counts) print "+", r, anchor[r]; else print "-", r
+        }
+        exit
+      }
+      for (r in counts) group[nvim[r]] = 1
+      for (i = 1; i <= NR; i++)
+        if ((pgid[i] in group) || ((pid[i] in server) && index(command[i], "virgil-lsp")) ||
+          index(command[i], ENVIRON["W"]))
+          print pid[i], command[i]
     }'
 }
 
@@ -209,6 +240,8 @@ stopping=0 pending='' frozen=' '
 # parents unseen, so a later call that finds none doesn't make the teardown
 # complete.
 lost=0
+# checked holds the runs whose Neovim's process group a call has checked.
+checked=' '
 
 # Stops each tmux server and every process of the runs: the servers' process
 # trees, the processes that run_processes finds, and all their descendants.
@@ -222,12 +255,16 @@ lost=0
 # tries again after 0.2 seconds, up to five times, with those found so far
 # still frozen. Then every 0.2 seconds it looks again and kills any process
 # it finds; if any is left after five seconds, or the processes couldn't be
-# listed, it prints so and fails. A signal meanwhile exits only after that,
+# listed, it prints so and fails. Before the kills, it checks each Neovim's
+# process group that no call has checked: if the group doesn't count, what
+# Neovim left in it can't be found, and it fails; if it does, its anchor is
+# killed last, once nothing else is left, so that the looks until then still
+# find the group's processes. A signal meanwhile exits only after that,
 # and a stopped tmux server would answer no query: so a query that gets no
 # answer in two seconds is given up, and if a call didn't finish, the next
 # kills what it froze without asking the servers.
 stop_processes() {
-  local list new pids sock pid tries=0 fails=0 listed=1 rc=0
+  local list new pids sock pid groups state name anchors left tries=0 fails=0 listed=1 rc=0
   stopping=1
   if [[ $frozen == ' ' ]]; then
     for sock in "$work"/*.sock; do
@@ -258,24 +295,53 @@ stop_processes() {
     for pid in $new; do kill -STOP "$pid" 2>/dev/null || true; done
     tries=$((tries + 1))
   done
+  anchors=' '
+  if (( listed )); then
+    if groups=$(run_processes groups); then
+      while read -r state name pid; do
+        [[ -n $state ]] || continue
+        checked="$checked$name "
+        if [[ $state == + ]]; then
+          anchors="$anchors$pid "
+        else
+          echo "FAIL: $name's Neovim has no anchor in its process group, so what Neovim left there can't be found"
+          rc=1
+        fi
+      done <<< "$groups"
+    else
+      listed=0
+    fi
+  fi
   pids=$frozen tries=0
   while :; do
-    for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
-    frozen=' '
+    for pid in $pids; do
+      [[ $anchors == *" $pid "* ]] || kill -KILL "$pid" 2>/dev/null || true
+    done
+    frozen=$anchors
     if ! pids=$(run_trees "$pids"); then
       listed=0
       break
     fi
+    left=''
+    for pid in $pids; do
+      [[ $anchors == *" $pid "* ]] || left="$left$pid "
+    done
+    if [[ -z $left && $anchors != ' ' ]]; then
+      anchors=' '
+      continue
+    fi
     [[ -n $pids ]] || break
     if (( tries == 25 )); then
       echo "FAIL: processes still running after SIGKILL:"
-      for pid in $pids; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
+      for pid in $left; do ps -p "$pid" -o pid=,command= 2>/dev/null | sed 's/^/   /'; done
       rc=1
       break
     fi
     sleep 0.2
     tries=$((tries + 1))
   done
+  for pid in $anchors; do kill -KILL "$pid" 2>/dev/null || true; done
+  frozen=' '
   if (( ! listed )); then
     echo "FAIL: could not list the processes of the runs"
     rc=1
@@ -553,7 +619,7 @@ run() {
     export VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
     export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$results
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
-    export VIRGIL_DRIVER_STATUS=$work/$name.status
+    export VIRGIL_DRIVER_ANCHOR=$work/$name.anchor VIRGIL_DRIVER_STATUS=$work/$name.status
     # The pane stays open when Neovim exits, for its screen, and keeps the
     # tmux server running until stop_processes. The script's path is an
     # argument of its own, not split by a shell.
@@ -613,8 +679,11 @@ run() {
     verdict=FAIL
   fi
   # What else Neovim left running, such as a plugin's download, is named but
-  # doesn't fail the run: it isn't the server's.
-  left=$(run_processes | awk -v t="$tmux_pid" -v p="$pane_pid" '$1 != t && $1 != p { print "   " $0 }' || true)
+  # doesn't fail the run: it isn't the server's. Its anchor isn't listed, and
+  # its name goes through the environment: on awk's command line, it would
+  # name the work directory, and be listed.
+  left=$(run_processes | A=$work/$name.anchor awk -v t="$tmux_pid" -v p="$pane_pid" \
+    '$1 != t && $1 != p && $2 != ENVIRON["A"] { print "   " $0 }' || true)
   if [[ -n $left ]]; then
     echo "-- left running after Neovim exited, and stopped:"
     echo "$left"
