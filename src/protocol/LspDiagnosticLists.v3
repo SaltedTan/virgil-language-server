@@ -15,8 +15,9 @@ class LspUriDiagnostics(uri: string) {
 // published here: its current parser diagnostics followed by the semantic
 // diagnostics of the newest analysis still current for it, without
 // repeating a parser diagnostic. Parser updates always publish, as before;
-// semantic updates publish only when the list changes. Open documents carry
-// their overlay version; closed project files carry none.
+// semantic updates publish only when the list changes. A version-only change
+// publishes the same list at its new version. Open documents carry their
+// overlay version; closed project files carry none.
 class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 	// By canonical URI, in byte order; see OrderedStringMap.
 	private def lists = OrderedStringMap<LspUriDiagnostics>.new();
@@ -29,6 +30,12 @@ class LspDiagnosticLists(store: DocumentStore, send: Array<byte> -> void) {
 		list.semantic = [];
 		list.owner = null;
 		publish(list, doc, true);
+	}
+	// An accepted version-only change: the text, and so the list and its
+	// provenance, are unchanged; only the version the client checks moves.
+	def versioned(doc: DocumentOverlay) {
+		var list = lists[doc.uri];
+		if (list != null) publish(list, doc, false);
 	}
 	// An accepted close publishes an empty list with the last open version,
 	// without reading the disk; a later analysis may report the file again.

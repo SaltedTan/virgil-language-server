@@ -16,6 +16,7 @@ def X = [
 	T("LspSemanticDiagnostics:configuration_edits_drop_obsolete_waiters", test_configuration_edits_drop_obsolete_waiters),
 	T("LspSemanticDiagnostics:hidden_configuration_blocks_parent", test_hidden_configuration_blocks_parent),
 	T("LspSemanticDiagnostics:debounce_timeout", test_debounce_timeout),
+	T("LspSemanticDiagnostics:version_only_update", test_version_only_update),
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
 	T("LspSemanticDiagnostics:urgent_context_starts_first", test_urgent_context_starts_first),
@@ -56,6 +57,12 @@ class SemanticTestSession {
 		doc["version"] = JsonValue.Int(version);
 		change["text"] = JsonValue.String(text);
 		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	def versionOnly(name: string, version: int) {
+		var doc = Strings.newMap<JsonValue>();
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		notify("textDocument/didChange", doc, []);
 	}
 	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
 		var params = Strings.newMap<JsonValue>();
@@ -185,6 +192,20 @@ def test_development_request_rejected_when_busy(t: Tester) {
 	t.asserti(1, s.supervisor.snapshot.generation);
 	s.server.close();
 }
+// The parameters of the last publication of {uri} in {messages}, or null.
+def lastPublication(messages: Array<HashMap<string, JsonValue>>, uri: string) -> HashMap<string, JsonValue> {
+	var result: HashMap<string, JsonValue>;
+	for (m in messages) {
+		if (!Strings.equal("textDocument/publishDiagnostics", method(m))) continue;
+		var p = params(m);
+		if (Strings.equal(uri, JsonValue.String.!(p["uri"]).v)) result = p;
+	}
+	return result;
+}
+// The JSON of {v}, for comparing published lists.
+def rendered(v: JsonValue) -> string {
+	return JsonRpcJson.render(StringBuilder.new(), v).toString();
+}
 def test_debounce_timeout(t: Tester) {
 	var s = SemanticTestSession.new();
 	s.open("main.v3", 1, s.main);
@@ -225,6 +246,34 @@ def test_disk_change_discards_result(t: Tester) {
 class InfoRecorder {
 	def messages = Vector<string>.new();
 	def info(msg: string) { messages.put(msg); }
+}
+def test_version_only_update(t: Tester) {
+	var s = SemanticTestSession.new(), uri = s.uri("main.v3");
+	s.open("main.v3", 1, replace(s.main, "var total = r.area();", "var total: int = r;"));
+	s.settle();
+	var messages = s.take(), first = lastPublication(messages, uri);
+	t.assert(first != null, "the open document's diagnostics were published");
+	if (first == null) return s.server.close();
+	t.asserti(1, JsonValue.Int.!(first["version"]).v);
+	var list = JsonValue.JArray.!(first["diagnostics"]).v;
+	t.assert(list.length > 0, "the type error is published");
+	t.assert_string("aeneas", JsonValue.String.!(field(list[0], "source")).v);
+	var generation = s.supervisor.snapshot.generation;
+	// A version-only change keeps the text, its analysis, and the list's
+	// provenance; it republishes that list at the new version without analyzing.
+	s.versionOnly("main.v3", 2);
+	t.assertz(false, s.server.analyzing());
+	messages = s.take();
+	var second = lastPublication(messages, uri);
+	t.assert(second != null, "the diagnostics were republished");
+	if (second == null) return s.server.close();
+	t.asserti(2, JsonValue.Int.!(second["version"]).v);
+	var same = JsonValue.JArray.!(second["diagnostics"]).v;
+	t.assert_string(rendered(JsonValue.JArray(list)), rendered(JsonValue.JArray(same)));
+	t.assert_string("aeneas", JsonValue.String.!(field(same[0], "source")).v);
+	t.asserti(generation, s.supervisor.snapshot.generation);
+	t.asserti(0, count(messages, "window/showMessage"));
+	s.server.close();
 }
 def test_shutdown_stops_scheduling(t: Tester) {
 	var s = SemanticTestSession.new();

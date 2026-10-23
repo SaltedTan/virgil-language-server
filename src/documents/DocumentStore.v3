@@ -13,10 +13,13 @@ component DocumentLimits {
 
 // An accepted version of an open document. Treat text bytes as read-only.
 // Updates replace the record, so a retained record keeps its original version.
-class DocumentOverlay(uri: string, languageId: string, version: int, text: Array<byte>) {
+class DocumentOverlay(uri: string, languageId: string, version: int, text: Array<byte>,
+		token: DocumentVersionIdentity) {
 	// A lightweight identity for this accepted record. Retaining it does not
-	// retain text, and close/reopen cannot revive an old version stamp.
-	def identity = DocumentVersionIdentity.new();
+	// retain text, and close/reopen cannot revive an old version stamp. A
+	// version-only update keeps the previous record's identity, since its text
+	// is unchanged.
+	def identity = if(token == null, DocumentVersionIdentity.new(), token);
 }
 class DocumentVersionIdentity { }
 
@@ -77,7 +80,7 @@ class DocumentStore {
 		if (overlays[key] != null) return "document is already open";
 		var charge = cost(key, languageId, text);
 		if (charge > long.view(capacity) - used) return DocumentLimits.EXCEEDED;
-		overlays[key] = DocumentOverlay.new(key, languageId, version, text);
+		overlays[key] = DocumentOverlay.new(key, languageId, version, text, null);
 		used += charge;
 		return null;
 	}
@@ -89,8 +92,20 @@ class DocumentStore {
 		var remaining = used - cost(doc.uri, doc.languageId, doc.text);
 		var charge = cost(doc.uri, doc.languageId, text);
 		if (charge > long.view(capacity) - remaining) return DocumentLimits.EXCEEDED;
-		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text);
+		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, text, null);
 		used = remaining + charge;
+		return null;
+	}
+	// A didChange with no content changes: the text stays byte-for-byte the
+	// same, and only the version moves. The new record keeps the old identity,
+	// so analyses, diagnostics, and cached results of the same text stay
+	// current. The charge is unchanged, since the text, URI, and language ID
+	// are the ones the old record already held.
+	def changeVersion(uri: string, version: int) -> string {
+		var doc = overlay(uri);
+		if (doc == null) return "document is not open";
+		if (version <= doc.version) return "document version is not newer";
+		overlays[doc.uri] = DocumentOverlay.new(doc.uri, doc.languageId, version, doc.text, doc.identity);
 		return null;
 	}
 	private def cost(uri: string, languageId: string, text: Array<byte>) -> long {

@@ -17,6 +17,7 @@ def X = [
 	T("LspDocumentSymbols:details_current_snapshot", test_symbol_details),
 	T("LspDocumentSymbols:details_stale_snapshot", test_symbol_details_stale),
 	T("LspDocumentSymbols:details_outside_project", test_symbol_details_outside_project),
+	T("LspDocumentSymbols:version_only_change", test_symbol_version_only),
 	()
 ];
 
@@ -160,6 +161,21 @@ def test_symbol_overlay(t: Tester) {
 	t.asserti(0, symbols(t, s).length);
 }
 
+def renderSymbols(t: Tester, s: LspServer) -> string {
+	var buf = StringBuilder.new();
+	for (v in symbols(t, s)) buf.puts(JsonRpcJson.render(StringBuilder.new(), v).toString());
+	return buf.toString();
+}
+def test_symbol_version_only(t: Tester) {
+	var s = running(t);
+	t.assert(s.documents.open(URI, "virgil", 1, "component C {\n\tdef f() {}\n}\n") == null, "open");
+	var before = renderSymbols(t, s);
+	t.assert(s.documents.changeVersion(URI, 2) == null, "version-only change");
+	var doc = s.documents.overlay(URI);
+	t.asserti(2, doc.version);
+	t.assert_string("component C {\n\tdef f() {}\n}\n", s.documents.read(URI));
+	t.assert_string(before, renderSymbols(t, s));
+}
 def test_symbol_utf16_ranges(t: Tester) {
 	var s = LspServer.new(DocumentLimits.MAX_BYTES);
 	var init = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\"]},\"textDocument\":{\"documentSymbol\":{\"hierarchicalDocumentSymbolSupport\":true}}}}}";

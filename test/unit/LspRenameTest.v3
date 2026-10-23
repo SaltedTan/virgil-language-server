@@ -36,6 +36,7 @@ def X = [
 	T("LspRename:replaced_context_during_preflight", test_replaced_context_during_preflight),
 	T("LspRename:cancelled_preflight_snapshot_budget", test_cancelled_preflight_snapshot_budget),
 	T("LspRename:changed_while_waiting", test_changed_while_waiting),
+	T("LspRename:version_only_change", test_version_only_change),
 	T("LspRename:changed_while_checked", test_changed_while_checked),
 	T("LspRename:closed_file_changed_while_checked", test_closed_file_changed_while_checked),
 	T("LspRename:stale_snapshot", test_stale_snapshot),
@@ -223,6 +224,14 @@ class RenameTestSession {
 		doc["version"] = JsonValue.Int(version);
 		change["text"] = JsonValue.String(text);
 		notify("textDocument/didChange", doc, [JsonValue.JObject(change)]);
+	}
+	// A didChange with no content changes: the text stays, the version moves.
+	def versionOnly(name: string, version: int) {
+		var f = file(name), doc = Strings.newMap<JsonValue>();
+		f.version = version;
+		doc["uri"] = JsonValue.String(uri(name));
+		doc["version"] = JsonValue.Int(version);
+		notify("textDocument/didChange", doc, []);
 	}
 	private def notify(method: string, doc: HashMap<string, JsonValue>, changes: Array<JsonValue>) {
 		var params = Strings.newMap<JsonValue>();
@@ -947,6 +956,24 @@ def test_changed_while_waiting(t: Tester) {
 		doc(s, "Kinds.v3", KINDS, [("var area", 4), ("= area", 2)], 4),
 		doc(s, "Open.v3", OPEN, [("s.area", 2)], 4),
 		doc(s, "Uses.v3", USES, [("().area", 3)], 4)]));
+	s.server.close();
+}
+// A version-only change keeps the document's text and analysis, so a rename
+// answers at once with the new version in its TextDocumentEdit.
+def test_version_only_change(t: Tester) {
+	var s = kindsSession(t), snapshot = s.supervisor.snapshot;
+	s.versionOnly("Kinds.v3", 3);
+	t.assertz(false, s.server.analyzing());
+	t.assert(s.supervisor.snapshot == snapshot, "a version-only change must not analyze");
+	var edit = s.renamed(t, "Kinds.v3", "var total", 4, "sum"), found = false;
+	for (change in array(member(edit, "documentChanges"))) {
+		var td = member(change, "textDocument");
+		if (Strings.equal("Kinds.v3", s.relative(stringAt(td, "uri")))) {
+			t.asserti(3, intAt(td, "version"));
+			found = true;
+		} else t.assert(JsonValue.Null.?(member(td, "version")), "a closed file carries no version");
+	}
+	t.assert(found, "the rename edits the open document");
 	s.server.close();
 }
 // An edit while the preflight runs refuses the rename, which describes the

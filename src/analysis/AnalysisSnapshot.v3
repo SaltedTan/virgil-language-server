@@ -344,10 +344,21 @@ class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersi
 	var disk: DocumentVersionIdentity;
 	var length = -1;
 	var hash: u64;
+	// An overlay stays current while the same accepted record is open. A
+	// version-only didChange keeps the record's identity, since its text is
+	// unchanged, so it does not make the analysis stale.
 	def matchesDocument(store: DocumentStore) -> bool {
 		var doc = store.overlay(uri);
 		if (identity == null) return doc == null && (disk == null || disk == store.diskStamp(uri));
-		return doc != null && doc.version == version && doc.identity == identity;
+		return doc != null && doc.identity == identity;
+	}
+	// The version to report for this source: the open overlay's current
+	// version while it is this record, including after a version-only change,
+	// and otherwise the version captured with the analysis.
+	def reportedVersion(store: DocumentStore) -> int {
+		if (identity == null) return version;
+		var doc = store.overlay(uri);
+		return if(doc != null && doc.identity == identity, doc.version, version);
 	}
 }
 

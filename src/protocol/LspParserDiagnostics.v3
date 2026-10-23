@@ -27,6 +27,11 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return last.clean;
 		return AeneasAdapter.parseFile(pathOf(doc), doc.text, options).diagnostics.length == 0;
 	}
+	// A version-only change, whose text is unchanged: the last parse and the
+	// published list still describe it, so only their version moves.
+	def versioned(doc: DocumentOverlay) {
+		lists.versioned(doc);
+	}
 	// The path that names {doc} in its diagnostics: its file's, or its URI.
 	private def pathOf(doc: DocumentOverlay) -> string {
 		var path = DocumentUri.filePath(doc.uri);

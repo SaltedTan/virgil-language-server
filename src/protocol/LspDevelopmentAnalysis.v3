@@ -133,7 +133,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		for (i < versions.length) {
 			var v = s.documentVersions[i], item = Strings.newMap<JsonValue>();
 			item["uri"] = JsonValue.String(v.uri);
-			item["version"] = if(v.identity == null, JsonValue.Null, JsonValue.Int(v.version));
+			item["version"] = if(v.identity == null, JsonValue.Null, JsonValue.Int(v.reportedVersion(store)));
 			item["current"] = JsonValue.Bool(s.matchesProject() && v.matchesDocument(store));
 			versions[i] = JsonValue.JObject(item);
 		}

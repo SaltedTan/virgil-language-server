@@ -117,6 +117,7 @@ class LspServer {
 		projects.onConfig = configChanged;
 		documentSync.onOpen = documentOpened;
 		documentSync.onChange = documentChanged;
+		documentSync.onVersionChange = documentVersionChanged;
 		documentSync.onSave = documentSaved;
 		documentSync.onClose = documentClosed;
 	}
@@ -171,6 +172,14 @@ class LspServer {
 	}
 	private def documentChanged(doc: DocumentOverlay) {
 		documentUpdated(doc, true);
+	}
+	// A didChange with no content changes. The text is byte-for-byte the same,
+	// so analyses, diagnostics, and cached queries still describe it. Only the
+	// version that clients check in edits and diagnostics changed: republish
+	// the current list at that version, without parsing or analyzing again.
+	// Project files have configuration diagnostics, which carry no version.
+	private def documentVersionChanged(doc: DocumentOverlay) {
+		if (!isProjectFile(doc)) parserDiagnostics.versioned(doc);
 	}
 	private def documentUpdated(doc: DocumentOverlay, debounce: bool) {
 		invalidateQueries();

@@ -1,0 +1,19 @@
+# The control for an empty didChange batch: a full-text change with the same bytes at version 2 is
+# a real replacement, so the analysis describes a new record, and the rename after it reports the
+# analyzed version, 2, just as the version-only update's does.
+{"write":[".virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"*.v3\"]}]}"]}
+{"write":["main.v3","component Main {\n\tdef main() -> int {\n\t\tvar value = 1;\n\t\treturn value;\n\t}\n}\n"]}
+{"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}},"textDocument":{"rename":{"prepareSupport":true}}}}}}
+{"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
+{"send":{"jsonrpc":"2.0","method":"initialized","params":{}}}
+{"send":{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@TMP@/main.v3","languageId":"virgil","version":1,"text":"component Main {\n\tdef main() -> int {\n\t\tvar value = 1;\n\t\treturn value;\n\t}\n}\n"}}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/.virgil-lsp.json"}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":1}}}
+# The same text is still a full replacement: parse it again and publish at version 2.
+{"send":{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@TMP@/main.v3","version":2},"contentChanges":[{"text":"component Main {\n\tdef main() -> int {\n\t\tvar value = 1;\n\t\treturn value;\n\t}\n}\n"}]}}}
+{"recv":{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@TMP@/main.v3","version":2}}}
+{"send":{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":3,"character":9},"newName":"total"}}}
+{"recv":{"jsonrpc":"2.0","id":2,"result":{"documentChanges":[{"textDocument":{"uri":"@TMP@/main.v3","version":2},"edits":[{"range":{"start":{"line":2,"character":6},"end":{"line":2,"character":11}},"newText":"total"},{"range":{"start":{"line":3,"character":9},"end":{"line":3,"character":14}},"newText":"total"}]}]}}}
+{"send":{"jsonrpc":"2.0","id":3,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":3,"result":null}}
+{"send":{"jsonrpc":"2.0","method":"exit"}}

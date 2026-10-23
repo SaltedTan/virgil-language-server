@@ -6,6 +6,7 @@ def X = [
 	T("DocumentStore:overlay_precedence", test_store_overlay_precedence),
 	T("DocumentStore:wsl_overlay_and_disk_fallback", test_store_wsl_overlay_and_disk_fallback),
 	T("DocumentStore:versions", test_store_versions),
+	T("DocumentStore:version_only", test_store_version_only),
 	T("DocumentStore:duplicate_open", test_store_duplicate_open),
 	T("DocumentStore:save", test_store_save),
 	T("DocumentStore:opaque_and_invalid", test_store_opaque_and_invalid),
@@ -85,6 +86,29 @@ def test_store_versions(t: Tester) {
 	t.assert_string("max", store.read(uri));
 }
 
+def test_store_version_only(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), uri = "file:///a%20b.v3", alias = "file:/a b.v3";
+	t.assert_string("document is not open", store.changeVersion(uri, 1));
+	t.assert(store.open(uri, "virgil", 3, "text") == null, "open failed");
+	var doc = store.overlay(uri);
+	for (version in [3, 2, 0, -2147483648]) {
+		t.assert_string("document version is not newer", store.changeVersion(alias, version));
+		t.assert(store.overlay(uri) == doc, "a rejected version-only change must preserve the record");
+	}
+	t.assert(store.changeVersion(alias, 4) == null, "version-only change failed");
+	var moved = store.overlay(uri);
+	t.asserti(4, moved.version);
+	t.assert_string("text", store.read(uri));
+	t.assert(moved.identity == doc.identity, "a version-only change must keep the record's identity");
+	t.assert(store.changeVersion(uri, 4) != null, "the same version must be rejected again");
+	t.assert(store.changeVersion(uri, 5) == null, "the next version must work");
+	t.asserti(5, store.overlay(uri).version);
+	// A full-text change is a new record, even when its bytes equal the old text.
+	t.assert(store.change(uri, 6, "text") == null, "full-text change failed");
+	t.assert(moved.identity != store.overlay(uri).identity, "a full-text change must replace the record");
+	t.assert(store.close(uri) == null, "close failed");
+	t.assert_string("document is not open", store.changeVersion(uri, 7));
+}
 def test_store_duplicate_open(t: Tester) {
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), uri = "file:///a%20b.v3", alias = "file:/a b.v3";
 	t.assert(store.open(uri, "virgil", 5, "original") == null, "open failed");

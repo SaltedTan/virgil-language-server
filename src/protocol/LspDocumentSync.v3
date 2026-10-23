@@ -6,9 +6,12 @@
 // Rejections are reported through an injected warning sink, never as replies.
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	var capacityWarning: string -> void;
-	// Accepted events only; retained records identify the version analyzed or closed.
+	// Accepted events only; retained records identify the version analyzed or
+	// closed. A didChange with no content changes reports the same text at a
+	// newer version to {onVersionChange} instead of {onChange}.
 	var onOpen: DocumentOverlay -> void;
 	var onChange: DocumentOverlay -> void;
+	var onVersionChange: DocumentOverlay -> void;
 	var onSave: DocumentOverlay -> void;
 	var onClose: DocumentOverlay -> void;
 
@@ -47,8 +50,17 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			return;
 		}
 		var changes = JsonValue.JArray.!(params["contentChanges"]).v;
-		if (changes == null || changes.length == 0) {
-			ignored(n, "contentChanges must not be empty");
+		if (changes == null) {
+			ignored(n, "invalid didChange params");
+			return;
+		}
+		var uri = JsonValue.String.!(doc["uri"]).v, version = JsonValue.Int.!(doc["version"]).v;
+		if (changes.length == 0) {
+			// LSP 3.17 allows an empty array: all the changes are applied, so
+			// the text is unchanged and the version is the notification's.
+			var reason = store.changeVersion(uri, version);
+			ignored(n, reason);
+			if (reason == null && onVersionChange != null) onVersionChange(store.overlay(uri));
 			return;
 		}
 		var text: string;
@@ -69,8 +81,7 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			text = JsonValue.String.!(obj["text"]).v;
 		}
 		// Each event replaces the whole text; only the last one survives.
-		var uri = JsonValue.String.!(doc["uri"]).v;
-		var reason = store.change(uri, JsonValue.Int.!(doc["version"]).v, text);
+		var reason = store.change(uri, version, text);
 		ignored(n, reason);
 		if (reason == null && onChange != null) onChange(store.overlay(uri));
 	}
