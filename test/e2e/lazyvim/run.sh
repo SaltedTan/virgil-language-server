@@ -482,13 +482,19 @@ cat "$work/plugins.txt"
 
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
 # One run: Neovim with the observer and the driver, then its exit status,
-# which the pane also exits with.
+# which the pane also exits with. The status file appears whole, once.
 cat > "$work/pane.sh" <<'SH'
 TERM=xterm-256color nvim -n --cmd 'lua dofile(vim.env.VIRGIL_HARNESS .. "/observer.lua")' \
   -c 'lua dofile(vim.env.VIRGIL_HARNESS .. "/driver.lua")' "$VIRGIL_DRIVER_FILE"
 status=$?
-echo "$status" > "$VIRGIL_DRIVER_STATUS"
+echo "$status" > "$VIRGIL_DRIVER_STATUS.tmp"
+mv "$VIRGIL_DRIVER_STATUS.tmp" "$VIRGIL_DRIVER_STATUS"
 exit "$status"
+SH
+# wait.sh STATUS_FILE PANE_PID: waits until pane.sh has written its status,
+# or the pane's shell is gone without one.
+cat > "$work/wait.sh" <<'SH'
+while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null; do sleep 0.2; done
 SH
 
 summary=''
@@ -498,6 +504,7 @@ run() {
   local name=$1 mode=$2 file=$3 workaround=$4 expected_xfail=$5
   local results=$out/$name.results sock=$work/$1.sock started=$SECONDS rc=0
   local exit_status complete=0 passed='?' failed='?' xfail='?' verdict=PASS left
+  local pane_pid=''
   current=$name
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
@@ -508,14 +515,18 @@ run() {
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
     export VIRGIL_DRIVER_STATUS=$work/$name.status
     # The pane stays open when Neovim exits, for its screen, and keeps the
-    # tmux server running until stop_processes; the hook then wakes wait-for,
-    # whether before or after it starts waiting. The script's path is an
+    # tmux server running until stop_processes. The script's path is an
     # argument of its own, not split by a shell.
     tmux -S "$sock" -f /dev/null set-option -g remain-on-exit on \; \
-      set-hook -g pane-died "wait-for -S $name" \; \
-      new-session -d -s "$name" -x 200 -y 50 -c "$work/project" /bin/sh "$work/pane.sh"
-  )
-  deadline "$run_timeout" tmux -S "$sock" wait-for "$name" || rc=$?
+      new-session -d -P -F '#{pane_pid}' -s "$name" -x 200 -y 50 -c "$work/project" \
+      /bin/sh "$work/pane.sh"
+  ) > "$work/$name.tmux"
+  read -r pane_pid < "$work/$name.tmux" || true
+  # The run ends once Neovim has exited and pane.sh has written its status, or
+  # the pane's shell is gone without one. It doesn't wait for tmux to find the
+  # pane dead: Ubuntu 24.04's tmux 3.4, built with utempter, can miss the
+  # shell's exit and then never does (tmux/tmux#4559).
+  deadline "$run_timeout" /bin/sh "$work/wait.sh" "$work/$name.status" "$pane_pid" || rc=$?
   if (( rc == 124 )); then
     echo "FAIL: $name exceeded $run_timeout seconds; screen in $out/$name.screen.txt"
     save_screen "$name" "when the run timed out"
