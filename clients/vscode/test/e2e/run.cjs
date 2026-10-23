@@ -219,8 +219,9 @@ async function launch({ executable, settings, project, vsix, servers, signal }, 
 // one of the servers SERVER_EXIT_MS after the command itself has exited, the
 // group is stopped as well. The group's keeper (see startGroup in
 // processes.cjs) keeps the group's number the run's until then, or until the
-// group's SIGKILL; if it goes before, the test signals only the processes that
-// it saw in the group, each by its PID and start time.
+// group's SIGKILL, and sends the group the test's signals; if it goes before,
+// the test signals only the processes that it saw in the group, each by its
+// PID and start time.
 function runGroup(command, args, { env, stdin, signal, servers = [] }) {
   return new Promise((resolve) => {
     let stopped;

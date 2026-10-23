@@ -33,7 +33,7 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
-const { PIDFD_SIGNAL, pidfdSupport, startGroup } = require('../processes.cjs');
+const { PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -590,7 +590,8 @@ function suiteLines() {
 // directory: exactly those, never processes found by name or another process
 // that now has the PID. Each signal goes through a pidfd where the target's
 // Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
-// otherwise follows a second check of the start time.
+// otherwise, or where a pidfd couldn't be opened for that process or couldn't
+// signal it, follows a second check of the start time.
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -606,15 +607,18 @@ const stat = (pid) => {
 const send = (name, targets) => {
   if (targets.length === 0) return;
   const helper = spawnSync('python3', ['-I', '-c', ${JSON.stringify(PIDFD_SIGNAL)}, JSON.stringify([name, targets])], { encoding: 'utf8' });
+  let results;
   try {
-    if (helper.status === 0 && Array.isArray(JSON.parse(helper.stdout))) return;
+    results = helper.status === 0 ? JSON.parse(helper.stdout) : undefined;
   } catch {}
-  for (const [pid, start] of targets) {
+  const complete = Array.isArray(results) && results.length === targets.length;
+  targets.forEach(([pid, start], i) => {
+    if (complete && ${JSON.stringify(SETTLED)}.includes(results[i])) return;
     try {
       const fields = stat(pid);
       if (fields[0] !== 'Z' && fields[19] === start) process.kill(pid, name);
     } catch {}
-  }
+  });
 };
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {

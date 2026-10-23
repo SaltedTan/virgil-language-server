@@ -17,7 +17,7 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 const fakes = require('./support/fakes.cjs');
 
-const { fakeClock, fakeKeeper, fakeProc, fakeProcesses } = fakes;
+const { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses } = fakes;
 const dir = path.join(__dirname, 'e2e/remote-ssh');
 
 // Loads a module of the Remote-SSH test with some modules, process
@@ -104,27 +104,14 @@ test('the teardown sends its signals through pidfds where they are available', a
 });
 
 // run.cjs's runGroup, over fake processes (see fakeProc) and a fake clock and
-// keeper (see support/fakes.cjs), for a command whose group's keeper has the
-// PID 50, and is in processes. The keeper ignores signals other than SIGKILL.
-// Other processes go on SIGKILL, and may say what happens on other signals.
-// With pidfd, signals to single processes go through the fake pidfd helper.
+// group (see fakeGroup in support/fakes.cjs), for a command whose group's
+// keeper has the PID 50, and is in processes. With pidfd, signals to single
+// processes go through the fake pidfd helper.
 function runGroup(processes, timeout = 60000, { pidfd = false } = {}) {
-  const signals = [];
-  const keeper = fakeKeeper(50);
-  const kill = (target, name) => {
-    signals.push([target, name]);
-    for (const [pid, p] of [...processes]) {
-      if (pid !== target && p.group !== -target) continue;
-      if (pid === 50 && name !== 'SIGKILL') continue;
-      p.on?.(name);
-      if (name !== 'SIGKILL') continue;
-      processes.delete(pid);
-      if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
-    }
-  };
+  const { keeper, kill, deliver, signals } = fakeGroup(processes);
   const clock = fakeClock();
   const run = load('run.cjs', {
-    '../processes.cjs': fakeProcesses(processes, { keeper, kill, pidfd, signals }),
+    '../processes.cjs': fakeProcesses(processes, { keeper, kill, deliver, pidfd, signals }),
     '../run.cjs': require('./e2e/run.cjs'),
     './localhost.cjs': {},
   }, { pid: 1, kill }, clock.globals);
@@ -196,7 +183,7 @@ test('a command runs under a keeper that leads its process group, with only its 
   assert.ok(result.stderr.trim().split(/\s+/).length <= 4, result.stderr);
 });
 
-test('a command\'s process group is stopped by its number while its keeper runs', async () => {
+test('a command\'s process group is stopped by its keeper, never by the runner with its number', async () => {
   // A command that ignores SIGTERM and exceeds its timeout; the group's
   // SIGKILL ends the keeper too, before it can say how the command ended.
   let processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }]]);
@@ -204,9 +191,9 @@ test('a command\'s process group is stopped by its number while its keeper runs'
   ignoreTerm(processes, 51);
   run.command(51);
   run.advance(1050);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  assert.deepEqual(run.signals, [['keeper', 'SIGTERM']]);
   run.advance(5100);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  assert.deepEqual(run.signals, [['keeper', 'SIGTERM'], ['keeper', 'SIGKILL']]);
   await run.result();
   run.close();
   run.advance(100);
@@ -224,9 +211,9 @@ test('a command\'s process group is stopped by its number while its keeper runs'
   processes.delete(51);
   run.exit(0, null);
   run.advance(10100);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  assert.deepEqual(run.signals, [['keeper', 'SIGTERM']]);
   run.advance(5100);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  assert.deepEqual(run.signals, [['keeper', 'SIGTERM'], ['keeper', 'SIGKILL']]);
   await run.result();
   run.advance(100);
   result = await run.result();
@@ -255,7 +242,7 @@ test('a process that joins the group just before the command exits is waited for
     run.advance(5100);
     const result = await run.result();
     assert.equal(result.groupLeft, !leaves);
-    assert.deepEqual(run.signals, leaves ? [] : [[-50, 'SIGTERM']]);
+    assert.deepEqual(run.signals, leaves ? [] : [['keeper', 'SIGTERM']]);
     assert.equal(run.keeper.released, 'release\n');
   }
 });
@@ -292,6 +279,36 @@ test('once the keeper has gone, the group is never signaled by its number, only 
   }
 });
 
+test('a group whose keeper Node.js has reaped, but not yet reported, is signaled only through the processes seen there', async () => {
+  // Something else kills the keeper, and Node.js reaps it, but hasn't run its
+  // exit listeners yet, as when it reaps several children at once. The
+  // command's own process has made a session of its own, and an unrelated
+  // process has been given the group's number, and makes a group of it with
+  // another process.
+  const processes = new Map([[50, KEEPER], [51, { start: '100', group: 50 }]]);
+  const run = runGroup(processes);
+  run.command(51);
+  run.advance(50);
+  processes.delete(50);
+  processes.set(51, { start: '100', group: 51 });
+  processes.set(50, { start: '200', group: 50 });
+  processes.set(53, { start: '210', group: 50 });
+  // The runner asks the keeper, which isn't there to answer.
+  run.interrupt();
+  assert.deepEqual(run.signals, []);
+  // Its exit listeners run, and its reports end without saying that it sent
+  // the signal: the runner sends it to the process that it saw instead.
+  run.keeper.reap('SIGKILL');
+  assert.deepEqual(run.signals, [[51, 'SIGTERM']]);
+  run.advance(5100);
+  run.close();
+  run.advance(100);
+  const result = await run.result();
+  assert.match(result.error.message, /keeper exited with SIGKILL first/);
+  assert.deepEqual(run.signals.filter(([target]) => target < 0 || target === 53), []);
+  assert.equal(processes.has(50) && processes.has(53), true);
+});
+
 test('a process that joins the group just before the command exits is waited for (real processes)', async () => {
   const { runGroup } = require(path.join(dir, 'run.cjs'));
   const started = Date.now();
@@ -314,19 +331,7 @@ function download() {
     if (name === 'SIGTERM') processes.delete(51);
   };
   ignoreTerm(processes, 52);
-  const signals = [];
-  const keeper = fakeKeeper(50);
-  const kill = (target, name) => {
-    signals.push([target, name]);
-    for (const [pid, p] of [...processes]) {
-      if (pid !== target && p.group !== -target) continue;
-      if (pid === 50 && name !== 'SIGKILL') continue;
-      p.on?.(name);
-      if (name !== 'SIGKILL') continue;
-      processes.delete(pid);
-      if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
-    }
-  };
+  const { keeper, kill, signals } = fakeGroup(processes);
   const clock = fakeClock();
   const runner = load('run.cjs', {
     '../processes.cjs': fakeProcesses(processes, { keeper, kill, signals }),
@@ -356,12 +361,12 @@ test('an interrupt during the VS Code download stops it and its tar before the r
   run.advance(50);
   const interrupted = Object.assign(new Error('interrupted by SIGTERM'), { kind: 'interrupted' });
   run.controller.abort(interrupted);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM']]);
+  assert.deepEqual(run.signals, [['keeper', 'SIGTERM']]);
   run.advance(4000);
   assert.equal(await run.outcome(), undefined);
   assert.equal(run.processes.has(52), true);
   run.advance(1100);
-  assert.deepEqual(run.signals, [[-50, 'SIGTERM'], [-50, 'SIGKILL']]);
+  assert.deepEqual(run.signals, [['keeper', 'SIGTERM'], ['keeper', 'SIGKILL']]);
   await run.outcome();
   run.keeper.close();
   run.advance(100);
@@ -796,9 +801,9 @@ test('scratch-directory failures produce an INFRA manifest and exit status', asy
 
 // run.cjs's program that lists and signals processes on the host, over fake
 // processes (see fakeProc), with options as run.cjs gives it them. With
-// pidfd, the host's pidfd helper "runs" (see fakeProcesses); without it,
-// python3 isn't found there.
-function remoteProcesses(processes, options, { pidfd = false } = {}) {
+// pidfd, the host's pidfd helper "runs", and gives result for every target;
+// without it, python3 isn't found there.
+function remoteProcesses(processes, options, { pidfd = false, result = 'sent' } = {}) {
   const signals = [];
   const output = [];
   const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
@@ -806,7 +811,7 @@ function remoteProcesses(processes, options, { pidfd = false } = {}) {
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
     const [name, targets] = JSON.parse(args.at(-1));
     signals.push(['pidfd', name, targets]);
-    return { status: 0, stdout: JSON.stringify(targets.map(() => 'sent')) };
+    return { status: 0, stdout: JSON.stringify(targets.map(() => result)) };
   };
   const modules = { 'node:fs': fakeProc(processes), 'node:child_process': { spawnSync } };
   vm.runInNewContext(REMOTE_PROCESSES, {
@@ -843,6 +848,13 @@ test('the leak check signals a remote extension host only by its PID, start time
   // Where the host has pidfds, the same signals go through them.
   assert.deepEqual(remoteProcesses(processes, { ...options, host, signal: 'SIGTERM', kill: ['20@600', '21@611'] }, { pidfd: true }).signals,
     [['pidfd', 'SIGTERM', [[10, '500']]], ['pidfd', 'SIGKILL', [[20, '600']]]]);
+  // Where the helper finds a process gone or another's, nothing else signals
+  // it; where it couldn't use a pidfd for it, the process gets the signal
+  // after a check.
+  for (const [result, fallback] of [['gone', []], ['other', []], ['error EPERM', [[10, 'SIGTERM'], [20, 'SIGKILL']]], ['error ENOSYS', [[10, 'SIGTERM'], [20, 'SIGKILL']]]]) {
+    const { signals: sent } = remoteProcesses(processes, { ...options, host, signal: 'SIGTERM', kill: ['20@600'] }, { pidfd: true, result });
+    assert.deepEqual(sent.filter(([pid]) => pid !== 'pidfd'), fallback, result);
+  }
   // Without pidfds, a process that has since exited, and whose PID another
   // process has been given, is not signaled.
   const reused = new Map(processes);

@@ -18,8 +18,9 @@
 // time, and sends each signal through a pidfd that it opens before it checks
 // both again (see ../processes.cjs), so that a PID that a process of the run
 // had and another process has since been given is never signaled. Where
-// pidfds aren't available, the check is a few system calls before the signal,
-// and the PID could be given to another process in between.
+// pidfds aren't available, or one can't be used for a process, the check is a
+// few system calls before the signal, and the PID could be given to another
+// process in between.
 
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');

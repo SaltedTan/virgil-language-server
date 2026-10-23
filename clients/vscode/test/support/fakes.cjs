@@ -3,7 +3,8 @@
 
 // Fakes for the tests of the VS Code test runners (e2e/): a loader that
 // replaces a module's modules, process properties, and globals; a fake /proc;
-// a fake clock; and a fake of the process groups' keeper (e2e/keeper.cjs).
+// a fake clock; and a fake of the process groups' keeper (e2e/keeper.cjs),
+// alone or with its group.
 
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
@@ -88,8 +89,11 @@ function fakeClock() {
 // processes.cjs's startGroup. command(pid), exit(code, signal), and
 // fail(code) report the command's start, exit, or failure, as the keeper
 // does; data(name, text) and close() are the command's output; reap(signal)
-// is Node.js reaping the keeper, which it does, after a microtask, once the
-// keeper is released. spawned holds spawn's arguments.
+// is Node.js reaping the keeper and running its exit listeners, which it
+// does, after a microtask, once the keeper is released. A signal that the
+// runner asks for goes to group(name), which returns whether the keeper was
+// there to send it; the keeper then says that it sent it, unless it was
+// SIGKILL. spawned holds spawn's arguments.
 function fakeKeeper(pid) {
   const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
   const pipe = () => Object.assign(new EventEmitter(), { end() {} });
@@ -97,6 +101,7 @@ function fakeKeeper(pid) {
     keeper,
     released: undefined,
     spawned: undefined,
+    group: () => false,
     spawn: (...args) => {
       fake.spawned = args;
       return keeper;
@@ -111,6 +116,7 @@ function fakeKeeper(pid) {
     },
     reap: (signal) => {
       if (keeper.exitCode !== null || keeper.signalCode !== null) return;
+      stdin.writable = false;
       if (signal) keeper.signalCode = signal;
       else keeper.exitCode = 0;
       keeper.emit('exit', keeper.exitCode, keeper.signalCode);
@@ -118,7 +124,14 @@ function fakeKeeper(pid) {
     },
   };
   const stdin = Object.assign(new EventEmitter(), {
+    writable: true,
+    write: (text) => {
+      for (const name of String(text).split('\n').filter(Boolean)) {
+        if (fake.group(name) && name !== 'SIGKILL') line({ signaled: name });
+      }
+    },
     end: (text) => {
+      stdin.writable = false;
       fake.released = String(text);
       queueMicrotask(() => fake.reap(null));
     },
@@ -157,4 +170,37 @@ function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], d
   }, { pid: 1, kill, platform });
 }
 
-module.exports = { fakeClock, fakeKeeper, fakeProc, fakeProcesses, load };
+// A fake keeper, with the PID 50, of a group among fake processes (see
+// fakeProc), and kill as process.kill. kill sends a signal to a process, or to
+// a group by its negated number, which a runner never should; the keeper sends
+// one to its whole group while it is in processes, as the same entry. signals
+// gets [target, name] for each kill, and ['keeper', name] for each of the
+// keeper's. The keeper ignores every signal but SIGKILL, after which Node.js
+// reaps it; other processes go on SIGKILL, and may say, with on(name), what
+// happens on others.
+function fakeGroup(processes, signals = []) {
+  const keeper = fakeKeeper(50);
+  const entry = processes.get(50);
+  const deliver = (pid, name) => {
+    const p = processes.get(pid);
+    if (p === undefined || (pid === 50 && name !== 'SIGKILL')) return;
+    p.on?.(name);
+    if (name !== 'SIGKILL') return;
+    processes.delete(pid);
+    if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
+  };
+  const inGroup = (group) => [...processes].filter(([, p]) => p.group === group).map(([pid]) => pid);
+  keeper.group = (name) => {
+    if (processes.get(50) !== entry) return false;
+    signals.push(['keeper', name]);
+    for (const pid of inGroup(50)) deliver(pid, name);
+    return true;
+  };
+  const kill = (target, name) => {
+    signals.push([target, name]);
+    for (const pid of target < 0 ? inGroup(-target) : [target]) deliver(pid, name);
+  };
+  return { keeper, kill, deliver, signals };
+}
+
+module.exports = { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses, load };

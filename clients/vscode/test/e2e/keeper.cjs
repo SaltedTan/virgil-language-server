@@ -11,9 +11,12 @@
 // and 5, each where given is true, and /dev/null otherwise; it gets no other
 // descriptor of the keeper's. Its start, its exit, or why it didn't start
 // goes to standard output, one JSON object a line. Standard input is the
-// runner's: "release" on it lets the keeper exit. If it ends without one, the
-// runner has gone, so the keeper stops its group itself: SIGTERM, then
-// SIGKILL STOP_GRACE_MS later.
+// runner's requests, one a line: a signal's name, such as SIGTERM, which the
+// keeper sends to its own group, and then says so on standard output, unless
+// the signal was SIGKILL, which ends the keeper too; or "release", which lets
+// the keeper exit once standard input ends. If it ends without one, the runner
+// has gone, so the keeper stops its group itself: SIGTERM, then SIGKILL
+// STOP_GRACE_MS later.
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -44,12 +47,25 @@ child?.on('error', (error) => {
 child?.on('exit', (code, signal) => report({ exit: [code, signal] }));
 
 let input = '';
+let released = false;
 process.stdin.on('data', (data) => {
   input += data;
+  const lines = input.split('\n');
+  input = lines.pop();
+  for (const line of lines) {
+    if (line === 'release') {
+      released = true;
+    } else if (/^SIG[A-Z0-9]+$/.test(line)) {
+      // The keeper is in its group as it signals it, so the group still has
+      // its number, and the signal reaches no other group.
+      process.kill(-process.pid, line);
+      report({ signaled: line });
+    }
+  }
 });
 process.stdin.on('error', () => {});
 process.stdin.on('close', () => {
-  if (input.includes('release')) process.exit(0);
+  if (released) process.exit(0);
   process.kill(-process.pid, 'SIGTERM');
   setTimeout(() => process.kill(-process.pid, 'SIGKILL'), STOP_GRACE_MS);
 });

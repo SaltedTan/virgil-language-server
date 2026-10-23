@@ -13,26 +13,16 @@ const path = require('node:path');
 
 const KEEPER = path.join(__dirname, 'keeper.cjs');
 
-// Sends a signal to a process, or to a process group by its negated number,
-// which may have just gone.
-function send(target, name) {
-  try {
-    process.kill(target, name);
-  } catch (error) {
-    if (error.code !== 'ESRCH') throw error;
-  }
-}
-
-// A process's state, process group, and start time; undefined if it has
-// gone. On Linux they are the third, fifth, and 22nd fields of
+// A process's state, parent, process group, and start time; undefined if it
+// has gone. On Linux they are the third, fourth, fifth, and 22nd fields of
 // /proc/<pid>/stat, and the start time is in clock ticks after boot;
-// elsewhere ps gives them, and the start time to the second.
+// elsewhere ps gives them, and the start time only to the second.
 function processInfo(pid) {
   if (process.platform !== 'linux') return psTable(['-p', String(pid)]).find((p) => p.pid === Number(pid));
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return { pid: Number(pid), state: fields[0], group: Number(fields[2]), start: fields[19] };
+    return { pid: Number(pid), state: fields[0], ppid: Number(fields[1]), group: Number(fields[2]), start: fields[19] };
   } catch {
     return undefined;
   }
@@ -50,13 +40,13 @@ function processTable() {
 // The processes that ps lists with selection, which -p's exit status of 1
 // for a process that has gone leaves empty.
 function psTable(selection) {
-  const ps = spawnSync('ps', [...selection, '-o', 'pid=', '-o', 'pgid=', '-o', 'stat=', '-o', 'lstart='], { encoding: 'utf8' });
+  const ps = spawnSync('ps', [...selection, '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'stat=', '-o', 'lstart='], { encoding: 'utf8' });
   if (ps.error !== undefined || (ps.status !== 0 && selection[0] !== '-p')) {
     throw new Error(`ps failed: ${ps.error?.message ?? ps.stderr}`);
   }
   return ps.stdout.split('\n').flatMap((line) => {
-    const [, pid, group, state, start] = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line) ?? [];
-    return pid === undefined ? [] : [{ pid: Number(pid), state: state[0], group: Number(group), start }];
+    const [, pid, ppid, group, state, start] = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line) ?? [];
+    return pid === undefined ? [] : [{ pid: Number(pid), state: state[0], ppid: Number(ppid), group: Number(group), start }];
   });
 }
 
@@ -64,43 +54,54 @@ function psTable(selection) {
 // and start time, through a pidfd: it opens the pidfd and only then checks the
 // start time, in /proc, so the signal reaches that process or none, never
 // another that has been given the PID. Its argument is JSON, [signal,
-// [[pid, start], ...]]. It prints, as JSON, what happened to each, or null if
-// this Python or kernel has no pidfds: they need Python 3.9 and Linux 5.3.
+// [[pid, start], ...]]. It prints, as JSON, null if this Python or kernel
+// can't open pidfds and send signals through them, which needs Python 3.9 and
+// Linux 5.3, and otherwise what happened to each process: "sent"; "gone", if
+// it has exited; "other", if its PID is another process's; or "error" and the
+// errno's name, such as "error EPERM", if a pidfd couldn't be opened for it
+// or couldn't signal it.
 const PIDFD_SIGNAL = `
-import json, os, signal, sys
+import errno, json, os, signal, sys
 name, targets = json.loads(sys.argv[1])
 try:
-    os.close(os.pidfd_open(os.getpid()))
-    send = signal.pidfd_send_signal
+    fd = os.pidfd_open(os.getpid())
+    try:
+        signal.pidfd_send_signal(fd, 0)
+    finally:
+        os.close(fd)
 except (AttributeError, OSError):
     print('null')
     sys.exit()
-results = []
-for pid, start in targets:
+def failed(error):
+    return 'error ' + errno.errorcode.get(error.errno, str(error.errno))
+def outcome(pid, start):
     try:
         fd = os.pidfd_open(pid)
-    except OSError:
-        results.append('gone')
-        continue
+    except ProcessLookupError:
+        return 'gone'
+    except OSError as error:
+        return failed(error)
     try:
         with open('/proc/%d/stat' % pid) as file:
             stat = file.read()
         fields = stat[stat.rindex(')') + 2:].split(' ')
         if fields[19] != start:
-            results.append('other')
-        elif fields[0] == 'Z':
-            results.append('gone')
-        else:
-            send(fd, getattr(signal, name))
-            results.append('sent')
+            return 'other'
+        if fields[0] == 'Z':
+            return 'gone'
+        signal.pidfd_send_signal(fd, getattr(signal, name))
+        return 'sent'
     except (FileNotFoundError, ProcessLookupError):
-        results.append('gone')
+        return 'gone'
     except OSError as error:
-        results.append(error.strerror)
+        return failed(error)
     finally:
         os.close(fd)
-print(json.dumps(results))
+print(json.dumps([outcome(pid, start) for pid, start in targets]))
 `;
+
+// PIDFD_SIGNAL's results that need no other attempt.
+const SETTLED = ['sent', 'gone', 'other'];
 
 // Whether signals to processes go through pidfds: undefined until the first
 // signal or pidfdSupport(), then true, or why not.
@@ -136,36 +137,51 @@ function pidfdSupport() {
   return pidfds;
 }
 
+// Sends a signal to a process, given by its PID and start time, if a check
+// just before finds that it is still that process and not a zombie; returns
+// what happened, as PIDFD_SIGNAL does, or "failed" and the error's code.
+function checkedSignal({ pid, start }, name) {
+  const info = processInfo(pid);
+  if (info === undefined || info.state === 'Z') return 'gone';
+  if (info.start !== start) return 'other';
+  try {
+    process.kill(pid, name);
+    return 'sent';
+  } catch (error) {
+    return error.code === 'ESRCH' ? 'gone' : `failed ${error.code}`;
+  }
+}
+
 // Sends a signal to each of processes, each given by its PID and start time,
-// that is still that process and not a zombie, wherever it is now; one that
-// can't be signaled is skipped. Where pidfds are available (see PIDFD_SIGNAL)
-// the signal goes through one; once they aren't, each check is a few system
-// calls before its signal, so a process that exits between them, and whose
-// PID another process is given at once, could still get it.
+// that is still that process and not a zombie, wherever it is now; returns
+// what happened to each (see checkedSignal). Where pidfds are available (see
+// PIDFD_SIGNAL) the signal goes through one. Where they aren't, or a pidfd
+// couldn't be opened for a process or couldn't signal it, it follows a check
+// a few system calls before it, so a process that exits between them, and
+// whose PID another process is given at once, could still get it. ps gives
+// start times only to the second, so off Linux, a process that is given the
+// PID of one that has exited within the same second as that one started gets
+// it too.
 function signalProcesses(processes, name) {
-  if (processes.length === 0) return;
-  if (pidfds === undefined || pidfds === true) {
-    if (pidfdSignal(name, processes.map((p) => [p.pid, p.start])) !== undefined) return;
-  }
-  for (const p of processes) {
-    const info = processInfo(p.pid);
-    try {
-      if (info?.start === p.start && info.state !== 'Z') process.kill(p.pid, name);
-    } catch {
-      // It has just exited, or it can't be signaled.
-    }
-  }
+  if (processes.length === 0) return [];
+  const results = pidfds === undefined || pidfds === true ? pidfdSignal(name, processes.map((p) => [p.pid, p.start])) : undefined;
+  return processes.map((p, i) => (SETTLED.includes(results?.[i]) ? results[i] : checkedSignal(p, name)));
 }
 
 // Starts command, with args, in a process group of its own, under keeper.cjs,
 // which is the group's first process and runs the command there: the group's
-// number is the keeper's PID. Until Node.js has reaped the keeper, which it
-// can't do between a check and the signal after it in the same turn of the
-// event loop, Linux and macOS give no other process or group that number: so
-// while the keeper runs, or is a zombie, a signal to the group by its number
-// reaches only the run's processes. The keeper survives SIGINT, SIGTERM, and
-// SIGHUP, which the rest of the group gets as usual, so the group stays the
-// run's until the runner releases the keeper, or sends SIGKILL to the group;
+// number is the keeper's PID. While the keeper is in the group, alive or a
+// zombie, Linux and macOS give no other process or group that number. Node.js
+// may have reaped the keeper before its exit event, since it reaps every child
+// that has exited before it runs any of their exit listeners, so the runner
+// can't tell from the keeper's ChildProcess whether it has been reaped. So the
+// runner never signals the group by its number: it asks the keeper, over the
+// keeper's standard input, and the keeper, which is in the group as it
+// signals it, signals its own group. If the keeper has gone, or goes before
+// it says that it has sent the signal, the runner signals instead each process
+// that it saw in the group (see signalProcesses). The keeper survives SIGINT,
+// SIGTERM, and SIGHUP, which the rest of the group gets as usual, so the group
+// stays the run's until the runner releases the keeper, or asks for SIGKILL;
 // if the runner goes, the keeper stops the group. stdio is spawn's for the
 // command's standard input, output, and error, each 'pipe', 'inherit', or
 // 'ignore'; the returned group's stdin, stdout, and stderr are the pipes.
@@ -179,15 +195,29 @@ function startGroup(command, args, { env, stdio, onExit }) {
     env, detached: true, stdio: ['pipe', 'pipe', 'inherit', ...passed],
   });
   const number = keeper.pid;
+  // The keeper's parent and start time. Node.js can't have reaped it before
+  // this turn of the event loop ends.
+  const leader = number === undefined ? undefined : processInfo(number);
   // The processes that the runner has seen in the group, other than the
   // keeper, each by PID and start time.
   const seen = new Map();
-  let lost = number === undefined;
+  // The signals that the runner has asked the keeper for, in order, and that
+  // the keeper hasn't said it sent.
+  const requested = [];
+  let lost = leader === undefined;
   let killed = false;
   let reported = false;
   let keeperGone = false;
   let reportsEnded = keeper.stdout === null;
-  const kept = () => number !== undefined && keeper.exitCode === null && keeper.signalCode === null;
+  // Whether the keeper hasn't been reaped: its PID still has its parent, the
+  // runner, and its start time. ps gives start times only to the second, so
+  // off Linux another process would pass for the keeper only if it were
+  // another child of the runner, given the keeper's PID within the second in
+  // which the keeper started.
+  const led = () => {
+    const info = processInfo(number);
+    return info !== undefined && info.start === leader.start && info.ppid === leader.ppid;
+  };
   const report = (result) => {
     if (reported) return;
     reported = true;
@@ -195,13 +225,13 @@ function startGroup(command, args, { env, stdio, onExit }) {
   };
   // The group's processes other than the keeper, and not zombies, while the
   // group is the run's, which the runner then remembers; undefined once it
-  // isn't. Once Node.js has reaped the keeper, the group is the run's while a
-  // process that the runner saw there in an earlier look is still in it, the
-  // same process by PID and start time, alive or a zombie: it has kept the
-  // number since, as a process can't come back to a session that it has left.
-  // Once none is, another process may have been given the number, and the
-  // group is never the run's again. That is checked after the look, so that it
-  // covers the whole look.
+  // isn't. The group is the run's while the keeper hasn't been reaped, or,
+  // once it has, while a process that the runner saw there in an earlier look
+  // is still in it, the same process by PID and start time, alive or a zombie:
+  // it has kept the number since, as a process can't come back to a session
+  // that it has left. Once neither is, another process may have been given the
+  // number, and the group is never the run's again. That is checked after the
+  // look, so that it covers the whole look.
   const look = () => {
     if (lost) return undefined;
     const found = processTable().filter((p) => p.group === number && p.state !== 'Z' && p.pid !== number);
@@ -209,12 +239,18 @@ function startGroup(command, args, { env, stdio, onExit }) {
       const info = processInfo(pid);
       return info?.start === start && info.group === number;
     };
-    if (!kept() && ![...seen].some(held)) {
+    if (!led() && ![...seen].some(held)) {
       lost = true;
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
     return found;
+  };
+  // Sends a signal to each process that the runner saw in the group, wherever
+  // it is now (see signalProcesses).
+  const signalSeen = (name) => {
+    look();
+    signalProcesses([...seen].map(([pid, start]) => ({ pid, start })), name);
   };
   // The keeper has gone without saying how the command ended: the group's
   // SIGKILL ended both, or something else ended the keeper.
@@ -236,12 +272,15 @@ function startGroup(command, args, { env, stdio, onExit }) {
         continue;
       }
       if (message.spawn !== undefined) look();
+      else if (message.signaled !== undefined) requested.shift();
       else if (message.exit !== undefined) report({ code: message.exit[0], signal: message.exit[1] });
       else if (message.error !== undefined) report({ error: Object.assign(new Error(message.error.message), message.error) });
     }
   });
+  // The keeper has gone, and every report of its has been read.
   keeper.stdout?.on('close', () => {
     reportsEnded = true;
+    for (const name of requested.splice(0)) signalSeen(name);
     keeperEnded();
   });
   keeper.stdin?.on('error', () => {});
@@ -251,6 +290,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   });
   keeper.on('error', (error) => {
     lost = true;
+    keeperGone = true;
     report({ error });
   });
   return {
@@ -259,22 +299,21 @@ function startGroup(command, args, { env, stdio, onExit }) {
     stdout: keeper.stdio[4],
     stderr: keeper.stdio[5],
     look,
-    // Sends a signal to the group by its number while the keeper hasn't been
-    // reaped. Once it has, it sends it instead to each process that the
-    // runner saw in the group, wherever it is now (see signalProcesses).
+    // Asks the keeper to send a signal to the group; once the keeper has gone,
+    // sends it instead to each process that the runner saw in the group.
     signal: (name) => {
-      if (kept()) {
-        killed ||= name === 'SIGKILL';
-        send(-number, name);
-        return;
+      killed ||= name === 'SIGKILL';
+      if (!reportsEnded && keeper.stdin?.writable) {
+        requested.push(name);
+        keeper.stdin.write(`${name}\n`);
+      } else {
+        signalSeen(name);
       }
-      look();
-      signalProcesses([...seen].map(([pid, start]) => ({ pid, start })), name);
     },
     // Lets the keeper exit, once the runner has seen the command exit and no
     // other process left in the group; resolves once Node.js has reaped it.
     release: () => new Promise((resolve) => {
-      if (!kept()) {
+      if (keeperGone || number === undefined) {
         resolve();
         return;
       }
@@ -284,4 +323,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   };
 }
 
-module.exports = { PIDFD_SIGNAL, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
+module.exports = { PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
