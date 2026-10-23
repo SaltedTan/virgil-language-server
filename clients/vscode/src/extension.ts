@@ -9,6 +9,7 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
+  State,
   TransportKind,
 } from 'vscode-languageclient/node';
 
@@ -37,6 +38,11 @@ class QueuedLanguageClient extends LanguageClient {
   watchers: vscode.Disposable[] = [];
 
   override start(): Promise<void> {
+    // The client also calls start before each request and notification. While
+    // it is starting or running, that call only waits for the current start,
+    // and must not wait behind a restart that stops this client. Other calls,
+    // such as automatic recovery, start a server, so they join the queue.
+    if (this.state === State.Starting || this.state === State.Running) return super.start();
     return enqueue(async () => {
       if (client === this) await this.startInQueue();
     });

@@ -14,10 +14,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function extensionHost({ settings = {}, env = {} } = {}) {
+// The language client's public states. Its private ones (initial, starting,
+// startFailed, running, stopping, stopped) map to these.
+const State = { Stopped: 1, Running: 2, Starting: 3, StartFailed: 4 };
+
+// `documents` are open in the editor, so each client opens them as it starts.
+function extensionHost({ settings = {}, env = {}, documents = [] } = {}) {
   const clients = [];
   const commands = new Map();
   const events = [];
+  // Failures the language client reports, each with an error notification.
+  const errors = [];
   const tabListeners = new Set();
   const editorListeners = new Set();
   const subscribe = (listeners) => (callback) => {
@@ -26,6 +33,7 @@ function extensionHost({ settings = {}, env = {} } = {}) {
   };
   let configurationChanged;
   let nextStart;
+  let nextStop;
   const values = { 'virgil.server.path': '/server/virgil-lsp', ...settings };
   const warnings = [];
   const watchers = [];
@@ -33,25 +41,45 @@ function extensionHost({ settings = {}, env = {} } = {}) {
     constructor(id, name, serverOptions, clientOptions) {
       this.options = clientOptions;
       this.id = clients.length;
-      this.state = 'initial';
+      this.$state = 'initial';
       clients.push(this);
     }
+    get state() {
+      const states = { starting: State.Starting, startFailed: State.StartFailed, running: State.Running };
+      return states[this.$state] ?? State.Stopped;
+    }
     start() {
+      if (this.$state === 'stopping') return Promise.reject(new Error('Client is currently stopping'));
       if (this.starting) return this.starting;
       this.visibleDocuments;
-      this.state = 'starting';
+      this.$state = 'starting';
       events.push(`start:${this.id}`);
       const gate = nextStart;
       nextStart = undefined;
       this.starting = (gate?.promise ?? Promise.resolve()).then(() => {
-        this.state = 'running';
+        this.$state = 'running';
+        // Document sync opens each open document before the start resolves.
+        for (const document of documents) {
+          this.sendNotification(`didOpen ${document}`).catch((error) => errors.push(error.message));
+        }
       }, (error) => {
-        this.state = 'failed';
+        this.$state = 'startFailed';
         throw error;
       });
       return this.starting;
     }
-    isRunning() { return this.state === 'running'; }
+    // Like each request and notification, this calls start first.
+    async sendNotification(method) {
+      if (['startFailed', 'stopping', 'stopped'].includes(this.$state)) throw new Error('Client is not running');
+      await this.$start();
+      events.push(`${method}:${this.id}`);
+    }
+    async $start() {
+      if (this.$state === 'startFailed') throw new Error('Previous start failed');
+      await this.start();
+      if (this.$state !== 'running') throw new Error('Starting server failed');
+    }
+    isRunning() { return this.$state === 'running'; }
     get visibleDocuments() {
       if (!this.visibility) {
         const scan = () => events.push(`scan:${this.id}`);
@@ -64,14 +92,19 @@ function extensionHost({ settings = {}, env = {} } = {}) {
       return this.visibility;
     }
     async stop() {
-      assert.equal(this.state, 'running');
-      events.push(`shutdown:${this.id}`, `exit:${this.id}`);
-      this.state = 'stopped';
+      assert.equal(this.$state, 'running');
+      events.push(`shutdown:${this.id}`);
+      this.$state = 'stopping';
+      const gate = nextStop;
+      nextStop = undefined;
+      if (gate) await gate.promise;
+      events.push(`exit:${this.id}`);
+      this.$state = 'stopped';
       this.starting = undefined;
       if (this.failStop) throw new Error('shutdown failed');
     }
     connectionClosed() {
-      this.state = 'initial';
+      this.$state = 'initial';
       this.starting = undefined;
       return this.start();
     }
@@ -104,7 +137,7 @@ function extensionHost({ settings = {}, env = {} } = {}) {
     process: Object.assign(Object.create(process), { env }),
     require(name) {
       if (name === 'vscode') return vscode;
-      if (name === 'vscode-languageclient/node') return { LanguageClient, TransportKind: { stdio: 0 } };
+      if (name === 'vscode-languageclient/node') return { LanguageClient, State, TransportKind: { stdio: 0 } };
       if (name === 'node:fs/promises') return {
         realpath: async (file) => file,
         stat: async () => ({ isFile: () => true }),
@@ -114,7 +147,7 @@ function extensionHost({ settings = {}, env = {} } = {}) {
     },
   });
   return {
-    extension: module.exports, clients, events, values, warnings, watchers,
+    extension: module.exports, clients, events, errors, values, warnings, watchers,
     activate: () => module.exports.activate({ subscriptions: [] }),
     restart: () => commands.get('virgil.server.restart')(),
     // Changes the given setting, or every setting.
@@ -122,6 +155,7 @@ function extensionHost({ settings = {}, env = {} } = {}) {
       affectsConfiguration: (section) => setting === undefined || section === setting,
     }),
     pauseStart() { nextStart = deferred(); return nextStart; },
+    pauseStop() { nextStop = deferred(); return nextStop; },
     changeVisibility() {
       for (const callback of tabListeners) callback();
       for (const callback of editorListeners) callback();
@@ -141,7 +175,7 @@ for (const action of ['restart', 'configure', 'deactivate']) {
     const gate = host.pauseStart();
     const recovery = host.clients[0].connectionClosed();
     await settle();
-    assert.equal(host.clients[0].state, 'starting');
+    assert.equal(host.clients[0].$state, 'starting');
     assert.deepEqual(host.subscriptionCounts(), [1, 1]);
     const requested = action === 'deactivate' ? host.extension.deactivate() : host[action]();
     await settle();
@@ -167,8 +201,68 @@ test('a replaced client cannot start from a queued automatic recovery', async ()
   await restart;
   await recovery;
   assert.deepEqual(host.events, ['start:0', 'start:1']);
-  assert.equal(host.clients[0].state, 'initial');
-  assert.equal(host.clients[1].state, 'running');
+  assert.equal(host.clients[0].$state, 'initial');
+  assert.equal(host.clients[1].$state, 'running');
+  await host.extension.deactivate();
+});
+
+for (const action of ['restart', 'configure', 'deactivate']) {
+  test(`the recovering client's messages go out before ${action} stops it, without errors`, async () => {
+    const host = extensionHost({ documents: ['a.v3', 'b.v3'] });
+    await host.activate();
+    const gate = host.pauseStart();
+    const recovery = host.clients[0].connectionClosed();
+    await settle();
+    const requested = action === 'deactivate' ? host.extension.deactivate() : host[action]();
+    await settle();
+    // Sent while the recovery starts, it waits for that start only.
+    const message = host.clients[0].sendNotification('didChange');
+    gate.resolve();
+    await recovery;
+    await message;
+    await requested;
+    await settle();
+    const recovered = host.events.slice(host.events.lastIndexOf('start:0') + 1, host.events.indexOf('shutdown:0'));
+    assert.deepEqual(recovered, ['didChange:0', 'didOpen a.v3:0', 'didOpen b.v3:0']);
+    assert.deepEqual(host.errors, []);
+    assert.equal(host.clients.filter((client) => client.isRunning()).length, action === 'deactivate' ? 0 : 1);
+    await host.extension.deactivate();
+  });
+}
+
+test('a message while a restart stops the client is refused at once, and nothing starts it again', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const gate = host.pauseStop();
+  const restart = host.restart();
+  await settle();
+  assert.equal(host.clients[0].$state, 'stopping');
+  await assert.rejects(host.clients[0].sendNotification('didChange'), /Client is not running/);
+  const late = host.clients[0].start();
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0']);
+  gate.resolve();
+  await restart;
+  await late;
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.equal(host.clients[0].$state, 'stopped');
+  await host.extension.deactivate();
+});
+
+test('a restart queued behind a failed recovery starts one replacement', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const gate = host.pauseStart();
+  const recovery = host.clients[0].connectionClosed();
+  await settle();
+  const restart = host.restart();
+  gate.reject(new Error('initialization failed'));
+  await assert.rejects(recovery, /initialization failed/);
+  await restart;
+  assert.equal(host.clients[0].$state, 'startFailed');
+  await assert.rejects(host.clients[0].sendNotification('didChange'), /Client is not running/);
+  assert.deepEqual(host.events, ['start:0', 'start:0', 'start:1']);
+  assert.equal(host.clients[1].$state, 'running');
   await host.extension.deactivate();
 });
 
