@@ -16,6 +16,7 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 
 const dir = path.join(__dirname, 'e2e/remote-ssh');
+const linuxArchiveSkip = process.platform === 'linux' ? false : 'Archive extraction requires Linux /proc process-group tracking';
 
 // Loads a module of the Remote-SSH test with some modules, process
 // properties, and globals replaced.
@@ -306,12 +307,14 @@ test('server staging preserves a selected alternate executable and its resolved 
     }
     assert.equal(staged.details.server, server);
   }
-  const archive = path.join(root, 'build.tar.gz');
-  execFileSync('tar', ['-czf', archive, '-C', root, 'build']);
-  const work = fs.mkdtempSync(path.join(root, 'work-'));
-  const staged = await serverFiles({ values: { archive }, work, env: process.env, signal: new AbortController().signal, checkpoint() {}, manifest: {} });
-  assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp'), { encoding: 'utf8' }), 'wrong');
-  assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp-worker'), { encoding: 'utf8' }), 'worker');
+  await t.test('archive input preserves packaged executables', { skip: linuxArchiveSkip }, async () => {
+    const archive = path.join(root, 'build.tar.gz');
+    execFileSync('tar', ['-czf', archive, '-C', root, 'build']);
+    const work = fs.mkdtempSync(path.join(root, 'work-'));
+    const staged = await serverFiles({ values: { archive }, work, env: process.env, signal: new AbortController().signal, checkpoint() {}, manifest: {} });
+    assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp'), { encoding: 'utf8' }), 'wrong');
+    assert.equal(execFileSync(path.join(staged.dir, 'virgil-lsp-worker'), { encoding: 'utf8' }), 'worker');
+  });
 });
 
 test('missing product executables fail before an upload, for direct and archive inputs', async (t) => {
@@ -322,15 +325,17 @@ test('missing product executables fail before an upload, for direct and archive 
   const { serverFiles } = require(path.join(dir, 'run.cjs'));
   for (const present of [[], ['virgil-lsp'], ['virgil-lsp-worker']]) {
     for (const name of present) fs.writeFileSync(path.join(build, name), name);
-    const archive = path.join(root, 'build.tar.gz');
-    execFileSync('tar', ['-czf', archive, '-C', root, 'build']);
-    for (const values of [{ server: path.join(build, 'virgil-lsp') }, { archive }]) {
-      const work = fs.mkdtempSync(path.join(root, 'work-'));
-      const run = { values, work, env: process.env, signal: new AbortController().signal, checkpoint() {}, manifest: {} };
-      await assert.rejects(serverFiles(run), (error) => error.kind === 'fail' && /missing server executable/.test(error.message));
-      for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
-        assert.equal(run.manifest.server.sha256[name] === null, !present.includes(name));
-      }
+    for (const kind of ['server', 'archive']) {
+      await t.test(`${kind} input with ${present.join(', ') || 'no executables'}`, { skip: kind === 'archive' && linuxArchiveSkip }, async () => {
+        const values = kind === 'server' ? { server: path.join(build, 'virgil-lsp') } : { archive: path.join(root, 'build.tar.gz') };
+        if (kind === 'archive') execFileSync('tar', ['-czf', values.archive, '-C', root, 'build']);
+        const work = fs.mkdtempSync(path.join(root, 'work-'));
+        const run = { values, work, env: process.env, signal: new AbortController().signal, checkpoint() {}, manifest: {} };
+        await assert.rejects(serverFiles(run), (error) => error.kind === 'fail' && /missing server executable/.test(error.message));
+        for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
+          assert.equal(run.manifest.server.sha256[name] === null, !present.includes(name));
+        }
+      });
     }
     for (const name of present) fs.unlinkSync(path.join(build, name));
   }
