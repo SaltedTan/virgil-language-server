@@ -1,8 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// The Remote-SSH test's teardown and bootstrap (e2e/remote-ssh/), with a fake
-// /proc and a fake VS Code: nothing is started or signaled.
+// The Remote-SSH test's teardown, leak check, and bootstrap (e2e/remote-ssh/),
+// with a fake /proc and a fake VS Code: nothing is started or signaled.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -24,11 +24,9 @@ function load(file, modules, overrides) {
   return module.exports;
 }
 
-// localhost.cjs's teardown over fake processes, by PID: each has a start time,
-// and may have a parent, an executable, an environment, and what happens when
-// it gets a signal. Processes go on SIGKILL.
-function teardown(processes, started) {
-  const signals = [];
+// node:fs with a fake /proc of processes, by PID: each has a start time, and
+// may have a parent, an executable, and an environment.
+function fakeProc(processes) {
   const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   const entry = (file) => {
     const [, pid, name] = /^\/proc\/(\d+)\/(\w+)$/.exec(file) ?? [];
@@ -36,7 +34,7 @@ function teardown(processes, started) {
     if (p === undefined) throw missing(file);
     return [Number(pid), p, name];
   };
-  const proc = {
+  return {
     ...fs,
     readdirSync: (name) => (name === '/proc' ? [...processes.keys()].map(String) : fs.readdirSync(name)),
     readFileSync: (file) => {
@@ -47,13 +45,19 @@ function teardown(processes, started) {
     },
     readlinkSync: (file) => entry(file)[1].exe ?? '/usr/bin/other',
   };
+}
+
+// localhost.cjs's teardown over fake processes (see fakeProc), each of which
+// may say what happens when it gets a signal. Processes go on SIGKILL.
+function teardown(processes, started) {
+  const signals = [];
   const kill = (pid, name) => {
     signals.push([pid, name]);
     const p = processes.get(pid);
     p?.on?.(name);
     if (name === 'SIGKILL') processes.delete(pid);
   };
-  const localhost = load('localhost.cjs', { 'node:fs': proc }, { pid: 1, kill });
+  const localhost = load('localhost.cjs', { 'node:fs': fakeProc(processes) }, { pid: 1, kill });
   const result = localhost.teardown({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started, port: undefined });
   return result.then((value) => ({ result: value, signals }));
 }
@@ -99,6 +103,45 @@ test('the teardown stops a running Xvfb last, with SIGTERM', async () => {
   assert.equal(result.ok, true);
 });
 
+// run.cjs's program that lists and signals processes on the host, over fake
+// processes (see fakeProc), with options as run.cjs gives it them.
+function remoteProcesses(processes, options) {
+  const signals = [];
+  const output = [];
+  const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+  vm.runInNewContext(REMOTE_PROCESSES, {
+    require: (name) => (name === 'node:fs' ? fakeProc(processes) : require(name)),
+    process: { pid: 1, argv: [process.execPath, JSON.stringify({ kill: [], ...options })], kill: (pid, name) => signals.push([pid, name]) },
+    console: { log: (line) => output.push(JSON.parse(line)) },
+  });
+  return { listing: output[0], signals };
+}
+
+test('the leak check signals a remote extension host only by its PID, start time, and executable', () => {
+  const agent = '/remote/server/.vscode-server';
+  const host = { pid: 10, start: '500', exe: `${agent}/bin/c/node` };
+  const processes = new Map([
+    [10, { start: '500', exe: host.exe }],
+    [20, { start: '600', ppid: 10, exe: '/remote/virgil-lsp/virgil-lsp' }],
+    [21, { start: '610', ppid: 20, exe: '/remote/virgil-lsp/virgil-lsp-worker' }],
+    [30, { start: '700', exe: '/usr/bin/other' }],
+  ]);
+  const options = { root: '/remote', agent };
+  const { listing, signals } = remoteProcesses(processes, { ...options, host, signal: 'SIGTERM' });
+  assert.deepEqual(signals, [[10, 'SIGTERM']]);
+  assert.equal(listing.host, true);
+  assert.deepEqual(listing.found.map((p) => [p.pid, p.ppid]), [[10, 1], [20, 10], [21, 20]]);
+  // Another process that has since been given the host's PID, and a process
+  // with its PID and start time but another executable.
+  for (const other of [{ ...host, start: '499' }, { ...host, exe: `${agent}/bin/c/other` }]) {
+    const result = remoteProcesses(processes, { ...options, host: other, signal: 'SIGKILL' });
+    assert.deepEqual(result.signals, []);
+    assert.equal(result.listing.host, false);
+  }
+  // Leftovers are killed by PID and start time, and never the VS Code Server's.
+  assert.deepEqual(remoteProcesses(processes, { ...options, kill: ['20@600', '21@611', '10@500'] }).signals, [[20, 'SIGKILL']]);
+});
+
 // bootstrap.cjs for a launch in mode, in a window with the workspace folders
 // given by URI, with a fake VS Code that hasn't loaded the extension.
 async function bootstrap(mode, folders) {
@@ -133,7 +176,14 @@ test('bootstrap.cjs refuses a launch whose workspace folders are not its mode\'s
     assert.equal(suite, false);
   }
   for (const [mode, folders] of [['workspace', ['file:///remote/project']], ['single-file', undefined]]) {
-    const { error } = await bootstrap(mode, folders);
+    const { error, result } = await bootstrap(mode, folders);
     assert.match(error.message, /is not loaded/, `${mode} with ${folders}`);
+    // Its identity, which run.cjs needs to stop it: the PID and start time of
+    // this process, which it runs in here.
+    assert.equal(result.pid, process.pid);
+    if (process.platform === 'linux') {
+      const stat = fs.readFileSync('/proc/self/stat', 'utf8');
+      assert.equal(result.start, stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+    }
   }
 });

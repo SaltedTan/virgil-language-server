@@ -57,8 +57,11 @@ const SSH_TIMEOUT_MS = 60000;
 // long the rest of a group gets after its first process has exited.
 const STOP_GRACE_MS = 5000;
 const GROUP_EXIT_MS = 10000;
-// How long the language servers get to exit after their window has closed.
+// How long the language servers get to exit after their window has closed,
+// or after the test has stopped a remote extension host that VS Code left
+// running; and how long that host gets after SIGTERM, and then SIGKILL.
 const SERVER_EXIT_MS = 5000;
+const HOST_STOP_MS = 3000;
 
 const STATUS = { PASS: 0, FAIL: 1, USAGE: 2, INFRA: 3 };
 const SIGNAL_STATUS = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
@@ -308,6 +311,8 @@ class Run {
     this.signal = this.controller.signal;
     this.marker = `VIRGIL_REMOTE_SSH_RUN=${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
     this.failures = [];
+    // What the results' reader should know, which isn't a failure.
+    this.notes = [];
     // What ended the test, or spoiled its evidence, as Failures.
     this.errors = [];
     // The test, then the log collection and the teardown, which a signal
@@ -351,6 +356,11 @@ class Run {
   fail(message) {
     this.failures.push(message);
     console.log(`FAIL: ${message}`);
+  }
+
+  note(message) {
+    this.notes.push(message);
+    console.log(`INFO: ${message}`);
   }
 
   // Records what ended the test or spoiled its evidence: a Failure as it is,
@@ -538,17 +548,20 @@ function suiteLines() {
   };
 }
 
-// A Node.js program for the target's VS Code Server: it prints, as JSON, the
-// processes that run an executable under the directory in its first argument,
-// other than itself and zombies, with their start times. It kills those of
-// the processes after the second argument, the VS Code Server's directory,
-// each given as PID@start, that still have that start time and run an
-// executable under the first and not under the second: exactly those, never
-// processes found by name or another process that now has the PID.
+// A Node.js program for the target's VS Code Server, whose argument is JSON:
+// it prints, as JSON, the processes that run an executable under root, other
+// than itself and zombies, with their parents' PIDs and their start times, and
+// whether host, a process given by PID, start time, and executable, still
+// runs. It sends signal, if given, to that host, and SIGKILL to those of the
+// processes in kill, each given as PID@start, that still have that start time
+// and run an executable under root and not under agent, the VS Code Server's
+// directory: exactly those, never processes found by name or another process
+// that now has the PID.
 const REMOTE_PROCESSES = `
 const fs = require('node:fs');
-const [root, agent, ...kill] = process.argv.slice(1);
+const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
 const found = [];
+let hostRuns = false;
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
     const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
@@ -557,27 +570,98 @@ for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)
     const exe = fs.readlinkSync('/proc/' + pid + '/exe');
     if (!exe.startsWith(root + '/')) continue;
     const start = fields[19];
+    if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) {
+      if (signal) process.kill(Number(pid), signal);
+      hostRuns = true;
+    }
     if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) process.kill(Number(pid), 'SIGKILL');
-    found.push({ pid: Number(pid), start, exe });
+    found.push({ pid: Number(pid), ppid: Number(fields[1]), start, exe });
   } catch {}
 }
-console.log(JSON.stringify(found));`;
+console.log(JSON.stringify({ found, host: hostRuns }));`;
 
 // The target's processes that run an executable from its work directory,
 // other than the VS Code Server's, which stays running between windows:
-// language servers and workers, and anything else that the tests started.
-// The processes in kill are killed first.
-async function remoteProcesses(run, layout, kill = []) {
-  const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(run.target.root)} ${sh(layout.agent)}`
-    + kill.map((p) => ` ${p.pid}@${p.start}`).join(''), { allowFailure: true });
-  let all;
+// language servers and workers, and anything else that the tests started;
+// and whether host, a window's remote extension host, still runs. The
+// processes in kill are killed first, and host gets signal.
+async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
+  const options = { root: run.target.root, agent: layout.agent, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
+  const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(JSON.stringify(options))}`, { allowFailure: true });
+  let listing;
   try {
-    all = JSON.parse(result.stdout);
+    listing = JSON.parse(result.stdout);
   } catch {
     throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
   }
   const server = (p) => p.exe.startsWith(`${layout.agent}/`);
-  return { left: all.filter((p) => !server(p)), vscodeServer: all.filter(server).length };
+  return { left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length, host: listing.host };
+}
+
+// The remote extension host that bootstrap.cjs ran in, by its PID, start
+// time, and executable, the VS Code Server's node; undefined if bootstrap.cjs
+// didn't record it.
+function extensionHost(evidence, layout) {
+  if (!Number.isInteger(evidence?.pid) || typeof evidence.start !== 'string') return undefined;
+  return { pid: evidence.pid, start: evidence.start, exe: layout.serverNode };
+}
+
+// Waits up to SERVER_EXIT_MS for the language servers to exit, and for host
+// too, if given; returns what still runs then.
+async function settle(run, layout, host) {
+  const deadline = Date.now() + SERVER_EXIT_MS;
+  for (;;) {
+    const processes = await remoteProcesses(run, layout, { host });
+    if ((processes.left.length === 0 && !processes.host) || Date.now() > deadline) return processes;
+    await sleep(200);
+  }
+}
+
+// The processes in processes that descend from the process with pid.
+function descendants(processes, pid) {
+  const found = new Set([pid]);
+  for (let added = true; added;) {
+    added = false;
+    for (const p of processes) {
+      if (!found.has(p.pid) && found.has(p.ppid)) {
+        found.add(p.pid);
+        added = true;
+      }
+    }
+  }
+  return processes.filter((p) => found.has(p.pid));
+}
+
+// Stops a remote extension host that VS Code left running, and returns the
+// signal that stopped it, or null if it exited first, and how long it took.
+// The host doesn't handle SIGTERM, so SIGTERM ends it at once, without
+// deactivating its extensions, as a crash would: its language client neither
+// stops its server nor can restart it, and the server sees its input close.
+// SIGKILL follows if the host still runs HOST_STOP_MS later.
+async function stopHost(run, layout, host) {
+  const started = Date.now();
+  let sent = null;
+  for (const signal of ['SIGTERM', 'SIGKILL']) {
+    if (!(await remoteProcesses(run, layout, { host, signal })).host) break;
+    sent = signal;
+    for (const deadline = Date.now() + HOST_STOP_MS; Date.now() < deadline;) {
+      await sleep(100);
+      if (!(await remoteProcesses(run, layout, { host })).host) return { signal, seconds: (Date.now() - started) / 1000 };
+    }
+  }
+  if (sent === 'SIGKILL') {
+    throw infra(`the remote extension host (pid ${host.pid}) that VS Code left running still ran ${HOST_STOP_MS / 1000} seconds after SIGKILL`);
+  }
+  return { signal: sent, seconds: (Date.now() - started) / 1000 };
+}
+
+// What happened to a launch's remote extension host that VS Code left
+// running, for the output; undefined if VS Code didn't leave it running.
+function hostStopped(host) {
+  if (!host?.leftRunning) return undefined;
+  if (host.stopSeconds === undefined) return 'while stopping the remote extension host that VS Code left running';
+  if (host.stoppedWith === null) return 'the remote extension host that VS Code left running exited before the test stopped it';
+  return `stopped the remote extension host that VS Code left running, with ${host.stoppedWith}`;
 }
 
 // One start of VS Code in a Remote-SSH window, which runs bootstrap.cjs in
@@ -687,19 +771,30 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   record.failLines = (output.match(/^FAIL: /gm) ?? []).length;
   record.suiteSeconds = evidence?.seconds ?? null;
 
-  // Closing the window ends the extension host, whose extension stops its
-  // language server: none may be left SERVER_EXIT_MS later.
+  // Closing the window ends its remote extension host, whose extension stops
+  // its language server: none may be left SERVER_EXIT_MS later. But VS Code
+  // can quit before it tells the host to terminate, and the VS Code Server
+  // then keeps the host, with its language client and server, for its
+  // reconnection grace time, three hours, as it should for a window that may
+  // reconnect. So a host that still runs then is stopped, and its language
+  // server must then exit by itself within SERVER_EXIT_MS, as when its client
+  // has gone. Stopping it also keeps its client from restarting the server
+  // during a later launch.
   if (mode !== 'probe') {
-    const deadline = Date.now() + SERVER_EXIT_MS;
-    let processes;
-    for (;;) {
-      processes = await remoteProcesses(run, layout);
-      if (processes.left.length === 0 || Date.now() > deadline) break;
-      await sleep(200);
+    const host = extensionHost(evidence, layout);
+    let processes = await settle(run, layout, host);
+    if (host !== undefined) record.remoteExtensionHost = { pid: host.pid, start: host.start, leftRunning: processes.host };
+    if (processes.host) {
+      record.remoteExtensionHost.processes = descendants(processes.left, host.pid);
+      record.info = [`VS Code didn't terminate the remote extension host (pid ${host.pid}); stopping it`];
+      run.note(`${name}: ${record.info[0]}`);
+      const stopped = await stopHost(run, layout, host);
+      Object.assign(record.remoteExtensionHost, { stoppedWith: stopped.signal, stopSeconds: stopped.seconds });
+      processes = await settle(run, layout);
     }
     record.leftRunning = processes.left;
     record.vscodeServerProcesses = processes.vscodeServer;
-    if (processes.left.length > 0) await remoteProcesses(run, layout, processes.left);
+    if (processes.left.length > 0) await remoteProcesses(run, layout, { kill: processes.left });
   }
 
   const problems = [];
@@ -722,15 +817,18 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     if (record.failLines > 0) problems.push(`the suite printed ${record.failLines} FAIL line(s)`);
   }
   if (exit.groupLeft) problems.push(`VS Code's processes outlived it by ${GROUP_EXIT_MS / 1000} seconds`);
+  const lingered = record.remoteExtensionHost?.leftRunning === true;
   if (record.leftRunning?.length > 0) {
-    problems.push(`left running ${SERVER_EXIT_MS / 1000} seconds after the window closed, then killed: `
+    problems.push(`left running ${SERVER_EXIT_MS / 1000} seconds after `
+      + `${lingered ? 'the test stopped the remote extension host that VS Code left running' : 'the window closed'}, then killed: `
       + record.leftRunning.map((p) => `${p.exe} (pid ${p.pid})`).join(', '));
   }
   record.result = problems.length === 0 ? 'PASS' : 'FAIL';
   record.problems = problems;
   const suite = record.suiteSeconds === null || mode === 'probe' ? '' : `, suite ${record.suiteSeconds.toFixed(1)} s`;
-  const left = record.leftRunning?.length === 0 ? '; no language server left running' : '';
-  console.log(`-- ${name}: ${record.result} in ${record.seconds.toFixed(1)} s${suite}${left}`);
+  const host = lingered ? `; ${hostStopped(record.remoteExtensionHost)}` : '';
+  const left = record.leftRunning?.length === 0 ? `; ${lingered ? 'then ' : ''}no language server left running` : '';
+  console.log(`-- ${name}: ${record.result} in ${record.seconds.toFixed(1)} s${suite}${host}${left}`);
   if (mode === 'probe' && record.result !== 'PASS') {
     throw infra(`the first connection did not run its probe in the VS Code Server: ${problems.join('; ')}`);
   }
@@ -1109,15 +1207,19 @@ async function main() {
   ];
   if (teardown !== undefined && !teardown.ok) reasons.push('the teardown could not confirm that nothing of the run is left');
   const summary = () => [
-    ...run.manifest.launches.map((l) => `${l.name}: ${l.result ?? 'not finished'}, ${l.seconds?.toFixed(1) ?? '?'} s`
-      + `${l.suiteSeconds == null || l.mode === 'probe' ? '' : ` (suite ${l.suiteSeconds.toFixed(1)} s)`}`
-      + `${l.leftRunning === undefined ? '' : `, ${l.leftRunning.length} language server process(es) left running`}`),
+    ...run.manifest.launches.map((l) => {
+      const host = hostStopped(l.remoteExtensionHost);
+      return `${l.name}: ${l.result ?? 'not finished'}${host === undefined ? '' : ` (${host})`}, ${l.seconds?.toFixed(1) ?? '?'} s`
+        + `${l.suiteSeconds == null || l.mode === 'probe' ? '' : ` (suite ${l.suiteSeconds.toFixed(1)} s)`}`
+        + `${l.leftRunning === undefined ? '' : `, ${l.leftRunning.length} language server process(es) left running`}`;
+    }),
+    ...run.notes.map((note) => `info: ${note}`),
     ...reasons.map((reason) => `reason: ${reason}`),
     `VS Code Remote-SSH test: ${result}`,
   ].join('\n');
   try {
     Object.assign(run.manifest, {
-      result, exitStatus: status, reasons, interrupted: run.interrupted ?? null, finished: new Date().toISOString(),
+      result, exitStatus: status, reasons, info: run.notes, interrupted: run.interrupted ?? null, finished: new Date().toISOString(),
     });
     fs.writeFileSync(path.join(values.out, 'manifest.json'), `${JSON.stringify(run.manifest, null, 2)}\n`);
     fs.writeFileSync(path.join(values.out, 'summary.txt'), `${summary()}\n`);
@@ -1129,9 +1231,14 @@ async function main() {
   process.exit(status);
 }
 
-main().catch((error) => {
-  // Only a fault in the runner itself, before the run starts or after its
-  // teardown, gets here.
-  console.error(`run.cjs: ${error.stack}\nRESULT: FAIL`);
-  process.exit(STATUS.FAIL);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    // Only a fault in the runner itself, before the run starts or after its
+    // teardown, gets here.
+    console.error(`run.cjs: ${error.stack}\nRESULT: FAIL`);
+    process.exit(STATUS.FAIL);
+  });
+}
+
+// REMOTE_PROCESSES is exported for test/remote-ssh.cjs.
+module.exports = { REMOTE_PROCESSES };

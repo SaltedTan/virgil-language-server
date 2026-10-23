@@ -8,9 +8,9 @@
 // launch's workspace folders, and that VS Code loaded the extension installed
 // from the VSIX there, gives suite.cjs the remote paths through the
 // environment variables that run.cjs sets locally, and runs it unchanged. It
-// writes what it found to the launch's result file, first when it starts and
-// again when it ends, so that run.cjs can tell a suite that failed from one
-// that never started.
+// writes what it found, and this extension host's PID and start time, to the
+// launch's result file, first when it starts and again when it ends, so that
+// run.cjs can tell a suite that failed from one that never started.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -32,6 +32,19 @@ function hostLogs(root) {
   return path.dirname(found[0]);
 }
 
+// This process's start time, in clock ticks after boot: the 22nd field of
+// /proc/self/stat. With the PID, it identifies the extension host to
+// run.cjs, which stops the host if VS Code leaves it running. Null without
+// /proc.
+function startTime() {
+  try {
+    const stat = fs.readFileSync('/proc/self/stat', 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+  } catch {
+    return null;
+  }
+}
+
 async function run() {
   const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'run-config.json'), 'utf8'));
   const started = Date.now();
@@ -40,6 +53,7 @@ async function run() {
     outcome: 'started',
     started: new Date(started).toISOString(),
     pid: process.pid,
+    start: startTime(),
     execPath: process.execPath,
     platform: `${process.platform}-${process.arch}`,
     osRelease: os.release(),
