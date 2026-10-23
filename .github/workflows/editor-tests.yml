@@ -139,6 +139,11 @@ jobs:
             sudo apt-get update
             sudo apt-get install --yes --no-install-recommends "${packages[@]}"
           fi
+      - name: Create the SSH server's privilege separation directory if missing
+        # OpenSSH 9.6 may refuse to start without it, even as the runner's
+        # user. The runner's SSH service creates it only when it runs.
+        run: |
+          [[ -d /run/sshd ]] || sudo install -d -m 0755 /run/sshd
       - uses: actions/download-artifact@v8
         with:
           name: server-linux
