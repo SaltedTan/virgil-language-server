@@ -42,12 +42,11 @@ component LspSymbolKind {
 }
 
 // Outlines parse the overlay with the language options of the document's
-// active project, as its syntax diagnostics do. A symbol's detail is its
-// declaration's signature, from the active project's snapshot, but only if
-// that snapshot analyzed this very overlay; the outline never waits for one.
-// The reply is hierarchical DocumentSymbol[] only for a client that declared
-// textDocument.documentSymbol.hierarchicalDocumentSymbolSupport; others get
-// flat SymbolInformation[]. See docs/architecture.md#document-symbols.
+// active project, as its syntax diagnostics do. A hierarchical symbol's detail
+// is its declaration's signature, from the active project's snapshot, but only
+// if that snapshot analyzed this very overlay; the outline never waits for one.
+// Reply shapes follow the client's capabilities; see
+// docs/architecture.md#document-symbols.
 class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	// True if the client's initialize declared
 	// textDocument.documentSymbol.hierarchicalDocumentSymbolSupport: true.
