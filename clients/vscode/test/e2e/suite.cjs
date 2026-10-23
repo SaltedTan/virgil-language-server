@@ -514,6 +514,7 @@ async function workspace(extension) {
   await missingWorker(failures, words);
   await actionDuringRecovery(failures, words, 'restart');
   await actionDuringRecovery(failures, words, 'configuration');
+  await pendingEditRestart(failures, bad, words);
   assert.deepEqual(failures, [], 'scenarios failed');
 }
 
@@ -708,10 +709,12 @@ function shellWord(word) {
 // appends its PID to "starts". A held start writes its PID to "held", and
 // when it goes on, "PID removed" to "released" if the hold file is gone, or
 // "PID terminating" if the hold file names a log that says the extension host
-// is terminating; after 20 seconds, it goes on anyway. It appends "PID
-// status" to "exits" when the server exits. Any other start runs the server
-// in its place, with the script's PID. The client looks for the worker beside
-// the script, so a link to the real one is there.
+// is terminating; after 20 seconds, it goes on anyway. A held start, and any
+// start while a file "record" is in directory, runs the server with its input
+// copied to input-PID, and appends "PID status" to "exits" when the server
+// exits. Any other start runs the server in its place, with the script's PID.
+// The client looks for the worker beside the script, so a link to the real
+// one is there.
 function recoveryServer(directory, server) {
   const script = path.join(directory, 'virgil-lsp');
   fs.writeFileSync(script, `#!/bin/sh
@@ -729,12 +732,13 @@ if [ -e "$state/hold" ]; then
     waited=$((waited + 1))
   done
   echo "$$ $reason" >> "$state/released"
-  tee "$state/input-$$" | ${shellWord(server)} "$@"
-  status=$?
-  echo "$$ $status" >> "$state/exits"
-  exit $status
+elif [ ! -e "$state/record" ]; then
+  exec ${shellWord(server)} "$@"
 fi
-exec ${shellWord(server)} "$@"
+tee "$state/input-$$" | ${shellWord(server)} "$@"
+status=$?
+echo "$$ $status" >> "$state/exits"
+exit $status
 `, { mode: 0o755 });
   fs.symlinkSync(path.join(path.dirname(fs.realpathSync(server)), 'virgil-lsp-worker'), path.join(directory, 'virgil-lsp-worker'));
   return script;
@@ -744,6 +748,13 @@ exec ${shellWord(server)} "$@"
 function recorded(directory, name) {
   const file = path.join(directory, name);
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [];
+}
+
+// The requests and notifications that the script's start with PID pid has
+// copied from its input so far, as messages returns them.
+function serverInput(directory, pid) {
+  const file = path.join(directory, `input-${pid}`);
+  return fs.existsSync(file) ? messages(fs.readFileSync(file)) : [];
 }
 
 // The requests and notifications in a server's input, as the script copied it,
@@ -897,11 +908,16 @@ function expectInOrder(text, lines) {
 // exit can be logged after the replacement's start.
 async function actionDuringRecovery(failures, words, action) {
   const server = setting('virgil.server.path');
+  const breadcrumbs = setting('breadcrumbs.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
   const name = action === 'restart'
     ? 'server killed, and Virgil: Restart Language Server during the recovery'
     : 'server killed, and virgil.server.path changed during the recovery';
   await scenario(failures, `${name}: the recovery, then shutdown and exit, then one replacement`, async () => {
+    // Breadcrumbs request document symbols when the recovered client's
+    // provider registers. That request and its cancellation can race with
+    // shutdown; this scenario checks the recovery and stop, without UI work.
+    await setSetting('breadcrumbs.enabled', false);
     // The trace starts before the server that is killed, so that no
     // $/setTrace is on its way to it then.
     const traced = logFromHere();
@@ -957,6 +973,97 @@ async function actionDuringRecovery(failures, words, action) {
       fs.rmSync(path.join(directory, 'hold'), { force: true });
       await level(vscode.LogLevel.Info);
       await restoreServer(server, words);
+      await setSetting('breadcrumbs.enabled', breadcrumbs);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+// The client sends a full-text change 250 ms after an edit, or before its next
+// request or notification, so a restart at once after an unsaved edit stops the
+// client with the edit still pending, and the client never sends it. The new
+// server must get the edit's text from its didOpen, which the client sends for
+// each open document as it starts. The server starts from a recoveryServer
+// script that records each start's input, which tells what reached each
+// server: if the old server got the edit, the restart didn't find it pending,
+// so the scenario fails rather than pass without testing that.
+//
+// vscode-languageclient 10.1.2 can then log "Delivering pending changes
+// failed" and "TypeError: this.task is not a function" in the output channel,
+// about half a second after the edit, often after the scenario has ended: the
+// stopped client's timer for the change outlives it, and its retry fails
+// (https://github.com/microsoft/vscode-languageserver-node/issues/1916). Any
+// restart with a change pending can log it, as other scenarios' restarts and
+// this one's restore sometimes do. It loses nothing, depends on timing, and
+// goes away with a fixed release, so the scenario neither requires nor forbids
+// it, and no check of this suite counts it as a failure.
+async function pendingEditRestart(failures, bad, words) {
+  const server = setting('virgil.server.path');
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'pending-'));
+  const { document } = bad;
+  const uri = document.uri.toString();
+  const saved = fs.readFileSync(document.uri.fsPath, 'utf8');
+  const active = vscode.window.activeTextEditor?.document;
+  await scenario(failures, 'Virgil: Restart Language Server with an unsaved edit still pending: '
+    + 'the new server gets its exact text, then a later edit', async () => {
+    assert.ok(document.getText() === saved && !document.isDirty, 'bad.v3 is not as saved');
+    const editor = await vscode.window.showTextDocument(document, { preview: false });
+    fs.writeFileSync(path.join(directory, 'record'), '');
+    const { pid } = await startRecoveryServer(server, directory);
+    await expectParserDiagnostic(editor);
+    await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+    // Nothing may send a request or a notification between the edit and the
+    // restart. VS Code runs the command in this extension host before
+    // executeCommand returns, and the queued restart starts to stop the old
+    // client at once.
+    await edit(editor, (builder) => builder.replace(
+      new vscode.Range(0, 0, document.lineCount, 0), 'component RestartLatest { def value = 1; }\n',
+    ));
+    const [text, version] = [document.getText(), document.version];
+    await vscode.commands.executeCommand('virgil.server.restart');
+    const starts = recorded(directory, 'starts').map(Number);
+    assert.equal(starts.length, 2, `expected the old server's start and its replacement's, not ${starts.join(', ')}`);
+    // The script records an exit once the server and the copy of its input are
+    // done. The server exits with status 0 only after shutdown and then exit.
+    await waitFor('the old server to exit', () => recorded(directory, 'exits').length > 0);
+    assert.deepEqual(recorded(directory, 'exits'), [`${pid} 0`], 'the old server did not exit with status 0');
+    const old = serverInput(directory, pid);
+    const opened = old.find((m) => m.method === 'textDocument/didOpen' && m.params.textDocument.uri === uri);
+    assert.equal(opened?.params.textDocument.text, saved, 'the old server did not get the saved bad.v3 in a didOpen');
+    const sent = old.filter((m) => m.method === 'textDocument/didChange' && m.params.textDocument.uri === uri
+      && m.params.contentChanges.some((change) => change.text.includes('RestartLatest')));
+    assert.equal(sent.length, 0, 'the old server got the edit before the restart, in a didChange of version '
+      + `${sent.map((m) => m.params.textDocument.version)}: something sent it first, so the restart didn't find it pending`);
+    // The new server's didOpen has the buffer's text and version, which its
+    // document symbols come from: the saved text has none.
+    const reopened = await waitFor('the new server to get bad.v3 in a didOpen', () => serverInput(directory, starts[1])
+      .find((m) => m.method === 'textDocument/didOpen' && m.params.textDocument.uri === uri));
+    assert.deepEqual([reopened.params.textDocument.text, reopened.params.textDocument.version], [text, version]);
+    assert.deepEqual(await symbols(editor), [{ name: 'RestartLatest', kind: vscode.SymbolKind.Namespace }]);
+    // A later edit reaches the new server as usual.
+    await edit(editor, (builder) => builder.replace(
+      new vscode.Range(0, 0, document.lineCount, 0), 'component RestartLater { def value = 2; }\n',
+    ));
+    const [later, next] = [document.getText(), document.version];
+    const change = await waitFor('the later edit to reach the new server', () => serverInput(directory, starts[1])
+      .find((m) => m.method === 'textDocument/didChange' && m.params.textDocument.uri === uri
+        && m.params.textDocument.version === next));
+    assert.deepEqual(change.params.contentChanges, [{ text: later }]);
+    assert.deepEqual(await symbols(editor), [{ name: 'RestartLater', kind: vscode.SymbolKind.Namespace }]);
+  }, async () => {
+    try {
+      if (document.isDirty) {
+        await vscode.window.showTextDocument(document, { preview: false });
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+        await waitFor('bad.v3 as saved again', () => document.getText() === saved && !document.isDirty);
+      }
+      await restoreServer(server, words);
+      await expectParserDiagnostic(bad);
+      if (active !== undefined) await vscode.window.showTextDocument(active, { preview: false });
+      // Each start records its exit in directory once its server has exited.
+      await waitFor('the servers started from the script to exit',
+        () => recorded(directory, 'exits').length === recorded(directory, 'starts').length);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
