@@ -1,6 +1,6 @@
 # Manual testing
 
-In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration, in CI on Linux and in a weekly workflow on Linux and macOS, and locally. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
+In CI, the automated editor tests run the plain Neovim configuration and VS Code on Linux and macOS. A scripted test runs the LazyVim configuration, in CI on Linux and in a weekly workflow on Linux and macOS, and locally. The weekly workflow also runs the VS Code test through Remote-SSH on Linux. Local runs are recorded under [Results](#results). This page lists what they cover, the editor and platform combinations to try by hand before a release, how to check each feature, and the results for each release.
 
 ## What the automated tests cover
 
@@ -10,12 +10,14 @@ The editor tests use the same fixture, [`test/e2e/nvim/fixture`](../test/e2e/nvi
 | --- | --- | --- | --- |
 | [Headless Neovim test](../editors/nvim/README.md#headless-smoke-test) | `make test-nvim`, also part of `make test` | CI jobs `test` (`ubuntu-24.04`, Neovim 0.11.6) and `test-macos` (`macos-15`, Apple Silicon under Rosetta 2, Homebrew Neovim), and both build jobs of the [release workflow](releasing.md#how-the-workflow-works) | See the [plain-configuration smoke-test coverage](../editors/nvim/README.md#headless-smoke-test). |
 | [Extension Host test](../clients/vscode/README.md#extension-host-test) | `npm run test:e2e` in `clients/vscode`; not part of `make test` | CI job `vscode-extension-host` (`ubuntu-24.04`, VS Code 1.142.0), on the extension from source and on a VSIX it packages and installs, and CI job `vscode-extension-host-macos` (`macos-15`, Apple Silicon under Rosetta 2, with the server that `test-macos` built), on the extension from source. The weekly [editor tests workflow](../.github/workflows/editor-tests.yml) runs it on macOS on a VSIX it packages and installs. The release workflow runs it on the VSIX it attaches ([#117](https://github.com/SaltedTan/virgil-language-server/issues/117)). | See the [Extension Host checks](../clients/vscode/README.md#extension-host-test), including installed-VSIX mode. |
+| [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test) | `npm run test:e2e:remote-ssh -- --vsix <vsix>` in `clients/vscode`, on Linux; not part of `make test` | Job `vscode-remote-ssh-linux` of the weekly [editor tests workflow](../.github/workflows/editor-tests.yml) (`ubuntu-24.04`, VS Code 1.142.0, Remote-SSH 0.129.2026100915), three times, on a VSIX it packages and the server that its `build-linux` job built; not a required check. The workflow also runs before each release ([Making a release](releasing.md#making-a-release)) | The Extension Host test's checks, unchanged, in the remote extension host of a Remote-SSH window, from a Linux client to an SSH server of the test's own on the same machine, with the VSIX installed on that host; and that no language server is left running there after each window closes. See [what it checks](../clients/vscode/README.md#remote-ssh-test). |
 | [Lifecycle tests](../clients/vscode/README.md#development) | `npm test` in `clients/vscode` | CI job `vscode-client` (`ubuntu-24.04`) | Client startup, shutdown, restart, and recovery, the Virgil root settings, and the documents and files sent to the server, with a simulated extension host and language client |
 | [Scripted LazyVim test](../test/e2e/lazyvim/README.md) | `test/e2e/lazyvim/run.sh --archive <archive>`, or `make test-lazyvim` for the build; not part of `make test` | CI job `lazyvim-linux` (`ubuntu-24.04`, Neovim 0.11.6, with the server that `test` built), which isn't a required check yet ([CI](../test/e2e/lazyvim/README.md#ci)); the weekly [editor tests workflow](../.github/workflows/editor-tests.yml), on `ubuntu-24.04` with Neovim 0.11.6 and 0.12.6 and on `macos-15` (Apple Silicon under Rosetta 2, Homebrew Neovim); and local runs on Linux or macOS with the [documented prerequisites](../test/e2e/lazyvim/README.md#running-it) | The procedure's Neovim steps through LazyVim's own client, keys, and windows, in a terminal UI under the pinned starter and plugins, including a restart, a missing Virgil root, and a change on disk. See [what it checks](../test/e2e/lazyvim/README.md#what-it-checks). |
 
 The editor tests don't cover:
 
-- VS Code Remote-SSH or Remote-WSL. Nothing runs inside WSL 2.
+- VS Code Remote-WSL. Nothing runs inside WSL 2.
+- VS Code Remote-SSH from a Mac, or to another machine. The Remote-SSH test connects a Linux client to the same machine. It doesn't cover checklist step 17, forced server crashes and recovery, which no test covers.
 - An installed VSIX on macOS in pull requests. CI runs the Extension Host test there only on the extension from source; the weekly editor tests run it on an installed VSIX.
 - In plain Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, and the LazyVim test covers them in LazyVim.
 - Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
@@ -29,7 +31,7 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 | --- | --- | --- | --- |
 | VS Code | Linux x86-64 | `x86-64-linux` | Extension Host test |
 | VS Code | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | Extension Host test, on the extension from source; weekly, on an installed VSIX |
-| VS Code Remote-SSH, from any desktop | Linux x86-64 | `x86-64-linux` | None |
+| VS Code Remote-SSH, from any desktop | Linux x86-64 | `x86-64-linux` | Remote-SSH test, from a Linux client to the same machine: weekly and before each release |
 | VS Code Remote-WSL, from Windows | WSL 2 | `x86-64-linux` | None |
 | Neovim, plain configuration | Linux x86-64, locally or over SSH | `x86-64-linux` | Headless Neovim test |
 | Neovim, plain configuration | macOS on Apple Silicon, under Rosetta 2 | `x86-64-darwin` | Headless Neovim test |
@@ -51,6 +53,8 @@ Try each setup with each feature: diagnostics, document symbols, definition, hov
 ### VS Code
 
 Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS. Its steps check the features as follows: diagnostics in steps 3, 4, 6, and 7; document symbols in step 5; definition, hover, signature help, references, and workspace symbols in step 7; rename in step 8; completion in step 9; configuration changes in steps 10 to 12; and restart in step 13. Steps 1, 2, and 14 to 17 check startup, startup errors, the message trace, and recovery.
+
+For VS Code Remote-SSH, each release needs a passing automated run instead of a manual session: the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), with official VS Code and Microsoft's Remote-SSH extension, from a Linux client, against the release branch's VSIX and Linux server. The run of the weekly editor tests on the release branch includes it ([Making a release](releasing.md#making-a-release)). It doesn't cover checklist step 17 or what VS Code shows. A Remote-SSH check from a Mac client to Linux, automated where possible, runs quarterly and after relevant changes, such as to the extension, the server's startup or shutdown, or the Remote-SSH test; record it under [Results](#results).
 
 ### Neovim and LazyVim
 

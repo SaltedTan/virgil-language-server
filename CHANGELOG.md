@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A VS Code Remote-SSH test, `npm run test:e2e:remote-ssh` in `clients/vscode`, on Linux. It runs the Extension Host test's suite, unchanged, in the remote extension host of a Remote-SSH window: official VS Code 1.142.0 and Microsoft's Remote-SSH extension 0.129.2026100915, at pinned versions and checksums, connect to an SSH server of the test's own on 127.0.0.1, the packaged VSIX is installed on that host with the VS Code Server's CLI, and the test checks where the suite runs, the installed extension, and that no language server is left running after each window closes. It keeps its state and processes apart from the user's, and tells infrastructure failures from test failures by its exit status. The weekly editor tests workflow runs it three times, not as a required check, and each release now needs it to pass instead of a manual Remote-SSH session; a check from a Mac client follows quarterly. It doesn't cover checklist step 17, forced server crashes, or what VS Code shows. See the [Remote-SSH test](clients/vscode/README.md#remote-ssh-test) and [manual testing](docs/manual-testing.md#vs-code).
+
 ### Changed
 
 - The [LazyVim test](test/e2e/lazyvim/README.md#ci) now runs in CI on Linux for every pull request as an advisory check, and weekly on Linux and macOS. The weekly workflow also runs the [Extension Host test](clients/vscode/README.md#extension-host-test) on an installed VSIX on macOS.
