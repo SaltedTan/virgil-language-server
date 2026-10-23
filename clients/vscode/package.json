@@ -94,6 +94,7 @@
     "check": "tsc -p . --noEmit",
     "test": "npm run compile && node --test test/*.cjs",
     "test:e2e": "npm run compile && node test/e2e/run.cjs",
+    "test:e2e:remote-ssh": "node test/e2e/remote-ssh/run.cjs",
     "package": "vsce package --pre-release --baseContentUrl https://github.com/SaltedTan/virgil-language-server/blob/main/clients/vscode --baseImagesUrl https://github.com/SaltedTan/virgil-language-server/raw/main/clients/vscode"
   },
   "dependencies": {

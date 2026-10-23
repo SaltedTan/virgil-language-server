@@ -1,12 +1,15 @@
 name: Editor tests (weekly)
 
 # Runs the editor tests in full, where pull request CI runs only part of them:
-# the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS, and the
-# Extension Host test on macOS against a packaged VSIX. The LazyVim test
-# installs the pinned starter and plugins from GitHub, without a cache.
-# Failures here do not block merges; they signal that an editor, a plugin, or a
-# runner image now behaves differently with the server. It also runs by hand
-# before each release. See test/e2e/lazyvim/README.md#ci and
+# the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS, the
+# Extension Host test on macOS against a packaged VSIX, and the same suite
+# through VS Code Remote-SSH on Linux. The LazyVim test installs the pinned
+# starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
+# and the VS Code Server from Microsoft, without a cache. Failures here do not
+# block merges; they signal that an editor, a plugin, or a runner image now
+# behaves differently with the server. It also runs by hand before each
+# release, which needs the Remote-SSH test to pass. See
+# test/e2e/lazyvim/README.md#ci, clients/vscode/README.md#remote-ssh-test, and
 # docs/manual-testing.md for coverage.
 
 on:
@@ -107,6 +110,82 @@ jobs:
         with:
           name: lazyvim-linux-nvim-${{ matrix.nvim }}
           path: ${{ runner.temp }}/lazyvim
+          if-no-files-found: warn
+          retention-days: 30
+
+  vscode-remote-ssh-linux:
+    # VS Code with Microsoft's Remote-SSH extension connects to this runner
+    # through an SSH server of the test's own on 127.0.0.1, installs the
+    # packaged VSIX there, and runs the Extension Host suite in the remote
+    # extension host, three times. The artifact holds the test's logs and
+    # manifest, never Microsoft's downloads or the test's keys.
+    name: VS Code Remote-SSH test (packaged VSIX, built server, linux)
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The test's fixture project uses the pinned Virgil checkout's libraries.
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install an SSH server and Xvfb if missing
+        # The test starts its own SSH server; it never uses or changes the
+        # runner's.
+        run: |
+          packages=()
+          [[ -x /usr/sbin/sshd ]] || packages+=(openssh-server)
+          command -v Xvfb >/dev/null || packages+=(xvfb)
+          if (( ${#packages[@]} > 0 )); then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+          fi
+      - name: Create the SSH server's privilege separation directory if missing
+        # OpenSSH 9.6 may refuse to start without it, even as the runner's
+        # user. The runner's SSH service creates it only when it runs.
+        run: |
+          [[ -d /run/sshd ]] || sudo install -d -m 0755 /run/sshd
+      - uses: actions/download-artifact@v8
+        with:
+          name: server-linux
+          path: build
+      - name: Restore executable permissions
+        # Artifacts don't preserve file permissions.
+        run: |
+          chmod +x build/virgil-lsp build/virgil-lsp-worker
+          build/virgil-lsp --version
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Show versions
+        run: |
+          sed -n 's/^PRETTY_NAME=//p' /etc/os-release
+          node --version
+          ssh -V
+          command -v Xvfb
+          grep -m 1 "VSCODE_VERSION = " clients/vscode/test/e2e/run.cjs
+          grep -m 1 "id: 'ms-vscode-remote.remote-ssh'," clients/vscode/test/e2e/remote-ssh/run.cjs
+      - name: Install client dependencies from the lockfile
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Package the VSIX
+        working-directory: clients/vscode
+        run: |
+          npm run package
+          mkdir "$RUNNER_TEMP/remote-ssh"
+          cp virgil-lsp-vscode-*.vsix "$RUNNER_TEMP/remote-ssh/"
+      - name: Remote-SSH test against the packaged VSIX
+        working-directory: clients/vscode
+        run: |
+          set -o pipefail
+          npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-*.vsix --repeat 3 \
+            --out "$RUNNER_TEMP/remote-ssh/results" 2>&1 | tee "$RUNNER_TEMP/remote-ssh/run.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: vscode-remote-ssh-linux
+          path: ${{ runner.temp }}/remote-ssh
           if-no-files-found: warn
           retention-days: 30
 
