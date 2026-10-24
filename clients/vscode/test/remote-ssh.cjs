@@ -1090,6 +1090,25 @@ test('the leak check finds a process that hides its executable by its command li
   assert.deepEqual(byParent.listing.found.map((p) => [p.pid, p.ppid]), [[100, 200], [200, 1]]);
 });
 
+test('the leak check finds a hidden process whose parent is a system program that the run\'s process started', () => {
+  // The server starts a system Python, which isn't a leftover itself, and
+  // that starts a non-dumpable child: the chain through the Python still
+  // makes the child the run's, while the Python stays out.
+  const { listing } = remoteProcesses(new Map([
+    [100, { start: '100', exe: '/work/agent/bin/c/node' }],
+    [101, { start: '110', ppid: 100, exe: '/usr/bin/python3' }],
+    [102, { start: '120', ppid: 101, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(listing.found.map((p) => p.pid), [100, 102]);
+  // A PID in the chain that another process has since been given breaks it.
+  const reused = remoteProcesses(new Map([
+    [100, { start: '100', exe: '/work/agent/bin/c/node' }],
+    [101, { start: '130', ppid: 100, exe: '/usr/bin/python3' }],
+    [102, { start: '120', ppid: 101, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(reused.listing.found.map((p) => p.pid), [100]);
+});
+
 test('the leak check does not take a process that hides its executable for its parent\'s child', () => {
   // Its parent PID is one that another process has since been given: it
   // started after the child, so it can't be the parent that forked it.

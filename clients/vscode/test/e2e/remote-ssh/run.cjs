@@ -688,9 +688,22 @@ const known = kill.map((identity) => {
 if (host) known.push(host);
 const byPid = new Map(table.map((entry) => [entry.pid, entry]));
 const owned = new Set();
+// Whether a process descends from one of the run's: its parent's chain
+// reaches an owned process, each parent having started no later than its
+// child, so that a reused PID breaks the chain. A readable process between
+// them, such as a system shell or Python that isn't itself a leftover, doesn't
+// break it, so a hidden child of the server's still counts (see runOwned,
+// which asks this only of a process whose executable can't be read).
 const parent = (ppid, start) => {
-  const entry = byPid.get(ppid);
-  return entry !== undefined && owned.has(entry.pid) && Number(entry.start) <= Number(start);
+  let childStart = Number(start);
+  for (let pid = ppid, depth = 0; depth < 64; depth++) {
+    const entry = byPid.get(pid);
+    if (entry === undefined || Number(entry.start) > childStart) return false;
+    if (owned.has(entry.pid)) return true;
+    childStart = Number(entry.start);
+    pid = entry.ppid;
+  }
+  return false;
 };
 for (let added = true; added;) {
   added = false;
