@@ -62,11 +62,11 @@ class Session:
                     msg = json.loads(body[:size])
                     self.transcript.append(("recv", msg))
                     assert msg["jsonrpc"] == "2.0", msg
-                    if "id" in msg:
+                    if "id" in msg and "method" not in msg:
                         key = (type(msg["id"]), msg["id"])
                         assert key not in self.answered, ("duplicate response", msg)
                         self.answered.add(key)
-                    else:
+                    elif "id" not in msg:
                         assert msg["method"] == "textDocument/publishDiagnostics", msg
                     return msg
             remaining = deadline - time.monotonic()
