@@ -286,16 +286,18 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		var found = Array<Vector<LspDiagnostic>>.new(paths.length);
 		var maps = Array<PositionMap>.new(paths.length);
 		var last = -1, lastDiagnostic: AnalysisDiagnostic;
+		var excludedError = false;
 		for (d in snapshot.diagnostics) {
 			if (d.path == null || !index.has(d.path)) {
 				log(warn, Strings.format2("project %s reported a diagnostic without a source document: %s", ctx.definition.name, d.toString()));
 				continue;
 			}
 			var i = index[d.path];
+			var mapped = snapshot.currentRange(i, d.beginOffset, d.endOffset);
+			if (mapped.0 < 0) excludedError = true;
 			if (owners[i] != ctx) continue;
 			last = i;
 			lastDiagnostic = d;
-			var mapped = snapshot.currentRange(i, d.beginOffset, d.endOffset);
 			if (mapped.0 < 0) continue;
 			if (maps[i] == null) {
 				var text = LspAnalysisCapture.currentText(store, snapshot, i, LspAnalysisCapture.analyzedText(store, snapshot, i));
@@ -307,7 +309,9 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		}
 		// At its error limit Aeneas stops checking, hiding errors in later
 		// declarations and files; say so where the last reported error is.
-		if (last >= 0 && snapshot.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS) {
+		// Excluded errors can cause this limit even when the last error is
+		// visible. Omitting its notice is safe; publishing a foreign one is not.
+		if (!excludedError && last >= 0 && snapshot.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS) {
 			var mapped = snapshot.currentRange(last, lastDiagnostic.beginOffset, lastDiagnostic.endOffset);
 			// The notice belongs at the actual last error, not at an earlier
 			// visible error when the last one is in an excluded body.

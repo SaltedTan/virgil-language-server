@@ -208,16 +208,93 @@ def error_limit(exe, root):
         c.s.close()
 
 
+def excluded_error_limit(exe, root):
+    # The excluded errors precede a visible last error in B. That last
+    # location alone cannot prove the limit belongs to the current program.
+    errors = ''.join('var x%d: int = true; ' % n for n in range(14))
+    old = 'component A { def target() -> int { return 1; } def broken() { ' + errors + '} }\n'
+    results = {}
+    for name, text in (('fallback', old), ('oracle', old.replace(errors, 'var syntax = 1; '))):
+        project = root / name
+        project.mkdir()
+        c = Case(exe, project, text)
+        try:
+            c.open('A.v3')
+            c.open('B.v3')
+            c.snapshot()
+            if name == 'fallback':
+                assert any(d['code'] == 'ErrorLimit' for d in c.diagnostics('B.v3'))
+                c.change(old.replace(errors, 'var syntax = ; '))
+                assert len(substitutions(c.snapshot())) == 1
+            results[name] = c.diagnostics('B.v3')
+            c.close()
+        finally:
+            c.s.close()
+    assert [d['code'] for d in results['oracle']] == ['TypeError'], results
+    assert results['fallback'] == results['oracle'], results
+
+
+def current_error_limit(exe, root):
+    # With no errors in the excluded body, a real current-program limit stays.
+    old = 'component A { def target() -> int { return 1; } def broken() { var syntax = 1; } }\n'
+    c = Case(exe, root, old)
+    errors = ''.join('var x%d: int = true; ' % n for n in range(15))
+    c.texts['B.v3'] = B.replace('return "bad";', errors + 'return 1;')
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        c.snapshot()
+        c.change(old.replace('var syntax = 1;', 'var syntax = ;'))
+        assert len(substitutions(c.snapshot())) == 1
+        assert [d['code'] for d in c.diagnostics('B.v3')] == ['TypeError'] * 15 + ['ErrorLimit']
+        c.close()
+    finally:
+        c.s.close()
+
+
+def large_cache(exe, root):
+    # 4,000,063 source bytes, below the program cap. A reaches the parser's
+    # error limit before B is read. Parsing B in cacheCompleted used to exhaust
+    # the main server's heap (2755676), defeating worker isolation.
+    a = '\r' * 16 + 'component A { }\n'
+    b = 'component B { def huge() { ' + 'f();' * 1000000 + '} }\n'
+    assert len(a) + len(b) == 4000063
+    (root / 'A.v3').write_bytes(a.encode())
+    (root / 'B.v3').write_text(b)
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'large', 'sources': ['A.v3', 'B.v3']}]}))
+    s = Session(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(), 'capabilities': {}}))
+        s.send('initialized', {}, request=False)
+        s.send('textDocument/didOpen', {'textDocument': {
+            'uri': (root / 'A.v3').as_uri(), 'languageId': 'virgil', 'version': 1, 'text': a}}, request=False)
+        assert s.result(s.send('textDocument/definition', {
+            'textDocument': {'uri': (root / 'A.v3').as_uri()},
+            'position': {'line': 0, 'character': 14}})) is None
+        snapshot = s.result(s.send('virgil-lsp/snapshot'))
+        assert not substitutions(snapshot), snapshot
+        assert len(snapshot['diagnostics']) >= 15, snapshot
+        assert all(d['path'] == str(root / 'A.v3') and d['kind'] == 'ParseError'
+                   for d in snapshot['diagnostics']), snapshot
+        s.ping()
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     # Keep disposable projects beside the build, away from the shared /tmp.
     with tempfile.TemporaryDirectory(prefix='body-fallback-', dir=exe.parent) as work:
-        for name, run in (('warm', warm), ('error-limit', error_limit), ('cold', lambda e, p: unavailable(e, p, False)),
+        for name, run in (('warm', warm), ('error-limit', error_limit),
+                          ('excluded-error-limit', excluded_error_limit), ('current-error-limit', current_error_limit),
+                          ('large-cache', large_cache), ('cold', lambda e, p: unavailable(e, p, False)),
                           ('closed', lambda e, p: unavailable(e, p, True))):
             root = Path(work).resolve() / name
             root.mkdir()
             run(exe, root)
-    print('body fallback: warm, cold, closed-file, mapped queries, diagnostics, and edit refusals passed')
+    print('body fallback: warm, cold, closed-file, mapped queries, error limits, large cache, and edit refusals passed')
 
 
 if __name__ == '__main__':

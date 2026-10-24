@@ -19,7 +19,9 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 			var doc = store.overlay(versions[i].uri);
 			if (doc == null || parser.parses(doc, context.definition.compilerArgs)) continue;
 			var effective = cache.get(context, doc.uri);
-			if (effective == null) continue;
+			// Closed disk files can seed larger texts. Reparse a predecessor only
+			// within the same byte limit as an open document's parser diagnostics.
+			if (effective == null || effective.length > DocumentLimits.MAX_BYTES) continue;
 			var bodies = AeneasAdapter.methodBodies(sources[i].path, effective, context.definition.compilerArgs);
 			if (bodies == null) continue;
 			var result = LspBodyEligibility.compare(effective, doc.text, bodies).0;
@@ -33,20 +35,28 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 		}
 		return null;
 	}
-	// Cache only a completed analysis's own parseable inputs. A clean program
-	// already proves every file parsed; a failed program's per-file check is
-	// necessary because Aeneas may have stopped before later files.
+	// Cache only a completed analysis's own parseable inputs, without parsing
+	// in the server. AeneasAdapter.parseProgram visits sources in order until
+	// its error limit: a visited file with no syntax diagnostics parsed, but
+	// files after the cutoff have no diagnostics because they were not visited.
 	def cacheCompleted(context: ProjectContext, cache: ParseableTextCache, snapshot: AnalysisSnapshot) {
 		if (!context.config.current) return;
+		var errors = OrderedStringMap<int>.new();
+		if (!snapshot.parsed) {
+			for (d in snapshot.diagnostics) errors[d.path] = errors[d.path] + 1;
+		}
 		var keep = OrderedStringMap<bool>.new();
 		for (s in context.sources) keep[s.uri] = true;
+		var seenErrors = 0;
 		for (i < sources.length) {
+			if (seenErrors >= AeneasAdapter.PROGRAM_MAX_ERRORS) break;
 			var source = sources[i];
+			var count = errors[source.path];
+			seenErrors += count;
+			if (count > 0) continue;
 			if (versions[i].substitution != null) continue;
 			if (!keep.has(versions[i].uri)) continue;
-			if (snapshot.parsed || AeneasAdapter.parseFile(source.path, source.input, context.definition.compilerArgs).diagnostics.length == 0) {
-				cache.put(context, versions[i].uri, source.input);
-			}
+			cache.put(context, versions[i].uri, source.input);
 		}
 	}
 }

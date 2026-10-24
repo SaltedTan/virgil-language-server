@@ -763,16 +763,19 @@ counts are preserved. Definition and hover remain single exact answers. The
 negative controls also count permitted empty suppression as `correct`, while
 `matches_oracle` always records exact equality.
 
-Four negative controls delete a declaration, change its signature, introduce
-a shadowing local, or insert braces inside a body that move an unchanged later
-method to another component, alongside a syntax error. Their policy accepts suppression or
+Five negative controls delete a declaration, change its signature, introduce
+a shadowing local, insert braces inside a body that move an unchanged later
+method to another component, or replace a body whose type errors contributed
+to the error limit, alongside a syntax error. Their policy accepts suppression or
 the current program's oracle. The driver separately feeds each predecessor's
 captured answer to the scorer and requires a wrong verdict. The
 [scoring tests](../test/benchmarks/test_tolerance.py) repeat this with
 [protocol captures](../test/benchmarks/tolerance-negative-oracles.json), including
 the signature change whose identifier ranges still match. These controls guard
-against unrestricted substitution. Fifteen extra states cover three variants each of two broken
-files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
+against unrestricted substitution and foreign error-limit notices. The error-limit
+control uses 13 old body errors because the benchmark observer contributes
+another error before the intact caller reaches 15. Fifteen extra states cover
+three variants each of two broken files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
 non-ASCII before the query and one CRLF case), closed-file disk changes with
 watched-file notifications, and project-file changes (remove/add membership and
 change a language flag). The pinned compiler rejects CRLF, so that case uses an
@@ -796,8 +799,8 @@ the existing phase, allocation, and heap counters. RSS is sampled before shutdow
 These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
-`make test` runs scoring and cleanup regression checks and a six-state smoke
-replay (two small repair states and all four negative controls, in both modes).
+`make test` runs scoring and cleanup regression checks and a seven-state smoke
+replay (two small repair states and all five negative controls, in both modes).
 The smoke run takes about 0.2 seconds on the reference host. The full suite
 remains opt-in. Run these checks separately with:
 
@@ -975,3 +978,14 @@ Server and worker SHA-256 hashes, respectively:
   `99bf5afed7be95785904c8a5cb7ec71fa5725e0c64f16153e90b297e040ac80f`.
 - After: `40effe7c55866787eba8670498188abbf4e67df98e153ce1fefaf493d89f8fe0`,
   `4f94b5d4b1cb68b589e7176457dadac81cbf184b7a58a525a6f90805dd6c5dc5`.
+
+The round-2 cache and error-limit fixes were rerun with probes on CPU 6, using
+`make BUILD=build/body-fallback-r2 BENCH=1 all bench-metadata` and the same
+tolerance command with that executable. The fifth negative control adds two
+mode records: all 410 complete in 224.97 seconds, with zero wrong answers,
+27 partial reference answers, one partial diagnostic set, and zero worker
+replacements. All 408 answers shared with the preceding review run are
+identical, so the primary counts above remain unchanged. The new control's
+warm answers exactly match its current-program oracle, including diagnostics;
+its cold answers are permitted suppression. All five controls reject their
+injected unsafe predecessor answers.

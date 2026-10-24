@@ -404,16 +404,21 @@ A snapshot also holds the [display text](#display-text): its files, indexed by t
 ### Method-body fallback
 
 A completed project analysis records each file's last parseable text when that
-file was analyzed as itself, including text with semantic errors. A failed
-whole-program parse requires a separate single-file parse to establish this;
-a successful parse already proves it. `ParseableTextCache` keeps one entry per
+file was analyzed as itself, including text with semantic errors. Cache
+population does not parse: the worker's per-file syntax diagnostics identify
+failed files, and their cumulative count identifies where its 15-error limit
+stopped parsing later files. A visited file without syntax diagnostics parsed;
+an unvisited file cannot seed the cache. `ParseableTextCache` keeps one entry per
 context and canonical URI in a global LRU. Its 4 MiB cap charges source bytes,
 URI bytes, and 512 bytes per entry for metadata and indexing. Context retirement
 and source expansion remove obsolete entries. There is no persistent cache.
 
 At capture, `LspAnalysisInputs.substitute` reuses `LspParserDiagnostics`' current
-identity/options parse outcome for each open source. For a broken file with a
-cached text, `LspBodyEligibility` finds the common-prefix/suffix interval. It
+identity/options parse outcome for each open source. Only a broken open file
+with cached text needs a predecessor parse. That text must fit the existing
+1 MiB open-document byte limit, even if a larger closed disk file seeded it;
+the shared parser also bounds stack use and expression chains, with no further
+byte or token cap. `LspBodyEligibility` finds the common-prefix/suffix interval. It
 must lie strictly within one method or constructor's braces in the cached text.
 `AeneasAdapter.methodBodies` parses that text through the server's existing
 parser and consumed-token index; snapshot declaration sites select only names.
@@ -464,7 +469,7 @@ are not substituted.
 
 **Failures.** A worker crash, timeout, malformed or over-budget result, or startup failure, and a capture or snapshot-admission failure, leave every published list unchanged and log a warning to stderr. The first such failure also sends `window/showMessage` (`MessageType.Warning`) naming the project and the reason; later failures are only logged until an analysis completes again. The supervisor's [restart policy](decisions/0004-analysis-worker-process.md#restart-policy) provides a new worker for the next analysis, which the next open, change, save, close, or file event schedules. A failed analysis is not retried by itself.
 
-**Error limit.** `Program.ERROR` in the pinned Aeneas stops at 15 errors (`AeneasAdapter.PROGRAM_MAX_ERRORS`, checked against the compiler by `AeneasAdapter:program_error_limit`), and the adapter cannot replace it. At the limit, parsing records no more errors and parses no more files, and verification stops at the next declaration. The parser also stops at a file's first syntax error. Fifteen errors in one file therefore hide every other file's errors. When an analysis reaches the limit, an Information diagnostic (`source: "virgil-lsp"`, code `ErrorLimit`) follows the last reported error, at its range, saying that errors elsewhere may be missing. If that last error is inside an excluded fallback body, its notice is suppressed too, without moving it to an earlier error. Aeneas rejects carriage returns (`ParseError: invalid character valued 0D`, one per CRLF line), as `v3c` does, so a single CRLF file reaches the limit; convert CRLF checkouts, which WSL users may have, to LF.
+**Error limit.** `Program.ERROR` in the pinned Aeneas stops at 15 errors (`AeneasAdapter.PROGRAM_MAX_ERRORS`, checked against the compiler by `AeneasAdapter:program_error_limit`), and the adapter cannot replace it. At the limit, parsing records no more errors and parses no more files, and verification stops at the next declaration. The parser also stops at a file's first syntax error. Fifteen errors in one file therefore hide every other file's errors. When an analysis reaches the limit, an Information diagnostic (`source: "virgil-lsp"`, code `ErrorLimit`) follows the last reported error, at its range, saying that errors elsewhere may be missing. A degraded snapshot suppresses the notice if any of its errors touches an excluded fallback body, even when the last error is visible: errors from the old body can cause a limit that the current program would not reach. This can omit a real limit notice, leaving a partial diagnostic set. If no error is excluded, the notice stays at the last reported error. Aeneas rejects carriage returns (`ParseError: invalid character valued 0D`, one per CRLF line), as `v3c` does, so a single CRLF file reaches the limit; convert CRLF checkouts, which WSL users may have, to LF.
 
 **Size limits.** Each automatic analysis has the development request's limits: 4 MiB of paths and source per program (the Aeneas sources and their dependencies use 72%), the [16 MiB result-decoding budget](decisions/0004-analysis-worker-process.md#consequences), and the worker heap. ADR-0004 owns the [supported program size measurements and recovery guidance](decisions/0004-analysis-worker-process.md#supported-program-size). A program that exceeds them is reported as a failure.
 

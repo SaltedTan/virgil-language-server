@@ -217,6 +217,21 @@ class Corpus:
                            oracle={"A.v3": fixed}, allow_absent=True)
         state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
         yield state
+        # Removed body errors must not leave a foreign ErrorLimit notice at
+        # the last visible error in an intact file. Navigation stays bound.
+        # The benchmark's Observer supplies the fourteenth error before B.
+        errors = ''.join('var x%d: int = true; ' % n for n in range(13))
+        original = ('component A { def target() -> int { return 1; } '
+                    'def broken() { ' + errors + '} }\n')
+        caller = ('component B { def use() -> int { return A.target(); } '
+                  'def wrong() -> int { return "bad"; } }\n')
+        project = self.project("negative/excluded-error-limit", {"A.v3": original, "B.v3": caller})
+        state = self.state(project, "excluded-error-limit", "negative", "body",
+                           {"A.v3": original}, {"A.v3": original.replace(errors, 'var syntax = ; ')},
+                           "original small program with body type errors",
+                           oracle={"A.v3": original.replace(errors, 'var syntax = 1; ')}, allow_absent=True)
+        state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
+        yield state
         # Three variants per boundary, including distinct fresh diagnostic kinds.
         for variant in (0, 1, 2):
             broken = a.replace("return x;", "return x.;")

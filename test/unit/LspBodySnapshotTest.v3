@@ -4,6 +4,8 @@
 def T = UnitTests.register;
 def X = [T("LspBodySnapshot:provenance_and_eviction", test_provenance),
 	T("LspBodySnapshot:capture_bounds_and_closed_files", test_capture),
+	T("LspBodySnapshot:cache_parse_progress", test_cache_parse_progress),
+	T("LspBodySnapshot:predecessor_size_limit", test_predecessor_size_limit),
 	T("LspBodySnapshot:project_cache_lifetime", test_project_lifetime), ()];
 def OLD = "/* é😀\t */ component A { def broken() -> int { return 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
 def CURRENT = "/* é😀\t */ component A { def broken() -> int { var x = ;\n\treturn 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
@@ -101,5 +103,56 @@ def test_project_lifetime(t: Tester) {
 	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
 	t.assert_eq(null, ctx.parseableTexts);
 	t.assertl(0, cache.retainedBytes);
+	s.server.close();
+}
+
+def test_cache_parse_progress(t: Tester) {
+	// Real adapter diagnostics: a bad middle file still lets later files
+	// parse unless the cumulative syntax error limit has been reached.
+	for (limit in [false, true]) {
+		var paths = ["/A.v3", "/B.v3", "/C.v3"];
+		var texts = ["component A { }", if(limit, "\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\rcomponent B { }", "component B { def broken( { }"),
+			"component C { def wrong() -> int { return true; } }"];
+		var inputs = LspAnalysisInputs.new(Array<AnalysisDocumentVersion>.new(3), 0);
+		inputs.sources = Array<AnalysisSource>.new(3);
+		var ctx = ProjectContext.new(ProjectRevision.new("file:///project.json", 1), null);
+		ctx.sources = Array<ProjectSource>.new(3);
+		for (i < 3) {
+			ctx.sources[i] = ProjectSource.new(paths[i], true);
+			inputs.versions[i] = AnalysisDocumentVersion.new(ctx.sources[i].uri, 1, null);
+			inputs.sources[i] = AnalysisSource.new(paths[i], texts[i]);
+		}
+		var analysis = AeneasAdapter.analyzeProgram(inputs.sources, [], false);
+		t.assert(!analysis.parsed, "middle file has syntax errors");
+		t.assert_eq(limit, analysis.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS);
+		var snapshot = AnalysisSnapshot.new(1, paths, analysis.parsed, analysis.verified, analysis.diagnostics, null, false, []);
+		var cache = ParseableTextCache.new();
+		inputs.cacheCompleted(ctx, cache, snapshot);
+		t.assertb(texts[0], cache.get(ctx, ctx.sources[0].uri));
+		t.assert_eq(null, cache.get(ctx, ctx.sources[1].uri));
+		if (limit) t.assert_eq(null, cache.get(ctx, ctx.sources[2].uri));
+		else t.assertb(texts[2], cache.get(ctx, ctx.sources[2].uri));
+	}
+}
+
+def test_predecessor_size_limit(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, CURRENT);
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	// This oversized disk predecessor would be eligible and parseable, but
+	// reparsing it must obey the open-document byte limit before allocating.
+	var prefix = "component A { def broken() { ", suffix = "} }\n";
+	var effective = Array<byte>.new(DocumentLimits.MAX_BYTES + 1);
+	for (i < prefix.length) effective[i] = prefix[i];
+	for (i = prefix.length; i < effective.length - suffix.length; i++) effective[i] = ' ';
+	for (i < suffix.length) effective[effective.length - suffix.length + i] = suffix[i];
+	t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, "component A { def broken() { var syntax = ; } }\n"));
+	// Keep the current overlay small; the size rule is about the predecessor.
+	cache.put(ctx, s.uri("A.v3"), effective);
+	var keys = [DocumentUri.normalize(s.uri("A.v3"))];
+	var inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+	var parser = LspParserDiagnostics.new(LspDiagnosticLists.new(s.store, null));
+	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+	t.assert_eq(null, inputs.versions[0].substitution);
 	s.server.close();
 }
