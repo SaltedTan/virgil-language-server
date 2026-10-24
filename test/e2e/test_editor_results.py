@@ -922,9 +922,9 @@ class RunEndTest(ValidatorTest):
 
     def test_counts(self):
         cases = [
-            ("expectedCount", {"expectedCount": 20}, "expectedCount is 20, but the run-start plans 21 observations"),
-            ("checkCount", {"checkCount": 22}, "checkCount is 22, but the stream has 21 checks"),
-            ("counts.pass", {"counts": dict.fromkeys(STATUSES, 0)}, "counts.pass is 0, but the stream has 21 "
+            ("expectedCount", {"expectedCount": 20}, "expectedCount is 20, but the run-start plans 22 observations"),
+            ("checkCount", {"checkCount": 23}, "checkCount is 23, but the stream has 22 checks"),
+            ("counts.pass", {"counts": dict.fromkeys(STATUSES, 0)}, "counts.pass is 0, but the stream has 22 "
                                                                      "pass checks"),
         ]
         for name, fields, message in cases:
@@ -934,9 +934,9 @@ class RunEndTest(ValidatorTest):
         events = stream("nvim")
         fail(events, 3)
         events = rebuild(events, status="fail")
-        events[-1]["counts"].update({"pass": 21, "fail": 0})
-        self.assertInvalid(events, len(events), "counts.pass is 21, but the stream has 20 pass checks")
-        events[-1]["counts"].update({"pass": 20, "skip": 1})
+        events[-1]["counts"].update({"pass": 22, "fail": 0})
+        self.assertInvalid(events, len(events), "counts.pass is 22, but the stream has 21 pass checks")
+        events[-1]["counts"].update({"pass": 21, "skip": 1})
         self.assertInvalid(events, len(events), "counts.fail is 0, but the stream has 1 fail check")
 
     def test_complete(self):
@@ -1407,8 +1407,8 @@ class CommandTest(unittest.TestCase):
         n = len(stream("lazyvim")) - 2
         passed_line = (f"{passed}: valid, run passed ({n} of {n} observations): {n - 1} pass, 0 fail, 1 xfail, "
                        "0 xpass, 0 skip\n")
-        failed_line = f"{failed}: valid, run failed (21 of 21 observations): 20 pass, 1 fail, 0 xfail, 0 xpass, 0 skip\n"
-        invalid_line = f"{invalid}: invalid: line 23: incomplete: no run-end\n"
+        failed_line = f"{failed}: valid, run failed (22 of 22 observations): 21 pass, 1 fail, 0 xfail, 0 xpass, 0 skip\n"
+        invalid_line = f"{invalid}: invalid: line 24: incomplete: no run-end\n"
         self.assertEqual((0, passed_line, ""), self.run_command(passed))
         self.assertEqual((1, failed_line, ""), self.run_command(failed))
         self.assertEqual((2, invalid_line, ""), self.run_command(invalid))
@@ -1432,7 +1432,7 @@ class CommandTest(unittest.TestCase):
         passed = self.write("passed.jsonl", stream("nvim"))
         self.assertEqual((2, f"{huge}: invalid: line 1: expected has profile single-file in iterations {10 ** 19}, "
                              "without iteration 1\n"
-                             f"{passed}: valid, run passed (21 of 21 observations): 21 pass, 0 fail, 0 xfail, "
+                             f"{passed}: valid, run passed (22 of 22 observations): 22 pass, 0 fail, 0 xfail, "
                              "0 xpass, 0 skip\n", ""),
                          self.run_command(huge, passed))
 

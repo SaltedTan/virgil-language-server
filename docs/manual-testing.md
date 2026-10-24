@@ -20,6 +20,7 @@ The editor tests don't cover:
 - VS Code Remote-SSH from a Mac, or to another machine. The Remote-SSH test connects a Linux client to the same machine. See the [VS Code procedure](#vs-code) for its recovery checks and remaining gaps.
 - An installed VSIX on macOS on every pull request. CI runs the Extension Host test there only on the extension from source; the weekly editor tests and the release workflow run it on an installed VSIX, including the release dry run of a pull request that changes the release path or the editor tests.
 - In plain Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, and the LazyVim test covers them in LazyVim.
+- Document highlights and navigation with `]]` and `[[` in LazyVim. The VS Code and plain Neovim suites check through their APIs that highlighting `StringBuilder` returns only its use's exact range in `words/Words.v3`, with the Text kind.
 - Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
 - What the editor shows. The tests read diagnostics, symbols, locations, hover text, signature help, and completion items through editor APIs, not from the Problems view, the outline, a hover popup, a signature popup, a completion menu, or a notification. The LazyVim test reads the text of noice.nvim's hover and signature windows and blink.cmp's menu items, but not how they look.
 
@@ -27,7 +28,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
+For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
@@ -54,7 +55,7 @@ For optional manual checks, try each selected setup with each feature: diagnosti
 
 ### VS Code
 
-Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS. Its steps check the features as follows: diagnostics in steps 3, 4, 6, and 7; document symbols in step 5; definition, hover, signature help, references, and workspace symbols in step 7; rename in step 8; completion in step 9; configuration changes in steps 10 to 12; and restart in step 13. Steps 1, 2, and 14 to 17 check startup, startup errors, the message trace, and recovery.
+Follow the [manual checklist](../clients/vscode/README.md#manual-checklist), which covers local Linux, Remote-SSH, Remote-WSL, and macOS. Its steps check the features as follows: diagnostics in steps 3, 4, 6, and 7; document symbols in step 5; definition, hover, signature help, references, document highlights, and workspace symbols in step 7; rename in step 8; completion in step 9; configuration changes in steps 10 to 12; and restart in step 13. Steps 1, 2, and 14 to 17 check startup, startup errors, the message trace, and recovery.
 
 For VS Code Remote-SSH, each release needs a passing automated run instead of a manual session: the [Remote-SSH test](../clients/vscode/README.md#remote-ssh-test), with official VS Code and Microsoft's Remote-SSH extension, from a Linux client, against the release's own VSIX and Linux server. The release workflow runs it in the dry run of the release branch and in the tag's run, and publishes only if it passes ([Making a release](releasing.md#making-a-release)). Of checklist step 17, it checks a restart and a configuration change during a server's recovery, a write to a dead server, and the crash limit, but not closing the window during the recovery; that, and what VS Code shows, are gaps that the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist) lists. The test's [coverage and limitations](../clients/vscode/README.md#remote-ssh-test) explain why. A check from a Mac client is deferred ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)) and no release requires it. Record any optional manual observations under [Results](#results).
 

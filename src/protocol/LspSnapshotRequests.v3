@@ -167,6 +167,28 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		batches.clear();
 		for (i < cancelled.length) reply(cancelled[i].deliver, cancelled[i].id, JsonRpcReply.Error(error));
 	}
+	// Cancels only requests we answer ourselves. A submitter with a reply
+	// sink, such as rename, owns its cancellation and withdraws its request.
+	def cancel(n: JsonRpcMessage.Notification) {
+		if (!JsonRpcParams.ByName.?(n.params)) return;
+		var params = JsonRpcParams.ByName.!(n.params).v, id: JsonRpcId;
+		if (!params.has("id")) return;
+		match (params["id"]) {
+			Int(v) => id = JsonRpcId.Int(v);
+			String(v) => id = JsonRpcId.String(v);
+			_ => return;
+		}
+		// MAX_WAITING bounds the live requests, and compact bounds the
+		// answered records kept beside them. Scan rather than hashing
+		// client-controlled ids with the library's predictable string hash.
+		for (i = oldest; i < arrivals.length; i++) {
+			var r = arrivals[i];
+			if (r.answered || r.deliver != null || !r.id.equal(id)) continue;
+			finish(r, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_CANCELLED, "the request was cancelled")));
+			compact();
+			return;
+		}
+	}
 	// Answers or defers {request} for {method}.
 	def receive(method: LspSnapshotMethod, request: JsonRpcMessage.Request) {
 		submit(request, method.label, method.requires, method.prepare, null, null);
