@@ -51,7 +51,7 @@ Each check has the level of the evidence it gathers. Generated tables print a pa
 | `configuration` | The test's own inputs and setup: prerequisites, pins, installations, key mappings, evidence | Pass (configuration) |
 | `manual` | A person's observation | Pass (manual) |
 
-A matrix cell's level combines the API, UI state, and manual evidence of its checks: a restart cell whose checks also observe exit statuses reads "Pass (API)". The wording is the evidence's labels joined by " + ", which the consistency test enforces, and the schema's `level` lists the same wording.
+A matrix cell's level combines the API and UI state evidence of its automated checks: a restart cell whose checks also observe exit statuses reads "Pass (API)". The wording is the evidence's labels joined by " + ", which the consistency test enforces, and the schema's `level` lists the same wording.
 
 ## The release gate
 

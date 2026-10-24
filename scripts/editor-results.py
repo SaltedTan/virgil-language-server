@@ -6,11 +6,9 @@
 # coverage manifest and the result schema, by the rules in test/e2e/RESULTS.md.
 # The script interprets results-v1.schema.json itself, with draft 2020-12
 # semantics for the keywords in SCHEMA_KEYWORDS, and refuses a schema with any
-# other keyword, so that the schema and this script can't drift apart. Then it
-# checks what one event's schema can't: the stream's encoding, the order of its
-# events, the run-start's plan and provenance against the manifest, each check
-# against the plan and the manifest's expected-failure rules, and the run-end
-# against the checks. It prints one line for each stream: valid, with whether
+# other keyword, so that the schema and this script can't drift apart. It
+# also enforces the cross-event rules in test/e2e/RESULTS.md#result-events.
+# It prints one line for each stream: valid, with whether
 # its run passed and the number of observations in each status, or invalid,
 # with the first error it finds and its line. It exits with 0 if every stream
 # is valid and its run passed, 1 if every stream is valid but a run didn't
@@ -18,10 +16,8 @@
 # used. Other tools can load this file as a module, with importlib, since its
 # name has a hyphen. See test/e2e/RESULTS.md#validating-a-stream.
 #
-# render writes a release's results into a Markdown document, such as
-# docs/manual-testing.md: a table of its runs and its matrix, between the
-# release's markers, from the valid streams that a selection lists (the
-# selection's schema is selection-v1.schema.json, beside the result schema).
+# render writes a release's tables as test/e2e/RESULTS.md#rendering-a-release
+# defines, using selection-v1.schema.json beside the result schema.
 # The output depends only on the inputs. It exits with 0 if it rendered, or
 # found no drift with --check, 1 if --check found drift, which it prints as a
 # unified diff, or a selected run didn't pass, and 2 if an input is malformed.
@@ -739,8 +735,8 @@ def manual_plan(start, manifest):
 
 
 def plan_of(start, manifest):
-    """Checks that the run-start's expected is the manifest's plan, as
-    RESULTS.md defines it, and returns the Plan. Raises Invalid on line 1."""
+    """Validates expected by RESULTS.md's automated or manual plan rules
+    and returns the Plan. Raises Invalid on line 1."""
     suite = start["suite"]
     if suite == MANUAL:
         return manual_plan(start, manifest)
