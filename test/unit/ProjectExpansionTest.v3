@@ -765,7 +765,7 @@ def test_workspace_source_uris(t: Tester) {
 	// A configuration change in a preflight replaces the context, and the
 	// preflight clears the old one's sources.
 	var configUri = ProjectFiles.uri(config);
-	store.open(configUri, "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"with space.v3\",\"caf\xC3\xA9.v3\"]}]}");
+	store.open(configUri, "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"with space.v3\",\"100%.v3\"]}]}");
 	w.reexpand();
 	var second = c.contexts[0];
 	t.assert(second != first, "the configuration change replaces the context");
@@ -780,9 +780,11 @@ def test_workspace_source_uris(t: Tester) {
 	checkUris(t, "kept by the old context", 2, second.sources);
 	checkUris(t, "configuration change without a preflight", 5, third.sources);
 	// An overlay too large for the budget, open under another spelling of the
-	// URI, invalidates the configuration, which clears the sources.
+	// URI, invalidates the configuration, which clears the sources. These
+	// steps name only ASCII files, since a file system that decomposes names,
+	// such as HFS+, lists the accented fixture in another Unicode form.
 	var baseUri = ProjectFiles.uri(base);
-	var spelled = StringBuilder.new().puts("file://localhost").puts(Arrays.range(baseUri, 7, baseUri.length)).puts("/./caf%c3%a9.v3").extract();
+	var spelled = StringBuilder.new().puts("file://localhost").puts(Arrays.range(baseUri, 7, baseUri.length)).puts("/./100%25.v3").extract();
 	t.assert(store.open(spelled, "virgil", 1, Array<byte>.new(ProjectLimits.MAX_BYTES)) == null, "the large overlay is admitted");
 	w.reexpand();
 	t.asserti(1, c.diagnostics.length);
