@@ -127,3 +127,50 @@ test('a server request error still raises its notification', async (t) => {
   assert.equal(notifications.length, 1);
   assert.match(notifications[0], /Request textDocument\/hover failed\.[\s\S]*Invalid hover position/);
 });
+
+test('lost framing rejects every pending request, including one waiting for document sync', { timeout: 2000 }, async (t) => {
+  const { client, stops } = await clientForTest(t);
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let sent = '';
+  const written = new Promise((resolve) => output.on('data', (chunk) => {
+    sent += chunk.toString();
+    if (sent.includes('textDocument/documentSymbol')) resolve();
+  }));
+  const connection = library.createMessageConnection(input, output, { error() {}, warn() {}, info() {}, log() {} });
+  t.after(() => { connection.dispose(); input.destroy(); output.destroy(); });
+  connection.onError(([error, message, count]) => {
+    void client.handleConnectionError(error, message, count);
+  });
+  connection.listen();
+  // Keep the installed library's sendRequest and JSON-RPC connection; replace
+  // startup and document synchronization, which need a real editor.
+  client.$start = async () => connection;
+  let release;
+  const sync = new Promise((resolve) => { release = resolve; });
+  let opens = 0;
+  client._didOpenTextDocumentFeature = {
+    sendPendingOpenNotifications: () => ++opens === 4 ? sync : Promise.resolve(),
+  };
+  client._didChangeTextDocumentFeature = { syncKind: 0 };
+  const params = { textDocument: { uri: 'file:///bad.v3' } };
+  const methods = ['textDocument/hover', 'textDocument/rename', 'textDocument/documentSymbol', 'textDocument/hover'];
+  const requests = methods.map((method) => client.sendRequest(method, params, library.CancellationToken.None));
+  const results = Promise.allSettled(requests);
+  await written;
+  assert.equal((sent.match(/Content-Length:/g) ?? []).length, 3, sent);
+  input.write('wrapper banner\nContent-Length: 2\r\n\r\n{}');
+  for (const result of await results) {
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reason.code, library.ErrorCodes.MessageReadError);
+    assert.match(result.reason.message, /Header must provide a Content-Length property/);
+    assert.throws(() => client.handleFailedRequest({ method: 'textDocument/hover' }, undefined, result.reason, undefined),
+      (error) => error === result.reason);
+  }
+  assert.equal(stops(), 1);
+  assert.equal(notifications.length, 1, 'only the connection error raises a notification');
+  await assert.rejects(client.sendRequest('textDocument/hover', params),
+    (error) => error.code === library.ErrorCodes.MessageReadError);
+  // A late completion or rejection of an underlying request remains handled.
+  release();
+});

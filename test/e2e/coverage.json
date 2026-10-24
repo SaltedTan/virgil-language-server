@@ -1540,6 +1540,16 @@
       "description": "The server runs as the child of a script that, once bad.v3 has its parser diagnostic and words/Words.v3 its type error, writes a line that isn't a message to the client, before the server's answer to a hover. The client logs that the connection to the server is erroring and \"Shutting down server.\", and stops: the diagnostics of bad.v3 and words/Words.v3 and the document symbols of bad.v3 are gone at once. The log then says that stopping the server timed out, and that the script exited, with SIGKILL or status 137, once; the script, the server, and its worker are gone, the script recorded no other start, and the log never says that the server will restart or will not be restarted."
     },
     {
+      "id": "vscode.recovery.lost-framing-request",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "In a separate lost-framing run, the test pauses the server and invokes a rename command, waits for its textDocument/prepareRename request to be sent, then has the script write a line that isn't a message before resuming the server. That rename command must reject with a connection read error within one second of the injection request, before the two-second shutdown timeout; it never sends textDocument/rename. The client reports the fault, stops, and eventually kills the script, server, and worker without starting another server, as in the lost-framing check."
+    },
+    {
       "id": "vscode.recovery.crash-limit",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
