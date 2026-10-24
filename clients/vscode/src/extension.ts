@@ -295,7 +295,8 @@ async function resolveServer(): Promise<string> {
 
 // Returns the Virgil root for projects' virgilDependencies: the setting, or
 // else VIRGIL_LOC from the extension host's environment. The server ignores a
-// root that isn't an absolute path, so such a value is reported and not sent.
+// root that isn't an absolute path. Forward invalid nonempty overrides so
+// bundled fallback cannot silently hide the error.
 function resolveVirgilRoot(): string | undefined {
   const setting = vscode.workspace.getConfiguration().get<string>(VIRGIL_ROOT_SETTING, '').trim();
   if (setting !== '') {
@@ -307,7 +308,7 @@ function resolveVirgilRoot(): string | undefined {
       + 'Projects with virgilDependencies stay disabled until it is fixed.';
     output.warn(message);
     void vscode.window.showWarningMessage(`Virgil: ${message}`);
-    return undefined;
+    return setting;
   }
   const env = (process.env.VIRGIL_LOC ?? '').trim();
   if (env !== '' && path.isAbsolute(env)) {
@@ -317,9 +318,9 @@ function resolveVirgilRoot(): string | undefined {
   output.info(
     env === ''
       ? `No Virgil root: neither ${VIRGIL_ROOT_SETTING} nor VIRGIL_LOC is set`
-      : `No Virgil root: ignoring VIRGIL_LOC, which is not an absolute path: ${env}`,
+      : `Invalid Virgil root: VIRGIL_LOC is not an absolute path: ${env}`,
   );
-  return undefined;
+  return env === '' ? undefined : env;
 }
 
 async function findExecutable(setting: string): Promise<string> {

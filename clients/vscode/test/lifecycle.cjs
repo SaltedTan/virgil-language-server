@@ -562,7 +562,7 @@ for (const [title, settings, env, expected] of [
     { 'virgil.virgilRoot': ` ${VIRGIL_ROOT} ` }, { VIRGIL_LOC: '/opt/other' }, { virgilRoot: VIRGIL_ROOT }],
   ['VIRGIL_LOC is sent when virgil.virgilRoot is empty', {}, { VIRGIL_LOC: VIRGIL_ROOT }, { virgilRoot: VIRGIL_ROOT }],
   ['no virgilRoot is sent without a root', {}, {}, {}],
-  ['no virgilRoot is sent for a relative VIRGIL_LOC', {}, { VIRGIL_LOC: 'vendor/virgil' }, {}],
+  ['a relative VIRGIL_LOC blocks server bundle fallback', {}, { VIRGIL_LOC: 'vendor/virgil' }, { virgilRoot: 'vendor/virgil' }],
 ]) {
   test(title, async () => {
     const host = extensionHost({ settings, env });
@@ -573,10 +573,10 @@ for (const [title, settings, env, expected] of [
   });
 }
 
-test('a relative virgil.virgilRoot is reported and not sent, even with VIRGIL_LOC', async () => {
+test('a relative virgil.virgilRoot is reported and blocks fallback, even with VIRGIL_LOC', async () => {
   const host = extensionHost({ settings: { 'virgil.virgilRoot': 'vendor/virgil' }, env: { VIRGIL_LOC: VIRGIL_ROOT } });
   await host.activate();
-  assert.deepEqual(plain(host.clients[0].options.initializationOptions), {});
+  assert.deepEqual(plain(host.clients[0].options.initializationOptions), { virgilRoot: 'vendor/virgil' });
   assert.equal(host.warnings.length, 1);
   assert.match(host.warnings[0], /virgil\.virgilRoot must be an absolute path, not vendor\/virgil/);
   await host.extension.deactivate();

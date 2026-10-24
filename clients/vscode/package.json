@@ -71,7 +71,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "The absolute path of the Virgil checkout or installation (the directory that holds `lib/`) that project files' `virgilDependencies` are relative to. When empty, the `VIRGIL_LOC` environment variable of the extension host is used. With Remote-SSH or Remote-WSL, set this in the remote settings."
+          "markdownDescription": "The absolute path of the Virgil checkout or installation (the directory that holds `lib/`) that project files' `virgilDependencies` are relative to. When empty, the `VIRGIL_LOC` environment variable of the extension host is used; if unset, the server uses its bundled library. Sources outside `lib/` need a full checkout override. With Remote-SSH or Remote-WSL, set this in the remote settings."
         },
         "virgil.trace.server": {
           "type": "string",

@@ -450,6 +450,12 @@ if [[ -n $archive ]]; then
 else
   export PATH="$server_dir:$PATH"
 fi
+# The rootless profiles deliberately model an incomplete installation. Keep
+# their MissingVirgilRoot and noice warning checks meaningful for archives
+# that now carry a default library. The main profile uses the real install.
+mkdir "$work/no-bundle"
+installed_server=$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("virgil-lsp")))')
+cp "$installed_server" "$(dirname "$installed_server")/virgil-lsp-worker" "$work/no-bundle/"
 server_version=$(virgil-lsp --version 2>&1) || die "virgil-lsp does not run here: $server_version"
 
 # The provenance header, printed and kept in the output directory.
@@ -615,7 +621,11 @@ run() {
   rm -f "$XDG_STATE_HOME/nvim/lsp.log"
   echo "== $name"
   (
-    if [[ $mode == main ]]; then export VIRGIL_LOC=$virgil_loc; fi
+    if [[ $mode == main ]]; then
+      export VIRGIL_LOC=$virgil_loc
+    else
+      export PATH="$work/no-bundle:$PATH"
+    fi
     export VIRGIL_DRIVER_MODE=$mode VIRGIL_DRIVER_FILE=$file
     export VIRGIL_DRIVER_NOICE_WORKAROUND=$workaround VIRGIL_DRIVER_OUT=$results
     export VIRGIL_DRIVER_SCREEN=$out/$name.screen.txt VIRGIL_DRIVER_PIDS=$work/$name.pids
