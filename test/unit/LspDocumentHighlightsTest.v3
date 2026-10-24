@@ -20,6 +20,11 @@ def X = [
 	T("LspDocumentHighlights:include_declaration", test_include_declaration),
 	T("LspDocumentHighlights:nothing_selected", test_nothing_selected),
 	T("LspDocumentHighlights:cross_file", test_cross_file),
+	T("LspSnapshotRequests:cancelled_cursor_burst", test_cancelled_cursor_burst),
+	T("LspSnapshotRequests:cancel_waiting_methods", test_cancel_waiting_methods),
+	T("LspSnapshotRequests:cancel_ids", test_cancel_ids),
+	T("LspSnapshotRequests:cancel_owned_request", test_cancel_owned_request),
+	T("LspSnapshotRequests:cancel_reentrant_reply", test_cancel_reentrant_reply),
 	T("LspDocumentHighlights:file_changed_on_disk", test_file_changed_on_disk),
 	T("LspDocumentHighlights:semantic_errors", test_semantic_errors),
 	T("LspDocumentHighlights:stale_waits_for_analysis", test_stale_waits_for_analysis),
@@ -70,6 +75,7 @@ class HighlightsTestSession {
 	var nextId = 100;
 	// What handle() returned for the last request; replies use the sink.
 	var handled: Array<byte>;
+	var onReply: JsonValue -> void;
 	new(t: Tester, source: string) {
 		base = highlightsBase();
 		write(t, "Refs.v3", source);
@@ -85,7 +91,9 @@ class HighlightsTestSession {
 		// Server output can contain more values than the client input limit.
 		parser.maxValues = int.max;
 		var parsed = JsonValue.JObject.!(parser.parseDocument()).v;
-		if (parsed.has("id")) replies.put(parsed);
+		if (!parsed.has("id")) return;
+		replies.put(parsed);
+		if (onReply != null) onReply(parsed["id"]);
 	}
 	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
 	def write(t: Tester, name: string, text: string) {
@@ -124,24 +132,43 @@ class HighlightsTestSession {
 	// Sends a {method} request for {line}:{character} in {name}, with
 	// no context, and returns its id.
 	def request(method: string, name: string, line: int, character: int) -> int {
+		var id = nextId++;
+		requestId(JsonRpcId.Int(id), method, name, line, character);
+		return id;
+	}
+	def requestId(id: JsonRpcId, method: string, name: string, line: int, character: int) {
+		var params = positionParams(name, line, character);
+		if (Strings.equal(method, "textDocument/references")) {
+			var context = Strings.newMap<JsonValue>();
+			context["includeDeclaration"] = JsonValue.Bool(true);
+			JsonRpcParams.ByName.!(params).v["context"] = JsonValue.JObject(context);
+		}
+		handled = server.handle(JsonRpcMessage.Request(id, method, params).encode());
+	}
+	def positionParams(name: string, line: int, character: int) -> JsonRpcParams {
 		var doc = Strings.newMap<JsonValue>(), position = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
 		doc["uri"] = JsonValue.String(uri(name));
 		position["line"] = JsonValue.Int(line);
 		position["character"] = JsonValue.Int(character);
 		params["textDocument"] = JsonValue.JObject(doc);
 		params["position"] = JsonValue.JObject(position);
-
-		var id = nextId++;
-		handled = server.handle(JsonRpcMessage.Request(JsonRpcId.Int(id), method, JsonRpcParams.ByName(params)).encode());
-		return id;
+		return JsonRpcParams.ByName(params);
+	}
+	def cancel(id: JsonValue) {
+		var params = Strings.newMap<JsonValue>();
+		params["id"] = id;
+		server.handle(JsonRpcMessage.Notification("$/cancelRequest", JsonRpcParams.ByName(params)).encode());
 	}
 	def highlights(name: string, line: int, character: int) -> int {
 		return request("textDocument/documentHighlight", name, line, character);
 	}
 	// The response to {id}, or null if none has arrived.
-	def reply(id: int) -> HashMap<string, JsonValue> {
+	def reply(id: int) -> HashMap<string, JsonValue> { return replyId(JsonValue.Int(id)); }
+	def replyId(id: JsonValue) -> HashMap<string, JsonValue> {
 		for (i < replies.length) {
-			if (replies[i]["id"] == JsonValue.Int(id)) return replies[i];
+			var got = replies[i]["id"];
+			if (got == id || (JsonValue.String.?(got) && JsonValue.String.?(id)
+				&& Strings.equal(JsonValue.String.!(got).v, JsonValue.String.!(id).v))) return replies[i];
 		}
 		return null;
 	}
@@ -507,5 +534,129 @@ def test_reply_bound(t: Tester) {
 		t.assert_string("the declaration step has more than 3 document highlights", stringAt(replies[1]["error"], "message"));
 		expectHighlightSpots(t, s, replies[2]["result"], nodes, "aliases do not count");
 	}
+	s.server.close();
+}
+
+// The same server and fixture exercise cancellation of every shared snapshot
+// method, without polling the worker until the requests have been cancelled.
+def expectCancelled(t: Tester, r: HashMap<string, JsonValue>) {
+	t.assert(r != null && r.has("error"), "the waiting request was cancelled");
+	if (r != null && r.has("error")) t.asserti(LspErrorCode.REQUEST_CANCELLED, intAt(r["error"], "code"));
+}
+def test_cancelled_cursor_burst(t: Tester) {
+	var s = session(t), requests = s.server.rename.requests;
+	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
+	var p = at(SOURCE, "a + step", 4);
+	var definition = s.request("textDocument/definition", "Refs.v3", p.0, p.1);
+	t.assert(s.reply(definition) == null, "the definition waits for the analysis");
+	var ids = Array<int>.new(requests.MAX_WAITING);
+	for (i < ids.length) {
+		ids[i] = s.highlights("Refs.v3", p.0, p.1);
+		t.assert(s.reply(ids[i]) == null, "the highlight waits for the analysis");
+		s.cancel(JsonValue.Int(ids[i]));
+	}
+	t.assert(s.reply(definition) == null, "cancelled cursor requests never evict the definition");
+	for (id in ids) expectCancelled(t, s.reply(id));
+	t.asserti(requests.MAX_WAITING, s.replies.length);
+	t.asserti(1, requests.waiting());
+	s.settle();
+	t.assert(JsonValue.JObject.?(s.result(t, definition)), "the definition is answered from the completed snapshot");
+	t.asserti(requests.MAX_WAITING + 1, s.replies.length);
+	t.asserti(0, requests.waiting());
+	s.server.close();
+}
+def test_cancel_waiting_methods(t: Tester) {
+	var s = session(t), requests = s.server.rename.requests;
+	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
+	var p = at(SOURCE, "a + step", 4);
+	var methods = ["textDocument/definition", "textDocument/hover", "textDocument/references",
+		"textDocument/signatureHelp", "textDocument/prepareRename"];
+	var ids = Array<int>.new(methods.length);
+	for (i < methods.length) ids[i] = s.request(methods[i], "Refs.v3", p.0, p.1);
+	t.asserti(methods.length, requests.waiting());
+	for (i < ids.length) {
+		t.assert(s.reply(ids[i]) == null, "the request waits");
+		s.cancel(JsonValue.Int(ids[i]));
+		expectCancelled(t, s.reply(ids[i]));
+		t.asserti(ids.length - i - 1, requests.waiting());
+	}
+	t.asserti(0, requests.recorded());
+	s.settle();
+	t.asserti(ids.length, s.replies.length);
+	s.server.close();
+}
+def test_cancel_ids(t: Tester) {
+	var s = session(t), requests = s.server.rename.requests;
+	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
+	var p = at(SOURCE, "a + step", 4);
+	s.requestId(JsonRpcId.Int(123), "textDocument/definition", "Refs.v3", p.0, p.1);
+	s.requestId(JsonRpcId.String("123"), "textDocument/hover", "Refs.v3", p.0, p.1);
+	for (id in [JsonValue.Int(999), JsonValue.String("unknown"), JsonValue.Null, JsonValue.Bool(true)]) s.cancel(id);
+	s.server.handle(JsonRpcMessage.Notification("$/cancelRequest", JsonRpcParams.Absent).encode());
+	s.server.handle(JsonRpcMessage.Notification("$/cancelRequest", JsonRpcParams.ByName(Strings.newMap<JsonValue>())).encode());
+	t.asserti(0, s.replies.length);
+	t.asserti(2, requests.waiting());
+	s.cancel(JsonValue.String("123"));
+	expectCancelled(t, s.replyId(JsonValue.String("123")));
+	t.assert(s.reply(123) == null, "string and integer ids are distinct");
+	t.asserti(1, requests.waiting());
+	s.cancel(JsonValue.String("123"));
+	t.asserti(1, s.replies.length);
+	s.settle();
+	t.assert(JsonValue.JObject.?(s.result(t, 123)), "the integer id completes normally");
+	s.cancel(JsonValue.Int(123));
+	t.asserti(2, s.replies.length);
+	s.server.close();
+}
+// Even before its owner withdraws it, a request with a sink is excluded from
+// snapshot cancellation. LspRenameTest covers rename's own cancellation.
+def test_cancel_owned_request(t: Tester) {
+	var s = session(t), requests = s.server.rename.requests;
+	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
+	var p = at(SOURCE, "a + step", 4), replies = Vector<JsonRpcReply>.new();
+	var request = JsonRpcMessage.Request(JsonRpcId.Int(123), "owned", s.positionParams("Refs.v3", p.0, p.1));
+	var r = requests.submit(request, "owned", LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare,
+		null, fun (reply: JsonRpcReply) { replies.put(reply); });
+	t.assert(r != null, "the owned request waits");
+	s.cancel(JsonValue.Int(123));
+	t.asserti(0, replies.length);
+	t.asserti(0, s.replies.length);
+	t.asserti(1, requests.waiting());
+	requests.withdraw(r);
+	t.asserti(0, requests.waiting());
+	s.settle();
+	t.asserti(0, replies.length);
+	s.server.close();
+}
+class HighlightsCancellationReply(s: HighlightsTestSession, t: Tester, first: int) {
+	var sent = -1;
+	def receive(id: JsonValue) {
+		if (id != JsonValue.Int(first) || sent >= 0) return;
+		sent = 0;
+		var requests = s.server.rename.requests;
+		t.asserti(requests.MAX_WAITING - 1, requests.waiting());
+		// Repeating the cancellation during its reply must not answer twice.
+		s.cancel(id);
+		sent = s.highlights("Refs.v3", 3, 6);
+	}
+}
+def test_cancel_reentrant_reply(t: Tester) {
+	var s = session(t), requests = s.server.rename.requests;
+	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
+	var ids = Array<int>.new(requests.MAX_WAITING);
+	for (i < ids.length) ids[i] = s.highlights("Refs.v3", 3, 6);
+	var sender = HighlightsCancellationReply.new(s, t, ids[0]);
+	s.onReply = sender.receive;
+	s.cancel(JsonValue.Int(ids[0]));
+	s.onReply = null;
+	expectCancelled(t, s.reply(ids[0]));
+	t.assert(sender.sent > 0, "a new request was sent within the reply");
+	t.asserti(1, s.replies.length);
+	t.asserti(requests.MAX_WAITING, requests.waiting());
+	s.settle();
+	t.asserti(ids.length + 1, s.replies.length);
+	for (i = 1; i < ids.length; i++) t.assert(s.reply(ids[i]) != null, "each original request completes once");
+	t.assert(s.reply(sender.sent) != null, "the reentrant request completes");
+	t.asserti(0, requests.waiting());
 	s.server.close();
 }
