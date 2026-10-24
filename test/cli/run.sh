@@ -335,7 +335,7 @@ EXIT='{"jsonrpc":"2.0","method":"exit"}'
     frame "$(not_found 3 small)"
     frame '{"jsonrpc":"2.0","id":4,"result":null}'
 } > "$TMP/want"
-expect_stdio "stdio rejects a message with too many values and keeps going" 0 "$TMP/want" "" -- < "$TMP/in"
+expect_stdio "stdio rejects a message with too many values and keeps going" 0 "$TMP/want" '^virgil-lsp: Virgil root: ' -- < "$TMP/in"
 
 # A bare LF proves the header is malformed, so the server must stop while the
 # client still holds the pipe open. If it waited for more input instead, it
@@ -358,7 +358,7 @@ exit_held_open() {
 }
 { frame "$INIT_RESULT"; frame '{"jsonrpc":"2.0","id":2,"result":null}'; } > "$TMP/want"
 SECONDS=0
-expect_stdio "stdio exits at exit without waiting for more input" 0 "$TMP/want" "" -- < <(exit_held_open)
+expect_stdio "stdio exits at exit without waiting for more input" 0 "$TMP/want" '^virgil-lsp: Virgil root: ' -- < <(exit_held_open)
 [ "$SECONDS" -lt 3 ] || { fail=$((fail + 1)); echo "FAIL: stdio waited for the end of input after exit"; }
 
 : > "$TMP/empty"

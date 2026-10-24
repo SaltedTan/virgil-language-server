@@ -278,6 +278,11 @@ def loggedServer(t: Tester, capabilities: string) -> (LspServer, ServerLog) {
 	s.infoProject = log.info;
 	expectServerReply(t, s, Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":%s}}", capabilities),
 		initializeResult());
+	// Root selection is an initialize log; the callers below check only
+	// watcher registration's subsequent logs.
+	t.asserti(1, log.infos.length);
+	if (log.infos.length > 0) t.assert(Strings.startsWith(log.infos[0], "Virgil root: "), "expected root selection log");
+	log.infos.clear();
 	return (s, log);
 }
 def DYNAMIC = "{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":true}}}";
