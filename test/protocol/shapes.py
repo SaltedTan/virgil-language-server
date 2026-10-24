@@ -105,9 +105,13 @@ class ShapeSession(Session):
         assert "result" in msg, (method, "expected success", msg)
         return msg["result"]
 
-    def start(self, params=None, initialized=True):
-        result = self.success("initialize", {"processId": None, "rootUri": None, "capabilities": {}}
-                              if params is None else params)
+    def start(self, params=None, initialized=True, allow_invalid=False):
+        reply = self.call("initialize", {"processId": None, "rootUri": None, "capabilities": {}}
+                          if params is None else params)
+        if allow_invalid and "error" in reply:
+            return self.start(initialized=initialized)
+        assert "result" in reply, ("initialize unexpectedly rejected", reply)
+        result = reply["result"]
         assert result["capabilities"]["textDocumentSync"]["change"] == 1, result
         if initialized:
             self.send("initialized", {}, request=False)
@@ -193,7 +197,8 @@ def shape(s, case):
             s.call(method, params, code=-32602)
             s.start()  # failed initialize must leave recovery possible
         else:
-            s.start(params)
+            s.start(params, allow_invalid=not case["session_valid"])
+        s.barrier()
         return
     if method.startswith("textDocument/") and method != "textDocument/didOpen":
         open_document(s)
@@ -384,7 +389,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("exe", type=Path)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--cases", type=int, default=1500, help="total budget, including mandatory semantic cases")
+    parser.add_argument("--cases", type=int, default=2000, help="total budget, including mandatory semantic cases")
     parser.add_argument("--case", help="run one stable case ID, including its setup and shutdown")
     parser.add_argument("--list", action="store_true", help="print selected cases and their three validity layers")
     parser.add_argument("--artifacts", type=Path, default=Path("build/protocol-shapes"))

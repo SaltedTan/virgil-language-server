@@ -204,6 +204,8 @@ class Model:
             elif ref in self.enums:
                 for entry in self.enums[ref]["values"]:
                     yield "enum-" + str(entry["value"]), entry["value"]
+                for label, value in self.variants(self.enums[ref]["type"], name, trail + (ref,)):
+                    yield "enum-base." + label, value
             else:
                 yield from self.variants(self.aliases[ref], name, trail + (ref,))
         elif kind == "literal":
@@ -265,6 +267,8 @@ def session_validity(method, params):
             return False, "version must increase beyond the open version 1"
     if method in ("textDocument/completion", "textDocument/signatureHelp") and "context" in params:
         return False, "trigger context support was not negotiated"
+    if method == "virgil-lsp/analyze":
+        return False, "analysis requires nonempty local-file URIs; generated URIs are untitled"
     if method == "textDocument/rename":
         return False, "versioned workspace edits were not negotiated"
     doc = params.get("textDocument", {})

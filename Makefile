@@ -3,6 +3,9 @@
 
 VIRGIL ?= vendor/virgil
 BUILD  ?= build
+# Offline protocol shape budget; includes mandatory semantic/lifecycle oracles.
+SEED   ?= 0
+CASES  ?= 2000
 V3C    := scripts/v3c.sh
 
 # Aeneas front end plus the libraries it depends on, as listed in the pinned
@@ -40,7 +43,7 @@ BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 # and test_cleanup.py uses that to exercise the wrapper without the real tests.
 UNIT_TESTS  = $(BUILD)/unit-tests
 
-.PHONY: all test test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
+.PHONY: all test test-protocol-shapes test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
 all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
@@ -105,7 +108,7 @@ test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
 
 # Unit and CLI tests start the worker next to their executables.
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
+test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(BUILD)/retain-probe
 	$(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
@@ -125,6 +128,11 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
 	test/release/run.sh
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
+
+# Seed and total budget are overridable for wider deterministic local runs.
+test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
+	python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(SEED) --cases $(CASES) \
+	  --artifacts $(BUILD)/protocol-shapes
 
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
 test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker

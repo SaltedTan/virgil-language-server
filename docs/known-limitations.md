@@ -71,6 +71,11 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 - Nothing is published to a package manager, the Visual Studio Marketplace, or Open VSX. Install the server from a release archive and the extension from its VSIX by hand ([Installing](releasing.md#installing), [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)). VS Code doesn't update an extension installed from a VSIX.
 - Release archives bundle only Virgil's `lib/`. Projects selecting `rt/`, `aeneas/`, or other sources outside it still need a client-supplied checkout at the revision that `virgil-lsp --version` prints. Development builds have no bundle by default. Missing or mismatched bundles leave no root, and invalid client overrides block fallback ([The Virgil root](configuration.md#the-virgil-root)).
 
+## Protocol numbers and synchronization
+
+- JSON numbers must be signed 32-bit integers. A fraction, exponent, or out-of-range integer anywhere in an admitted request to a supported method, including unused `initializationOptions`, gets `InvalidParams` (-32602) with the request's original ID. The dispatcher ignores notifications containing these numbers; document synchronization also logs a warning. Numeric request IDs outside that range instead get `InvalidRequest` (-32600) with a null ID. This is a `JsonValue` representation limit, including for otherwise valid free-form LSP data ([JSON rules](architecture.md#json-limitations-and-workarounds), [lifecycle admission](architecture.md#lifecycle)).
+- The server negotiates full synchronization. A `didChange` containing a range or `rangeLength` is ignored and logged as “incremental changes are not supported,” with no notification reply. The overlay's text and version stay unchanged. An empty `contentChanges` with a newer version is accepted as a version-only update; subsequent versioned rename edits carry that version ([document synchronization](architecture.md#document-store)).
+
 ## What rename refuses
 
 [Rename](architecture.md#rename) is deliberately conservative: it refuses rather than risk an edit that changes what the program means, and its reason says why. [Prepare rename](architecture.md#prepare-rename) lists the rules for which names can be renamed, and [Rename](architecture.md#rename) the rules for new names and edits.
