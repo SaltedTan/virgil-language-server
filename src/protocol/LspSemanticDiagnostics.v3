@@ -222,7 +222,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		if (!ctx.config.current || ctx.sources.length == 0) return;
 		var keys = Array<string>.new(ctx.sources.length);
 		for (i < keys.length) {
-			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
+			keys[i] = ctx.sources[i].uri;
 			if (keys[i] == null) return failed(ctx, Strings.format1("cannot form a document URI for %s", ctx.sources[i].path));
 		}
 		var captured = LspAnalysisCapture.capture(store, keys, true);

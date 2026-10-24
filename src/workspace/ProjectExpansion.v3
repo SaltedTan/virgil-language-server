@@ -1,7 +1,13 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-class ProjectSource(path: string, member: bool) { }
+class ProjectSource(path: string, member: bool) {
+	// The canonical document URI of {path}, or null if it has none. Expansion
+	// looks up the file's overlay with it, and freshness checks compare it
+	// with captured URIs (LspAnalysisCapture.matchesSources), so neither
+	// converts the path again. Formed with the source, it cannot go stale.
+	def uri = DocumentUri.normalize(ProjectFiles.uri(path));
+}
 class ProjectExpansionResult(sources: Array<ProjectSource>, diagnostics: Array<ProjectConfigDiagnostic>) { }
 
 component ProjectLimits {
@@ -58,12 +64,13 @@ class ProjectExpansion(store: DocumentStore, maxFiles: int, maxBytes: int) {
 				var meta = HostOs.fileMetadata(fd);
 				HostOs.close(fd);
 				if (meta.0 != ProjectFiles.REGULAR || meta.1 < 0) { error(ProjectConfigCode.SOURCE_IO, "selected source is no longer a readable regular file"); return; }
-				var overlay = if(store != null, store.overlay(ProjectFiles.uri(path)));
+				var source = ProjectSource.new(path, member);
+				var overlay = if(store != null, store.canonicalOverlay(source.uri));
 				var size = if(overlay != null, long.view(overlay.text.length), meta.1);
 				var overhead = long.view(path.length) + 16;
 				if (size > long.view(maxBytes) - bytes - overhead) { error(ProjectConfigCode.SOURCE_BUDGET, "project exceeds the aggregate analysis source budget"); return; }
 				bytes += size + overhead;
-				sources.put(ProjectSource.new(path, member));
+				sources.put(source);
 			}
 		}
 	}

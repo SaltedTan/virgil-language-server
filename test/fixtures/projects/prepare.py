@@ -123,6 +123,17 @@ analyzed_text.mkdir(exist_ok=True)
     '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}',
     encoding="utf-8",
 )
+# Names whose URIs escape bytes. WorkspaceProjects:source_uris creates and
+# deletes "new file.v3" itself.
+source_uris = root / "source-uris"
+source_uris.mkdir(exist_ok=True)
+(source_uris / ".virgil-lsp.json").write_text(
+    '{"version":1,"projects":[{"name":"p","sources":["*.v3"]}]}',
+    encoding="utf-8",
+)
+for name in ["plain.v3", "with space.v3", "caf\u00e9.v3", "100%.v3"]:
+    (source_uris / name).write_text("def x = 1;\n", encoding="utf-8")
+(source_uris / "new file.v3").unlink(missing_ok=True)
 # LspDefinitionTest writes and changes the sources itself.
 definition = root / "definition"
 definition.mkdir(exist_ok=True)
