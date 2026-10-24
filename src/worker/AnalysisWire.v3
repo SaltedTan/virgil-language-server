@@ -196,8 +196,26 @@ component AnalysisWire {
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
-		var w = WorkerFraming.start().putb(RESULT);
-		w.put_b32(id).put_b32(analyses).put_b32(uidNext).put_b64(0);
+		var sized = encodeResultWithQueryCounted(id, analyses, uidNext, analysis, collectUs, globalTypeTotal,
+			files, scope, members, call);
+		var written = long.view(sized.0.end());
+		// The sizing pass and the writer ran the same code, so a mismatch is an
+		// encoder bug. The bytes are still the writer's and still correct; only
+		// the buffer was sized wrong, so the result is sent and the mismatch is
+		// logged rather than ending the worker. The unit tests check the pair
+		// for every result shape.
+		if (sized.1 != written) {
+			Log.warn(Strings.format2("result sizer counted %d bytes but the writer wrote %d", sized.1, written));
+		}
+		return sized.0;
+	}
+	// Encodes a RESULT as {encodeResultWithQuery} does, and returns the writer
+	// with the number of bytes the sizing pass counted. The two must be equal;
+	// {encodeResultWithQuery} checks that. The unit tests check the same pair
+	// for every result shape.
+	def encodeResultWithQueryCounted(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
+			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
+			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> (DataWriter, long) {
 		// The call answer's signature index plus one, or zero, or -1 if its
 		// call is not sent.
 		var callSignature = if(files != null && call != null, checkCall(call, analysis.callSignatureCount()), -1);
@@ -205,10 +223,6 @@ component AnalysisWire {
 		var flags = if(analysis.parsed, PARSED) | if(analysis.verified, VERIFIED) | if(files != null, OCCURRENCES)
 			| if(files != null && scope != null, SCOPE) | if(files != null && members != null, MEMBERS)
 			| if(call != null, CALL);
-		w.putb(flags);
-		var s = analysis.stats;
-		w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
-		w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
 		// Each file's calls that are sent (see AnalysisCallCheck), and how many
 		// of them use each call signature.
 		var skipped = -1, calls: Array<int>, uses: Array<int>;
@@ -232,18 +246,46 @@ component AnalysisWire {
 			}
 			if (callSignature > 0) uses[callSignature - 1]++;
 		}
-		w.put_sleb32(skipped);
-		w.put_sleb32(analysis.diagnostics.length);
-		for (d in analysis.diagnostics) {
-			putString(w, d.path);
-			w.put_sleb32(d.beginLine).put_sleb32(d.beginColumn).put_sleb32(d.endLine).put_sleb32(d.endColumn);
-			w.put_sleb32(d.beginOffset).put_sleb32(d.endOffset);
-			putString(w, d.kind);
-			putString(w, d.message);
-		}
-		if (files != null) encodeOccurrences(w, analysis, files, calls, uses, scope, members, call);
-		return w;
+		var prefix = fun (w: DataWriter) {
+			w.put_b32(0).putb(RESULT);
+			w.put_b32(id).put_b32(analyses).put_b32(uidNext).put_b64(0);
+			w.putb(flags);
+			var s = analysis.stats;
+			w.put_sleb32(s.parseUs).put_sleb32(s.verifyUs).put_sleb32(collectUs).put_sleb32(s.uidsUsed);
+			w.put_sleb32(s.globalTypesAdded).put_sleb32(globalTypeTotal);
+			w.put_sleb32(skipped);
+			w.put_sleb32(analysis.diagnostics.length);
+			for (d in analysis.diagnostics) {
+				putString(w, d.path);
+				w.put_sleb32(d.beginLine).put_sleb32(d.beginColumn).put_sleb32(d.endLine).put_sleb32(d.endColumn);
+				w.put_sleb32(d.beginOffset).put_sleb32(d.endOffset);
+				putString(w, d.kind);
+				putString(w, d.message);
+			}
+		};
+		if (files != null) return encodeOccurrences(prefix, analysis, files, calls, uses, scope, members, call);
+		return encodeSized(prefix, fun (w: DataWriter) {});
 	}
+	// Count the same writes with the already prepared tables, then allocate
+	// the frame capacity, rounded up to the runtime's eight-byte allocation
+	// alignment. At most seven unused bytes keep array padding out of the
+	// worker's retained-heap probe. Neither pass changes encoding or limits.
+	// Returns the writer and the counted size, which must equal its length;
+	// the caller checks that (see encodeResultWithQuery).
+	private def encodeSized(prefix: DataWriter -> void, body: DataWriter -> void) -> (DataWriter, long) {
+		var size = AnalysisResultSizer.new();
+		prefix(size);
+		body(size);
+		// An unrepresentable frame still follows the library writer's failure
+		// path. Representable oversized frames remain rejected by the reader.
+		var w = DataWriter.new();
+		if (size.bytes <= int.max - 7) w.grow(int.view((size.bytes + 7) & ~7L));
+		else if (size.bytes <= int.max) w.grow(int.view(size.bytes));
+		prefix(w);
+		body(w);
+		return (w, size.bytes);
+	}
+
 	// The signature index plus one, or zero, of {call}'s record, if it is
 	// valid with {signatures} signatures, as a file's calls must be; or -1.
 	private def checkCall(call: AnalysisCallAnswer, signatures: int) -> int {
@@ -257,9 +299,9 @@ component AnalysisWire {
 		w.at(LIVE_BYTES_OFFSET).put_b64(liveBytes).at(end);
 		return WorkerFraming.finish(w);
 	}
-	private def encodeOccurrences(w: DataWriter, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>,
+	private def encodeOccurrences(prefix: DataWriter -> void, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>,
 			calls: Array<int>, uses: Array<int>, scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer,
-			call: AnalysisCallAnswer) {
+			call: AnalysisCallAnswer) -> (DataWriter, long) {
 		// A path is its file's index in {files}, the request's distinct paths
 		// in order, plus one. The paths key an ordered map, which takes
 		// O(log n) whatever they are; see OrderedStringMap.
@@ -325,86 +367,89 @@ component AnalysisWire {
 			if (strings.find(sig.label) < 0) text.add(sig.label);
 			for (p in sig.params) if (strings.find(p) < 0) text.add(p);
 		}
-		w.put_sleb32(strings.length());
-		for (i < strings.length()) putString(w, strings[i]);
-		w.put_sleb32(decls.length());
-		for (i < decls.length()) {
-			var d = decls[i];
-			w.putb(d.kind.tag);
-			w.put_sleb32(strings.add(d.name));
-			// Every declaration is in one of the request's files; -1 would be
-			// rejected.
-			w.put_sleb32(paths[d.range.path] - 1);
-			putRange(w, d.range);
-			w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
-		}
-		w.put_sleb32(text.length());
-		for (i < text.length()) putString(w, text[i]);
-		w.put_sleb32(order.length);
-		for (i in order) {
-			var sig = analysis.callSignature(i);
-			w.put_sleb32(stringRef(strings, text, sig.label)).put_sleb32(sig.start).put_sleb32(sig.params.length);
-			for (p in sig.params) w.put_sleb32(stringRef(strings, text, p));
-		}
-		w.put_sleb32(files.length);
-		var check = AnalysisCallCheck.new(uses.length);
-		for (i < files.length) {
-			var f = files[i], count = 0, typed = 0;
-			w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
-			for (o in f.1) {
-				if (!o.range.isTokenSpan()) continue;
-				count++;
-				if (o.useType != null) typed++;
+		return encodeSized(prefix, fun (w: DataWriter) {
+			w.put_sleb32(strings.length());
+			for (i < strings.length()) putString(w, strings[i]);
+			w.put_sleb32(decls.length());
+			for (i < decls.length()) {
+				var d = decls[i];
+				w.putb(d.kind.tag);
+				w.put_sleb32(strings.add(d.name));
+				// Every declaration is in one of the request's files; -1 would be
+				// rejected.
+				w.put_sleb32(paths[d.range.path] - 1);
+				putRange(w, d.range);
+				w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
 			}
-			w.put_sleb32(count);
-			for (o in f.1) {
-				var r = o.range;
-				if (!r.isTokenSpan()) continue;
-				putSpan(w, r);
-				w.put_sleb32(decls.find(o.declaration));
+			w.put_sleb32(text.length());
+			for (i < text.length()) putString(w, text[i]);
+			w.put_sleb32(order.length);
+			for (i in order) {
+				var sig = analysis.callSignature(i);
+				w.put_sleb32(stringRef(strings, text, sig.label)).put_sleb32(sig.start).put_sleb32(sig.params.length);
+				for (p in sig.params) w.put_sleb32(stringRef(strings, text, p));
 			}
-			w.put_sleb32(typed);
-			var index = 0, previous = 0;
-			for (o in f.1) {
-				if (!o.range.isTokenSpan()) continue;
-				if (o.useType != null) {
-					w.put_sleb32(index - previous).put_sleb32(strings.add(o.useType));
-					previous = index;
+			w.put_sleb32(files.length);
+			var check = AnalysisCallCheck.new(uses.length);
+			for (i < files.length) {
+				var f = files[i], count = 0, typed = 0;
+				w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
+				for (o in f.1) {
+					if (!o.range.isTokenSpan()) continue;
+					count++;
+					if (o.useType != null) typed++;
 				}
-				index++;
-			}
-			count = 0;
-			for (u in builtins[i]) if (u.range.isTokenSpan()) count++;
-			w.put_sleb32(count);
-			for (u in builtins[i]) {
-				if (!u.range.isTokenSpan()) continue;
-				putSpan(w, u.range);
-				w.put_sleb32(strings.add(u.useType));
-			}
-			w.put_sleb32(calls[i]);
-			encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
-		}
-		if (call != null) encodeCall(w, call, decls, rank);
-		if (members != null) {
-			w.putb(if(members.truncated, SCOPE_TRUNCATED, 0)).put_sleb32(members.names.length);
-			for (i < members.names.length) {
-				var d = members.declarations[i], detail = members.details[i];
-				if (d != null) {
-					w.put_sleb32(1 + decls.find(d));
-				} else {
-					w.put_sleb32(0).putb(members.kinds[i].tag);
-					w.put_sleb32(strings.add(members.names[i]));
+				w.put_sleb32(count);
+				for (o in f.1) {
+					var r = o.range;
+					if (!r.isTokenSpan()) continue;
+					putSpan(w, r);
+					w.put_sleb32(decls.find(o.declaration));
 				}
-				w.put_sleb32(if(detail != null, 1 + strings.add(detail))).put_sleb32(members.levels[i]);
+				w.put_sleb32(typed);
+				var index = 0, previous = 0;
+				for (o in f.1) {
+					if (!o.range.isTokenSpan()) continue;
+					if (o.useType != null) {
+						w.put_sleb32(index - previous).put_sleb32(strings.add(o.useType));
+						previous = index;
+					}
+					index++;
+				}
+				count = 0;
+				for (u in builtins[i]) if (u.range.isTokenSpan()) count++;
+				w.put_sleb32(count);
+				for (u in builtins[i]) {
+					if (!u.range.isTokenSpan()) continue;
+					putSpan(w, u.range);
+					w.put_sleb32(strings.add(u.useType));
+				}
+				w.put_sleb32(calls[i]);
+				encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
 			}
-		}
-		if (scope == null) return;
-		w.putb(if(scope.truncated, SCOPE_TRUNCATED, 0)).put_sleb32(scope.thisLevel);
-		w.put_sleb32(scope.declarations.length);
-		for (i < scope.declarations.length) w.put_sleb32(decls.find(scope.declarations[i])).put_sleb32(scope.levels[i]);
-		w.put_sleb32(scope.hiddenBuiltins.length);
-		for (name in scope.hiddenBuiltins) putString(w, name);
+			if (call != null) encodeCall(w, call, decls, rank);
+			if (members != null) {
+				w.putb(if(members.truncated, SCOPE_TRUNCATED, 0)).put_sleb32(members.names.length);
+				for (i < members.names.length) {
+					var d = members.declarations[i], detail = members.details[i];
+					if (d != null) {
+						w.put_sleb32(1 + decls.find(d));
+					} else {
+						w.put_sleb32(0).putb(members.kinds[i].tag);
+						w.put_sleb32(strings.add(members.names[i]));
+					}
+					w.put_sleb32(if(detail != null, 1 + strings.add(detail))).put_sleb32(members.levels[i]);
+				}
+			}
+			if (scope == null) return;
+			w.putb(if(scope.truncated, SCOPE_TRUNCATED, 0)).put_sleb32(scope.thisLevel);
+			w.put_sleb32(scope.declarations.length);
+			for (i < scope.declarations.length) w.put_sleb32(decls.find(scope.declarations[i])).put_sleb32(scope.levels[i]);
+			w.put_sleb32(scope.hiddenBuiltins.length);
+			for (name in scope.hiddenBuiltins) putString(w, name);
+		});
 	}
+
 	// A call is unsigned LEB128 numbers: its opening parenthesis, as the
 	// difference from the previous call's (the first's from zero); its head,
 	// the argument count times eight plus AnalysisCallFlags; the callee's
@@ -636,6 +681,7 @@ component AnalysisWire {
 	}
 	// As the display's declaration keys (AnalysisDeclarationKeys.hash) do.
 	private def hashDeclaration(d: AnalysisDeclaration) -> int {
+		if (AnalysisWorkerDeclaration.?(d)) return AnalysisWorkerDeclaration.!(d).positionHash;
 		var r = d.range;
 		return int.view(AnalysisTables.hashPosition(r.path, r.beginLine, r.beginColumn, d.kind.tag));
 	}
@@ -645,6 +691,39 @@ component AnalysisWire {
 			&& x.beginLine == y.beginLine && x.beginColumn == y.beginColumn
 			&& x.endLine == y.endLine && x.endColumn == y.endColumn
 			&& x.beginOffset == y.beginOffset && x.endOffset == y.endOffset;
+	}
+}
+
+// Counts precisely the primitives used by RESULT encoding, without a byte
+// buffer. Long arithmetic keeps the count from wrapping at an int boundary.
+class AnalysisResultSizer extends DataWriter {
+	def var bytes: long;
+
+	def putb(value: int) -> this {
+		bytes++;
+	}
+	def put_b32(value: int) -> this {
+		bytes += 4;
+	}
+	def put_b64(value: long) -> this {
+		bytes += 8;
+	}
+	def put_sleb32(value: int) -> this {
+		bytes++;
+		while (value < -64 || value > 63) {
+			value = value >> 7;
+			bytes++;
+		}
+	}
+	def put_uleb32(value: u32) -> this {
+		bytes++;
+		while (value >= 128) {
+			value = value >> 7;
+			bytes++;
+		}
+	}
+	def putr(value: Range<byte>) -> this {
+		bytes += value.length;
 	}
 }
 

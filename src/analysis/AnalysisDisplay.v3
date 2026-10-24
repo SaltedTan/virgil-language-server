@@ -25,9 +25,13 @@ class AnalysisWorkerDeclaration extends AnalysisDeclaration {
 	def ownType: Type;
 	var typeText: string;
 	var rendered: bool;
+	// The per-worker keyed hash is constant for this declaration. Calls and
+	// the encoder index it many times, without hashing its path again.
+	def var positionHash: int;
 	new(kind: AnalysisDeclKind, name: string, range: AnalysisRange, signature: string, syntax, ownType)
 			super(kind, name, range) {
 		this.signature = signature;
+		positionHash = int.view(AnalysisTables.hashPosition(range.path, range.beginLine, range.beginColumn, kind.tag));
 	}
 }
 
@@ -765,7 +769,7 @@ def compareTypes(a: Type, b: Type) -> int {
 // AnalysisTypeKeyMap).
 def hashCall(key: (AnalysisDeclaration, Type, bool)) -> int {
 	var d = key.0, h = AnalysisTables.hashInt(key.1.hash | if(key.2, int.min));
-	if (d != null) h ^= int.view(AnalysisTables.hashPosition(d.range.path, d.range.beginLine, d.range.beginColumn, d.kind.tag));
+	if (d != null) h ^= AnalysisWorkerDeclaration.!(d).positionHash;
 	return h;
 }
 def sameCallHash(a: (AnalysisDeclaration, Type, bool), b: (AnalysisDeclaration, Type, bool)) -> bool {

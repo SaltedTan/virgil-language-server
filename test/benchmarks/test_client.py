@@ -79,6 +79,18 @@ class ValidationTest(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 self.block.validate_diagnostic("semantic", result)
 
+    def test_error_analysis_requires_expected_diagnostic_and_current_sources(self):
+        diagnostics = [{"path": "main.v3", "kind": "UnresolvedIdentifier", "message": "missing name"}]
+        good = {**self.snapshot, "diagnostics": diagnostics}
+        self.block.analysis(good, diagnostics)
+        for result in ({**good, "generation": 2, "diagnostics": []},
+                       {**good, "generation": 2, "documentVersions": []},
+                       {**good, "generation": 2, "diagnostics": [{**diagnostics[0], "kind": "ParseError"}]}):
+            with self.assertRaises(AssertionError):
+                self.block.analysis(result, diagnostics)
+        with self.assertRaises(AssertionError):
+            self.block.analysis(good, diagnostics)  # Repeated generation.
+
     def test_pinned_coordinates_and_source_order_are_checked(self):
         pinned, projects = bench.corpus.validate(strict=False)
         current = bench.corpus.generate(projects, pinned["virgil_source_revision"])
