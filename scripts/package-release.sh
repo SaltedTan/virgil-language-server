@@ -10,7 +10,7 @@
 # virgil-lsp-<version>-<target>.manifest.json, to the output directory, and
 # prints their paths. The archive holds one directory of the same name with
 # virgil-lsp, virgil-lsp-worker, LICENSE, THIRD_PARTY_NOTICES.md, README.md,
-# and manifest.json.
+# manifest.json, and virgil/{lib/,LICENSE,REVISION}.
 #
 # --tag checks the tag with scripts/check-release.sh and records it in the
 # manifest; without it, the manifest's tag is null. The checkout must be clean
@@ -107,6 +107,7 @@ stage=$WORK/stage/$name
 mkdir -p "$stage"
 cp "$WORK/build/virgil-lsp" "$WORK/build/virgil-lsp-worker" "$stage/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
+python3 scripts/release-library.py stage "$virgil" "$stage/virgil" "$virgil_revision"
 
 case $target in
     x86-64-linux)
@@ -133,6 +134,8 @@ $platform
 - \`virgil-lsp-worker\` is its analysis worker. The server starts the worker from
   the directory that holds the server's real path, so keep the two together. A
   symlink to \`virgil-lsp\` from a directory on your \`PATH\` works.
+- \`virgil/\` holds the complete pinned \`lib/\`, its Apache-2.0 license, and
+  \`REVISION\`. Keep it beside the executables.
 - \`manifest.json\` records the version, the exact server and Virgil revisions,
   and how the executables were built.
 - \`LICENSE\` and \`THIRD_PARTY_NOTICES.md\` cover the server and the Virgil
@@ -145,9 +148,11 @@ To install:
     ln -sf ~/.local/opt/$name/virgil-lsp ~/.local/bin/virgil-lsp
     virgil-lsp --version
 
-The archive doesn't include Virgil's library sources. Projects that use
-\`virgilDependencies\` need the editor to send a Virgil root. The release
-documentation covers checksums, editors, remote machines, and the Virgil root:
+With no client Virgil root, the server uses the bundled library beside its
+resolved executable after checking its revision. A client root takes precedence;
+an invalid override never falls back. Projects needing sources outside \`lib/\`
+(such as \`rt/\` or \`aeneas/\`) still need an explicit checkout. The release
+documentation covers checksums, editors, remote machines, and root selection:
 https://github.com/SaltedTan/virgil-language-server/blob/${tag:-$revision}/docs/releasing.md#installing
 README
 
@@ -161,6 +166,11 @@ python3 - "$stage/manifest.json" "$version" "$tag" "$target" "$revision" "$dirty
     "$virgil_revision" "$worker_heap" "$compiler_path" "$(sha256 "$compiler")" \
     "$(sha256 "$stage/virgil-lsp")" "$(sha256 "$stage/virgil-lsp-worker")" <<'PY'
 import json, sys
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location("release_library", "scripts/release-library.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 (out, version, tag, target, revision, dirty, virgil_revision, worker_heap,
  compiler_path, compiler_sha256, server_sha256, worker_sha256) = sys.argv[1:]
 manifest = {
@@ -173,6 +183,7 @@ manifest = {
     "dirty": dirty == "true",
     "virgilRevision": virgil_revision,
     "workerHeap": worker_heap,
+    "library": module.metadata(Path(out).parent / "virgil", virgil_revision),
     "compiler": {"path": compiler_path, "sha256": compiler_sha256},
     "sha256": {"virgil-lsp": server_sha256, "virgil-lsp-worker": worker_sha256},
 }
@@ -183,8 +194,8 @@ PY
 
 chmod 755 "$stage" "$stage/virgil-lsp" "$stage/virgil-lsp-worker"
 chmod 644 "$stage/LICENSE" "$stage/THIRD_PARTY_NOTICES.md" "$stage/README.md" "$stage/manifest.json"
-# COPYFILE_DISABLE keeps macOS tar from adding AppleDouble (._*) files.
-(cd "$WORK/stage" && COPYFILE_DISABLE=1 tar -czf "$OUT/$name.tar.gz" "$name")
+# Normalize ordering, ownership, mtimes, and the gzip header on Linux/macOS.
+python3 scripts/release-library.py archive "$stage" "$OUT/$name.tar.gz" "$(git show -s --format=%ct HEAD)"
 cp "$stage/manifest.json" "$OUT/$name.manifest.json"
 echo "$OUT/$name.tar.gz"
 echo "$OUT/$name.manifest.json"

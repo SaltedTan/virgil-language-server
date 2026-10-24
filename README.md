@@ -39,7 +39,7 @@ cd virgil-language-server
 make test        # builds build/virgil-lsp and build/virgil-lsp-worker, and runs available tests
 ```
 
-Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables. [Releases](docs/releasing.md) describes the release archives, how to verify them, and how to install them.
+Keep `virgil-lsp-worker` next to `virgil-lsp` when moving the executables. New release archives also include `virgil/` with the pinned library: keep it beside the executables to analyze `virgilDependencies` under `lib/` without a separate checkout. An optional client root overrides the bundle; sources outside `lib/` still need a checkout ([root selection](docs/configuration.md#the-virgil-root)). [Releases](docs/releasing.md) describes the release archives, how to verify them, and how to install them.
 
 Try the current development command:
 

@@ -87,6 +87,15 @@ run_case() {
         cat -v "$TMP/want" | sed 's/^/  expected| /'
         echo
     fi
+    # Initialize now logs the root choice once. The interactive bundle tests
+    # check the exact provenance/reason; keep these transcripts focused on
+    # their existing lifecycle, framing, and warning expectations.
+    local initialized roots
+    initialized=$(grep -o '"serverInfo":' "$TMP/out" | wc -l | tr -d ' ')
+    roots=$(grep -c '^virgil-lsp: Virgil root: ' "$TMP/err" || true)
+    [ "$initialized" -eq "$roots" ] || { ok=0; echo "  stderr: expected $initialized root selection log(s), got $roots"; }
+    sed '/^virgil-lsp: Virgil root: /d' "$TMP/err" > "$TMP/other-err"
+    mv "$TMP/other-err" "$TMP/err"
     if [ -f "$c/stderr" ]; then
         if [ "$(wc -l < "$c/stderr")" -ne "$(wc -l < "$TMP/err")" ]; then
             ok=0

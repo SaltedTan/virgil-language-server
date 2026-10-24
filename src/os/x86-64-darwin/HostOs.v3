@@ -168,7 +168,8 @@ component HostOs {
 		return ((u64.view(System.ticksUs()) << 32) ^ u64.view(System.ticksNs()), u64.view(sys(SYS_getpid, ())));
 	}
 	// The absolute path of this process's executable, or null. This is
-	// libproc's proc_pidpath(), which returns a NUL-terminated path.
+	// libproc's proc_pidpath(): the kernel returns the executable vnode's
+	// physical path, resolving symlinks, NUL-terminated.
 	def executablePath() -> string {
 		var buf = Array<byte>.new(4096); // PROC_PIDPATHINFO_MAXSIZE
 		var pid = sys(SYS_getpid, ());

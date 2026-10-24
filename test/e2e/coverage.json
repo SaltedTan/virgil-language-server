@@ -208,7 +208,7 @@
           "id": "noroot",
           "workaround": false,
           "repeated": false,
-          "description": "The stock configuration, with VIRGIL_LOC unset, opening .virgil-lsp.json."
+          "description": "The stock configuration, with VIRGIL_LOC unset, opening .virgil-lsp.json using deliberately bundle-less copies of the server and worker."
         },
         {
           "id": "noroot-noice-workaround",
@@ -1016,7 +1016,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
-      "description": "With VIRGIL_LOC unset, a client initializes on .virgil-lsp.json."
+      "description": "With VIRGIL_LOC unset and a deliberately bundle-less server, a client initializes on .virgil-lsp.json."
     },
     {
       "id": "lazyvim.configuration.missing-root",
@@ -1426,7 +1426,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "With VIRGIL_LOC unset, clearing virgil.virgilRoot restarts the server, and the output channel says there is no Virgil root; restoring it restarts with the root."
+      "description": "With VIRGIL_LOC unset and deliberately bundle-less server and worker copies, clearing virgil.virgilRoot restarts the server, and the output channel says there is no Virgil root; restoring it restarts with the root."
     },
     {
       "id": "vscode.configuration.rootless-live",
@@ -2316,7 +2316,7 @@
       },
       {
         "step": 12,
-        "summary": "Clearing virgil.virgilRoot restarts the server without a root, and the project file gets MissingVirgilRoot.",
+        "summary": "With deliberately bundle-less server and worker copies, clearing virgil.virgilRoot restarts the server without a root, and the project file gets MissingVirgilRoot.",
         "checks": ["vscode.configuration.rootless-log", "vscode.configuration.rootless-live"],
         "notCovered": ["vscode.problems-view"]
       },

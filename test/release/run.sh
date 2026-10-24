@@ -7,7 +7,7 @@
 # scripts/release-notes.py on the release assets. The check-release.sh cases
 # write VERSION and CHANGELOG.md to a temporary repository root; the others
 # construct VSIX files, build manifests, and archives in a temporary directory.
-# Usage: test/release/run.sh
+# Usage: test/release/run.sh [--archive <archive>]
 # Backticks in single-quoted patterns are Markdown, not command substitutions.
 # shellcheck disable=SC2016
 set -uo pipefail
@@ -822,6 +822,12 @@ expect_run "release-notes.py: no relative link target remains" 1 - "" \
 assets '"v1.2.3-alpha.4"'
 links "a repository link at the release's tag" 0 \
     '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
+
+expect_run "bundled library integrity and reproducibility" 0 - - python3 "$ROOT/test/release/test_library.py"
+if [ "${1:-}" = --archive ]; then
+    expect_run "archive installation (moved, spaces, symlink, read-only library)" 0 \
+        '0 failed$' - "$ROOT/scripts/smoke-test-release.sh" "${2:?missing archive}"
+fi
 
 echo "release scripts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

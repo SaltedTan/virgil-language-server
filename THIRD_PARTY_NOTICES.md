@@ -9,10 +9,12 @@ This file lists third-party material that is used by, linked into, or adapted in
 | Upstream | https://github.com/titzer/virgil |
 | Location | `vendor/virgil` (git submodule) |
 | Pinned revision | `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` (2026-10-08) |
-| License | Apache License 2.0 (`vendor/virgil/aeneas/LICENSE`; source headers refer to it) |
+| License | Apache License 2.0 (the root README names `vendor/virgil/rt/LICENSE`; compiler headers also refer to `aeneas/LICENSE`) |
 | Copyright | Ben L. Titzer, Google Inc., and the Virgil authors, as stated in individual source headers |
-| How it is used | Compiled into the `virgil-lsp` executable: `aeneas/src`, plus the libraries listed in `aeneas/DEPS` (`lib/util`, `lib/asm/*`, `lib/file/elf`) and `lib/file/json/JsonParser.v3`. `lib/test` is used only by the unit-test executable. The prebuilt `bin/stable` compiler is used as a build tool. |
+| How it is used | Compiled into the `virgil-lsp` executable: `aeneas/src`, plus the libraries listed in `aeneas/DEPS` (`lib/util`, `lib/asm/*`, `lib/file/elf`) and `lib/file/json/JsonParser.v3`. `lib/test` is used only by the unit-test executable. The prebuilt `bin/stable` compiler is used as a build tool. Release archives also redistribute the entire unchanged `lib/` as `virgil/lib/`, with `virgil/LICENSE` copied from `rt/LICENSE` and `virgil/REVISION` recording this pin. |
 | Modifications | The submodule is unmodified. The single-file parser driver is adapted as recorded below. |
+
+The bundled sources retain all upstream headers and attribution, including Ulf Adams's copyright and Apache-2.0 notice in `lib/util/Floats.v3`. The bundle contains no compiler executable, `rt/`, or `aeneas/` sources.
 
 Release archives that contain a `virgil-lsp` binary must include a copy of the Apache License 2.0 and this notice file. [`scripts/package-release.sh`](scripts/package-release.sh) adds both.
 

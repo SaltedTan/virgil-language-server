@@ -591,6 +591,16 @@ async function noVirgilRoot(failures, words) {
   const root = setting('virgil.virgilRoot');
   const server = setting('virgil.server.path');
   const config = vscode.Uri.file(path.join(project, '.virgil-lsp.json'));
+  // Root errors need an intentionally incomplete install now that archives
+  // carry a default library. Copy the executables; a symlink resolves back
+  // to the original install and would still discover its bundle.
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'no-bundle-'));
+  const copy = path.join(directory, 'virgil-lsp');
+  for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
+    fs.copyFileSync(path.join(path.dirname(fs.realpathSync(server)), name), path.join(directory, name));
+    fs.chmodSync(path.join(directory, name), 0o755);
+  }
+  await restoreServer(copy, words);
   // Errors logged meanwhile can come from a client that the restart replaces,
   // as after a failed check, so only the new server's start counts.
   const restore = async () => {
@@ -613,7 +623,7 @@ async function noVirgilRoot(failures, words) {
       const text = log();
       return text.includes('virgil.virgilRoot changed; restarting the server')
         && text.includes('No Virgil root: neither virgil.virgilRoot nor VIRGIL_LOC is set')
-        && text.includes(`Starting ${server} --stdio`);
+        && text.includes(`Starting ${copy} --stdio`);
     });
   }, restore);
   await scenario(failures, 'no Virgil root: a running server, and MissingVirgilRoot on .virgil-lsp.json, cleared when restored', async () => {
@@ -634,6 +644,8 @@ async function noVirgilRoot(failures, words) {
     assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
     expectNoServerError(log);
   }, restore);
+  await restoreServer(server, words);
+  fs.rmSync(directory, { recursive: true, force: true });
 }
 
 // Points virgil.server.path back at server, if it no longer is, and waits for

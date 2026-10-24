@@ -12,13 +12,15 @@
 # Usage: smoke-test-release.sh <archive>
 set -uo pipefail
 
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
 ARCHIVE=${1:?usage: smoke-test-release.sh <archive>}
 ARCHIVE=$(cd "$(dirname "$ARCHIVE")" && pwd)/$(basename "$ARCHIVE")
 name=$(basename "$ARCHIVE" .tar.gz)
 TMP=$(mktemp -d)
 # Executable discovery resolves symlinks (e.g. /var to /private/var on macOS).
 TMP=$(cd "$TMP" && pwd -P)
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod -R u+w "$TMP"; rm -rf "$TMP"' EXIT
 
 pass=0
 fail=0
@@ -53,24 +55,20 @@ run() {
     (cd "$TMP/work" && env -i PATH="$TMP/bin:/usr/bin:/bin" "$@")
 }
 
-expected_members() {
-    for f in LICENSE README.md THIRD_PARTY_NOTICES.md manifest.json virgil-lsp virgil-lsp-worker; do
-        echo "$name/$f"
-    done
-}
-members() {
-    local listed
-    listed=$(tar -tzf "$ARCHIVE") || return 1
-    diff <(expected_members) <(echo "$listed" | sed 's:/$::' | grep -vxF "$name" | LC_ALL=C sort)
-}
-check "archive holds exactly the expected files under $name/" members
+# Validate all members before extraction, including entry types and paths.
+if ! "$ROOT/scripts/check-release.sh" --archive "$ARCHIVE"; then exit 1; fi
 
 mkdir "$TMP/extract" "$TMP/work" "$TMP/bin"
 if ! tar -xzf "$ARCHIVE" -C "$TMP/extract"; then
     echo "FAIL: cannot extract $ARCHIVE"
     exit 1
 fi
-DIR=$TMP/extract/$name
+# Move the installation, with spaces in the path, before using it.
+DIR=$TMP/moved\ install
+mv "$TMP/extract/$name" "$DIR"
+# Every library operation must work without write permissions.
+find "$DIR/virgil" -type f -exec chmod 444 {} +
+find "$DIR/virgil" -type d -exec chmod 555 {} +
 ln -s "$DIR/virgil-lsp" "$TMP/bin/virgil-lsp"
 
 executables() {
@@ -147,6 +145,9 @@ check "analyze reports a semantic error" \
     analyze "$DIR/virgil-lsp" 1 '^error\.v3:2:[0-9]+: UnresolvedIdentifier' error.v3
 check "analyze works through a symlink on PATH" \
     analyze virgil-lsp 0 '^ok: 2 files parsed and verified$' main.v3 shapes.v3
+
+check "no-root lib/util diagnostics, hover, and definition through a symlink in a moved, read-only install" \
+    python3 "$ROOT/test/release/bundled-library.py" "$TMP/bin/virgil-lsp"
 
 echo "$name: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

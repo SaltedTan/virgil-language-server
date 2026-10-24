@@ -6,7 +6,7 @@ Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in cli
 
 ## LazyVim
 
-Copy [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to `~/.config/nvim/lua/plugins/virgil.lua`, and make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Set `VIRGIL_LOC` as described under [The Virgil root](#the-virgil-root).
+Copy [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to `~/.config/nvim/lua/plugins/virgil.lua`, and make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
 
 LazyVim's keys reach the server: `gd`, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more.
 
@@ -26,13 +26,13 @@ nvim --clean -u editors/nvim/virgil_lsp.lua path/to/file.v3
 
 ## The Virgil root
 
-Project files name Virgil's own libraries relative to a Virgil checkout or installation, as in `"virgilDependencies": ["lib/util/*.v3"]` ([Configuration](../../docs/configuration.md#the-virgil-root)). Both configurations send its location as `init_options = { virgilRoot = vim.env.VIRGIL_LOC }`, so set `VIRGIL_LOC` before starting Neovim to the absolute physical path of the directory that holds `lib/`:
+Project files name Virgil's own libraries relative to a Virgil checkout or installation, as in `"virgilDependencies": ["lib/util/*.v3"]` ([Configuration](../../docs/configuration.md#the-virgil-root)). Both configurations send its location as `init_options = { virgilRoot = vim.env.VIRGIL_LOC }`, so an unset `VIRGIL_LOC` omits the option and lets the server use its bundled library. To override it, set `VIRGIL_LOC` before starting Neovim to the absolute physical path of the directory that holds `lib/`:
 
 ```sh
 export VIRGIL_LOC=$HOME/virgil
 ```
 
-Or replace `vim.env.VIRGIL_LOC` with the path. Without a root, a project file with `virgilDependencies` gets a `MissingVirgilRoot` diagnostic, and its documents stay in single-file mode. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
+Or replace `vim.env.VIRGIL_LOC` with the path. See [The Virgil root](../../docs/configuration.md#the-virgil-root) for bundle placement, root errors, and projects needing a checkout override. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
 
 ## Project files
 
