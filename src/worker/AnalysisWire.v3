@@ -636,6 +636,7 @@ component AnalysisWire {
 	}
 	// As the display's declaration keys (AnalysisDeclarationKeys.hash) do.
 	private def hashDeclaration(d: AnalysisDeclaration) -> int {
+		if (AnalysisWorkerDeclaration.?(d)) return AnalysisWorkerDeclaration.!(d).positionHash;
 		var r = d.range;
 		return int.view(AnalysisTables.hashPosition(r.path, r.beginLine, r.beginColumn, d.kind.tag));
 	}
