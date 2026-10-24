@@ -6,22 +6,29 @@
 # coverage manifest and the result schema, by the rules in test/e2e/RESULTS.md.
 # The script interprets results-v1.schema.json itself, with draft 2020-12
 # semantics for the keywords in SCHEMA_KEYWORDS, and refuses a schema with any
-# other keyword, so that the schema and this script can't drift apart. It
-# also enforces the cross-event rules in test/e2e/RESULTS.md#result-events.
-# It prints one line for each stream: valid, with whether
-# its run passed and the number of observations in each status, or invalid,
-# with the first error it finds and its line. It exits with 0 if every stream
-# is valid and its run passed, 1 if every stream is valid but a run didn't
-# pass, and 2 if a stream is invalid or the manifest or the schema can't be
-# used. Other tools can load this file as a module, with importlib, since its
-# name has a hyphen. See test/e2e/RESULTS.md#validating-a-stream.
+# other keyword, so that the schema and this script can't drift apart. Then it
+# checks what one event's schema can't: the stream's encoding, the order of its
+# events, the run-start's plan (the manifest's, or a manual run's chosen
+# targets) and provenance against the manifest, each check against the plan and
+# the manifest's expected-failure rules, each manual observation against the
+# plan, and the run-end against the results. It prints one line for each
+# stream: valid, with whether its run passed and the number of observations in
+# each status, or invalid, with the first error it finds and its line. It exits
+# with 0 if every stream is valid and its run passed, 1 if every stream is
+# valid but a run didn't pass, and 2 if a stream is invalid or the manifest or
+# the schema can't be used. Other tools can load this file as a module, with
+# importlib, since its name has a hyphen. See
+# test/e2e/RESULTS.md#validating-a-stream.
 #
-# render writes a release's tables as test/e2e/RESULTS.md#rendering-a-release
-# defines, using selection-v1.schema.json beside the result schema.
-# The output depends only on the inputs. It exits with 0 if it rendered, or
-# found no drift with --check, 1 if --check found drift, which it prints as a
-# unified diff, or a selected run didn't pass, and 2 if an input is malformed.
-# See test/e2e/RESULTS.md#rendering-a-release.
+# render writes a release's results into a Markdown document, such as
+# docs/manual-testing.md: a table of its automated runs, a separate table of
+# any selected manual observations, and its matrix, between the release's
+# markers, from the valid streams that a selection lists (the selection's
+# schema is selection-v1.schema.json, beside the result schema). The output
+# depends only on the inputs. It exits with 0 if it rendered, or found no drift
+# with --check, 1 if --check found drift, which it prints as a unified diff, or
+# a selected run didn't pass, and 2 if an input is malformed. See
+# test/e2e/RESULTS.md#rendering-a-release.
 # Usage: editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
 #        editor-results.py render [--manifest PATH] [--schema PATH] --selection FILE --doc PATH
 #                                 (--write | --check)
