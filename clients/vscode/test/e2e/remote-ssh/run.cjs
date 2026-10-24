@@ -670,15 +670,14 @@ const send = (name, targets) => {
 const table = [];
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
-    const fields = stat(pid);
-    if (isZombie(fields[0], Number(fields[17]))) continue;
     const identified = processFiles(fs, pid, { exe: 'link' });
     if (identified === undefined) continue;
     if (identified.unreadable) {
-      unidentified.push(Number(pid));
+      unidentified.push(identified.pid);
+      if (host && identified.pid === host.pid && identified.start === host.start) hostRuns = null;
       continue;
     }
-    table.push({ pid: Number(pid), ppid: Number(fields[1]), start: identified.start, files: identified.files });
+    table.push({ pid: identified.pid, ppid: identified.ppid, start: identified.start, files: identified.files });
   } catch {}
 }
 const known = kill.map((identity) => {
@@ -777,8 +776,9 @@ async function settle(run, layout, at, host, firstSample) {
   for (;;) {
     const processes = firstSample ?? await remoteProcesses(run, layout, { host });
     firstSample = undefined;
-    processes.host = host !== undefined && processes.found.some((p) => p.pid === host.pid && p.start === host.start
-      && (p.exe === undefined || p.exe === host.exe));
+    processes.host = host !== undefined && processes.unidentified.includes(host.pid) ? null
+      : host !== undefined && processes.found.some((p) => p.pid === host.pid && p.start === host.start
+        && (p.exe === undefined || p.exe === host.exe));
     if (!Number.isFinite(processes.sampledAt)) throw infra('leak check could not be verified in time');
     timely ||= processes.sampledAt <= deadline;
     if (!timely) throw infra('leak check could not be verified in time');
@@ -819,15 +819,18 @@ async function stopHost(run, layout, host) {
   let sent = null;
   let at = started;
   for (const signal of ['SIGTERM', 'SIGKILL']) {
-    const processes = await remoteProcesses(run, layout, { host, signal });
-    if (!processes.host) return { signal: sent, seconds: (Date.now() - started) / 1000, at, processes };
-    sent = signal;
-    at = processes.signaledAt;
+    let processes = await remoteProcesses(run, layout, { host, signal });
+    if (processes.host === false) return { signal: sent, seconds: (Date.now() - started) / 1000, at, processes };
+    if (processes.signaledAt !== undefined) {
+      sent = signal;
+      at = processes.signaledAt;
+    }
     for (const deadline = Date.now() + HOST_STOP_MS; Date.now() < deadline;) {
       await sleep(100);
-      const stopped = await remoteProcesses(run, layout, { host });
-      if (!stopped.host) return { signal, seconds: (Date.now() - started) / 1000, at, processes: stopped };
+      processes = await remoteProcesses(run, layout, { host });
+      if (processes.host === false) return { signal: sent, seconds: (Date.now() - started) / 1000, at, processes };
     }
+    if (processes.host === null) throw infra(`leak check could not identify the host's process with pid ${host.pid}`);
   }
   throw infra(`the remote extension host (pid ${host.pid}) that VS Code left running still ran ${HOST_STOP_MS / 1000} seconds after SIGKILL`);
 }

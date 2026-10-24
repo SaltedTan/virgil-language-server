@@ -79,6 +79,45 @@ test('the teardown never signals a PID that a process of the run had and another
   assert.deepEqual([...result.stopped.map((p) => p.pid)].sort(), [200, 300, 301]);
 });
 
+test('both discoveries rescan a reused PID without inheriting its former parent', () => {
+  for (const discovery of ['teardown', 'remote']) {
+    for (const pivot of ['stat', 'exe']) {
+      const table = new Map([
+        [100, { start: '100', exe: '/work/python3' }],
+        [101, { start: '110', ppid: 100, hidden: true }],
+      ]);
+      const proc = fakeProc(table);
+      let replaced = false;
+      const replace = (file) => {
+        if (!replaced && file === `/proc/101/${pivot}`) {
+          table.set(101, { start: '200', ppid: 1, hidden: true });
+          replaced = true;
+        }
+      };
+      const racing = { ...proc, readdirSync: (file) => file === '/proc' ? ['100', '101'] : [],
+        readFileSync: (file, ...args) => {
+          const result = proc.readFileSync(file, ...args);
+          replace(file);
+          return result;
+        },
+        readlinkSync: (file) => {
+          replace(file);
+          return proc.readlinkSync(file);
+        },
+      };
+      const localhost = load('localhost.cjs', { 'node:fs': racing }, { pid: 1 });
+      const sample = () => discovery === 'teardown'
+        ? JSON.parse(JSON.stringify(localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started: [] })))
+        : remoteProcesses(table, { root: '/work', agent: '/work/agent' }, { proc: racing }).listing;
+      const first = sample();
+      const found = discovery === 'teardown' ? first.filter((p) => !p.unidentified) : first.found;
+      assert.deepEqual(found.map((p) => p.pid), [100], `${discovery} at ${pivot}`);
+      const second = sample();
+      assert.deepEqual((discovery === 'teardown' ? second : second.found).map((p) => p.pid), [100]);
+    }
+  }
+});
+
 test('the teardown stops a running Xvfb last, with SIGTERM', async () => {
   const processes = new Map([[100, { start: '500' }], [200, { start: '600', exe: '/work/remote/virgil-lsp' }]]);
   processes.get(100).on = (name) => {
@@ -1130,6 +1169,50 @@ test('the leak check finds a remote extension host that hides its executable by 
   assert.equal(listing.host, true);
   assert.deepEqual(listing.found, [{ pid: 10, ppid: 1, start: '500', exe: host.exe }]);
   assert.deepEqual(signals, [[10, 'SIGTERM']]);
+});
+
+test('host containment resamples an unidentified host and fails within its bound if it stays unknown', async () => {
+  const agent = '/work/agent';
+  const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+  for (const unknownAt of [0, 1]) {
+    for (const outcome of ['gone', 'live', 'unknown']) {
+      let now = 0;
+      let samples = 0;
+      const signals = [];
+      const runner = load('run.cjs', {}, {}, {
+        Date: { now: () => now },
+        setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+      });
+      const remote = { target: { root: '/work' }, remote: async (command) => {
+        const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+        assert.deepEqual(options.host, host);
+        const unknown = samples >= unknownAt && (outcome === 'unknown' || samples === unknownAt);
+        const gone = samples > unknownAt && outcome === 'gone';
+        samples++;
+        const proc = unknown ? fakeThreadedProc({ vanishing: ['101', '102'], exe: host.exe }) : fakeProc(new Map(
+          gone ? [] : [[host.pid, { start: host.start, exe: host.exe }]],
+        ));
+        const result = remoteProcesses(new Map(), options, { proc });
+        if (unknown) assert.equal(result.listing.host, null);
+        signals.push(...result.signals);
+        return { stdout: JSON.stringify({ ...result.listing, sampledAt: now, signaledAt: result.signals.length ? now : undefined }) };
+      } };
+      const stopped = runner.stopHost(remote, { agent, serverNode: host.exe }, host);
+      if (outcome === 'gone') {
+        const result = await stopped;
+        assert.equal(result.processes.host, false);
+        assert.equal(samples, unknownAt + 2);
+        assert.equal(result.signal, unknownAt === 0 ? null : 'SIGTERM');
+      } else {
+        await assert.rejects(stopped, (error) => error.kind === 'infra' && (outcome === 'unknown'
+          ? error.message === "leak check could not identify the host's process with pid 100"
+          : error.message.includes('still ran 3 seconds after SIGKILL')));
+      }
+      assert.ok(now <= 6000);
+      assert.ok(samples < 65);
+      if (outcome === 'unknown' && unknownAt === 0) assert.deepEqual(signals, []);
+    }
+  }
 });
 
 test('the leak check leaves the VS Code Server\'s descendants that run other executables out', () => {

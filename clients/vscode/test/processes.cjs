@@ -158,13 +158,62 @@ test('a process is identified by a thread that outlives the choice of whose file
   // Its main thread has exited; the first live thread whose files the scan
   // reads exits meanwhile, and the next one still identifies it.
   assert.deepEqual(processes.processFiles(fakeThreadedProc(), 100, files), {
-    start: '12345', files: { exe: '/work/python3', environ: 'RUN=1', cmdline: 'python3\0-c\0pass' },
+    pid: 100, ppid: 1, start: '12345', files: { exe: '/work/python3', environ: 'RUN=1', cmdline: 'python3\0-c\0pass' },
   });
   // With every live thread gone by then, while the process still runs, it is
   // neither identified nor known to have gone.
-  assert.deepEqual(processes.processFiles(fakeThreadedProc({ vanishing: ['101', '102'] }), 100, files), { start: '12345', unreadable: true });
+  assert.deepEqual(processes.processFiles(fakeThreadedProc({ vanishing: ['101', '102'] }), 100, files), { pid: 100, ppid: 1, start: '12345', unreadable: true });
   // A process that has gone, or is a zombie, has no files to identify it.
   assert.equal(processes.processFiles(fakeProc(new Map([[100, { start: '12345', state: 'Z' }]])), 100, files), undefined);
+});
+
+test('identifying files never combine identities when a PID is reused during a read', () => {
+  for (const pivot of ['stat', 'exe', 'environ', 'cmdline']) {
+    const table = new Map([[100, { ppid: 50, start: '100', exe: '/work/old', environ: ['RUN=1'] }]]);
+    const proc = fakeProc(table);
+    let replaced = false;
+    const replace = (file) => {
+      if (!replaced && file === `/proc/100/${pivot}`) {
+        table.set(100, { ppid: 1, start: '200', exe: '/usr/bin/new' });
+        replaced = true;
+      }
+    };
+    const racing = { ...proc, readdirSync: () => [],
+      readFileSync: (file, ...args) => {
+        const result = proc.readFileSync(file, ...args);
+        replace(file);
+        return result;
+      },
+      readlinkSync: (file) => {
+        const result = proc.readlinkSync(file);
+        replace(file);
+        return result;
+      },
+    };
+    const files = { exe: 'link', environ: 'latin1' };
+    assert.deepEqual(processes.processFiles(racing, 100, files), { pid: 100, ppid: 1, start: '200', unreadable: true }, pivot);
+    assert.deepEqual(processes.processFiles(racing, 100, files), {
+      pid: 100, ppid: 1, start: '200', files: { exe: '/usr/bin/new', environ: '', cmdline: '' },
+    }, pivot);
+  }
+});
+
+test('identifying files rejects a thread ID reused while its process remains live', () => {
+  const proc = fakeThreadedProc();
+  let replaced = false;
+  const racing = { ...proc,
+    readFileSync: (file, ...args) => {
+      const result = proc.readFileSync(file, ...args);
+      return replaced && file === '/proc/100/task/102/stat' ? result.replace(' 12345 ', ' 12346 ') : result;
+    },
+    readlinkSync: (file) => {
+      const result = proc.readlinkSync(file);
+      replaced = true;
+      return result;
+    },
+  };
+  assert.deepEqual(processes.processFiles(racing, 100, { exe: 'link' }), { pid: 100, ppid: 1, start: '12345', unreadable: true });
+  assert.equal(processes.processFiles(racing, 100, { exe: 'link' }).files.exe, '/work/python3');
 });
 
 test('a file that a process doesn\'t have, or that its user may not read, is left out of its files', () => {
@@ -187,18 +236,18 @@ test('a file that a process doesn\'t have, or that its user may not read, is lef
       throw Object.assign(new Error('ENOENT'), { code: file.startsWith('/proc/101/') ? 'EACCES' : 'ENOENT' });
     },
   };
-  assert.deepEqual(processes.processFiles(proc, 100, { exe: 'link', environ: 'latin1' }), { start: '12345', files: { environ: '', cmdline: '' } });
-  assert.deepEqual(processes.processFiles(proc, 101, { exe: 'link', environ: 'latin1' }), { start: '12345', files: { cmdline: 'ssh-agent\0-l\0/tmp/agent' } });
+  assert.deepEqual(processes.processFiles(proc, 100, { exe: 'link', environ: 'latin1' }), { pid: 100, ppid: 1, start: '12345', files: { environ: '', cmdline: '' } });
+  assert.deepEqual(processes.processFiles(proc, 101, { exe: 'link', environ: 'latin1' }), { pid: 101, ppid: 1, start: '12345', files: { cmdline: 'ssh-agent\0-l\0/tmp/agent' } });
   // cmdline only proves liveness: a failure leaves it out, and the other
   // files still identify the process.
-  assert.deepEqual(processes.processFiles(proc, 103, { exe: 'link', environ: 'latin1' }), { start: '12345', files: { exe: '/work/python3', environ: 'RUN=1' } });
+  assert.deepEqual(processes.processFiles(proc, 103, { exe: 'link', environ: 'latin1' }), { pid: 103, ppid: 1, start: '12345', files: { exe: '/work/python3', environ: 'RUN=1' } });
   // With no file readable at all, a live process is not identified; one
   // whose threads have all gone is neither identified nor known to be gone.
   const denied = { readdirSync: () => [], readFileSync: (file) => {
     if (file === '/proc/102/stat') return stat(102, 'sshd');
     throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
   }, readlinkSync: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); } };
-  assert.deepEqual(processes.processFiles(denied, 102, { exe: 'link', environ: 'latin1' }), { start: '12345', unreadable: true });
+  assert.deepEqual(processes.processFiles(denied, 102, { exe: 'link', environ: 'latin1' }), { pid: 102, ppid: 1, start: '12345', unreadable: true });
 });
 
 // Starts a real process that the test owns, and returns it with its start

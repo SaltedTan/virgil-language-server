@@ -71,9 +71,9 @@ function zombie(p) {
 // A file that the process doesn't have, as a kernel thread has no exe, or that
 // its user may not read, is otherwise left out.
 // Returns undefined if the process has gone: its stat can't be read, or it is
-// a zombie (see isZombie). Otherwise { start, files }, with the process's start
-// time in clock ticks after boot and the contents of the files that it could
-// read; or { start, unreadable }, if every thread had gone once its files had
+// a zombie (see isZombie). Otherwise { pid, ppid, start, files }, with the
+// process's start time in clock ticks after boot and the contents of the files
+// that it could read; or { pid, ppid, start, unreadable }, if every thread had gone once its files had
 // been read, or no thread's files could be read, while the process hadn't, so
 // that the process is neither identified nor known to have gone. A caller
 // reports such a process rather than counting it as gone, and tries again
@@ -82,15 +82,15 @@ function processFiles(fs, pid, files) {
   const stat = (dir) => {
     try {
       const text = fs.readFileSync(`${dir}/stat`, 'utf8');
-      return text.slice(text.lastIndexOf(')') + 2).split(' ');
+      const fields = text.slice(text.lastIndexOf(')') + 2).split(' ');
+      return { pid: Number(text.slice(0, text.indexOf(' '))), ppid: Number(fields[1]), start: fields[19], state: fields[0], threads: Number(fields[17]) };
     } catch (error) {
       if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined;
       throw error;
     }
   };
-  const fields = stat(`/proc/${pid}`);
-  if (fields === undefined || isZombie(fields[0], Number(fields[17]))) return undefined;
-  const start = fields[19];
+  const initial = stat(`/proc/${pid}`);
+  if (initial === undefined || isZombie(initial.state, initial.threads)) return undefined;
   let threads = [];
   try {
     threads = fs.readdirSync(`/proc/${pid}/task`);
@@ -100,11 +100,11 @@ function processFiles(fs, pid, files) {
   }
   // Its own directory describes the process while its main thread runs; once
   // that has exited, only a thread's does.
-  const dirs = fields[0] === 'Z' ? [] : [`/proc/${pid}`];
+  const dirs = initial.state === 'Z' ? [] : [`/proc/${pid}`];
   for (const tid of threads) dirs.push(`/proc/${pid}/task/${tid}`);
   for (const dir of dirs) {
     const before = stat(dir);
-    if (before === undefined || before[0] === 'Z') continue;
+    if (before === undefined || before.state === 'Z') continue;
     const read = {};
     let exited = false;
     for (const [name, how] of Object.entries({ ...files, cmdline: 'utf8' })) {
@@ -121,12 +121,15 @@ function processFiles(fs, pid, files) {
     // part, or not at all; and a thread that no file describes identifies
     // nothing, so try the next one.
     const after = stat(dir);
-    if (exited || after === undefined || after[0] === 'Z' || Object.keys(read).length === 0) continue;
-    return { start, files: read };
+    if (exited || after === undefined || after.state === 'Z' || before.pid !== after.pid || before.start !== after.start || Object.keys(read).length === 0) continue;
+    const current = stat(`/proc/${pid}`);
+    if (current === undefined || isZombie(current.state, current.threads)) return undefined;
+    if (current.pid !== initial.pid || current.start !== initial.start) break;
+    return { pid: current.pid, ppid: current.ppid, start: current.start, files: read };
   }
   const after = stat(`/proc/${pid}`);
-  if (after === undefined || isZombie(after[0], Number(after[17]))) return undefined;
-  return { start, unreadable: true };
+  if (after === undefined || isZombie(after.state, after.threads)) return undefined;
+  return { pid: after.pid, ppid: after.ppid, start: after.start, unreadable: true };
 }
 
 // Whether a process that processFiles identified is the run's. files are the

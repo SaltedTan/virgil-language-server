@@ -351,15 +351,13 @@ function runProcesses({ work, sockets, marker, started }) {
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
     try {
-      const { state, ppid, threads } = readStat(name);
-      if (isZombie(state, threads)) continue;
       const identified = processFiles(fs, name, { exe: 'link', environ: 'latin1', cmdline: 'utf8' });
       if (identified === undefined) continue;
       if (identified.unreadable) {
-        table.set(Number(name), { pid: Number(name), ppid, start: identified.start, unidentified: true });
+        table.set(Number(name), { pid: identified.pid, ppid: identified.ppid, start: identified.start, unidentified: true });
         continue;
       }
-      table.set(Number(name), { pid: Number(name), ppid, start: identified.start, files: identified.files });
+      table.set(Number(name), { pid: identified.pid, ppid: identified.ppid, start: identified.start, files: identified.files });
     } catch (error) {
       if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
     }
