@@ -7,6 +7,7 @@ def X = [
 	T("AnalysisWire:analyze_round_trip", test_analyze_round_trip),
 	T("AnalysisWire:analyze_frame_size", test_analyze_frame_size),
 	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
+	T("AnalysisWire:occurrence_write_bit", test_occurrence_write_bit),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
 	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
@@ -573,6 +574,7 @@ def test_display_round_trip(t: Tester) {
 				t.assert_string(want[i].declaration.signature, got[i].declaration.signature);
 				t.assert(want[i].declaration.signature != null, "every declaration has a signature");
 				t.assert(Strings.equal(want[i].useType, got[i].useType), "use-site type");
+				t.assertz(want[i].isWrite(), got[i].isWrite());
 				if (got[i].useType != null) typed++;
 				t.assert(Strings.equal(got[i].useType, s.useTypeAtOffset(p, got[i].range.beginOffset)), "use-site type at an offset");
 			}
@@ -1773,5 +1775,21 @@ def test_call_answer_allocation(t: Tester) {
 		var before = AnalysisResultDecode.Decoded.!(base).result.snapshot, after = AnalysisResultDecode.Decoded.!(answered).result.snapshot;
 		t.assertl(long.view(c.2), after.resultAllocation - before.resultAllocation);
 		t.assertl(after.resultAllocation - before.resultAllocation, after.retainedBytes - before.retainedBytes);
+	}
+}
+
+// A complemented target is a write, with exactly the same decoded storage
+// as a read. Neither a bad index nor a sign bit can bypass the bound.
+def test_occurrence_write_bit(t: Tester) {
+	var read = decodedResult(result(0, file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY)), 1, REQUEST);
+	var write = decodedResult(result(0, file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(-1).puta(NO_DISPLAY)), 1, REQUEST);
+	if (read == null || write == null) return t.fail("valid read/write targets rejected");
+	t.assertl(read.snapshot.resultAllocation, write.snapshot.resultAllocation);
+	t.assertl(read.snapshot.retainedBytes, write.snapshot.retainedBytes);
+	t.assert(!read.snapshot.occurrences("p.v3")[0].isWrite(), "read flag");
+	t.assert(write.snapshot.occurrences("p.v3")[0].isWrite(), "write flag round trip");
+	t.assert(write.snapshot.definitionAtOffset("p.v3", 8) == write.snapshot.declarations[0], "write still resolves");
+	for (target in [-2, int.min]) {
+		assertMalformed(t, file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(target).puta(NO_DISPLAY), "invalid write target");
 	}
 }

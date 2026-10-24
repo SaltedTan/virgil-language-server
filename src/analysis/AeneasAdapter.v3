@@ -82,12 +82,20 @@ class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisR
 // {useType} is the text of the use's type where it differs from the
 // declaration's, as at a generic call, or null.
 class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration) {
+	// The object's existing type tag carries the assignment flag without
+	// growing the transient occurrence object. Snapshots pack it in an int.
+	def isWrite() -> bool { return AnalysisWriteOccurrence.?(this); }
 	var useType: string;
 	def toString() -> string {
 		var buf = StringBuilder.new();
 		range.render(buf).puts(" -> ");
 		return declaration.render(buf).toString();
 	}
+}
+
+// A write has the same fields and allocation size as an ordinary occurrence.
+class AnalysisWriteOccurrence extends AnalysisOccurrence {
+	new(range: AnalysisRange, declaration: AnalysisDeclaration) super(range, declaration) { }
 }
 
 // A use that verification resolved to something with a type but no source
