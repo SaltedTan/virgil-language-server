@@ -471,8 +471,8 @@ Aeneas medians from six measured operations per build:
 | Semantic publication | 529.771 | 527.332 | −0.5% |
 
 This short control bounds the observed effect on these samples; noise and probe
-syscalls remain. It establishes no sub-millisecond equivalence. No macOS timing
-baseline was collected.
+syscalls remain. It establishes no sub-millisecond equivalence. See the
+[macOS reference baseline](#macos-reference-baseline) for macOS measurements.
 
 ## macOS reference baseline
 
