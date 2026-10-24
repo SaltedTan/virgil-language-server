@@ -19,7 +19,8 @@ class LspHover {
 		var s = at.snapshot, path = at.path();
 		var o = s.occurrenceAtOffset(path, offset);
 		if (o != null) {
-			if (at.target(o.declaration.range.path).0 < 0) return (true, JsonValue.Null);
+			var target = at.target(o.declaration.range.path).0, r = o.declaration.range;
+			if (target < 0 || !at.maps(target, r.beginOffset, r.endOffset)) return (true, JsonValue.Null);
 			return (true, hover(at, o.range, o.declaration.signature, o.useType));
 		}
 		var d = s.declarationAtOffset(path, offset);

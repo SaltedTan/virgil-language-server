@@ -60,7 +60,25 @@ class AnalysisSnapshot {
 	// Called once on completion, before exposing the snapshot to handlers.
 	def recordDocumentVersions(versions: Array<AnalysisDocumentVersion>) {
 		documentVersions = versions;
-		for (v in versions) retainedBytes += 144L + v.uri.length;
+		for (v in versions) {
+			retainedBytes += 144L + v.uri.length;
+			if (v.substitution != null) retainedBytes += v.substitution.bytes;
+		}
+	}
+	def degraded() -> bool {
+		for (v in documentVersions) if (v.substitution != null) return true;
+		return false;
+	}
+	def effectiveOffset(i: int, offset: int) -> int {
+		var sub = documentVersions[i].substitution;
+		return if(sub != null, sub.mapping.toEffective(offset), offset);
+	}
+	def currentRange(i: int, begin: int, end: int) -> (int, int) {
+		var sub = documentVersions[i].substitution;
+		if (sub == null) return (begin, end);
+		var m = sub.mapping;
+		if (!m.maps(begin, end)) return (-1, -1);
+		return (if(begin >= m.effectiveEnd, begin + m.delta, begin), if(end >= m.effectiveEnd, end + m.delta, end));
 	}
 
 	// False for an unrecorded URI. Disk inputs are current while no overlay is
@@ -374,6 +392,7 @@ class AnalysisSnapshot {
 // worker analyzed, which LspAnalysisCapture.analyzedText checks a re-read
 // against. An overlay input has length -1 and relies on its identity.
 class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersionIdentity) {
+	var substitution: AnalysisSubstitution;
 	var disk: DocumentVersionIdentity;
 	var length = -1;
 	var hash: u64;
@@ -393,6 +412,12 @@ class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersi
 		var doc = store.overlay(uri);
 		return if(doc != null && doc.identity == identity, doc.version, version);
 	}
+}
+
+// Kept by the snapshot, independently of text-cache eviction. Its charge is
+// reserved before submission and included in snapshot.retainedBytes.
+class AnalysisSubstitution(effective: Array<byte>, mapping: LspBodyFallback) {
+	def bytes = 256L + effective.length;
 }
 
 // Measurements of the analysis that produced a snapshot, taken in the worker.

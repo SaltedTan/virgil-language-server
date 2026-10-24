@@ -1,0 +1,76 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [T("LspBodySnapshot:provenance_and_eviction", test_provenance),
+	T("LspBodySnapshot:capture_bounds_and_closed_files", test_capture), ()];
+def OLD = "/* é😀\t */ component A { def broken() -> int { return 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
+def CURRENT = "/* é😀\t */ component A { def broken() -> int { var x = ;\n\treturn 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
+
+def test_provenance(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, OLD);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	t.assert(s.store.change(s.uri("A.v3"), 2, CURRENT) == null, "body edited");
+	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
+	t.assert(snapshot.parsed && snapshot.degraded(), "one effective program parsed");
+	var sub = snapshot.documentVersions[i].substitution;
+	t.assert(sub != null, "substitution provenance retained");
+	if (sub == null) return s.server.close();
+	t.assertb(OLD, s.text(snapshot, "A.v3"));
+	t.assertb(CURRENT, LspAnalysisCapture.currentText(s.store, snapshot, i, s.text(snapshot, "A.v3")));
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	t.asserti(-1, snapshot.effectiveOffset(i, sub.mapping.bodyBegin));
+	t.asserti(-1, snapshot.currentRange(i, sub.mapping.bodyBegin - 1, sub.mapping.effectiveBodyEnd + 1).0);
+	t.asserti(CURRENT.length, snapshot.currentRange(i, OLD.length, OLD.length).0);
+	cache.removeContext(ctx);
+	t.assertb(OLD, s.text(snapshot, "A.v3"));
+	t.assert(snapshot.retainedBytes >= sub.bytes, "retained effective bytes stay charged after eviction");
+	// Version-only updates retain the compared identity, while every later
+	// full-text update invalidates it, even if the bytes happen to be equal.
+	t.assert(s.store.changeVersion(s.uri("A.v3"), 3) == null, "version only");
+	t.assert(snapshot.matchesDocument(s.store, s.uri("A.v3")), "version identity retained");
+	t.assert(s.store.change(s.uri("A.v3"), 4, CURRENT) == null, "later full text");
+	t.assert(!snapshot.matchesDocument(s.store, s.uri("A.v3")), "substitution is stale");
+	t.assert_eq(null, s.text(snapshot, "A.v3"));
+	snapshot = s.analyze(t);
+	t.assert(!snapshot.parsed && !snapshot.degraded(), "eviction removes future fallback only");
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	s.server.close();
+}
+def test_capture(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, OLD);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assert(s.store.change(s.uri("A.v3"), 2, CURRENT) == null, "body edited");
+	var keys = Array<string>.new(ctx.sources.length);
+	for (i < keys.length) keys[i] = ctx.sources[i].uri;
+	var inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+	var parser = LspParserDiagnostics.new(LspDiagnosticLists.new(s.store, null));
+	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+	var paths = Array<string>.new(inputs.sources.length);
+	for (i < paths.length) paths[i] = inputs.sources[i].path;
+	var snapshot = AnalysisSnapshot.new(1, paths, true, false, [], null, false, []);
+	snapshot.recordDocumentVersions(inputs.versions);
+	t.assertl(inputs.snapshotBytes, snapshot.retainedBytes);
+	var i = snapshot.documentIndex(s.uri("A.v3"));
+	t.assertb(OLD, inputs.sources[i].input);
+	cache.removeContext(ctx);
+	inputs.cacheCompleted(ctx, cache, snapshot);
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	var projects = s.server.projects;
+	t.assert(!projects.admitSnapshot(ctx, snapshot, projects.MAX_SNAPSHOT_BYTES - snapshot.retainedBytes + 1), "provenance participates in admission");
+	// A cached closed source is never substituted. Its current disk input is
+	// sent unchanged even though an eligible predecessor is in the cache.
+	t.assert(s.store.close(s.uri("A.v3")) == null, "closed");
+	s.write(t, "A.v3", CURRENT);
+	cache.put(ctx, s.uri("A.v3"), OLD);
+	inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+	t.assert_eq(null, inputs.versions[i].substitution);
+	t.assertb(CURRENT, inputs.sources[i].input);
+	s.server.close();
+}

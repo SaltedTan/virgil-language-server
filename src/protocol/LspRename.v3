@@ -209,7 +209,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	def begin(r: LspRenameRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		var p = r.plan;
 		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
-		if (r.answered || ctx != p.ctx || !p.ctx.config.current) {
+		if (r.answered || ctx != p.ctx || !p.ctx.config.current || p.at.snapshot.degraded()) {
 			return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the documents changed while the rename was checked");
 		}
 		var sources = p.sources;

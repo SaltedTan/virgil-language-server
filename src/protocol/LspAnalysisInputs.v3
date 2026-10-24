@@ -6,9 +6,33 @@
 // record their length and a 64-bit FNV-1a hash, so that text read again to
 // convert ranges can be checked against what the worker analyzed (see
 // {LspAnalysisCapture.analyzedText}). Submitters drop {sources} once the
-// worker request holds a copy.
-class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, snapshotBytes: long) {
+// completed analysis has updated the last-parseable text cache.
+class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBytes: long) {
 	var sources: Array<AnalysisSource>;
+	// One capture, one analysis: reuse the current overlay's existing parse
+	// outcome to decide fallback before submitting any worker request.
+	def substitute(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
+			parser: LspParserDiagnostics) -> string {
+		var bytes = 32L;
+		for (s in sources) bytes += 16L + s.path.length + s.input.length;
+		for (i < sources.length) {
+			var doc = store.overlay(versions[i].uri);
+			if (doc == null || parser.parses(doc, context.definition.compilerArgs)) continue;
+			var effective = cache.get(context, doc.uri);
+			if (effective == null) continue;
+			var bodies = AeneasAdapter.methodBodies(sources[i].path, effective, context.definition.compilerArgs);
+			if (bodies == null) continue;
+			var result = LspBodyEligibility.compare(effective, doc.text, bodies).0;
+			if (result == null) continue;
+			bytes += effective.length - sources[i].input.length;
+			if (bytes > LspAnalysisCapture.MAX_SOURCE_BYTES) return "analysis sources exceed the analysis size budget";
+			var sub = AnalysisSubstitution.new(effective, result);
+			versions[i].substitution = sub;
+			snapshotBytes += sub.bytes;
+			sources[i] = AnalysisSource.new(sources[i].path, effective);
+		}
+		return null;
+	}
 	// Cache only a completed analysis's own parseable inputs. A clean program
 	// already proves every file parsed; a failed program's per-file check is
 	// necessary because Aeneas may have stopped before later files.
@@ -18,6 +42,7 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, snapshotBytes:
 		for (s in context.sources) keep[s.uri] = true;
 		for (i < sources.length) {
 			var source = sources[i];
+			if (versions[i].substitution != null) continue;
 			if (!keep.has(versions[i].uri)) continue;
 			if (snapshot.parsed || AeneasAdapter.parseFile(source.path, source.input, context.definition.compilerArgs).diagnostics.length == 0) {
 				cache.put(context, versions[i].uri, source.input);
@@ -116,10 +141,17 @@ component LspAnalysisCapture {
 		var v = snapshot.documentVersions[i];
 		if (v.identity != null) {
 			var doc = store.overlay(v.uri);
-			return if(doc != null && doc.identity == v.identity, doc.text);
+			if (doc == null || doc.identity != v.identity) return null;
+			return if(v.substitution != null, v.substitution.effective, doc.text);
 		}
 		var path = DocumentUri.filePath(v.uri);
 		var text = if(path != null && v.length >= 0, ProjectFiles.load(path, v.length));
 		return if(text != null && text.length == v.length && hash(text) == v.hash, text);
+	}
+	// Text for protocol coordinates, after the same analyzed-identity check.
+	def currentText(store: DocumentStore, snapshot: AnalysisSnapshot, i: int, effective: Array<byte>) -> Array<byte> {
+		if (effective == null) return null;
+		return if(snapshot.documentVersions[i].substitution != null,
+			store.overlay(snapshot.documentVersions[i].uri).text, effective);
 	}
 }

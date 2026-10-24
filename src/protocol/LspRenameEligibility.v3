@@ -34,6 +34,7 @@ component LspRenameEligibility {
 	// name; otherwise a position with no name is left to the caller's error.
 	def select(at: LspSnapshotPosition, projects: WorkspaceProjects, offset: int) -> (bool, LspRenameSelection, string) {
 		var s = at.snapshot, path = at.path();
+		if (s.degraded()) return (true, null, "the project's analysis substitutes a method body; rename needs current text");
 		if (at.store.overlay(s.documentVersions[at.index].uri) == null) return (true, null, OPEN_DOCUMENT);
 		var decl = s.definitionAtOffset(path, offset), begin: int, end: int, token: string;
 		if (decl != null) {
@@ -73,6 +74,7 @@ component LspRenameEligibility {
 	def check(at: LspSnapshotPosition, projects: WorkspaceProjects, decl: AnalysisDeclaration,
 			token: string) -> string {
 		var s = at.snapshot, name = decl.name, r = decl.range;
+		if (s.degraded()) return "the project's analysis substitutes a method body; rename needs current text";
 		// Rename edits source text, so it needs a program that the verifier
 		// accepted whole: a use the verifier did not resolve would be missed.
 		if (!s.verified) return "the project's analysis has errors; rename needs a program that verifies";

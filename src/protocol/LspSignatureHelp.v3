@@ -93,6 +93,7 @@ class LspSignatureHelp extends LspQueryRequests {
 	// target is in a file whose bytes are no longer the ones analyzed gets
 	// null, as its hover does.
 	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonValue) {
+		if (at.snapshot.degraded()) return (true, JsonValue.Null);
 		var call = at.snapshot.callAt(at.path(), offset);
 		if (call == null || call.signature == null) return (true, JsonValue.Null);
 		if (call.target != null && at.target(call.target.range.path).0 < 0) return (true, JsonValue.Null);
