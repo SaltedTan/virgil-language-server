@@ -117,7 +117,8 @@ class RenderTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.directory = Path(directory.name)
+        # macOS's temporary directory may be under the /var symlink.
+        self.directory = Path(directory.name).resolve()
         self.doc = self.directory / "manual-testing.md"
         self.doc.write_text(document())
 
