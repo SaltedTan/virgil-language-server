@@ -33,7 +33,7 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
-const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, startGroup, threadDir } = require('../processes.cjs');
+const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -616,10 +616,13 @@ function suiteLines() {
 // than itself and zombies, with their parents' PIDs and their start times, and
 // whether host, a process given by PID, start time, and executable, still
 // runs. A process whose main thread has exited is no zombie while its other
-// threads run, and threadDir gives the directory whose files identify it, as
-// it does for the teardown (see isZombie and threadDir in ../processes.cjs). It
-// sends signal, if given, to that host, and SIGKILL to those of the processes
-// in kill, each given as PID@start, that still have that start time and run an
+// threads run, and processFiles reads the executable, and every other file
+// that identifies it, from whichever of its threads still runs, as it does for
+// the teardown (see isZombie and processFiles in ../processes.cjs); it also
+// reports, in unidentified, each live process that no thread's files could
+// describe, which the caller retries rather than counting as gone. It sends
+// signal, if given, to that host, and SIGKILL to those of the processes in
+// kill, each given as PID@start, that still have that start time and run an
 // executable under root and not under agent, the VS Code Server's directory:
 // exactly those, never processes found by name or another process that now has
 // the PID. Each signal goes through a pidfd where the target's Python and
@@ -632,9 +635,10 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
 ${isZombie}
-${threadDir}
+${processFiles}
 const found = [];
 const killed = [];
+const unidentified = [];
 let hostRuns = false;
 let signaledAt;
 const stat = (pid) => {
@@ -661,11 +665,15 @@ for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)
   try {
     const fields = stat(pid);
     if (isZombie(fields[0], Number(fields[17]))) continue;
-    const dir = threadDir(fs, pid);
-    if (dir === undefined) continue;
-    const exe = fs.readlinkSync(dir + '/exe');
-    if (!exe.startsWith(root + '/')) continue;
-    const start = fields[19];
+    const identified = processFiles(fs, pid, { exe: 'link' });
+    if (identified === undefined) continue;
+    if (identified.unreadable) {
+      unidentified.push(Number(pid));
+      continue;
+    }
+    const exe = identified.files.exe;
+    if (exe === undefined || !exe.startsWith(root + '/')) continue;
+    const start = identified.start;
     if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) hostRuns = true;
     if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) killed.push([Number(pid), start]);
     found.push({ pid: Number(pid), ppid: Number(fields[1]), start, exe });
@@ -676,13 +684,15 @@ if (hostRuns && signal) {
   send(signal, [[host.pid, host.start]]);
 }
 send('SIGKILL', killed);
-console.log(JSON.stringify({ found, host: hostRuns, signaledAt, sampledAt: Date.now() }));`;
+console.log(JSON.stringify({ found, host: hostRuns, signaledAt, unidentified, sampledAt: Date.now() }));`;
 
 // The target's processes that run an executable from its work directory,
 // other than the VS Code Server's, which stays running between windows:
 // language servers and workers, and anything else that the tests started;
-// and whether host, a window's remote extension host, still runs. The
-// processes in kill are killed first, and host gets signal.
+// whether host, a window's remote extension host, still runs; and the live
+// processes that no thread's files could describe, which are neither known to
+// run nor known to have gone (see REMOTE_PROCESSES). The processes in kill are
+// killed first, and host gets signal.
 async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   const options = { root: run.target.root, agent: layout.agent, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
   const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(JSON.stringify(options))}`, { allowFailure: true });
@@ -695,7 +705,7 @@ async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   const server = (p) => p.exe.startsWith(`${layout.agent}/`);
   return {
     found: listing.found, left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length,
-    host: listing.host, signaledAt: listing.signaledAt, sampledAt: listing.sampledAt,
+    host: listing.host, signaledAt: listing.signaledAt, unidentified: listing.unidentified ?? [], sampledAt: listing.sampledAt,
   };
 }
 
@@ -708,7 +718,10 @@ function extensionHost(evidence, layout) {
 }
 
 // Waits up to SERVER_EXIT_MS for the language servers to exit, and for host
-// too, if given; returns what still runs then.
+// too, if given; returns what still runs then. A sample that finds a live
+// process that no thread's files described is not proof of shutdown, at any
+// time: it is sampled again within the bound, and if none within it describes
+// the process, the check fails with its PID, since it may still run.
 async function settle(run, layout, at, host, firstSample) {
   const deadline = at + SERVER_EXIT_MS;
   let timely = false;
@@ -720,7 +733,9 @@ async function settle(run, layout, at, host, firstSample) {
     if (!Number.isFinite(processes.sampledAt)) throw infra('leak check could not be verified in time');
     timely ||= processes.sampledAt <= deadline;
     if (!timely) throw infra('leak check could not be verified in time');
-    if (processes.left.length === 0 && !processes.host) {
+    if (processes.unidentified.length > 0) {
+      if (processes.sampledAt >= deadline) throw infra(`leak check could not identify the host's process with pid ${processes.unidentified.join(', ')}`);
+    } else if (processes.left.length === 0 && !processes.host) {
       if (processes.sampledAt > deadline) throw infra('leak check could not be verified in time');
       return processes;
     }
@@ -1311,7 +1326,7 @@ async function main() {
   if (teardown !== undefined && !teardown.ok) {
     keep = true;
     console.log(`INFRA: the teardown could not confirm that nothing of the run is left${teardown.error ? `: ${teardown.error}` : ''}`
-      + `${teardown.left.map((p) => `\n   pid ${p.pid}: ${p.command}`).join('')}`
+      + `${teardown.left.map((p) => `\n   ${p.unidentified ? `pid ${p.pid}: could not be identified` : `pid ${p.pid}: ${p.command}`}`).join('')}`
       + `${teardown.portClosed === false ? `\n   port ${run.target.details.port} is still open` : ''}`);
   } else if (teardown !== undefined) {
     const port = run.target.details.port === undefined ? '' : `, and port ${run.target.details.port} is closed`;

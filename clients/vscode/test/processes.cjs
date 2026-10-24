@@ -12,7 +12,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { fakeClock, fakeGroup, fakeProc, fakeProcesses, load } = require('./support/fakes.cjs');
+const { fakeClock, fakeGroup, fakeProc, fakeProcesses, fakeThreadedProc, load } = require('./support/fakes.cjs');
 
 const processes = require('./e2e/processes.cjs');
 
@@ -151,6 +151,54 @@ test('a process whose main thread has exited while its other threads run gets si
   const fake = fakeProcesses(table, { kill: (pid, name) => kills.push([pid, name]) });
   assert.deepEqual(fake.signalProcesses([{ pid: 11, start: '510' }, { pid: 12, start: '520' }], 'SIGKILL'), ['sent', 'gone']);
   assert.deepEqual(kills, [[11, 'SIGKILL']]);
+});
+
+test('a process is identified by a thread that outlives the choice of whose files to read, and reported if none does', () => {
+  const files = { exe: 'link', environ: 'latin1', cmdline: 'utf8' };
+  // Its main thread has exited; the first live thread whose files the scan
+  // reads exits meanwhile, and the next one still identifies it.
+  assert.deepEqual(processes.processFiles(fakeThreadedProc(), 100, files), {
+    start: '12345', files: { exe: '/work/python3', environ: 'RUN=1', cmdline: 'python3\0-c\0pass' },
+  });
+  // With every live thread gone by then, while the process still runs, it is
+  // neither identified nor known to have gone.
+  assert.deepEqual(processes.processFiles(fakeThreadedProc({ vanishing: ['101', '102'] }), 100, files), { start: '12345', unreadable: true });
+  // A process that has gone, or is a zombie, has no files to identify it.
+  assert.equal(processes.processFiles(fakeProc(new Map([[100, { start: '12345', state: 'Z' }]])), 100, files), undefined);
+});
+
+test('a file that a process doesn\'t have, or that its user may not read, is left out of its files', () => {
+  // A kernel thread, which has no exe, and another user's process, whose exe
+  // and environ this user may not read; cmdline is always read.
+  const stat = (pid, name) => `${pid} (${name}) S 1 0 ${Array(14).fill(0).join(' ')} 1 0 12345 0 0`;
+  const proc = {
+    readdirSync: () => [],
+    readFileSync: (file) => {
+      if (file === '/proc/100/stat') return stat(100, 'kthreadd');
+      if (file === '/proc/100/environ' || file === '/proc/100/cmdline') return '';
+      if (file === '/proc/101/stat') return stat(101, 'ssh-agent');
+      if (file === '/proc/101/cmdline') return 'ssh-agent\0-l\0/tmp/agent';
+      if (file === '/proc/103/stat') return stat(103, 'python3');
+      if (file === '/proc/103/environ') return 'RUN=1';
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    },
+    readlinkSync: (file) => {
+      if (file === '/proc/103/exe') return '/work/python3';
+      throw Object.assign(new Error('ENOENT'), { code: file.startsWith('/proc/101/') ? 'EACCES' : 'ENOENT' });
+    },
+  };
+  assert.deepEqual(processes.processFiles(proc, 100, { exe: 'link', environ: 'latin1' }), { start: '12345', files: { environ: '', cmdline: '' } });
+  assert.deepEqual(processes.processFiles(proc, 101, { exe: 'link', environ: 'latin1' }), { start: '12345', files: { cmdline: 'ssh-agent\0-l\0/tmp/agent' } });
+  // cmdline only proves liveness: a failure leaves it out, and the other
+  // files still identify the process.
+  assert.deepEqual(processes.processFiles(proc, 103, { exe: 'link', environ: 'latin1' }), { start: '12345', files: { exe: '/work/python3', environ: 'RUN=1' } });
+  // With no file readable at all, a live process is not identified; one
+  // whose threads have all gone is neither identified nor known to be gone.
+  const denied = { readdirSync: () => [], readFileSync: (file) => {
+    if (file === '/proc/102/stat') return stat(102, 'sshd');
+    throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+  }, readlinkSync: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); } };
+  assert.deepEqual(processes.processFiles(denied, 102, { exe: 'link', environ: 'latin1' }), { start: '12345', unreadable: true });
 });
 
 // Starts a real process that the test owns, and returns it with its start

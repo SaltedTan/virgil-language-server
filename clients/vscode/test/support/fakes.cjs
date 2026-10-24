@@ -53,6 +53,48 @@ function fakeProc(processes) {
   };
 }
 
+// A fake /proc of one process whose main thread has exited while other
+// threads run, for the race between choosing a thread and reading its files
+// (see processFiles in e2e/processes.cjs): the threads in vanishing exit once
+// their stat has been read, as one does when the discovery has just chosen
+// it. tids are the process's thread IDs, the main thread's first; Linux lists
+// a process whose main thread has exited as a zombie with its number of
+// threads, while each thread has its own state and files. The last thread
+// still there has exe, environ, and cmdline. The process's stat keeps its
+// thread count, so that a process whose threads have all vanished during the
+// scan is still live, as one that starts a thread then is.
+function fakeThreadedProc({ pid = 100, start = '12345', tids = ['100', '101', '102'], vanishing = ['101'],
+  exe = '/work/python3', environ = 'RUN=1', cmdline = 'python3 -c pass' } = {}) {
+  const gone = new Set();
+  const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+  const line = (id, state, threads) => `${id} (python3) ${state} 1 0 ${Array(14).fill(0).join(' ')} ${threads} 0 ${start} 0 0`;
+  const task = (file) => /^\/proc\/\d+\/task\/(\d+)\/(\w+)$/.exec(file);
+  return {
+    readdirSync: (file) => {
+      if (file === '/proc') return [String(pid)];
+      if (file === `/proc/${pid}/task`) return [...tids];
+      throw missing(file);
+    },
+    readFileSync: (file) => {
+      if (file === `/proc/${pid}/stat`) return line(pid, 'Z', tids.length);
+      const match = task(file);
+      if (match === null || gone.has(match[1]) || match[1] === tids[0]) throw missing(file);
+      if (match[2] === 'stat') {
+        if (vanishing.includes(match[1])) gone.add(match[1]);
+        return line(match[1], 'S', 1);
+      }
+      if (match[2] === 'environ') return environ;
+      if (match[2] === 'cmdline') return cmdline.split(' ').join('\0');
+      throw missing(file);
+    },
+    readlinkSync: (file) => {
+      const match = /^\/proc\/\d+\/task\/(\d+)\/exe$/.exec(file);
+      if (match === null || gone.has(match[1]) || match[1] === tids[0]) throw missing(file);
+      return exe;
+    },
+  };
+}
+
 // A fake clock: globals for load(), and advance(ms), which runs the timers
 // that are due in the next ms milliseconds.
 function fakeClock() {
@@ -226,4 +268,4 @@ function fakeGroup(processes, signals = []) {
   return { keeper, kill, deliver, signals };
 }
 
-module.exports = { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses, load };
+module.exports = { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses, fakeThreadedProc, load };

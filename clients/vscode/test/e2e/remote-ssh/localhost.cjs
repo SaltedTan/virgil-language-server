@@ -28,7 +28,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { isZombie, signalProcesses, threadDir } = require('../processes.cjs');
+const { isZombie, processFiles, signalProcesses } = require('../processes.cjs');
 
 const ALIAS = 'virgil-remote-ssh-test';
 const HOST = '127.0.0.1';
@@ -333,26 +333,28 @@ function signal(processes, name) {
 // entries of other users' processes can't be read, and processes that exit
 // meanwhile are skipped; zombies don't count, but a process whose main thread
 // has exited while its other threads run does, and a live thread's /proc
-// files identify it (see threadDir in ../processes.cjs). Throws if /proc
-// itself can't be listed.
+// files identify it (see processFiles in ../processes.cjs), whichever of its
+// threads they still describe. A live process that no thread's files could
+// describe, which a scan that raced its threads' exit may find, is reported
+// as unidentified rather than left out, so that the teardown tries again
+// instead of counting it as gone. Throws if /proc itself can't be listed.
 function runProcesses({ work, sockets, marker, started }) {
   const table = new Map();
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
     try {
-      const { state, ppid, threads, start } = readStat(name);
+      const { state, ppid, threads } = readStat(name);
       if (isZombie(state, threads)) continue;
-      const dir = threadDir(fs, name);
-      if (dir === undefined) continue;
-      let exe = '';
-      try {
-        exe = fs.readlinkSync(path.join(dir, 'exe'));
-      } catch {
-        // A kernel thread, or another user's process.
+      const identified = processFiles(fs, name, { exe: 'link', environ: 'latin1', cmdline: 'utf8' });
+      if (identified === undefined) continue;
+      if (identified.unreadable) {
+        table.set(Number(name), { ppid, start: identified.start, unidentified: true });
+        continue;
       }
+      const { exe = '', environ = '', cmdline = '' } = identified.files;
       const owned = [work, sockets].some((root) => exe.startsWith(`${root}/`))
-        || fs.readFileSync(path.join(dir, 'environ'), 'latin1').split('\0').includes(marker);
-      table.set(Number(name), { ppid, start, exe, owned, dir });
+        || environ.split('\0').includes(marker);
+      table.set(Number(name), { ppid, start: identified.start, exe, owned, command: cmdline.replaceAll('\0', ' ').trim() });
     } catch (error) {
       if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
     }
@@ -370,14 +372,9 @@ function runProcesses({ work, sockets, marker, started }) {
       }
     }
   }
-  return [...table].filter(([, entry]) => entry.owned).map(([pid, { start, exe, dir }]) => {
-    let command = '';
-    try {
-      command = fs.readFileSync(path.join(dir, 'cmdline'), 'utf8').replaceAll('\0', ' ').trim();
-    } catch {
-      // It has exited.
-    }
-    return { pid, start, exe, command };
+  return [...table].flatMap(([pid, entry]) => {
+    if (entry.unidentified) return [{ pid, start: entry.start, unidentified: true }];
+    return entry.owned ? [{ pid, start: entry.start, exe: entry.exe, command: entry.command }] : [];
   });
 }
 
@@ -389,7 +386,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Server runs, and an orphan no longer descends from the process that started
 // it: so they are frozen with SIGSTOP until a look finds no new one, then
 // killed. Xvfb goes last, with SIGTERM, so that it removes its socket and lock
-// file. If the processes can't be listed, it tries again five times.
+// file. If the processes can't be listed, or a look finds a live process that
+// no thread's files could identify (see runProcesses), it tries again five
+// times, 200 ms apart, and reports what it found if it still can't, rather
+// than taking that for none left.
 async function teardown({ work, sockets, marker, started, port }) {
   const result = { ok: true, stopped: [], left: [], portClosed: null };
   const display = started.find((entry) => entry.name === 'Xvfb');
@@ -398,11 +398,14 @@ async function teardown({ work, sockets, marker, started, port }) {
   const list = async () => {
     for (let tries = 1; ; tries++) {
       try {
-        return runProcesses({ work, sockets, marker, started }).filter((p) => xvfb === undefined || key(p) !== key(xvfb));
+        const found = runProcesses({ work, sockets, marker, started }).filter((p) => xvfb === undefined || key(p) !== key(xvfb));
+        const unknown = found.filter((p) => p.unidentified);
+        if (unknown.length === 0) return found;
+        if (tries === 5) throw new Error(`could not identify the process(es) with pid ${unknown.map((p) => p.pid).join(', ')}`);
       } catch (error) {
         if (tries === 5) throw error;
-        await sleep(200);
       }
+      await sleep(200);
     }
   };
   try {

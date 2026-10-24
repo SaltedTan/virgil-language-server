@@ -50,37 +50,83 @@ function zombie(p) {
   return isZombie(p.state, p.threads);
 }
 
-// The /proc directory whose exe, environ, and cmdline describe the process
-// with this PID: its own while its main thread runs, else that of a thread
-// that still runs, under /proc/<pid>/task/<tid>/. A process whose main thread
-// has exited keeps none of those itself, which is what the teardown and the
-// Remote-SSH leak check need to identify such a process (see zombie).
-// Undefined if no thread runs.
-function threadDir(fs, pid) {
-  let main;
-  try {
-    main = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-  } catch {
-    return undefined;
-  }
-  const fields = main.slice(main.lastIndexOf(')') + 2).split(' ');
-  if (fields[0] !== 'Z') return `/proc/${pid}`;
-  let threads;
+// The contents of the /proc files that identify the process with this PID, by
+// name: its exe, environ, and cmdline. Reads them from the directory that
+// describes the process, its own while its main thread runs, else that of a
+// thread that still runs, under /proc/<pid>/task/<tid>/, since a process whose
+// main thread has exited keeps none of those itself (see zombie); the teardown
+// and the Remote-SSH leak check identify such a process this way. A thread can
+// exit between the choice and the reads while another thread still runs, so a
+// candidate whose thread has gone once its files have been read gives way to
+// the next one, and every file is read from one thread, never some from one
+// and some from another. files maps each name to how to read it: 'link' for a
+// symlink, such as exe, else the encoding for a read, such as 'latin1' for
+// environ. cmdline is always read as 'utf8' too, and returned, as the thread's
+// liveness: it needs no ptrace access, unlike exe and environ, so a user may
+// read it even where those are denied, and one that has gone has none, so a
+// cmdline read that fails with ENOENT or ESRCH shows that the thread went,
+// even if a stat of it just before still described it; any other failure
+// leaves it out. A candidate with no readable file, as one whose user may
+// read none of them, identifies nothing and gives way to the next thread too.
+// A file that the process doesn't have, as a kernel thread has no exe, or that
+// its user may not read, is otherwise left out.
+// Returns undefined if the process has gone: its stat can't be read, or it is
+// a zombie (see isZombie). Otherwise { start, files }, with the process's start
+// time in clock ticks after boot and the contents of the files that it could
+// read; or { start, unreadable }, if every thread had gone once its files had
+// been read, or no thread's files could be read, while the process hadn't, so
+// that the process is neither identified nor known to have gone. A caller
+// reports such a process rather than counting it as gone, and tries again
+// within its bounds, since another thread may still run.
+function processFiles(fs, pid, files) {
+  const stat = (dir) => {
+    try {
+      const text = fs.readFileSync(`${dir}/stat`, 'utf8');
+      return text.slice(text.lastIndexOf(')') + 2).split(' ');
+    } catch (error) {
+      if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined;
+      throw error;
+    }
+  };
+  const fields = stat(`/proc/${pid}`);
+  if (fields === undefined || isZombie(fields[0], Number(fields[17]))) return undefined;
+  const start = fields[19];
+  let threads = [];
   try {
     threads = fs.readdirSync(`/proc/${pid}/task`);
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Another user's process may not list its threads; its files below tell.
+    if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
   }
-  for (const tid of threads) {
-    const dir = `/proc/${pid}/task/${tid}`;
-    try {
-      const stat = fs.readFileSync(`${dir}/stat`, 'utf8');
-      if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z') return dir;
-    } catch {
-      // It has exited.
+  // Its own directory describes the process while its main thread runs; once
+  // that has exited, only a thread's does.
+  const dirs = fields[0] === 'Z' ? [] : [`/proc/${pid}`];
+  for (const tid of threads) dirs.push(`/proc/${pid}/task/${tid}`);
+  for (const dir of dirs) {
+    const before = stat(dir);
+    if (before === undefined || before[0] === 'Z') continue;
+    const read = {};
+    let exited = false;
+    for (const [name, how] of Object.entries({ ...files, cmdline: 'utf8' })) {
+      try {
+        read[name] = how === 'link' ? fs.readlinkSync(`${dir}/${name}`) : fs.readFileSync(`${dir}/${name}`, how);
+      } catch (error) {
+        // cmdline only proves that the thread still runs (see above): any
+        // failure leaves it out.
+        if (name !== 'cmdline' && !['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
+        if (name === 'cmdline' && (error.code === 'ENOENT' || error.code === 'ESRCH')) exited = true;
+      }
     }
+    // It may have exited between the reads, which then described it only in
+    // part, or not at all; and a thread that no file describes identifies
+    // nothing, so try the next one.
+    const after = stat(dir);
+    if (exited || after === undefined || after[0] === 'Z' || Object.keys(read).length === 0) continue;
+    return { start, files: read };
   }
-  return undefined;
+  const after = stat(`/proc/${pid}`);
+  if (after === undefined || isZombie(after[0], Number(after[17]))) return undefined;
+  return { start, unreadable: true };
 }
 
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
@@ -468,4 +514,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   return group;
 }
 
-module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processInfo, processTable, signalProcesses, startGroup, threadDir, zombie };
+module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, signalProcesses, startGroup, zombie };
