@@ -139,8 +139,9 @@ def normalize(capture, out):
     initialize = kept[0]
     mapping, names = replacements(initialize)
     normalized = rewrite(kept, mapping, names)
-    normalized[0]["params"]["processId"] = (
-        PROCESS_ID if normalized[0]["params"].get("processId") is not None else None)
+    # Keep an absent or null processId as it was.
+    if normalized[0]["params"].get("processId") is not None:
+        normalized[0]["params"]["processId"] = PROCESS_ID
     if capture.name not in CAPTURES:
         sys.exit(f"{capture.name}: add its editor and client library to CAPTURES")
     metadata = {
