@@ -1,3 +1,4 @@
 * text=auto eol=lf
 test/fixtures/** -text
 test/protocol/*/** -text
+test/protocol/schema/3.17/metaModel.json linguist-generated=true

@@ -57,3 +57,16 @@ The extension package (VSIX) that [`npm run package`](clients/vscode/README.md#p
 | `tslib` | 0BSD | Build tool, through `@vscode/vsce` |
 
 `@vscode/vsce` also uses some of the packages listed above for the runtime and test tools, such as `semver`, `minimatch`, `debug`, and the proxy agents, and a second copy of `signal-exit` (ISC).
+
+## Language Server Protocol 3.17 metaModel
+
+| Field | Value |
+| --- | --- |
+| Upstream | https://github.com/microsoft/language-server-protocol |
+| Location | `test/protocol/schema/3.17/metaModel.json` |
+| Pinned revision | `baf2db31b5fb314a8f358f9a839d3c66e9d98734` (`_specifications/lsp/3.17/metaModel/metaModel.json`) |
+| SHA-256 | `c207890d9e0f54d8f9e462a924670f563423ec9af90a0a369645ff55384c8d6d` |
+| License | Creative Commons Attribution 4.0 International (`test/protocol/schema/3.17/License.txt`, copied unchanged from upstream) |
+| Attribution | Microsoft, Language Server Protocol contributors |
+| How it is used | Offline input for the bounded protocol shape tests. It is not compiled into the server or shipped in release archives. |
+| Modifications | None. The model retains its CC BY 4.0 license separately from the repository's Apache-2.0 code. See the [model README](test/protocol/schema/3.17/README.md) for source and update instructions. |
