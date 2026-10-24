@@ -55,28 +55,38 @@ def unavailable_paths(document):
     consumer = RESULTS.Schema(document)
     accepted = set()
 
-    def walk(node, path, field=False):
+    def walk(node, path, field=False, base=None):
+        """base is the schema that node refines in an if, then, or else branch,
+        so that a field there is tested with the constraints it refines."""
         if field:
+            refined = node if base is None else {"allOf": [base, node]}
             probe = RESULTS.Schema({
                 "$schema": document["$schema"],
                 "$defs": document["$defs"],
-                "allOf": [node],
+                "allOf": [refined],
             })
             if not probe.errors({"value": None, "unavailable": "prerequisite failed"}):
                 accepted.add(path)
         if not isinstance(node, dict):
             return
         if "$ref" in node:
-            walk(consumer.schemas[consumer.references[node["$ref"]]], path)
+            walk(consumer.schemas[consumer.references[node["$ref"]]], path, base=base)
+        base = base if isinstance(base, dict) else {}
         for name, child in node.get("properties", {}).items():
-            walk(child, f"{path}.{name}" if path else name, True)
+            walk(child, f"{path}.{name}" if path else name, True,
+                 base=base.get("properties", {}).get(name))
         if "items" in node:
-            walk(node["items"], path + "[]", True)
+            walk(node["items"], path + "[]", True, base=base.get("items"))
         if "additionalProperties" in node and node["additionalProperties"] is not False:
-            walk(node["additionalProperties"], path + ".*", True)
+            other = base.get("additionalProperties")
+            walk(node["additionalProperties"], path + ".*", True,
+                 base=other if isinstance(other, dict) else None)
         for keyword in ("oneOf", "allOf"):
             for child in node.get(keyword, []):
-                walk(child, path)
+                walk(child, path, base=base)
+        for keyword in ("if", "then", "else"):
+            if keyword in node:
+                walk(node[keyword], path, base=node)
 
     walk(document, "")
     return accepted
@@ -475,6 +485,15 @@ class CoverageTest(unittest.TestCase):
                     if location[0] == "machine":
                         added = {"provenance.client.release", "provenance.host.release"}
                     self.assertEqual(expected | added, unavailable_paths(mutant))
+
+    def test_unavailable_provenance_paths_descend_into_conditions(self):
+        # A field that only a then's branch declares is still found. The walk
+        # reports each field that any branch widens to the unavailable form.
+        mutant = copy.deepcopy(self.schema)
+        mutant["$defs"]["runEnd"]["then"]["properties"]["counts"]["properties"]["note"] = {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/unavailableProvenance"}]}
+        self.assertEqual(unavailable_paths(self.schema) | {"counts.note"},
+                         unavailable_paths(mutant))
 
     def test_unavailable_provenance_paths_detect_missing_fields(self):
         mutant = copy.deepcopy(self.schema)
