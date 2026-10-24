@@ -360,7 +360,7 @@ class RunsTableTest(unittest.TestCase):
         self.assertEqual(["2026-10-24", "`2222222`",
                           "Neovim, Linux; `test`; Linux 24.04, x86_64; "
                           "[run 123](https://github.com/o/r/actions/runs/123), attempt 2",
-                          "`make test`", "Neovim 0.11.6", "Passed (21 of 21 observations): 21 pass"], row(events))
+                          "`make test`", "Neovim 0.11.6", "Passed (22 of 22 observations): 22 pass"], row(events))
 
     def test_the_expected_failure(self):
         cells_ = row(run_of("lazyvim", lane="lazyvim-linux"))
@@ -373,14 +373,14 @@ class RunsTableTest(unittest.TestCase):
         index = find(events, "nvim.hover.response")
         fail(events, index)
         events[index + 1].update(status="skip", reason="r")
-        self.assertEqual("Failed (21 of 21 observations): 19 pass, 1 fail, 1 skip; failed: `nvim.hover.response`; "
+        self.assertEqual("Failed (22 of 22 observations): 20 pass, 1 fail, 1 skip; failed: `nvim.hover.response`; "
                          "exit code 1; cleanup failed; 2 issues",
                          row(rebuild(events, status="fail", exitCode=1, cleanup="failed", issues=["a", "b"]))[5])
         events = run_of("remote-ssh")[:40] + run_of("remote-ssh")[-1:]
-        self.assertEqual("Aborted (39 of 159 observations): 39 pass; signal SIGTERM; cleanup unknown",
+        self.assertEqual("Aborted (39 of 162 observations): 39 pass; signal SIGTERM; cleanup unknown",
                          row(rebuild(events, status="aborted", exitCode=None, signal="SIGTERM", cleanup="unknown"))[5])
         events = rebuild(run_of("nvim"), status="fail", exitCode=None)
-        self.assertEqual("Failed (21 of 21 observations): 21 pass; no exit code", row(events)[5])
+        self.assertEqual("Failed (22 of 22 observations): 22 pass; no exit code", row(events)[5])
         events = run_of("lazyvim")
         events[find(events, RULE["check"], RULE["profile"])].update(status="xpass", reason="shown", failureCode=None)
         self.assertEqual("Failed (57 of 57 observations): 56 pass, 1 xpass; passed unexpectedly: "
@@ -393,7 +393,7 @@ class RunsTableTest(unittest.TestCase):
         for event in events[2:-1]:
             event.update(status="skip", reason="the preflight failed")
         self.assertEqual(["`2222222`, server version unknown",
-                          "Unavailable (21 of 21 observations): 1 fail, 20 skip; failed: "
+                          "Unavailable (22 of 22 observations): 1 fail, 21 skip; failed: "
                           "`nvim.infrastructure.preflight`; exit code 2; provenance unavailable"],
                          [row(rebuild(events, status="unavailable", exitCode=2))[i] for i in (1, 5)])
         # A cap on the failed checks it names.
@@ -511,7 +511,7 @@ class SelectionTest(RenderTest):
     def test_invalid_stream(self):
         events = run_of("nvim")[:-1]
         selection = self.select(run_of("lazyvim", 2), events)
-        self.assertMalformed(selection, f"{selection.parent / 'stream-1.jsonl'}: invalid: line 23: incomplete: no "
+        self.assertMalformed(selection, f"{selection.parent / 'stream-1.jsonl'}: invalid: line 24: incomplete: no "
                                         "run-end")
         events = run_of("nvim")
         events[0]["coverageSha256"] = "0" * 64
@@ -906,7 +906,7 @@ class CheckTest(RenderTest):
         fail(events, find(events, "nvim.hover.response"))
         selection = self.select(rebuild(events, status="fail"))
         stream_path = selection.parent / "stream-0.jsonl"
-        summary = f"{stream_path}: valid, run failed (21 of 21 observations): 20 pass, 1 fail, 0 xfail, 0 xpass, 0 skip\n"
+        summary = f"{stream_path}: valid, run failed (22 of 22 observations): 21 pass, 1 fail, 0 xfail, 0 xpass, 0 skip\n"
         # It still renders, and says so.
         self.assertEqual((1, summary + f"{self.doc}: rendered the results of {RELEASE}\n", ""), self.render(selection))
         self.assertIn("| Fail: `nvim.hover.response` |", self.doc.read_text())

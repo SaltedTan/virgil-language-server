@@ -235,10 +235,10 @@ An observation without a check is never a pass: a run that stopped early, or tha
 
 The example's rows of Neovim and LazyVim on Linux:
 
-| Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Workspace symbols | Signature help | Rename | Completion |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Neovim, Linux | Pass (API); not covered: undoing the fix of bad.v3, which brings the parser error back | Pass (API) | Pass (API); not covered: the jump with CTRL-\] | Pass (API) | Pass (API); not covered: a change to the project file on disk; a missing Virgil root, with its MissingVirgilRoot diagnostic and Invalid project file warning | Not covered | Pass (API) | Pass (API) | Pass (API); not covered: a call still being typed, and nothing just past the ) | Pass (API); not covered: the refusal while the type error stands | Pass (API); not covered: no completion from the server in a comment |
-| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Known limitation: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)); workaround profile separate | Pass (API) | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (UI state) |
+| Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Document highlights | Workspace symbols | Signature help | Rename | Completion |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Neovim, Linux | Pass (API); not covered: undoing the fix of bad.v3, which brings the parser error back | Pass (API) | Pass (API); not covered: the jump with CTRL-\] | Pass (API) | Pass (API); not covered: a change to the project file on disk; a missing Virgil root, with its MissingVirgilRoot diagnostic and Invalid project file warning | Not covered | Pass (API) | Pass (API) | Pass (API) | Pass (API); not covered: a call still being typed, and nothing just past the ) | Pass (API); not covered: the refusal while the type error stands | Pass (API); not covered: no completion from the server in a comment |
+| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Known limitation: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)); workaround profile separate | Pass (API) | Pass (API) | Not covered | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (UI state) |
 
 ## Adding a check
 
