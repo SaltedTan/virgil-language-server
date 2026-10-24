@@ -647,6 +647,77 @@ test('host containment retains the signal timestamp across slow SSH responses', 
   }
 });
 
+test('host containment observes each signal after a slow SSH response before deciding survival', async (t) => {
+  for (const slow of ['SIGTERM', 'SIGKILL']) {
+    for (const gone of [false, true]) {
+      await t.test(`${slow}: host ${gone ? 'gone' : 'running'}`, async () => {
+        const agent = '/work/agent';
+        const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+        const table = new Map([[host.pid, { start: host.start, exe: host.exe }]]);
+        let now = 0;
+        let delayed = false;
+        let observed = false;
+        let calls = 0;
+        const sent = [];
+        const runner = load('run.cjs', {}, {}, {
+          Date: { now: () => now },
+          setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+        });
+        const remote = { target: { root: '/work' }, remote: async (command) => {
+          const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+          assert.deepEqual(options.host, host);
+          if (delayed && !observed) {
+            assert.equal(options.signal, undefined);
+            observed = true;
+          }
+          calls++;
+          const { listing, signals } = remoteProcesses(table, options, { now: () => now });
+          for (const [pid, signal] of signals) {
+            sent.push({ signal, at: listing.signaledAt });
+            if (signal === slow) {
+              if (gone) table.delete(pid);
+              now += 4000;
+              delayed = true;
+            }
+          }
+          return { stdout: JSON.stringify(listing) };
+        } };
+        const stopped = runner.stopHost(remote, { agent, serverNode: host.exe }, host);
+        if (gone) {
+          const result = await stopped;
+          assert.equal(result.signal, slow);
+          assert.equal(result.at, slow === 'SIGTERM' ? 0 : 3000);
+          assert.equal(result.processes.host, false);
+        } else {
+          await assert.rejects(stopped, (error) => error.kind === 'infra'
+            && error.message === 'the remote extension host (pid 100) that VS Code left running still ran 3 seconds after SIGKILL');
+        }
+        assert.equal(observed, true);
+        assert.deepEqual(sent, [
+          { signal: 'SIGTERM', at: 0 },
+          ...(!gone || slow === 'SIGKILL' ? [{ signal: 'SIGKILL', at: slow === 'SIGTERM' ? 4000 : 3000 }] : []),
+        ]);
+        assert.ok(now <= 7000);
+        assert.ok(calls <= 35);
+      });
+    }
+  }
+});
+
+test('host containment cannot report survival when no signal was sent', async () => {
+  let now = 0;
+  const runner = load('run.cjs', {}, {}, {
+    Date: { now: () => now },
+    setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+  });
+  const remote = { target: { root: '/work' }, remote: async () => ({
+    stdout: JSON.stringify({ found: [], host: true, sampledAt: now }),
+  }) };
+  await assert.rejects(runner.stopHost(remote, { agent: '/work/agent', serverNode: '/node' }, { pid: 100, start: '1', exe: '/node' }),
+    (error) => error.kind === 'infra' && error.message === 'could not send SIGTERM to the remote extension host (pid 100)');
+  assert.equal(now, 3000);
+});
+
 test('a late first sample or a late empty sample cannot verify the leak deadline', async () => {
   for (const at of [0, 10000]) {
     for (const samples of [[{ offset: 7000, alive: false }], [{ offset: 7000, alive: true }],
@@ -908,11 +979,12 @@ test('scratch-directory failures produce an INFRA manifest and exit status', asy
 // pidfd, the host's pidfd helper "runs", and gives result for every target;
 // without it, python3 isn't found there. proc is the fake of /proc that it
 // reads.
-function remoteProcesses(processes, options, { pidfd = false, result = 'sent', proc = fakeProc(processes), now = Date.now } = {}) {
+function remoteProcesses(processes, options, { pidfd = false, result = 'sent', proc = fakeProc(processes), now = Date.now, onHelper = () => {} } = {}) {
   const signals = [];
   const output = [];
   const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
   const spawnSync = (command, args) => {
+    onHelper();
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
     const [name, targets] = JSON.parse(args.at(-1));
     signals.push(['pidfd', name, targets]);
@@ -987,6 +1059,22 @@ test('the leak check signals a remote extension host only by its PID, start time
     console: { log() {} },
   });
   assert.deepEqual(sent, []);
+});
+
+test('remote signal timestamps acknowledge a send after the helper completes', () => {
+  const agent = '/work/agent';
+  const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+  for (const pidfd of [false, true]) {
+    for (const result of ['sent', 'gone', 'other']) {
+      let now = 0;
+      const { listing, signals } = remoteProcesses(new Map([[host.pid, { start: host.start, exe: host.exe }]]),
+        { root: '/work', agent, host, signal: 'SIGTERM' },
+        { pidfd, result, now: () => now, onHelper: () => { now += 4000; } });
+      assert.equal(listing.signaledAt, pidfd && result !== 'sent' ? undefined : 4000);
+      assert.equal(listing.host, true);
+      assert.equal(signals.length, 1);
+    }
+  }
 });
 
 test('without pidfds, the leak check signals a process that has since been listed as a zombie only while its other threads run', () => {

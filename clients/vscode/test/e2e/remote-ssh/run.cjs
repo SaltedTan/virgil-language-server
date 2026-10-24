@@ -661,13 +661,18 @@ const send = (name, targets) => {
     results = helper.status === 0 ? JSON.parse(helper.stdout) : undefined;
   } catch {}
   const complete = Array.isArray(results) && results.length === targets.length;
+  let sentAt = complete && results.includes('sent') ? Date.now() : undefined;
   targets.forEach(([pid, start], i) => {
     if (complete && ${JSON.stringify(SETTLED)}.includes(results[i])) return;
     try {
       const fields = stat(pid);
-      if (!isZombie(fields[0], Number(fields[17])) && fields[19] === start) process.kill(pid, name);
+      if (!isZombie(fields[0], Number(fields[17])) && fields[19] === start) {
+        process.kill(pid, name);
+        sentAt = Date.now();
+      }
     } catch {}
   });
+  return sentAt;
 };
 const table = [];
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
@@ -725,10 +730,7 @@ for (const entry of table) {
   if (kill.includes(entry.pid + '@' + start) && !(exe ?? '').startsWith(agent + '/')) killed.push([entry.pid, start]);
   found.push(exe === undefined ? { pid: entry.pid, ppid: entry.ppid, start } : { pid: entry.pid, ppid: entry.ppid, start, exe });
 }
-if (hostRuns && signal) {
-  signaledAt = Date.now();
-  send(signal, [[host.pid, host.start]]);
-}
+if (hostRuns && signal) signaledAt = send(signal, [[host.pid, host.start]]);
 send('SIGKILL', killed);
 console.log(JSON.stringify({ found, host: hostRuns, signaledAt, unidentified, sampledAt: Date.now() }));`;
 
@@ -833,9 +835,11 @@ async function stopHost(run, layout, host) {
         sent = signal;
         at = processes.signaledAt;
         deadline = at + HOST_STOP_MS;
+        if (Date.now() >= deadline) continue;
       }
       if (Date.now() >= deadline) {
         if (processes.host === null) throw infra(`leak check could not identify the host's process with pid ${host.pid}`);
+        if (sent !== signal) throw infra(`could not send ${signal} to the remote extension host (pid ${host.pid})`);
         break;
       }
       await sleep(Math.min(100, deadline - Date.now()));
