@@ -27,14 +27,18 @@ LazyVim's noice.nvim drops `window/showMessage` notifications from every languag
 
 ## Plain Neovim
 
-Add the contents of [`virgil_lsp.lua`](virgil_lsp.lua) to your `init.lua`. For a new installation with no existing configuration, download it directly (replace `config_url` as above):
+Download [`virgil_lsp.lua`](virgil_lsp.lua) as a module and load it from your `init.lua` (replace `config_url` as above). This preserves any existing configuration and adds the `require` line only once:
 
 <!-- clean-install: plain-nvim -->
 ```sh
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
-mkdir -p "$HOME/.config/nvim"
-curl --fail --location "$config_url/virgil_lsp.lua" -o "$HOME/.config/nvim/init.lua"
+mkdir -p "$HOME/.config/nvim/lua"
+curl --fail --location "$config_url/virgil_lsp.lua" -o "$HOME/.config/nvim/lua/virgil_lsp.lua"
+touch "$HOME/.config/nvim/init.lua"
+grep -qxF 'require("virgil_lsp")' "$HOME/.config/nvim/init.lua" || printf '\nrequire("virgil_lsp")\n' >> "$HOME/.config/nvim/init.lua"
 ```
+
+Alternatively, add the contents of `virgil_lsp.lua` to your `init.lua`.
 
 To reproduce a problem from a source checkout without your own configuration:
 

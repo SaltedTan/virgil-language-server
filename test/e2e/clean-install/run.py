@@ -40,6 +40,57 @@ def extract(bundle):
     return steps
 
 
+def examples(steps):
+    """Read the documented substitution points, failing closed if they change."""
+    def value(step, field, pattern):
+        assignment = "VIRGIL_LOC" if field == "VIRGIL_LOC root path" else field
+        assignments = re.findall(rf"^(?:export )?{assignment}=.*$", steps[step], re.M)
+        matches = re.findall(pattern, steps[step], re.M)
+        if len(assignments) != 1 or len(matches) != 1:
+            raise ValueError(f"README step {step}: expected exactly one {field} matching {pattern!r}")
+        return matches[0]
+
+    version_pattern = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?"
+    server = value("server", "server_version", rf"^server_version=({version_pattern})$")
+    extension = value("vsix-download", "extension_version",
+                      r"^extension_version=([0-9]+\.[0-9]+\.[0-9]+)$")
+    download = value("server", "download_url", r"^download_url=(https://github\.com/SaltedTan/"
+                     r"virgil-language-server/releases/download/v\$server_version)$")
+    configs = {}
+    roots = {}
+    versions = {"server": server}
+    for step in ["lazyvim", "plain-nvim"]:
+        config, version = value(step, "config_url", r"^config_url=(https://raw\.githubusercontent\.com/"
+                                rf"SaltedTan/virgil-language-server/v({version_pattern})/editors/nvim)$")
+        configs[step] = config
+        versions[step] = version
+    for step in ["vscode-root", "nvim-root"]:
+        root, version = value(step, "VIRGIL_LOC root path",
+                              rf'^export VIRGIL_LOC="(\$HOME/\.local/opt/virgil-lsp-({version_pattern})-x86-64-linux/virgil)"$')
+        roots[step] = root
+        versions[step] = version
+    for step, version in versions.items():
+        if version != server:
+            raise ValueError(f"README step {step}: server version {version!r} differs from server_version={server}")
+    return {"server_version": server, "extension_version": extension,
+            "download_url": download, "config_urls": configs, "roots": roots}
+
+
+def substitute(steps, values, version, extension_version, url):
+    """Change only the explicit README example values, rather than global literals."""
+    steps = dict(steps)
+    steps["server"] = steps["server"].replace(
+        "server_version=" + values["server_version"], "server_version=" + version).replace(
+        "download_url=" + values["download_url"], "download_url=" + url)
+    steps["vsix-download"] = steps["vsix-download"].replace(
+        "extension_version=" + values["extension_version"], "extension_version=" + extension_version)
+    for step, config in values["config_urls"].items():
+        steps[step] = steps[step].replace("config_url=" + config, "config_url=" + url + "/editors/nvim")
+    for step, root in values["roots"].items():
+        steps[step] = steps[step].replace(root, root.replace(values["server_version"], version))
+    return steps
+
+
 def bundle(out):
     """The only operation that reads the source checkout; run outside the container."""
     repo = HERE.parents[2]
@@ -55,7 +106,7 @@ def bundle(out):
         "name": "clean-install-driver", "version": "0.0.0", "publisher": "test",
         "engines": {"vscode": "^1.90.0"}, "main": "suite.cjs",
     }) + "\n")
-    extract(out)
+    examples(extract(out))
     print(f"Self-contained bundle: {out}")
 
 
@@ -82,6 +133,7 @@ def run(args):
     # Deliberately minimal environment; no inherited root, editor profile, or XDG paths.
     base_env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "TERM": "xterm-256color"}
     steps = extract(source)
+    values = examples(steps)
     public = work / "public"
     public.mkdir()
     for file in args.assets.resolve().iterdir():
@@ -100,17 +152,10 @@ def run(args):
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}"
     extension_version = re.fullmatch(r"virgil-lsp-vscode-(.+)\.vsix", args.vsix)[1]
-    # Only the versions and the two README-documented download locations change.
-    replacements = {"0.1.0-alpha.3": args.version,
-                    "extension_version=0.1.2": f"extension_version={extension_version}",
-                    "https://github.com/SaltedTan/virgil-language-server/releases/download/v$server_version": url,
-                    "https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim": url + "/editors/nvim"}
+    steps = substitute(steps, values, args.version, extension_version, url)
     scripts = work / "steps"
     scripts.mkdir()
     for key, body in steps.items():
-        # Download URLs are replaced first because one contains the example version.
-        for old, new in reversed(list(replacements.items())):
-            body = body.replace(old, new)
         (scripts / (key + ".sh")).write_text(body)
     q = shlex.quote
 
