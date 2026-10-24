@@ -78,7 +78,7 @@ expected values per capture and document why they differ.
 
 ```sh
 make test-protocol-shapes
-make test-protocol-shapes SEED=42 CASES=5000
+make test-protocol-shapes PROTOCOL_SHAPES_SEED=42 PROTOCOL_SHAPES_CASES=5000
 ```
 
 The default is seed 0 and a total budget of 2,000 cases, including mandatory

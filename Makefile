@@ -3,10 +3,11 @@
 
 VIRGIL ?= vendor/virgil
 BUILD  ?= build
-# Offline protocol shape budget; includes mandatory semantic/lifecycle oracles.
-SEED   ?= 0
-CASES  ?= 2000
 V3C    := scripts/v3c.sh
+
+# Offline protocol shape budget; includes mandatory semantic/lifecycle oracles.
+PROTOCOL_SHAPES_SEED  ?= 0
+PROTOCOL_SHAPES_CASES ?= 2000
 
 # Aeneas front end plus the libraries it depends on, as listed in the pinned
 # checkout's aeneas/DEPS. lib/test is excluded here and added only to tests.
@@ -131,7 +132,7 @@ test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUIL
 
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
-	python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(SEED) --cases $(CASES) \
+	python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(PROTOCOL_SHAPES_SEED) --cases $(PROTOCOL_SHAPES_CASES) \
 	  --artifacts $(BUILD)/protocol-shapes
 
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
