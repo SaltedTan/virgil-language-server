@@ -73,9 +73,13 @@ function zombie(p) {
 // Returns undefined if the process has gone: its stat can't be read, or it is
 // a zombie (see isZombie). Otherwise { pid, ppid, start, files }, with the
 // process's start time in clock ticks after boot and the contents of the files
-// that it could read; or { pid, ppid, start, unreadable }, if every thread had gone once its files had
-// been read, or no thread's files could be read, while the process hadn't, so
-// that the process is neither identified nor known to have gone. A caller
+// that it could read. The thread's PID and start time must match before and
+// after the file reads, and the process must still have its initial identity;
+// ppid comes from that same process's final stat, so a reused PID cannot mix
+// a former parent's ownership with a replacement's files. Otherwise returns
+// { pid, ppid, start, unreadable }, if no thread's files could identify the
+// process or its identity changed during the reads. This entry describes the
+// current process, which is neither identified nor known to have gone. A caller
 // reports such a process rather than counting it as gone, and tries again
 // within its bounds, since another thread may still run.
 function processFiles(fs, pid, files) {
@@ -148,8 +152,9 @@ function processFiles(fs, pid, files) {
 // whose executable can't be read, as a non-dumpable one's can't, may also be
 // the run's if its parent is, or by its readable command line, if an argument
 // names a path under one of roots: that is the evidence left for a process of
-// the run that hides both its executable and its environment, since a readable
-// executable that is under none of roots settles that it is not the run's. So
+// the run that hides both its executable and its environment. With descend
+// false, readable system executables don't become leftovers just because of
+// ancestry or command-line paths, keeping transient server helpers out. So
 // the same-uid non-dumpable processes that every machine has, such as systemd
 // --user's, stay out: their command lines name nothing under the run's
 // directories, and the run didn't start them.

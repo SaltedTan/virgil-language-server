@@ -612,23 +612,25 @@ function suiteLines() {
 }
 
 // A Node.js program for the target's VS Code Server, whose argument is JSON:
-// it prints, as JSON, the processes that run an executable under root, other
-// than itself and zombies, with their parents' PIDs and their start times, and
-// whether host, a process given by PID, start time, and executable, still
-// runs. A process whose main thread has exited is no zombie while its other
-// threads run, and processFiles reads the executable, and every other file
-// that identifies it, from whichever of its threads still runs, as it does for
-// the teardown (see isZombie and processFiles in ../processes.cjs); it also
+// it prints, as JSON, the run's processes (see runOwned), other than itself
+// and zombies, with their parents' PIDs and their start times, and
+// whether host, a process given by PID, start time, and executable, is gone
+// (false), identified and running (true), or unidentified (null). A process
+// whose main thread has exited is no zombie while its other threads run, and
+// processFiles reads its identifying files from whichever thread still runs,
+// as it does for the teardown (see isZombie and processFiles in
+// ../processes.cjs); it also
 // reports, in unidentified, each live process that no thread's files could
 // describe, which the caller retries rather than counting as gone. A process
 // that hides its executable, as a non-dumpable one does, is still found if the
 // caller already identified it by its PID and start time, as it did host and
 // the processes in kill, if its parent is the run's, or if an argument of its
 // readable command line names a path under root (see runOwned in
-// ../processes.cjs); a readable executable under none of root settles that it
-// isn't. It sends signal, if given, to that host, and SIGKILL to those of the
-// processes in kill, each given as PID@start, that still have that start time
-// and run an executable under root and not under agent, the VS Code Server's
+// ../processes.cjs). Other readable executables outside root stay out unless
+// their identity is already known. It sends signal, if given, to that host,
+// and SIGKILL to those of the processes in kill, each given as PID@start,
+// that still have that start time
+// and whose executable is hidden or not under agent, the VS Code Server's
 // directory: exactly those, never processes found by name or another process
 // that now has the PID. Each signal goes through a pidfd where the target's
 // Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
@@ -813,7 +815,11 @@ function descendants(processes, pid) {
 // The host doesn't handle SIGTERM, so SIGTERM ends it at once, without
 // deactivating its extensions, as a crash would: its language client neither
 // stops its server nor can restart it, and the server sees its input close.
-// SIGKILL follows if the host still runs HOST_STOP_MS later.
+// SIGKILL follows if the host still runs HOST_STOP_MS after SIGTERM is sent.
+// An unidentified sample retains the pending signal and host identity; its
+// identification is retried within HOST_STOP_MS, and the signal's wait starts
+// only when it is sent. A host still unidentified at the deadline fails with
+// its PID rather than counting as stopped or as having survived a signal.
 async function stopHost(run, layout, host) {
   const started = Date.now();
   let sent = null;

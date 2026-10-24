@@ -340,9 +340,8 @@ function signal(processes, name) {
 // environment, as a non-dumpable one does, is still the run's if its identity
 // is one that start() started, if its parent is the run's, or if an argument
 // of its command line names a path under the work or sockets directory (see
-// runOwned in ../processes.cjs); a readable executable that is under neither
-// settles that it isn't. A live process that no thread's files could describe,
-// which a scan that raced its threads' exit may find, is reported as
+// runOwned in ../processes.cjs). A live process that no thread's files could
+// describe, which a scan that raced its threads' exit may find, is reported as
 // unidentified rather than left out, so that the teardown tries again instead
 // of counting it as gone. Throws if /proc itself can't be listed.
 function runProcesses({ work, sockets, marker, started }) {
