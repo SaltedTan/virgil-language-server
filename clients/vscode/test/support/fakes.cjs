@@ -98,10 +98,12 @@ function fakeClock() {
 // stopped, does neither, and doesn't exit once released, until resume(), as
 // SIGCONT would resume it: it then sends the signals that it was asked for
 // meanwhile, in order, says so, and exits if released. spawned holds spawn's
-// arguments.
+// arguments. The keeper's referenced, and each pipe's destroyed, say whether
+// the runner has let Node.js exit without them, with unref() and destroy().
 function fakeKeeper(pid) {
-  const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
-  const pipe = () => Object.assign(new EventEmitter(), { end() {} });
+  const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null, referenced: true });
+  keeper.unref = () => { keeper.referenced = false; };
+  const pipe = () => Object.assign(new EventEmitter(), { destroyed: false, end() {}, destroy() { this.destroyed = true; } });
   // The signals that the keeper was asked for while it was stopped.
   const waiting = [];
   const send = (name) => {
@@ -140,7 +142,7 @@ function fakeKeeper(pid) {
       if (fake.released !== undefined) fake.reap(null);
     },
   };
-  const stdin = Object.assign(new EventEmitter(), {
+  const stdin = Object.assign(pipe(), {
     writable: true,
     write: (text) => {
       for (const name of String(text).split('\n').filter(Boolean)) {
@@ -156,7 +158,7 @@ function fakeKeeper(pid) {
     },
   });
   keeper.stdin = stdin;
-  keeper.stdout = new EventEmitter();
+  keeper.stdout = pipe();
   keeper.stdio = [stdin, keeper.stdout, null, pipe(), pipe(), pipe()];
   const line = (message) => keeper.stdout.emit('data', Buffer.from(`${JSON.stringify(message)}\n`));
   return fake;

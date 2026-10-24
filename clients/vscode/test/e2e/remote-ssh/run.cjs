@@ -241,8 +241,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // then, or until the group's SIGKILL, so the group stays the run's: a process
 // that joins it, even just before the command exits, is waited for, and
 // stopped with the group. If the group or its output hasn't ended
-// KILL_WAIT_MS after SIGKILL, it resolves all the same, and the result's
-// stopped says so.
+// KILL_WAIT_MS after SIGKILL, it resolves all the same, at once, and the
+// result's stopped says so: it detaches from the group, and so stops reading
+// the output, so that the test can exit while the group, even its keeper, or
+// a process that holds the output pipes runs on (see detach in
+// ../processes.cjs).
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const output = { stdout: [], stderr: [] };
@@ -264,18 +267,21 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
         finish();
       },
     });
+    // With anyway, resolves at once, without the keeper.
     const finish = (anyway = false) => {
       if (finished || (!anyway && (exited === undefined || open > 0 || group.look()?.empty === false))) return;
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
-      void group.release().then(() => {
+      const done = () => {
         signal.removeEventListener('abort', interrupt);
         resolve({
           ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
           stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
         });
-      });
+      };
+      if (anyway) done();
+      else void group.release().then(done);
     };
     const stop = (reason) => {
       if (stopped !== undefined || group.pid === undefined) return;
@@ -297,6 +303,7 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
       }
       if (!finished && abandon !== undefined && Date.now() > abandon) {
         stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
+        if (!group.detach()) stopped += `, nor had its keeper (pid ${group.pid})`;
         finish(true);
       }
     }, 50);

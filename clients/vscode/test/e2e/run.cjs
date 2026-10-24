@@ -254,9 +254,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
 // which bin/code starts without exec on Linux. A stopped group gets SIGTERM,
 // then SIGKILL, and the promise resolves only after the whole group has exited,
 // before the caller removes the temporary directory, or, if it hasn't
-// KILL_WAIT_MS after SIGKILL, with the result's stopped saying so. If the
-// group still runs one of the servers SERVER_EXIT_MS after the command itself
-// has exited, the group is stopped as well. The group's keeper (see
+// KILL_WAIT_MS after SIGKILL, at once, with the result's stopped saying so,
+// and detached from the group, so that the test can exit while the group,
+// even its keeper, runs on (see detach in processes.cjs). If the group still
+// runs one of the servers SERVER_EXIT_MS after the command itself has
+// exited, the group is stopped as well. The group's keeper (see
 // startGroup in processes.cjs) keeps the group's number the run's until then,
 // or until the group's SIGKILL, and sends the group the test's signals; if it
 // goes before, the test signals only the processes that it saw in the group,
@@ -278,7 +280,8 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       },
     });
     // Resolves once the command has exited and the group holds no process but
-    // its keeper, or is no longer the run's, or, with anyway, at once; returns
+    // its keeper, or is no longer the run's, and Node.js has reaped the
+    // released keeper; or, with anyway, at once, without the keeper; returns
     // whether it has.
     const finish = (anyway = false) => {
       if (finished) return true;
@@ -286,10 +289,12 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
-      void group.release().then(() => {
+      const done = () => {
         signal.removeEventListener('abort', interrupt);
         resolve({ ...exited, stopped });
-      });
+      };
+      if (anyway) done();
+      else void group.release().then(done);
       return true;
     };
     const stop = (reason) => {
@@ -306,6 +311,7 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         abandon = Date.now() + KILL_WAIT_MS;
       } else if (!finish() && abandon !== undefined && Date.now() > abandon) {
         stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
+        if (!group.detach()) stopped += `, nor had its keeper (pid ${group.pid})`;
         finish(true);
       }
     }, 50);

@@ -209,11 +209,12 @@ function signalProcesses(processes, name) {
 // that hasn't exited KEEPER_REPLY_MS after its release gets SIGKILL the same
 // way. The keeper survives SIGINT, SIGTERM, and SIGHUP, which the rest of the
 // group gets as usual, so the group stays the run's until the runner releases
-// the keeper, or asks for SIGKILL; if the runner goes, the keeper stops the
-// group. stdio is spawn's for the command's standard input, output, and
-// error, each 'pipe', 'inherit', or 'ignore'; the returned group's stdin,
-// stdout, and stderr are the pipes. onExit gets the command's exit as
-// { code, signal }, or { error } if it didn't start.
+// the keeper, or asks for SIGKILL; if the runner goes, or detaches from the
+// group (see detach), the keeper stops the group. stdio is spawn's for the
+// command's standard input, output, and error, each 'pipe', 'inherit', or
+// 'ignore'; the returned group's stdin, stdout, and stderr are the pipes.
+// onExit gets the command's exit as { code, signal }, or { error } if it
+// didn't start.
 function startGroup(command, args, { env, stdio, onExit }) {
   // For the keeper, 'inherit' would mean the runner's descriptors 3 to 5; the
   // command's are the runner's own standard streams.
@@ -392,6 +393,22 @@ function startGroup(command, args, { env, stdio, onExit }) {
       });
       keeper.stdin.end('release\n');
     }),
+    // Gives up on the group, as a runner does on one that its SIGKILL hasn't
+    // ended, so that Node.js can exit while the keeper, or a process that
+    // holds the command's pipes, runs on: closes the runner's end of every
+    // pipe to the keeper and the command, after which none of their output or
+    // reports arrive, and onExit is no longer called, and no longer waits for
+    // the keeper. A keeper that is still there finds its input ended without a
+    // release, as when the runner goes. Returns whether Node.js has reaped the
+    // keeper.
+    detach: () => {
+      const gone = keeperGone || !led();
+      reported = true;
+      for (const { timer } of requested.splice(0)) clearTimeout(timer);
+      for (const stream of keeper.stdio) stream?.destroy();
+      keeper.unref();
+      return gone;
+    },
   };
 }
 
