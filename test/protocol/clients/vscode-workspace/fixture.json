@@ -1,0 +1,15 @@
+{
+  "editor": "Visual Studio Code",
+  "editorVersion": "1.142.0",
+  "clientLibrary": "vscode-languageclient 10.1.2",
+  "captured": "2026-10-23",
+  "serverCommit": "025082d",
+  "projectRoot": "/work/project",
+  "normalized": [
+    "the captured project root to /work/project",
+    "initializationOptions.virgilRoot, when present, to /work/virgil",
+    "processId to 4242, or kept null",
+    "a workspace folder named after the project directory, when present, to project"
+  ],
+  "notes": "Replies to the server's requests keep the captured id; the test answers the id of the server's pending request."
+}

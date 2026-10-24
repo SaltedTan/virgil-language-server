@@ -5,7 +5,8 @@
 # Golden transcript tests: runs "virgil-lsp --stdio" on recorded input bytes
 # and compares standard output byte for byte. Each directory next to this
 # script is one case, except __pycache__, which the Python tests that import
-# worker.py leave here:
+# worker.py leave here, and clients, which holds client_initialization.py's
+# fixtures:
 #
 #   input        The bytes written to standard input.
 #   input.<n>    Instead of input: parts written one after another, numbered
@@ -121,7 +122,10 @@ run_case() {
 pass=0
 fail=0
 for c in "$DIR"/*/; do
-    [ "$(basename "$c")" = __pycache__ ] && continue
+    # Not transcripts: Python's cache and client_initialization.py's fixtures.
+    case "$(basename "$c")" in
+        __pycache__|clients) continue ;;
+    esac
     if run_case "$c" > "$TMP/report"; then
         pass=$((pass + 1))
     else
