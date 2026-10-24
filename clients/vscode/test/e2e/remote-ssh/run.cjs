@@ -819,18 +819,21 @@ async function stopHost(run, layout, host) {
   let sent = null;
   let at = started;
   for (const signal of ['SIGTERM', 'SIGKILL']) {
-    let processes = await remoteProcesses(run, layout, { host, signal });
-    if (processes.host === false) return { signal: sent, seconds: (Date.now() - started) / 1000, at, processes };
-    if (processes.signaledAt !== undefined) {
-      sent = signal;
-      at = processes.signaledAt;
-    }
-    for (const deadline = Date.now() + HOST_STOP_MS; Date.now() < deadline;) {
-      await sleep(100);
-      processes = await remoteProcesses(run, layout, { host });
+    let deadline = Date.now() + HOST_STOP_MS;
+    for (;;) {
+      const processes = await remoteProcesses(run, layout, { host, signal: sent === signal ? undefined : signal });
       if (processes.host === false) return { signal: sent, seconds: (Date.now() - started) / 1000, at, processes };
+      if (processes.signaledAt !== undefined) {
+        sent = signal;
+        at = processes.signaledAt;
+        deadline = at + HOST_STOP_MS;
+      }
+      if (Date.now() >= deadline) {
+        if (processes.host === null) throw infra(`leak check could not identify the host's process with pid ${host.pid}`);
+        break;
+      }
+      await sleep(Math.min(100, deadline - Date.now()));
     }
-    if (processes.host === null) throw infra(`leak check could not identify the host's process with pid ${host.pid}`);
   }
   throw infra(`the remote extension host (pid ${host.pid}) that VS Code left running still ran ${HOST_STOP_MS / 1000} seconds after SIGKILL`);
 }

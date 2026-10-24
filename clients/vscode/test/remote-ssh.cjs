@@ -908,7 +908,7 @@ test('scratch-directory failures produce an INFRA manifest and exit status', asy
 // pidfd, the host's pidfd helper "runs", and gives result for every target;
 // without it, python3 isn't found there. proc is the fake of /proc that it
 // reads.
-function remoteProcesses(processes, options, { pidfd = false, result = 'sent', proc = fakeProc(processes) } = {}) {
+function remoteProcesses(processes, options, { pidfd = false, result = 'sent', proc = fakeProc(processes), now = Date.now } = {}) {
   const signals = [];
   const output = [];
   const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
@@ -920,6 +920,7 @@ function remoteProcesses(processes, options, { pidfd = false, result = 'sent', p
   };
   const modules = { 'node:fs': proc, 'node:child_process': { spawnSync } };
   vm.runInNewContext(REMOTE_PROCESSES, {
+    Date: { now },
     require: (name) => modules[name] ?? require(name),
     process: { pid: 1, argv: [process.execPath, JSON.stringify({ kill: [], ...options })], kill: (pid, name) => signals.push([pid, name]) },
     console: { log: (line) => output.push(JSON.parse(line)) },
@@ -1208,9 +1209,71 @@ test('host containment resamples an unidentified host and fails within its bound
           ? error.message === "leak check could not identify the host's process with pid 100"
           : error.message.includes('still ran 3 seconds after SIGKILL')));
       }
-      assert.ok(now <= 6000);
+      assert.ok(now <= 6100);
       assert.ok(samples < 65);
       if (outcome === 'unknown' && unknownAt === 0) assert.deepEqual(signals, []);
+    }
+  }
+});
+
+test('host containment retains each pending signal until a fake /proc sample identifies the host', async (t) => {
+  for (const pending of ['SIGTERM', 'SIGKILL']) {
+    for (const outcome of ['stops', 'unidentified', 'survives']) {
+      await t.test(`${pending}: ${outcome}`, async () => {
+        const agent = '/work/agent';
+        const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+        const table = new Map([[host.pid, { start: host.start, exe: host.exe }]]);
+        let now = 0;
+        let dueAt;
+        const delivered = [];
+        const requests = [];
+        const runner = load('run.cjs', {}, {}, {
+          Date: { now: () => now },
+          setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+        });
+        const remote = { target: { root: '/work' }, remote: async (command) => {
+          const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+          assert.deepEqual(options.host, host);
+          if (options.signal === pending) dueAt ??= now;
+          const unknown = dueAt !== undefined && (outcome === 'unidentified' || now < dueAt + 200);
+          const proc = unknown ? fakeThreadedProc({ vanishing: ['101', '102'], exe: host.exe }) : fakeProc(table);
+          const { listing, signals } = remoteProcesses(table, options, { proc, now: () => now });
+          requests.push({ signal: options.signal, host: listing.host });
+          if (unknown) {
+            assert.equal(listing.host, null);
+            assert.equal(listing.signaledAt, undefined);
+            assert.deepEqual(signals, []);
+          }
+          for (const [pid, signal] of signals) {
+            delivered.push({ at: now, pid, signal });
+            assert.equal(listing.signaledAt, now);
+            if (outcome === 'stops' && signal === pending) table.delete(pid);
+          }
+          return { stdout: JSON.stringify(listing) };
+        } };
+        const stopped = runner.stopHost(remote, { agent, serverNode: host.exe }, host);
+        if (outcome === 'stops') {
+          const result = await stopped;
+          assert.equal(result.processes.host, false);
+          assert.equal(result.signal, pending);
+          assert.equal(result.at, dueAt + 200);
+          assert.equal(now, result.at + 100);
+        } else {
+          await assert.rejects(stopped, (error) => error.kind === 'infra' && error.message === (outcome === 'unidentified'
+            ? "leak check could not identify the host's process with pid 100"
+            : 'the remote extension host (pid 100) that VS Code left running still ran 3 seconds after SIGKILL'));
+          assert.equal(now, outcome === 'unidentified' ? dueAt + 3000 : 6200);
+        }
+        const expected = pending === 'SIGTERM' ? [] : [{ at: 0, pid: host.pid, signal: 'SIGTERM' }];
+        if (outcome !== 'unidentified') {
+          expected.push({ at: dueAt + 200, pid: host.pid, signal: pending });
+          if (pending === 'SIGTERM' && outcome === 'survives') expected.push({ at: 3200, pid: host.pid, signal: 'SIGKILL' });
+        }
+        assert.deepEqual(delivered, expected);
+        for (const request of requests.filter((sample) => sample.host === null)) assert.equal(request.signal, pending);
+        assert.ok(now <= 6200);
+        assert.ok(requests.length <= 65);
+      });
     }
   }
 });
