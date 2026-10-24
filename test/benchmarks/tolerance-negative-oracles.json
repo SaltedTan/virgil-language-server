@@ -1,0 +1,478 @@
+{
+  "description": "Protocol captures on 6406edc, Virgil 7cf038fc. project:/// replaces the disposable project URI. These are safe-current-program oracles and unsafe predecessor answers; no fallback is implemented.",
+  "cases": {
+    "deleted-declaration": {
+      "oracle": {
+        "0:definition": null,
+        "0:hover": null,
+        "0:references": null,
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "UnresolvedMember",
+              "message": "type A has no such member \"f\"",
+              "range": {
+                "end": {
+                  "character": 41,
+                  "line": 0
+                },
+                "start": {
+                  "character": 40,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got ?",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 0
+                },
+                "start": {
+                  "character": 38,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 19,
+              "line": 0
+            },
+            "start": {
+              "character": 18,
+              "line": 0
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def f(x: int) -> int"
+          },
+          "range": {
+            "end": {
+              "character": 41,
+              "line": 0
+            },
+            "start": {
+              "character": 40,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 19,
+                "line": 0
+              },
+              "start": {
+                "character": 18,
+                "line": 0
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 41,
+                "line": 0
+              },
+              "start": {
+                "character": 40,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "changed-signature": {
+      "oracle": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 19,
+              "line": 0
+            },
+            "start": {
+              "character": 18,
+              "line": 0
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def f(x: bool) -> int"
+          },
+          "range": {
+            "end": {
+              "character": 41,
+              "line": 0
+            },
+            "start": {
+              "character": 40,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 19,
+                "line": 0
+              },
+              "start": {
+                "character": 18,
+                "line": 0
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 41,
+                "line": 0
+              },
+              "start": {
+                "character": 40,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected bool in call, got int",
+              "range": {
+                "end": {
+                  "character": 43,
+                  "line": 0
+                },
+                "start": {
+                  "character": 42,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 19,
+              "line": 0
+            },
+            "start": {
+              "character": 18,
+              "line": 0
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def f(x: int) -> int"
+          },
+          "range": {
+            "end": {
+              "character": 41,
+              "line": 0
+            },
+            "start": {
+              "character": 40,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 19,
+                "line": 0
+              },
+              "start": {
+                "character": 18,
+                "line": 0
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 41,
+                "line": 0
+              },
+              "start": {
+                "character": 40,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "shadowing-local": {
+      "oracle": {
+        "0:definition": null,
+        "0:hover": null,
+        "0:references": null,
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "UnresolvedMember",
+              "message": "expression of type int has no such member \"f\"",
+              "range": {
+                "end": {
+                  "character": 52,
+                  "line": 0
+                },
+                "start": {
+                  "character": 51,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got ?",
+              "range": {
+                "end": {
+                  "character": 55,
+                  "line": 0
+                },
+                "start": {
+                  "character": 49,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 19,
+              "line": 0
+            },
+            "start": {
+              "character": 18,
+              "line": 0
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def f(x: int) -> int"
+          },
+          "range": {
+            "end": {
+              "character": 41,
+              "line": 0
+            },
+            "start": {
+              "character": 40,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 19,
+                "line": 0
+              },
+              "start": {
+                "character": 18,
+                "line": 0
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 41,
+                "line": 0
+              },
+              "start": {
+                "character": 40,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
