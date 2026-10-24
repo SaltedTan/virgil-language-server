@@ -1164,21 +1164,37 @@ async function lostFraming(failures, bad, words, pendingRequest = false) {
     const { pid } = await startRecoveryServer(server, directory);
     await expectParserDiagnostic(bad);
     await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+    const traced = logFromHere();
+    await level(vscode.LogLevel.Trace);
+    await waitFor('the trace to start', () => traced().includes("Sending notification '$/setTrace'"));
     const log = logFromHere();
-    fs.writeFileSync(path.join(directory, 'inject'), '');
-    await waitFor('the script to write the line', () => fs.existsSync(path.join(directory, 'injected')));
-    // This request's response follows the bad line. Use rename for the
-    // pending-request check: its command propagates the provider's error,
-    // whereas VS Code swallows hover errors and returns an empty list.
-    const began = performance.now();
+    // Keep the request pending until the bad line: otherwise a background
+    // response can trigger the read error and unregister the provider before
+    // the command runs, or the request can finish before the line is written.
+    // Resume the server only after the script writes the line, so that its
+    // response completes the malformed header and triggers the read error.
+    const child = Number(recorded(directory, 'child')[0]);
+    process.kill(child, 'SIGSTOP');
+    let began;
     let settled;
-    const request = pendingRequest
-      ? vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', bad.document.uri, new vscode.Position(0, 0), 'Renamed')
-      : vscode.commands.executeCommand('vscode.executeHoverProvider', bad.document.uri, new vscode.Position(0, 0));
-    request.then(
-      (value) => { settled = { value, ms: performance.now() - began }; },
-      (error) => { settled = { error, ms: performance.now() - began }; },
-    );
+    try {
+      // Rename propagates the provider's error; hover returns an empty list.
+      const request = pendingRequest
+        ? vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', bad.document.uri, new vscode.Position(0, 0), 'Renamed')
+        : vscode.commands.executeCommand('vscode.executeHoverProvider', bad.document.uri, new vscode.Position(0, 0));
+      request.then(
+        (value) => { settled = { value, ms: performance.now() - began }; },
+        (error) => { settled = { error, ms: performance.now() - began }; },
+      );
+      const method = pendingRequest ? 'textDocument/rename' : 'textDocument/hover';
+      await waitFor('the request to be sent before the bad line', () => log().includes(`Sending request '${method}`));
+      assert.equal(settled, undefined, 'the request settled before the bad line');
+      began = performance.now();
+      fs.writeFileSync(path.join(directory, 'inject'), '');
+      await waitFor('the script to write the line', () => fs.existsSync(path.join(directory, 'injected')));
+    } finally {
+      process.kill(child, 'SIGCONT');
+    }
     if (pendingRequest) {
       // Rejection is local, with no response or shutdown to wait for. Allow
       // one second for Extension Host scheduling and command IPC, still well
@@ -1205,6 +1221,7 @@ async function lostFraming(failures, bad, words, pendingRequest = false) {
     assert.deepEqual(recorded(directory, 'starts'), [String(pid)], 'the client started another server');
   }, async () => {
     try {
+      await level(vscode.LogLevel.Info);
       fs.rmSync(path.join(directory, 'straying'), { force: true });
       // A client that still runs the script, as one that let the error pass
       // would, can't stop it either: the library kills it 2 seconds after the
