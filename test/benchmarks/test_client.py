@@ -5,10 +5,13 @@
 import argparse
 import copy
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,8 +77,9 @@ class ValidationTest(unittest.TestCase):
                 self.block.validate_diagnostic("semantic", result)
 
     def test_pinned_coordinates_and_source_order_are_checked(self):
-        current = bench.corpus.generate()
-        self.assertEqual(current, json.loads(bench.corpus.MANIFEST.read_text()))
+        pinned, projects = bench.corpus.validate(strict=False)
+        current = bench.corpus.generate(projects, pinned["virgil_source_revision"])
+        self.assertEqual(current, {**pinned, "projects": {name: pinned["projects"][name] for name in projects}})
         shifted = copy.deepcopy(current)
         shifted["projects"]["small"]["query"]["range"]["start"]["line"] += 1
         with self.assertRaises(AssertionError):
@@ -84,6 +88,59 @@ class ValidationTest(unittest.TestCase):
     def test_raw_probe_records_do_not_merge_server_and_worker(self):
         parsed = bench.probes("BENCH server 7 gc_count 1\nBENCH worker 7 gc_count 0\n")
         self.assertEqual([(p["process"], p["value"]) for p in parsed], [("server", 1), ("worker", 0)])
+
+
+class CorpusPinTest(unittest.TestCase):
+    def setUp(self):
+        self.pinned = json.loads(bench.corpus.MANIFEST.read_text())
+        self.revision = self.pinned["virgil_source_revision"]
+
+    def validate(self, gitlink, checkout, strict=False):
+        notice = io.StringIO()
+        with mock.patch.object(bench.corpus, "revisions", return_value=(gitlink, checkout)), \
+                contextlib.redirect_stderr(notice):
+            result = bench.corpus.validate(strict=strict)
+        return result[1], notice.getvalue()
+
+    def test_pinned_checkout_checks_every_project(self):
+        # Keep policy cases independent of the real vendor checkout (advisory CI).
+        with mock.patch.object(bench.corpus, "generate", return_value=self.pinned) as generated:
+            projects, notice = self.validate(self.revision, self.revision)
+            self.assertEqual(projects, list(self.pinned["projects"]))
+            self.assertEqual(notice, "")
+            generated.assert_called_once_with(projects, self.revision)
+            self.validate(self.revision, self.revision, strict=True)
+
+    def test_advisory_and_export_check_small_without_reading_vendor(self):
+        generate = bench.corpus.generate
+        for gitlink, checkout in ((self.revision, "a" * 40), ("unknown", "unknown")):
+            with mock.patch.object(bench.corpus, "generate", wraps=generate) as generated, \
+                    mock.patch.object(bench.corpus, "site", wraps=bench.corpus.site) as sites:
+                projects, notice = self.validate(gitlink, checkout)
+                generated.assert_called_once_with(["small"], self.revision)
+                self.assertTrue(all(call.args[0].startswith("test/") for call in sites.call_args_list))
+            self.assertEqual(projects, ["small"])
+            self.assertEqual(len(notice.splitlines()), 1)
+            self.assertIn("skipping vendor projects (util, aeneas)", notice)
+            with self.assertRaisesRegex(AssertionError, "requires pinned Virgil"):
+                self.validate(gitlink, checkout, strict=True)
+
+    def test_gitlink_bump_requires_regeneration_even_if_checkout_is_old(self):
+        for checkout in (self.revision, "a" * 40):
+            with self.assertRaises(AssertionError) as error:
+                self.validate("a" * 40, checkout)
+            message = str(error.exception)
+            for detail in (self.revision, "a" * 40, "python3 scripts/bench-corpus.py --write",
+                           "CONTRIBUTING.md#updating-the-pinned-virgil-revision"):
+                self.assertIn(detail, message)
+
+    def test_small_hash_and_anchor_changes_still_fail_when_vendor_is_skipped(self):
+        changed = copy.deepcopy(self.pinned)
+        changed["projects"]["small"]["files"][0]["sha256"] = "0" * 64
+        with mock.patch.object(bench.corpus, "MANIFEST") as manifest:
+            manifest.read_text.return_value = json.dumps(changed)
+            with self.assertRaisesRegex(AssertionError, "corpus sources or anchors changed"):
+                self.validate(self.revision, "a" * 40)
 
 
 if __name__ == "__main__":

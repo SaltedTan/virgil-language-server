@@ -29,16 +29,24 @@ scenario per block. Adjust them with `--blocks`, `--warmups`, and `--operations`
 excluded from summaries. A fresh-worker warmup uses its own process pair so it
 cannot warm a measured fresh worker. File caches may already be warm.
 
-The client is also directly runnable against a build from `make all`:
+The client is also directly runnable against a normal build. Generate benchmark
+metadata explicitly; ordinary `make all` builds need no Python:
 
 ```sh
+make all bench-metadata
 python3 scripts/bench-lsp.py --exe build/virgil-lsp --output build/bench-results/normal.json
 python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output /dev/null
 ```
 
 `make test` runs the small smoke case and the client's rejection checks. The smoke
 case takes under a second on the reference host; the full benchmark is not part
-of `make test`. `--require-probes` requires one complete phase transaction for each
+of `make test`. Smoke runs need no benchmark build metadata. The tests compare
+the corpus revision to the superproject's `vendor/virgil` gitlink. A changed
+gitlink requires corpus regeneration. If the checkout differs from a matching
+gitlink (the advisory Virgil-master workflow), or there is no Git metadata, they
+print one notice and skip vendor corpus projects while checking the small
+fixture. Strict benchmarks always require matching pins and hashes.
+`--require-probes` requires one complete phase transaction for each
 analysis, completion miss, rename preflight, and semantic publication, and no
 worker transaction for a cache hit, current navigation, or syntax publication.
 `make bench` supplies it automatically. This catches a mislabeled completion hit
@@ -67,7 +75,11 @@ recompute every position; the pin must match before and after a run. A pin bump,
 moved anchor, changed byte, or changed selection fails before measurement. Review
 any intentional change with `python3 scripts/bench-corpus.py --write`; do not use
 that command merely to make a failed check pass. When changing the small fixture,
-also advance `SMALL_REVISION` in the generator to a commit containing those bytes.
+also advance the full literal `SMALL_REVISION` in the generator to a commit
+containing those bytes. For a compiler pin bump, follow the
+[pin update checklist](../CONTRIBUTING.md#updating-the-pinned-virgil-revision):
+regenerate the corpus, review hashes and anchors, then rerun `make test` and a
+short `make bench` from a commit containing both updated pins.
 Run old and new corpora separately
 when assessing a compiler pin change.
 
@@ -154,7 +166,7 @@ leaves peak RSS null. Metadata includes the corpus, both revisions, generated
 BuildInfo, compiler and binary hashes, compilation commands/source hashes, heap
 settings, host CPU, logical cores, kernel, Python, load, affinity, governors when
 readable, and all server command lines. Missing build metadata fails with a request
-to rebuild using `make all`.
+to rebuild using `make bench-metadata` with the executable's `BUILD` directory.
 
 ## Compare builds
 
@@ -164,7 +176,7 @@ paths and compiled-in paths affect sizes and allocation. A different checkout
 path alone can move the Aeneas worker across a GC boundary. Keep both executables
 and their build metadata together, and avoid concurrent work where possible.
 
-Build each candidate with `make BUILD=build/name all` (add `BENCH=1` to both for
+Build each candidate with `make BUILD=build/name all bench-metadata` (add `BENCH=1` to both for
 phase comparisons). From the checkout owning the pinned corpus, pass both paths:
 
 ```sh
@@ -279,7 +291,7 @@ The following observer check used the same source revision, with equal-length
 `build/plain` (normal) and `build/bench` (probes) directories:
 
 ```sh
-make BUILD=build/plain all
+make BUILD=build/plain all bench-metadata
 python3 scripts/bench-lsp.py --exe build/plain/virgil-lsp --exe build/bench/virgil-lsp \
   --blocks 2 --operations 3 --warmups 1 --cpu 4 --output build/bench-results/observer.json
 ```

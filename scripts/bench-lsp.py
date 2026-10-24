@@ -88,14 +88,14 @@ def host_info(affinity):
             "load_average": list(os.getloadavg()) if hasattr(os, "getloadavg") else None}
 
 
-def binary_info(exe):
+def binary_info(exe, smoke=False):
     info = {"exe": str(exe), "version": command(str(exe), "--version"),
             "binaries": {p.name: {"sha256": corpus.sha256(p.read_bytes()), "bytes": p.stat().st_size}
                          for p in (exe, exe.with_name("virgil-lsp-worker"))},
             "build_info": optional_file(exe.parent / "gen/BuildInfo.v3")}
     manifest = exe.parent / "benchmark-build.json"
-    check(manifest.exists(), f"missing {manifest}; build this executable with make all")
-    info["build"] = json.loads(manifest.read_text())
+    check(smoke or manifest.exists(), f"missing {manifest}; build with make BUILD={exe.parent} bench-metadata")
+    info["build"] = json.loads(manifest.read_text()) if manifest.exists() else None
     return info
 
 
@@ -330,16 +330,15 @@ def main():
         args.blocks, args.operations, args.warmups, args.project = 1, 1, 0, ["small"]
     check(args.blocks > 0 and args.operations > 0 and args.warmups >= 0, "invalid sample counts")
     os.chdir(ROOT)
-    pinned = json.loads(corpus.MANIFEST.read_text())
-    check(corpus.generate() == pinned, "corpus changed; review scripts/bench-corpus.py --write before benchmarking")
+    pinned, checked_projects = corpus.validate(strict=not args.smoke)
     affinity = pin_cpu(args.cpu)
     executables = [p.resolve() for p in args.exe or [ROOT / "build/virgil-lsp"]]
     result = {"schema": 1, "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "command": [sys.executable, *sys.argv], "server_revision": command("git", "rev-parse", "HEAD"),
-              "git_status": command("git", "status", "--short"), "host": host_info(affinity),
+              "command": [sys.executable, *sys.argv], "server_revision": corpus.git_revision(ROOT, "rev-parse", "HEAD"),
+              "git_status": corpus.git_revision(ROOT, "status", "--short"), "host": host_info(affinity),
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
               "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups},
-              "builds": [binary_info(p) for p in executables], "blocks": []}
+              "builds": [binary_info(p, args.smoke) for p in executables], "blocks": []}
     try:
         for block in range(args.blocks):
             order = list(range(len(executables)))
@@ -351,7 +350,9 @@ def main():
                     result["blocks"].append(row)
                     Block(executables[build], pinned["projects"][project], args, row).run()
                     print(f"block {block + 1}, build {build}, {project}: all semantic checks passed", file=sys.stderr)
-        check(corpus.generate() == pinned, "benchmark mutated the corpus")
+        expected = {**pinned, "projects": {name: pinned["projects"][name] for name in checked_projects}}
+        check(corpus.generate(checked_projects, pinned["virgil_source_revision"]) == expected,
+              "benchmark mutated the corpus")
         result["summary"] = summaries(result["blocks"])
         if args.require_probes:
             worker_metrics = {"parse_us", "verify_us", "collect_us", "query_us", "request_decode_us",

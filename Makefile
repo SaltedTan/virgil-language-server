@@ -42,16 +42,18 @@ UNIT_TESTS  = $(BUILD)/unit-tests
 
 .PHONY: all test test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
-all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/benchmark-build.json
+all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 
 $(BUILD)/benchmark-build.json: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
 	python3 scripts/bench-build-info.py $(BUILD) $(WORKER_HEAP) $(BENCH) $(V3C_TARGET) \
 	  $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # One command builds the opt-in probes and runs all corpus/scenario blocks.
-.PHONY: bench bench-build
+.PHONY: bench bench-build bench-metadata
+bench-metadata: $(BUILD)/benchmark-build.json
+
 bench-build:
-	$(MAKE) BUILD=$(BUILD)/bench BENCH=1 all
+	$(MAKE) BUILD=$(BUILD)/bench BENCH=1 all bench-metadata
 
 bench: bench-build
 	python3 scripts/bench-lsp.py --exe $(BUILD)/bench/virgil-lsp --require-probes $(BENCH_ARGS)
@@ -103,7 +105,7 @@ test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
 
 # Unit and CLI tests start the worker next to their executables.
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe $(BUILD)/benchmark-build.json
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(BUILD)/retain-probe
 	$(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=

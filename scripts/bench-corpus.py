@@ -7,10 +7,11 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "test/benchmarks/corpus.json"
-SMALL_REVISION = "9a9e384"  # Revision introducing the benchmark's source baseline.
+SMALL_REVISION = "9a9e384dc371a88268762a66115c1bec8c283f0d"  # Revision introducing the benchmark's source baseline.
 
 
 def sha256(data):
@@ -33,10 +34,52 @@ def site(path, anchor, token, occurrence=0):
                                          "end": position(text, offset + len(token))}}
 
 
-def generate():
+def git_revision(path, *args):
+    # Do not accidentally discover a containing repository in an exported tree.
+    if not (path / ".git").exists():
+        return "unknown"
+    try:
+        return subprocess.check_output(["git", *args], cwd=path, text=True,
+                                       stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def revisions():
+    tree = git_revision(ROOT, "ls-tree", "HEAD", "vendor/virgil")
+    match = re.fullmatch(r"160000 commit ([0-9a-f]{40})\tvendor/virgil", tree)
+    return (match[1] if match else "unknown",
+            git_revision(ROOT / "vendor/virgil", "rev-parse", "HEAD"))
+
+
+def validate(strict=True):
+    """Validate all pins for benchmarks; tests may skip an unpinned vendor tree."""
+    pinned = json.loads(MANIFEST.read_text())
+    gitlink, checkout = revisions()
+    revision = pinned["virgil_source_revision"]
+    regenerate = ("run python3 scripts/bench-corpus.py --write and review the hashes and anchors; "
+                  "see CONTRIBUTING.md#updating-the-pinned-virgil-revision")
+    if gitlink != "unknown" and revision != gitlink:
+        raise AssertionError(f"corpus Virgil revision {revision} differs from superproject gitlink {gitlink}; "
+                             + regenerate)
+    vendor_matches = gitlink == revision and checkout == revision
+    if strict and not vendor_matches:
+        raise AssertionError(f"benchmark requires pinned Virgil {revision}; gitlink {gitlink}, checkout {checkout}; "
+                             + regenerate)
+    projects = list(pinned["projects"]) if vendor_matches else ["small"]
+    if not vendor_matches:
+        print(f"benchmark corpus: skipping vendor projects (util, aeneas): pinned {revision}, "
+              f"gitlink {gitlink}, checkout {checkout}; checking in-repo fixtures", file=sys.stderr)
+    expected = {**pinned, "projects": {name: pinned["projects"][name] for name in projects}}
+    assert generate(projects, revision) == expected, "corpus sources or anchors changed; " + regenerate
+    return pinned, projects
+
+
+def generate(projects=("small", "util", "aeneas"), virgil_revision=None):
     virgil = ROOT / "vendor/virgil"
-    dependencies = [p for p in (virgil / "aeneas/DEPS").read_text().split()
-                    if not p.startswith("lib/test/")]
+    vendor = any(name != "small" for name in projects)
+    dependencies = ([p for p in (virgil / "aeneas/DEPS").read_text().split()
+                     if not p.startswith("lib/test/")] if vendor else [])
     paths = {"small": sorted(ROOT.glob("test/fixtures/analysis/two-file/*.v3")),
              "util": sorted(virgil.glob("lib/util/*.v3")),
              "aeneas": sorted(virgil.glob("aeneas/src/*/*.v3"))}
@@ -46,25 +89,27 @@ def generate():
     vector = "vendor/virgil/lib/util/Vector.v3"
     program = "vendor/virgil/aeneas/src/core/Program.v3"
     aeneas = "vendor/virgil/aeneas/src/main/Aeneas.v3"
-    queries = {
-        "small": (site(small, "return total + r.width;", "total"),
-                  site(small, "var total = r.area();", "total"), "var total: int"),
-        "util": (site(vector, "return if(index >= 0 && index < length, array[index]);", "index"),
-                 site(vector, "def get(index: int) -> T", "index"), "index: int"),
-        "aeneas": (site(program, "if (explicitName != null) return explicitName;", "explicitName"),
-                   site(program, "var explicitName: string;", "explicitName"), "var explicitName: Array<byte>")}
+    anchors = {
+        "small": (small, "return total + r.width;", "var total = r.area();", "total", "var total: int"),
+        "util": (vector, "return if(index >= 0 && index < length, array[index]);",
+                 "def get(index: int) -> T", "index", "index: int"),
+        "aeneas": (program, "if (explicitName != null) return explicitName;",
+                   "var explicitName: string;", "explicitName", "var explicitName: Array<byte>")}
+    queries = {name: (site(path, query, token), site(path, target, token), hover)
+               for name, (path, query, target, token, hover) in anchors.items() if name in projects}
     references = {
         "small": [queries["small"][1], queries["small"][0]],
         "util": [queries["util"][1]] + [site(vector, queries["util"][0]["anchor"], "index", n)
-                                       for n in range(3)],
+                                       for n in range(3)] if "util" in projects else [],
         "aeneas": [queries["aeneas"][1]] + [site(program, queries["aeneas"][0]["anchor"], "explicitName", n)
                                             for n in range(2)] + [
-            site(aeneas, "prog.explicitName = CLOptions.PROGRAM_NAME.val;", "explicitName")]}
-    result = {"schema": 1, "server_source_revision": subprocess.check_output(
-        ["git", "rev-parse", SMALL_REVISION], cwd=ROOT, text=True).strip(),
-        "virgil_source_revision": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=virgil, text=True).strip(), "projects": {}}
+            site(aeneas, "prog.explicitName = CLOptions.PROGRAM_NAME.val;", "explicitName")] if "aeneas" in projects else []}
+    result = {"schema": 1, "server_source_revision": SMALL_REVISION,
+              "virgil_source_revision": virgil_revision or git_revision(virgil, "rev-parse", "HEAD"),
+              "projects": {}}
     for name, files in paths.items():
+        if name not in projects:
+            continue
         query, target, hover = queries[name]
         text = (ROOT / query["path"]).read_text()
         base = str(Path(query["path"]).parent) if name != "aeneas" else "vendor/virgil"
@@ -98,12 +143,14 @@ def generate():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="check the pin (the default)")
     parser.add_argument("--write", action="store_true", help="replace the pin (review its diff)")
     args = parser.parse_args()
-    actual = generate()
     if args.write:
+        actual = generate()
         MANIFEST.write_text(json.dumps(actual, indent=2) + "\n")
     else:
-        assert actual == json.loads(MANIFEST.read_text()), "corpus changed; review before --write"
+        pinned, projects = validate(strict=False)
+        actual = {**pinned, "projects": {name: pinned["projects"][name] for name in projects}}
     for name, p in actual["projects"].items():
         print(f"{name}: {len(p['files'])} files, {p['source_bytes']} bytes, {p['lines']} lines")
