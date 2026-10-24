@@ -594,6 +594,9 @@ class Manifest:
                         value = item[field]
                         if section == "scopes" and value is None:
                             continue
+                        # Only the matrix's features are rendered by label.
+                        if section == "areas" and not item["matrix"]:
+                            continue
                         if not isinstance(value, str) or not value.strip():
                             raise ValueError(f"an entry of {section} has {field} that must be a nonempty string")
             for suite in document["suites"]:

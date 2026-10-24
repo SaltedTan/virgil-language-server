@@ -929,6 +929,23 @@ class ManifestTest(RenderTest):
                     self.assertMalformed(selection, f"an entry of {section} has {field} that must be a nonempty "
                                                     "string", cli=True, options=("--manifest", str(path)))
 
+    def test_an_area_outside_the_matrix_keeps_any_label(self):
+        # Rendering reads only the matrix's features' labels, so another
+        # area's label stays as unchecked as test_coverage.py leaves it.
+        manifest = json.loads(builder.MANIFEST_BYTES)
+        next(area for area in manifest["areas"] if not area["matrix"])["label"] = None
+        data = json.dumps(manifest).encode()
+        path = self.directory / "manifest.json"
+        path.write_bytes(data)
+        events = run_of("lazyvim")
+        events[0]["coverageSha256"] = hashlib.sha256(data).hexdigest()
+        selection = self.select(events)
+        status, _, err = call("validate", "--manifest", str(path), str(selection.parent / "stream-0.jsonl"))
+        self.assertEqual((0, ""), (status, err))
+        status, _, err = call("render", "--manifest", str(path), "--selection", str(selection),
+                              "--doc", str(self.doc), "--write")
+        self.assertEqual((0, ""), (status, err))
+
     def test_malformed_matrix_references_are_rejected_when_loading_the_manifest(self):
         cases = [("scope", "missing", "unknown scope"),
                  ("scope-wording", None, "the matrix lacks the cell for vscode-wsl and diagnostics"),
