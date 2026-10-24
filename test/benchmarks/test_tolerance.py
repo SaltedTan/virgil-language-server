@@ -3,11 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Structural scoring must reject plausible stale protocol answers."""
 import copy
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
@@ -108,6 +111,117 @@ class Scoring(unittest.TestCase):
         at = text.index("A.f") + 2
         self.assertEqual(q["position"], {"line": 0, "character": at + 1})
         self.assertEqual(tolerance.states.corpus.position(text, len(text)), {"line": 1, "character": 0})
+
+
+class Cleanup(unittest.TestCase):
+    def test_interrupted_reply_preserves_written_failed_record(self):
+        for phase in ("capture", "warm", "cold"):
+            for teardown in ("shutdown", "close"):
+                with self.subTest(phase=phase, teardown=teardown), contextlib.ExitStack() as stack:
+                    temp = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=ROOT)))
+                    output = temp / "result.json"
+                    project = {"base": temp, "config": {}, "sources": {
+                        "A.v3": "original", "Observer.v3": "observer"}}
+                    (temp / "A.v3").write_text("original")
+                    state = {"id": "member-with-prefix", "suite": "repair", "project": project,
+                             "predecessor": {"A.v3": "predecessor"}, "current": {"A.v3": "broken"},
+                             "queries": [{"path": "Observer.v3"}], "disk": True}
+                    corpus = mock.Mock()
+                    corpus.fixtures.return_value = [state]
+                    corpus.controls.return_value = []
+                    session = mock.Mock()
+                    session.transcript = []
+                    session.proc.pid = 123
+                    original = KeyboardInterrupt("interrupted reply")
+                    secondary = RuntimeError("pending reply during " + teardown)
+
+                    def send(method, params=None):
+                        session.transcript.append(("send", {"id": 1, "method": method}))
+                        return 1
+
+                    def interrupted_reply(request_id, timeout):
+                        session.buffer = b'Content-Length: 50\r\n\r\n{"jsonrpc":'
+                        raise original
+
+                    session.send.side_effect = send
+                    session.result.side_effect = interrupted_reply
+                    getattr(session, teardown).side_effect = secondary
+                    patches = [
+                        mock.patch.object(sys, "argv", ["bench-tolerance.py", "--smoke", "--cpu", "none",
+                                                       "--work-dir", str(temp), "--output", str(output)]),
+                        mock.patch.object(tolerance.bench.corpus, "validate", return_value=({}, None)),
+                        mock.patch.object(tolerance.bench.corpus, "git_revision", return_value="revision"),
+                        mock.patch.object(tolerance.bench, "pin_cpu", return_value={}),
+                        mock.patch.object(tolerance.bench, "host_info", return_value={}),
+                        mock.patch.object(tolerance.bench, "binary_info", return_value={}),
+                        mock.patch.object(tolerance.states, "Corpus", return_value=corpus),
+                        mock.patch.object(tolerance.bench, "Session", return_value=session),
+                        mock.patch.object(tolerance.bench, "logs", return_value="server evidence"),
+                    ]
+                    if phase != "capture":
+                        patches.append(mock.patch.object(tolerance, "capture", return_value=({"0:hover": "oracle"}, {})))
+                    if phase == "cold":
+                        execute = tolerance.execute
+                        patches.append(mock.patch.object(tolerance, "execute", side_effect=
+                            lambda exe, state, mode, oracle: {} if mode == "warm" else execute(exe, state, mode, oracle)))
+                    for patch in patches:
+                        stack.enter_context(patch)
+                    with self.assertRaises(KeyboardInterrupt) as raised:
+                        tolerance.main()
+                    self.assertIs(raised.exception, original)
+                    failure = json.loads(Path(str(output) + ".failure.json").read_text())
+                    self.assertEqual(failure["error"], repr(original))
+                    self.assertEqual(failure["failed_record"], json.loads(json.dumps(original.tolerance_record)))
+                    self.assertEqual(failure["failed_record"]["transcript"][0][1]["method"], "initialize")
+                    self.assertIn(repr(secondary), failure["failed_record"]["cleanup_errors"])
+                    self.assertEqual(failure["failed_record"]["stderr"], "server evidence")
+                    session.close.assert_called_once_with()
+                    self.assertEqual((temp / "A.v3").read_text(), "original")
+
+    def test_shutdown_failure_survives_log_and_close_failures(self):
+        row = {}
+        session = mock.Mock()
+        original = RuntimeError("shutdown failed")
+        log_error = OSError("log read failed")
+        close_error = OSError("close failed")
+        session.shutdown.side_effect = original
+        session.close.side_effect = close_error
+        with mock.patch.object(tolerance.bench, "Session", return_value=session), \
+                mock.patch.object(tolerance.bench, "logs", side_effect=log_error):
+            run = tolerance.Run(Path("server"), {}, row)
+            with self.assertRaises(RuntimeError) as raised:
+                run.close()
+        self.assertIs(raised.exception, original)
+        self.assertEqual(row["cleanup_errors"], [repr(log_error), repr(close_error)])
+        session.close.assert_called_once_with()
+
+    def test_cleanup_failure_after_success_is_reported(self):
+        session = mock.Mock()
+        session.transcript = []
+        session.proc.pid = 123
+        original = RuntimeError("shutdown failed")
+        session.shutdown.side_effect = original
+        with mock.patch.object(tolerance.bench, "Session", return_value=session), \
+                mock.patch.object(tolerance.bench, "logs", return_value="server evidence"), \
+                mock.patch.object(tolerance.Run, "start"), \
+                mock.patch.object(tolerance.Run, "answers", return_value=({"0:hover": "answer"}, [])):
+            with self.assertRaises(RuntimeError) as raised:
+                tolerance.capture(Path("server"), {"project": {}}, {}, [], [])
+        self.assertIs(raised.exception, original)
+        self.assertEqual(original.tolerance_record["stderr"], "server evidence")
+        session.close.assert_called_once_with()
+
+    def test_failure_file_error_preserves_original_exception(self):
+        original = KeyboardInterrupt("interrupted reply")
+        row = {"transcript": []}
+        original.tolerance_record = row
+        try:
+            raise original
+        except KeyboardInterrupt:
+            with tolerance.cleanup(row):
+                raise OSError("failure file unavailable")
+            self.assertIs(sys.exc_info()[1], original)
+        self.assertEqual(row["cleanup_errors"], ["OSError('failure file unavailable')"])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 """Measure semantic availability and correctness during syntax errors over stdio."""
 import argparse
 import collections
+import contextlib
 import datetime
 import json
 import os
@@ -29,6 +30,18 @@ bench = load("bench-lsp")
 states = load("tolerance-corpus")
 ROOT = bench.ROOT
 FEATURES = ("definition", "hover", "references", "diagnostics")
+
+
+@contextlib.contextmanager
+def cleanup(row):
+    error = sys.exc_info()[1]
+    try:
+        yield
+    except BaseException as cleanup_error:
+        if error is None:
+            cleanup_error.tolerance_record = row
+            raise
+        row.setdefault("cleanup_errors", []).append(repr(cleanup_error))
 
 
 def canonical(feature, value):
@@ -149,11 +162,15 @@ class Run:
             self.s.shutdown()
             self.collect()
         finally:
-            log = bench.logs(self.s)
-            self.row.update({"server_pid": self.s.proc.pid, "command": [str(self.exe), "--stdio"],
-                             "stderr": log, "probes": bench.probes(log),
-                             "worker_replacements": len(re.findall(r"replacing analysis worker \d+", log))})
-            self.s.close()
+            try:
+                with cleanup(self.row):
+                    log = bench.logs(self.s)
+                    self.row.update({"server_pid": self.s.proc.pid, "command": [str(self.exe), "--stdio"],
+                                     "stderr": log, "probes": bench.probes(log),
+                                     "worker_replacements": len(re.findall(r"replacing analysis worker \d+", log))})
+            finally:
+                with cleanup(self.row):
+                    self.s.close()
 
 
 def capture(exe, state, overlays, queries, paths):
@@ -168,7 +185,8 @@ def capture(exe, state, overlays, queries, paths):
         error.tolerance_record = row
         raise
     finally:
-        run.close()
+        with cleanup(row):
+            run.close()
 
 
 def execute(exe, state, mode, oracle):
@@ -224,9 +242,13 @@ def execute(exe, state, mode, oracle):
         error.tolerance_record = row
         raise
     finally:
-        run.close()
-        for path in state["current"]:
-            (project["base"] / path).write_bytes(project["sources"][path].encode())
+        try:
+            with cleanup(row):
+                run.close()
+        finally:
+            for path in state["current"]:
+                with cleanup(row):
+                    (project["base"] / path).write_bytes(project["sources"][path].encode())
 
 
 def summary(rows):
@@ -356,7 +378,8 @@ def main():
         result["error"] = repr(error)
         result["failed_record"] = getattr(error, "tolerance_record", None)
         if args.output != "-":
-            bench.write_json(args.output + ".failure.json", result)
+            with cleanup(result["failed_record"] if result["failed_record"] is not None else result):
+                bench.write_json(args.output + ".failure.json", result)
         raise
     bench.write_json(args.output, result)
 
