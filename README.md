@@ -53,6 +53,27 @@ See [docs/development.md](docs/development.md) for details.
 
 ## Editor setup
 
+Install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` installed, run the following in a terminal. Replace `server_version` with the release version and `download_url` with that release's asset download location (or a directory served over HTTP containing the downloaded assets). The checksum comes from the same release; download it along with the archive.
+
+<!-- clean-install: server -->
+```sh
+server_version=0.1.0-alpha.3
+download_url=https://github.com/SaltedTan/virgil-language-server/releases/download/v$server_version
+mkdir -p "$HOME/Downloads/virgil-lsp"
+cd "$HOME/Downloads/virgil-lsp"
+archive=virgil-lsp-$server_version-x86-64-linux.tar.gz
+curl --fail --location "$download_url/$archive" -o "$archive"
+curl --fail --location "$download_url/SHA256SUMS" -o SHA256SUMS
+grep "  $archive$" SHA256SUMS | sha256sum --check --strict
+mkdir -p "$HOME/.local/opt" "$HOME/.local/bin"
+tar -xzf "$archive" -C "$HOME/.local/opt"
+ln -sf "$HOME/.local/opt/virgil-lsp-$server_version-x86-64-linux/virgil-lsp" "$HOME/.local/bin/virgil-lsp"
+export PATH="$HOME/.local/bin:$PATH"
+virgil-lsp --version
+```
+
+Keep the worker and `virgil/` beside the server. Add the `export PATH` line to your shell's startup file for future terminals, and start your editor from this terminal for the first install. For macOS downloads, checksum verification, and Rosetta 2, see [Installing](docs/releasing.md#installing).
+
 For VS Code, [install the prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix). Neovim and LazyVim setup and integration status live in [`editors/nvim/`](editors/nvim/).
 
 ## Contributing

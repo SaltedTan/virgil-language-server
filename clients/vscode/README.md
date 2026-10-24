@@ -15,16 +15,34 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 
 ## Installing from a VSIX
 
-Requirements: a VS Code version and a server version that work with the extension's version, both listed in [compatibility](../../docs/compatibility.md#editors). Follow the [release installation instructions](../../docs/releasing.md#installing), or [build the server from source](../../README.md#building).
+Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl` and `sha256sum` for the Linux commands below. The editor and server versions must work with the extension's version, as listed in [compatibility](../../docs/compatibility.md#editors). Follow the [release installation instructions](../../docs/releasing.md#installing), or [build the server from source](../../README.md#building).
 
 1. Get `virgil-lsp-vscode-<version>.vsix`: from a [GitHub prerelease](https://github.com/SaltedTan/virgil-language-server/releases), which attaches the VSIX that the release workflow tested against that release's server, and lists it in `SHA256SUMS` ([Releases](../../docs/releasing.md#vs-code-extension)); from the `vsix` artifact of a [CI](../../.github/workflows/ci.yml) run (GitHub downloads artifacts as a zip file that contains the VSIX); or by [packaging](#packaging) it yourself.
-2. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:
+2. In the terminal used for the [server installation](../../README.md#editor-setup), download the VSIX and verify it against that release's `SHA256SUMS`. Replace `extension_version` with the release's extension version; it is independent of the server's version. `download_url` is the asset location set during server installation.
 
+   <!-- clean-install: vsix-download -->
    ```sh
-   code --install-extension virgil-lsp-vscode-0.1.2.vsix
+   extension_version=0.1.2
+   vsix=virgil-lsp-vscode-$extension_version.vsix
+   curl --fail --location "$download_url/$vsix" -o "$vsix"
+   grep "  $vsix$" SHA256SUMS | sha256sum --check --strict
    ```
 
-3. Unless `virgil-lsp` is on `PATH`, set `virgil.server.path` to its absolute path. New release installs include the library; set `virgil.virgilRoot` only when you need an override ([root selection](../../docs/configuration.md#the-virgil-root), [Settings](#settings)).
+3. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:
+
+   <!-- clean-install: vsix-install -->
+   ```sh
+   code --install-extension "$vsix"
+   ```
+
+4. Unless `virgil-lsp` is on `PATH`, set `virgil.server.path` to its absolute path. New release installs include the library; set `virgil.virgilRoot` only when you need an override ([root selection](../../docs/configuration.md#the-virgil-root), [Settings](#settings)).
+
+To use an explicit Virgil root, set `virgil.virgilRoot` in user settings, or export `VIRGIL_LOC` before starting a new VS Code window. For example, to select the installed release's library explicitly (replace the version and target for your install):
+
+<!-- clean-install: vscode-root -->
+```sh
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-linux/virgil"
+```
 
 With Remote-SSH or Remote-WSL, the extension runs on the remote machine, next to the server and the files, so install it there. In a window connected to the remote, either run **Extensions: Install from VSIX...**, or copy the VSIX to the remote machine and run `code --install-extension` in that window's integrated terminal. The Extensions view then lists the extension under the remote, such as "SSH: host" or "WSL: Ubuntu", not under "Local". Set any needed `virgil.server.path` or `virgil.virgilRoot` override in the remote settings.
 
