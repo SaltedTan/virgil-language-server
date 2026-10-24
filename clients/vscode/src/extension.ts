@@ -13,6 +13,11 @@ import {
   LanguageClient,
   LanguageClientOptions,
   MessageSignature,
+  ProtocolRequestType,
+  ProtocolRequestType0,
+  RequestParam,
+  RequestType,
+  RequestType0,
   ResponseError,
   ServerOptions,
   State,
@@ -98,6 +103,14 @@ class QueuedLanguageClient extends LanguageClient {
     defaultHandler = this.createDefaultErrorHandler();
   }
 
+  // The library's overloads, so that callers keep their result and parameter
+  // types.
+  override sendRequest<R, PR, E, RO>(type: ProtocolRequestType0<R, PR, E, RO>, token?: vscode.CancellationToken): Promise<R>;
+  override sendRequest<P, R, PR, E, RO>(type: ProtocolRequestType<P, R, PR, E, RO>, params: NoInfer<RequestParam<P>>, token?: vscode.CancellationToken): Promise<R>;
+  override sendRequest<R, E>(type: RequestType0<R, E>, token?: vscode.CancellationToken): Promise<R>;
+  override sendRequest<P, R, E>(type: RequestType<P, R, E>, params: NoInfer<RequestParam<P>>, token?: vscode.CancellationToken): Promise<R>;
+  override sendRequest<R>(method: string, token?: vscode.CancellationToken): Promise<R>;
+  override sendRequest<R>(method: string, param: any, token?: vscode.CancellationToken): Promise<R>;
   override sendRequest<R>(type: any, ...params: [any?, vscode.CancellationToken?]): Promise<R> {
     if (this.requestFailure !== undefined) return Promise.reject(this.requestFailure);
     // Include requests waiting for document synchronization, not just those
