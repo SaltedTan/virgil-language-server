@@ -293,6 +293,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			}
 			var i = index[d.path];
 			if (owners[i] != ctx) continue;
+			last = i;
+			lastDiagnostic = d;
 			var mapped = snapshot.currentRange(i, d.beginOffset, d.endOffset);
 			if (mapped.0 < 0) continue;
 			if (maps[i] == null) {
@@ -302,14 +304,14 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				found[i] = Vector<LspDiagnostic>.new();
 			}
 			found[i].put(LspDiagnostics.make(maps[i], mapped.0, mapped.1, 1, "aeneas", d.kind, Strings.nonnull(d.message)));
-			last = i;
-			lastDiagnostic = d;
 		}
 		// At its error limit Aeneas stops checking, hiding errors in later
 		// declarations and files; say so where the last reported error is.
 		if (last >= 0 && snapshot.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS) {
 			var mapped = snapshot.currentRange(last, lastDiagnostic.beginOffset, lastDiagnostic.endOffset);
-			found[last].put(LspDiagnostics.make(maps[last], mapped.0, mapped.1, 3, "virgil-lsp", "ErrorLimit",
+			// The notice belongs at the actual last error, not at an earlier
+			// visible error when the last one is in an excluded body.
+			if (mapped.0 >= 0) found[last].put(LspDiagnostics.make(maps[last], mapped.0, mapped.1, 3, "virgil-lsp", "ErrorLimit",
 				Strings.format1("Aeneas stops checking after %d errors, so errors elsewhere in this program may be missing.", AeneasAdapter.PROGRAM_MAX_ERRORS)));
 		}
 		var keep = OrderedStringMap<bool>.new();

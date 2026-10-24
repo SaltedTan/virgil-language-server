@@ -184,11 +184,31 @@ def unavailable(exe, root, closed):
         c.s.close()
 
 
+def error_limit(exe, root):
+    errors = ''.join('var x%d: int = true; ' % n for n in range(20))
+    old = ('component A { def target() -> int { return 1; } '
+           'def outside() -> int { return "bad"; } def broken() { ' + errors + '} }\n')
+    c = Case(exe, root, old)
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        c.snapshot()
+        assert any(d['code'] == 'ErrorLimit' for d in c.diagnostics('A.v3'))
+        c.change(old.replace(errors, 'var syntax = ; ' + errors))
+        assert len(substitutions(c.snapshot())) == 1
+        semantic = [d for d in c.diagnostics('A.v3') if d['code'] != 'ParseError']
+        assert len(semantic) == 1 and semantic[0]['code'] == 'TypeError', semantic
+        assert semantic[0]['range'] == span(c.texts['A.v3'], '"bad"')
+        c.close()
+    finally:
+        c.s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     # Keep disposable projects beside the build, away from the shared /tmp.
     with tempfile.TemporaryDirectory(prefix='body-fallback-', dir=exe.parent) as work:
-        for name, run in (('warm', warm), ('cold', lambda e, p: unavailable(e, p, False)),
+        for name, run in (('warm', warm), ('error-limit', error_limit), ('cold', lambda e, p: unavailable(e, p, False)),
                           ('closed', lambda e, p: unavailable(e, p, True))):
             root = Path(work).resolve() / name
             root.mkdir()
