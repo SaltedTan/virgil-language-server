@@ -19,6 +19,42 @@ OBSERVER = """component ToleranceObserver {
 }
 """
 
+# Each fixture's syntax error: a control or declaration header is `header`
+# even inside a routine body; any other expression or statement is `body`.
+REPAIR_EDIT_KINDS = {
+    "call-after-string-and-comment": "body",
+    "call-empty-arguments": "body",
+    "call-generic": "body",
+    "call-nested-missing-paren": "body",
+    "call-open-arguments": "body",
+    "call-trailing-comma": "body",
+    "else-branch": "body",
+    "if-condition-open": "header",
+    "index-open": "body",
+    "local-type": "header",
+    "member-end-of-statement": "body",
+    "member-in-component-field": "body",
+    "member-in-condition": "header",
+    "member-in-field-initializer": "body",
+    "member-in-lambda": "body",
+    "member-in-match-arm": "body",
+    "member-mid-expression": "body",
+    "member-of-call-result": "body",
+    "member-of-this": "body",
+    "member-of-type": "body",
+    "member-with-prefix": "body",
+    "missing-brace-end-of-method": "body",
+    "missing-semicolon": "body",
+    "return-expression": "body",
+    "statement-keyword-prefix": "body",
+    "syntax-error-after-cursor": "body",
+    "syntax-error-elsewhere-in-file": "body",
+    "syntax-error-in-other-file": "body",
+    "type-error-elsewhere-in-file": "body",
+    "type-error-in-other-file": "body",
+    "var-initializer": "body",
+}
+
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
@@ -88,6 +124,7 @@ class Corpus:
         seeds = json.loads(SEEDS.read_text())
         cases = repair.fixture_cases()
         assert set(seeds) == {name for name, _ in cases}, "fixture seed inventory changed"
+        assert set(REPAIR_EDIT_KINDS) == set(seeds), "fixture edit-kind inventory changed"
         for name, files in cases:
             seed = seeds[name]
             assert set(seed["files"]) == {str(Path(p).relative_to(ROOT)) for p in files}, name
@@ -99,7 +136,7 @@ class Corpus:
                 current[path.name] = raw.replace("<|>", "", 1)
                 previous[path.name] = raw.replace("<|>", seed["insertion"], 1).replace("var x = ;", "var x = 0;")
             project = self.project("fixtures/" + name, previous)
-            yield self.state(project, name, "repair", "body", previous, current, seed["policy"])
+            yield self.state(project, name, "repair", REPAIR_EDIT_KINDS[name], previous, current, seed["policy"])
 
     def large(self):
         sources = {str(Path(p).relative_to(ROOT / "vendor/virgil")): self.remember(p)

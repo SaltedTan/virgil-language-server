@@ -396,9 +396,12 @@ LF oracle and expects semantic suppression today.
 JSON has the performance harness's revision, binary SHA-256, build, host, affinity,
 command, and input-hash metadata. `states` retains mode, seed policy, edit kind,
 text hashes, current parse outcomes, snapshots, answers, scores, and raw samples.
-Edit kinds are `body`, `header` (condition/for headers and declaration headers in
-controls), and `whole_file` (truncation). `summary.features` splits availability,
-correctness, exact matches, and wrong answers by suite, mode, kind, and feature;
+Edit kinds are `body` (an expression or statement inside a routine or member
+body), `header` (a condition or for header, or a declaration header such as a
+parameter list, return type, or variable type), and `whole_file` (truncation).
+Each fixture's kind is pinned in the script's classification table.
+`summary.features` splits availability, correctness, exact matches, and wrong
+answers by suite, mode, kind, and feature;
 `summary.latency_ms` reports p50/p95 by suite, mode, and query kind. Definition is
 queried first and includes analysis waiting; later requests generally use the
 completed snapshot. Diagnostic latency is an **upper bound** from state start to
@@ -430,7 +433,7 @@ The same all-feature state counts split by edit kind follow, for either mode:
 
 | Corpus | Body | Header | Whole file |
 | --- | ---: | ---: | ---: |
-| Repair | 6/41 | 0/2 | 0/2 |
+| Repair | 6/38 | 0/5 | 0/2 |
 | Replay | 7/78 | 2/62 | — |
 
 Available answers were all correct. All three negative controls passed the safe
