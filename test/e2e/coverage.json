@@ -2565,6 +2565,7 @@
   "xfails": [
     {
       "id": "noice-1074-7bfd942",
+      "label": "missing-root warning",
       "check": "lazyvim.configuration.warning",
       "profile": "noroot",
       "plugin": "noice.nvim",
