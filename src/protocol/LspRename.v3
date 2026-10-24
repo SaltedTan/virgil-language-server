@@ -169,7 +169,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		var p = LspRenamePlan.new(at, ctx, sel, edits, files.extract(), ranges.extract());
 		// The snapshot's exact analyzed bytes of every source, edited, within
 		// the budget of a capture (LspAnalysisCapture.capture).
-		var captureStart = BenchProbe.now();
+		var captureStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var sources = Array<AnalysisSource>.new(s.paths.length), total = 32L;
 		p.snapshotBytes = 1024L;
 		for (i < sources.length) {

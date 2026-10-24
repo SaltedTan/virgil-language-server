@@ -44,7 +44,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 			if (result == null) return fail("received a malformed request");
 			// Report the heap that stays live between analyses, which is what
 			// a retention leak would grow. Exclude the result being sent.
-			var gcStart = BenchProbe.now();
+			var gcStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 			RiGc.forceGC();
 			if (BenchProbe.enabled) {
 				BenchProbe.worker(analyses, "force_gc_us", long.view(BenchProbe.now() - gcStart));
@@ -60,9 +60,10 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 	// Decodes and runs one request. Nothing it allocates but the encoded
 	// result stays reachable after it returns.
 	private def handle(payload: Array<byte>) -> DataWriter {
-		var t0 = BenchProbe.now(), gc0 = BenchProbe.gcCount(), bytes0 = BenchProbe.allocated();
+		var t0 = if(BenchProbe.enabled, BenchProbe.now(), 0), gc0 = if(BenchProbe.enabled, BenchProbe.gcCount(), 0),
+			bytes0 = if(BenchProbe.enabled, BenchProbe.allocated(), 0L);
 		var request = AnalysisWire.decodeAnalyze(payload);
-		var t1 = BenchProbe.now();
+		var t1 = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		if (request == null) return null;
 		analyses++;
 		// The server kills a worker at its time limit. If the server has died,
@@ -75,7 +76,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		var analysis = if(request.scope() != null,
 			AeneasAdapter.analyzeForScope(request.sources, request.options, stats),
 			AeneasAdapter.analyzeProgram(request.sources, request.options, stats));
-		var t2 = BenchProbe.now();
+		var t2 = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var files: Array<(string, Array<AnalysisOccurrence>)>, collectUs = -1;
 		if ((request.flags & AnalysisWire.WANT_OCCURRENCES) != 0) {
 			var start = System.ticksUs();
@@ -88,7 +89,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		}
 		// Only a completion asks for the scope or the members at its cursor;
 		// see docs/architecture.md#completion.
-		var t3 = BenchProbe.now();
+		var t3 = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var scope = if(files != null, request.scopeAnswer(analysis));
 		var members = if(files != null, request.memberAnswer(analysis));
 		// Only a signature help asks for the call at its cursor; see
@@ -96,10 +97,10 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		var call = if(files != null, request.callAnswer(analysis));
 		HostOs.setAlarm(0);
 		var globalTypes = if(stats, AeneasAdapter.globalTypeCount(), -1);
-		var t4 = BenchProbe.now();
+		var t4 = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var encoded = AnalysisWire.encodeResultWithQuery(request.id, analyses, AeneasAdapter.uidCounter(),
 			analysis, collectUs, globalTypes, files, scope, members, call);
-		var t5 = BenchProbe.now();
+		var t5 = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		if (BenchProbe.enabled) {
 			BenchProbe.worker(analyses, "request_decode_us", long.view(t1 - t0));
 			BenchProbe.worker(analyses, "adapter_us", long.view(t2 - t1));

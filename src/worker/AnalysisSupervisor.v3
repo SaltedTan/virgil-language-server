@@ -99,7 +99,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		activeId = id;
 		paths = Array<string>.new(sources.length);
 		for (i < paths.length) paths[i] = sources[i].path;
-		var encodeStart = BenchProbe.now();
+		var encodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources, scope);
 		if (BenchProbe.enabled) {
 			BenchProbe.server(id, "request_encode_us", long.view(BenchProbe.now() - encodeStart));
@@ -160,7 +160,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 					return AnalysisOutcome.Pending;
 				}
 				var result: AnalysisWorkerResult;
-				var decodeStart = BenchProbe.now();
+				var decodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 				match (AnalysisWire.decodeResultWithQuery(payload, generation + 1, paths, queryKinds)) {
 					Decoded(decoded) => result = decoded;
 					TooLarge(id) => {

@@ -50,7 +50,7 @@ component LspAnalysisCapture {
 	// Returns the inputs for canonical document URIs {keys}, or null and the
 	// reason they cannot be captured.
 	def capture(store: DocumentStore, keys: Array<string>, project: bool) -> (LspAnalysisInputs, string) {
-		var captureStart = BenchProbe.now();
+		var captureStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		var sources = Array<AnalysisSource>.new(keys.length);
 		var versions = Array<AnalysisDocumentVersion>.new(keys.length);
 		// Conservative metadata allowance, then the snapshot's exact path and
