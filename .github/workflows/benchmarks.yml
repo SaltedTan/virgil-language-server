@@ -24,6 +24,7 @@ on:
       - scripts/bench-build-info.py
       - scripts/bench-corpus.py
       - test/benchmarks/**
+      - test/fixtures/analysis/two-file/**
       - test/protocol/worker.py
       - scripts/v3c.sh
       - scripts/gen-buildinfo.sh

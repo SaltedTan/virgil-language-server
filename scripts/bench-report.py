@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 
-# The Linux reference has typical analysis spreads below 15%, but some fast
+# The Linux reference has analysis spreads below 18%, but some fast
 # requests have much wider tails. Also require disjoint p10-p90 intervals.
 THRESHOLD = 0.25
 SCENARIOS = ("fresh_analysis", "reused_analysis", "syntax_diagnostic", "semantic_diagnostic",
@@ -40,21 +40,22 @@ def context(result, builds):
     for index in builds:
         build = result["builds"][index]
         lines += [f"Build {index}: `{build['build']['server_revision']}`; `{build['version']}`.", ""]
+    config = result["configuration"]
+    lines += [f"{config['blocks']} blocks × {config['operations']} measured operations per case; "
+              f"{config['warmups']} warmups per block.", ""]
     lines += [f"Corpus SHA-256: `{result['corpus_sha256']}`. Started: {result['started_utc']}.", ""]
     return lines
 
 
 def gc_totals(result):
-    totals = collections.defaultdict(lambda: [0, 0])
+    totals = collections.defaultdict(int)
     for block in result["blocks"]:
         for sample in block["samples"]:
             if sample["warmup"]:
                 continue
             for probe in sample["probes"]:
                 if probe["metric"] == "gc_count":
-                    value = totals[(block["build"], block["project"], sample["scenario"], probe["process"])]
-                    value[0] += probe["value"]
-                    value[1] += 1
+                    totals[(block["build"], block["project"], sample["scenario"], probe["process"])] += probe["value"]
     return totals
 
 
@@ -78,7 +79,7 @@ def comparison(result):
     for project, scenario in sorted(cases):
         before, after = (indexed[(b, project, scenario, "latency_ms")] for b in (0, 1))
         relative, flagged = change(before, after)
-        counts = ["/".join(str(totals[(b, project, scenario, role)][0])
+        counts = ["/".join(str(totals[(b, project, scenario, role)])
                            if (b, project, scenario, role) in totals else "—"
                            for role in ("server", "worker")) for b in (0, 1)]
         lines.append(f"| {project} / `{scenario}` | {latency(before)} | {latency(after)} | "

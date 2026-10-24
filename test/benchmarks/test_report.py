@@ -143,9 +143,11 @@ class RefTest(unittest.TestCase):
         base = self.commit("2026-10-17T00:00:00Z")
         new = self.commit("2026-10-25T00:00:00Z")
         self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, new, self.now), (base, new))
+        self.git("update-ref", "refs/remotes/origin/newer", new)
+        self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, "newer", self.now), (base, new))
         event = {"pull_request": {"base": {"sha": base}, "head": {"sha": new}}}
         self.assertEqual(compare.select_refs("pull_request", event, "ignored", "ignored", self.now), (base, new))
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaises(ValueError):
             compare.resolve("--help")
 
 

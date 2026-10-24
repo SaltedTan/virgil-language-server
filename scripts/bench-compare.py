@@ -21,7 +21,14 @@ def git(*args):
 
 
 def resolve(ref):
-    return git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
+    # checkout fetches remote branches, but creates only its selected local
+    # branch. Accept a dispatch input such as main as well as origin/main.
+    for candidate in (ref, "refs/remotes/origin/" + ref):
+        command = ["git", "rev-parse", "--verify", "--end-of-options", candidate + "^{commit}"]
+        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        if result.returncode == 0:
+            return result.stdout.strip()
+    raise ValueError(f"unknown commit, tag, or branch: {ref}")
 
 
 def previous_week(new, now):
