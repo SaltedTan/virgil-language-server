@@ -127,7 +127,7 @@ If the warning is observed there, it is an `xpass`, which fails the run, so that
 python3 scripts/editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
 ```
 
-It reads the schema itself, with draft 2020-12's meaning for the keywords that the schema uses, and refuses a schema with any other keyword. A `pattern` is an ECMA-262 regular expression, an `integer` is written without a fraction or an exponent, and a `time`'s date must exist. It prints a line for each stream: `valid`, with whether the run passed and the count of each status, or `invalid`, with the line of the first error it finds. It exits with:
+It reads the schema itself, with draft 2020-12's meaning for the keywords that the schema uses, and refuses a schema with any other keyword. A `pattern` is an ECMA-262 regular expression, an `integer` is written without a fraction or an exponent, and a `time`'s date must exist. All JSON inputs, including the manifest and schemas, limit integer literals to 20 digits; a leading minus sign does not count. It prints a line for each stream: `valid`, with whether the run passed and the count of each status, or `invalid`, with the line of the first error it finds. It exits with:
 
 - 0 if every stream is valid and its run passed;
 - 1 if every stream is valid, but a run failed, was aborted, or was unavailable;
@@ -169,7 +169,7 @@ A selection names the release and lists the streams that count for it, each by i
 The selection is malformed unless:
 
 - it lists every file whose name ends in `.jsonl` in its directory and the directory's subdirectories, so that no attempt is left out unnoticed, and each file has the SHA-256 that it gives;
-- no component of the selection's or a listed stream's path is a symlink, and there are no symlinks anywhere under the selection's directory, including unlisted files, directories, and dangling links;
+- the selection file itself is not a symlink, and there are no symlinks anywhere under its directory, including components of listed stream paths, unlisted files, directories, and dangling links. The selection's directory and its ancestors may be symlinks: the completeness check walks the directory's contents either way;
 - each stream is valid, by the rules above, with the selection's `release`;
 - no two streams have the same run ID, or the same slot: a suite, a setup, a lane, and the editor's version, `provenance.editor.version`. The version is part of it because one CI job can run its lane at several editor versions, as `lazyvim-linux` runs Neovim 0.11.6 and 0.12.6, and each such leg is evidence of its own. A stream whose editor version is null could be of any leg, so it shares the slot of every stream of its suite, setup, and lane. The renderer never chooses between two attempts, such as by taking the later one.
 
