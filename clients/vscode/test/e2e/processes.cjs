@@ -70,8 +70,9 @@ function zombie(p) {
 // read none of them, identifies nothing and gives way to the next thread too.
 // A file that the process doesn't have, as a kernel thread has no exe, or that
 // its user may not read, is otherwise left out.
-// Returns undefined if the process has gone: its stat can't be read, or it is
-// a zombie (see isZombie). Otherwise { pid, ppid, start, files }, with the
+// Returns undefined if a process stat read reports ENOENT or ESRCH, or it is
+// a zombie (see isZombie); other stat errors throw. Otherwise
+// { pid, ppid, start, files }, with the
 // process's start time in clock ticks after boot and the contents of the files
 // that it could read. The thread's PID and start time must match before and
 // after the file reads, and the process must still have its initial identity;
@@ -145,8 +146,8 @@ function processFiles(fs, pid, files) {
 // started no later than start, is the run's, for the parent chain; descend
 // says whether a process with a readable executable under none of roots is
 // still the run's when it descends from one, as the teardown counts every
-// descendant, while the leak check counts only processes that run an
-// executable from the work directory; and pid, start, and ppid are the
+// descendant, while the leak check excludes readable system executables
+// identified only by ancestry; and pid, start, and ppid are the
 // process's. A process with the marker, or with a readable executable under
 // one of roots, is the run's, as is one whose identity is known. A process
 // whose executable can't be read, as a non-dumpable one's can't, may also be

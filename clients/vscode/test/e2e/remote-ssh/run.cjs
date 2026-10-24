@@ -734,16 +734,11 @@ if (hostRuns && signal) signaledAt = send(signal, [[host.pid, host.start]]);
 send('SIGKILL', killed);
 console.log(JSON.stringify({ found, host: hostRuns, signaledAt, unidentified, sampledAt: Date.now() }));`;
 
-// The target's processes that run an executable from its work directory,
-// other than the VS Code Server's, which stays running between windows:
-// language servers and workers, and anything else that the tests started;
-// whether host, a window's remote extension host, still runs; and the live
-// processes that no thread's files could describe, which are neither known to
-// run nor known to have gone (see REMOTE_PROCESSES). A process whose
-// executable can't be read is counted as a leftover unless its identity is the
-// host's, which the caller gave, so that a process of the run that hides it is
-// still waited for and killed. The processes in kill are killed first, and
-// host gets signal.
+// The run's processes on the target, identified by REMOTE_PROCESSES, split
+// into the VS Code Server's, which stay running between windows, and leftovers;
+// whether host, a window's remote extension host, still runs; and live
+// processes that could not be identified. Sends signal to host, then kills
+// the processes in kill, subject to REMOTE_PROCESSES's identity checks.
 async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   const options = { root: run.target.root, agent: layout.agent, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
   const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(JSON.stringify(options))}`, { allowFailure: true });
@@ -835,6 +830,9 @@ async function stopHost(run, layout, host) {
         sent = signal;
         at = processes.signaledAt;
         deadline = at + HOST_STOP_MS;
+        // This sample observed the host before sending the signal. Even if
+        // the SSH response used up the wait, observe it again before escalation
+        // or a survival verdict.
         if (Date.now() >= deadline) continue;
       }
       if (Date.now() >= deadline) {
