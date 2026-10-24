@@ -314,13 +314,19 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
     signal.addEventListener('abort', interrupt);
     if (signal.aborted) interrupt();
     // VS Code starts the servers in its own group, where they outlive it only
-    // if they don't exit.
+    // if they don't exit. A look after each listing checks that the group is
+    // still the run's, and so was during the listing, as it is never again
+    // once it isn't (see startGroup in processes.cjs); once it isn't, another
+    // group may have its number, and the check ends.
     const expectServersGone = async () => {
       const limit = Date.now() + SERVER_EXIT_MS;
       for (;;) {
         let running;
         try {
-          running = groupProcesses(group.pid, servers);
+          const listed = groupProcesses(group.pid, servers);
+          const members = group.look()?.processes;
+          if (members === undefined) return;
+          running = listed.filter((p) => members.some((member) => member.pid === p.pid));
         } catch (error) {
           stop(`could not be checked for servers left running: ${error.message}`);
           return;

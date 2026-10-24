@@ -1039,6 +1039,37 @@ test('the Extension Host test waits for its group to empty, then releases the ke
   assert.match(result.stopped, /^left virgil-lsp \(pid 52\) running 5 seconds after VS Code exited$/);
 });
 
+test('the Extension Host test\'s check for servers left running ends once the group is no longer the run\'s', async () => {
+  // VS Code exits, and its server runs on in the group.
+  const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50, args: '/build/virgil-lsp --stdio' }]]);
+  const run = localRunGroup(table, { servers: ['/build/virgil-lsp'] });
+  run.keeper.command(51);
+  table.delete(51);
+  run.keeper.exit(0, null);
+  // The check for servers waits on the clock between its looks; the last
+  // before its limit, at 5 seconds, finds the server.
+  for (let i = 0; i <= 50; i++) {
+    await run.result();
+    run.advance(100);
+  }
+  // Just before the check's next look, something kills the keeper, and the
+  // server exits. Another process is given the group's number, and makes a
+  // group of it with a process that runs the same server.
+  table.delete(50);
+  run.keeper.reap('SIGKILL');
+  table.delete(52);
+  table.set(50, { start: '200', group: 50 });
+  table.set(53, { start: '210', group: 50, args: '/build/virgil-lsp --stdio' });
+  for (let i = 0; i < 10; i++) {
+    await run.result();
+    run.advance(100);
+  }
+  const result = await run.result();
+  assert.deepEqual([result?.code, result?.stopped], [0, undefined]);
+  assert.deepEqual(run.signals, []);
+  assert.equal(table.has(53), true);
+});
+
 test('once its keeper has gone, the Extension Host test never signals the group\'s number, only the processes it saw there', async () => {
   for (const pidfd of [false, true]) {
     // Something kills the keeper; a process of VS Code's leaves the group;
