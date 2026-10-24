@@ -523,10 +523,13 @@ class PlanTest(ValidatorTest):
                 events = stream(variant)
                 events[0]["provenance"].update(fields)
                 self.assertInvalid(events, 1, message)
-        # Without the checks in its profiles, a run's provenance doesn't say
-        # whether the condition held.
+        # Without the checks in its profiles, the plan doesn't say whether the
+        # condition held, but the provenance still must agree with itself.
         events = only(stream("vscode"), {"wrapper"})
         events[0]["provenance"]["clientMode"] = "vsix"
+        self.assertInvalid(events, 1, 'provenance.clientMode is "vsix", but provenance.vsix is null: '
+                                      "clientMode is vsix exactly when vsix is not null")
+        events[0]["provenance"]["vsix"] = vsix
         self.assertValid(events)
 
     def test_a_condition_that_always_holds(self):
@@ -976,6 +979,61 @@ class ProvenanceTest(ValidatorTest):
         pins = events[0]["provenance"]["pins"]
         pins.append(dict(pins[1], commit=OTHER_COMMIT))
         self.assertInvalid(events, 1, f'provenance.pins[2] repeats the name "{RULE["plugin"]}"')
+
+    def test_client_mode_and_vsix_agree(self):
+        vsix = stream("vscode-vsix")[0]["provenance"]["vsix"]
+        # A VS Code run that plans only the wrapper's checks has no vsix
+        # checks, so no plan rule can catch contradictory provenance.
+        events = only(stream("vscode"), {"wrapper"})
+        events[0]["provenance"]["vsix"] = copy.deepcopy(vsix)
+        self.assertInvalid(events, 1, 'provenance.clientMode is "source", but provenance.vsix is an object: '
+                                      "clientMode is vsix exactly when vsix is not null")
+        events = only(stream("vscode"), {"wrapper"})
+        events[0]["provenance"]["clientMode"] = "vsix"
+        self.assertInvalid(events, 1, 'provenance.clientMode is "vsix", but provenance.vsix is null: '
+                                      "clientMode is vsix exactly when vsix is not null")
+        # A VSIX that a run couldn't read is still a VSIX, in a Neovim run too.
+        for variant in ("nvim", "lazyvim"):
+            with self.subTest(variant):
+                events = stream(variant)
+                events[0]["provenance"]["vsix"] = copy.deepcopy(UNREADABLE_VSIX)
+                self.assertInvalid(events, 1, f'provenance.clientMode is "{VARIANTS[variant]["client_mode"]}", '
+                                              "but provenance.vsix is an object: clientMode is vsix exactly when "
+                                              "vsix is not null")
+
+    def test_client_mode_and_editor_agree_with_the_suite(self):
+        # A Neovim suite's run uses no extension, and a VS Code one installs it.
+        for variant in ("nvim", "lazyvim"):
+            with self.subTest(variant):
+                events = stream(variant)
+                events[0]["provenance"]["clientMode"] = "source"
+                self.assertInvalid(events, 1, 'provenance.clientMode is "source", but a run of suite '
+                                              f"{VARIANTS[variant]['suite']} records none")
+        events = stream("vscode")
+        events[0]["provenance"]["clientMode"] = "none"
+        self.assertInvalid(events, 1, 'provenance.clientMode is "none", but a run of suite vscode records '
+                                      "source or vsix")
+        # The editor follows the suite, in a run with vsix checks and one without.
+        for variant, editor in (("vscode", "nvim"), ("vscode-vsix", "nvim"), ("nvim", "vscode"),
+                                ("lazyvim", "vscode")):
+            with self.subTest(variant):
+                events = stream(variant)
+                events[0]["provenance"]["editor"]["name"] = editor
+                suite = VARIANTS[variant]["suite"]
+                self.assertInvalid(events, 1, f'provenance.editor.name is "{editor}", but a run of suite {suite} '
+                                              f"uses {'nvim' if suite in ('nvim', 'lazyvim') else 'vscode'}")
+
+    def test_a_manual_record_is_a_persons_own_setup(self):
+        # It records no VSIX, and either editor, whatever the suite.
+        for variant in ("nvim", "vscode"):
+            with self.subTest(variant):
+                events = stream(variant)
+                events[0]["provenance"].update(clientMode="manual", vsix=None)
+                self.assertValid(events)
+        events = stream("nvim")
+        events[0]["provenance"].update(clientMode="manual", vsix=copy.deepcopy(UNREADABLE_VSIX))
+        self.assertInvalid(events, 1, 'provenance.clientMode is "manual", but provenance.vsix is an object: '
+                                      "clientMode is vsix exactly when vsix is not null")
 
     def test_configuration_digests(self):
         events = stream("lazyvim")

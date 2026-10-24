@@ -104,8 +104,10 @@ The `run-start` doesn't say which conditions held or which profiles ran, so `exp
 - of each pair of alternatives, the run plans one side's checks, all of them, and none of the other side's; it plans neither only if a side has no checks in the run's profiles;
 - a condition without an alternative is planned for all of its checks in the run's profiles or for none of them;
 - a condition holds in every run of a suite that its `always` names, so such a run plans all of the condition's checks in its profiles;
-- the `vsix` condition holds exactly when `provenance.clientMode` is `vsix` and `provenance.vsix` is the VSIX's metadata or unavailable, not null; if the run's profiles have `vsix` checks, it plans them exactly then, and in a suite that the condition's `always` names, every run's provenance says that it holds, whatever its profiles;
+- the `vsix` condition holds exactly when `provenance.clientMode` is `vsix`; if the run's profiles have `vsix` checks, it plans them exactly then, and in a suite that the condition's `always` names, every run's provenance says that it holds, whatever its profiles;
 - a repeated profile has iterations 1 to N, each with all of its checks, with the same N for every repeated profile of the run, and any other profile has iteration 1 only.
+
+Whatever its plan, a run's `provenance.clientMode` is `vsix` exactly when `provenance.vsix` is not null: the VSIX's metadata, or the unavailable form. The client mode and the editor also agree with the suite: `nvim` and `lazyvim` runs record `clientMode: none` and `editor.name: nvim`; `vscode` runs record `source` or `vsix` and `editor.name: vscode`; every Remote-SSH run records `vsix` and `editor.name: vscode`; and a manual record, with `clientMode: manual`, is of a person's own setup in either editor and has no VSIX.
 
 Which profiles and repetitions a release requires comes with the release gate.
 
