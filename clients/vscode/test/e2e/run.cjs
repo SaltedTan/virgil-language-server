@@ -26,7 +26,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
-const { startGroup } = require('./processes.cjs');
+const { KEEPER_KILL_WAIT_MS, startGroup } = require('./processes.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
@@ -271,6 +271,7 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
     // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
     let abandon;
     let finished = false;
+    let releasing = false;
     const group = startGroup(command, args, {
       env,
       stdio: [stdin, 'inherit', 'inherit'],
@@ -285,16 +286,25 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
     // whether it has.
     const finish = (anyway = false) => {
       if (finished) return true;
+      if (!anyway && releasing) return true;
       if (!anyway && (exited === undefined || group.look()?.empty === false)) return false;
-      finished = true;
       clearTimeout(timer);
-      clearInterval(poll);
       const done = () => {
+        if (finished) return;
+        finished = true;
+        clearInterval(poll);
         signal.removeEventListener('abort', interrupt);
         resolve({ ...exited, stopped });
       };
       if (anyway) done();
-      else void group.release().then(done);
+      else {
+        releasing = true;
+        void group.release().then((gone) => {
+          if (finished) return;
+          if (!gone) stopped = `${stopped === undefined ? '' : `${stopped}, and `}its keeper (pid ${group.pid}) hadn't ended ${KEEPER_KILL_WAIT_MS / 1000} seconds after its release watchdog's SIGKILL`;
+          done();
+        });
+      }
       return true;
     };
     const stop = (reason) => {
@@ -309,11 +319,11 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         deadline = undefined;
         group.signal('SIGKILL');
         abandon = Date.now() + KILL_WAIT_MS;
-      } else if (!finish() && abandon !== undefined && Date.now() > abandon) {
+      } else if (abandon !== undefined && Date.now() > abandon) {
         stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
         if (!group.detach()) stopped += `, nor had its keeper (pid ${group.pid})`;
         finish(true);
-      }
+      } else finish();
     }, 50);
     const timer = setTimeout(() => stop(`exceeded ${LAUNCH_TIMEOUT_MS / 1000} seconds`), LAUNCH_TIMEOUT_MS);
     const interrupt = () => stop('was interrupted');

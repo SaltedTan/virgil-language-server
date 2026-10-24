@@ -14,6 +14,7 @@ const path = require('node:path');
 const KEEPER = path.join(__dirname, 'keeper.cjs');
 // How long a group's keeper gets to answer a request (see startGroup).
 const KEEPER_REPLY_MS = 1000;
+const KEEPER_KILL_WAIT_MS = 30000;
 
 // A process's state, parent, process group, and start time, and on Linux its
 // number of threads; undefined if it has gone, null if inaccessible. On Linux
@@ -242,6 +243,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   let reported = false;
   let keeperGone = false;
   let reportsEnded = keeper.stdout === null;
+  let releaseDone;
   // Whether the keeper hasn't been reaped: its PID still has its parent, the
   // runner, and its start time. ps gives start times only to the second, so
   // off Linux another process would pass for the keeper only if it were
@@ -356,7 +358,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
     keeperGone = true;
     report({ error });
   });
-  return {
+  const group = {
     pid: number,
     stdin: keeper.stdio[3],
     stdout: keeper.stdio[4],
@@ -381,16 +383,24 @@ function startGroup(command, args, { env, stdio, onExit }) {
     // other process left in the group; resolves once Node.js has reaped it.
     release: () => new Promise((resolve) => {
       if (keeperGone || number === undefined) {
-        resolve();
+        resolve(true);
         return;
       }
+      let abandon;
+      const done = (gone = true) => {
+        clearTimeout(timer);
+        clearTimeout(abandon);
+        keeper.removeListener('exit', ended);
+        releaseDone = undefined;
+        resolve(gone);
+      };
+      const ended = () => done();
       const timer = setTimeout(() => {
         if (led()) signalProcesses([{ pid: number, start: leader.start }], 'SIGKILL');
+        abandon = setTimeout(() => group.detach(), KEEPER_KILL_WAIT_MS);
       }, KEEPER_REPLY_MS);
-      keeper.on('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
+      releaseDone = done;
+      keeper.on('exit', ended);
       keeper.stdin.end('release\n');
     }),
     // Gives up on the group, as a runner does on one that its SIGKILL hasn't
@@ -407,9 +417,11 @@ function startGroup(command, args, { env, stdio, onExit }) {
       for (const { timer } of requested.splice(0)) clearTimeout(timer);
       for (const stream of keeper.stdio) stream?.destroy();
       keeper.unref();
+      releaseDone?.(gone);
       return gone;
     },
   };
+  return group;
 }
 
-module.exports = { PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
+module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };

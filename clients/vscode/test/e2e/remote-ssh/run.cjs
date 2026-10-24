@@ -33,7 +33,7 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
-const { PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
+const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -253,6 +253,7 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
     let exited;
     let open = 2;
     let finished = false;
+    let releasing = false;
     let deadline;
     // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
     let abandon;
@@ -269,11 +270,12 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
     });
     // With anyway, resolves at once, without the keeper.
     const finish = (anyway = false) => {
-      if (finished || (!anyway && (exited === undefined || open > 0 || group.look()?.empty === false))) return;
-      finished = true;
+      if (finished || (!anyway && (releasing || exited === undefined || open > 0 || group.look()?.empty === false))) return;
       clearTimeout(timer);
-      clearInterval(poll);
       const done = () => {
+        if (finished) return;
+        finished = true;
+        clearInterval(poll);
         signal.removeEventListener('abort', interrupt);
         resolve({
           ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
@@ -281,7 +283,14 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
         });
       };
       if (anyway) done();
-      else void group.release().then(done);
+      else {
+        releasing = true;
+        void group.release().then((gone) => {
+          if (finished) return;
+          if (!gone) stopped = `${stopped === undefined ? '' : `${stopped}, and `}its keeper (pid ${group.pid}) hadn't ended ${KEEPER_KILL_WAIT_MS / 1000} seconds after its release watchdog's SIGKILL`;
+          done();
+        });
+      }
     };
     const stop = (reason) => {
       if (stopped !== undefined || group.pid === undefined) return;

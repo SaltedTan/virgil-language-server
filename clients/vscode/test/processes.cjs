@@ -714,7 +714,7 @@ function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [],
   let result;
   runner.runGroup('code', [], { env: {}, stdin: 'ignore', timeout: 60000, signal: controller.signal, servers }).then((value) => { result = value; });
   return {
-    signals, keeper, advance: clock.advance, interrupt: () => controller.abort(),
+    signals, keeper, timers: clock.timers, advance: clock.advance, interrupt: () => controller.abort(),
     result: () => new Promise((resolve) => setImmediate(() => resolve(result))),
   };
 }
@@ -973,6 +973,108 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
     assert.deepEqual([result.stopped, result.code, result.signal], ['was interrupted', 0, null]);
     assert.deepEqual(run.signals, [[50, 'SIGKILL']]);
   });
+
+  test(`${file} keeps the armed stop bound while releasing a keeper that survives SIGKILL`, async () => {
+    const table = new Map([[50, { start: '90', group: 50, state: 'D', stays: true }], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50 }]]);
+    const run = localRunGroup(table, { file });
+    run.keeper.command(51);
+    run.keeper.stopped = true;
+    table.delete(51);
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    run.interrupt();
+    run.advance(5100);
+    assert.equal(table.has(52), false);
+    assert.equal(run.keeper.released, 'release\n');
+    run.advance(29900);
+    assert.equal(await run.result(), undefined);
+    run.advance(100);
+    const result = await run.result();
+    assert.equal(result?.code, 0);
+    assert.equal(result?.stopped, "was interrupted, and hadn't ended 30 seconds after SIGKILL, nor had its keeper (pid 50)");
+    assert.equal(run.keeper.keeper.referenced, false);
+    assert.deepEqual(run.keeper.keeper.stdio.map((pipe) => pipe?.destroyed), [true, true, undefined, true, true, true]);
+    assert.equal(run.timers.size, 0);
+  });
+
+  test(`${file} bounds a clean exit's keeper release after the watchdog's SIGKILL`, async () => {
+    const table = new Map([[50, { start: '90', group: 50, state: 'D', stays: true }], [51, { start: '100', group: 50 }]]);
+    const run = localRunGroup(table, { file });
+    run.keeper.command(51);
+    run.keeper.stopped = true;
+    table.delete(51);
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    run.advance(1000);
+    assert.deepEqual(run.signals, [[50, 'SIGKILL']]);
+    run.advance(29999);
+    assert.equal(await run.result(), undefined);
+    run.advance(1);
+    const result = await run.result();
+    assert.equal(result?.code, 0);
+    assert.equal(result?.stopped, "its keeper (pid 50) hadn't ended 30 seconds after its release watchdog's SIGKILL");
+    assert.equal(run.keeper.keeper.referenced, false);
+    assert.deepEqual(run.keeper.keeper.stdio.map((pipe) => pipe?.destroyed), [true, true, undefined, true, true, true]);
+    assert.equal(run.timers.size, 0);
+  });
+
+  test(`${file} succeeds when the keeper releases before its bound`, async () => {
+    const table = new Map([[50, { start: '90', group: 50, stays: true }], [51, { start: '100', group: 50 }]]);
+    const run = localRunGroup(table, { file });
+    run.keeper.command(51);
+    run.keeper.stopped = true;
+    table.delete(51);
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    run.advance(30000);
+    assert.equal(await run.result(), undefined);
+    run.keeper.resume();
+    const result = await run.result();
+    assert.equal(result?.code, 0);
+    assert.equal(result?.stopped, undefined);
+    assert.equal(run.keeper.keeper.referenced, true);
+    assert.deepEqual(run.keeper.keeper.stdio.map((pipe) => pipe?.destroyed), [false, false, undefined, false, false, false]);
+    assert.equal(run.timers.size, 0);
+  });
+
+  for (const interrupted of [false, true]) {
+    test(`${file} lets Node exit after ${interrupted ? 'an interrupted' : 'a clean'} command's keeper survives release`, () => {
+      const script = `
+        const assert = require('node:assert/strict');
+        const { fakeGroup, fakeProcesses, load } = require(${JSON.stringify(path.join(__dirname, 'support/fakes.cjs'))});
+        const file = process.argv[1];
+        const interrupted = process.argv[2] === 'true';
+        const table = new Map([[50, { start: '90', group: 50, stays: true }], [51, { start: '100', group: 50 }]]);
+        if (interrupted) table.set(52, { start: '110', group: 50 });
+        const { keeper, kill, deliver } = fakeGroup(table);
+        const globals = {
+          Date: { now: () => Date.now() * 100 },
+          setTimeout: (fn, ms) => setTimeout(fn, ms / 100), clearTimeout,
+          setInterval: (fn, ms) => setInterval(fn, ms / 100), clearInterval,
+        };
+        const fake = fakeProcesses(table, { keeper, kill, deliver, globals });
+        const runner = load(file, { [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fake }, {}, globals);
+        const controller = new AbortController();
+        runner.runGroup('code', [], { env: {}, stdin: 'ignore', timeout: 600000, signal: controller.signal }).then((result) => {
+          assert.equal(result.code, 0);
+          assert.ok(result.stopped.includes('keeper (pid 50)'));
+          assert.equal(keeper.keeper.referenced, false);
+          assert.deepEqual(keeper.keeper.stdio.map((pipe) => pipe?.destroyed), [true, true, undefined, true, true, true]);
+          console.log(JSON.stringify(result));
+        });
+        keeper.command(51);
+        keeper.stopped = true;
+        table.delete(51);
+        keeper.exit(0, null);
+        keeper.close();
+        if (interrupted) controller.abort();
+      `;
+      const child = spawnSync(process.execPath, ['-e', script, file, String(interrupted)], { encoding: 'utf8', timeout: 5000 });
+      assert.equal(child.error, undefined, child.stderr);
+      assert.equal(child.status, 0, child.stderr);
+      assert.match(JSON.parse(child.stdout).stopped, /keeper/);
+    });
+  }
 }
 
 test('the Extension Host test has the keeper signal its group, and waits for the group', async () => {
