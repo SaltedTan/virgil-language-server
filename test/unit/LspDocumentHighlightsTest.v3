@@ -20,6 +20,7 @@ def X = [
 	T("LspDocumentHighlights:include_declaration", test_include_declaration),
 	T("LspDocumentHighlights:nothing_selected", test_nothing_selected),
 	T("LspDocumentHighlights:cross_file", test_cross_file),
+	T("LspDocumentHighlights:cross_file_matching_offsets", test_cross_file_matching_offsets),
 	T("LspSnapshotRequests:cancelled_cursor_burst", test_cancelled_cursor_burst),
 	T("LspSnapshotRequests:cancel_waiting_methods", test_cancel_waiting_methods),
 	T("LspSnapshotRequests:cancel_ids", test_cancel_ids),
@@ -537,6 +538,24 @@ def test_reply_bound(t: Tester) {
 	s.server.close();
 }
 
+// A foreign use's byte span also spells the name in a comment in Refs.v3.
+// Name validation therefore cannot substitute for the document-path filter.
+def test_cross_file_matching_offsets(t: Tester) {
+	var decl = "component Decl { def thing = 1; def get() -> int { return thing; } }\n";
+	var foreign = at(decl, "return thing", 7).1;
+	var padding = Array<byte>.new(foreign - 2);
+	for (i < padding.length) padding[i] = ' ';
+	var text = Strings.format1("//%sthing\ncomponent Refs { def get() -> int { return Decl.thing; } }\n", padding);
+	var s = HighlightsTestSession.new(t, text);
+	s.write(t, "Decl.v3", decl);
+	s.open("Refs.v3", 1, text);
+	s.settle();
+	t.assert_string("thing", Arrays.range(text, foreign, foreign + 5));
+	var use = at(text, "Decl.thing", 5);
+	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", use.0, use.1),
+		[HighlightSpot.new("Refs.v3", use.0, use.1, use.1 + 5)], "a foreign span with matching bytes");
+	s.server.close();
+}
 // The same server and fixture exercise cancellation of every shared snapshot
 // method, without polling the worker until the requests have been cancelled.
 def expectCancelled(t: Tester, r: HashMap<string, JsonValue>) {
