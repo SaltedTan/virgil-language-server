@@ -17,27 +17,33 @@ async function launches(t, scenario) {
   t.mock.method(console, 'error', (message) => messages.push(message));
   const clock = fakeClock();
   const events = [];
+  const notes = [];
   let tries = 0;
   let current;
   let servers = [];
+  let lateReport;
   const run = {
     work: path.join(root, 'work'), evidence: path.join(root, 'evidence'), values: { out: path.join(root, 'out') },
     target: { root: '/remote', alias: 'host' }, settings: {}, errors: [], tokens: new Set(),
     manifest: { launches: [] }, controller: new AbortController(), failures: [],
     checkpoint() { if (this.signal.aborted) throw Object.assign(new Error('interrupted'), { kind: 'interrupted' }); },
-    fail(message) { this.failures.push(message); }, note() {}, record(error) { this.errors.push(error); },
+    fail(message) { this.failures.push(message); }, note(message) { notes.push(message); }, record(error) { this.errors.push(error); },
     async remote(command) {
       if (command.startsWith("'/remote/agent/node' -e ") || command.startsWith(`'${process.execPath}' -e `)) {
         const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
         if (options.signal) {
           events.push(`stop:${options.host.pid}:${options.signal}`);
+          lateReport = scenario.lateReport;
           if (!scenario.survivor) servers = servers.filter((p) => p.pid !== options.host.pid);
         }
+        events.push(`processes:${servers.length}`);
         return { stdout: JSON.stringify({ found: servers, unidentified: scenario.unidentified ? [99] : [],
           host: servers.some((p) => p.pid === options.host?.pid), sampledAt: clock.globals.Date.now() }) };
       }
       if (command.includes('else exit 44')) {
+        assert.ok(command.includes(`'/results/${current}.json'`));
         events.push(`report:${current}`);
+        if (lateReport !== undefined) return lateReport;
         if (scenario.reportError) return { code: 1, stdout: '' };
         if ((tries === 1 || scenario.secondFailure) && !scenario.started) return { code: 44, stdout: '' };
         return { code: 0, stdout: scenario.unreadable ? '{' : JSON.stringify({ outcome: 'pass', folders: scenario.name?.endsWith('workspace') ? ['file:///project'] : null, seconds: 1 }) };
@@ -106,7 +112,7 @@ async function launches(t, scenario) {
   assert.equal(done, true, 'the fake launch must finish within its bounds');
   await pending;
   assert.equal(clock.timers.size, 0);
-  return { run, root, messages, events, error };
+  return { run, root, messages, events, notes, error };
 }
 
 for (const name of ['probe', '1-single-file', '2-single-file', '2-workspace']) {
@@ -128,6 +134,30 @@ for (const name of ['probe', '1-single-file', '2-single-file', '2-workspace']) {
       }
       assert.equal(messages.filter((m) => m.startsWith('RETRY:')).length, 1);
       assert.ok(messages.some((m) => m.includes('before the tests started in the remote extension host')));
+    });
+  }
+}
+
+for (const name of ['probe', '1-single-file', '2-single-file', '2-workspace']) {
+  for (const [label, lateReport] of [
+    ['complete', { code: 0, stdout: JSON.stringify({ outcome: 'pass' }) }],
+    ['incomplete', { code: 0, stdout: '{' }],
+    ['unreadable', { code: 1, stdout: '' }],
+  ]) {
+    test(`${name} does not retry when a ${label} report appears during teardown`, async (t) => {
+      const { run, messages, events, notes, error } = await launches(t, { name, servers: true, lateReport });
+      assert.equal(error.kind, 'infra');
+      assert.match(error.message, new RegExp(`^${name}: VS Code exited with 1 before the tests started`));
+      assert.equal(error.retryOutcome.activated, false);
+      assert.equal(run.manifest.launches.length, 1);
+      assert.equal(run.manifest.launches[0].result, 'INFRA');
+      assert.equal(Object.hasOwn(run.manifest.launches[0], 'retriedAs'), false);
+      assert.equal(events.filter((event) => event.startsWith('launch:')).length, 1);
+      assert.equal(events.filter((event) => event === `report:${name}`).length, 2);
+      assert.deepEqual(events.slice(-2), ['processes:0', `report:${name}`]);
+      for (const pid of [10, 11]) assert.ok(events.includes(`stop:${pid}:SIGTERM`));
+      assert.equal(messages.some((message) => message.startsWith('RETRY:')), false);
+      assert.ok(notes.some((note) => note.includes('bootstrap started after the window exited')));
     });
   }
 }

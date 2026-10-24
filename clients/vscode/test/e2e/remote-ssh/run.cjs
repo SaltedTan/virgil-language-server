@@ -870,6 +870,12 @@ async function launch(run, name, mode, options) {
     saveLogs: async () => {},
     beforeRetry: async () => {
       await stopForRetry(run, options.layout);
+      const result = path.posix.join(options.layout.results, `${record.name}.json`);
+      const report = await readBootstrapReport(run, result);
+      if (report.code !== 44) {
+        run.note(`${record.name}: bootstrap started after the window exited or its result file is unreadable; not retrying`);
+        throw failed;
+      }
       record.retriedAs = `${name}-retry`;
     },
     launch: async (dir) => {
@@ -918,6 +924,10 @@ async function stopForRetry(run, layout) {
       await stopHost(run, scanner, member);
     }
   }
+}
+
+function readBootstrapReport(run, result) {
+  return run.remote(`if [ -e ${sh(result)} ]; then cat ${sh(result)}; else exit 44; fi`, { allowFailure: true });
 }
 
 async function launchSteps(run, record, { executable, layout, vsix }) {
@@ -1018,7 +1028,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
 
   // Distinguish an absent report (44) from one that exists but can't be
   // read, which must not make a started bootstrap eligible for a retry.
-  const report = await run.remote(`if [ -e ${sh(result)} ]; then cat ${sh(result)}; else exit 44; fi`, { allowFailure: true });
+  const report = await readBootstrapReport(run, result);
   let evidence;
   try {
     if (report.code !== 44) evidence = JSON.parse(report.stdout);
