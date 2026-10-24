@@ -32,7 +32,7 @@ const path = require('node:path');
 const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
-const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
+const { VSCODE_VERSION, attempt, isolatedEnv, windowError } = require('../run.cjs');
 const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, runOwned, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
@@ -860,13 +860,63 @@ function hostStopped(host) {
 // 'single-file', or 'workspace'. Returns the launch's record for the
 // manifest; an infrastructure failure throws.
 async function launch(run, name, mode, options) {
-  const record = { name, mode };
-  run.manifest.launches.push(record);
-  try {
-    return await launchSteps(run, record, options);
-  } catch (error) {
-    record.result ??= { infra: 'INFRA', interrupted: 'INTERRUPTED' }[error.kind] ?? 'FAIL';
-    throw error;
+  let record;
+  let failed;
+  await attempt({
+    name, work: path.join(run.work, 'client'), logs: path.join(run.values.out, 'client'),
+    started: 'the tests started in the remote extension host',
+    // collectLogs keeps both attempts, including the remote logs, before
+    // publishLogs redacts their connection tokens. Never copy raw logs out.
+    saveLogs: async () => {},
+    beforeRetry: async () => {
+      await stopForRetry(run, options.layout);
+      record.retriedAs = `${name}-retry`;
+    },
+    launch: async (dir) => {
+      failed = undefined;
+      record = {
+        name: path.basename(dir), mode,
+        ...(options.repetition === undefined ? {} : { repetition: options.repetition }),
+      };
+      run.manifest.launches.push(record);
+      try {
+        await launchSteps(run, record, options);
+        return { passed: record.result === 'PASS' };
+      } catch (error) {
+        record.result ??= { infra: 'INFRA', interrupted: 'INTERRUPTED' }[error.kind] ?? 'FAIL';
+        if (error.retryOutcome === undefined) throw error;
+        failed = error;
+        return error.retryOutcome;
+      }
+    },
+  });
+  if (failed !== undefined) throw failed;
+  return record;
+}
+
+// A retry must not reconnect to anything the failed window left running,
+// even a VS Code Server or an extension host whose bootstrap never ran.
+// Keep its logs first, then stop only processes identified under this run's
+// remote root, by PID and start time, using the host shutdown's bounds.
+async function stopForRetry(run, layout) {
+  const errors = run.errors.length;
+  await collectLogs(run);
+  if (run.errors.length !== errors) throw infra('could not keep the failed launch logs before retrying');
+  // The target is this machine and user. Its copy of the runner's Node is
+  // available over SSH even when the probe failed before installing the
+  // VS Code Server (and therefore before layout.serverNode exists).
+  const scanner = { ...layout, serverNode: process.execPath };
+  const deadline = Date.now() + KILL_WAIT_MS;
+  for (;;) {
+    run.checkpoint();
+    const processes = await remoteProcesses(run, scanner);
+    if (processes.unidentified.length > 0) throw infra(`could not identify processes before retry: ${processes.unidentified.join(', ')}`);
+    if (processes.found.length === 0) return;
+    if (Date.now() >= deadline) throw infra('remote processes remained before retry');
+    for (const member of processes.found) {
+      if (member.exe === undefined) throw infra(`could not identify the executable of pid ${member.pid} before retry`);
+      await stopHost(run, scanner, member);
+    }
   }
 }
 
@@ -966,10 +1016,12 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   if (firstSample?.error !== undefined) throw firstSample.error;
   if (unwritten !== undefined) throw infra(`could not write launches/${name}.log: ${unwritten.message}`);
 
-  const report = await run.remote(`cat ${sh(result)}`, { allowFailure: true });
+  // Distinguish an absent report (44) from one that exists but can't be
+  // read, which must not make a started bootstrap eligible for a retry.
+  const report = await run.remote(`if [ -e ${sh(result)} ]; then cat ${sh(result)}; else exit 44; fi`, { allowFailure: true });
   let evidence;
   try {
-    if (report.code === 0) evidence = JSON.parse(report.stdout);
+    if (report.code !== 44) evidence = JSON.parse(report.stdout);
   } catch {
     evidence = { outcome: 'unreadable', error: `${result} is not JSON` };
   }
@@ -1009,7 +1061,17 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   if (evidence === undefined) {
     // The connection, or VS Code itself, failed before the tests started.
     if (!succeeded(exit)) {
-      throw infra(`${name}: VS Code ${outcome(exit)} before the tests started in the remote extension host; see launches/${name}.log`);
+      const error = infra(`${name}: VS Code ${outcome(exit)} before the tests started in the remote extension host; see launches/${name}.log`);
+      // Only the bootstrap creates this launch's result file, before it
+      // checks or runs anything. An incomplete or unreadable file still
+      // proves it started; only an absent file permits a retry.
+      error.retryOutcome = {
+        passed: false, kind: 'launch', detail: outcome(exit), activated: false,
+        exited: exit.error === undefined && exit.stopped === undefined && !exit.groupLeft
+          && !(record.leftRunning?.length > 0),
+        windowError: infrastructure(`read ${name}'s main log`, () => windowError(userData)),
+      };
+      throw error;
     }
     problems.push('no test ran: VS Code exited with 0, but bootstrap.cjs never started in the remote extension host');
   } else if (JSON.stringify(evidence.folders) !== JSON.stringify(config.folders)) {
@@ -1177,8 +1239,7 @@ async function test(run) {
 
   for (let repetition = 1; repetition <= values.repeat; repetition++) {
     for (const mode of ['single-file', 'workspace']) {
-      const record = await launch(run, `${repetition}-${mode}`, mode, { executable, layout, vsix });
-      record.repetition = repetition;
+      await launch(run, `${repetition}-${mode}`, mode, { executable, layout, vsix, repetition });
     }
   }
 }

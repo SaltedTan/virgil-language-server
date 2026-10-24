@@ -448,8 +448,10 @@ function retryable({ kind, exited, activated, windowError }) {
 // beside the retry (see runGroup). Each failed launch's logs go to
 // logs/<name> or logs/<name>-retry, under a name of its own, before its
 // temporary directory is removed (see keepLogs). Returns whether a launch
-// passed, and whether that was the retry.
-async function attempt({ name, work, logs, launch }) {
+// passed, and whether that was the retry. Remote-SSH supplies its log keeper,
+// remote teardown before a retry, and the description of its start evidence.
+async function attempt({ name, work, logs, launch, saveLogs = keepLogs, beforeRetry = async () => {},
+  started = 'the extension activated' }) {
   for (let tries = 1; ; tries++) {
     const attemptName = tries === 1 ? name : `${name}-retry`;
     const dir = path.join(work, attemptName);
@@ -458,16 +460,17 @@ async function attempt({ name, work, logs, launch }) {
     try {
       result = await launch(dir);
     } catch (error) {
-      if (target !== undefined) keepLogs(dir, target);
+      if (target !== undefined) await saveLogs(dir, target);
       throw error;
     }
     if (result.passed) return { passed: true, retried: tries > 1 };
-    if (target !== undefined) keepLogs(dir, target);
+    if (target !== undefined) await saveLogs(dir, target);
     if (tries > 1 || !retryable(result)) return { passed: false };
+    await beforeRetry();
     const kept = target === undefined
       ? 'Its logs were not kept because --logs was not given'
       : `Its logs are in ${target}`;
-    console.error(`RETRY: the ${attemptName} launch ${result.detail} before the extension activated, and VS Code's main log `
+    console.error(`RETRY: the ${attemptName} launch ${result.detail} before ${started}, and VS Code's main log `
       + `records ${result.windowError}; launching it once more, as ${name}-retry. ${kept}.`);
   }
 }
