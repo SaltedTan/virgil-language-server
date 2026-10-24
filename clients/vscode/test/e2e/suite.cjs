@@ -1186,7 +1186,9 @@ async function lostFraming(failures, bad, words, pendingRequest = false) {
         (value) => { settled = { value, ms: performance.now() - began }; },
         (error) => { settled = { error, ms: performance.now() - began }; },
       );
-      const method = pendingRequest ? 'textDocument/rename' : 'textDocument/hover';
+      // VS Code prepares a rename first. With the server paused, that
+      // request must fail before the command could send textDocument/rename.
+      const method = pendingRequest ? 'textDocument/prepareRename' : 'textDocument/hover';
       await waitFor('the request to be sent before the bad line', () => log().includes(`Sending request '${method}`));
       assert.equal(settled, undefined, 'the request settled before the bad line');
       began = performance.now();

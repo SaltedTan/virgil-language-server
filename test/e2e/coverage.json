@@ -1547,7 +1547,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "In a separate lost-framing run, a script writes a line that isn't a message before the server's answer to a rename. That rename command must reject with a connection read error within one second, before the two-second shutdown timeout. The client reports the fault, stops, and eventually kills the script, server, and worker without starting another server, as in the lost-framing check."
+      "description": "In a separate lost-framing run, the test pauses the server and invokes a rename command, waits for its textDocument/prepareRename request to be sent, then has the script write a line that isn't a message before resuming the server. That rename command must reject with a connection read error within one second of the injection request, before the two-second shutdown timeout; it never sends textDocument/rename. The client reports the fault, stops, and eventually kills the script, server, and worker without starting another server, as in the lost-framing check."
     },
     {
       "id": "vscode.recovery.crash-limit",
