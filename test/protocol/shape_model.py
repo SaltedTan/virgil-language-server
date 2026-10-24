@@ -14,7 +14,8 @@ URI = "untitled:protocol-shapes"
 TEXT = "component C { def x = 1; }\n"
 REQUESTS = (
     "initialize", "shutdown", "textDocument/completion",
-    "textDocument/definition", "textDocument/documentSymbol", "textDocument/hover",
+    "textDocument/definition", "textDocument/documentHighlight", "textDocument/documentSymbol",
+    "textDocument/hover",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
     "textDocument/signatureHelp", "workspace/symbol",
 )
