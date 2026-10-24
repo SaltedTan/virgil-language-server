@@ -784,8 +784,8 @@ def plan_of(start, manifest):
             raise Invalid(1, f"expected has checks of neither {condition_id} nor its alternative {other}: "
                              "a run takes one of them")
 
-    # An alternative's side is a fact that the run-start records, as the vsix
-    # condition is provenance (RESULTS.md, "Result events"). The manifest says
+    # The run-start records observations that decide each alternative, as
+    # provenance decides vsix (RESULTS.md, "Result events"). The manifest says
     # which fact decides each pair, and which values select each side.
     facts = start["facts"]
     decided = {}    # fact -> {condition id: the values that select it}
@@ -857,7 +857,7 @@ def plan_of(start, manifest):
 
 class Run:
     """A valid stream's run: its run-start, Plan, check events, and run-end,
-    and the locations of its unavailable provenance."""
+    and the locations of its unavailable provenance and facts."""
 
     def __init__(self, start, plan, checks, end, unavailable):
         self.start = start
