@@ -58,6 +58,8 @@ def unavailable_paths(document):
     def walk(node, path, field=False, base=None):
         """base is the schema that node refines in an if, then, or else branch,
         so that a field there is tested with the constraints it refines."""
+        if base is False:
+            return
         if field:
             refined = node if base is None else {"allOf": [base, node]}
             probe = RESULTS.Schema({
@@ -74,13 +76,12 @@ def unavailable_paths(document):
         base = base if isinstance(base, dict) else {}
         for name, child in node.get("properties", {}).items():
             walk(child, f"{path}.{name}" if path else name, True,
-                 base=base.get("properties", {}).get(name))
+                 base=base.get("properties", {}).get(name, base.get("additionalProperties")))
         if "items" in node:
             walk(node["items"], path + "[]", True, base=base.get("items"))
         if "additionalProperties" in node and node["additionalProperties"] is not False:
-            other = base.get("additionalProperties")
             walk(node["additionalProperties"], path + ".*", True,
-                 base=other if isinstance(other, dict) else None)
+                 base=base.get("additionalProperties"))
         for keyword in ("oneOf", "allOf"):
             for child in node.get(keyword, []):
                 walk(child, path, base=base)
@@ -487,13 +488,44 @@ class CoverageTest(unittest.TestCase):
                     self.assertEqual(expected | added, unavailable_paths(mutant))
 
     def test_unavailable_provenance_paths_descend_into_conditions(self):
-        # A field that only a then's branch declares is still found. The walk
-        # reports each field that any branch widens to the unavailable form.
-        mutant = copy.deepcopy(self.schema)
-        mutant["$defs"]["runEnd"]["then"]["properties"]["counts"]["properties"]["note"] = {
-            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/unavailableProvenance"}]}
-        self.assertEqual(unavailable_paths(self.schema) | {"counts.note"},
-                         unavailable_paths(mutant))
+        unavailable = {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/unavailableProvenance"}]}
+        for keyword in ("if", "then", "else"):
+            for additional, allowed in ((False, False), (True, True), (None, True),
+                                        ({"type": "integer"}, False), (unavailable, True)):
+                with self.subTest(keyword=keyword, additional=additional):
+                    mutant = copy.deepcopy(self.schema)
+                    end = mutant["$defs"]["runEnd"]
+                    counts = end["properties"]["counts"]
+                    if additional is None:
+                        del counts["additionalProperties"]
+                    else:
+                        counts["additionalProperties"] = additional
+                    expected = unavailable_paths(mutant)
+                    branch = {"properties": {"note": unavailable}}
+                    end.setdefault(keyword, {}).setdefault("properties", {})["counts"] = branch
+                    probe = RESULTS.Schema({
+                        "$schema": mutant["$schema"], "$defs": mutant["$defs"],
+                        "allOf": [counts, branch],
+                    })
+                    value = dict.fromkeys(counts["required"], 0)
+                    value["note"] = {"value": None, "unavailable": "prerequisite failed"}
+                    self.assertEqual(allowed, not probe.errors(value))
+                    self.assertEqual(expected | ({"counts.note"} if allowed else set()),
+                                     unavailable_paths(mutant))
+
+    def test_unavailable_provenance_paths_preserve_forbidden_children(self):
+        for keyword in ("if", "then", "else"):
+            for child in ("properties", "additionalProperties", "items"):
+                with self.subTest(keyword=keyword, child=child):
+                    mutant = copy.deepcopy(self.schema)
+                    end = mutant["$defs"]["runEnd"]
+                    nested = {"properties": {"detail": {"$ref": "#/$defs/unavailableProvenance"}}}
+                    field = "issues" if child == "items" else "counts"
+                    if child == "items":
+                        end["properties"][field]["items"] = False
+                    branch = {child: {"note": nested} if child == "properties" else nested}
+                    end.setdefault(keyword, {}).setdefault("properties", {})[field] = branch
+                    self.assertEqual(unavailable_paths(self.schema), unavailable_paths(mutant))
 
     def test_unavailable_provenance_paths_detect_missing_fields(self):
         mutant = copy.deepcopy(self.schema)
