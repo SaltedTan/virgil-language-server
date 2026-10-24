@@ -13,14 +13,16 @@
 // in its environment, and the SSH server sets it for each session, so that the
 // VS Code Server and the language servers that it starts have it too. The
 // teardown stops exactly the processes that have the marker, run an
-// executable from the work directory, or descend from the servers started
-// here, never processes found by name. It knows each by its PID and start
-// time, and sends each signal through a pidfd that it opens before it checks
-// both again (see ../processes.cjs), so that a PID that a process of the run
-// had and another process has since been given is never signaled. Where
-// pidfds aren't available, or one can't be used for a process, the check is a
-// few system calls before the signal, and the PID could be given to another
-// process in between.
+// executable from the work directory, descend from the servers started here,
+// or, when they hide their executable and environment, have a command line
+// under the work or sockets directory or such a parent (see runOwned in
+// ../processes.cjs), never processes found by name. It knows each by its PID
+// and start time, and sends each signal through a pidfd that it opens before
+// it checks both again (see ../processes.cjs), so that a PID that a process of
+// the run had and another process has since been given is never signaled.
+// Where pidfds aren't available, or one can't be used for a process, the check
+// is a few system calls before the signal, and the PID could be given to
+// another process in between.
 
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -28,7 +30,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { isZombie, processFiles, signalProcesses } = require('../processes.cjs');
+const { isZombie, processFiles, runOwned, signalProcesses } = require('../processes.cjs');
 
 const ALIAS = 'virgil-remote-ssh-test';
 const HOST = '127.0.0.1';
@@ -334,11 +336,17 @@ function signal(processes, name) {
 // meanwhile are skipped; zombies don't count, but a process whose main thread
 // has exited while its other threads run does, and a live thread's /proc
 // files identify it (see processFiles in ../processes.cjs), whichever of its
-// threads they still describe. A live process that no thread's files could
-// describe, which a scan that raced its threads' exit may find, is reported
-// as unidentified rather than left out, so that the teardown tries again
-// instead of counting it as gone. Throws if /proc itself can't be listed.
+// threads they still describe. A process that hides its executable and
+// environment, as a non-dumpable one does, is still the run's if its identity
+// is one that start() started, if its parent is the run's, or if an argument
+// of its command line names a path under the work or sockets directory (see
+// runOwned in ../processes.cjs); a readable executable that is under neither
+// settles that it isn't. A live process that no thread's files could describe,
+// which a scan that raced its threads' exit may find, is reported as
+// unidentified rather than left out, so that the teardown tries again instead
+// of counting it as gone. Throws if /proc itself can't be listed.
 function runProcesses({ work, sockets, marker, started }) {
+  const roots = [work, sockets];
   const table = new Map();
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
@@ -348,33 +356,43 @@ function runProcesses({ work, sockets, marker, started }) {
       const identified = processFiles(fs, name, { exe: 'link', environ: 'latin1', cmdline: 'utf8' });
       if (identified === undefined) continue;
       if (identified.unreadable) {
-        table.set(Number(name), { ppid, start: identified.start, unidentified: true });
+        table.set(Number(name), { pid: Number(name), ppid, start: identified.start, unidentified: true });
         continue;
       }
-      const { exe = '', environ = '', cmdline = '' } = identified.files;
-      const owned = [work, sockets].some((root) => exe.startsWith(`${root}/`))
-        || environ.split('\0').includes(marker);
-      table.set(Number(name), { ppid, start: identified.start, exe, owned, command: cmdline.replaceAll('\0', ' ').trim() });
+      table.set(Number(name), { pid: Number(name), ppid, start: identified.start, files: identified.files });
     } catch (error) {
       if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
     }
   }
-  for (const { child, identity } of started) {
+  // The identities of the servers that start() started and that still run.
+  const known = started.flatMap(({ child, identity }) => {
     const entry = identity === undefined ? undefined : table.get(identity.pid);
-    if (child.exitCode === null && child.signalCode === null && entry?.start === identity.start) entry.owned = true;
-  }
+    return child.exitCode === null && child.signalCode === null && entry?.start === identity.start ? [identity] : [];
+  });
+  // A parent is the run's only if it started no later than its child, so that
+  // a PID given to another process after the real parent exited doesn't
+  // qualify. Ownership spreads until no more processes gain it, since a
+  // process can be listed before its parent.
+  const owned = new Set();
+  const parent = (ppid, start) => {
+    const entry = table.get(ppid);
+    return entry !== undefined && owned.has(entry.pid) && Number(entry.start) <= Number(start);
+  };
   for (let added = true; added;) {
     added = false;
     for (const entry of table.values()) {
-      if (!entry.owned && table.get(entry.ppid)?.owned) {
-        entry.owned = true;
+      if (entry.unidentified || owned.has(entry.pid)) continue;
+      if (runOwned({ ...entry, roots, marker, known, parent, descend: true })) {
+        owned.add(entry.pid);
         added = true;
       }
     }
   }
-  return [...table].flatMap(([pid, entry]) => {
-    if (entry.unidentified) return [{ pid, start: entry.start, unidentified: true }];
-    return entry.owned ? [{ pid, start: entry.start, exe: entry.exe, command: entry.command }] : [];
+  return [...table.values()].flatMap((entry) => {
+    if (entry.unidentified) return [{ pid: entry.pid, start: entry.start, unidentified: true }];
+    if (!owned.has(entry.pid)) return [];
+    const { exe = '', cmdline = '' } = entry.files;
+    return [{ pid: entry.pid, start: entry.start, exe, command: cmdline.replaceAll('\0', ' ').trim() }];
   });
 }
 

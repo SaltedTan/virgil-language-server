@@ -129,6 +129,37 @@ function processFiles(fs, pid, files) {
   return { start, unreadable: true };
 }
 
+// Whether a process that processFiles identified is the run's. files are the
+// contents that processFiles read; roots are the directories whose paths mark
+// the run's executables and command lines, such as its work directory; marker,
+// if given, is the environment entry that the run's processes have; known are
+// the identities, { pid, start }, that the run already identified or started;
+// parent(ppid, start), if given, says whether the process with that PID, which
+// started no later than start, is the run's, for the parent chain; descend
+// says whether a process with a readable executable under none of roots is
+// still the run's when it descends from one, as the teardown counts every
+// descendant, while the leak check counts only processes that run an
+// executable from the work directory; and pid, start, and ppid are the
+// process's. A process with the marker, or with a readable executable under
+// one of roots, is the run's, as is one whose identity is known. A process
+// whose executable can't be read, as a non-dumpable one's can't, may also be
+// the run's if its parent is, or by its readable command line, if an argument
+// names a path under one of roots: that is the evidence left for a process of
+// the run that hides both its executable and its environment, since a readable
+// executable that is under none of roots settles that it is not the run's. So
+// the same-uid non-dumpable processes that every machine has, such as systemd
+// --user's, stay out: their command lines name nothing under the run's
+// directories, and the run didn't start them.
+function runOwned({ pid, start, ppid, files, roots, marker, known = [], parent, descend = false }) {
+  const { exe, environ, cmdline = '' } = files;
+  if (marker !== undefined && environ !== undefined && environ.split('\0').includes(marker)) return true;
+  if (exe !== undefined && roots.some((root) => exe.startsWith(`${root}/`))) return true;
+  if (known.some((identity) => identity.pid === pid && identity.start === start)) return true;
+  if (parent !== undefined && parent(ppid, start) && (exe === undefined || descend)) return true;
+  if (exe !== undefined) return false;
+  return roots.some((root) => cmdline.split('\0').some((arg) => arg.startsWith(`${root}/`)));
+}
+
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
 // can't tell: on macOS, the kernel lists the PIDs, then looks up each process,
 // and leaves out one that has been reaped in between, so a process that starts
@@ -514,4 +545,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   return group;
 }
 
-module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, signalProcesses, startGroup, zombie };
+module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, runOwned, signalProcesses, startGroup, zombie };

@@ -33,7 +33,7 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
-const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, startGroup } = require('../processes.cjs');
+const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, runOwned, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -620,22 +620,28 @@ function suiteLines() {
 // that identifies it, from whichever of its threads still runs, as it does for
 // the teardown (see isZombie and processFiles in ../processes.cjs); it also
 // reports, in unidentified, each live process that no thread's files could
-// describe, which the caller retries rather than counting as gone. It sends
-// signal, if given, to that host, and SIGKILL to those of the processes in
-// kill, each given as PID@start, that still have that start time and run an
-// executable under root and not under agent, the VS Code Server's directory:
-// exactly those, never processes found by name or another process that now has
-// the PID. Each signal goes through a pidfd where the target's Python and
-// kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and otherwise, or
-// where a pidfd couldn't be opened for that process or couldn't signal it,
-// follows a second check of the start time, and of whether it is a zombie,
-// which it isn't while threads other than its main thread run.
+// describe, which the caller retries rather than counting as gone. A process
+// that hides its executable, as a non-dumpable one does, is still found if the
+// caller already identified it by its PID and start time, as it did host and
+// the processes in kill, if its parent is the run's, or if an argument of its
+// readable command line names a path under root (see runOwned in
+// ../processes.cjs); a readable executable under none of root settles that it
+// isn't. It sends signal, if given, to that host, and SIGKILL to those of the
+// processes in kill, each given as PID@start, that still have that start time
+// and run an executable under root and not under agent, the VS Code Server's
+// directory: exactly those, never processes found by name or another process
+// that now has the PID. Each signal goes through a pidfd where the target's
+// Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
+// otherwise, or where a pidfd couldn't be opened for that process or couldn't
+// signal it, follows a second check of the start time, and of whether it is a
+// zombie, which it isn't while threads other than its main thread run.
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
 ${isZombie}
 ${processFiles}
+${runOwned}
 const found = [];
 const killed = [];
 const unidentified = [];
@@ -661,6 +667,7 @@ const send = (name, targets) => {
     } catch {}
   });
 };
+const table = [];
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
     const fields = stat(pid);
@@ -671,13 +678,38 @@ for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)
       unidentified.push(Number(pid));
       continue;
     }
-    const exe = identified.files.exe;
-    if (exe === undefined || !exe.startsWith(root + '/')) continue;
-    const start = identified.start;
-    if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) hostRuns = true;
-    if (kill.includes(pid + '@' + start) && !exe.startsWith(agent + '/')) killed.push([Number(pid), start]);
-    found.push({ pid: Number(pid), ppid: Number(fields[1]), start, exe });
+    table.push({ pid: Number(pid), ppid: Number(fields[1]), start: identified.start, files: identified.files });
   } catch {}
+}
+const known = kill.map((identity) => {
+  const [pid, start] = identity.split('@');
+  return { pid: Number(pid), start };
+});
+if (host) known.push(host);
+const byPid = new Map(table.map((entry) => [entry.pid, entry]));
+const owned = new Set();
+const parent = (ppid, start) => {
+  const entry = byPid.get(ppid);
+  return entry !== undefined && owned.has(entry.pid) && Number(entry.start) <= Number(start);
+};
+for (let added = true; added;) {
+  added = false;
+  for (const entry of table) {
+    if (owned.has(entry.pid)) continue;
+    if (runOwned({ ...entry, roots: [root], known, parent })) {
+      owned.add(entry.pid);
+      added = true;
+    }
+  }
+}
+for (const entry of table) {
+  if (!owned.has(entry.pid)) continue;
+  const identity = known.find((candidate) => candidate.pid === entry.pid && candidate.start === entry.start);
+  const exe = entry.files.exe ?? identity?.exe;
+  const start = entry.start;
+  if (host && entry.pid === host.pid && start === host.start && exe === host.exe) hostRuns = true;
+  if (kill.includes(entry.pid + '@' + start) && !(exe ?? '').startsWith(agent + '/')) killed.push([entry.pid, start]);
+  found.push(exe === undefined ? { pid: entry.pid, ppid: entry.ppid, start } : { pid: entry.pid, ppid: entry.ppid, start, exe });
 }
 if (hostRuns && signal) {
   signaledAt = Date.now();
@@ -691,8 +723,11 @@ console.log(JSON.stringify({ found, host: hostRuns, signaledAt, unidentified, sa
 // language servers and workers, and anything else that the tests started;
 // whether host, a window's remote extension host, still runs; and the live
 // processes that no thread's files could describe, which are neither known to
-// run nor known to have gone (see REMOTE_PROCESSES). The processes in kill are
-// killed first, and host gets signal.
+// run nor known to have gone (see REMOTE_PROCESSES). A process whose
+// executable can't be read is counted as a leftover unless its identity is the
+// host's, which the caller gave, so that a process of the run that hides it is
+// still waited for and killed. The processes in kill are killed first, and
+// host gets signal.
 async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   const options = { root: run.target.root, agent: layout.agent, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
   const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(JSON.stringify(options))}`, { allowFailure: true });
@@ -702,7 +737,7 @@ async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   } catch {
     throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
   }
-  const server = (p) => p.exe.startsWith(`${layout.agent}/`);
+  const server = (p) => (p.exe ?? '').startsWith(`${layout.agent}/`);
   return {
     found: listing.found, left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length,
     host: listing.host, signaledAt: listing.signaledAt, unidentified: listing.unidentified ?? [], sampledAt: listing.sampledAt,
@@ -729,7 +764,8 @@ async function settle(run, layout, at, host, firstSample) {
   for (;;) {
     const processes = firstSample ?? await remoteProcesses(run, layout, { host });
     firstSample = undefined;
-    processes.host = host !== undefined && processes.found.some((p) => p.pid === host.pid && p.start === host.start && p.exe === host.exe);
+    processes.host = host !== undefined && processes.found.some((p) => p.pid === host.pid && p.start === host.start
+      && (p.exe === undefined || p.exe === host.exe));
     if (!Number.isFinite(processes.sampledAt)) throw infra('leak check could not be verified in time');
     timely ||= processes.sampledAt <= deadline;
     if (!timely) throw infra('leak check could not be verified in time');
@@ -966,7 +1002,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   if (record.leftRunning?.length > 0) {
     problems.push(`left running ${SERVER_EXIT_MS / 1000} seconds after `
       + `${lingered ? 'the test stopped the remote extension host that VS Code left running' : 'the window closed'}, then killed: `
-      + record.leftRunning.map((p) => `${p.exe} (pid ${p.pid})`).join(', '));
+      + record.leftRunning.map((p) => `${p.exe ?? 'a process that hides its executable'} (pid ${p.pid})`).join(', '));
   }
   record.result = problems.length === 0 ? 'PASS' : 'FAIL';
   record.problems = problems;

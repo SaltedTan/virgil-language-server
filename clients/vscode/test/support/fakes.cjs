@@ -31,9 +31,13 @@ function load(file, modules = {}, overrides = {}, globals = {}) {
 
 // node:fs with a fake /proc of processes, by PID: each has a start time, and
 // may have a state, a parent, a process group, a number of threads, an
-// executable, and an environment.
+// executable, an environment, and a command line, an array of arguments. One
+// that has hidden, as a non-dumpable process does, hides its executable and
+// environment, which then fail with EACCES, while its command line stays
+// readable.
 function fakeProc(processes) {
   const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+  const denied = (file) => Object.assign(new Error(`EACCES: ${file}`), { code: 'EACCES' });
   const entry = (file) => {
     const [, pid, name] = /^\/proc\/(\d+)\/(\w+)$/.exec(file) ?? [];
     const p = processes.get(Number(pid));
@@ -46,10 +50,18 @@ function fakeProc(processes) {
     readFileSync: (file) => {
       const [pid, p, name] = entry(file);
       if (name === 'stat') return `${pid} (x) ${p.state ?? 'S'} ${p.ppid ?? 1} ${p.group ?? 0} ${Array(14).fill(0).join(' ')} ${p.threads ?? 1} 0 ${p.start} 0 0`;
-      if (name === 'environ') return (p.environ ?? []).join('\0');
+      if (name === 'cmdline') return (p.cmdline ?? []).join('\0');
+      if (name === 'environ') {
+        if (p.hidden) throw denied(file);
+        return (p.environ ?? []).join('\0');
+      }
       return '';
     },
-    readlinkSync: (file) => entry(file)[1].exe ?? '/usr/bin/other',
+    readlinkSync: (file) => {
+      const [pid, p, name] = entry(file);
+      if (name === 'exe' && p.hidden) throw denied(file);
+      return p.exe ?? '/usr/bin/other';
+    },
   };
 }
 
