@@ -107,12 +107,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("--baseline", action="store_true")
-    parser.add_argument("--build", type=int, default=1, help="baseline build index (default: newer build, 1)")
     parser.add_argument("--annotations", action="store_true", help="emit GitHub warning annotations to stderr")
     args = parser.parse_args()
     result = json.loads(args.input.read_text())
     if args.baseline:
-        print(baseline(result, args.build), end="")
+        print(baseline(result, 1), end="")
     else:
         report, warnings = comparison(result)
         print(report, end="")
