@@ -16,8 +16,10 @@
 // empty extensions directory with --install-extension, as a user would, and
 // runs the suite against the installed copy. With --logs, a new or empty
 // directory, a launch or installation that fails leaves its VS Code and
-// Chromium logs there (see keepLogs). Without a display, run it under
-// xvfb-run on Linux.
+// Chromium logs there (see keepLogs). A launch that fails before the extension
+// activated, at an event at which VS Code's command-line extension test exits,
+// is retried once (see attempt). Without a display, run it under xvfb-run on
+// Linux.
 
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -43,6 +45,8 @@ const KILL_WAIT_MS = 30000;
 // How long the servers that a launch started get to exit after VS Code has.
 const SERVER_EXIT_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
+// VS Code's log of its main process, among its logs.
+const MAIN_LOG = 'main.log';
 // Chromium's own log, among VS Code's, with --logs (see launch).
 const CHROMIUM_LOG = 'chromium.log';
 
@@ -112,19 +116,18 @@ async function main() {
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
     const servers = [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
     const options = { executable, settings, project, vsix, servers, keep: logs !== undefined, signal: controller.signal };
-    // A launch fails if it returns false or throws.
-    const attempt = async (name, ...rest) => {
-      let passed = false;
-      try {
-        passed = await launch(options, path.join(work, name), ...rest);
-      } finally {
-        if (!passed && logs !== undefined) keepLogs(path.join(work, name), path.join(logs, name));
-      }
-      return passed;
-    };
-    let passed = await attempt('single-file');
-    if (passed) passed = await attempt('workspace', project);
-    if (passed) passed = await attempt('recovery-close', project, true);
+    // A launch that fails returns a failure (see failure), or throws; one that
+    // failed the way the unresponsive-window flake does before the extension
+    // activated is retried once (see attempt).
+    const run = (name, ...rest) => attempt({
+      name,
+      work,
+      logs,
+      launch: (dir) => launch(options, dir, ...rest),
+    });
+    let passed = (await run('single-file')).passed;
+    if (passed) passed = (await run('workspace', project)).passed;
+    if (passed) passed = (await run('recovery-close', project, true)).passed;
     if (!passed) process.exitCode = 1;
   } finally {
     process.off('SIGINT', interrupt).off('SIGTERM', interrupt);
@@ -150,11 +153,13 @@ function isolatedEnv(variables) {
 }
 
 // Starts VS Code with its own user data and extensions directories under dir,
-// and returns whether the suite passed. The suite opens a folder only if it is
-// given one. With recovery, the suite closes the window during a recovery,
-// with a virgil.server.path in dir/recovery, whose records are checked after
-// the window has closed. With keep, Chromium's own log goes among VS Code's
-// logs, for keepLogs.
+// and returns the launch's outcome: whether the suite passed, or why it did
+// not, with what the launch's logs say about an unresponsive window and
+// whether the extension activated (see failure and retryable). The suite opens
+// a folder only if it is given one. With recovery, the suite closes the
+// window during a recovery, with a virgil.server.path in dir/recovery, whose
+// records are checked after the window has closed. With keep, Chromium's own
+// log goes among VS Code's logs, for keepLogs.
 async function launch({ executable, settings, project, vsix, servers, keep, signal }, dir, folder, recovery = false) {
   const userData = path.join(dir, 'user-data');
   const extensions = path.join(dir, 'extensions');
@@ -213,14 +218,14 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     });
     if (!succeeded(installation)) {
       console.error(`FAIL: ${name} installation of ${vsix} ${outcome(installation)}`);
-      return false;
+      return failure(userData, 'installation', outcome(installation));
     }
   }
   const result = await runGroup(executable, args, { env, stdin: 'inherit', signal, servers });
   if (!succeeded(result)) {
     console.error(`FAIL: ${name} launch ${outcome(result)}`);
     printChannelLogs(userData);
-    return false;
+    return failure(userData, 'launch', outcome(result), result.error === undefined && result.stopped === undefined);
   }
   if (records !== undefined) {
     const document = pathToFileURL(path.join(project, 'bad.v3')).href;
@@ -228,12 +233,12 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     if (problem !== undefined) {
       console.error(`FAIL: VS Code window close during the recovery (${name} launch): ${problem}`);
       printChannelLogs(userData);
-      return false;
+      return failure(userData, 'recovery', problem);
     }
     console.log(`PASS: VS Code window close during the recovery (${name} launch): the recovery finished, the recovered server `
       + 'got a textDocument/didOpen for the open bad.v3 before exit, then shutdown and exit and exited with status 0, and no '
       + 'virgil-lsp or virgil-lsp-worker was left running');
-    return true;
+    return { passed: true };
   }
   // Closing the window deactivates the extension, which sends shutdown and
   // exit. The channel may close before the server exits, so its log need not
@@ -242,11 +247,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
   if (exit !== undefined && !exit.includes('Server process exited successfully')) {
     console.error(`FAIL: VS Code window close (${name} launch): the server did not exit cleanly: ${exit}`);
     printChannelLogs(userData);
-    return false;
+    return failure(userData, 'server', exit);
   }
   console.log(`PASS: VS Code window close (${name} launch): no virgil-lsp or virgil-lsp-worker left running, `
     + 'and no unclean server exit in the log');
-  return true;
+  return { passed: true };
 }
 
 // Runs command in a process group of its own, so that a timeout or an
@@ -382,12 +387,93 @@ function outcome(result) {
   return result.stopped ?? `exited with ${result.code ?? result.signal}`;
 }
 
+// A failed launch or installation, for attempt's retry decision (see
+// retryable): what failed, how, whether it exited by itself, whether the
+// extension activated, and the window error that VS Code's main log recorded.
+// The extension creates its output channel before it starts the server, so a
+// server or extension failure leaves the channel's log, and a launch without
+// one ended before the extension activated.
+function failure(userData, kind, detail, exited = false) {
+  return {
+    passed: false,
+    kind,
+    detail,
+    exited,
+    activated: channelLogs(userData).length > 0,
+    windowError: windowError(userData),
+  };
+}
+
+// Whether a failed launch may be the unresponsive-window flake that one retry
+// may contain: a launch, not an installation or a check of its records, that
+// exited by itself, before the extension activated, at an event at which
+// VS Code's command-line extension test exits with status 1, as its main log
+// records (see WINDOW_ERRORS). Any other failure, such as one that the test
+// stopped or an exit with no such event, may be a real one, and is not
+// retried.
+function retryable({ kind, exited, activated, windowError }) {
+  return kind === 'launch' && exited && !activated && windowError !== undefined;
+}
+
+// Runs the launch called name, and, if it fails as the unresponsive-window
+// flake does before the extension activated (see retryable), the launch once
+// more, as name-retry: never more than one retry per launch. launch resolves
+// only after a failed launch's process group has gone, so nothing of it runs
+// beside the retry (see runGroup). Each failed launch's logs go to
+// logs/<name> or logs/<name>-retry, under a name of its own, before its
+// temporary directory is removed (see keepLogs). Returns whether a launch
+// passed, and whether that was the retry.
+async function attempt({ name, work, logs, launch }) {
+  for (let tries = 1; ; tries++) {
+    const attemptName = tries === 1 ? name : `${name}-retry`;
+    const dir = path.join(work, attemptName);
+    const target = logs === undefined ? undefined : path.join(logs, attemptName);
+    let result;
+    try {
+      result = await launch(dir);
+    } catch (error) {
+      if (target !== undefined) keepLogs(dir, target);
+      throw error;
+    }
+    if (result.passed) return { passed: true, retried: tries > 1 };
+    if (target !== undefined) keepLogs(dir, target);
+    if (tries > 1 || !retryable(result)) return { passed: false };
+    const kept = target === undefined
+      ? 'Its logs were not kept because --logs was not given'
+      : `Its logs are in ${target}`;
+    console.error(`RETRY: the ${attemptName} launch ${result.detail} before the extension activated, and VS Code's main log `
+      + `records ${result.windowError}; launching it once more, as ${name}-retry. ${kept}.`);
+  }
+}
+
 function channelLogs(userData) {
+  return logFiles(userData, CHANNEL_LOG);
+}
+
+// The files called name among the launch's VS Code logs, user-data/logs.
+function logFiles(userData, name) {
   const logs = path.join(userData, 'logs');
   return fs.existsSync(logs)
-    ? fs.readdirSync(logs, { recursive: true }).filter((file) => path.basename(file) === CHANNEL_LOG)
+    ? fs.readdirSync(logs, { recursive: true }).filter((file) => path.basename(file) === name)
       .map((file) => path.join(logs, file))
     : [];
+}
+
+// The window errors at which VS Code's command-line extension tests exit with
+// status 1, in VS Code 1.142.0, each with the main log's wording: its
+// mainImpl.js kills the test run at the window's first unresponsive event or
+// gone renderer. "CodeWindow: recovered from unresponsive" and a failed load
+// don't end the run, so they are no evidence of it.
+const WINDOW_ERRORS = [
+  ['an unresponsive window', 'CodeWindow: detected unresponsive'],
+  ['a gone renderer process', 'CodeWindow: renderer process gone'],
+];
+
+// The window error among WINDOW_ERRORS that VS Code's main log recorded, if
+// any, as its description.
+function windowError(userData) {
+  const lines = logFiles(userData, MAIN_LOG).flatMap((file) => fs.readFileSync(file, 'utf8').split('\n'));
+  return WINDOW_ERRORS.find(([, marker]) => lines.some((line) => line.includes(marker)))?.[0];
 }
 
 // The output channel's log also holds the server's stderr.
@@ -509,4 +595,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { VSCODE_VERSION, isolatedEnv, keepLogs, runGroup };
+module.exports = { VSCODE_VERSION, attempt, failure, isolatedEnv, keepLogs, retryable, runGroup, windowError };

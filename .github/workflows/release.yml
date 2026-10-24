@@ -209,11 +209,13 @@ jobs:
           xvfb-run -a npm run test:e2e -- --vsix "$VSIX" --logs "$RUNNER_TEMP/vscode-logs" \
             "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp"
       - uses: actions/upload-artifact@v7
-        if: failure()
+        # Also after a pass: a launch retried after an unresponsive window
+        # keeps the failed attempt's logs. Missing logs matter only on failure.
+        if: ${{ !cancelled() }}
         with:
           name: vsix-extension-host-logs-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vscode-logs
-          if-no-files-found: warn
+          if-no-files-found: ${{ job.status == 'failure' && 'warn' || 'ignore' }}
           retention-days: 30
       - name: Check that the VSIX is unchanged
         working-directory: clients/vscode
