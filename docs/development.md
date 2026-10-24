@@ -36,7 +36,7 @@ Each executable is a single Aeneas invocation (see `Makefile` and [architecture.
 
 See [Performance benchmarks](benchmarks.md) for the pinned small, util, and Aeneas
 corpus, `make bench`, phase and GC measurements, baseline numbers, and fair build
-comparisons. `make test` runs only a small semantic benchmark smoke case.
+comparisons.
 
 ## Running
 

@@ -62,13 +62,11 @@ partial samples and the failing session's transcript in `<output>.failure.json`.
 
 ## Corpus and correctness
 
-[`test/benchmarks/corpus.json`](../test/benchmarks/corpus.json) pins these inputs:
-
-| Project | Source set | Files | Bytes | Lines |
-| --- | --- | ---: | ---: | ---: |
-| small | `test/fixtures/analysis/two-file/*.v3` | 2 | 441 | 20 |
-| util | `vendor/virgil/lib/util/*.v3` | 31 | 166,628 | 5,360 |
-| aeneas | `AENEAS_SRC` from the Makefile: compiler sources plus `aeneas/DEPS`, excluding `lib/test/` | 205 | 3,022,555 | 83,322 |
+[`test/benchmarks/corpus.json`](../test/benchmarks/corpus.json) pins the small
+two-file fixture, Virgil's util library, and the Makefile's `AENEAS_SRC` compiler
+source set. The generated manifest owns their ordered file lists, file counts,
+byte sizes, and line totals; `python3 scripts/bench-corpus.py --check` checks the
+pin and prints the totals for the checked projects.
 
 The manifest includes source revisions, ordered paths, each file's SHA-256 and
 length, analysis flags (pinned language defaults, no target), and query and edit
@@ -80,11 +78,8 @@ any intentional change with `python3 scripts/bench-corpus.py --write`; do not us
 that command merely to make a failed check pass. When changing the small fixture,
 also advance the full literal `SMALL_REVISION` in the generator to a commit
 containing those bytes. For a compiler pin bump, follow the
-[pin update checklist](../CONTRIBUTING.md#updating-the-pinned-virgil-revision):
-regenerate the corpus, review hashes and anchors, then stage both updated pins
-and rerun `make test` and a short `make bench` before committing.
-Run old and new corpora separately
-when assessing a compiler pin change.
+[pin update checklist](../CONTRIBUTING.md#updating-the-pinned-virgil-revision).
+Run old and new corpora separately when assessing a compiler pin change.
 
 The file order matches shell expansion of the Makefile's source set. Aeneas's
 unsaved project config uses one pattern per compiler source directory, in that
