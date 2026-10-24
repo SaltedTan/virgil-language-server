@@ -73,18 +73,8 @@ LazyVim needs no setup, and shows the items as you type. Its default completion 
 From the repository root, run `make test-nvim` (also included in `make test`).
 The test uses the plain configuration above with the built server on `PATH` and
 `--headless --clean -n` (no swap files), with `VIRGIL_LOC` set to the pinned
-checkout in `vendor/virgil`. It checks client attachment, parser diagnostics
-published and cleared after an unsaved edit, document symbols, including a
-variant case nested in its variant, semantic diagnostics for the fixture's
-project, which uses `lib/util` from the Virgil root, a definition in that
-closed library file, a hover over the same use, signature help in a call on the
-same line, its references in that file and other closed library files, a rename
-of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
-error, and its undo, keyword completion of `whi` to `while` and completion of
-`li` to the local `line` in the unsaved, unparsable buffer, each applied with
-Neovim's own edit and undone, a workspace symbol that nothing uses, configuration
-diagnostics after an unsaved edit to the project file, that other JSON buffers
-stay detached, and a graceful server shutdown with exit status 0. The fixture
+checkout in `vendor/virgil`. See the [coverage manifest](../../test/e2e/coverage.json)
+for the `nvim` suite's checks. The fixture
 is copied into a temporary directory; editor state is kept there, and the
 directory is removed afterward. The VS Code
 [Extension Host test](../../clients/vscode/README.md#extension-host-test) and
