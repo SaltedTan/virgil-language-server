@@ -1,6 +1,6 @@
 # Editor test results
 
-The editor tests give each of their checks a stable ID, and will record what each run observed as a stream of JSON events, from which the results of a release can be generated. This page is the contract for both:
+The headless Neovim, scripted LazyVim, Extension Host, and Remote-SSH tests give each of their checks a stable ID, and will record what each run observed as a stream of JSON events, from which the results of a release can be generated. The separate [clean install test](../../docs/releasing.md#clean-install-test) is outside this contract. This page is the contract for both:
 
 - [`coverage.json`](coverage.json), the coverage manifest: every automated check, what it covers in the [manual test matrix](../../docs/manual-testing.md#matrix) and the VS Code [manual checklist](../../clients/vscode/README.md#manual-checklist), and what no check covers.
 - [`results-v1.schema.json`](results-v1.schema.json), the JSON Schema of version 1 of the result events.

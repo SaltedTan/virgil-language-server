@@ -79,7 +79,7 @@ Named prerequisites are `curl`, `tar`, checksum tools, VS Code with `code` on PA
 
 This is an installation check, not the full editor behavior suite or a manual UI check. It covers Linux x86-64 only. Hosted macOS runners do not provide a fresh Linux-style container, and creating and driving a clean macOS user would require separate login/session machinery; the existing macOS archive and editor tests still run, but do not provide this clean-install guarantee. Remote installs, upgrades, shell startup files, and a root outside the shipped library are not checked here. This job has no result-event IDs yet, so its evidence stays in its workflow logs and artifact rather than the historical manual results or the result-stream contract.
 
-To reproduce without a container, package an archive and VSIX as above, record their digests when produced, then run the bundled `run.py run --help` command from a directory outside the checkout with an empty HOME and a minimal PATH containing the named prerequisites. Use a new `--out` directory each time. `run.py bundle <directory>` is the only operation that reads the checkout; `run` reads only that bundle and the supplied release assets.
+To reproduce without a container, package an archive and VSIX as above, record their digests when produced, and create the standalone bundle with `run.py bundle <directory>`. Use the bundled `run.py run --help` to see the required arguments, then execute `run.py run` from a directory outside the checkout with an empty HOME and a minimal PATH containing the named prerequisites. Use a new `--out` directory each time. `bundle` is the only operation that reads the checkout; `run` reads only that bundle and the supplied release assets.
 
 ## Making a release
 
