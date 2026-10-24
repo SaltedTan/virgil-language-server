@@ -432,8 +432,13 @@ class RunsTableTest(unittest.TestCase):
         events[0]["provenance"]["harness"].update(revision=None, dirty=None)
         self.assertEqual(["Unknown, server 0.1.0-alpha.3", "Neovim, version unknown"],
                          [row(events)[i] for i in (1, 4)])
-        events[0]["provenance"]["clientMode"] = "manual"
-        self.assertEqual("Neovim, version unknown, a person's own setup", row(events)[4])
+        # A manual stream can't validate yet: no check lists the manual suite,
+        # and expected needs one. Set the mode on the validated run instead,
+        # to check the cell's wording.
+        run = validated(events)
+        run.start["provenance"]["clientMode"] = "manual"
+        self.assertEqual("Neovim, version unknown, a person's own setup",
+                         results.run_cells(run, RELEASE, MANIFEST)[4])
 
     def test_cells_are_escaped(self):
         events = run_of("nvim", lane="a|b *c* <d> [e](f) `g` $h$ ~i~ &amp;_j_ k_l \\|\n\u202e")

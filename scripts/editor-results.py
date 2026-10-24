@@ -89,6 +89,18 @@ DECIDED_BY_PROVENANCE = {"vsix": {"clientMode": lambda mode: mode == "vsix", "vs
 # A manual record may observe any setup; every other suite's runs observe
 # the setups of their own suite.
 MANUAL = "manual"
+# The client modes and editors that a suite's runs record: the Neovim suites
+# run the client that the editor has, every VS Code run installs the extension
+# from source or from a VSIX, and Remote-SSH always runs it from a VSIX. A
+# manual record, of a person's own setup in either editor, is the manual
+# suite's alone: its client mode is manual exactly when its suite is.
+SUITE_PROVENANCE = {
+    "nvim": (("none",), ("nvim",)),
+    "lazyvim": (("none",), ("nvim",)),
+    "vscode": (("source", "vsix"), ("vscode",)),
+    "remote-ssh": (("vsix",), ("vscode",)),
+    MANUAL: (("manual",), ("nvim", "vscode")),
+}
 # The launcher's profile, outside the editor, which has no editor
 # configuration to digest (RESULTS.md, "The manifest").
 WRAPPER = "wrapper"
@@ -665,6 +677,39 @@ class Plan:
         self.holds = holds
 
 
+def check_suite_provenance(start):
+    """Checks the run-start's client mode, VSIX, and editor against each other
+    and its suite, whatever the run's plan (RESULTS.md, "Result events"). A
+    manual record, of a person's own setup in either editor, is the manual
+    suite's alone, so its client mode is manual exactly when its suite is.
+    Raises Invalid on line 1."""
+    suite = start["suite"]
+    provenance = start["provenance"]
+    mode = provenance["clientMode"]
+    vsix = provenance["vsix"]
+    # A run given a VSIX that it couldn't read still used a VSIX, so this is
+    # not about whether the VSIX is available.
+    if (mode == "vsix") != (vsix is not None):
+        raise Invalid(1, f"provenance.clientMode is {show(mode)}, but provenance.vsix is "
+                         + ("null" if vsix is None else "an object")
+                         + ": clientMode is vsix exactly when vsix is not null")
+    entry = SUITE_PROVENANCE.get(suite)
+    if entry is None:
+        # The manifest can add a suite before this table does; that is a
+        # mismatch of the manifest and the script, not of the stream, but the
+        # stream is where it shows.
+        raise Invalid(1, f"suite {suite} is not in SUITE_PROVENANCE: update the script's table of each "
+                         "suite's client modes and editors")
+    modes, editors = entry
+    if mode not in modes:
+        raise Invalid(1, f"provenance.clientMode is {show(mode)}, but a run of suite {suite} records "
+                         + " or ".join(modes))
+    editor = provenance["editor"]["name"]
+    if editor not in editors:
+        raise Invalid(1, f"provenance.editor.name is {show(editor)}, but a run of suite {suite} uses "
+                         + " or ".join(editors))
+
+
 def plan_of(start, manifest):
     """Checks that the run-start's expected is the manifest's plan, as
     RESULTS.md defines it, and returns the Plan. Raises Invalid on line 1."""
@@ -856,6 +901,7 @@ class _Reader:
         if suite != MANUAL and setup["suite"] != suite:
             raise Invalid(1, f"setup {setup['id']} is a setup of suite {setup['suite']}, not {suite}")
         self.plan = plan_of(start, manifest)
+        check_suite_provenance(start)
         provenance = start["provenance"]
         for side in ("client", "host"):
             if provenance[side]["os"] != setup[side]:

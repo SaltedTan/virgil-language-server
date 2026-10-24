@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Checks that coverage.json and results-v1.schema.json, beside this file, are
-consistent with themselves and with each other (RESULTS.md). It reads only
-those two files, never the tests that they describe."""
+"""Checks the editor coverage contracts (RESULTS.md, "Adding a check"),
+without reading the tests that the manifest describes."""
 import copy
 import importlib.util
 import json
@@ -55,28 +54,39 @@ def unavailable_paths(document):
     consumer = RESULTS.Schema(document)
     accepted = set()
 
-    def walk(node, path, field=False):
+    def walk(node, path, field=False, base=None):
+        """base is the schema that node refines in an if, then, or else branch,
+        so that a field there is tested with the constraints it refines."""
+        if base is False:
+            return
         if field:
+            refined = node if base is None else {"allOf": [base, node]}
             probe = RESULTS.Schema({
                 "$schema": document["$schema"],
                 "$defs": document["$defs"],
-                "allOf": [node],
+                "allOf": [refined],
             })
             if not probe.errors({"value": None, "unavailable": "prerequisite failed"}):
                 accepted.add(path)
         if not isinstance(node, dict):
             return
         if "$ref" in node:
-            walk(consumer.schemas[consumer.references[node["$ref"]]], path)
+            walk(consumer.schemas[consumer.references[node["$ref"]]], path, base=base)
+        base = base if isinstance(base, dict) else {}
         for name, child in node.get("properties", {}).items():
-            walk(child, f"{path}.{name}" if path else name, True)
+            walk(child, f"{path}.{name}" if path else name, True,
+                 base=base.get("properties", {}).get(name, base.get("additionalProperties")))
         if "items" in node:
-            walk(node["items"], path + "[]", True)
+            walk(node["items"], path + "[]", True, base=base.get("items"))
         if "additionalProperties" in node and node["additionalProperties"] is not False:
-            walk(node["additionalProperties"], path + ".*", True)
+            walk(node["additionalProperties"], path + ".*", True,
+                 base=base.get("additionalProperties"))
         for keyword in ("oneOf", "allOf"):
             for child in node.get(keyword, []):
-                walk(child, path)
+                walk(child, path, base=base)
+        for keyword in ("if", "then", "else"):
+            if keyword in node:
+                walk(node[keyword], path, base=node)
 
     walk(document, "")
     return accepted
@@ -476,11 +486,57 @@ class CoverageTest(unittest.TestCase):
                         added = {"provenance.client.release", "provenance.host.release"}
                     self.assertEqual(expected | added, unavailable_paths(mutant))
 
+    def test_unavailable_provenance_paths_descend_into_conditions(self):
+        unavailable = {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/unavailableProvenance"}]}
+        for keyword in ("if", "then", "else"):
+            for additional, allowed in ((False, False), (True, True), (None, True),
+                                        ({"type": "integer"}, False), (unavailable, True)):
+                with self.subTest(keyword=keyword, additional=additional):
+                    mutant = copy.deepcopy(self.schema)
+                    end = mutant["$defs"]["runEnd"]
+                    counts = end["properties"]["counts"]
+                    if additional is None:
+                        del counts["additionalProperties"]
+                    else:
+                        counts["additionalProperties"] = additional
+                    expected = unavailable_paths(mutant)
+                    branch = {"properties": {"note": unavailable}}
+                    end.setdefault(keyword, {}).setdefault("properties", {})["counts"] = branch
+                    probe = RESULTS.Schema({
+                        "$schema": mutant["$schema"], "$defs": mutant["$defs"],
+                        "allOf": [counts, branch],
+                    })
+                    value = dict.fromkeys(counts["required"], 0)
+                    value["note"] = {"value": None, "unavailable": "prerequisite failed"}
+                    self.assertEqual(allowed, not probe.errors(value))
+                    self.assertEqual(expected | ({"counts.note"} if allowed else set()),
+                                     unavailable_paths(mutant))
+
+    def test_unavailable_provenance_paths_preserve_forbidden_children(self):
+        for keyword in ("if", "then", "else"):
+            for child in ("properties", "additionalProperties", "items"):
+                with self.subTest(keyword=keyword, child=child):
+                    mutant = copy.deepcopy(self.schema)
+                    end = mutant["$defs"]["runEnd"]
+                    nested = {"properties": {"detail": {"$ref": "#/$defs/unavailableProvenance"}}}
+                    field = "issues" if child == "items" else "counts"
+                    if child == "items":
+                        end["properties"][field]["items"] = False
+                    branch = {child: {"note": nested} if child == "properties" else nested}
+                    end.setdefault(keyword, {}).setdefault("properties", {})[field] = branch
+                    self.assertEqual(unavailable_paths(self.schema), unavailable_paths(mutant))
+
     def test_unavailable_provenance_paths_detect_missing_fields(self):
         mutant = copy.deepcopy(self.schema)
         mutant["$defs"]["provenance"]["properties"]["fixtureSha256"] = {"$ref": "#/$defs/sha256"}
         self.assertEqual(unavailable_paths(self.schema) - {"provenance.fixtureSha256"},
                          unavailable_paths(mutant))
+
+    def test_suite_provenance_covers_every_suite(self):
+        self.assertEqual(sorted(suite["id"] for suite in self.manifest["suites"]),
+                         sorted(RESULTS.SUITE_PROVENANCE),
+                         "SUITE_PROVENANCE must name exactly the manifest's suites; "
+                         "update the table in scripts/editor-results.py")
 
     def test_schema_agrees_with_the_manifest(self):
         defs = self.schema["$defs"]
