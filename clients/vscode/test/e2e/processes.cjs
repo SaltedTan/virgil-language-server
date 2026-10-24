@@ -34,14 +34,53 @@ function processInfo(pid) {
   }
 }
 
-// Whether p, a process as processInfo or processTable gives it, is a zombie:
-// it has exited, and its parent hasn't reaped it. Linux lists a process whose
-// main thread has exited as a zombie while its other threads run, and they
-// can still start processes and take signals, so it is no zombie until they
-// have exited too. macOS's ps lists a process as a zombie only once it has
-// exited, whole.
+// Whether a process, given the state and thread count that /proc's stat has,
+// is a zombie: it has exited, and its parent hasn't reaped it. Linux lists a
+// process whose main thread has exited as a zombie while its other threads
+// run, and they can still start processes and take signals, so it is no
+// zombie until they have exited too. macOS's ps lists a process as a zombie
+// only once it has exited, whole.
+function isZombie(state, threads) {
+  return state === 'Z' && !(threads > 1);
+}
+
+// Whether p, a process as processInfo or processTable gives it, is a zombie
+// (see isZombie).
 function zombie(p) {
-  return p.state === 'Z' && !(p.threads > 1);
+  return isZombie(p.state, p.threads);
+}
+
+// The /proc directory whose exe, environ, and cmdline describe the process
+// with this PID: its own while its main thread runs, else that of a thread
+// that still runs, under /proc/<pid>/task/<tid>/. A process whose main thread
+// has exited keeps none of those itself, which is what the teardown and the
+// Remote-SSH leak check need to identify such a process (see zombie).
+// Undefined if no thread runs.
+function threadDir(fs, pid) {
+  let main;
+  try {
+    main = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const fields = main.slice(main.lastIndexOf(')') + 2).split(' ');
+  if (fields[0] !== 'Z') return `/proc/${pid}`;
+  let threads;
+  try {
+    threads = fs.readdirSync(`/proc/${pid}/task`);
+  } catch {
+    return undefined;
+  }
+  for (const tid of threads) {
+    const dir = `/proc/${pid}/task/${tid}`;
+    try {
+      const stat = fs.readFileSync(`${dir}/stat`, 'utf8');
+      if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z') return dir;
+    } catch {
+      // It has exited.
+    }
+  }
+  return undefined;
 }
 
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
@@ -429,4 +468,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   return group;
 }
 
-module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
+module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processInfo, processTable, signalProcesses, startGroup, threadDir, zombie };

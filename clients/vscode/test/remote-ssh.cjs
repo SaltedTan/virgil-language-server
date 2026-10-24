@@ -11,11 +11,13 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { test } = require('node:test');
 const vm = require('node:vm');
 const fakes = require('./support/fakes.cjs');
+const { THREAD_SKIP, startThread } = require('./support/threads.cjs');
 
 const { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses } = fakes;
 const dir = path.join(__dirname, 'e2e/remote-ssh');
@@ -101,6 +103,21 @@ test('the teardown sends its signals through pidfds where they are available', a
     ['pidfd', 'SIGTERM', [[100, '500']]], ['pidfd', 'SIGKILL', [[100, '500']]],
   ]);
   assert.equal(result.ok, true);
+});
+
+test('the teardown finds a process whose main thread has exited while another thread runs, by its marker (real process)', { skip: THREAD_SKIP }, async () => {
+  const { child, exited, start } = await startThread({ env: { ...process.env, VIRGIL_TEST_THREADED: '1' } });
+  try {
+    const localhost = require('./e2e/remote-ssh/localhost.cjs');
+    const found = localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'VIRGIL_TEST_THREADED=1', started: [] })
+      .filter((p) => p.pid === child.pid);
+    // Its environment, which says that it is the run's, is a live thread's.
+    assert.deepEqual(found.map((p) => [p.pid, p.start]), [[child.pid, start]]);
+    assert.match(found[0]?.command ?? '', /^python3 /);
+  } finally {
+    child.kill('SIGKILL');
+    await exited;
+  }
 });
 
 // run.cjs's runGroup, over fake processes (see fakeProc) and a fake clock and
@@ -897,6 +914,28 @@ test('without pidfds, the leak check signals a process that has since been liste
       console: { log() {} },
     });
     assert.deepEqual(sent, signals, `${threads} threads`);
+  }
+});
+
+test('the leak check finds a process whose main thread has exited while another thread runs, by its executable (real process)', { skip: THREAD_SKIP }, async () => {
+  // The copy's executable is under root, as the run's servers' are.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-threaded-'));
+  try {
+    const { child, exited, start } = await startThread({ exeDir: root });
+    try {
+      const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+      const options = { root, agent: path.join(root, 'agent'), kill: [], host: undefined, signal: undefined };
+      const listing = spawnSync(process.execPath, ['-e', REMOTE_PROCESSES, JSON.stringify(options)], { encoding: 'utf8' });
+      assert.equal(listing.status, 0, listing.stderr);
+      const found = JSON.parse(listing.stdout).found.filter((p) => p.pid === child.pid);
+      // The executable, which says that it is the run's, is a live thread's.
+      assert.deepEqual(found.map((p) => [p.pid, p.start, p.exe]), [[child.pid, start, path.join(root, 'python3')]]);
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

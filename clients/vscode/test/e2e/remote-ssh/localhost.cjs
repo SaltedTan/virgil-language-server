@@ -28,7 +28,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { signalProcesses } = require('../processes.cjs');
+const { isZombie, signalProcesses, threadDir } = require('../processes.cjs');
 
 const ALIAS = 'virgil-remote-ssh-test';
 const HOST = '127.0.0.1';
@@ -286,21 +286,22 @@ function check(command, env) {
   });
 }
 
-// A process's state, its parent's PID, and its start time, in clock ticks
-// after boot, from /proc/<pid>/stat: its third, fourth, and 22nd fields.
+// A process's state, its parent's PID, its number of threads, and its start
+// time, in clock ticks after boot, from /proc/<pid>/stat: its third, fourth,
+// 20th, and 22nd fields.
 function readStat(pid) {
   const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
   const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-  return { state: fields[0], ppid: Number(fields[1]), start: fields[19] };
+  return { state: fields[0], ppid: Number(fields[1]), threads: Number(fields[17]), start: fields[19] };
 }
 
 // A process's identity: its PID and its start time, which a later process
 // with the same PID doesn't share. Undefined if the process has gone or is a
-// zombie.
+// zombie (see isZombie in ../processes.cjs).
 function identify(pid) {
   try {
-    const { state, start } = readStat(pid);
-    return state === 'Z' ? undefined : { pid, start };
+    const { state, threads, start } = readStat(pid);
+    return isZombie(state, threads) ? undefined : { pid, start };
   } catch {
     return undefined;
   }
@@ -330,16 +331,19 @@ function signal(processes, name) {
 // descendants, each with its identity. The SSH server and its sessions write
 // their titles over their environment, so only descent finds those. The /proc
 // entries of other users' processes can't be read, and processes that exit
-// meanwhile are skipped; zombies don't count. Throws if /proc itself can't be
-// listed.
+// meanwhile are skipped; zombies don't count, but a process whose main thread
+// has exited while its other threads run does, and a live thread's /proc
+// files identify it (see threadDir in ../processes.cjs). Throws if /proc
+// itself can't be listed.
 function runProcesses({ work, sockets, marker, started }) {
   const table = new Map();
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
-    const dir = path.join('/proc', name);
     try {
-      const { state, ppid, start } = readStat(name);
-      if (state === 'Z') continue;
+      const { state, ppid, threads, start } = readStat(name);
+      if (isZombie(state, threads)) continue;
+      const dir = threadDir(fs, name);
+      if (dir === undefined) continue;
       let exe = '';
       try {
         exe = fs.readlinkSync(path.join(dir, 'exe'));
@@ -446,5 +450,5 @@ async function teardown({ work, sockets, marker, started, port }) {
   return result;
 }
 
-// teardown is exported for test/remote-ssh.cjs.
-module.exports = { create, teardown };
+// runProcesses is exported for test/remote-ssh.cjs, and teardown as well.
+module.exports = { create, runProcesses, teardown };

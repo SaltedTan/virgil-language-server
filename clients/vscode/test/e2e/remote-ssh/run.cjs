@@ -33,7 +33,7 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
-const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
+const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, startGroup, threadDir } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -615,20 +615,24 @@ function suiteLines() {
 // it prints, as JSON, the processes that run an executable under root, other
 // than itself and zombies, with their parents' PIDs and their start times, and
 // whether host, a process given by PID, start time, and executable, still
-// runs. It sends signal, if given, to that host, and SIGKILL to those of the
-// processes in kill, each given as PID@start, that still have that start time
-// and run an executable under root and not under agent, the VS Code Server's
-// directory: exactly those, never processes found by name or another process
-// that now has the PID. Each signal goes through a pidfd where the target's
-// Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
-// otherwise, or where a pidfd couldn't be opened for that process or couldn't
-// signal it, follows a second check of the start time, and of whether it is a
-// zombie, which it isn't while threads other than its main thread run (see
-// zombie in ../processes.cjs).
+// runs. A process whose main thread has exited is no zombie while its other
+// threads run, and threadDir gives the directory whose files identify it, as
+// it does for the teardown (see isZombie and threadDir in ../processes.cjs). It
+// sends signal, if given, to that host, and SIGKILL to those of the processes
+// in kill, each given as PID@start, that still have that start time and run an
+// executable under root and not under agent, the VS Code Server's directory:
+// exactly those, never processes found by name or another process that now has
+// the PID. Each signal goes through a pidfd where the target's Python and
+// kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and otherwise, or
+// where a pidfd couldn't be opened for that process or couldn't signal it,
+// follows a second check of the start time, and of whether it is a zombie,
+// which it isn't while threads other than its main thread run.
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
+${isZombie}
+${threadDir}
 const found = [];
 const killed = [];
 let hostRuns = false;
@@ -649,15 +653,17 @@ const send = (name, targets) => {
     if (complete && ${JSON.stringify(SETTLED)}.includes(results[i])) return;
     try {
       const fields = stat(pid);
-      if ((fields[0] !== 'Z' || Number(fields[17]) > 1) && fields[19] === start) process.kill(pid, name);
+      if (!isZombie(fields[0], Number(fields[17])) && fields[19] === start) process.kill(pid, name);
     } catch {}
   });
 };
 for (const pid of fs.readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name) && Number(name) !== process.pid)) {
   try {
     const fields = stat(pid);
-    if (fields[0] === 'Z') continue;
-    const exe = fs.readlinkSync('/proc/' + pid + '/exe');
+    if (isZombie(fields[0], Number(fields[17]))) continue;
+    const dir = threadDir(fs, pid);
+    if (dir === undefined) continue;
+    const exe = fs.readlinkSync(dir + '/exe');
     if (!exe.startsWith(root + '/')) continue;
     const start = fields[19];
     if (host && Number(pid) === host.pid && start === host.start && exe === host.exe) hostRuns = true;

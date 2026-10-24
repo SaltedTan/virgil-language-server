@@ -221,24 +221,11 @@ ${calls}`;
 });
 
 // A command, in Python, whose main thread exits at once while another thread
-// runs on for 30 seconds; it ignores SIGTERM. Linux lists it as a zombie with
-// two threads meanwhile.
-const THREAD_COMMAND = `
-import ctypes, signal, threading, time
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-threading.Thread(target=time.sleep, args=(30,)).start()
-ctypes.CDLL(None).pthread_exit(None)
-`;
-const threadSkip = process.platform !== 'linux' ? 'only Linux lists a process whose main thread has exited as a zombie' : pythonSkip;
+// runs on, for the tests here and of the Remote-SSH test's discoveries (see
+// support/threads.cjs).
+const { THREAD_COMMAND, THREAD_SKIP, runs } = require('./support/threads.cjs');
 
-// Whether p, a process given by PID and start time, still runs: it hasn't
-// exited, or only its main thread has.
-function runs(p) {
-  const info = processes.processInfo(p.pid);
-  return info?.start === p.start && !(info.state === 'Z' && !(info.threads > 1));
-}
-
-test('a process whose main thread has exited while its other threads run gets signals, through a pidfd or after a check (real processes)', { skip: threadSkip }, async () => {
+test('a process whose main thread has exited while its other threads run gets signals, through a pidfd or after a check (real processes)', { skip: THREAD_SKIP }, async () => {
   const real = require('node:child_process');
   const unchecked = load('processes.cjs', {
     'node:child_process': { ...real, spawnSync: () => ({ error: Object.assign(new Error('spawnSync python3 ENOENT'), { code: 'ENOENT' }) }) },
@@ -584,7 +571,7 @@ async function threadRun(file) {
   }
 }
 
-test('both runners stop a group whose keeper has been stopped when it holds a process whose main thread has exited (real processes)', { skip: threadSkip, timeout: 30000 }, async () => {
+test('both runners stop a group whose keeper has been stopped when it holds a process whose main thread has exited (real processes)', { skip: THREAD_SKIP, timeout: 30000 }, async () => {
   const outcomes = await Promise.allSettled(['run.cjs', 'remote-ssh/run.cjs'].map(threadRun));
   assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
 });
