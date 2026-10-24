@@ -110,8 +110,10 @@ variant case nested in its variant, semantic diagnostics for the fixture's
 project, which uses `lib/util` from the Virgil root, a definition in that
 closed library file, a hover over the same use, signature help in a call on the
 same line, its references in that file and other closed library files, its
-document highlights with the exact ranges and kinds specified in the
-[coverage contract](../../test/e2e/coverage.json), a rename
+document highlight, only that use's exact range in the current buffer with the
+Read kind, the exact ranges and kinds of a local's highlights in another
+fixture file (its declaration Text, its assignment and increment Write, and
+its other uses Read), a rename
 of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
 error, and its undo, keyword completion of `whi` to `while` and completion of
 `li` to the local `line` in the unsaved, unparsable buffer, each applied with
