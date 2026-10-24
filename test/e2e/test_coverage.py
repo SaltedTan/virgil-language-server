@@ -5,12 +5,17 @@
 consistent with themselves and with each other (RESULTS.md). It reads only
 those two files, never the tests that they describe."""
 import copy
+import importlib.util
 import json
 import re
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SPEC = importlib.util.spec_from_file_location(
+    "editor_results", HERE.parent.parent / "scripts" / "editor-results.py")
+RESULTS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RESULTS)
 NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 CHECK_ID = re.compile(rf"({NAME.pattern})\.({NAME.pattern})\.({NAME.pattern})")
 GAP_ID = re.compile(rf"({NAME.pattern})\.{NAME.pattern}")
@@ -44,6 +49,37 @@ def by_id(items):
 
 def repeated(values):
     return sorted({value for value in values if values.count(value) > 1})
+
+
+def unavailable_paths(document):
+    consumer = RESULTS.Schema(document)
+    accepted = set()
+
+    def walk(node, path, field=False):
+        if field:
+            probe = RESULTS.Schema({
+                "$schema": document["$schema"],
+                "$defs": document["$defs"],
+                "allOf": [node],
+            })
+            if not probe.errors({"value": None, "unavailable": "prerequisite failed"}):
+                accepted.add(path)
+        if not isinstance(node, dict):
+            return
+        if "$ref" in node:
+            walk(consumer.schemas[consumer.references[node["$ref"]]], path)
+        for name, child in node.get("properties", {}).items():
+            walk(child, f"{path}.{name}" if path else name, True)
+        if "items" in node:
+            walk(node["items"], path + "[]", True)
+        if "additionalProperties" in node and node["additionalProperties"] is not False:
+            walk(node["additionalProperties"], path + ".*", True)
+        for keyword in ("oneOf", "allOf"):
+            for child in node.get(keyword, []):
+                walk(child, path)
+
+    walk(document, "")
+    return accepted
 
 
 class CoverageTest(unittest.TestCase):
@@ -269,7 +305,36 @@ class CoverageTest(unittest.TestCase):
                 problems.append(f"condition {condition['id']}: no check uses it")
             if other is not None and (other not in self.conditions or self.conditions[other]["alternative"] != condition["id"]):
                 problems.append(f"condition {condition['id']}: its alternative {other} doesn't name it back")
+            # The suites in which the condition holds in every run.
+            if repeated(condition["always"]):
+                problems.append(f"condition {condition['id']}: always repeats a suite")
+            for suite in condition["always"]:
+                if suite not in self.suites:
+                    problems.append(f"condition {condition['id']}: always names the unknown suite {suite}")
+                elif not any(check["when"] == condition["id"] and suite in check["suites"]
+                             for check in self.manifest["checks"]):
+                    problems.append(f"condition {condition['id']}: always names suite {suite}, "
+                                    "which runs none of its checks")
+                elif other in self.conditions and suite in self.conditions[other]["always"]:
+                    problems.append(f"condition {condition['id']} and its alternative {other} both always hold "
+                                    f"in suite {suite}")
         self.assertEqual([], problems)
+
+    def test_a_condition_always_holds_only_in_suites_that_run_its_checks(self):
+        for changes, message in (
+                ({"vsix": ["remote-ssh", "remote-ssh"]}, "always repeats a suite"),
+                ({"vsix": ["nowhere"]}, "always names the unknown suite nowhere"),
+                ({"vsix": ["nvim"]}, "always names suite nvim, which runs none of its checks"),
+                ({"file-watching": ["lazyvim"], "no-file-watching": ["lazyvim"]},
+                 "both always hold in suite lazyvim")):
+            with self.subTest(changes=changes):
+                mutant = CoverageTest("test_gaps_and_conditions")
+                mutant.manifest = copy.deepcopy(self.manifest)
+                mutant.conditions = by_id(mutant.manifest["conditions"])
+                for condition_id, always in changes.items():
+                    mutant.conditions[condition_id]["always"] = always
+                with self.assertRaisesRegex(AssertionError, message):
+                    mutant.test_gaps_and_conditions()
 
     def test_the_expected_failure_rule(self):
         rules = self.manifest["xfails"]
@@ -353,16 +418,66 @@ class CoverageTest(unittest.TestCase):
             if key != "description"})
         provenance = defs["provenance"]["properties"]
         server = provenance["server"]["properties"]
+        vsix = {
+            "type": "object",
+            "properties": {
+                "name": {"$ref": "#/$defs/nonEmpty"},
+                "sha256": {"$ref": "#/$defs/sha256"},
+                "version": {"$ref": "#/$defs/nonEmpty"},
+            },
+            "required": ["name", "sha256", "version"],
+            "additionalProperties": False,
+        }
         fields = [
-            (server["versionText"], {"$ref": "#/$defs/nonEmpty"}),
-            (server["target"], {"enum": ["x86-64-linux", "x86-64-darwin"]}),
-            (server["sha256"], {"$ref": "#/$defs/sha256"}),
-            (server["workerSha256"], {"$ref": "#/$defs/sha256"}),
-            (provenance["fixtureSha256"], {"$ref": "#/$defs/sha256"}),
+            (server["versionText"], [{"$ref": "#/$defs/nonEmpty"}]),
+            (server["target"], [{"enum": ["x86-64-linux", "x86-64-darwin"]}]),
+            (server["sha256"], [{"$ref": "#/$defs/sha256"}]),
+            (server["workerSha256"], [{"$ref": "#/$defs/sha256"}]),
+            (provenance["vsix"], [{"type": "null"}, vsix]),
+            (provenance["fixtureSha256"], [{"$ref": "#/$defs/sha256"}]),
         ]
         for field, available in fields:
-            self.assertEqual([available, {"$ref": "#/$defs/unavailableProvenance"}],
+            self.assertEqual(available + [{"$ref": "#/$defs/unavailableProvenance"}],
                              field["oneOf"])
+        # RESULTS.md lists exactly these fields.
+        self.assertEqual({
+            "provenance.server.versionText",
+            "provenance.server.target",
+            "provenance.server.sha256",
+            "provenance.server.workerSha256",
+            "provenance.vsix",
+            "provenance.fixtureSha256",
+        }, unavailable_paths(self.schema),
+            "unavailable fields differ from RESULTS.md's list")
+
+    def test_unavailable_provenance_paths_detect_widened_fields(self):
+        expected = unavailable_paths(self.schema)
+        for path, location in (
+                ("provenance.server.version", ("provenance", "properties", "server", "properties", "version")),
+                ("provenance.client.release", ("machine", "properties", "release")),
+                ("provenance.pins[].version", ("provenance", "properties", "pins", "items", "properties", "version")),
+                ("provenance.runtimes.*", ("provenance", "properties", "runtimes", "additionalProperties")),
+                ("observation", ("check", "properties", "observation")),
+                ("issues[]", ("runEnd", "properties", "issues", "items"))):
+            for inline in (False, True):
+                with self.subTest(path=path, inline=inline):
+                    mutant = copy.deepcopy(self.schema)
+                    node = mutant["$defs"]
+                    for part in location[:-1]:
+                        node = node[part]
+                    unavailable = mutant["$defs"]["unavailableProvenance"] if inline else \
+                        {"$ref": "#/$defs/unavailableProvenance"}
+                    node[location[-1]] = {"oneOf": [node[location[-1]], unavailable]}
+                    added = {path}
+                    if location[0] == "machine":
+                        added = {"provenance.client.release", "provenance.host.release"}
+                    self.assertEqual(expected | added, unavailable_paths(mutant))
+
+    def test_unavailable_provenance_paths_detect_missing_fields(self):
+        mutant = copy.deepcopy(self.schema)
+        mutant["$defs"]["provenance"]["properties"]["fixtureSha256"] = {"$ref": "#/$defs/sha256"}
+        self.assertEqual(unavailable_paths(self.schema) - {"provenance.fixtureSha256"},
+                         unavailable_paths(mutant))
 
     def test_schema_agrees_with_the_manifest(self):
         defs = self.schema["$defs"]

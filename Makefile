@@ -91,6 +91,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/fixtures/projects/test_cleanup.py
 	python3 test/e2e/test_coverage.py
+	python3 test/e2e/test_editor_results.py
 	test/cli/run.sh $(BUILD)/virgil-lsp
 	test/protocol/run.sh $(BUILD)/virgil-lsp
 	python3 test/diagnostics/run.py $(BUILD)/virgil-lsp
