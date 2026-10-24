@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Checks that coverage.json and results-v1.schema.json, beside this file, are
-consistent with themselves and with each other (RESULTS.md). It reads only
-those two files, never the tests that they describe."""
+"""Checks the editor coverage contracts (RESULTS.md, "Adding a check"),
+without reading the tests that the manifest describes."""
 import copy
 import importlib.util
 import json

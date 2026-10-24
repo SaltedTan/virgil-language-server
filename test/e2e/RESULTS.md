@@ -135,7 +135,7 @@ It reads the schema itself, with draft 2020-12's meaning for the keywords that t
 - 1 if every stream is valid, but a run failed, was aborted, or was unavailable;
 - 2 if a stream is invalid, or the manifest or the schema can't be used.
 
-[`test_editor_results.py`](test_editor_results.py), which `make test` runs, builds a passing stream for each suite from the manifest, and breaks each rule in turn.
+[`test_editor_results.py`](test_editor_results.py), which `make test` runs, builds a passing stream for each automated suite from the manifest, and breaks each rule in turn.
 
 ## Rendering a release
 
