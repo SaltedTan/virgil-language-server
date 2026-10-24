@@ -116,6 +116,7 @@ test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUIL
 	python3 test/fixtures/projects/test_cleanup.py
 	python3 test/e2e/test_coverage.py
 	python3 test/e2e/clean-install/test_readme.py
+	python3 test/e2e/clean-install/test_install.py
 	python3 test/e2e/test_editor_results.py
 	python3 test/e2e/test_editor_results_render.py
 	test/cli/run.sh $(BUILD)/virgil-lsp

@@ -59,16 +59,16 @@ Install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` i
 ```sh
 server_version=0.1.0-alpha.3
 download_url=https://github.com/SaltedTan/virgil-language-server/releases/download/v$server_version
-mkdir -p "$HOME/Downloads/virgil-lsp"
-cd "$HOME/Downloads/virgil-lsp"
 archive=virgil-lsp-$server_version-x86-64-linux.tar.gz
-curl --fail --location "$download_url/$archive" -o "$archive"
-curl --fail --location "$download_url/SHA256SUMS" -o SHA256SUMS
-grep "  $archive$" SHA256SUMS | sha256sum --check --strict
-mkdir -p "$HOME/.local/opt" "$HOME/.local/bin"
-tar -xzf "$archive" -C "$HOME/.local/opt"
-ln -sf "$HOME/.local/opt/virgil-lsp-$server_version-x86-64-linux/virgil-lsp" "$HOME/.local/bin/virgil-lsp"
-export PATH="$HOME/.local/bin:$PATH"
+mkdir -p "$HOME/Downloads/virgil-lsp" &&
+cd "$HOME/Downloads/virgil-lsp" &&
+curl --fail --location "$download_url/$archive" -o "$archive" &&
+curl --fail --location "$download_url/SHA256SUMS" -o SHA256SUMS &&
+grep "  $archive$" SHA256SUMS | sha256sum --check --strict &&
+mkdir -p "$HOME/.local/opt" "$HOME/.local/bin" &&
+tar -xzf "$archive" -C "$HOME/.local/opt" &&
+ln -sf "$HOME/.local/opt/virgil-lsp-$server_version-x86-64-linux/virgil-lsp" "$HOME/.local/bin/virgil-lsp" &&
+export PATH="$HOME/.local/bin:$PATH" &&
 virgil-lsp --version
 ```
 

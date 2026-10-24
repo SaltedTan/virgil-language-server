@@ -4,6 +4,7 @@
 """Keep install examples current and their substitution points unambiguous."""
 import json
 from pathlib import Path
+import re
 import unittest
 
 from run import examples, extract, substitute
@@ -38,6 +39,24 @@ class ReadmeTests(unittest.TestCase):
         for step in ["vscode-root", "nvim-root"]:
             self.assertEqual(actual[step], 'export VIRGIL_LOC="$HOME/.local/opt/'
                              'virgil-lsp-9.0.0-alpha.1-x86-64-linux/virgil"\n')
+
+    def test_releasing_example_versions(self):
+        markdown = (REPO / "docs/releasing.md").read_text()
+        server = (REPO / "VERSION").read_text().strip()
+        extension = json.loads((REPO / "clients/vscode/package.json").read_text())["version"]
+        version = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?"
+        for section in ["Verifying a download", "Installing"]:
+            body = markdown.split(f"## {section}\n", 1)[1].split("\n## ", 1)[0]
+            servers = re.findall(rf"gh release download v({version})\b", body)
+            servers += re.findall(rf"virgil-lsp-({version})-x86-64-", body)
+            extensions = re.findall(rf"virgil-lsp-vscode-({version})\.vsix", body)
+            self.assertTrue(servers, f"no server examples found in {section}")
+            self.assertTrue(extensions, f"no extension examples found in {section}")
+            for actual in servers:
+                self.assertEqual(actual, server, f"{section}: server examples must match VERSION")
+            for actual in extensions:
+                self.assertEqual(actual, extension,
+                                 f"{section}: extension examples must match clients/vscode/package.json")
 
     def test_reject_malformed_or_duplicate_values(self):
         for step, assignment in [("server", "server_version"), ("server", "download_url"),

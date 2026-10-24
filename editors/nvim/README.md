@@ -6,13 +6,14 @@ Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on
 
 ## LazyVim
 
-Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to `~/.config/nvim/lua/plugins/virgil.lua` in your existing LazyVim installation. In the commands below, replace `config_url` with the raw source download location for the release version you installed (or an HTTP directory containing its `editors/nvim/` files):
+Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim installation's `lua/plugins/virgil.lua`. The commands use `$XDG_CONFIG_HOME/nvim`, or `~/.config/nvim` when it is unset or empty. Replace `config_url` with the raw source download location for the release version you installed (or an HTTP directory containing its `editors/nvim/` files):
 
 <!-- clean-install: lazyvim -->
 ```sh
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
-mkdir -p "$HOME/.config/nvim/lua/plugins"
-curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$HOME/.config/nvim/lua/plugins/virgil.lua"
+nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+mkdir -p "$nvim_config/lua/plugins"
+curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$nvim_config/lua/plugins/virgil.lua"
 ```
 
 Make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
@@ -27,15 +28,20 @@ LazyVim's noice.nvim drops `window/showMessage` notifications from every languag
 
 ## Plain Neovim
 
-Download [`virgil_lsp.lua`](virgil_lsp.lua) as a module and load it from your `init.lua` (replace `config_url` as above). This preserves any existing configuration and adds the `require` line only once:
+Download [`virgil_lsp.lua`](virgil_lsp.lua) as a module and load it from your existing `init.vim` or `init.lua` (replace `config_url` as above). This uses the same configuration directory as the LazyVim step, preserves your settings, and adds the module load only once. If neither init file exists, it creates `init.lua`:
 
 <!-- clean-install: plain-nvim -->
 ```sh
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
-mkdir -p "$HOME/.config/nvim/lua"
-curl --fail --location "$config_url/virgil_lsp.lua" -o "$HOME/.config/nvim/lua/virgil_lsp.lua"
-touch "$HOME/.config/nvim/init.lua"
-grep -qxF 'require("virgil_lsp")' "$HOME/.config/nvim/init.lua" || printf '\nrequire("virgil_lsp")\n' >> "$HOME/.config/nvim/init.lua"
+nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+mkdir -p "$nvim_config/lua"
+curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/lua/virgil_lsp.lua"
+if [ -f "$nvim_config/init.vim" ]; then
+  grep -qxF 'lua require("virgil_lsp")' "$nvim_config/init.vim" || printf '\nlua require("virgil_lsp")\n' >> "$nvim_config/init.vim"
+else
+  touch "$nvim_config/init.lua"
+  grep -qxF 'require("virgil_lsp")' "$nvim_config/init.lua" || printf '\nrequire("virgil_lsp")\n' >> "$nvim_config/init.lua"
+fi
 ```
 
 Alternatively, add the contents of `virgil_lsp.lua` to your `init.lua`.

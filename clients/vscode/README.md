@@ -18,22 +18,26 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl` and `sha256sum` for the Linux commands below. The editor and server versions must work with the extension's version, as listed in [compatibility](../../docs/compatibility.md#editors). Follow the [release installation instructions](../../docs/releasing.md#installing), or [build the server from source](../../README.md#building).
 
 1. Get `virgil-lsp-vscode-<version>.vsix`: from a [GitHub prerelease](https://github.com/SaltedTan/virgil-language-server/releases), which attaches the VSIX that the release workflow tested against that release's server, and lists it in `SHA256SUMS` ([Releases](../../docs/releasing.md#vs-code-extension)); from the `vsix` artifact of a [CI](../../.github/workflows/ci.yml) run (GitHub downloads artifacts as a zip file that contains the VSIX); or by [packaging](#packaging) it yourself.
-2. In the terminal used for the [server installation](../../README.md#editor-setup), download the VSIX and verify it against that release's `SHA256SUMS`. Replace `extension_version` with the release's extension version; it is independent of the server's version. `download_url` is the asset location set during server installation.
+2. For a **release download**, use the terminal from the [server installation](../../README.md#editor-setup) to download, verify, and install the VSIX. Replace `extension_version` with the release's extension version; it is independent of the server's version. `download_url` is the asset location set during server installation, and `SHA256SUMS` is the checksum list downloaded there.
 
    <!-- clean-install: vsix-download -->
    ```sh
    extension_version=0.1.2
    vsix=virgil-lsp-vscode-$extension_version.vsix
-   curl --fail --location "$download_url/$vsix" -o "$vsix"
-   grep "  $vsix$" SHA256SUMS | sha256sum --check --strict
-   ```
-
-3. Install it, either in VS Code with **Extensions: Install from VSIX...** from the Command Palette, or from a terminal:
-
-   <!-- clean-install: vsix-install -->
-   ```sh
+   curl --fail --location "$download_url/$vsix" -o "$vsix" &&
+   grep "  $vsix$" SHA256SUMS | sha256sum --check --strict &&
    code --install-extension "$vsix"
    ```
+
+   To use the Command Palette instead, omit the `code` command and its preceding `&&`, then use **Extensions: Install from VSIX...** only after verification prints `OK`.
+
+3. For a **CI artifact or local package**, skip the release download commands. Unzip the CI artifact or [package](#packaging) the extension locally, then install that file with its path:
+
+   ```sh
+   code --install-extension "/path/to/virgil-lsp-vscode-<version>.vsix"
+   ```
+
+   These routes do not provide a release `SHA256SUMS` list. You can also select that file with **Extensions: Install from VSIX...**.
 
 4. Unless `virgil-lsp` is on `PATH`, set `virgil.server.path` to its absolute path. New release installs include the library; set `virgil.virgilRoot` only when you need an override ([root selection](../../docs/configuration.md#the-virgil-root), [Settings](#settings)).
 

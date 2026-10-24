@@ -20,7 +20,7 @@ import threading
 HERE = Path(__file__).resolve().parent
 STEPS = {
     "README.md": ["server"],
-    "clients/vscode/README.md": ["vsix-download", "vsix-install", "vscode-root"],
+    "clients/vscode/README.md": ["vsix-download", "vscode-root"],
     "editors/nvim/README.md": ["lazyvim", "plain-nvim", "nvim-root"],
 }
 
@@ -179,7 +179,7 @@ def run(args):
             script = 'set -Eeuo pipefail\ntrap \'echo "FAIL step: $step (line $LINENO)" >&2\' ERR\n'
             script += step("server")
             if editor == "vscode":
-                script += step("vsix-download") + step("vsix-install")
+                script += step("vsix-download")
                 command = (
                     'xvfb-run -a "$CLEAN_CODE_EXECUTABLE" --no-sandbox --disable-gpu-sandbox --disable-workspace-trust '
                     '--skip-welcome --skip-release-notes --disable-updates '
