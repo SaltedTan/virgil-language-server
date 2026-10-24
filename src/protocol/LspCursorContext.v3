@@ -150,6 +150,12 @@ enum LspCursorToken {
 // position. See docs/architecture.md#completion for tokenization limitations.
 // It is linear in the text before the cursor and allocates only as delimiters nest.
 class LspCursorScanner(text: Array<byte>) {
+	// Raw code-brace balance from this offset to the scan's cursor. Unlike
+	// completion's recovering delimiter stack, this never discards a stray
+	// closer. Body fallback uses it to prove containment in both texts.
+	var braceFrom = int.max;
+	def var braceDepth: int;
+	def var braceMinimum: int;
 	def NO_DECL = -1;
 	def STARTED = -2;		// the declaration or statement starts with no keyword
 	def PATTERN_HEAD = -3;
@@ -698,6 +704,11 @@ class LspCursorScanner(text: Array<byte>) {
 			|| decl == LspKeyword.IMPORT.tag || decl == LspKeyword.EXPORT.tag;
 	}
 	private def punct(c: byte, start: int) {
+		if (start >= braceFrom) {
+			if (c == '{') braceDepth++;
+			if (c == '}') braceDepth--;
+			if (braceDepth < braceMinimum) braceMinimum = braceDepth;
+		}
 		var closed = LspOpenRole.TOP;
 		var h = header;
 		var adjacentName = prevKind == LspCursorToken.NAME && isIdentMiddle(text[start - 1]);

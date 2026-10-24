@@ -1,0 +1,41 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Extract block-bodied methods and constructors from a successful server-side
+// parse. Snapshot declaration sites select names only. The parser's body range
+// identifies its opening token; consumed tokens locate the matching closing
+// brace without treating literals or comments as delimiters. No VST escapes.
+class AnalysisMethodBodies(file: VstFile, syntax: SymbolSyntaxIndex) {
+	private def result = Vector<(int, int)>.new();
+	def collect() -> Array<(int, int)> {
+		for (i < file.components.length) members(file.components[i]);
+		for (i < file.classes.length) members(file.classes[i]);
+		for (i < file.enums.length) members(file.enums[i]);
+		return result.extract();
+	}
+	private def members(d: VstCompound) {
+		for (l = d.members; l != null; l = l.tail) {
+			var m = l.head;
+			if (m.isSynthetic || !VstMethod.?(m)) continue;
+			var body = VstMethod.!(m).func.body;
+			if (!BlockStmt.?(body)) continue;
+			var range = BlockStmt.!(body).stmts.src;
+			var i = syntax.find(Token.new(file.fileName, "{", range.beginLine, range.beginColumn));
+			if (i < 0) continue;
+			var tokens = syntax.tokens, depth = 0;
+			for (j = i; j < tokens.length; j++) {
+				var t = tokens[j];
+				if (t.end - t.begin != 1) continue;
+				var c = file.input[t.begin];
+				if (c == '{') depth++;
+				if (c == '}') {
+					depth--;
+					if (depth == 0) {
+						result.put((tokens[i].begin, t.end));
+						break;
+					}
+				}
+			}
+		}
+	}
+}

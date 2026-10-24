@@ -456,6 +456,15 @@ component AeneasAdapter {
 		}
 		return FileParseResult.new(path, diagnostics, decls);
 	}
+	// Parse block-bodied method/constructor ranges for last-parseable text.
+	// Null means the text did not parse with these language options.
+	def methodBodies(path: string, input: Array<byte>, options: Array<string>) -> Array<(int, int)> {
+		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		setLanguageOptions(options);
+		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
+		resetLanguageOptions();
+		return if(errors.numErrors == 0, AnalysisMethodBodies.new(file, syntax).collect());
+	}
 	// Parse current document bytes without verification, through the same
 	// driver and recovery as {parseFile}. A failed parse yields no symbols:
 	// the compiler stops early and its partial VST is not an outline.
