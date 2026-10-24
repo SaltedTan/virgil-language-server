@@ -44,8 +44,11 @@ def run_of(variant, number=1, lane="local", release=RELEASE, **start):
 
 def at_version(events, version):
     """The run's events at an editor version. A LazyVim run on Neovim 0.11,
-    which has no built-in :lsp command, restarts with :LspRestart."""
+    which has no built-in :lsp command, restarts with :LspRestart, and its
+    facts say so."""
     events[0]["provenance"]["editor"]["version"] = version
+    if events[0]["suite"] == "lazyvim":
+        events[0]["facts"]["neovimBuiltinLspCommand"] = not (version or "").startswith("0.11.")
     if events[0]["suite"] == "lazyvim" and (version or "").startswith("0.11."):
         rename = {"lazyvim.restart.builtin": "lazyvim.restart.legacy"}
         for event in events[1:-1]:
