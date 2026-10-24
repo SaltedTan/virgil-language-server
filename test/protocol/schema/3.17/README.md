@@ -22,7 +22,9 @@ that license, separately from this repository's Apache-2.0 code.
 Updates require a separate reviewed change. Select an immutable upstream
 commit that still describes LSP 3.17, download the file without rewriting
 it, inspect the structural and documentation diff and upstream license,
-and update this table, `THIRD_PARTY_NOTICES.md`, and `MODEL_SHA256` in
-[shape_model.py](../../shape_model.py). Run the bounded and full corpus
-as described in the [protocol README](../../README.md). Tests never fetch
-the model or license, and must not follow a branch or a 3.18 model.
+preserve its license and attribution, and update this table,
+`THIRD_PARTY_NOTICES.md`, and `MODEL_SHA256` in
+[shape_model.py](../../shape_model.py). Run the default target and a wider
+budget that covers the new corpus using the [protocol README](../../README.md).
+Tests never fetch the model or license, and must not follow a branch or a 3.18
+model.

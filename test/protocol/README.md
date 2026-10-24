@@ -82,10 +82,11 @@ make test-protocol-shapes PROTOCOL_SHAPES_SEED=42 PROTOCOL_SHAPES_CASES=5000
 ```
 
 The default is seed 0 and a total budget of 2,000 cases, including mandatory
-semantic and lifecycle oracles. It covers the entire current 1,593-case model
-corpus; remaining slots combine two seeded initialization shapes. Smaller
-budgets keep every method's minimum and every semantic oracle, then select
-other shapes using the seed. Budgets below that mandatory set are rejected.
+semantic and lifecycle oracles. It covers the entire current model corpus;
+the runner prints the corpus size. Remaining slots combine two seeded
+initialization shapes. Smaller budgets keep every method's minimum and every
+semantic oracle, then select other shapes using the seed. Budgets below that
+mandatory set are rejected.
 The seed controls selection, order, and pairwise combinations; it is not a
 coverage claim. Wider runs have no fixed wall-time guarantee.
 
@@ -109,10 +110,10 @@ have no replies, so their list is explicit: a new notification handler must be
 added by hand. The two development requests have small explicit local schemas
 because the LSP model does not define them.
 
-Each case has three independent labels, available with `--list`:
+Each case has three validity labels, available with `--list`:
 
 - `schema_valid`: structural validity in the pinned model (or the extension's local schema).
-- `session_valid`: validity under the negotiated full synchronization, available overlay, version, and capabilities, including the documented JSON number limit.
+- `session_valid`: schema validity plus validity under the negotiated full synchronization, available overlay, version, and capabilities, including the documented JSON number limit.
 - `lifecycle_valid`: whether initialize/shutdown ordering is legal. Illegal sequences have exact expected lifecycle errors.
 
 URI normalization, rename eligibility, and other semantic checks are server
@@ -169,9 +170,4 @@ assertion; the default budget is intended to stay below about one minute.
 
 ### Updating the model
 
-Follow the [model update procedure](schema/3.17/README.md) in a separate reviewed
-change. Keep the file unchanged, inspect both documentation and structural
-differences, preserve its license and attribution, and update its recorded
-hash in the model README, third-party notices, and `shape_model.py`. Run the
-default target and a wider budget that covers the new corpus. Normal tests
-must remain offline and pinned to LSP 3.17.
+Follow the [model update procedure](schema/3.17/README.md).
