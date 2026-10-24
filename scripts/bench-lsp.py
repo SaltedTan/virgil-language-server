@@ -152,18 +152,18 @@ class Block:
         self.s = None
         self.analysis_generation = 0
 
-    def analysis(self, result):
-        self.snapshot(result)
+    def analysis(self, result, diagnostics=None):
+        self.snapshot(result, diagnostics)
         check(result["generation"] == self.analysis_generation + 1, result)
         self.analysis_generation = result["generation"]
 
     def request(self, method, params=None):
         return self.s.result(self.s.send(method, params), timeout=60)
 
-    def snapshot(self, result=None):
+    def snapshot(self, result=None, diagnostics=None):
         if result is None:
             result = self.request("virgil-lsp/snapshot")
-        check(result is not None and result["diagnostics"] == [], result)
+        check(result is not None and result["diagnostics"] == (diagnostics or []), result)
         check(result["documentVersions"] == [
             {"uri": uri, "version": self.version if uri == self.uri else None, "current": True}
             for uri in self.uris], result)
@@ -193,8 +193,8 @@ class Block:
         self.definition(self.request("textDocument/definition", self.query))
         self.snapshot()
 
-    def diagnostic(self, kind):
-        self.change(self.text + self.p["edits"][kind]["append"])
+    def diagnostic(self, kind, extra=""):
+        self.change(self.text + self.p["edits"][kind]["append"] + extra)
         deadline = time.monotonic() + 60
         while True:
             msg = self.s.receive(deadline)
@@ -281,6 +281,23 @@ class Block:
                     self.measure(kind + "_diagnostic", i, lambda: self.diagnostic(kind),
                                  lambda r: self.validate_diagnostic(kind, r))
             self.restore()
+            if self.args.error_result and self.row["project"] == "aeneas":
+                # Reproduce #240's diagnostic-bearing RESULT growth cliff.
+                # Generated overlays leave the reviewed corpus pin unchanged.
+                extra = "".join(f"def reviewPad{i}(x: int) -> int {{ var y = x + 1; return y; }}\n"
+                                for i in range(900))
+                self.validate_diagnostic("semantic", self.diagnostic("semantic", extra))
+                expected = self.p["edits"]["semantic"]["expected"]
+                begin, end = expected["range"]["start"], expected["range"]["end"]
+                diagnostics = [{"path": str(ROOT / self.p["query"]["path"]),
+                                "beginLine": begin["line"] + 1, "beginColumn": begin["character"] + 1,
+                                "endLine": end["line"] + 1, "endColumn": end["character"] + 1,
+                                "kind": expected["code"], "message": expected["message"]}]
+                self.analysis_generation = self.snapshot(diagnostics=diagnostics)["generation"]
+                for i in range(count):
+                    self.measure("error_analysis", i,
+                                 lambda: self.request("virgil-lsp/analyze", {"uris": self.uris}),
+                                 lambda r: self.analysis(r, diagnostics))
             self.finish_session()
         except BaseException:
             if self.s:
@@ -325,6 +342,8 @@ def main():
     parser.add_argument("--output", default="-", help="JSON file, or - for stdout")
     parser.add_argument("--smoke", action="store_true", help="small fixture, one block/operation, no warmups")
     parser.add_argument("--require-probes", action="store_true", help="fail unless all phase/GC metrics are present")
+    parser.add_argument("--error-result", action="store_true",
+                        help="also repeat Aeneas analyses with an unresolved name and 900 extra functions (#240)")
     args = parser.parse_args()
     if args.smoke:
         args.blocks, args.operations, args.warmups, args.project = 1, 1, 0, ["small"]
@@ -337,7 +356,8 @@ def main():
               "command": [sys.executable, *sys.argv], "server_revision": corpus.git_revision(ROOT, "rev-parse", "HEAD"),
               "git_status": corpus.git_revision(ROOT, "status", "--short"), "host": host_info(affinity),
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
-              "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups},
+              "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups,
+                                "error_result": args.error_result},
               "builds": [binary_info(p, args.smoke) for p in executables], "blocks": []}
     try:
         for block in range(args.blocks):
@@ -365,7 +385,7 @@ def main():
                     for probe in sample["probes"]:
                         measured[probe["process"]].append(probe["metric"])
                     scenario = sample["scenario"]
-                    if scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic"):
+                    if scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis"):
                         for role, required in (("worker", worker_metrics), ("server", server_metrics)):
                             check(all(measured[role].count(metric) == 1 for metric in required),
                                   ("missing/duplicate transaction probes", block["build"], block["project"], scenario, role, measured[role]))

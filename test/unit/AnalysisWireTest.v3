@@ -10,6 +10,8 @@ def X = [
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
 	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
+	T("AnalysisWire:result_buffer_capacity", test_result_buffer_capacity),
+	T("AnalysisWire:result_frame_boundary", test_result_frame_boundary),
 	T("AnalysisWire:truncated_messages", test_truncated_messages),
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
 	T("AnalysisWire:display_round_trip", test_display_round_trip),
@@ -266,12 +268,12 @@ def test_result_without_occurrences(t: Tester) {
 	t.assert(s.definitionAtOffset(MAIN, 85) == null, "no occurrences were sent");
 }
 
-// Bulk writes and header patches must preserve bytes and the high-water mark
-// across buffer growth, as finishResult's two patches require.
+// Bulk writes and header patches preserve bytes and the high-water mark in
+// the presized buffer, as finishResult's two patches require.
 def test_result_buffer_writes(t: Tester) {
 	var data = Array<byte>.new(17001);
 	for (i < data.length) data[i] = byte.view(i);
-	var w = AnalysisResultWriter.new().put_b32(0).put_b64(0);
+	var w = DataWriter.new().grow(18014).put_b32(0).put_b64(0);
 	for (i < 1000) w.putb(i);
 	w.puta(data);
 	var end = w.end();
@@ -284,6 +286,67 @@ def test_result_buffer_writes(t: Tester) {
 	w.putb(42);
 	expected.putb(42);
 	t.assertb(expected.copy(), w.copy());
+	t.asserti(w.end(), w.data.length);
+}
+
+// Make a diagnostic-bearing result with exactly {bytes} frame bytes. Both
+// trial and final message lengths have the same signed LEB width here.
+def paddedResult(bytes: int) -> DataWriter {
+	var message = Array<byte>.new(bytes);
+	var diagnostic = AnalysisDiagnostic.new("p.v3", 1, 1, 1, 1, "Error", message);
+	var analysis = ProgramAnalysis.new([diagnostic], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	var trial = AnalysisWire.encodeResult(1, 1, 1, analysis, -1, -1, null);
+	var overhead = trial.end() - bytes;
+	diagnostic = AnalysisDiagnostic.new("p.v3", 1, 1, 1, 1, "Error", Ranges.dup(message[0 ... bytes - overhead]));
+	analysis = ProgramAnalysis.new([diagnostic], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	return AnalysisWire.encodeResult(1, 1, 1, analysis, -1, -1, null);
+}
+
+def test_result_buffer_capacity(t: Tester) {
+	for (bytes in [255, 256, 257]) {
+		var w = paddedResult(bytes);
+		t.asserti(bytes, w.end());
+		var capacity = (bytes + 7) & ~7;
+		t.asserti(capacity, w.data.length);
+		t.asserti(bytes, AnalysisWire.finishResult(w, 123L).length);
+		t.asserti(capacity, w.data.length);
+	}
+	for (paths in [[SHAPES, MAIN], [SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
+		var sources = load(t, paths);
+		if (sources == null) return;
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], true);
+		for (occurrences in [false, true]) {
+			var files: Array<(string, Array<AnalysisOccurrence>)>;
+			if (occurrences) files = [(paths[0], analysis.occurrences(paths[0])), (paths[1], analysis.occurrences(paths[1]))];
+			var w = AnalysisWire.encodeResult(1, 1, 1, analysis, -1, -1, files);
+			t.asserti((w.end() + 7) & ~7, w.data.length);
+			t.asserti(w.end(), AnalysisWire.finishResult(w, 123L).length);
+		}
+	}
+}
+
+def test_result_frame_boundary(t: Tester) {
+	for (delta in [-1, 0, 1]) {
+		var payload = WorkerFraming.MAX_PAYLOAD + delta;
+		var w = paddedResult(WorkerFraming.HEADER_BYTES + payload);
+		t.asserti((WorkerFraming.HEADER_BYTES + payload + 7) & ~7, w.data.length);
+		var frame = AnalysisWire.finishResult(w, 0L);
+		t.asserti(WorkerFraming.HEADER_BYTES + payload, frame.length);
+		t.asserti(payload, int.view(DataReaders.read_range_u32(frame[0 ... WorkerFraming.HEADER_BYTES])));
+		var reader = WorkerFrameReader.new(WorkerFraming.MAX_PAYLOAD);
+		var header = reader.space();
+		for (i < header.length) header[i] = frame[i];
+		t.assert(reader.advance(header.length) == null, "header alone has no complete payload");
+		t.assertz(delta > 0, reader.error != null);
+		t.asserti(if(delta > 0, 0, payload), reader.space().length);
+	}
+	// A sizing pass must not wrap when the total exceeds a signed int.
+	var size = AnalysisResultSizer.new();
+	var block = Array<byte>.new(1024 * 1024);
+	for (i < 2048) size.puta(block);
+	size.put_b64(0).put_sleb32(int.min).put_uleb32(u32.max).puta("abc");
+	t.assertl(long.view(int.max) + 1 + 8 + 5 + 5 + 3, size.bytes);
+	t.assert(size.data == null, "sizing allocates no buffer");
 }
 
 // A message cut short anywhere is rejected, without trapping.
