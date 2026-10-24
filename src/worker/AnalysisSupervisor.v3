@@ -68,6 +68,11 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 	private def start(sources: Array<AnalysisSource>, options: Array<string>, flags: int, scope: AnalysisScopeRequest) -> AnalysisOutcome {
 		if (pending) return AnalysisOutcome.Failed(AnalysisFailure.BUSY, "an analysis is already running");
 		if (scope != null) flags |= AnalysisWire.WANT_SCOPE;
+		if (BenchProbe.enabled) {
+			BenchProbe.roundtripStart = BenchProbe.now();
+			BenchProbe.serverGcStart = BenchProbe.gcCount();
+			BenchProbe.serverAllocatedStart = BenchProbe.allocated();
+		}
 		var id = nextId++;
 		var size = AnalysisWire.analyzeFrameSize(id, flags, limits.timeoutMs, options, sources, scope) - WorkerFraming.HEADER_BYTES;
 		if (size > WorkerFraming.MAX_PAYLOAD) {
@@ -78,6 +83,7 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 			var error: string;
 			if (workerPath == null) error = "cannot start the analysis worker: the server's executable path is unknown";
 			else {
+				if (BenchProbe.enabled) BenchProbe.workerStart = BenchProbe.now();
 				var started = WorkerProcesses.start(workerPath);
 				worker = started.0;
 				if (worker == null) error = Strings.format1("cannot start the analysis worker: %s", started.1);
@@ -93,7 +99,11 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 		activeId = id;
 		paths = Array<string>.new(sources.length);
 		for (i < paths.length) paths[i] = sources[i].path;
+		var encodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 		request = AnalysisWire.encodeAnalyze(id, flags, limits.timeoutMs, options, sources, scope);
+		if (BenchProbe.enabled) {
+			BenchProbe.server(id, "request_encode_us", long.view(BenchProbe.now() - encodeStart));
+		}
 		pending = true;
 		queryKinds = if(scope != null, scope.kinds);
 		if (!starting) sendRequest();
@@ -141,11 +151,16 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 						return discard(AnalysisFailure.UNAVAILABLE, "is from a different build");
 					}
 					heapBytes = hello.heapBytes;
+					if (BenchProbe.enabled) {
+						BenchProbe.server(activeId, "worker_heap_bytes", heapBytes);
+						BenchProbe.server(activeId, "worker_start_us", long.view(BenchProbe.now() - BenchProbe.workerStart));
+					}
 					starting = false;
 					sendRequest();
 					return AnalysisOutcome.Pending;
 				}
 				var result: AnalysisWorkerResult;
+				var decodeStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
 				match (AnalysisWire.decodeResultWithQuery(payload, generation + 1, paths, queryKinds)) {
 					Decoded(decoded) => result = decoded;
 					TooLarge(id) => {
@@ -156,7 +171,16 @@ class AnalysisSupervisor(workerPath: string, limits: AnalysisWorkerLimits) {
 					}
 					Malformed => return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
 				}
+				if (BenchProbe.enabled) {
+					BenchProbe.server(activeId, "result_decode_us", long.view(BenchProbe.now() - decodeStart));
+					BenchProbe.server(activeId, "roundtrip_us", long.view(BenchProbe.now() - BenchProbe.roundtripStart));
+				}
 				if (result.id != activeId) return discard(AnalysisFailure.MALFORMED, "sent a malformed result and was killed");
+				if (BenchProbe.enabled) {
+					BenchProbe.server(activeId, "gc_count", long.view(BenchProbe.gcCount() - BenchProbe.serverGcStart));
+					BenchProbe.server(activeId, "allocated_bytes", BenchProbe.allocated() - BenchProbe.serverAllocatedStart);
+					BenchProbe.server(activeId, "heap_after_decode_bytes", BenchProbe.heap());
+				}
 				generation++;
 				if (!temporary) snapshot = result.snapshot;
 				// Every use the collector finds should be a token span; see
