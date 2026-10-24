@@ -53,8 +53,8 @@ class LspServer {
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
-	// Definition, hover, references, signature help, and rename requests,
-	// answered from snapshots.
+	// Keep snapshot selection and waiting consistent across methods; see
+	// docs/architecture.md#definition for the shared rules.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private var prepareRename: LspPrepareRename;
