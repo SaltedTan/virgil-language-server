@@ -1,8 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// An automatic analysis the supervisor is running. The sources were dropped
-// once the worker request held a copy; {inputs} keeps their provenance.
+// An automatic analysis the supervisor is running. Inputs keep bounded source
+// bytes until completion so the last-parseable cache can record exact inputs.
 class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) {
 	// The listener of {LspSemanticDiagnostics.whenAnalyzed}, or null.
 	var listener: LspSnapshotWaiters;
@@ -232,7 +232,6 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
 		}
 		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);
-		inputs.sources = null;
 		match (outcome) {
 			Failed(failure, reason) => failed(ctx, reason);
 			_ => running = LspSemanticRun.new(ctx, keys, inputs);
@@ -259,6 +258,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				snapshot.recordDocumentVersions(run.inputs.versions);
 				// Notice a configuration replaced on disk before trusting the result.
 				projects.refresh();
+				run.inputs.cacheCompleted(ctx, projects.parseableText, snapshot);
 				snapshot.recordProject(ctx);
 				ctx.snapshot = snapshot;
 				failureReported = false;

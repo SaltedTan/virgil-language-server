@@ -8,6 +8,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 	private var pendingVersions: Array<AnalysisDocumentVersion>;
+	private var pendingInputs: LspAnalysisInputs;
 	private var projects: WorkspaceProjects;
 	private var pendingProject: ProjectContext;
 	def withProjects(projects: WorkspaceProjects) -> this { this.projects = projects; }
@@ -64,6 +65,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			Failed(failure, reason) => return workerError(reason);
 			_ => {
 				pendingVersions = inputs.versions;
+				pendingInputs = inputs;
 				return null;
 			}
 		}
@@ -82,6 +84,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 				snapshot.recordDocumentVersions(pendingVersions);
 				if (pendingProject != null) {
 					if (projects != null) projects.refresh();
+					pendingInputs.cacheCompleted(pendingProject, projects.parseableText, snapshot);
 					snapshot.recordProject(pendingProject);
 					pendingProject.snapshot = snapshot;
 				}
@@ -98,6 +101,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		pending = false;
 		pendingId = JsonRpcId.Null;
 		pendingVersions = null;
+		pendingInputs = null;
 		pendingProject = null;
 		match (reply) {
 			Result(v) => send(JsonRpcMessage.Response(id, v).encode());

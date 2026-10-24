@@ -9,6 +9,21 @@
 // worker request holds a copy.
 class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, snapshotBytes: long) {
 	var sources: Array<AnalysisSource>;
+	// Cache only a completed analysis's own parseable inputs. A clean program
+	// already proves every file parsed; a failed program's per-file check is
+	// necessary because Aeneas may have stopped before later files.
+	def cacheCompleted(context: ProjectContext, cache: ParseableTextCache, snapshot: AnalysisSnapshot) {
+		if (!context.config.current) return;
+		var keep = OrderedStringMap<bool>.new();
+		for (s in context.sources) keep[s.uri] = true;
+		for (i < sources.length) {
+			var source = sources[i];
+			if (!keep.has(versions[i].uri)) continue;
+			if (snapshot.parsed || AeneasAdapter.parseFile(source.path, source.input, context.definition.compilerArgs).diagnostics.length == 0) {
+				cache.put(context, versions[i].uri, source.input);
+			}
+		}
+	}
 }
 
 // Captures whole-program inputs for the development request and automatic
