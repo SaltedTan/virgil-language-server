@@ -501,6 +501,12 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(unavailable_paths(self.schema) - {"provenance.fixtureSha256"},
                          unavailable_paths(mutant))
 
+    def test_suite_provenance_covers_every_suite(self):
+        self.assertEqual(sorted(suite["id"] for suite in self.manifest["suites"]),
+                         sorted(RESULTS.SUITE_PROVENANCE),
+                         "SUITE_PROVENANCE must name exactly the manifest's suites; "
+                         "update the table in scripts/editor-results.py")
+
     def test_schema_agrees_with_the_manifest(self):
         defs = self.schema["$defs"]
         self.assertEqual([s["id"] for s in self.manifest["suites"]], defs["suite"]["enum"])

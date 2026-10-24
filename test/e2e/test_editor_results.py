@@ -1068,6 +1068,21 @@ class ProvenanceTest(ValidatorTest):
         self.assertEqual('line 1: provenance.clientMode is "none", but a run of suite manual records manual',
                          str(context.exception))
 
+    def test_a_suite_that_the_table_lacks_is_an_error(self):
+        # The manifest may add a suite before the script's table has it. The
+        # stream then gets an ordinary error that names the suite, not a
+        # KeyError, and test_coverage.py catches the drift first.
+        manifest = results.Manifest(MANIFEST_BYTES.replace(b'"nvim"', b'"nvim-next"'))
+        schema_data = copy.deepcopy(SCHEMA_DATA)
+        schema_data["$defs"]["suite"]["enum"].append("nvim-next")
+        schema = results.Schema(schema_data)
+        events = stream("nvim")
+        events[0].update(suite="nvim-next", coverageSha256=manifest.sha256)
+        with self.assertRaises(results.Invalid) as context:
+            results.validate_stream(encode(events), manifest, schema)
+        self.assertEqual(1, context.exception.line)
+        self.assertIn("suite nvim-next is not in SUITE_PROVENANCE", context.exception.message)
+
     def test_configuration_digests(self):
         events = stream("lazyvim")
         digests = events[0]["provenance"]["configurationSha256"]

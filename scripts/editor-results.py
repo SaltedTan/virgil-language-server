@@ -693,7 +693,14 @@ def check_suite_provenance(start):
         raise Invalid(1, f"provenance.clientMode is {show(mode)}, but provenance.vsix is "
                          + ("null" if vsix is None else "an object")
                          + ": clientMode is vsix exactly when vsix is not null")
-    modes, editors = SUITE_PROVENANCE[suite]
+    entry = SUITE_PROVENANCE.get(suite)
+    if entry is None:
+        # The manifest can add a suite before this table does; that is a
+        # mismatch of the manifest and the script, not of the stream, but the
+        # stream is where it shows.
+        raise Invalid(1, f"suite {suite} is not in SUITE_PROVENANCE: update the script's table of each "
+                         "suite's client modes and editors")
+    modes, editors = entry
     if mode not in modes:
         raise Invalid(1, f"provenance.clientMode is {show(mode)}, but a run of suite {suite} records "
                          + " or ".join(modes))
