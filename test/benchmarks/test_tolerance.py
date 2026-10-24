@@ -33,6 +33,22 @@ class Scoring(unittest.TestCase):
                 # unchanged identifier ranges happen to map perfectly.
                 self.assertTrue(tolerance.score("hover", case["predecessor"]["0:hover"],
                                                 case["oracle"]["0:hover"], True)["wrong"])
+                for key, old in case["predecessor"].items():
+                    if key.split(":")[-1] in ("references", "diagnostics"):
+                        expected = case["oracle"][key]
+                        if old == expected:
+                            continue  # Some signature edits leave locations identical.
+                        if all(item in (expected or []) for item in old):
+                            # The captured independent Observer error is a safe
+                            # subset. Move its range to model a stale diagnostic,
+                            # rather than demanding that safe suppression fail.
+                            self.assertTrue(tolerance.score("diagnostics", old, expected)["partial"])
+                            old = copy.deepcopy(old)
+                            old[0]["diagnostic"]["range"]["start"]["character"] += 1
+                        self.assertTrue(any(item not in (expected or []) for item in old),
+                                        (name, key, "stale set must contain a foreign item"))
+                        self.assertTrue(tolerance.score(key.split(":")[-1], old,
+                                                        expected, True)["wrong"])
 
     def test_negative_policy_accepts_suppression_or_current_answer(self):
         for case in CONTROLS.values():
@@ -46,16 +62,19 @@ class Scoring(unittest.TestCase):
     def test_absence_is_distinct_from_wrong_answer(self):
         expected = CONTROLS["changed-signature"]["oracle"]["0:hover"]
         self.assertEqual(tolerance.score("hover", None, expected), {
-            "available": False, "correct": False, "wrong": False, "matches_oracle": False})
+            "available": False, "correct": False, "partial": False, "missing": True,
+            "wrong": False, "matches_oracle": False})
         self.assertEqual(tolerance.score("hover", None, expected, True), {
-            "available": False, "correct": True, "wrong": False, "matches_oracle": False})
+            "available": False, "correct": True, "partial": False, "missing": True,
+            "wrong": False, "matches_oracle": False})
 
     def test_legitimate_empty_results_are_available_and_correct(self):
         for feature, empty in (("definition", None), ("hover", None),
                                ("references", []), ("diagnostics", [])):
             with self.subTest(feature=feature):
                 self.assertEqual(tolerance.score(feature, empty, empty), {
-                    "available": True, "correct": True, "wrong": False, "matches_oracle": True})
+                    "available": True, "correct": True, "partial": False, "missing": False,
+                    "wrong": False, "matches_oracle": True})
         # null and [] have different protocol meanings and are not interchangeable.
         self.assertFalse(tolerance.score("references", None, [])["correct"])
 
@@ -79,13 +98,18 @@ class Scoring(unittest.TestCase):
                 actual["contents"][change] += " different"
             self.assertTrue(tolerance.score("hover", actual, hover)["wrong"])
 
-    def test_reference_and_diagnostic_sets_ignore_only_order(self):
+    def test_reference_and_diagnostic_items_compare_exactly(self):
         case = CONTROLS["changed-signature"]
         for feature, key in (("references", "0:references"), ("diagnostics", "diagnostics")):
             expected = case["oracle"][key]
             self.assertGreaterEqual(len(expected), 2)
             self.assertTrue(tolerance.score(feature, list(reversed(expected)), expected)["correct"])
-            self.assertTrue(tolerance.score(feature, expected[:-1], expected)["wrong"])
+            self.assertEqual(tolerance.score(feature, expected[:-1], expected), {
+                "available": True, "correct": False, "partial": True, "missing": False,
+                "wrong": False, "matches_oracle": False})
+            foreign = {**expected[0], "uri": "project:///foreign.v3"}
+            self.assertTrue(tolerance.score(feature, expected[:-1] + [foreign], expected)["wrong"])
+            self.assertTrue(tolerance.score(feature, expected + [expected[0]], expected)["wrong"])
             changed = copy.deepcopy(expected)
             changed[0]["uri"] += "wrong"
             self.assertTrue(tolerance.score(feature, changed, expected)["wrong"])
@@ -105,6 +129,13 @@ class Scoring(unittest.TestCase):
         self.assertEqual(sum(r["wrong"] for r in result["features"]), 1)
         self.assertEqual(result["worker_replacements"], 2)
         self.assertTrue(all(row["p50"] == row["p95"] == 10 for row in result["latency_ms"]))
+
+    def test_summary_counts_partial_answers_separately(self):
+        verdict = tolerance.score("references", [{"uri": "one"}], [{"uri": "one"}, {"uri": "two"}])
+        result = tolerance.summary([{"suite": "repair", "mode": "warm", "edit_kind": "body",
+                                     "scores": {"0:references": verdict}, "samples": [],
+                                     "worker_replacements": 0}])["features"][0]
+        self.assertEqual((result["correct"], result["partial"], result["missing"], result["wrong"]), (0, 1, 0, 0))
 
     def test_utf16_coordinates_include_non_ascii_before_query(self):
         text = '/* é😀 */ return A.f(1);\r\n'

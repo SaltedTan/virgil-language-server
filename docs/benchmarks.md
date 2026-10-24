@@ -752,11 +752,14 @@ program with the intended semantic edit retained and only the syntax error
 removed. JSON retains these answers, source overlays, configuration, and each
 state's answers and scores. Disposable URI prefixes become `project:///`; target
 paths and every range remain significant. Hover text and ranges compare exactly;
-reference and diagnostic sets ignore ordering only. `available` counts a nonempty
+reference and diagnostic items compare exactly, ignoring set ordering. `available` counts a nonempty
 answer or an oracle-matching legitimate empty answer. `correct` counts an exact
 match. Missing a nonempty oracle is unavailable and incorrect, but is not a
-`wrong` binding. A nonempty mismatch is wrong, including a partial reference or
-diagnostic set.
+`wrong` binding. For references and diagnostics, a nonempty proper subset of the
+oracle is `partial`; a result containing any foreign item is `wrong`. Duplicate
+counts are preserved. Definition and hover remain single exact answers. The
+negative controls also count permitted empty suppression as `correct`, while
+`matches_oracle` always records exact equality.
 
 Four negative controls delete a declaration, change its signature, introduce
 a shadowing local, or insert braces inside a body that move an unchanged later
@@ -780,7 +783,7 @@ Edit kinds are `body` (an expression or statement inside a routine or member
 body), `header` (a condition or for header, or a declaration header such as a
 parameter list, return type, or variable type), and `whole_file` (truncation).
 Each fixture's kind is pinned in the script's classification table.
-`summary.features` splits availability, correctness, exact matches, and wrong
+`summary.features` splits availability, correctness, partial and missing answers, exact matches, and wrong
 answers by suite, mode, kind, and feature;
 `summary.latency_ms` reports p50/p95 by suite, mode, and query kind. Definition is
 queried first and includes analysis waiting; later requests generally use the
@@ -809,11 +812,11 @@ Measured on 2026-10-25 at `220733d` (server sources unchanged from `6406edc`) an
 described above. The build's `-dirty` marker reflects pending documentation only.
 Other work ran on this machine. Warm and cold counts were identical:
 
-| Corpus (per mode) | States with all four features | Correct definition / hover / reference answers, each | Correct diagnostic sets | Wrong answers |
-| --- | ---: | ---: | ---: | ---: |
-| Repair | 6/45 | 15/87 | 6/45 | 0 |
-| Replay | 9/140 | 35/540 | 9/140 | 0 |
-| Combined | 15/185 | 50/627 | 15/185 | 0 |
+| Corpus (per mode) | States with all four features | Correct definition / hover / reference answers, each | Partial references | Correct diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair | 6/45 | 15/87 | 0 | 6/45 | 0 | 0 |
+| Replay | 9/140 | 35/540 | 0 | 9/140 | 0 | 0 |
+| Combined | 15/185 | 50/627 | 0 | 15/185 | 0 | 0 |
 
 The same all-feature state counts split by edit kind follow, for either mode:
 
@@ -827,6 +830,12 @@ suppression policy in both modes and rejected the injected predecessor answer.
 The fifteen extra states produced no wrong answers. This establishes the current
 low-availability baseline; these deterministic cases do not estimate availability
 across arbitrary editing sessions.
+
+The full base rerun for #243 used `e3dbd69`, CPU 4, and the amended scorer
+and fourth negative control. All 408 state/mode records completed in 200.26
+seconds with zero partial and zero wrong answers. Every answer and legacy
+score matched the original 406 records plus the separately captured boundary
+control; the primary counts above are unchanged.
 
 The full runs took 212.93 and 210.61 seconds for 406 state/mode records each,
 including the three negative controls and fifteen extra cases. Every per-state
