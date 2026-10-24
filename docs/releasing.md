@@ -66,10 +66,12 @@ Only these README-documented substitutions are made:
 
 | README example | Test value |
 | --- | --- |
-| Server version `0.1.0-alpha.3` (including root paths and the config source URL) | The caller's `version` input |
-| `extension_version=0.1.2` | The version in the caller's `vsix-file` input |
+| `server_version` and the version in both root paths | The caller's `version` input |
+| `extension_version` | The version in the caller's `vsix-file` input |
 | `download_url`, the release asset location | An ephemeral localhost HTTP directory containing the caller's archive and VSIX |
 | `config_url`, the raw source download location | The same HTTP server's `editors/nvim` directory from the source bundle |
+
+The driver reads these example values from the marked blocks, checks their expected assignment and path shapes, and requires the server version to agree across the install command, both root paths, and both `config_url` tags. `make test` also requires the server examples and config tags to match `VERSION`, and the extension example to match `clients/vscode/package.json`. A release preparation must update those examples together, so the test can use the bundled configs before the new tag exists.
 
 The final release `SHA256SUMS` is written after the editor tests, so it is not available yet. Each caller records its archive's SHA-256 immediately after packaging in `checksum-<target>`. The test builds a two-file `SHA256SUMS` from that recorded Linux digest and the caller's `vsix-sha256` input, before serving the files. The README's download and checksum commands then verify the received bytes against those producer expectations. This tests the user's verification procedure without pretending to download a published release or deriving the expectation from the downloaded copy.
 
@@ -86,6 +88,7 @@ To reproduce without a container, package an archive and VSIX as above, record t
    - Set `VERSION` to the version.
    - In `CHANGELOG.md`, move the entries under `## [Unreleased]` into a new section, `## [0.1.0-alpha.1] - YYYY-MM-DD`, and leave an empty `## [Unreleased]` above it. The new section becomes the release notes.
    - If the VS Code extension changed since the last release, raise its version with `npm version --no-git-tag-version <x.y.z>` in `clients/vscode`, which updates `package.json` and `package-lock.json`, so that the release doesn't attach different contents under a version that an earlier release attached ([versions](../clients/vscode/README.md#versions)).
+   - Update the marked install examples in [README.md](../README.md#editor-setup), [clients/vscode/README.md](../clients/vscode/README.md#installing-from-a-vsix), and [editors/nvim/README.md](../editors/nvim/README.md): `server_version`, both explicit root paths, and both `config_url` tags must use `VERSION`; `extension_version` must use the extension's version. `make test` checks these values.
    - In [docs/compatibility.md](compatibility.md), add a row for the version to the Virgil revision table, and update the extension compatibility table if needed.
    - Update [docs/known-limitations.md](known-limitations.md). [Dry-run](#dry-runs) the workflow on the branch. The dry run must pass, its editor test jobs included, among them the Remote-SSH test that each release needs ([VS Code](manual-testing.md#vs-code)). A release needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). Manual checks with its archives and VSIX are optional; follow the [manual procedure](manual-testing.md#procedure) and add any to the [results](manual-testing.md#results).
 3. Merge the pull request, then [dry-run](#dry-runs) the workflow on `main` and read its release notes and manifests, and check the VSIX's version.
@@ -124,7 +127,7 @@ A dry run builds, tests, packages, and smoke-tests both archives, packages and t
 
 A dry run from a tag (`--ref v0.1.0-alpha.1`) checks and records the tag and uses that version's changelog section, but still doesn't publish.
 
-A pull request that changes `release.yml`, `check-release.sh`, `check-vsix.py`, `package-release.sh`, `release-notes.py`, or `smoke-test-release.sh`, the extension's packaging inputs (`clients/vscode/package.json`, `package-lock.json`, and `.vscodeignore`), or the editor tests and their pins (`editor-test-suites.yml`, `editor-tests.yml`, `test/e2e/lazyvim/`, the shared fixture in `test/e2e/nvim/fixture/`, and `clients/vscode/test/e2e/`), plus the install READMEs (`README.md`, `clients/vscode/README.md`, and `editors/nvim/`), and `test/e2e/clean-install/`, also dry-runs the workflow, because GitHub only runs a workflow by hand once it is on the default branch. Other changes that could break packaging or the editor tests, such as to the `Makefile`, `scripts/v3c.sh`, or the extension's sources, don't trigger it; CI still packages the VSIX and runs the Extension Host test and the LazyVim test on Linux on every pull request, and you can dry-run `main` after merging them.
+A pull request that changes `release.yml`, `check-release.sh`, `check-vsix.py`, `package-release.sh`, `release-notes.py`, or `smoke-test-release.sh`, the extension's packaging inputs (`clients/vscode/package.json`, `package-lock.json`, and `.vscodeignore`), or the editor tests and their pins (`editor-test-suites.yml`, `editor-tests.yml`, `test/e2e/lazyvim/`, the shared fixture in `test/e2e/nvim/fixture/`, `clients/vscode/test/e2e/`, and `test/e2e/clean-install/`), also dry-runs the workflow, because GitHub only runs a workflow by hand once it is on the default branch. README changes alone do not trigger a full release dry run; an install command that breaks is caught by the weekly editor run and the release's required dry run before the tag. Other changes that could break packaging or the editor tests, such as to the `Makefile`, `scripts/v3c.sh`, or the extension's sources, don't trigger it; CI still packages the VSIX and runs the Extension Host test and the LazyVim test on Linux on every pull request, and you can dry-run `main` after merging them.
 
 To package locally, run the same scripts as the workflow:
 

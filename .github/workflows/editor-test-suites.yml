@@ -7,7 +7,8 @@ name: Editor test suites
 # workflow run, on the files of the run that calls this one: the archives in
 # its archive-x86-64-linux and archive-x86-64-darwin artifacts and the VSIX in
 # its vsix artifact, never building the server or packaging the VSIX again.
-# They run a clean README install in an Ubuntu container, the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS,
+# They run a clean README install in an Ubuntu container, the LazyVim test on
+# Linux with Neovim 0.11 and 0.12 and on macOS,
 # the Extension Host test on macOS on the installed VSIX, and the same suite
 # through VS Code Remote-SSH on Linux. The LazyVim test installs the pinned
 # starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
@@ -99,7 +100,7 @@ jobs:
             --vsix-sha256 "$VSIX_SHA256" --version "$VERSION" --vsix "$VSIX" \
             --out /home/installer/results
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           name: clean-install-linux
           path: |
@@ -110,7 +111,7 @@ jobs:
             /home/installer/results/*/.local/state/nvim/lsp.log
             /home/installer/results/public/SHA256SUMS
           include-hidden-files: true
-          if-no-files-found: warn
+          if-no-files-found: ${{ job.status == 'failure' && 'warn' || 'ignore' }}
           retention-days: 30
 
   lazyvim-linux:

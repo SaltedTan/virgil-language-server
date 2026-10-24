@@ -8,8 +8,9 @@ name: Release
 # against the Linux archive's server, runs the editor tests of
 # editor-test-suites.yml on those archives and that VSIX (the LazyVim test on
 # Linux and macOS, the Extension Host test on macOS, and the Remote-SSH test on
-# Linux, plus the clean README install in a Linux container), writes SHA256SUMS, and publishes them as a GitHub prerelease. Running
-# the workflow by hand, or on a pull request that changes the release files or
+# Linux, plus the clean README install in a Linux container), writes SHA256SUMS,
+# and publishes them as a GitHub prerelease. Running the workflow by hand, or
+# on a pull request that changes the release files or
 # the editor tests, is a dry run: the same jobs without publishing, with the
 # release files kept as a workflow artifact. See docs/releasing.md.
 
@@ -23,9 +24,6 @@ on:
       - .github/workflows/editor-test-suites.yml
       - .github/workflows/editor-tests.yml
       - .github/workflows/release.yml
-      - README.md
-      - clients/vscode/README.md
-      - editors/nvim/**
       - test/e2e/clean-install/**
       - clients/vscode/.vscodeignore
       - clients/vscode/package-lock.json
