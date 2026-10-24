@@ -22,13 +22,14 @@ CONTROLS = json.loads(Path(__file__).with_name("tolerance-negative-oracles.json"
 
 class Scoring(unittest.TestCase):
     def test_negative_controls_reject_predecessor_answers(self):
-        self.assertEqual(set(CONTROLS), {"deleted-declaration", "changed-signature", "shadowing-local"})
+        self.assertEqual(set(CONTROLS), {"deleted-declaration", "changed-signature", "shadowing-local",
+                                        "body-boundary-escape"})
         for name, case in CONTROLS.items():
             with self.subTest(case=name):
                 results = [tolerance.score(key.split(":")[-1], old, case["oracle"][key], True)
                            for key, old in case["predecessor"].items()]
                 self.assertTrue(any(row["wrong"] for row in results))
-                # Hover alone exposes all three safety violations, even when
+                # Hover alone exposes all four safety violations, even when
                 # unchanged identifier ranges happen to map perfectly.
                 self.assertTrue(tolerance.score("hover", case["predecessor"]["0:hover"],
                                                 case["oracle"]["0:hover"], True)["wrong"])

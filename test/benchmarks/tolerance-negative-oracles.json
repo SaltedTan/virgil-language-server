@@ -1,5 +1,5 @@
 {
-  "description": "Protocol captures on 6406edc, Virgil 7cf038fc. project:/// replaces the disposable project URI. These are safe-current-program oracles and unsafe predecessor answers; no fallback is implemented.",
+  "description": "Protocol captures on 6406edc, Virgil 7cf038fc. project:/// replaces the disposable project URI. These are safe-current-program oracles and unsafe predecessor answers; no fallback is implemented. Body-boundary-escape captured on e3dbd69, Virgil 7cf038fc.",
   "cases": {
     "deleted-declaration": {
       "oracle": {
@@ -445,6 +445,152 @@
               },
               "start": {
                 "character": 40,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "body-boundary-escape": {
+      "oracle": {
+        "0:definition": null,
+        "0:hover": null,
+        "0:references": null,
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "UnresolvedMember",
+              "message": "type A has no such member \"target\"",
+              "range": {
+                "end": {
+                  "character": 48,
+                  "line": 0
+                },
+                "start": {
+                  "character": 42,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got ?",
+              "range": {
+                "end": {
+                  "character": 50,
+                  "line": 0
+                },
+                "start": {
+                  "character": 40,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 2
+            },
+            "start": {
+              "character": 8,
+              "line": 2
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 2
+              },
+              "start": {
+                "character": 8,
+                "line": 2
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
                 "line": 0
               }
             },

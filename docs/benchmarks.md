@@ -758,8 +758,9 @@ match. Missing a nonempty oracle is unavailable and incorrect, but is not a
 `wrong` binding. A nonempty mismatch is wrong, including a partial reference or
 diagnostic set.
 
-Three negative controls delete a declaration, change its signature, or introduce
-a shadowing local, alongside a syntax error. Their policy accepts suppression or
+Four negative controls delete a declaration, change its signature, introduce
+a shadowing local, or insert braces inside a body that move an unchanged later
+method to another component, alongside a syntax error. Their policy accepts suppression or
 the current program's oracle. The driver separately feeds each predecessor's
 captured answer to the scorer and requires a wrong verdict. The
 [scoring tests](../test/benchmarks/test_tolerance.py) repeat this with
@@ -790,8 +791,8 @@ the existing phase, allocation, and heap counters. RSS is sampled before shutdow
 These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
-`make test` runs scoring and cleanup regression checks and a five-state smoke
-replay (two small repair states and all three negative controls, in both modes).
+`make test` runs scoring and cleanup regression checks and a six-state smoke
+replay (two small repair states and all four negative controls, in both modes).
 The smoke run takes about 0.2 seconds on the reference host. The full suite
 remains opt-in. Run these checks separately with:
 
