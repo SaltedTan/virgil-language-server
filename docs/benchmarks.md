@@ -198,89 +198,184 @@ replace end-to-end measurements.
 
 ## Reference baseline
 
-Measured on 2026-10-24 at server source revision
-`2c1ebafd31ad4d40019e8f12c06aef2b167f144a`, Virgil
+Measured on 2026-10-25 at server source revision
+`154f08c7187452272ace803a995260306c0f2597`, Virgil
 `7cf038fc13a5474836bec8b14c7a3e796fd07fa5`. The host was an Intel Core i7-14700KF
 (28 logical CPUs), Linux `7.0.0-38-generic` x86-64/glibc 2.43, Python 3.14.4,
-pinned with `taskset` to CPU 4; its readable governor was `powersave`. The worker
-reserved 402,653,184 bytes (384 MiB), and the server used the default 200 MiB heap.
-Other work ran on this shared host. These are reference measurements, not budgets.
+pinned with `taskset` to CPU 10; its readable governor was `powersave`. CPU 10 and
+its sibling were idle when selected; other agents used other cores, including
+CPU 4. The worker reserved 402,653,184 bytes (384 MiB), and the server used the
+default 200 MiB heap. These are reference measurements, not budgets.
 
-The first run used this command, after creating `build/bench-results`:
+The comparison kept three builds in this physical checkout: baseline `6406edc`
+(`build/base-0`), cached keyed declaration hashes at `32cf580` (`build/hash-0`),
+and both that change and smaller RESULT buffer growth at `154f08c`
+(`build/next-0`). Each was built with `BENCH=1 all bench-metadata` at its own
+revision. Their directory names and BuildInfo revision strings have equal
+lengths. A second set with suffix `-1` used `WORKER_HEAP=1g`. All three corpus
+projects ran with two warmups and five measured operations in each of three
+process blocks; build order reversed each block:
 
 ```sh
-make bench BENCH_ARGS='--blocks 3 --operations 5 --warmups 2 --cpu 4 --output build/bench-results/run-1.json'
+python3 scripts/bench-lsp.py \
+  --exe build/base-0/virgil-lsp --exe build/hash-0/virgil-lsp \
+  --exe build/next-0/virgil-lsp --require-probes \
+  --blocks 3 --operations 5 --warmups 2 --cpu 10 \
+  --output build/bench-results/compare-default.json
 ```
 
-The repeat used the same binaries without rebuilding:
+Repeat with the `-1` executables for the 1 GiB control. The retained evidence files
+are `baseline.json`, `compare-default.json`, `compare-1g.json`,
+`repeat-default.json`, and `repeat-1g.json`; the repeats select `--project aeneas`
+with the same blocks, operations, and warmups. Each JSON records binary and
+compiler hashes, exact build inputs, every sample, and stderr traces. Every
+operation passed semantic/version checks and complete probe checks. No outliers
+were removed.
 
-```sh
-python3 scripts/bench-lsp.py --exe build/bench/virgil-lsp --require-probes \
-  --blocks 3 --operations 5 --warmups 2 --cpu 4 --output build/bench-results/run-2.json
-```
-
-Both files record server SHA-256
-`1dda2bfb4b8f5f7d6398a840be7246644967717c8ea288b9b78403ca74e039fa`
-and worker SHA-256
-`a6d2814a727b3991ec04e9f87df44d81753a721e8864ba6693f0b2c1393b6ed2`.
-Every operation passed semantic/version checks and complete probe checks. Each
-cell below is the first run's **median (p10–p90), in milliseconds**, from 15 measured
-operations over three process blocks; raw JSON also includes min/max and MAD.
+The current default-heap baseline follows. Each cell is **median (p10–p90), in
+milliseconds**, from 15 measured operations in the first comparison.
 
 | Scenario | small | util | Aeneas |
 | --- | ---: | ---: | ---: |
-| `fresh_analysis` | 0.464 (0.430–0.492) | 16.576 (15.859–17.686) | 363.062 (357.443–367.868) |
-| `reused_analysis` | 0.139 (0.131–0.153) | 14.162 (13.602–15.275) | 470.304 (464.167–500.762) |
-| `syntax_diagnostic` | 0.073 (0.068–0.086) | 0.300 (0.272–0.342) | 0.411 (0.401–0.435) |
-| `semantic_diagnostic` | 200.677 (200.566–200.710) | 215.598 (215.088–216.176) | 525.567 (511.718–532.621) |
-| `completion_miss` | 0.689 (0.644–0.764) | 7.873 (7.570–8.710) | 135.928 (132.513–149.710) |
-| `completion_hit` | 0.452 (0.444–0.513) | 0.731 (0.693–0.822) | 2.792 (2.705–3.046) |
-| `definition` | 0.072 (0.070–0.074) | 0.391 (0.379–0.409) | 1.840 (1.593–2.023) |
-| `hover` | 0.069 (0.066–0.072) | 0.385 (0.365–0.404) | 1.897 (1.675–15.796) |
-| `references` | 0.074 (0.072–0.079) | 0.420 (0.398–0.439) | 2.370 (2.246–2.530) |
-| `prepareRename` | 0.172 (0.167–0.179) | 1.980 (1.938–2.091) | 18.955 (18.642–19.897) |
-| `rename` | 0.463 (0.448–0.469) | 17.713 (17.137–18.874) | 362.372 (352.339–372.686) |
+| `fresh_analysis` | 0.455 (0.441–0.500) | 15.459 (15.293–15.784) | 318.797 (313.889–353.017) |
+| `reused_analysis` | 0.136 (0.130–0.143) | 13.298 (12.852–13.764) | 292.147 (269.654–312.525) |
+| `syntax_diagnostic` | 0.073 (0.071–0.082) | 0.309 (0.286–0.325) | 0.403 (0.394–0.443) |
+| `semantic_diagnostic` | 200.667 (200.627–200.701) | 214.682 (214.363–217.621) | 518.104 (496.495–562.658) |
+| `completion_miss` | 0.683 (0.655–0.841) | 8.230 (7.868–8.726) | 130.520 (124.821–143.977) |
+| `completion_hit` | 0.470 (0.441–0.579) | 0.743 (0.712–0.763) | 2.708 (2.637–4.209) |
+| `definition` | 0.074 (0.070–0.104) | 0.379 (0.370–0.396) | 1.775 (1.608–1.989) |
+| `hover` | 0.068 (0.066–0.091) | 0.369 (0.363–0.383) | 1.839 (1.686–15.969) |
+| `references` | 0.074 (0.073–0.098) | 0.407 (0.396–0.426) | 2.217 (2.057–2.518) |
+| `prepareRename` | 0.173 (0.164–0.185) | 1.929 (1.896–2.006) | 18.487 (18.104–19.583) |
+| `rename` | 0.458 (0.442–0.484) | 16.859 (16.572–17.610) | 323.467 (307.194–335.884) |
 
-The repeat's median changes ranged from −2.5% to +5.7% for small, −2.8% to +2.6%
-for util, and −9.3% to +0.6% for Aeneas. Aeneas fresh analysis moved from 363.062
-to 348.685 ms (−4.0%); reused analysis from 470.304 to 462.337 ms (−1.7%);
-completion miss from 135.928 to 133.164 ms (−2.0%); and semantic publication from
-525.567 to 528.827 ms (+0.6%). The largest relative Aeneas movement was hover,
-1.897 to 1.721 ms (−9.3%, only −0.176 ms). Its first-run p90 above also shows a
-large tail. Treat such differences as host/GC variability, not an optimization.
-
-First-run Aeneas phase medians follow. Time rows are **milliseconds**; count and
-byte rows retain their units. These come from the same 15 operations per scenario.
-
-| Metric | Fresh full analysis | Reused full analysis | Completion miss |
-| --- | ---: | ---: | ---: |
-| Capture, ms | 9.940 | 8.162 | 12.216 |
-| Request decode, ms | 2.814 | 2.149 | 2.145 |
-| Parse, ms | 64.791 | 41.618 | 45.758 |
-| Verify, ms | 48.524 | 36.323 | 38.845 |
-| Collect, ms | 113.226 | 95.612 | 0.000 |
-| Query, ms | 0.001 | 0.001 | 1.026 |
-| Request encode, ms | 5.306 | 4.138 | 4.053 |
-| Result encode, ms | 91.356 | 234.496 | 0.898 |
-| Result decode, ms | 15.544 | 13.570 | 0.268 |
-| Final GC, ms | 3.720 | 24.461 | 23.670 |
-| GCs during handle | 0 | 1 | 0 |
-| Allocated bytes during handle | 197,599,392 | 197,445,968 | 159,740,296 |
-| Heap bytes after handle | 200,643,952 | 129,150,584 | 171,183,872 |
-| RESULT frame bytes | 3,936,046 | 3,936,046 | 59,140 |
-
-The fresh full analysis stays just below its semispace capacity of 201,326,592
-bytes; the reused full analysis collects during handling, so its encode interval
-includes GC. Source path lengths and worker history matter when interpreting that
+The same-run Aeneas comparison is below; cells are **median (p10–p90), ms**.
+The 1 GiB control separates encoder work from the default heap's collection
 boundary.
+
+| Scenario | 384 MiB before | 384 MiB after | 1 GiB before | 1 GiB after |
+| --- | ---: | ---: | ---: | ---: |
+| `fresh_analysis` | 364.715 (360.094–375.688) | 318.797 (313.889–353.017) | 358.381 (350.637–381.202) | 324.729 (318.360–330.614) |
+| `reused_analysis` | 484.705 (458.007–546.474) | 292.147 (269.654–312.525) | 326.933 (311.123–351.139) | 289.532 (275.309–313.900) |
+| `semantic_diagnostic` | 532.326 (525.075–546.358) | 518.104 (496.495–562.658) | 547.567 (530.398–616.160) | 510.274 (494.536–513.267) |
+| `completion_miss` | 138.014 (132.737–149.929) | 130.520 (124.821–143.977) | 136.239 (132.099–149.405) | 127.574 (124.188–141.187) |
+| `rename` | 368.989 (349.661–392.806) | 323.467 (307.194–335.884) | 360.162 (348.671–365.117) | 322.269 (309.533–325.990) |
+
+Aeneas worker phase medians in the default-heap comparison follow. Time rows
+are **milliseconds**; counts and bytes retain their units. `adapter_us` overlaps
+parse and verify, so it is omitted here.
+
+| Metric | Fresh before | Fresh after | Reused before | Reused after | Completion miss before | Completion miss after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Capture, ms | 9.889 | 9.729 | 8.142 | 9.432 | 11.828 | 12.304 |
+| Request decode, ms | 2.809 | 2.964 | 2.146 | 2.114 | 2.125 | 2.149 |
+| Parse, ms | 64.359 | 63.845 | 41.798 | 40.287 | 45.535 | 44.918 |
+| Verify, ms | 49.014 | 47.229 | 37.054 | 36.389 | 38.933 | 38.683 |
+| Collect, ms | 113.670 | 110.010 | 95.462 | 94.080 | 0.000 | 0.000 |
+| Query, ms | 0.001 | 0.002 | 0.001 | 0.001 | 1.026 | 1.002 |
+| Request encode, ms | 5.260 | 5.125 | 4.244 | 4.095 | 3.991 | 4.030 |
+| Result encode, ms | 90.792 | 55.588 | 238.963 | 52.561 | 0.916 | 0.632 |
+| Result decode, ms | 15.738 | 15.572 | 13.353 | 13.904 | 0.279 | 0.259 |
+| Final GC, ms | 3.643 | 1.701 | 21.814 | 17.932 | 23.083 | 17.166 |
+| GCs during handle | 0 | 0 | 1 | 0 | 0 | 0 |
+| Allocated bytes during handle | 197,599,392 | 193,653,792 | 197,445,968 | 193,500,368 | 159,740,296 | 159,713,112 |
+| Heap bytes after handle | 200,643,952 | 196,698,352 | 129,150,584 | 200,915,592 | 171,183,872 | 167,128,344 |
+| Live bytes after final GC | 176,769 | 176,768 | 176,769 | 176,768 | 176,772 | 176,768 |
+| RESULT frame bytes | 3,936,046 | 3,936,046 | 3,936,046 | 3,936,046 | 59,140 | 59,140 |
+
+Caching each worker declaration's existing keyed path/position hash removes
+repeated hashing in call keys and the encoder's declaration index. In the first
+1 GiB protocol comparison, hash caching alone reduced fresh encoding from
+88.675 to 55.687 ms and reused encoding from 89.217 to 52.343 ms, with identical
+transaction allocation. Full equality checks, keyed string hashing, and type
+collision handling remain in place.
+
+The RESULT writer doubles power-of-two buffers instead of the library writer's
+roughly tripled capacity for small appends. For the successful corpus analysis,
+this saves 3,945,600 allocated bytes per transaction in the protocol workload.
+The previous RESULT buffer is also smaller while the next analysis runs. The
+reused default worker therefore avoids the collection during encoding; all
+15 baseline and hash-only reused samples collected once, and all 15 final
+samples collected zero times. Aeneas fresh handling uses 196,698,352 bytes,
+leaving 4,628,240 bytes of its 201,326,592-byte semispace. Reused handling uses
+200,915,592 bytes without collecting, leaving only 411,000 bytes: path lengths
+and worker history can still move a program across that boundary. Its higher
+post-handle heap than the baseline's 129,150,584 bytes reflects the avoided GC,
+not increased retained analysis state.
+
+Growth savings depend on the write sequence. The semantic-error workload
+allocates 1,253,008 more bytes during handling, while its post-handle heap is
+2,775,336 bytes lower because its preceding result is smaller. Its first-run
+latency spread is large; use the repeated comparison below when assessing it.
+Do not infer a universal allocation or latency improvement for every result.
+
+A separate scratch attribution run used a 1 GiB heap, CPU 10, and ten reused
+Aeneas analyses per variant. Rows that omit data are attribution controls only;
+they are not product changes or correctness-preserving alternatives. Times are
+medians in ms, and allocations are bytes per phase.
+
+| Scratch variant | Collect, ms | Collect bytes | Encode, ms | Encode bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 94.040 | 55,083,264 | 84.022 | 16,789,000 |
+| Omit declaration signatures (drops data) | 84.790 | 54,062,144 | 77.420 | 15,994,304 |
+| Omit call signatures (drops data) | 77.734 | 53,053,424 | 76.416 | 16,568,040 |
+| Omit calls (drops data) | 69.752 | 51,741,992 | 69.190 | 16,567,944 |
+| Cache keyed declaration hash | 93.091 | 55,083,264 | 48.376 | 16,789,000 |
+| Reserve 4 MiB result buffer (control) | 91.255 | 55,083,264 | 77.769 | 8,535,960 |
+
+None of those 1 GiB attribution phases collected. Scratch default-heap variants
+and a separate final-writer probe retain per-phase allocation and collection
+counts too. The latter reduces encode allocation from 16,789,000 to 12,730,096
+bytes, with collection allocation unchanged at 55,083,264 bytes; its absolute
+paths differ from the protocol workload, so its byte totals are not substituted
+for the protocol table. A callback-based growth prototype was rejected because
+it retained a few extra bytes. The final writer adds no fields or callback
+state, and its bulk writes and header patches have a regression check.
+
+Normalized RESULT data is byte-identical before, after hash caching, and after
+both fixes: 21 cases at both heaps, each in fresh and reused workers. The cases
+include all three corpus projects, semantic and syntax errors, occurrence and
+call coverage, duplicate-use fixtures, and scope/member/call answers. Only the
+three elapsed timing fields and reported live bytes were normalized. The wire
+format, decoded allocation charges, frame and decode budgets, heap reservation,
+and retirement policy are unchanged. Fresh live-after-GC bytes are no higher
+on any corpus project (small 1,161 to 1,160; util 42,473 to 42,472; Aeneas
+176,769 to 176,768). The one-byte difference is buffer alignment, not a retained
+object removed from the analysis.
+
+Aeneas confirmation runs used the same binaries and another 15 measured
+operations per build at each heap. Median latencies in ms:
+
+| Scenario | 384 MiB before | 384 MiB after | 1 GiB before | 1 GiB after |
+| --- | ---: | ---: | ---: | ---: |
+| `fresh_analysis` | 370.450 | 331.045 | 358.933 | 324.323 |
+| `reused_analysis` | 476.022 | 291.232 | 325.405 | 289.750 |
+| `semantic_diagnostic` | 532.346 | 513.680 | 543.681 | 500.862 |
+| `completion_miss` | 135.089 | 128.796 | 136.028 | 126.488 |
+| `rename` | 357.355 | 323.022 | 364.342 | 318.147 |
+
+Treat small-project and fast-request differences inside their observed spread
+as noise. No macOS timing baseline or normal-build observer comparison was
+collected for these changes.
+
+The confirmation preserves the default reused-analysis GC change in all 30
+measured operations across both runs: one collection before and zero after.
+Semantic-diagnostic medians improve, but their p10–p90 intervals overlap
+substantially; these shared-host runs do not establish a firm diagnostic
+latency gain.
+
+### Earlier probe observer control
+
+These 2026-10-24 controls predate the allocation changes above and describe the
+benchmark instrumentation at its introduction.
 
 A separate three-run heap control used the original worker at `9a9e384`, the new
 worker with probes disabled, and the enabled worker, with identical source paths
 and matching BuildInfo in every build. All nine fresh Aeneas analyses used exactly
 **200,643,960 bytes after handling, with zero collections**: instrumentation added
 **0 transient bytes** at that boundary. The normal server and worker contained
-neither the `BENCH ` marker nor the probe metric names checked. The baseline above
-uses 8 fewer heap bytes because its clean revision string is shorter than the
+neither the `BENCH ` marker nor the probe metric names checked. The earlier
+baseline at `2c1ebaf` used 8 fewer heap bytes because its clean revision string is shorter than the
 control's dirty revision string in HELLO. The controls used temporary worker
 source copies with a single heap read before formatting the measurement; repository
 and compiler sources were not modified by those controls.
