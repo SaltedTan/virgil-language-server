@@ -99,8 +99,14 @@ REGISTERED_INFO = "virgil-lsp: the client watches project files and sources"
 
 def expected_log(messages):
     params = messages[0]["params"]
+    options = params.get("initializationOptions")
+    root = options.get("virgilRoot") if isinstance(options, dict) else None
+    root_log = (
+        f"virgil-lsp: Virgil root: {root} (client)" if root else
+        "virgil-lsp: Virgil root: none (bundle REVISION is missing or unreadable)"
+    )
     replies = any("method" not in message for message in messages)
-    return ([REGISTERED_INFO] if replies else []) + (
+    return [root_log] + ([REGISTERED_INFO] if replies else []) + (
         [MISSING_ROOT_WARNING] if params.get("workspaceFolders") else []
     ) + [SINGLE_FILE_WARNING]
 
