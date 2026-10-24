@@ -26,7 +26,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
-const { startGroup } = require('./processes.cjs');
+const { KEEPER_KILL_WAIT_MS, startGroup } = require('./processes.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
@@ -35,6 +35,11 @@ const VSCODE_VERSION = '1.142.0';
 const LAUNCH_TIMEOUT_MS = 120000;
 // How long a stopped process group gets after SIGTERM before SIGKILL.
 const STOP_GRACE_MS = 5000;
+// How long a group gets to end after SIGKILL before the test gives up on it.
+// SIGKILL ends a process at once, or as soon as it leaves an uninterruptible
+// sleep, so this bounds only a group with a process that the test can't
+// stop, such as one that its user may not signal.
+const KILL_WAIT_MS = 30000;
 // How long the servers that a launch started get to exit after VS Code has.
 const SERVER_EXIT_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
@@ -248,19 +253,26 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
 // interrupt can stop all of it: VS Code and the server, or the installer,
 // which bin/code starts without exec on Linux. A stopped group gets SIGTERM,
 // then SIGKILL, and the promise resolves only after the whole group has exited,
-// before the caller removes the temporary directory. If the group still runs
-// one of the servers SERVER_EXIT_MS after the command itself has exited, the
-// group is stopped as well. The group's keeper (see startGroup in
-// processes.cjs) keeps the group's number the run's until then, or until the
-// group's SIGKILL, and sends the group the test's signals; if it goes before,
-// the test signals only the processes that it saw in the group, each by its
-// PID and start time.
+// before the caller removes the temporary directory, or, if it hasn't
+// KILL_WAIT_MS after SIGKILL, at once, with the result's stopped saying so,
+// and detached from the group, so that the test can exit while the group,
+// even its keeper, runs on (see detach in processes.cjs). Keeper release has
+// its own bound, even after a clean exit (see release in processes.cjs).
+// If the group still runs one of the servers SERVER_EXIT_MS after the
+// command itself has exited, the group is stopped as well. The group's keeper
+// (see startGroup in processes.cjs) keeps the group's number the run's until then,
+// or until the group's SIGKILL, and sends the group the test's signals; if it
+// goes before, the test signals only the processes that it saw in the group,
+// each by its PID and start time.
 function runGroup(command, args, { env, stdin, signal, servers = [] }) {
   return new Promise((resolve) => {
     let stopped;
     let exited;
     let deadline;
+    // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
+    let abandon;
     let finished = false;
+    let releasing = false;
     const group = startGroup(command, args, {
       env,
       stdio: [stdin, 'inherit', 'inherit'],
@@ -269,18 +281,31 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         if (!finish() && result.error === undefined && servers.length > 0) void expectServersGone();
       },
     });
-    // Resolves once the command has exited and the group holds no process but
-    // its keeper, or is no longer the run's; returns whether it has.
-    const finish = () => {
+    // Starts finishing once the command has exited and the group holds no
+    // process but its keeper, or is no longer the run's. Waits for the bounded
+    // keeper release; with anyway, resolves at once, without the keeper.
+    // Returns whether finishing has started.
+    const finish = (anyway = false) => {
       if (finished) return true;
-      if (exited === undefined || group.look()?.empty === false) return false;
-      finished = true;
+      if (!anyway && releasing) return true;
+      if (!anyway && (exited === undefined || group.look()?.empty === false)) return false;
       clearTimeout(timer);
-      clearInterval(poll);
-      void group.release().then(() => {
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        clearInterval(poll);
         signal.removeEventListener('abort', interrupt);
         resolve({ ...exited, stopped });
-      });
+      };
+      if (anyway) done();
+      else {
+        releasing = true;
+        void group.release().then((gone) => {
+          if (finished) return;
+          if (!gone) stopped = `${stopped === undefined ? '' : `${stopped}, and `}its keeper (pid ${group.pid}) hadn't ended ${KEEPER_KILL_WAIT_MS / 1000} seconds after its release watchdog's SIGKILL`;
+          done();
+        });
+      }
       return true;
     };
     const stop = (reason) => {
@@ -294,22 +319,31 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
-      } else {
-        finish();
-      }
+        abandon = Date.now() + KILL_WAIT_MS;
+      } else if (abandon !== undefined && Date.now() > abandon) {
+        stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
+        if (!group.detach()) stopped += `, nor had its keeper (pid ${group.pid})`;
+        finish(true);
+      } else finish();
     }, 50);
     const timer = setTimeout(() => stop(`exceeded ${LAUNCH_TIMEOUT_MS / 1000} seconds`), LAUNCH_TIMEOUT_MS);
     const interrupt = () => stop('was interrupted');
     signal.addEventListener('abort', interrupt);
     if (signal.aborted) interrupt();
     // VS Code starts the servers in its own group, where they outlive it only
-    // if they don't exit.
+    // if they don't exit. A look after each listing checks that the group is
+    // still the run's, and so was during the listing, as it is never again
+    // once it isn't (see startGroup in processes.cjs); once it isn't, another
+    // group may have its number, and the check ends.
     const expectServersGone = async () => {
       const limit = Date.now() + SERVER_EXIT_MS;
       for (;;) {
         let running;
         try {
-          running = groupProcesses(group.pid, servers);
+          const listed = groupProcesses(group.pid, servers);
+          const members = group.look()?.processes;
+          if (members === undefined) return;
+          running = listed.filter((p) => members.some((member) => member.pid === p.pid));
         } catch (error) {
           stop(`could not be checked for servers left running: ${error.message}`);
           return;

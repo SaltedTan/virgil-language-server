@@ -98,10 +98,12 @@ function fakeClock() {
 // stopped, does neither, and doesn't exit once released, until resume(), as
 // SIGCONT would resume it: it then sends the signals that it was asked for
 // meanwhile, in order, says so, and exits if released. spawned holds spawn's
-// arguments.
+// arguments. The keeper's referenced, and each pipe's destroyed, say whether
+// the runner has let Node.js exit without them, with unref() and destroy().
 function fakeKeeper(pid) {
-  const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null });
-  const pipe = () => Object.assign(new EventEmitter(), { end() {} });
+  const keeper = Object.assign(new EventEmitter(), { pid, exitCode: null, signalCode: null, referenced: true });
+  keeper.unref = () => { keeper.referenced = false; };
+  const pipe = () => Object.assign(new EventEmitter(), { destroyed: false, end() {}, destroy() { this.destroyed = true; } });
   // The signals that the keeper was asked for while it was stopped.
   const waiting = [];
   const send = (name) => {
@@ -140,7 +142,7 @@ function fakeKeeper(pid) {
       if (fake.released !== undefined) fake.reap(null);
     },
   };
-  const stdin = Object.assign(new EventEmitter(), {
+  const stdin = Object.assign(pipe(), {
     writable: true,
     write: (text) => {
       for (const name of String(text).split('\n').filter(Boolean)) {
@@ -156,7 +158,7 @@ function fakeKeeper(pid) {
     },
   });
   keeper.stdin = stdin;
-  keeper.stdout = new EventEmitter();
+  keeper.stdout = pipe();
   keeper.stdio = [stdin, keeper.stdout, null, pipe(), pipe(), pipe()];
   const line = (message) => keeper.stdout.emit('data', Buffer.from(`${JSON.stringify(message)}\n`));
   return fake;
@@ -178,7 +180,7 @@ function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], d
     const results = targets.map(([pid, start]) => {
       const p = processes.get(pid);
       if (p?.start !== start) return p === undefined ? 'gone' : 'other';
-      if (p.state === 'Z') return 'gone';
+      if (p.state === 'Z' && !(p.threads > 1)) return 'gone';
       deliver(pid, name);
       return 'sent';
     });
@@ -196,8 +198,9 @@ function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], d
 // one to its whole group while it is in processes, as the same entry. signals
 // gets [target, name] for each kill, and ['keeper', name] for each of the
 // keeper's. The keeper ignores every signal but SIGKILL, after which Node.js
-// reaps it; other processes go on SIGKILL, and may say, with on(name), what
-// happens on others.
+// reaps it; other processes go on SIGKILL, unless they have stays, as a
+// process that the runner's user may not signal does, and may say, with
+// on(name), what happens on others.
 function fakeGroup(processes, signals = []) {
   const keeper = fakeKeeper(50);
   const entry = processes.get(50);
@@ -205,7 +208,7 @@ function fakeGroup(processes, signals = []) {
     const p = processes.get(pid);
     if (p === undefined || (pid === 50 && name !== 'SIGKILL')) return;
     p.on?.(name);
-    if (name !== 'SIGKILL') return;
+    if (name !== 'SIGKILL' || p.stays) return;
     processes.delete(pid);
     if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
   };

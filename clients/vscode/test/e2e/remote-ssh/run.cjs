@@ -33,7 +33,7 @@ const { parseArgs } = require('node:util');
 const zlib = require('node:zlib');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { VSCODE_VERSION, isolatedEnv } = require('../run.cjs');
-const { PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
+const { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, startGroup } = require('../processes.cjs');
 const localhost = require('./localhost.cjs');
 
 // The Remote-SSH extension that the client installs from the Marketplace,
@@ -60,6 +60,9 @@ const SSH_TIMEOUT_MS = 60000;
 // long the rest of a group gets after its first process has exited.
 const STOP_GRACE_MS = 5000;
 const GROUP_EXIT_MS = 10000;
+// How long a group gets to end after SIGKILL before the test gives up on it
+// (see KILL_WAIT_MS in ../run.cjs).
+const KILL_WAIT_MS = 30000;
 // How long the language servers get to exit after their window has closed,
 // or after the test has stopped a remote extension host that VS Code left
 // running; and how long that host gets after SIGTERM, and then SIGKILL.
@@ -237,7 +240,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // milliseconds, or is no longer the run's. The group's keeper stays until
 // then, or until the group's SIGKILL, so the group stays the run's: a process
 // that joins it, even just before the command exits, is waited for, and
-// stopped with the group.
+// stopped with the group. If the group or its output hasn't ended
+// KILL_WAIT_MS after SIGKILL, it resolves all the same, at once, and the
+// result's stopped says so: it detaches from the group, and so stops reading
+// the output, so that the test can exit while the group, even its keeper, or
+// a process that holds the output pipes runs on (see detach in
+// ../processes.cjs). Keeper release has its own bound, even after a clean
+// exit (see release in ../processes.cjs).
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const output = { stdout: [], stderr: [] };
@@ -245,7 +254,10 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
     let exited;
     let open = 2;
     let finished = false;
+    let releasing = false;
     let deadline;
+    // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
+    let abandon;
     let groupLeft = false;
     const started = Date.now();
     const group = startGroup(command, args, {
@@ -257,18 +269,29 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
         finish();
       },
     });
-    const finish = () => {
-      if (finished || exited === undefined || open > 0 || group.look()?.empty === false) return;
-      finished = true;
+    // With anyway, resolves at once, without the keeper.
+    const finish = (anyway = false) => {
+      if (finished || (!anyway && (releasing || exited === undefined || open > 0 || group.look()?.empty === false))) return;
       clearTimeout(timer);
-      clearInterval(poll);
-      void group.release().then(() => {
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        clearInterval(poll);
         signal.removeEventListener('abort', interrupt);
         resolve({
           ...exited, stopped, groupLeft, seconds: (Date.now() - started) / 1000,
           stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr).toString(),
         });
-      });
+      };
+      if (anyway) done();
+      else {
+        releasing = true;
+        void group.release().then((gone) => {
+          if (finished) return;
+          if (!gone) stopped = `${stopped === undefined ? '' : `${stopped}, and `}its keeper (pid ${group.pid}) hadn't ended ${KEEPER_KILL_WAIT_MS / 1000} seconds after its release watchdog's SIGKILL`;
+          done();
+        });
+      }
     };
     const stop = (reason) => {
       if (stopped !== undefined || group.pid === undefined) return;
@@ -281,11 +304,17 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
       if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
+        abandon = Date.now() + KILL_WAIT_MS;
       } else if (exited !== undefined && empty) {
         finish();
-      } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
+      } else if (!releasing && exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
         groupLeft = true;
         stop(`left processes running ${GROUP_EXIT_MS / 1000} seconds after it exited`);
+      }
+      if (!finished && abandon !== undefined && Date.now() > abandon) {
+        stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
+        if (!group.detach()) stopped += `, nor had its keeper (pid ${group.pid})`;
+        finish(true);
       }
     }, 50);
     const timer = setTimeout(() => stop(`exceeded ${timeout / 1000} seconds`), timeout);
@@ -593,7 +622,9 @@ function suiteLines() {
 // that now has the PID. Each signal goes through a pidfd where the target's
 // Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
 // otherwise, or where a pidfd couldn't be opened for that process or couldn't
-// signal it, follows a second check of the start time.
+// signal it, follows a second check of the start time, and of whether it is a
+// zombie, which it isn't while threads other than its main thread run (see
+// zombie in ../processes.cjs).
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -618,7 +649,7 @@ const send = (name, targets) => {
     if (complete && ${JSON.stringify(SETTLED)}.includes(results[i])) return;
     try {
       const fields = stat(pid);
-      if (fields[0] !== 'Z' && fields[19] === start) process.kill(pid, name);
+      if ((fields[0] !== 'Z' || Number(fields[17]) > 1) && fields[19] === start) process.kill(pid, name);
     } catch {}
   });
 };

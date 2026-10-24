@@ -14,6 +14,7 @@ const path = require('node:path');
 const KEEPER = path.join(__dirname, 'keeper.cjs');
 // How long a group's keeper gets to answer a request (see startGroup).
 const KEEPER_REPLY_MS = 1000;
+const KEEPER_KILL_WAIT_MS = 30000;
 
 // A process's state, parent, process group, and start time, and on Linux its
 // number of threads; undefined if it has gone, null if inaccessible. On Linux
@@ -31,6 +32,16 @@ function processInfo(pid) {
     if (['EACCES', 'EPERM'].includes(error.code)) return null;
     throw error;
   }
+}
+
+// Whether p, a process as processInfo or processTable gives it, is a zombie:
+// it has exited, and its parent hasn't reaped it. Linux lists a process whose
+// main thread has exited as a zombie while its other threads run, and they
+// can still start processes and take signals, so it is no zombie until they
+// have exited too. macOS's ps lists a process as a zombie only once it has
+// exited, whole.
+function zombie(p) {
+  return p.state === 'Z' && !(p.threads > 1);
 }
 
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
@@ -69,9 +80,9 @@ function psTable(selection) {
 // [[pid, start], ...]]. It prints, as JSON, null if this Python or kernel
 // can't open pidfds and send signals through them, which needs Python 3.9 and
 // Linux 5.3, and otherwise what happened to each process: "sent"; "gone", if
-// it has exited; "other", if its PID is another process's; or "error" and the
-// errno's name, such as "error EPERM", if a pidfd couldn't be opened for it
-// or couldn't signal it.
+// it has exited, even if it is still a zombie (see zombie); "other", if its
+// PID is another process's; or "error" and the errno's name, such as "error
+// EPERM", if a pidfd couldn't be opened for it or couldn't signal it.
 const PIDFD_SIGNAL = `
 import errno, json, os, signal, sys
 name, targets = json.loads(sys.argv[1])
@@ -99,7 +110,7 @@ def outcome(pid, start):
         fields = stat[stat.rindex(')') + 2:].split(' ')
         if fields[19] != start:
             return 'other'
-        if fields[0] == 'Z':
+        if fields[0] == 'Z' and int(fields[17]) < 2:
             return 'gone'
         signal.pidfd_send_signal(fd, getattr(signal, name))
         return 'sent'
@@ -150,11 +161,12 @@ function pidfdSupport() {
 }
 
 // Sends a signal to a process, given by its PID and start time, if a check
-// just before finds that it is still that process and not a zombie; returns
-// what happened, as PIDFD_SIGNAL does, or "failed" and the error's code.
+// just before finds that it is still that process and not a zombie (see
+// zombie); returns what happened, as PIDFD_SIGNAL does, or "failed" and the
+// error's code.
 function checkedSignal({ pid, start }, name) {
   const info = processInfo(pid);
-  if (info == null || info.state === 'Z') return 'gone';
+  if (info == null || zombie(info)) return 'gone';
   if (info.start !== start) return 'other';
   try {
     process.kill(pid, name);
@@ -198,11 +210,13 @@ function signalProcesses(processes, name) {
 // that hasn't exited KEEPER_REPLY_MS after its release gets SIGKILL the same
 // way. The keeper survives SIGINT, SIGTERM, and SIGHUP, which the rest of the
 // group gets as usual, so the group stays the run's until the runner releases
-// the keeper, or asks for SIGKILL; if the runner goes, the keeper stops the
-// group. stdio is spawn's for the command's standard input, output, and
-// error, each 'pipe', 'inherit', or 'ignore'; the returned group's stdin,
-// stdout, and stderr are the pipes. onExit gets the command's exit as
-// { code, signal }, or { error } if it didn't start.
+// the keeper, or asks for SIGKILL; if the runner goes, or detaches from the
+// group (see detach), before releasing the keeper, the keeper stops the group.
+// stdio is spawn's for the command's standard input, output, and error,
+// each 'pipe', 'inherit', or
+// 'ignore'; the returned group's stdin, stdout, and stderr are the pipes.
+// onExit gets the command's exit as { code, signal }, or { error } if it
+// didn't start.
 function startGroup(command, args, { env, stdio, onExit }) {
   // For the keeper, 'inherit' would mean the runner's descriptors 3 to 5; the
   // command's are the runner's own standard streams.
@@ -230,6 +244,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   let reported = false;
   let keeperGone = false;
   let reportsEnded = keeper.stdout === null;
+  let releaseDone;
   // Whether the keeper hasn't been reaped: its PID still has its parent, the
   // runner, and its start time. ps gives start times only to the second, so
   // off Linux another process would pass for the keeper only if it were
@@ -261,12 +276,13 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // and a zombie can't start a process, so one whose parent never reaps it
   // doesn't keep the group from emptying. On Linux, a process whose main
   // thread has exited is listed as a zombie while its other threads run, and
-  // counts as one only once they have exited too.
+  // counts as one only once they have exited too (see zombie): until then, it
+  // is live, and the runner remembers and signals it as any other.
   const look = () => {
     if (lost) return undefined;
     const { processes, complete } = processTable();
     const members = processes.filter((p) => p.group === number && p.pid !== number);
-    const found = members.filter((p) => p.state !== 'Z');
+    const found = members.filter((p) => !zombie(p));
     const held = ([pid, start]) => {
       const info = processInfo(pid);
       return info?.start === start && info.group === number;
@@ -276,7 +292,6 @@ function startGroup(command, args, { env, stdio, onExit }) {
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
-    const zombie = (p) => p.state === 'Z' && !(p.threads > 1);
     const empty = complete && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
     zombies = new Map(members.filter(zombie).map((p) => [p.pid, p.start]));
     return { processes: found, empty };
@@ -344,7 +359,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
     keeperGone = true;
     report({ error });
   });
-  return {
+  const group = {
     pid: number,
     stdin: keeper.stdio[3],
     stdout: keeper.stdio[4],
@@ -366,22 +381,52 @@ function startGroup(command, args, { env, stdio, onExit }) {
       }
     },
     // Lets the keeper exit, once the runner has seen the command exit and no
-    // other process left in the group; resolves once Node.js has reaped it.
+    // other process left in the group. Resolves with whether Node.js has
+    // reaped it, either on exit or on detach. The release watchdog sends
+    // SIGKILL after KEEPER_REPLY_MS and detaches KEEPER_KILL_WAIT_MS later if
+    // the keeper still hasn't exited; a runner can detach sooner when its
+    // already-armed group stop deadline expires.
     release: () => new Promise((resolve) => {
       if (keeperGone || number === undefined) {
-        resolve();
+        resolve(true);
         return;
       }
+      let abandon;
+      const done = (gone = true) => {
+        clearTimeout(timer);
+        clearTimeout(abandon);
+        keeper.removeListener('exit', ended);
+        releaseDone = undefined;
+        resolve(gone);
+      };
+      const ended = () => done();
       const timer = setTimeout(() => {
         if (led()) signalProcesses([{ pid: number, start: leader.start }], 'SIGKILL');
+        abandon = setTimeout(() => group.detach(), KEEPER_KILL_WAIT_MS);
       }, KEEPER_REPLY_MS);
-      keeper.on('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
+      releaseDone = done;
+      keeper.on('exit', ended);
       keeper.stdin.end('release\n');
     }),
+    // Gives up on the group, as a runner does on one that its SIGKILL hasn't
+    // ended, so that Node.js can exit while the keeper, or a process that
+    // holds the command's pipes, runs on: closes the runner's end of every
+    // pipe to the keeper and the command, after which none of their output or
+    // reports arrive, and onExit is no longer called, and no longer waits for
+    // the keeper. Unless already released, a keeper that is still there finds
+    // its input ended without a release, as when the runner goes. Returns
+    // whether Node.js has reaped the keeper.
+    detach: () => {
+      const gone = keeperGone || !led();
+      reported = true;
+      for (const { timer } of requested.splice(0)) clearTimeout(timer);
+      for (const stream of keeper.stdio) stream?.destroy();
+      keeper.unref();
+      releaseDone?.(gone);
+      return gone;
+    },
   };
+  return group;
 }
 
-module.exports = { PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
+module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
