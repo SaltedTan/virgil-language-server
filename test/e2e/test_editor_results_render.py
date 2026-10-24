@@ -138,18 +138,24 @@ class RenderTest(unittest.TestCase):
                                          "streams": listed if entries is None else entries}, indent=2))
         return selection
 
-    def render(self, selection, *options, doc=None):
-        return call("render", "--selection", str(selection), "--doc", str(doc or self.doc), *(options or ("--write",)))
+    def render(self, selection, *options, doc=None, cli=False):
+        args = ("render", "--selection", str(selection), "--doc", str(doc or self.doc), *(options or ("--write",)))
+        if not cli:
+            return call(*args)
+        result = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=self.directory,
+                                capture_output=True, text=True)
+        return result.returncode, result.stdout, result.stderr
 
-    def assertMalformed(self, selection, message, doc=None):
+    def assertMalformed(self, selection, message, doc=None, cli=False, options=()):
         """Asserts that render exits with 2 and the message, and leaves the document as it was."""
         before = (doc or self.doc).read_bytes()
         for mode in ("--write", "--check"):
             with self.subTest(mode):
-                status, out, err = self.render(selection, mode, doc=doc)
+                status, out, err = self.render(selection, mode, *options, doc=doc, cli=cli)
                 self.assertEqual((2, ""), (status, out), err)
                 self.assertIn(message, err)
                 self.assertTrue(err.startswith("editor-results.py: "), err)
+                self.assertNotIn("Traceback", err)
                 self.assertEqual(before, (doc or self.doc).read_bytes())
 
 
@@ -466,6 +472,17 @@ class RunsTableTest(unittest.TestCase):
 
 
 class SelectionTest(RenderTest):
+    def test_a_long_editor_version(self):
+        # All are schema-valid strings. Numeric tokens can exceed Python's
+        # integer conversion limit, and leading zeros do not change their value.
+        versions = ["0.9", "0.10", "8" * 5000, "000" + "9" * 5000, "1" + "0" * 5000]
+        selection = self.select(*[at_version(run_of("nvim", number), version)
+                                  for number, version in enumerate(reversed(versions), 1)])
+        status, out, err = self.render(selection, cli=True)
+        self.assertEqual((0, ""), (status, err), out)
+        self.assertEqual(versions, re.findall(r"\| Neovim ([0-9.]+) \|", self.doc.read_text()))
+        self.assertEqual(0, self.render(selection, "--check", cli=True)[0])
+
     def test_renders_the_selected_streams(self):
         selection = self.select(run_of("nvim"), run_of("lazyvim", 2))
         status, out, err = self.render(selection)
@@ -574,6 +591,45 @@ class SelectionTest(RenderTest):
                                 names=["linux/nvim.jsonl", "linux/.lazyvim.jsonl"])
         self.assertEqual(0, self.render(selection)[0])
 
+    def test_a_symlinked_directory_cannot_hide_a_failed_retry(self):
+        external = self.select(run_of("nvim"), directory="external", names=["selected.jsonl"]).parent
+        failed = run_of("nvim", 2)
+        fail(failed, find(failed, "nvim.hover.response"))
+        (external / "retry.jsonl").write_bytes(encode(rebuild(failed, status="fail")))
+        selected = external / "selected.jsonl"
+        selection = self.select(entries=[{"path": "lane/selected.jsonl",
+                                          "sha256": hashlib.sha256(selected.read_bytes()).hexdigest()}])
+        lane = selection.parent / "lane"
+        lane.symlink_to("../external", target_is_directory=True)
+        self.assertMalformed(selection, f"{lane}: symlinks are not allowed", cli=True)
+
+    def test_symlinks_anywhere_under_the_selection_are_rejected(self):
+        for name, target, directory in (("directory", ".", True),
+                                         ("file", "stream-0.jsonl", False),
+                                         ("dangling", "missing", False)):
+            with self.subTest(name):
+                selection = self.select(run_of("nvim"), directory=name)
+                link = selection.parent / "unlisted"
+                link.symlink_to(target, target_is_directory=directory)
+                self.assertMalformed(selection, f"{link}: symlinks are not allowed", cli=True)
+
+    def test_symlinks_in_listed_paths_are_rejected(self):
+        selection = self.select(run_of("nvim"))
+        stream = selection.parent / "stream-0.jsonl"
+        external = self.directory / "external.jsonl"
+        stream.rename(external)
+        stream.symlink_to(external)
+        self.assertMalformed(selection, f"{stream}: symlinks are not allowed", cli=True)
+
+    def test_symlinks_in_the_selection_path_are_rejected(self):
+        selection = self.select(run_of("nvim"))
+        alias = self.directory / "alias"
+        alias.symlink_to(selection.parent, target_is_directory=True)
+        self.assertMalformed(alias / selection.name, f"{alias}: symlinks are not allowed", cli=True)
+        alias.unlink()
+        alias.symlink_to(selection)
+        self.assertMalformed(alias, f"{alias}: symlinks are not allowed", cli=True)
+
     def test_missing_and_repeated_streams(self):
         selection = self.select(run_of("nvim"))
         entries = json.loads(selection.read_text())["streams"]
@@ -671,6 +727,44 @@ class MarkerTest(RenderTest):
         for name, text, message in cases:
             with self.subTest(name):
                 self.assertMalformed(self.write(text), message)
+
+    def test_commonmark_headings_end_the_release_section(self):
+        headings = [" ### 0.1.0-alpha.3", "###\t0.1.0-alpha.3", "   ###\t0.1.0-alpha.3 ###",
+                    "  ## Older results", "   # Results", "###", "##\t", " #  "]
+        for heading in headings:
+            with self.subTest(heading=heading):
+                text = document().replace("Hand-written prose.", f"Hand-written prose.\n\n{heading}")
+                self.assertMalformed(self.write(text), "the marker runs:begin is outside", cli=True)
+
+    def test_commonmark_release_headings(self):
+        for heading in (f" ### {RELEASE}", f"###\t{RELEASE}", f"   ###  {RELEASE}  ###\t"):
+            with self.subTest(heading=heading):
+                text = document().replace(f"### {RELEASE}", heading)
+                self.assertEqual(0, self.render(self.write(text), cli=True)[0])
+                self.assertIn(heading + "\n", self.doc.read_text())
+
+    def test_headings_in_fences_do_not_end_the_section(self):
+        for fence, info, other in (("````", "markdown", "~~~~"), ("~~~~", "info `with backticks`", "````")):
+            with self.subTest(fence=fence):
+                # Short, mismatched, and non-whitespace-suffixed fences do
+                # not close the block. A longer matching fence does.
+                example = (f"   {fence}{info}\n### old\n{fence[:3]}\n### {RELEASE}\n"
+                           f"{other}\n## example\n{fence} text\n# example\n  {fence * 2}\t \n")
+                text = document().replace("Hand-written prose.", example)
+                self.assertEqual(0, self.render(self.write(text), cli=True)[0])
+                self.assertIn(example, self.doc.read_text())
+
+    def test_markers_in_fences_are_rejected(self):
+        for fence in ("```markdown", "   ~~~~ markdown"):
+            for where in ("whole document", "inside section", "another release"):
+                with self.subTest(fence=fence, where=where):
+                    if where == "whole document":
+                        text = f"{fence}\n{document()}\n"
+                    elif where == "inside section":
+                        text = document().replace("Hand-written prose.", f"Hand-written prose.\n{fence}")
+                    else:
+                        text = document() + f"\n{fence}\n<!-- editor-results:0.1.0-alpha.3:runs:begin -->\n"
+                    self.assertMalformed(self.write(text), "a marker is inside a fenced code block", cli=True)
 
     def test_other_releases_markers_stay(self):
         other = ("<!-- editor-results:0.1.0-alpha.3:runs:begin -->\n| old |\n"
@@ -812,6 +906,52 @@ class CheckTest(RenderTest):
                               str(selection), "--doc", str(self.doc), "--write")
         self.assertEqual(2, status)
         self.assertIn("can't read the manifest", err)
+
+
+class ManifestTest(RenderTest):
+    def test_malformed_renderer_text_is_rejected_when_loading_the_manifest(self):
+        fields = [("xfails", 0, "label"), ("xfails", 0, "issue"), ("setups", 0, "label"),
+                  ("areas", 0, "label"), ("levels", 0, "wording"), ("scopes", 1, "wording"),
+                  ("gaps", 0, "what"), ("gaps", 0, "kind")]
+        for section, index, field in fields:
+            for value in (None, "", " \t", 1, [], {}):
+                if section == "scopes" and value is None:
+                    continue  # A null wording is valid for an automated scope.
+                with self.subTest(section=section, field=field, value=value):
+                    manifest = json.loads(builder.MANIFEST_BYTES)
+                    manifest[section][index][field] = value
+                    data = json.dumps(manifest).encode()
+                    path = self.directory / "manifest.json"
+                    path.write_bytes(data)
+                    events = run_of("lazyvim")
+                    events[0]["coverageSha256"] = hashlib.sha256(data).hexdigest()
+                    selection = self.select(events)
+                    self.assertMalformed(selection, f"an entry of {section} has {field} that must be a nonempty "
+                                                    "string", cli=True, options=("--manifest", str(path)))
+
+    def test_malformed_matrix_references_are_rejected_when_loading_the_manifest(self):
+        cases = [("scope", "missing", "unknown scope"),
+                 ("scope-wording", None, "the matrix lacks the cell for vscode-wsl and diagnostics"),
+                 ("checks", None, "checks that must be an array"),
+                 ("checks", ["missing"], 'unknown checks entry "missing"'),
+                 ("notCovered", None, "notCovered that must be an array"),
+                 ("notCovered", ["missing"], 'unknown notCovered entry "missing"'),
+                 ("level", None, "unknown level null")]
+        for field, value, message in cases:
+            with self.subTest(field=field, value=value):
+                manifest = json.loads(builder.MANIFEST_BYTES)
+                if field == "scope":
+                    manifest["setups"][0][field] = value
+                elif field == "scope-wording":
+                    manifest["scopes"][1]["wording"] = value
+                else:
+                    manifest["matrix"]["cells"][0][field] = value
+                data = json.dumps(manifest).encode()
+                path = self.directory / "manifest.json"
+                path.write_bytes(data)
+                events = run_of("lazyvim")
+                events[0]["coverageSha256"] = hashlib.sha256(data).hexdigest()
+                self.assertMalformed(self.select(events), message, cli=True, options=("--manifest", str(path)))
 
 
 # The example in results-example/: demo runs of three setups, each passing,

@@ -105,6 +105,16 @@ MANIFEST_FIELDS = {
     "scopes": ("id", "wording"),
     "gaps": ("id", "kind", "what"),
 }
+# Text that rendering uses without the result schema checking its type.
+# Only a scope's wording may be null: its cells then come from observations.
+MANIFEST_TEXT_FIELDS = {
+    "setups": ("label",),
+    "xfails": ("label", "issue"),
+    "areas": ("label",),
+    "levels": ("wording",),
+    "scopes": ("wording",),
+    "gaps": ("kind", "what"),
+}
 PROFILE_FIELDS = ("id", "workaround", "repeated")
 CELL_FIELDS = ("setup", "feature", "level", "checks", "notCovered")
 SURROGATE = re.compile("[\ud800-\udfff]")
@@ -580,6 +590,12 @@ class Manifest:
                     missing = [field for field in fields if field not in item]
                     if missing:
                         raise ValueError(f"an entry of {section} lacks {missing[0]}")
+                    for field in MANIFEST_TEXT_FIELDS.get(section, ()):
+                        value = item[field]
+                        if section == "scopes" and value is None:
+                            continue
+                        if not isinstance(value, str) or not value.strip():
+                            raise ValueError(f"an entry of {section} has {field} that must be a nonempty string")
             for suite in document["suites"]:
                 for profile in suite["profiles"]:
                     missing = [field for field in PROFILE_FIELDS if field not in profile]
@@ -601,6 +617,24 @@ class Manifest:
             self.levels = by_id(document["levels"])
             self.scopes = by_id(document["scopes"])
             self.gaps = by_id(document["gaps"])
+            # Rendering visits every automated setup's cells, even without
+            # a selected run. Check its references before leaving the loader.
+            for setup in self.setups.values():
+                if setup["scope"] not in self.scopes:
+                    raise ValueError(f"setup {setup['id']} has unknown scope {show(setup['scope'])}")
+                if self.scopes[setup["scope"]]["wording"] is None:
+                    for feature in self.features:
+                        if (setup["id"], feature) not in self.cells:
+                            raise ValueError(f"the matrix lacks the cell for {setup['id']} and {feature}")
+            for cell in self.cells.values():
+                for field, known in (("checks", self.checks), ("notCovered", self.gaps)):
+                    if not isinstance(cell[field], list):
+                        raise ValueError(f"a cell of the matrix has {field} that must be an array")
+                    for key in cell[field]:
+                        if key not in known:
+                            raise ValueError(f"a cell of the matrix has unknown {field} entry {show(key)}")
+                if cell["checks"] and cell["level"] not in self.levels:
+                    raise ValueError(f"a cell of the matrix has unknown level {show(cell['level'])}")
         except (ValueError, RecursionError, KeyError, TypeError) as error:
             raise Unusable(f"the manifest can't be used: {error}") from error
 
@@ -1041,8 +1075,10 @@ EDGES = ("begin", "end")
 # in the release's section or names the release.
 MARKER_NAME = "editor-results:"
 MARKER = re.compile(r"<!-- editor-results:([^\s:]+):([^\s:]+):(begin|end) -->")
-# A heading that ends a release's section: an ATX heading of level 1 to 3.
-HEADING = re.compile(r"#{1,3}(?: |$)")
+# CommonMark ATX headings and fences, each indented by at most three spaces.
+# Only headings of level 1 to 3 end a release's section.
+HEADING = re.compile(r" {0,3}(#{1,6})(?:[ \t]+(.*)|$)")
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 RUNS_HEADER = ("Date", "Commit", "Where", "Command", "Editor", "Result")
 NOT_COVERED = "Not covered"
 NOT_YET_RUN = "Not yet run"
@@ -1251,8 +1287,13 @@ def table(header, rows):
 
 def version_order(version):
     """A sort key for an editor version, or None, that compares its runs of
-    digits as numbers, so that 0.9 comes before 0.10."""
-    return [int(part) if index % 2 else part for index, part in enumerate(re.split("([0-9]+)", version or ""))]
+    digits as numbers, so that 0.9 comes before 0.10, without converting an
+    arbitrarily long token to an integer."""
+    parts = re.split("([0-9]+)", version or "")
+    for index in range(1, len(parts), 2):
+        digits = parts[index].lstrip("0")
+        parts[index] = (len(digits), digits)
+    return parts
 
 
 def render_blocks(release, runs, manifest):
@@ -1282,14 +1323,33 @@ def splice(document, release, blocks):
     starts = [0]
     for line in lines[:-1]:
         starts.append(starts[-1] + len(line) + 1)
+    headings, fence = {}, None
+    for number, line in enumerate(lines):
+        match = FENCE.fullmatch(line)
+        if fence is not None:
+            if MARKER_NAME in line:
+                raise Malformed(f"line {number + 1}: a marker is inside a fenced code block")
+            if match and match[1][0] == fence[0] and len(match[1]) >= len(fence) and not match[2].strip(" \t"):
+                fence = None
+            continue
+        if match and (match[1][0] == "~" or "`" not in match[2]):
+            if MARKER_NAME in line:
+                raise Malformed(f"line {number + 1}: a marker is inside a fenced code block")
+            fence = match[1]
+            continue
+        match = HEADING.fullmatch(line)
+        if match:
+            title = (match[2] or "").strip(" \t")
+            title = re.sub(r"(?:^|[ \t]+)#+$", "", title).rstrip(" \t")
+            headings[number] = (len(match[1]), title)
     heading = f"### {release}"
-    found = [number for number, line in enumerate(lines) if line == heading]
+    found = [number for number, value in headings.items() if value == (3, release)]
     if not found:
         raise Malformed(f"no heading {heading}")
     if len(found) > 1:
         raise Malformed(f"line {found[1] + 1}: a second heading {heading}, after line {found[0] + 1}")
     first = found[0]
-    last = next((number for number in range(first + 1, len(lines)) if HEADING.match(lines[number])), len(lines))
+    last = next((number for number, (level, _) in headings.items() if number > first and level <= 3), len(lines))
     section = f"the section {heading}, lines {first + 1} to {last}"
     markers = {}
     for number, line in enumerate(lines):
@@ -1345,14 +1405,22 @@ def read_document(path):
     return document
 
 
+def reject_symlink(path):
+    if path.is_symlink():
+        raise Malformed(f"{path}: symlinks are not allowed in a selection's paths or directory")
+
+
 def streams_in(directory, selection):
     """The paths, relative to the directory, of the files in it and its
-    subdirectories whose names end in .jsonl, but the selection, sorted."""
+    subdirectories whose names end in .jsonl, but the selection, sorted.
+    Rejects every symlink, including unlisted files and directories."""
     def stop(error):
         raise error
 
     found = []
-    for root, _, files in os.walk(directory, onerror=stop):
+    for root, directories, files in os.walk(directory, onerror=stop):
+        for name in sorted(directories + files):
+            reject_symlink(Path(root, name))
         for name in files:
             path = Path(root, name)
             if name.endswith(".jsonl") and path != selection:
@@ -1365,6 +1433,8 @@ def select(path, manifest, schema, selection_schema):
     order of their paths. Returns its release and a (path, Run) pair for each
     stream. Raises Malformed for the first problem that it finds."""
     try:
+        for component in reversed((path, *path.parents)):
+            reject_symlink(component)
         document = parse_json(path.read_bytes().decode("utf-8"))
     except OSError as error:
         raise Malformed(f"can't read the selection {path}: {error.strerror}") from error
