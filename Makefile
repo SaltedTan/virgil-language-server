@@ -120,6 +120,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp
 	python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp
 	python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp
+	python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp
 	python3 test/benchmarks/test_client.py
 	python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
 	test/release/run.sh
