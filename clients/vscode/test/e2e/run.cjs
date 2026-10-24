@@ -35,6 +35,11 @@ const VSCODE_VERSION = '1.142.0';
 const LAUNCH_TIMEOUT_MS = 120000;
 // How long a stopped process group gets after SIGTERM before SIGKILL.
 const STOP_GRACE_MS = 5000;
+// How long a group gets to end after SIGKILL before the test gives up on it.
+// SIGKILL ends a process at once, or as soon as it leaves an uninterruptible
+// sleep, so this bounds only a group with a process that the test can't
+// stop, such as one that its user may not signal.
+const KILL_WAIT_MS = 30000;
 // How long the servers that a launch started get to exit after VS Code has.
 const SERVER_EXIT_MS = 5000;
 const CHANNEL_LOG = 'Virgil Language Server.log';
@@ -248,18 +253,21 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
 // interrupt can stop all of it: VS Code and the server, or the installer,
 // which bin/code starts without exec on Linux. A stopped group gets SIGTERM,
 // then SIGKILL, and the promise resolves only after the whole group has exited,
-// before the caller removes the temporary directory. If the group still runs
-// one of the servers SERVER_EXIT_MS after the command itself has exited, the
-// group is stopped as well. The group's keeper (see startGroup in
-// processes.cjs) keeps the group's number the run's until then, or until the
-// group's SIGKILL, and sends the group the test's signals; if it goes before,
-// the test signals only the processes that it saw in the group, each by its
-// PID and start time.
+// before the caller removes the temporary directory, or, if it hasn't
+// KILL_WAIT_MS after SIGKILL, with the result's stopped saying so. If the
+// group still runs one of the servers SERVER_EXIT_MS after the command itself
+// has exited, the group is stopped as well. The group's keeper (see
+// startGroup in processes.cjs) keeps the group's number the run's until then,
+// or until the group's SIGKILL, and sends the group the test's signals; if it
+// goes before, the test signals only the processes that it saw in the group,
+// each by its PID and start time.
 function runGroup(command, args, { env, stdin, signal, servers = [] }) {
   return new Promise((resolve) => {
     let stopped;
     let exited;
     let deadline;
+    // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
+    let abandon;
     let finished = false;
     const group = startGroup(command, args, {
       env,
@@ -270,10 +278,11 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       },
     });
     // Resolves once the command has exited and the group holds no process but
-    // its keeper, or is no longer the run's; returns whether it has.
-    const finish = () => {
+    // its keeper, or is no longer the run's, or, with anyway, at once; returns
+    // whether it has.
+    const finish = (anyway = false) => {
       if (finished) return true;
-      if (exited === undefined || group.look()?.empty === false) return false;
+      if (!anyway && (exited === undefined || group.look()?.empty === false)) return false;
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
@@ -294,8 +303,10 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
       if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
-      } else {
-        finish();
+        abandon = Date.now() + KILL_WAIT_MS;
+      } else if (!finish() && abandon !== undefined && Date.now() > abandon) {
+        stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
+        finish(true);
       }
     }, 50);
     const timer = setTimeout(() => stop(`exceeded ${LAUNCH_TIMEOUT_MS / 1000} seconds`), LAUNCH_TIMEOUT_MS);

@@ -33,6 +33,16 @@ function processInfo(pid) {
   }
 }
 
+// Whether p, a process as processInfo or processTable gives it, is a zombie:
+// it has exited, and its parent hasn't reaped it. Linux lists a process whose
+// main thread has exited as a zombie while its other threads run, and they
+// can still start processes and take signals, so it is no zombie until they
+// have exited too. macOS's ps lists a process as a zombie only once it has
+// exited, whole.
+function zombie(p) {
+  return p.state === 'Z' && !(p.threads > 1);
+}
+
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
 // can't tell: on macOS, the kernel lists the PIDs, then looks up each process,
 // and leaves out one that has been reaped in between, so a process that starts
@@ -69,9 +79,9 @@ function psTable(selection) {
 // [[pid, start], ...]]. It prints, as JSON, null if this Python or kernel
 // can't open pidfds and send signals through them, which needs Python 3.9 and
 // Linux 5.3, and otherwise what happened to each process: "sent"; "gone", if
-// it has exited; "other", if its PID is another process's; or "error" and the
-// errno's name, such as "error EPERM", if a pidfd couldn't be opened for it
-// or couldn't signal it.
+// it has exited, even if it is still a zombie (see zombie); "other", if its
+// PID is another process's; or "error" and the errno's name, such as "error
+// EPERM", if a pidfd couldn't be opened for it or couldn't signal it.
 const PIDFD_SIGNAL = `
 import errno, json, os, signal, sys
 name, targets = json.loads(sys.argv[1])
@@ -99,7 +109,7 @@ def outcome(pid, start):
         fields = stat[stat.rindex(')') + 2:].split(' ')
         if fields[19] != start:
             return 'other'
-        if fields[0] == 'Z':
+        if fields[0] == 'Z' and int(fields[17]) < 2:
             return 'gone'
         signal.pidfd_send_signal(fd, getattr(signal, name))
         return 'sent'
@@ -150,11 +160,12 @@ function pidfdSupport() {
 }
 
 // Sends a signal to a process, given by its PID and start time, if a check
-// just before finds that it is still that process and not a zombie; returns
-// what happened, as PIDFD_SIGNAL does, or "failed" and the error's code.
+// just before finds that it is still that process and not a zombie (see
+// zombie); returns what happened, as PIDFD_SIGNAL does, or "failed" and the
+// error's code.
 function checkedSignal({ pid, start }, name) {
   const info = processInfo(pid);
-  if (info == null || info.state === 'Z') return 'gone';
+  if (info == null || zombie(info)) return 'gone';
   if (info.start !== start) return 'other';
   try {
     process.kill(pid, name);
@@ -261,12 +272,13 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // and a zombie can't start a process, so one whose parent never reaps it
   // doesn't keep the group from emptying. On Linux, a process whose main
   // thread has exited is listed as a zombie while its other threads run, and
-  // counts as one only once they have exited too.
+  // counts as one only once they have exited too (see zombie): until then, it
+  // is live, and the runner remembers and signals it as any other.
   const look = () => {
     if (lost) return undefined;
     const { processes, complete } = processTable();
     const members = processes.filter((p) => p.group === number && p.pid !== number);
-    const found = members.filter((p) => p.state !== 'Z');
+    const found = members.filter((p) => !zombie(p));
     const held = ([pid, start]) => {
       const info = processInfo(pid);
       return info?.start === start && info.group === number;
@@ -276,7 +288,6 @@ function startGroup(command, args, { env, stdio, onExit }) {
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
-    const zombie = (p) => p.state === 'Z' && !(p.threads > 1);
     const empty = complete && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
     zombies = new Map(members.filter(zombie).map((p) => [p.pid, p.start]));
     return { processes: found, empty };

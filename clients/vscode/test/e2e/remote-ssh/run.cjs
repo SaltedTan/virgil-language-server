@@ -60,6 +60,9 @@ const SSH_TIMEOUT_MS = 60000;
 // long the rest of a group gets after its first process has exited.
 const STOP_GRACE_MS = 5000;
 const GROUP_EXIT_MS = 10000;
+// How long a group gets to end after SIGKILL before the test gives up on it
+// (see KILL_WAIT_MS in ../run.cjs).
+const KILL_WAIT_MS = 30000;
 // How long the language servers get to exit after their window has closed,
 // or after the test has stopped a remote extension host that VS Code left
 // running; and how long that host gets after SIGTERM, and then SIGKILL.
@@ -237,7 +240,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // milliseconds, or is no longer the run's. The group's keeper stays until
 // then, or until the group's SIGKILL, so the group stays the run's: a process
 // that joins it, even just before the command exits, is waited for, and
-// stopped with the group.
+// stopped with the group. If the group or its output hasn't ended
+// KILL_WAIT_MS after SIGKILL, it resolves all the same, and the result's
+// stopped says so.
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const output = { stdout: [], stderr: [] };
@@ -246,6 +251,8 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
     let open = 2;
     let finished = false;
     let deadline;
+    // When the test gives up on the group, KILL_WAIT_MS after its SIGKILL.
+    let abandon;
     let groupLeft = false;
     const started = Date.now();
     const group = startGroup(command, args, {
@@ -257,8 +264,8 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
         finish();
       },
     });
-    const finish = () => {
-      if (finished || exited === undefined || open > 0 || group.look()?.empty === false) return;
+    const finish = (anyway = false) => {
+      if (finished || (!anyway && (exited === undefined || open > 0 || group.look()?.empty === false))) return;
       finished = true;
       clearTimeout(timer);
       clearInterval(poll);
@@ -281,11 +288,16 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
       if (deadline !== undefined && Date.now() > deadline) {
         deadline = undefined;
         group.signal('SIGKILL');
+        abandon = Date.now() + KILL_WAIT_MS;
       } else if (exited !== undefined && empty) {
         finish();
       } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
         groupLeft = true;
         stop(`left processes running ${GROUP_EXIT_MS / 1000} seconds after it exited`);
+      }
+      if (!finished && abandon !== undefined && Date.now() > abandon) {
+        stopped += `, and hadn't ended ${KILL_WAIT_MS / 1000} seconds after SIGKILL`;
+        finish(true);
       }
     }, 50);
     const timer = setTimeout(() => stop(`exceeded ${timeout / 1000} seconds`), timeout);
@@ -593,7 +605,9 @@ function suiteLines() {
 // that now has the PID. Each signal goes through a pidfd where the target's
 // Python and kernel have them (see PIDFD_SIGNAL in ../processes.cjs), and
 // otherwise, or where a pidfd couldn't be opened for that process or couldn't
-// signal it, follows a second check of the start time.
+// signal it, follows a second check of the start time, and of whether it is a
+// zombie, which it isn't while threads other than its main thread run (see
+// zombie in ../processes.cjs).
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -618,7 +632,7 @@ const send = (name, targets) => {
     if (complete && ${JSON.stringify(SETTLED)}.includes(results[i])) return;
     try {
       const fields = stat(pid);
-      if (fields[0] !== 'Z' && fields[19] === start) process.kill(pid, name);
+      if ((fields[0] !== 'Z' || Number(fields[17]) > 1) && fields[19] === start) process.kill(pid, name);
     } catch {}
   });
 };

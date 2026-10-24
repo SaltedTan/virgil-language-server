@@ -877,6 +877,29 @@ test('the leak check signals a remote extension host only by its PID, start time
   assert.deepEqual(sent, []);
 });
 
+test('without pidfds, the leak check signals a process that has since been listed as a zombie only while its other threads run', () => {
+  // The listing finds the server running. Its main thread then exits, and its
+  // other thread, if it has one, runs on.
+  const options = { root: '/remote', agent: '/remote/server/.vscode-server', kill: ['20@600'] };
+  const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+  for (const [threads, signals] of [[1, []], [2, [[20, 'SIGKILL']]]]) {
+    const processes = new Map([[20, { start: '600', exe: '/remote/virgil-lsp/virgil-lsp' }]]);
+    const sent = [];
+    vm.runInNewContext(REMOTE_PROCESSES, {
+      require: (name) => ({
+        'node:fs': fakeProc(processes),
+        'node:child_process': { spawnSync: () => {
+          Object.assign(processes.get(20), { state: 'Z', threads });
+          return { status: 0, stdout: 'null\n' };
+        } },
+      })[name],
+      process: { pid: 1, argv: [process.execPath, JSON.stringify(options)], kill: (pid, name) => sent.push([pid, name]) },
+      console: { log() {} },
+    });
+    assert.deepEqual(sent, signals, `${threads} threads`);
+  }
+});
+
 // bootstrap.cjs for a launch in mode, in a window with the workspace folders
 // given by URI, with a fake VS Code that hasn't loaded the extension.
 async function bootstrap(mode, folders) {

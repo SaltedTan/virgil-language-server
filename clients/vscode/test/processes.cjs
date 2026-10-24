@@ -143,6 +143,16 @@ test('without /proc, processes and their start times come from ps, and signals f
   assert.deepEqual(kills, [[10, 'SIGTERM'], [10, 'SIGKILL']]);
 });
 
+test('a process whose main thread has exited while its other threads run gets signals after a check, unlike a zombie', () => {
+  // Linux lists both as zombies: 11 with another thread still running, and 12
+  // with none.
+  const table = new Map([[11, { start: '510', state: 'Z', threads: 2 }], [12, { start: '520', state: 'Z' }]]);
+  const kills = [];
+  const fake = fakeProcesses(table, { kill: (pid, name) => kills.push([pid, name]) });
+  assert.deepEqual(fake.signalProcesses([{ pid: 11, start: '510' }, { pid: 12, start: '520' }], 'SIGKILL'), ['sent', 'gone']);
+  assert.deepEqual(kills, [[11, 'SIGKILL']]);
+});
+
 // Starts a real process that the test owns, and returns it with its start
 // time, once it runs.
 async function ownProcess(command, args) {
@@ -208,6 +218,43 @@ ${calls}`;
       child.kill('SIGKILL');
     }
   }
+});
+
+// A command, in Python, whose main thread exits at once while another thread
+// runs on for 30 seconds; it ignores SIGTERM. Linux lists it as a zombie with
+// two threads meanwhile.
+const THREAD_COMMAND = `
+import ctypes, signal, threading, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+threading.Thread(target=time.sleep, args=(30,)).start()
+ctypes.CDLL(None).pthread_exit(None)
+`;
+const threadSkip = process.platform !== 'linux' ? 'only Linux lists a process whose main thread has exited as a zombie' : pythonSkip;
+
+// Whether p, a process given by PID and start time, still runs: it hasn't
+// exited, or only its main thread has.
+function runs(p) {
+  const info = processes.processInfo(p.pid);
+  return info?.start === p.start && !(info.state === 'Z' && !(info.threads > 1));
+}
+
+test('a process whose main thread has exited while its other threads run gets signals, through a pidfd or after a check (real processes)', { skip: threadSkip }, async () => {
+  const real = require('node:child_process');
+  const unchecked = load('processes.cjs', {
+    'node:child_process': { ...real, spawnSync: () => ({ error: Object.assign(new Error('spawnSync python3 ENOENT'), { code: 'ENOENT' }) }) },
+  });
+  for (const fake of pidfdSkip ? [unchecked] : [processes, unchecked]) {
+    const { child, exited, start } = await ownProcess('python3', ['-I', '-c', THREAD_COMMAND]);
+    try {
+      const info = await until(() => (processes.processInfo(child.pid)?.state === 'Z' ? processes.processInfo(child.pid) : undefined), 5000);
+      assert.equal(info?.threads, 2);
+      assert.deepEqual(fake.signalProcesses([{ pid: child.pid, start }], 'SIGKILL'), ['sent']);
+      assert.equal(await exited, 'SIGKILL');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }
+  assert.equal(unchecked.pidfdSupport(), 'python3 is not on PATH');
 });
 
 test('a command in a group gets the runner\'s own standard streams where they are inherited (real processes)', async () => {
@@ -499,6 +546,48 @@ test('both runners stop an interrupted group within the grace period when it hol
   assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
 });
 
+// Runs THREAD_COMMAND under file's runGroup. Once the command's main thread
+// has exited, something sends the keeper SIGSTOP, so that it can't answer the
+// runner, and then the run is interrupted. Checks that the run finishes within
+// 8 seconds, which covers the 5 seconds before SIGKILL, and leaves neither the
+// command nor the keeper running.
+async function threadRun(file) {
+  let group;
+  const fake = { ...processes, startGroup: (...args) => (group = processes.startGroup(...args)) };
+  const runner = load(file, { [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fake }, {}, { setInterval, clearInterval });
+  const controller = new AbortController();
+  let result;
+  const running = runner.runGroup('python3', ['-I', '-c', THREAD_COMMAND], {
+    env: process.env, stdin: 'ignore', timeout: 60000, signal: controller.signal,
+  }).then((value) => { result = value; });
+  const keeper = processes.processInfo(group.pid);
+  let command;
+  try {
+    command = await until(() => processes.processTable().processes
+      .find((p) => p.group === keeper.pid && p.pid !== keeper.pid && p.state === 'Z' && p.threads > 1), 5000);
+    assert.notEqual(command, undefined, `${file}: the command's main thread didn't exit`);
+    processes.signalProcesses([keeper], 'SIGSTOP');
+    assert.ok(await until(() => processes.processInfo(keeper.pid)?.state === 'T', 2000), `${file}: the keeper didn't stop`);
+    const at = Date.now();
+    controller.abort();
+    // The run's own timers, not these, keep the test going while it runs.
+    await Promise.race([running, new Promise((resolve) => setTimeout(resolve, 8000).unref())]);
+    assert.notEqual(result, undefined, `${file} hadn't finished ${Date.now() - at} ms after the interrupt`);
+    assert.deepEqual([result.stopped, result.signal], ['was interrupted', 'SIGKILL'], file);
+    assert.ok(await until(() => ![command, keeper].some(runs), 1000), `${file} left the command or the keeper running`);
+  } finally {
+    // Not through processes.cjs, whose signals may be what failed.
+    for (const p of [command, keeper]) if (p !== undefined && runs(p)) process.kill(p.pid, 'SIGKILL');
+    controller.abort();
+    await Promise.race([running, new Promise((resolve) => setTimeout(resolve, 10000).unref())]);
+  }
+}
+
+test('both runners stop a group whose keeper has been stopped when it holds a process whose main thread has exited (real processes)', { skip: threadSkip, timeout: 30000 }, async () => {
+  const outcomes = await Promise.allSettled(['run.cjs', 'remote-ssh/run.cjs'].map(threadRun));
+  assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
+});
+
 test('a group whose keeper Node.js has reaped is never signaled by its number, even before the keeper\'s exit event (real processes)', async (t) => {
   // Two keepers exit together. Node.js reaps both before it runs the first
   // one's exit listeners, so the second's ChildProcess still looks unreaped
@@ -717,6 +806,52 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
     run.advance(50);
     assert.equal((await run.result())?.code, 0);
     assert.deepEqual(run.signals, []);
+  });
+
+  test(`${file} signals a process whose main thread has exited as any other, once the keeper doesn't answer`, async () => {
+    for (const pidfd of [false, true]) {
+      // VS Code's main thread has exited before any look, while its other
+      // threads, which ignore SIGTERM, run on. The keeper is stopped; then an
+      // interrupt.
+      const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50, state: 'Z', threads: 2 }]]);
+      const run = localRunGroup(table, { file, pidfd });
+      run.keeper.command(51);
+      run.keeper.close();
+      run.keeper.stopped = true;
+      table.get(50).state = 'T';
+      run.interrupt();
+      run.advance(1050);
+      const both = (name) => (pidfd ? [['pidfd', name, [[51, '100'], [50, '90']]]] : [[51, name], [50, name]]);
+      assert.deepEqual(run.signals, both('SIGTERM'), `pidfd ${pidfd}`);
+      run.advance(4100);
+      assert.deepEqual(run.signals, [...both('SIGTERM'), ...both('SIGKILL')], `pidfd ${pidfd}`);
+      const result = await run.result();
+      assert.deepEqual([result?.stopped, result?.code, result?.signal], ['was interrupted', null, 'SIGKILL'], `pidfd ${pidfd}`);
+      assert.deepEqual([...table.keys()], []);
+    }
+  });
+
+  test(`${file} gives up on a group that SIGKILL doesn't end, 30 seconds later`, async () => {
+    // VS Code ignores SIGTERM, and a process in its group that the runner's
+    // user may not signal stays; then an interrupt.
+    const table = new Map([[50, { start: '90', group: 50 }], [51, { start: '100', group: 50 }], [52, { start: '110', group: 50, stays: true }]]);
+    const run = localRunGroup(table, { file });
+    run.keeper.command(51);
+    run.keeper.close();
+    run.interrupt();
+    run.advance(5100);
+    assert.deepEqual(run.signals, [['keeper', 'SIGTERM'], ['keeper', 'SIGKILL']]);
+    // Node.js reaps the keeper.
+    assert.equal(await run.result(), undefined);
+    run.advance(29900);
+    assert.equal(await run.result(), undefined);
+    run.advance(100);
+    const result = await run.result();
+    assert.deepEqual([result?.stopped, result?.code, result?.signal], ['was interrupted, and hadn\'t ended 30 seconds after SIGKILL', null, 'SIGKILL']);
+    // The keeper went before it could say that it had sent SIGKILL, so the
+    // runner sent it to the processes that it saw in the group too.
+    assert.deepEqual(run.signals.slice(2), [[52, 'SIGKILL']]);
+    assert.deepEqual([...table.keys()], [52]);
   });
 
   test(`${file} observes an interrupt during the keeper release wait`, async () => {

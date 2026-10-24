@@ -178,7 +178,7 @@ function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], d
     const results = targets.map(([pid, start]) => {
       const p = processes.get(pid);
       if (p?.start !== start) return p === undefined ? 'gone' : 'other';
-      if (p.state === 'Z') return 'gone';
+      if (p.state === 'Z' && !(p.threads > 1)) return 'gone';
       deliver(pid, name);
       return 'sent';
     });
@@ -196,8 +196,9 @@ function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], d
 // one to its whole group while it is in processes, as the same entry. signals
 // gets [target, name] for each kill, and ['keeper', name] for each of the
 // keeper's. The keeper ignores every signal but SIGKILL, after which Node.js
-// reaps it; other processes go on SIGKILL, and may say, with on(name), what
-// happens on others.
+// reaps it; other processes go on SIGKILL, unless they have stays, as a
+// process that the runner's user may not signal does, and may say, with
+// on(name), what happens on others.
 function fakeGroup(processes, signals = []) {
   const keeper = fakeKeeper(50);
   const entry = processes.get(50);
@@ -205,7 +206,7 @@ function fakeGroup(processes, signals = []) {
     const p = processes.get(pid);
     if (p === undefined || (pid === 50 && name !== 'SIGKILL')) return;
     p.on?.(name);
-    if (name !== 'SIGKILL') return;
+    if (name !== 'SIGKILL' || p.stays) return;
     processes.delete(pid);
     if (pid === 50) queueMicrotask(() => keeper.reap('SIGKILL'));
   };
