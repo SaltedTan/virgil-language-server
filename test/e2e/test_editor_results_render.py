@@ -390,7 +390,7 @@ class RunsTableTest(unittest.TestCase):
                          "exit code 1; cleanup failed; 2 issues",
                          row(rebuild(events, status="fail", exitCode=1, cleanup="failed", issues=["a", "b"]))[5])
         events = run_of("remote-ssh")[:40] + run_of("remote-ssh")[-1:]
-        self.assertEqual("Aborted (39 of 162 observations): 39 pass; signal SIGTERM; cleanup unknown",
+        self.assertEqual("Aborted (39 of 165 observations): 39 pass; signal SIGTERM; cleanup unknown",
                          row(rebuild(events, status="aborted", exitCode=None, signal="SIGTERM", cleanup="unknown"))[5])
         events = rebuild(run_of("nvim"), status="fail", exitCode=None)
         self.assertEqual("Failed (22 of 22 observations): 22 pass; no exit code", row(events)[5])

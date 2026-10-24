@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
+const { ErrorCodes, ResponseError } = require('vscode-jsonrpc');
 
 function deferred() {
   let resolve;
@@ -199,7 +200,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
         },
       };
       if (name === 'vscode') return vscode;
-      if (name === 'vscode-languageclient/node') return { ErrorAction, LanguageClient, State, TransportKind: { stdio: 0 } };
+      if (name === 'vscode-languageclient/node') return { ErrorAction, ErrorCodes, ResponseError, LanguageClient, State, TransportKind: { stdio: 0 } };
       if (name === 'node:fs/promises') return {
         realpath: async (file) => file,
         stat: async () => ({ isFile: () => true }),

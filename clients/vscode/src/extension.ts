@@ -52,6 +52,8 @@ class QueuedLanguageClient extends LanguageClient {
   watchers: vscode.Disposable[] = [];
   notificationDrainTimeout = NOTIFICATION_DRAIN_TIMEOUT_MS;
   private readonly pendingNotifications = new Set<Promise<void>>();
+  private readonly pendingRequests = new Set<(error: ResponseError<void>) => void>();
+  private requestFailure: ResponseError<void> | undefined;
 
   constructor(id: string, name: string, serverOptions: ServerOptions, clientOptions: LanguageClientOptions) {
     // The library's default handler, created once the client exists, keeps
@@ -70,9 +72,24 @@ class QueuedLanguageClient extends LanguageClient {
         // open, with no close to decide, so the default handler does: it
         // reports the error and, for a read error like that one, stops the
         // client.
-        error: (error, message, count) => CLOSING_ERRORS.has((error as NodeJS.ErrnoException).code ?? '')
-          ? { action: ErrorAction.Continue, handled: true }
-          : defaultHandler!.error(error, message, count),
+        error: async (error, message, count) => {
+          if (CLOSING_ERRORS.has((error as NodeJS.ErrnoException).code ?? '')) {
+            return { action: ErrorAction.Continue, handled: true };
+          }
+          const result = await defaultHandler!.error(error, message, count);
+          if (result.action === ErrorAction.Shutdown) {
+            // A lost response also makes shutdown time out. In 10.1.2 that
+            // path never disposes the connection, leaving requests pending
+            // even after the server is killed. End our callers' waits now;
+            // the default handler still reports the fault and stops the server.
+            const failure = new ResponseError<void>(ErrorCodes.MessageReadError,
+              `The language server connection failed: ${error.message}`);
+            this.requestFailure = failure;
+            for (const reject of this.pendingRequests) reject(failure);
+            this.pendingRequests.clear();
+          }
+          return result;
+        },
         // The library's policy: restart, unless the server crashed 5 times in
         // 3 minutes; then stop, with its message.
         closed: () => defaultHandler!.closed(),
@@ -81,16 +98,32 @@ class QueuedLanguageClient extends LanguageClient {
     defaultHandler = this.createDefaultErrorHandler();
   }
 
+  override sendRequest<R>(type: any, ...params: [any?, vscode.CancellationToken?]): Promise<R> {
+    if (this.requestFailure !== undefined) return Promise.reject(this.requestFailure);
+    // Include requests waiting for document synchronization, not just those
+    // already written. Both outcomes of the library's promise stay handled
+    // if its answer arrives after we have rejected the caller's request.
+    return new Promise<R>((resolve, reject) => {
+      this.pendingRequests.add(reject);
+      const forget = () => this.pendingRequests.delete(reject);
+      super.sendRequest<R>(type, ...params).then(
+        (value) => { forget(); resolve(value); },
+        (error) => { forget(); reject(error); },
+      );
+    });
+  }
+
   override handleFailedRequest<T>(
     type: MessageSignature, token: vscode.CancellationToken | undefined, error: any, defaultValue: T,
     showNotification = true, throwOnCancel = false,
   ): T {
     // JSON-RPC also rejects a request whose write failed, dropping the
-    // original error code. Let the connection handler above decide whether
-    // to notify: pipe errors stay quiet, and other write errors are reported
-    // by the default handler. Keep the request's log and rejection.
+    // original error code. The connection handler above also rejects pending
+    // requests on a read error. Let that handler decide whether to notify;
+    // keep each request's log and rejection.
     return super.handleFailedRequest(type, token, error, defaultValue,
-      showNotification && !(error instanceof ResponseError && error.code === ErrorCodes.MessageWriteError), throwOnCancel);
+      showNotification && !(error instanceof ResponseError
+        && (error.code === ErrorCodes.MessageWriteError || error.code === ErrorCodes.MessageReadError)), throwOnCancel);
   }
 
   override start(): Promise<void> {
@@ -105,6 +138,7 @@ class QueuedLanguageClient extends LanguageClient {
   }
 
   startInQueue(): Promise<void> {
+    this.requestFailure = undefined;
     return super.start();
   }
 

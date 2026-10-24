@@ -530,6 +530,7 @@ async function workspace(extension) {
   await actionDuringRecovery(failures, words, 'configuration');
   await writeAfterServerDied(failures, bad, words);
   await lostFraming(failures, bad, words);
+  await lostFraming(failures, bad, words, true);
   await crashLimit(failures, bad, words);
   await pendingEditRestart(failures, bad, words);
   assert.deepEqual(failures, [], 'scenarios failed');
@@ -1149,14 +1150,16 @@ async function writeAfterServerDied(failures, bad, words) {
 // the stop times out, and 2 seconds later the library kills the processes
 // that it started. The server starts as the child of a recoveryServer script,
 // which writes one line to the client when the test asks.
-async function lostFraming(failures, bad, words) {
+async function lostFraming(failures, bad, words, pendingRequest = false) {
   const server = setting('virgil.server.path');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'framing-'));
   const remaining = () => {
     const [child] = recorded(directory, 'child').map(Number);
     return groupProcesses().filter((p) => p.args.includes(directory) || p.pid === child || p.ppid === child);
   };
-  await scenario(failures, 'a line on the server\'s output that is not a message: the client reports it and stops', async () => {
+  const name = pendingRequest ? 'vscode.recovery.lost-framing-request'
+    : 'a line on the server\'s output that is not a message: the client reports it and stops';
+  await scenario(failures, name, async () => {
     fs.writeFileSync(path.join(directory, 'stray'), '');
     const { pid } = await startRecoveryServer(server, directory);
     await expectParserDiagnostic(bad);
@@ -1164,10 +1167,28 @@ async function lostFraming(failures, bad, words) {
     const log = logFromHere();
     fs.writeFileSync(path.join(directory, 'inject'), '');
     await waitFor('the script to write the line', () => fs.existsSync(path.join(directory, 'injected')));
-    // The server's answer to a hover now follows the line. The hover itself
-    // can stay pending.
-    vscode.commands.executeCommand('vscode.executeHoverProvider', bad.document.uri, new vscode.Position(0, 0))
-      .then(() => {}, () => {});
+    // This request's response follows the bad line. Use rename for the
+    // pending-request check: its command propagates the provider's error,
+    // whereas VS Code swallows hover errors and returns an empty list.
+    const began = performance.now();
+    let settled;
+    const request = pendingRequest
+      ? vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', bad.document.uri, new vscode.Position(0, 0), 'Renamed')
+      : vscode.commands.executeCommand('vscode.executeHoverProvider', bad.document.uri, new vscode.Position(0, 0));
+    request.then(
+      (value) => { settled = { value, ms: performance.now() - began }; },
+      (error) => { settled = { error, ms: performance.now() - began }; },
+    );
+    if (pendingRequest) {
+      // Rejection is local, with no response or shutdown to wait for. Allow
+      // one second for Extension Host scheduling and command IPC, still well
+      // below the library's two-second shutdown timeout.
+      await waitFor('the rename that hit lost framing to settle with an error within 1000 ms', () => settled, 1000);
+      assert.ok(settled.ms < 1000, JSON.stringify(settled));
+      assert.match(String(settled.error), /The language server connection failed: Header must provide a Content-Length property/);
+      assert.ok(!log().includes('Stopping server timed out'), log());
+      console.log(`Lost-framing rename rejected after ${Math.round(settled.ms)} ms`);
+    }
     await waitFor('the client to report the error and stop', () => log().includes('Shutting down server.'))
       .catch((error) => { throw new Error(`${error.message}; the log since the line:\n${log()}`); });
     expectInOrder(log(), ['[error] Client Virgil Language Server: connection to server is erroring.', 'Shutting down server.']);
