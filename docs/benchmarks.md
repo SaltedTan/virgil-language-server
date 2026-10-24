@@ -4,8 +4,8 @@ The performance benchmark measures whole-program analyses and editor
 requests over real stdio pipes. The [syntax-error tolerance benchmark](#semantics-during-syntax-errors)
 measures semantic availability and correctness while editing. Both use Python
 3.9+ and its standard library, including the
-[`Session` protocol client](../test/protocol/worker.py). Timing budgets and scheduled
-CI comparisons are separate work; these measurements do not gate releases.
+[`Session` protocol client](../test/protocol/worker.py). The [weekly comparison](#scheduled-comparison)
+reports changes without timing budgets; these measurements do not gate releases.
 
 ## Run
 
@@ -221,6 +221,85 @@ fresh CLI parse/verify statistics and retains its regression tests. Its CLI outp
 path and statistics differ from this full-snapshot protocol workload; it cannot
 replace end-to-end measurements.
 
+## Scheduled comparison
+
+The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
+04:23 UTC on `ubuntu-24.04` and `macos-15`, in separate jobs. Each compares current
+`main` with the first commit in its first-parent history whose committer date is
+at least seven days before the run. If no such commit exists, it uses the nearest
+reachable release tag (`v[0-9]*`). Manual dispatch accepts `base_ref` and `new_ref`;
+the defaults are `last-week` and `origin/main`. `last-week` selects from
+`new_ref`'s first-parent history with the same date and release-tag fallback.
+A pull request that changes the workflow, its benchmark scripts, their build
+inputs, or benchmark tests compares its head SHA with its base SHA, using the
+pull request's benchmark tooling.
+
+[`scripts/bench-compare.py`](../scripts/bench-compare.py) builds both refs with
+`BENCH=1` and `bench-metadata`, in fresh equal-length `base` and `next` checkouts
+with identical `build/bench` directories. Generated BuildInfo uses full commit
+SHAs for equal-length revision strings; tracked sources are unchanged. Both
+refs must have benchmark probes and metadata support (introduced in
+[#237](https://github.com/SaltedTan/virgil-language-server/pull/237)), and must use
+the same pinned Virgil as the tooling checkout's corpus. An explicit ref without
+them fails the comparison rather than produce misleading results. A week-old
+baseline without them, such as the first scheduled runs' (benchmark support
+landed on 2026-10-24) or one from before a Virgil pin bump, moves forward along
+the newer ref's first-parent history to the first commit that has both; a notice
+and the job summary say which commit was requested and which was used, and
+`refs.json` records the note. If no commit up to the newer build has both, the
+comparison fails.
+
+One client invocation measures all three projects, alternating build order by
+process block, with three blocks, two warmups, and five measured operations per
+scenario per block. Linux uses `taskset` on the first allowed CPU, inherited by
+the servers and workers. macOS has no `taskset`; it explicitly uses `--cpu none`.
+Its Apple Silicon host runs the x86-64-darwin executables under Rosetta 2. Host
+details and actual affinity are recorded in the JSON. Each comparison uses one
+runner; measurements from different runs or operating systems are not paired.
+
+The job summary shows each case's median and p10–p90 in milliseconds, the relative
+median change (`new/base - 1`, positive means slower), and total server/worker GC
+counts across measured transactions. Warmups and explicit final collections are
+excluded. `—` means no instrumented transaction, as for a cache hit, rather than
+a measured zero. Raw samples retain the GC counts for each transaction.
+
+[`scripts/bench-report.py`](../scripts/bench-report.py) flags either direction
+only when p10–p90 intervals do not overlap **and** the absolute median change is
+greater than **25%**. The Linux reference's fresh/reused analysis intervals span
+roughly 6–18% of their medians, while fast requests can have much wider tails
+(small completion-hit spans about 45%, and Aeneas hover has an outlier tail).
+The 25% threshold is deliberately larger than the ordinary analysis spread;
+requiring disjoint intervals also avoids flagging those noisy tails. It is an
+advisory heuristic, not a statistical significance test. Flags produce warning
+annotations, never a failed timing check. Build or benchmark correctness failures
+still fail the job. Rerun a flagged comparison and inspect its blocks and GC
+behavior before calling it a regression or improvement.
+
+Download `benchmarks-ubuntu-24.04` or `benchmarks-macos-15` from the workflow run's
+artifacts (retained for 90 days). Each contains `comparison.json`, resolved
+`refs.json`, and `summary.md`; macOS also contains `baseline.md`, the newer
+build's reference table. Failed benchmarks retain `comparison.json.failure.json`
+when available. Per-case budgets should be proposed separately only after
+several weeks of scheduled results establish runner variability.
+
+To reproduce the build and measurement steps locally, from a physical checkout
+with full history, tags, and the pinned submodule initialized:
+
+```sh
+python3 scripts/bench-compare.py --base-ref BASE_SHA --new-ref NEW_SHA \
+  --work-dir "$PWD/build/bench-checkouts" --output-dir "$PWD/build/bench-results"
+python3 scripts/bench-report.py build/bench-results/comparison.json --annotations > build/bench-results/summary.md
+python3 scripts/bench-report.py build/bench-results/comparison.json --baseline > build/bench-results/baseline.md
+```
+
+The work directory must not exist; it is removed after the run. The output
+directory remains. `test/benchmarks/test_report.py`, included in `make test`,
+checks flag boundaries, warmup exclusion, server/worker GC accounting, ref
+selection, and baseline rendering. Its `linux-reference.json` fixture retains
+the latency summaries and host/build identifiers from the recorded Linux
+`compare-default.json` below (raw samples and other metrics omitted); the
+expected table matches the documented current default-heap baseline exactly.
+
 ## Reference baseline
 
 Measured on 2026-10-25 at implementation revision
@@ -392,8 +471,55 @@ Aeneas medians from six measured operations per build:
 | Semantic publication | 529.771 | 527.332 | −0.5% |
 
 This short control bounds the observed effect on these samples; noise and probe
-syscalls remain. It establishes no sub-millisecond equivalence. No macOS timing
-baseline was collected.
+syscalls remain. It establishes no sub-millisecond equivalence. See the
+[macOS reference baseline](#macos-reference-baseline) for macOS measurements.
+
+## macOS reference baseline
+
+Measured on 2026-10-24 (22:34 UTC) by the `Compare builds (macos-15)` job of
+[run 40139072206](https://github.com/SaltedTan/virgil-language-server/actions/runs/40139072206),
+the pull request that added the weekly comparison, at revision
+`027c8d62190f7c0a650542059410a2d2e8a1d2f3`, whose server sources are those of
+`677be00`, with Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5`. The host was
+the hosted `macos-15` runner: an Apple M1 (Virtual) with 3 logical CPUs, macOS
+15.7.9, Python 3.14.7, running the x86-64-darwin server and worker under
+Rosetta 2, with no CPU pinning (macOS has no `taskset`). Its load average was
+5.5 when the run started (16.7 over five minutes), so other work shared the
+machine. It is a different host and execution environment from the Linux
+reference above; its numbers are not comparable with that baseline, and they
+are a reference, not budgets.
+
+The table is the job's `baseline.md`, which the workflow generates from the
+newer build's samples in `comparison.json`:
+
+```sh
+python3 scripts/bench-report.py results/comparison.json --baseline > results/baseline.md
+```
+
+All three pinned projects ran in three process blocks with two warmups and five
+measured operations per scenario per block, so each cell summarizes 15 measured
+operations; warmups are excluded. The default heaps were used, and the corpus
+SHA-256 was
+`625735d5760c6bbe9e3ee16aadd01367e5a674cef15567773822c11d37043350`. Median
+(p10–p90), in milliseconds:
+
+| Scenario | small | util | Aeneas |
+| --- | ---: | ---: | ---: |
+| `fresh_analysis` | 46.438 (43.906–52.099) | 117.437 (107.836–129.663) | 1340.596 (1255.567–1699.763) |
+| `reused_analysis` | 0.937 (0.832–1.034) | 42.825 (35.153–55.366) | 989.911 (924.980–1293.568) |
+| `syntax_diagnostic` | 0.287 (0.259–0.364) | 1.002 (0.910–1.515) | 1.691 (1.565–2.578) |
+| `semantic_diagnostic` | 203.917 (203.123–204.735) | 250.413 (245.318–259.054) | 1178.017 (1124.797–1309.753) |
+| `completion_miss` | 3.209 (2.963–4.334) | 32.865 (28.763–35.843) | 480.467 (414.266–640.432) |
+| `completion_hit` | 1.729 (1.535–3.037) | 3.024 (2.348–4.485) | 9.402 (7.998–18.820) |
+| `definition` | 0.269 (0.245–0.332) | 1.279 (1.231–1.350) | 6.022 (4.962–69.074) |
+| `hover` | 0.296 (0.235–0.537) | 1.355 (1.234–1.727) | 5.525 (4.875–10.619) |
+| `references` | 0.292 (0.279–0.360) | 1.432 (1.305–1.613) | 6.936 (6.309–12.444) |
+| `prepareRename` | 1.770 (1.645–2.455) | 26.103 (23.860–30.834) | 243.000 (214.236–328.126) |
+| `rename` | 4.894 (4.149–6.270) | 106.033 (92.241–116.272) | 1514.359 (1391.423–1773.595) |
+
+The wide upper ranges on Aeneas, such as `definition`'s 69 ms p90, reflect the
+shared virtual host. Weekly runs on the same runner type will show how much it
+varies before any budget is proposed.
 
 ## Semantics during syntax errors
 

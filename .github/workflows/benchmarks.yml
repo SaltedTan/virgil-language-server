@@ -1,0 +1,83 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: '23 4 * * 1' # Mondays at 04:23 UTC.
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: 'Baseline ref (last-week selects main history from seven days ago)'
+        default: last-week
+        required: true
+        type: string
+      new_ref:
+        description: 'Newer ref'
+        default: origin/main
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/benchmarks.yml
+      - scripts/bench-compare.py
+      - scripts/bench-report.py
+      - scripts/bench-lsp.py
+      - scripts/bench-build-info.py
+      - scripts/bench-corpus.py
+      - test/benchmarks/**
+      - test/fixtures/analysis/two-file/**
+      - test/protocol/worker.py
+      - scripts/v3c.sh
+      - scripts/gen-buildinfo.sh
+      - Makefile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Compare builds (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: tooling
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rosetta 2
+        if: runner.os == 'macOS'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - name: Build and compare
+        env:
+          BASE_REF: ${{ inputs.base_ref || 'last-week' }}
+          NEW_REF: ${{ inputs.new_ref || 'origin/main' }}
+        run: |
+          python3 tooling/scripts/bench-compare.py \
+            --base-ref "$BASE_REF" --new-ref "$NEW_REF" \
+            --work-dir "$RUNNER_TEMP/bench-builds" \
+            --output-dir "$GITHUB_WORKSPACE/results"
+      - name: Summarize comparison
+        run: |
+          python3 tooling/scripts/bench-report.py results/comparison.json --annotations > results/summary.md
+          cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Produce macOS reference table
+        if: runner.os == 'macOS'
+        run: |
+          python3 tooling/scripts/bench-report.py results/comparison.json --baseline > results/baseline.md
+          cat results/baseline.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: benchmarks-${{ matrix.os }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 90
