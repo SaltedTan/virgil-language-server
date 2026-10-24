@@ -46,7 +46,8 @@ Virgil upgrades are separate pull requests labelled `dependency/virgil`:
 1. `git -C vendor/virgil fetch && git -C vendor/virgil checkout <sha>`
 2. Regenerate the benchmark corpus with `python3 scripts/bench-corpus.py --write`
    and review the diff, including file hashes and query/edit anchors. Tests read
-   the gitlink from `HEAD`, so test a commit containing both updated pins.
+   the gitlink from the index, so stage the new gitlink and the regenerated
+   corpus together, then run `make test` before committing.
 3. `make clean test` and fix any adapter breakage inside `src/analysis/`. Run a
    short `make bench BENCH_ARGS='--blocks 1 --operations 1 --warmups 0 --output build/pin-bump-bench.json'`
    before finalizing the upgrade.

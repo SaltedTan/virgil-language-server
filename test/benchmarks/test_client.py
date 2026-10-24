@@ -9,7 +9,10 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -106,10 +109,47 @@ class CorpusPinTest(unittest.TestCase):
         # Keep policy cases independent of the real vendor checkout (advisory CI).
         with mock.patch.object(bench.corpus, "generate", return_value=self.pinned) as generated:
             projects, notice = self.validate(self.revision, self.revision)
-            self.assertEqual(projects, list(self.pinned["projects"]))
+            self.assertEqual(projects, list(bench.corpus.PROJECTS))
             self.assertEqual(notice, "")
             generated.assert_called_once_with(projects, self.revision)
             self.validate(self.revision, self.revision, strict=True)
+
+    def test_manifest_must_list_exactly_the_reviewed_projects(self):
+        for change, expected in (("missing", "missing util"), ("extra", "unexpected extra")):
+            changed = copy.deepcopy(self.pinned)
+            if change == "missing":
+                changed["projects"].pop("util")
+            else:
+                changed["projects"]["extra"] = changed["projects"]["small"]
+            with mock.patch.object(bench.corpus, "MANIFEST") as manifest:
+                manifest.read_text.return_value = json.dumps(changed)
+                for gitlink, checkout, strict in ((self.revision, self.revision, False),
+                                                  (self.revision, self.revision, True),
+                                                  (self.revision, "a" * 40, False),
+                                                  ("unknown", "unknown", False)):
+                    with self.subTest(change=change, gitlink=gitlink, checkout=checkout, strict=strict):
+                        with mock.patch.object(bench.corpus, "revisions", return_value=(gitlink, checkout)):
+                            with self.assertRaises(AssertionError) as error:
+                                bench.corpus.validate(strict=strict)
+                        message = str(error.exception)
+                        for detail in ("small, util, aeneas", expected,
+                                       "python3 scripts/bench-corpus.py --write"):
+                            self.assertIn(detail, message)
+
+    def test_gitlink_is_read_from_the_index(self):
+        with mock.patch.object(bench.corpus, "git_revision",
+                               side_effect=[f"160000 {self.revision} 0\tvendor/virgil", self.revision]) as git:
+            self.assertEqual(bench.corpus.revisions(), (self.revision, self.revision))
+        self.assertEqual(git.call_args_list[0].args[1:], ("ls-files", "-s", "vendor/virgil"))
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_unborn_head_with_staged_gitlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", "-q", "--initial-branch=main", directory], check=True)
+            subprocess.run(["git", "-C", directory, "update-index", "--add", "--cacheinfo",
+                            f"160000,{self.revision},vendor/virgil"], check=True)
+            with mock.patch.object(bench.corpus, "ROOT", Path(directory)):
+                self.assertEqual(bench.corpus.revisions()[0], self.revision)
 
     def test_advisory_and_export_check_small_without_reading_vendor(self):
         generate = bench.corpus.generate

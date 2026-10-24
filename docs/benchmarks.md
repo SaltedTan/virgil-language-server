@@ -41,11 +41,14 @@ python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output /dev/null
 `make test` runs the small smoke case and the client's rejection checks. The smoke
 case takes under a second on the reference host; the full benchmark is not part
 of `make test`. Smoke runs need no benchmark build metadata. The tests compare
-the corpus revision to the superproject's `vendor/virgil` gitlink. A changed
-gitlink requires corpus regeneration. If the checkout differs from a matching
-gitlink (the advisory Virgil-master workflow), or there is no Git metadata, they
-print one notice and skip vendor corpus projects while checking the small
-fixture. Strict benchmarks always require matching pins and hashes.
+the corpus revision to the superproject's `vendor/virgil` gitlink in the index
+(which matches `HEAD` unless a pin bump is staged). A changed gitlink requires
+corpus regeneration. The manifest must list exactly the three reviewed projects
+(`small`, `util`, and `aeneas`) in every mode; deleting one cannot skip it. If
+the checkout differs from a matching gitlink (the advisory Virgil-master
+workflow), or there is no Git metadata, they print one notice and skip vendor
+corpus projects while checking the small fixture. Strict benchmarks always
+require matching pins and hashes.
 `--require-probes` requires one complete phase transaction for each
 analysis, completion miss, rename preflight, and semantic publication, and no
 worker transaction for a cache hit, current navigation, or syntax publication.
@@ -78,8 +81,8 @@ that command merely to make a failed check pass. When changing the small fixture
 also advance the full literal `SMALL_REVISION` in the generator to a commit
 containing those bytes. For a compiler pin bump, follow the
 [pin update checklist](../CONTRIBUTING.md#updating-the-pinned-virgil-revision):
-regenerate the corpus, review hashes and anchors, then rerun `make test` and a
-short `make bench` from a commit containing both updated pins.
+regenerate the corpus, review hashes and anchors, then stage both updated pins
+and rerun `make test` and a short `make bench` before committing.
 Run old and new corpora separately
 when assessing a compiler pin change.
 

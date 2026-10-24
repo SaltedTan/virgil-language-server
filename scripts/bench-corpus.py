@@ -12,6 +12,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "test/benchmarks/corpus.json"
 SMALL_REVISION = "9a9e384dc371a88268762a66115c1bec8c283f0d"  # Revision introducing the benchmark's source baseline.
+# The reviewed corpus covers these projects. The list is fixed here rather than
+# derived from the manifest so that deleting a project cannot disable its checks.
+PROJECTS = ("small", "util", "aeneas")
 
 
 def sha256(data):
@@ -46,15 +49,36 @@ def git_revision(path, *args):
 
 
 def revisions():
-    tree = git_revision(ROOT, "ls-tree", "HEAD", "vendor/virgil")
-    match = re.fullmatch(r"160000 commit ([0-9a-f]{40})\tvendor/virgil", tree)
+    # Read the gitlink from the index, not HEAD: CI and fresh clones have the
+    # same value there, and a staged pin bump can be validated before it is
+    # committed. Only inspecting another commit inside vendor/virgil (the
+    # advisory workflow) leaves the index alone.
+    tree = git_revision(ROOT, "ls-files", "-s", "vendor/virgil")
+    match = re.fullmatch(r"160000 ([0-9a-f]{40}) 0\tvendor/virgil", tree)
     return (match[1] if match else "unknown",
             git_revision(ROOT / "vendor/virgil", "rev-parse", "HEAD"))
+
+
+def check_projects(pinned):
+    """Require the manifest to list exactly the reviewed projects, in any mode."""
+    projects = pinned.get("projects") or {}
+    missing = [name for name in PROJECTS if name not in projects]
+    extra = sorted(set(projects) - set(PROJECTS))
+    if missing or extra:
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if extra:
+            details.append("unexpected " + ", ".join(extra))
+        raise AssertionError(f"corpus projects must be exactly {', '.join(PROJECTS)}; "
+                             f"the manifest has {' and '.join(details)}; "
+                             "run python3 scripts/bench-corpus.py --write and review the diff")
 
 
 def validate(strict=True):
     """Validate all pins for benchmarks; tests may skip an unpinned vendor tree."""
     pinned = json.loads(MANIFEST.read_text())
+    check_projects(pinned)
     gitlink, checkout = revisions()
     revision = pinned["virgil_source_revision"]
     regenerate = ("run python3 scripts/bench-corpus.py --write and review the hashes and anchors; "
@@ -66,7 +90,7 @@ def validate(strict=True):
     if strict and not vendor_matches:
         raise AssertionError(f"benchmark requires pinned Virgil {revision}; gitlink {gitlink}, checkout {checkout}; "
                              + regenerate)
-    projects = list(pinned["projects"]) if vendor_matches else ["small"]
+    projects = list(PROJECTS) if vendor_matches else ["small"]
     if not vendor_matches:
         print(f"benchmark corpus: skipping vendor projects (util, aeneas): pinned {revision}, "
               f"gitlink {gitlink}, checkout {checkout}; checking in-repo fixtures", file=sys.stderr)
@@ -75,7 +99,7 @@ def validate(strict=True):
     return pinned, projects
 
 
-def generate(projects=("small", "util", "aeneas"), virgil_revision=None):
+def generate(projects=PROJECTS, virgil_revision=None):
     virgil = ROOT / "vendor/virgil"
     vendor = any(name != "small" for name in projects)
     dependencies = ([p for p in (virgil / "aeneas/DEPS").read_text().split()
