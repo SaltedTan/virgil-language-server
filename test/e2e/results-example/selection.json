@@ -11,6 +11,10 @@
       "sha256": "0ff3ff28c54aaaaf8120b2a170fbfb3486c7e813279314d1d5091ad8f30430bf"
     },
     {
+      "path": "manual-vscode-linux.jsonl",
+      "sha256": "62314ae2f540a0a4f198d33d8122ffb5d4c5a00cb247ca5a6aea0ceb8b73c8b4"
+    },
+    {
       "path": "nvim-linux.jsonl",
       "sha256": "88566e9ffa2e703b416780feeab2b1a3242b12b0fe98e0b803841bb3eb48201d"
     },

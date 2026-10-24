@@ -8,24 +8,27 @@
 # semantics for the keywords in SCHEMA_KEYWORDS, and refuses a schema with any
 # other keyword, so that the schema and this script can't drift apart. Then it
 # checks what one event's schema can't: the stream's encoding, the order of its
-# events, the run-start's plan and provenance against the manifest, each check
-# against the plan and the manifest's expected-failure rules, and the run-end
-# against the checks. It prints one line for each stream: valid, with whether
-# its run passed and the number of observations in each status, or invalid,
-# with the first error it finds and its line. It exits with 0 if every stream
-# is valid and its run passed, 1 if every stream is valid but a run didn't
-# pass, and 2 if a stream is invalid or the manifest or the schema can't be
-# used. Other tools can load this file as a module, with importlib, since its
-# name has a hyphen. See test/e2e/RESULTS.md#validating-a-stream.
+# events, the run-start's plan (the manifest's, or a manual run's chosen
+# targets) and provenance against the manifest, each check against the plan and
+# the manifest's expected-failure rules, each manual observation against the
+# plan, and the run-end against the results. It prints one line for each
+# stream: valid, with whether its run passed and the number of observations in
+# each status, or invalid, with the first error it finds and its line. It exits
+# with 0 if every stream is valid and its run passed, 1 if every stream is
+# valid but a run didn't pass, and 2 if a stream is invalid or the manifest or
+# the schema can't be used. Other tools can load this file as a module, with
+# importlib, since its name has a hyphen. See
+# test/e2e/RESULTS.md#validating-a-stream.
 #
 # render writes a release's results into a Markdown document, such as
-# docs/manual-testing.md: a table of its runs and its matrix, between the
-# release's markers, from the valid streams that a selection lists (the
-# selection's schema is selection-v1.schema.json, beside the result schema).
-# The output depends only on the inputs. It exits with 0 if it rendered, or
-# found no drift with --check, 1 if --check found drift, which it prints as a
-# unified diff, or a selected run didn't pass, and 2 if an input is malformed.
-# See test/e2e/RESULTS.md#rendering-a-release.
+# docs/manual-testing.md: a table of its automated runs, a separate table of
+# any selected manual observations, and its matrix, between the release's
+# markers, from the valid streams that a selection lists (the selection's
+# schema is selection-v1.schema.json, beside the result schema). The output
+# depends only on the inputs. It exits with 0 if it rendered, or found no drift
+# with --check, 1 if --check found drift, which it prints as a unified diff, or
+# a selected run didn't pass, and 2 if an input is malformed. See
+# test/e2e/RESULTS.md#rendering-a-release.
 # Usage: editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
 #        editor-results.py render [--manifest PATH] [--schema PATH] --selection FILE --doc PATH
 #                                 (--write | --check)
@@ -177,6 +180,9 @@ def location(path):
 
 
 def observation(key):
+    if len(key) == 2:
+        kind, value = key
+        return f"{kind} {value}"
     check, profile, iteration = key
     return f"{check} in profile {profile}, iteration {iteration}"
 
@@ -668,8 +674,8 @@ class Manifest:
 
 
 class Plan:
-    """A run's planned observations, as (id, profile, iteration) keys, the
-    number of iterations of each profile, and the conditions that hold."""
+    """Planned check keys (id, profile, iteration), or manual keys (kind,
+    value), with the profile iterations and conditions of automated runs."""
 
     def __init__(self, keys, iterations, holds):
         self.keys = keys
@@ -710,10 +716,37 @@ def check_suite_provenance(start):
                          + " or ".join(editors))
 
 
+def manual_key(target):
+    """A typed key, sorting features by code point before numeric steps."""
+    return next(iter(target.items()))
+
+
+def manual_plan(start, manifest):
+    """A person chooses any nonempty set of matrix features and VS Code steps.
+    There are no check profiles, repetitions, or alternatives to complete."""
+    keys = []
+    for index, target in enumerate(start["expected"]):
+        kind, value = manual_key(target)
+        if kind == "feature" and value not in manifest.features:
+            raise Invalid(1, f"expected[{index}]: {value} is not a matrix feature")
+        if kind == "step" and start["provenance"]["editor"]["name"] != "vscode":
+            raise Invalid(1, f"expected[{index}]: a checklist step requires the vscode editor")
+        keys.append((kind, value))
+    for index in range(1, len(keys)):
+        if keys[index] == keys[index - 1]:
+            raise Invalid(1, f"expected[{index}] repeats expected[{index - 1}]")
+        if keys[index] < keys[index - 1]:
+            raise Invalid(1, f"expected[{index}] sorts before expected[{index - 1}]: "
+                             "features sort by code point before steps in numeric order")
+    return Plan(set(keys), {}, set())
+
+
 def plan_of(start, manifest):
-    """Checks that the run-start's expected is the manifest's plan, as
-    RESULTS.md defines it, and returns the Plan. Raises Invalid on line 1."""
+    """Validates expected by RESULTS.md's automated or manual plan rules
+    and returns the Plan. Raises Invalid on line 1."""
     suite = start["suite"]
+    if suite == MANUAL:
+        return manual_plan(start, manifest)
     profiles = manifest.profiles[suite]
     keys = [(key["id"], key["profile"], key["iteration"]) for key in start["expected"]]
     for index, (check_id, profile, iteration) in enumerate(keys):
@@ -856,13 +889,14 @@ def plan_of(start, manifest):
 
 
 class Run:
-    """A valid stream's run: its run-start, Plan, check events, and run-end,
-    and the locations of its unavailable provenance and facts."""
+    """A valid stream's run: its run-start, Plan, checks or manual observations,
+    and run-end, and the locations of its unavailable provenance and facts."""
 
-    def __init__(self, start, plan, checks, end, unavailable):
+    def __init__(self, start, plan, checks, end, unavailable, observations):
         self.start = start
         self.plan = plan
         self.checks = checks
+        self.observations = observations
         self.end = end
         self.unavailable = unavailable
 
@@ -887,7 +921,8 @@ class _Reader:
         self.plan = None
         self.unavailable = []
         self.checks = []
-        self.lines = {}     # each observed key -> the line of its check
+        self.observations = []
+        self.lines = {}     # each observed key -> the line of its result event
         # (line, check, rule) of each xfail, and of each fail that the rule
         # would excuse if its prerequisites passed, which the run-end checks.
         self.excepted = []
@@ -925,15 +960,21 @@ class _Reader:
                                   "without gaps")
         if kind == "run-start":
             self._start(event, refs)
-        elif kind == "check":
-            self._check(number, event)
+        elif kind in ("check", "observation"):
+            manual = self.start["suite"] == MANUAL
+            if (kind == "observation") != manual:
+                raise Invalid(number, f"a {self.start['suite']} run cannot contain {kind} events")
+            if manual:
+                self._observe(number, event)
+            else:
+                self._check(number, event)
         else:
             self._end(number, event)
 
     def finish(self, lines):
         if self.end is None:
             raise Invalid(lines + 1, "incomplete: no run-end")
-        return Run(self.start, self.plan, self.checks, self.end, self.unavailable)
+        return Run(self.start, self.plan, self.checks, self.end, self.unavailable, self.observations)
 
     def _start(self, start, refs):
         manifest = self.manifest
@@ -982,6 +1023,15 @@ class _Reader:
                 commit = pin["commit"]
                 return f"{pin['name']} at {commit or 'no commit'}", commit == rule["commit"]
         return f"no pin of {rule['plugin']}", False
+
+    def _observe(self, number, event):
+        key = manual_key(event["target"])
+        if key not in self.plan.keys:
+            raise Invalid(number, f"{observation(key)} is not in the plan")
+        if key in self.lines:
+            raise Invalid(number, f"{observation(key)} is observed again, after line {self.lines[key]}")
+        self.lines[key] = number
+        self.observations.append(event)
 
     def _check(self, number, check):
         key = (check["id"], check["profile"], check["iteration"])
@@ -1057,28 +1107,30 @@ class _Reader:
                          else "it has no check")
                 raise Invalid(line, f"rule {rule['id']} excuses {check['id']} only if {observation(key)} "
                                     f"passed, but {found}")
+        events = self.checks + self.observations
+        noun = "observation" if self.start["suite"] == MANUAL else "check"
         counts = dict.fromkeys(STATUSES, 0)
-        for check in self.checks:
+        for check in events:
             counts[check["status"]] += 1
         if end["expectedCount"] != len(self.plan.keys):
             raise Invalid(number, f"expectedCount is {end['expectedCount']}, but the run-start plans "
                                   f"{plural(len(self.plan.keys), 'observation')}")
-        if end["checkCount"] != len(self.checks):
+        if end["checkCount"] != len(events):
             raise Invalid(number, f"checkCount is {end['checkCount']}, but the stream has "
-                                  f"{plural(len(self.checks), 'check')}")
+                                  f"{plural(len(events), noun)}")
         for status in STATUSES:
             if end["counts"][status] != counts[status]:
                 raise Invalid(number, f"counts.{status} is {end['counts'][status]}, but the stream has "
-                                      f"{plural(counts[status], status + ' check')}")
+                                      f"{plural(counts[status], status + ' ' + noun)}")
         missing = sorted(self.plan.keys - set(self.lines))
         if end["complete"] and missing:
             more = f", nor do {len(missing) - 1} more" if len(missing) > 1 else ""
-            raise Invalid(number, f"complete is true, but {observation(missing[0])} has no check{more}")
+            raise Invalid(number, f"complete is true, but {observation(missing[0])} has no {noun}{more}")
         if not end["complete"] and not missing:
-            raise Invalid(number, "complete is false, but every planned observation has its check")
+            raise Invalid(number, f"complete is false, but every planned observation has its {noun}")
         # Why the run can't pass, in RESULTS.md's order.
-        reasons = [f"{observation(key)} has no check" for key in missing[:1]]
-        reasons += [f"{plural(counts[status], 'check')} {verb}"
+        reasons = [f"{observation(key)} has no {noun}" for key in missing[:1]]
+        reasons += [f"{plural(counts[status], noun)} {verb}"
                     for status, verb in (("fail", "failed"), ("skip", "skipped"), ("xpass", "passed unexpectedly"))
                     if counts[status]]
         if end["exitCode"] != 0:
@@ -1399,6 +1451,31 @@ def version_order(version):
     return parts
 
 
+def manual_cells(run, manifest):
+    """An optional manual record, kept apart from automated evidence."""
+    start = run.start
+    attestation = start["attestation"]
+    editor = start["provenance"]["editor"]
+    events = {manual_key(event["target"]): event for event in run.observations}
+    observed = []
+    for key in sorted(run.plan.keys):
+        kind, value = key
+        label = manifest.features[value]["label"] if kind == "feature" else f"Checklist step {value}"
+        event = events.get(key)
+        status = "Not observed"
+        if event:
+            status = manifest.levels[MANUAL]["wording"] if event["status"] == "pass" else "Fail (manual)"
+        note = f": {text(event['note'])}" if event and "note" in event else ""
+        observed.append(f"{text(label)}: {status}{note}")
+    statement = (text(attestation["statement"]) + f"; observed {text(attestation['observedAt'])}; "
+                 + f"recorded {text(attestation['recordedAt'])}")
+    if attestation["reviewUrl"]:
+        statement += "; " + link("review", attestation["reviewUrl"])
+    return [start["time"][:10], text(attestation["tester"]), text(manifest.setups[start["setup"]]["label"]),
+            EDITOR_NAMES[editor["name"]] + " " + (text(editor["version"]) if editor["version"] else "version unknown"),
+            "; ".join(observed), OUTCOMES[run.end["status"]].capitalize(), statement]
+
+
 def render_blocks(release, runs, manifest):
     """The text of each block: the runs, sorted by the manifest's order of
     their setups, then suite, lane, editor version, and run ID, and the
@@ -1409,8 +1486,15 @@ def render_blocks(release, runs, manifest):
                                          version_order(run.start["provenance"]["editor"]["version"]),
                                          run.start["runId"]))
     features = list(manifest.features.values())
+    automated = [run for run in runs if run.start["suite"] != MANUAL]
+    manual = [run for run in runs if run.start["suite"] == MANUAL]
+    run_table = table(RUNS_HEADER, [run_cells(run, release, manifest) for run in automated])
+    if manual:
+        run_table += "Optional manual observations (do not change automated results):\n"
+        run_table += table(["Date", "Who", "Setup", "Editor", "Observations", "Result", "Attestation"],
+                           [manual_cells(run, manifest) for run in manual])
     return {
-        "runs": table(RUNS_HEADER, [run_cells(run, release, manifest) for run in runs]),
+        "runs": run_table,
         "matrix": table(["Setup"] + [text(feature["label"]) for feature in features],
                         [[text(setup["label"])] + [cell_text(setup, feature["id"], runs, manifest)
                                                    for feature in features]
