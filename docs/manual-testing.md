@@ -20,7 +20,7 @@ The editor tests don't cover:
 - VS Code Remote-SSH from a Mac, or to another machine. The Remote-SSH test connects a Linux client to the same machine. See the [VS Code procedure](#vs-code) for its recovery checks and remaining gaps.
 - An installed VSIX on macOS on every pull request. CI runs the Extension Host test there only on the extension from source; the weekly editor tests and the release workflow run it on an installed VSIX, including the release dry run of a pull request that changes the release path or the editor tests.
 - In plain Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, and the LazyVim test covers them in LazyVim.
-- Document highlights and navigation with `]]` and `[[` in LazyVim. The VS Code and plain Neovim suites check highlight ranges through their APIs.
+- Document highlights and navigation with `]]` and `[[` in LazyVim. The VS Code and plain Neovim suites check through their APIs that highlighting `StringBuilder` returns only its use's exact range in `words/Words.v3`, with the Text kind.
 - Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
 - What the editor shows. The tests read diagnostics, symbols, locations, hover text, signature help, and completion items through editor APIs, not from the Problems view, the outline, a hover popup, a signature popup, a completion menu, or a notification. The LazyVim test reads the text of noice.nvim's hover and signature windows and blink.cmp's menu items, but not how they look.
 
