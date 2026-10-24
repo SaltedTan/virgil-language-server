@@ -34,7 +34,7 @@ from worker import Session
 
 CLIENTS = Path(__file__).resolve().parent / "clients"
 PROJECT = "/work/project"
-URI = PROJECT + "/main.v3"
+URI = "file://" + PROJECT + "/main.v3"
 SOURCE = (
     "class Shape {\n"
     "\tdef area() -> int { return 1; }\n"
