@@ -196,7 +196,7 @@ component AnalysisWire {
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
-		var w = WorkerFraming.start().putb(RESULT);
+		var w = AnalysisResultWriter.new().put_b32(0).putb(RESULT);
 		w.put_b32(id).put_b32(analyses).put_b32(uidNext).put_b64(0);
 		// The call answer's signature index plus one, or zero, or -1 if its
 		// call is not sent.
@@ -646,6 +646,24 @@ component AnalysisWire {
 			&& x.beginLine == y.beginLine && x.beginColumn == y.beginColumn
 			&& x.endLine == y.endLine && x.endColumn == y.endColumn
 			&& x.beginOffset == y.beginOffset && x.endOffset == y.endOffset;
+	}
+}
+
+// RESULT buffers double through powers of two instead of DataWriter's
+// roughly tripled capacity, without a large reservation for small answers.
+class AnalysisResultWriter extends DataWriter {
+	def acquire(size: int) -> Range<byte> {
+		var end = pos + size;
+		if (data == null || end > data.length) {
+			var capacity = if(data == null, 256, data.length);
+			while (capacity < end && capacity <= int.max / 2) capacity *= 2;
+			grow(Ints.max(capacity, end));
+		}
+		var result = data[pos ... end];
+		// pos has a private setter; at also preserves the high-water mark
+		// when the frame header and live-byte count are patched later.
+		at(end);
+		return result;
 	}
 }
 

@@ -9,6 +9,7 @@ def X = [
 	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
+	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
 	T("AnalysisWire:truncated_messages", test_truncated_messages),
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
 	T("AnalysisWire:display_round_trip", test_display_round_trip),
@@ -263,6 +264,26 @@ def test_result_without_occurrences(t: Tester) {
 	t.asserti(0, s.occurrences(MAIN).length);
 	t.assert(s.definitionAt(MAIN, 4, 25) == null, "no occurrences were sent");
 	t.assert(s.definitionAtOffset(MAIN, 85) == null, "no occurrences were sent");
+}
+
+// Bulk writes and header patches must preserve bytes and the high-water mark
+// across buffer growth, as finishResult's two patches require.
+def test_result_buffer_writes(t: Tester) {
+	var data = Array<byte>.new(17001);
+	for (i < data.length) data[i] = byte.view(i);
+	var w = AnalysisResultWriter.new().put_b32(0).put_b64(0);
+	for (i < 1000) w.putb(i);
+	w.puta(data);
+	var end = w.end();
+	w.at(0).put_b32(end - 4).at(4).put_b64(123456789L).atEnd();
+	var expected = DataWriter.new().put_b32(end - 4).put_b64(123456789L);
+	for (i < 1000) expected.putb(i);
+	expected.puta(data);
+	t.asserti(expected.end(), w.pos);
+	t.assertb(expected.copy(), w.copy());
+	w.putb(42);
+	expected.putb(42);
+	t.assertb(expected.copy(), w.copy());
 }
 
 // A message cut short anywhere is rejected, without trapping.
