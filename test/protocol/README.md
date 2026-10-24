@@ -101,10 +101,13 @@ capability tree, each workspace/textDocument capability absent, and both values
 of every boolean capability. Empty objects and integer boundaries that violate
 the schema remain labeled negative probes.
 
-The method list is checked against `LspServer.v3` and its registration helpers.
-Every standard handler is covered, including shutdown/exit as session epilogues.
-The two development requests have small explicit local schemas because the LSP
-model does not define them. Adding a handler requires reviewing this list.
+A behavioral oracle sends every request method in the pinned model with minimal
+valid params after initialization: covered methods must be handled, and uncovered
+methods must return `MethodNotFound`. Shutdown is checked by the session epilogue.
+A new request handler therefore requires adding generator coverage. Notifications
+have no replies, so their list is explicit: a new notification handler must be
+added by hand. The two development requests have small explicit local schemas
+because the LSP model does not define them.
 
 Each case has three independent labels, available with `--list`:
 
@@ -122,8 +125,13 @@ from the oracles.
 `shapes.py` reuses `worker.Session` for child processes, framing and deadline-based
 receives. Ordinary cases share bounded groups of at most 32 cases; initialization
 and lifecycle cases get isolated sessions. Requests are awaited before shutdown;
-notification cases use a synchronous request as a barrier. Every group checks
-framing, process survival, exactly one reply per request with the original ID
+notification cases use synchronous requests as barriers and observe overlay
+text through document symbols. Same-version and next-version full-text changes,
+followed by symbol requests and stderr checks, bound each surviving overlay
+version exactly; closed overlays must reject a change as unopened. This checks
+each generated synchronization case, including rejection warnings, without a
+worker analysis per case. Reference outlines are cached within each session.
+Every group checks framing, process survival, exactly one reply per request with the original ID
 type, no notification replies, documented error codes, and a clean shutdown/exit.
 Dynamic watcher registration requests are answered as a real client would.
 

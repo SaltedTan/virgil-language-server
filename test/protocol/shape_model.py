@@ -7,14 +7,11 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-import re
 
 MODEL_PATH = Path(__file__).parent / "schema/3.17/metaModel.json"
 MODEL_SHA256 = "c207890d9e0f54d8f9e462a924670f563423ec9af90a0a369645ff55384c8d6d"
 URI = "untitled:protocol-shapes"
 TEXT = "component C { def x = 1; }\n"
-# Enumerated from LspServer's constructor, the register helpers it calls, and
-# the special exit path in handle(). verify_methods() detects registration drift.
 REQUESTS = (
     "initialize", "shutdown", "textDocument/completion",
     "textDocument/definition", "textDocument/documentSymbol", "textDocument/hover",
@@ -29,24 +26,13 @@ NOTIFICATIONS = (
 EXTENSIONS = ("virgil-lsp/analyze", "virgil-lsp/snapshot")
 
 
-def verify_methods(root):
-    """Review new handlers rather than silently leaving them out of the corpus."""
-    sources = "\n".join(p.read_text() for p in (root / "src/protocol").glob("Lsp*.v3"))
-    requests = set(re.findall(r'\.on(?:Deferred)?Request\("([^"]+)"', sources))
-    requests.update(re.findall(r'snapshotRequests\.register(?:Prepared)?\(dispatcher, "([^"]+)"', sources))
-    notifications = set(re.findall(r'\.onNotification\("([^"]+)"', sources))
-    assert 'Strings.equal(x.method, "exit")' in sources, "review the special exit handler"
-    notifications.add("exit")
-    assert requests == set(REQUESTS + EXTENSIONS), ("request registration drift", requests)
-    assert notifications == set(NOTIFICATIONS), ("notification registration drift", notifications)
-
-
 class Model:
     def __init__(self):
         data = MODEL_PATH.read_bytes()
         assert hashlib.sha256(data).hexdigest() == MODEL_SHA256, "unreviewed metaModel change"
         model = json.loads(data)
         assert model["metaData"]["version"] == "3.17.0"
+        self.requests = {s["method"]: s.get("params") for s in model["requests"]}
         self.structures = {s["name"]: s for s in model["structures"]}
         self.aliases = {s["name"]: s["type"] for s in model["typeAliases"]}
         self.enums = {s["name"]: s for s in model["enumerations"]}
@@ -272,7 +258,9 @@ def session_validity(method, params):
     if method == "textDocument/rename":
         return False, "versioned workspace edits were not negotiated"
     doc = params.get("textDocument", {})
-    if doc.get("uri", URI) != URI or params.get("uri", URI) != URI:
+    if "uri" in doc and not doc["uri"]:
+        return False, "empty document URI"
+    if method != "textDocument/didOpen" and (doc.get("uri", URI) != URI or params.get("uri", URI) != URI):
         return False, "URI differs from the session's open overlay"
     return True, "full-sync session with overlay version 1"
 

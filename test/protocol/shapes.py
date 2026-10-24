@@ -11,17 +11,15 @@ import json
 from pathlib import Path
 import random
 import shlex
-import subprocess
 import sys
 import tempfile
 import time
 
 from shape_model import (EXTENSIONS, MODEL_SHA256, Model, REQUESTS,
                          TEXT, URI, generated_cases, session_validity,
-                         unsupported_number, verify_methods)
+                         unsupported_number)
 from worker import Session
 
-ROOT = Path(__file__).resolve().parents[2]
 # Known server failures: none. Record any future deviation in one narrow case
 # here, retaining framing/typed-ID/liveness/shutdown checks and a write-up.
 # Only errors actually relevant to these handlers, not the whole JSON-RPC range.
@@ -50,6 +48,7 @@ class ShapeSession(Session):
         self.expected = {}
         self.case = None
         self.checkpoints = []
+        self.outlines = {}
 
     def raw(self, data):
         self.frames.append(data)
@@ -143,7 +142,7 @@ SPECIALS = [
     special("ranged-change-rejected", negotiated=False, reason="full synchronization rejects ranged changes"),
     special("decimal-options-rejected", negotiated=False, reason="documented JsonValue number limitation"),
     special("oversized-integer-options-rejected", negotiated=False, reason="documented JsonValue number limitation"),
-    special("typed-request-ids"),
+    special("typed-request-ids"), special("request-method-coverage"),
     special("before-initialize", lifecycle=False, reason="requests before initialize get ServerNotInitialized"),
     special("duplicate-initialize", lifecycle=False, reason="second initialize gets InvalidRequest"),
     special("after-shutdown", lifecycle=False, reason="requests after shutdown get InvalidRequest"),
@@ -190,6 +189,118 @@ def open_document(s, uri=URI, text=TEXT):
         "uri": uri, "languageId": "virgil", "version": 1, "text": text}}, request=False)
 
 
+DOCUMENT_NOTIFICATIONS = ("textDocument/didOpen", "textDocument/didChange",
+                          "textDocument/didSave", "textDocument/didClose")
+PRESERVED_TEXT = "component Preserved { def original = 1; }\n"
+PROBE_TEXT = "component VersionProbe { def marker = 2; }\n"
+
+
+def outline(s, uri):
+    return s.success("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+
+
+def expected_outline(s, uri, text):
+    if text not in s.outlines:
+        reference = "untitled:shape-reference"
+        open_document(s, reference, text)
+        s.outlines[text] = outline(s, reference)
+        s.send("textDocument/didClose", {"textDocument": {"uri": reference}}, request=False)
+    result = copy.deepcopy(s.outlines[text])
+    for symbol in result:
+        symbol["location"]["uri"] = uri
+    return result
+
+
+def observe_overlay(s, uri, state):
+    expected = [] if state is None else expected_outline(s, uri, state[0])
+    assert outline(s, uri) == expected, ("notification changed unexpected text", uri, state)
+    version = 2147483647 if state is None else state[1]
+    offset = len(s.logs())
+    s.send("textDocument/didChange", {"textDocument": {"uri": uri, "version": version},
+                                      "contentChanges": [{"text": PROBE_TEXT}]}, request=False)
+    assert outline(s, uri) == expected, ("notification changed unexpected version", uri, state)
+    warning = "document is not open" if state is None else "document version is not newer"
+    assert "ignored textDocument/didChange: " + warning in s.logs()[offset:], (uri, state, s.logs())
+    if state is not None and version < 2147483647:
+        offset = len(s.logs())
+        s.send("textDocument/didChange", {"textDocument": {"uri": uri, "version": version + 1},
+                                          "contentChanges": [{"text": PROBE_TEXT}]}, request=False)
+        assert outline(s, uri) == expected_outline(s, uri, PROBE_TEXT), (
+            "notification consumed a newer version", uri, state)
+        assert "ignored textDocument/didChange:" not in s.logs()[offset:], s.logs()
+    if state is not None:
+        s.send("textDocument/didClose", {"textDocument": {"uri": uri}}, request=False)
+
+
+def notification(s, case):
+    method, params = case["method"], case["params"]
+    doc = params.get("textDocument", {}) if isinstance(params, dict) else {}
+    uri = doc.get("uri", URI)
+    fresh_open = method == "textDocument/didOpen" and not unsupported_number(params)
+    states = {URI: None if fresh_open else (PRESERVED_TEXT, 1)}
+    if states[URI] is not None:
+        open_document(s, text=PRESERVED_TEXT)
+    if uri and uri != URI:
+        states[uri] = None
+    warning = None
+    if method in DOCUMENT_NOTIFICATIONS:
+        if unsupported_number(params):
+            warning = "params contain a number that is not a 32-bit integer"
+        elif (method == "textDocument/didChange" and isinstance(doc.get("uri"), str)
+              and type(doc.get("version")) is int and isinstance(params.get("contentChanges"), list)
+              and any(isinstance(c, dict) and ("range" in c or "rangeLength" in c)
+                      for c in params["contentChanges"])):
+            warning = "incremental changes are not supported"
+        elif not case["schema_valid"]:
+            warning = ""
+        elif not uri:
+            warning = "invalid or nonlocal file URI" if method.endswith("didOpen") else "document is not open"
+        elif method == "textDocument/didOpen":
+            states[uri] = (doc["text"], doc["version"])
+        elif method == "textDocument/didChange":
+            changes = params["contentChanges"]
+            if uri != URI:
+                warning = "document is not open"
+            elif doc["version"] <= 1:
+                warning = "document version is not newer"
+            else:
+                states[uri] = (changes[-1]["text"] if changes else PRESERVED_TEXT, doc["version"])
+        elif uri != URI:
+            warning = "document is not open"
+        elif method == "textDocument/didClose":
+            states[uri] = None
+    elif method.startswith("workspace/") and not case["schema_valid"] and not unsupported_number(params):
+        warning = ""
+    if method in DOCUMENT_NOTIFICATIONS:
+        assert case["session_valid"] == (warning is None), ("notification validity disagrees with outcome", case, warning)
+    s.barrier()
+    offset = len(s.logs())
+    s.send(method, params, request=False)
+    s.barrier()
+    logs = s.logs()[offset:]
+    prefix = "ignored " + method + ":"
+    if warning is not None:
+        assert prefix + (" " + warning if warning else "") in logs, (case, logs)
+    else:
+        assert prefix not in logs, ("valid notification unexpectedly rejected", case, logs)
+    for target, state in states.items():
+        observe_overlay(s, target, state)
+    s.barrier()
+
+
+def request_method_coverage(s):
+    model = Model()
+    s.start()
+    for method, schema in model.requests.items():
+        if method == "shutdown":
+            continue
+        params = model.base(schema)
+        assert model.valid(schema, params), ("invalid method probe", method, params)
+        reply = s.reply(s.send(method, params))
+        missing = reply.get("error", {}).get("code") == -32601
+        assert missing == (method not in REQUESTS), ("request handler coverage drift", method, reply)
+
+
 def shape(s, case):
     method, params = case["method"], case["params"]
     if method == "initialize":
@@ -200,15 +311,14 @@ def shape(s, case):
             s.start(params, allow_invalid=not case["session_valid"])
         s.barrier()
         return
-    if method.startswith("textDocument/") and method != "textDocument/didOpen":
+    if method not in REQUESTS + EXTENSIONS:
+        notification(s, case)
+        return
+    if method.startswith("textDocument/"):
         open_document(s)
-    if method in REQUESTS + EXTENSIONS:
-        reply = s.call(method, params, code=-32602 if unsupported_number(params) else None)
-        if case["session_valid"] and method not in ("textDocument/prepareRename", "virgil-lsp/analyze"):
-            assert "result" in reply, ("valid shape unexpectedly rejected", case, reply)
-    else:
-        s.send(method, params, request=False)
-        s.barrier()
+    reply = s.call(method, params, code=-32602 if unsupported_number(params) else None)
+    if case["session_valid"] and method not in ("textDocument/prepareRename", "virgil-lsp/analyze"):
+        assert "result" in reply, ("valid shape unexpectedly rejected", case, reply)
     if method.startswith("textDocument/"):
         s.send("textDocument/didClose", {"textDocument": {"uri": URI}}, request=False)
         s.barrier()
@@ -283,6 +393,8 @@ def oracle(s, case, work):
         s.call("initialize", {"processId": None, "rootUri": None, "capabilities": {},
                               "initializationOptions": {"unused": value}}, code=-32602)
         s.start()
+    elif ident == "request-method-coverage":
+        request_method_coverage(s)
     elif ident == "before-initialize":
         s.send("initialized", {}, request=False)
         s.call("workspace/symbol", {"query": ""}, code=-32002)
@@ -295,7 +407,7 @@ def oracle(s, case, work):
         assert s.success("shutdown") is None
         s.call("workspace/symbol", {"query": ""}, code=-32600)
         s.send("exit", request=False)
-        s.proc.stdin.close()
+        s.close_input()
         assert s.proc.wait(timeout=5) == 0
         assert not s.buffer and not s.proc.stdout.read(), "extra response after exit"
         assert set(s.expected) == s.answered
@@ -315,7 +427,7 @@ def oracle(s, case, work):
         msg = {"jsonrpc": "2.0", "method": "exit", "params": None}
         s.transcript.append(("send", msg))
         s.raw(frame(msg))
-        s.proc.stdin.close()
+        s.close_input()
         assert s.proc.wait(timeout=5) == 0
         assert not s.buffer and not s.proc.stdout.read(), "extra response after exit"
         assert set(s.expected) == s.answered
@@ -370,15 +482,6 @@ def run_group(group, args, work):
             s.finish()
         return True
     except Exception as exc:
-        # EOF reaps this server's worker; Session.close escalates only through
-        # this Popen object if its own child does not exit. Never kill by name.
-        if not s.proc.stdin.closed:
-            s.proc.stdin.close()
-        try:
-            s.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            s.proc.kill()
-            s.proc.wait(timeout=5)
         failure(s, args, exc)
         return False
     finally:
@@ -395,7 +498,6 @@ def main():
     parser.add_argument("--artifacts", type=Path, default=Path("build/protocol-shapes"))
     args = parser.parse_args()
     args.exe = args.exe.resolve()
-    verify_methods(ROOT)
     model = Model()
     try:
         cases, corpus_size = choose_cases(model, args.seed, args.cases)
