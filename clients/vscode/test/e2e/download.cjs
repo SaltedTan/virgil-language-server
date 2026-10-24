@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Downloads VS Code into cache with @vscode/test-electron, unless it is
-// there, and prints its executable's path. remote-ssh/run.cjs runs it in a
+// there, and prints its executable's path. Both test runners run it in a
 // process group of its own, with the tar that extracts the download, so that
 // an interrupt can stop both. Usage:
 //

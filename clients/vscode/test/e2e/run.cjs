@@ -27,7 +27,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
-const { downloadAndUnzipVSCode, resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
+const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { KEEPER_KILL_WAIT_MS, startGroup } = require('./processes.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
@@ -81,22 +81,30 @@ async function main() {
       throw new Error(`build virgil-lsp and virgil-lsp-worker before running the test: ${file} is missing`);
     }
   }
-  const executable = await downloadAndUnzipVSCode({
-    version: VSCODE_VERSION,
-    cachePath: path.join(extension, '.vscode-test'),
-  });
-  // From here on, an interrupt stops the running process group, and the
-  // temporary directory is removed once the group has exited.
+  // Install handlers before the download, which can start an extractor.
   const controller = new AbortController();
-  const interrupt = () => controller.abort();
-  process.on('SIGINT', interrupt).on('SIGTERM', interrupt);
-  // Keep edits and VS Code state out of the checkout's fixture and the user's
-  // home. Physical paths match the URIs that the server reports. VS Code's IPC
-  // socket goes in --user-data-dir, and a Unix socket path has at most 103
-  // characters on macOS, which its long os.tmpdir() under /var/folders exceeds.
-  const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
-  const work = fs.mkdtempSync(path.join(fs.realpathSync(base), 'virgil-vscode-e2e-'));
+  const interrupt = (name) => {
+    process.exitCode = name === 'SIGINT' ? 130 : 143;
+    controller.abort(new Error(`interrupted by ${name}`));
+  };
+  const sigint = () => interrupt('SIGINT');
+  const sigterm = () => interrupt('SIGTERM');
+  process.on('SIGINT', sigint).on('SIGTERM', sigterm);
+  let work;
   try {
+    // Reuse Remote-SSH's download script, process group, and ten-minute
+    // deadline. Load here: that runner imports this module's shared settings.
+    const executable = cachedVSCode(path.join(extension, '.vscode-test')) ?? await require('./remote-ssh/run.cjs').downloadVSCode({
+      env: process.env,
+      signal: controller.signal,
+      checkpoint: () => controller.signal.throwIfAborted(),
+    });
+    // Keep edits and VS Code state out of the checkout's fixture and the user's
+    // home. Physical paths match the URIs that the server reports. VS Code's IPC
+    // socket goes in --user-data-dir, and a Unix socket path has at most 103
+    // characters on macOS, which its long os.tmpdir() under /var/folders exceeds.
+    const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+    work = fs.mkdtempSync(path.join(fs.realpathSync(base), 'virgil-vscode-e2e-'));
     const project = path.join(work, 'project');
     fs.cpSync(path.join(repo, 'test/e2e/nvim/fixture'), project, { recursive: true });
     const settings = {
@@ -128,11 +136,22 @@ async function main() {
     let passed = (await run('single-file')).passed;
     if (passed) passed = (await run('workspace', project)).passed;
     if (passed) passed = (await run('recovery-close', project, true)).passed;
-    if (!passed) process.exitCode = 1;
+    if (!passed && !controller.signal.aborted) process.exitCode = 1;
   } finally {
-    process.off('SIGINT', interrupt).off('SIGTERM', interrupt);
-    fs.rmSync(work, { recursive: true, force: true });
+    process.off('SIGINT', sigint).off('SIGTERM', sigterm);
+    if (work !== undefined) fs.rmSync(work, { recursive: true, force: true });
   }
+}
+
+// The pinned downloader uses this directory and completion marker for a
+// stable release. Resolve a completed cache in-process, so repeat runs pay
+// no child-process or keeper startup cost. Incomplete extractions must go
+// through the interruptible download. Use the library's platform and path
+// resolution, including the current macOS app executable name.
+function cachedVSCode(cache) {
+  const { systemDefaultPlatform, downloadDirToExecutablePath } = require('@vscode/test-electron/out/util');
+  const dir = path.join(cache, `vscode-${systemDefaultPlatform}-${VSCODE_VERSION}`);
+  return fs.existsSync(path.join(dir, 'is-complete')) ? downloadDirToExecutablePath(dir, systemDefaultPlatform) : undefined;
 }
 
 // The environment for VS Code and its command-line interface. A terminal
@@ -595,11 +614,11 @@ function fromShutdown(received) {
 
 // The Remote-SSH test, remote-ssh/run.cjs, uses the same VS Code version and
 // isolation.
+module.exports = { VSCODE_VERSION, cachedVSCode, attempt, failure, isolatedEnv, keepLogs, retryable, runGroup, windowError };
+
 if (require.main === module) {
   main().catch((error) => {
     console.error(`FAIL: ${error.message}`);
-    process.exitCode = 1;
+    process.exitCode ??= 1;
   });
 }
-
-module.exports = { VSCODE_VERSION, attempt, failure, isolatedEnv, keepLogs, retryable, runGroup, windowError };
