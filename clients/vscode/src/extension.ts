@@ -8,9 +8,12 @@ import { clearTimeout, setTimeout } from 'node:timers';
 import * as vscode from 'vscode';
 import {
   ErrorAction,
+  ErrorCodes,
   ErrorHandler,
   LanguageClient,
   LanguageClientOptions,
+  MessageSignature,
+  ResponseError,
   ServerOptions,
   State,
   TransportKind,
@@ -76,6 +79,18 @@ class QueuedLanguageClient extends LanguageClient {
       },
     });
     defaultHandler = this.createDefaultErrorHandler();
+  }
+
+  override handleFailedRequest<T>(
+    type: MessageSignature, token: vscode.CancellationToken | undefined, error: any, defaultValue: T,
+    showNotification = true, throwOnCancel = false,
+  ): T {
+    // JSON-RPC also rejects a request whose write failed, dropping the
+    // original error code. Let the connection handler above decide whether
+    // to notify: pipe errors stay quiet, and other write errors are reported
+    // by the default handler. Keep the request's log and rejection.
+    return super.handleFailedRequest(type, token, error, defaultValue,
+      showNotification && !(error instanceof ResponseError && error.code === ErrorCodes.MessageWriteError), throwOnCancel);
   }
 
   override start(): Promise<void> {
