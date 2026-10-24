@@ -13,14 +13,16 @@
 // in its environment, and the SSH server sets it for each session, so that the
 // VS Code Server and the language servers that it starts have it too. The
 // teardown stops exactly the processes that have the marker, run an
-// executable from the work directory, or descend from the servers started
-// here, never processes found by name. It knows each by its PID and start
-// time, and sends each signal through a pidfd that it opens before it checks
-// both again (see ../processes.cjs), so that a PID that a process of the run
-// had and another process has since been given is never signaled. Where
-// pidfds aren't available, or one can't be used for a process, the check is a
-// few system calls before the signal, and the PID could be given to another
-// process in between.
+// executable from the work directory, descend from the servers started here,
+// or, when they hide their executable and environment, have a command line
+// under the work or sockets directory or such a parent (see runOwned in
+// ../processes.cjs), never processes found by name. It knows each by its PID
+// and start time, and sends each signal through a pidfd that it opens before
+// it checks both again (see ../processes.cjs), so that a PID that a process of
+// the run had and another process has since been given is never signaled.
+// Where pidfds aren't available, or one can't be used for a process, the check
+// is a few system calls before the signal, and the PID could be given to
+// another process in between.
 
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -28,7 +30,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { signalProcesses } = require('../processes.cjs');
+const { isZombie, processFiles, runOwned, signalProcesses } = require('../processes.cjs');
 
 const ALIAS = 'virgil-remote-ssh-test';
 const HOST = '127.0.0.1';
@@ -286,21 +288,22 @@ function check(command, env) {
   });
 }
 
-// A process's state, its parent's PID, and its start time, in clock ticks
-// after boot, from /proc/<pid>/stat: its third, fourth, and 22nd fields.
+// A process's state, its parent's PID, its number of threads, and its start
+// time, in clock ticks after boot, from /proc/<pid>/stat: its third, fourth,
+// 20th, and 22nd fields.
 function readStat(pid) {
   const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
   const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-  return { state: fields[0], ppid: Number(fields[1]), start: fields[19] };
+  return { state: fields[0], ppid: Number(fields[1]), threads: Number(fields[17]), start: fields[19] };
 }
 
 // A process's identity: its PID and its start time, which a later process
 // with the same PID doesn't share. Undefined if the process has gone or is a
-// zombie.
+// zombie (see isZombie in ../processes.cjs).
 function identify(pid) {
   try {
-    const { state, start } = readStat(pid);
-    return state === 'Z' ? undefined : { pid, start };
+    const { state, threads, start } = readStat(pid);
+    return isZombie(state, threads) ? undefined : { pid, start };
   } catch {
     return undefined;
   }
@@ -330,50 +333,63 @@ function signal(processes, name) {
 // descendants, each with its identity. The SSH server and its sessions write
 // their titles over their environment, so only descent finds those. The /proc
 // entries of other users' processes can't be read, and processes that exit
-// meanwhile are skipped; zombies don't count. Throws if /proc itself can't be
-// listed.
+// meanwhile are skipped; zombies don't count, but a process whose main thread
+// has exited while its other threads run does, and a live thread's /proc
+// files identify it (see processFiles in ../processes.cjs), whichever of its
+// threads they still describe. A process that hides its executable and
+// environment, as a non-dumpable one does, is still the run's if its identity
+// is one that start() started, if its parent is the run's, or if an argument
+// of its command line names a path under the work or sockets directory (see
+// runOwned in ../processes.cjs). A live process that no thread's files could
+// describe, which a scan that raced its threads' exit may find, is reported as
+// unidentified rather than left out, so that the teardown tries again instead
+// of counting it as gone. Throws if /proc itself can't be listed.
 function runProcesses({ work, sockets, marker, started }) {
+  const roots = [work, sockets];
   const table = new Map();
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
-    const dir = path.join('/proc', name);
     try {
-      const { state, ppid, start } = readStat(name);
-      if (state === 'Z') continue;
-      let exe = '';
-      try {
-        exe = fs.readlinkSync(path.join(dir, 'exe'));
-      } catch {
-        // A kernel thread, or another user's process.
+      const identified = processFiles(fs, name, { exe: 'link', environ: 'latin1', cmdline: 'utf8' });
+      if (identified === undefined) continue;
+      if (identified.unreadable) {
+        table.set(Number(name), { pid: identified.pid, ppid: identified.ppid, start: identified.start, unidentified: true });
+        continue;
       }
-      const owned = [work, sockets].some((root) => exe.startsWith(`${root}/`))
-        || fs.readFileSync(path.join(dir, 'environ'), 'latin1').split('\0').includes(marker);
-      table.set(Number(name), { ppid, start, exe, owned, dir });
+      table.set(Number(name), { pid: identified.pid, ppid: identified.ppid, start: identified.start, files: identified.files });
     } catch (error) {
       if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
     }
   }
-  for (const { child, identity } of started) {
+  // The identities of the servers that start() started and that still run.
+  const known = started.flatMap(({ child, identity }) => {
     const entry = identity === undefined ? undefined : table.get(identity.pid);
-    if (child.exitCode === null && child.signalCode === null && entry?.start === identity.start) entry.owned = true;
-  }
+    return child.exitCode === null && child.signalCode === null && entry?.start === identity.start ? [identity] : [];
+  });
+  // A parent is the run's only if it started no later than its child, so that
+  // a PID given to another process after the real parent exited doesn't
+  // qualify. Ownership spreads until no more processes gain it, since a
+  // process can be listed before its parent.
+  const owned = new Set();
+  const parent = (ppid, start) => {
+    const entry = table.get(ppid);
+    return entry !== undefined && owned.has(entry.pid) && Number(entry.start) <= Number(start);
+  };
   for (let added = true; added;) {
     added = false;
     for (const entry of table.values()) {
-      if (!entry.owned && table.get(entry.ppid)?.owned) {
-        entry.owned = true;
+      if (entry.unidentified || owned.has(entry.pid)) continue;
+      if (runOwned({ ...entry, roots, marker, known, parent, descend: true })) {
+        owned.add(entry.pid);
         added = true;
       }
     }
   }
-  return [...table].filter(([, entry]) => entry.owned).map(([pid, { start, exe, dir }]) => {
-    let command = '';
-    try {
-      command = fs.readFileSync(path.join(dir, 'cmdline'), 'utf8').replaceAll('\0', ' ').trim();
-    } catch {
-      // It has exited.
-    }
-    return { pid, start, exe, command };
+  return [...table.values()].flatMap((entry) => {
+    if (entry.unidentified) return [{ pid: entry.pid, start: entry.start, unidentified: true }];
+    if (!owned.has(entry.pid)) return [];
+    const { exe = '', cmdline = '' } = entry.files;
+    return [{ pid: entry.pid, start: entry.start, exe, command: cmdline.replaceAll('\0', ' ').trim() }];
   });
 }
 
@@ -385,7 +401,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Server runs, and an orphan no longer descends from the process that started
 // it: so they are frozen with SIGSTOP until a look finds no new one, then
 // killed. Xvfb goes last, with SIGTERM, so that it removes its socket and lock
-// file. If the processes can't be listed, it tries again five times.
+// file. If the processes can't be listed, or a look finds a live process that
+// no thread's files could identify (see runProcesses), it tries again five
+// times, 200 ms apart, and reports what it found if it still can't, rather
+// than taking that for none left.
 async function teardown({ work, sockets, marker, started, port }) {
   const result = { ok: true, stopped: [], left: [], portClosed: null };
   const display = started.find((entry) => entry.name === 'Xvfb');
@@ -394,11 +413,14 @@ async function teardown({ work, sockets, marker, started, port }) {
   const list = async () => {
     for (let tries = 1; ; tries++) {
       try {
-        return runProcesses({ work, sockets, marker, started }).filter((p) => xvfb === undefined || key(p) !== key(xvfb));
+        const found = runProcesses({ work, sockets, marker, started }).filter((p) => xvfb === undefined || key(p) !== key(xvfb));
+        const unknown = found.filter((p) => p.unidentified);
+        if (unknown.length === 0) return found;
+        if (tries === 5) throw new Error(`could not identify the process(es) with pid ${unknown.map((p) => p.pid).join(', ')}`);
       } catch (error) {
         if (tries === 5) throw error;
-        await sleep(200);
       }
+      await sleep(200);
     }
   };
   try {
@@ -446,5 +468,5 @@ async function teardown({ work, sockets, marker, started, port }) {
   return result;
 }
 
-// teardown is exported for test/remote-ssh.cjs.
-module.exports = { create, teardown };
+// runProcesses is exported for test/remote-ssh.cjs, and teardown as well.
+module.exports = { create, runProcesses, teardown };

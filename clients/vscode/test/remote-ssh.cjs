@@ -11,13 +11,16 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { test } = require('node:test');
 const vm = require('node:vm');
 const fakes = require('./support/fakes.cjs');
+const { HIDDEN_THREAD_COMMAND, THREAD_SKIP, startHiddenChild, startThread, stop } = require('./support/threads.cjs');
+const { processFiles } = require('./e2e/processes.cjs');
 
-const { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses } = fakes;
+const { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses, fakeThreadedProc } = fakes;
 const dir = path.join(__dirname, 'e2e/remote-ssh');
 
 // Loads a module of the Remote-SSH test with some modules, process
@@ -26,8 +29,9 @@ const load = (file, ...rest) => fakes.load(path.join('remote-ssh', file), ...res
 
 // localhost.cjs's teardown over fake processes (see fakeProc), each of which
 // may say what happens when it gets a signal. Processes go on SIGKILL. With
-// pidfd, signals go through the fake pidfd helper (see fakeProcesses).
-function teardown(processes, started, { pidfd = false } = {}) {
+// pidfd, signals go through the fake pidfd helper (see fakeProcesses); proc
+// is the fake of /proc that it reads.
+function teardown(processes, started, { pidfd = false, proc = fakeProc(processes) } = {}) {
   const signals = [];
   const deliver = (pid, name) => {
     const p = processes.get(pid);
@@ -39,7 +43,7 @@ function teardown(processes, started, { pidfd = false } = {}) {
     deliver(pid, name);
   };
   const localhost = load('localhost.cjs', {
-    'node:fs': fakeProc(processes),
+    'node:fs': proc,
     '../processes.cjs': fakeProcesses(processes, { kill, pidfd, signals, deliver }),
   }, { pid: 1, kill });
   const result = localhost.teardown({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started, port: undefined });
@@ -75,6 +79,45 @@ test('the teardown never signals a PID that a process of the run had and another
   assert.deepEqual([...result.stopped.map((p) => p.pid)].sort(), [200, 300, 301]);
 });
 
+test('both discoveries rescan a reused PID without inheriting its former parent', () => {
+  for (const discovery of ['teardown', 'remote']) {
+    for (const pivot of ['stat', 'exe']) {
+      const table = new Map([
+        [100, { start: '100', exe: '/work/python3' }],
+        [101, { start: '110', ppid: 100, hidden: true }],
+      ]);
+      const proc = fakeProc(table);
+      let replaced = false;
+      const replace = (file) => {
+        if (!replaced && file === `/proc/101/${pivot}`) {
+          table.set(101, { start: '200', ppid: 1, hidden: true });
+          replaced = true;
+        }
+      };
+      const racing = { ...proc, readdirSync: (file) => file === '/proc' ? ['100', '101'] : [],
+        readFileSync: (file, ...args) => {
+          const result = proc.readFileSync(file, ...args);
+          replace(file);
+          return result;
+        },
+        readlinkSync: (file) => {
+          replace(file);
+          return proc.readlinkSync(file);
+        },
+      };
+      const localhost = load('localhost.cjs', { 'node:fs': racing }, { pid: 1 });
+      const sample = () => discovery === 'teardown'
+        ? JSON.parse(JSON.stringify(localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started: [] })))
+        : remoteProcesses(table, { root: '/work', agent: '/work/agent' }, { proc: racing }).listing;
+      const first = sample();
+      const found = discovery === 'teardown' ? first.filter((p) => !p.unidentified) : first.found;
+      assert.deepEqual(found.map((p) => p.pid), [100], `${discovery} at ${pivot}`);
+      const second = sample();
+      assert.deepEqual((discovery === 'teardown' ? second : second.found).map((p) => p.pid), [100]);
+    }
+  }
+});
+
 test('the teardown stops a running Xvfb last, with SIGTERM', async () => {
   const processes = new Map([[100, { start: '500' }], [200, { start: '600', exe: '/work/remote/virgil-lsp' }]]);
   processes.get(100).on = (name) => {
@@ -101,6 +144,64 @@ test('the teardown sends its signals through pidfds where they are available', a
     ['pidfd', 'SIGTERM', [[100, '500']]], ['pidfd', 'SIGKILL', [[100, '500']]],
   ]);
   assert.equal(result.ok, true);
+});
+
+test('the teardown finds a process whose main thread has exited while another thread runs, by its marker (real process)', { skip: THREAD_SKIP }, async () => {
+  const { child, exited, start } = await startThread({ env: { ...process.env, VIRGIL_TEST_THREADED: '1' } });
+  try {
+    const localhost = require('./e2e/remote-ssh/localhost.cjs');
+    const found = localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'VIRGIL_TEST_THREADED=1', started: [] })
+      .filter((p) => p.pid === child.pid);
+    // Its environment, which says that it is the run's, is a live thread's.
+    assert.deepEqual(found.map((p) => [p.pid, p.start]), [[child.pid, start]]);
+    assert.match(found[0]?.command ?? '', /^python3 /);
+  } finally {
+    child.kill('SIGKILL');
+    await exited;
+  }
+});
+
+test('the teardown identifies a process whose first live thread exits while it reads, and another still runs', () => {
+  // Its main thread has exited. The thread that the discovery chooses first
+  // exits between the choice and the reads, as one can while another still
+  // runs: its files are gone, and its environment says that it is the run's.
+  const proc = fakeThreadedProc();
+  const localhost = load('localhost.cjs', { 'node:fs': proc }, { pid: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started: [] }))),
+    [{ pid: 100, start: '12345', exe: '/work/python3', command: 'python3 -c pass' }]);
+});
+
+test('the teardown retries a live process that no thread\'s files describe, then fails naming its PID', async () => {
+  // Every thread that it has exits while the discovery reads its files, and
+  // the process still runs, as one that starts a thread then does. None of
+  // them can say whether it belongs to the run.
+  const { result, signals } = await teardown(new Map(), [], { proc: fakeThreadedProc({ vanishing: ['101', '102'] }) });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /^could not list the run's processes: could not identify the process\(es\) with pid 100$/);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.stopped)), []);
+  assert.deepEqual(signals, []);
+});
+
+test('the teardown finds a process that hides its executable and environment by its command line', () => {
+  // As a non-dumpable process does: its executable and environment fail with
+  // EACCES, and its command line, which names the copy under the work
+  // directory, is all that says that it is the run's.
+  const proc = fakeProc(new Map([[100, { start: '100', hidden: true, cmdline: ['/work/python3', '-c', 'pass'] }]]));
+  const localhost = load('localhost.cjs', { 'node:fs': proc }, { pid: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started: [] }))),
+    [{ pid: 100, start: '100', exe: '', command: '/work/python3 -c pass' }]);
+});
+
+test('the teardown does not take a process that hides its executable for its parent\'s child', () => {
+  // The child's parent PID is one that another process has since been given:
+  // it started after the child, so it can't be the parent that forked it.
+  const proc = fakeProc(new Map([
+    [100, { start: '100', ppid: 200, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+    [200, { start: '200', exe: '/work/python3' }],
+  ]));
+  const localhost = load('localhost.cjs', { 'node:fs': proc }, { pid: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(localhost.runProcesses({ work: '/work', sockets: '/sockets', marker: 'RUN=1', started: [] }))),
+    [{ pid: 200, start: '200', exe: '/work/python3', command: '' }]);
 });
 
 // run.cjs's runGroup, over fake processes (see fakeProc) and a fake clock and
@@ -546,6 +647,77 @@ test('host containment retains the signal timestamp across slow SSH responses', 
   }
 });
 
+test('host containment observes each signal after a slow SSH response before deciding survival', async (t) => {
+  for (const slow of ['SIGTERM', 'SIGKILL']) {
+    for (const gone of [false, true]) {
+      await t.test(`${slow}: host ${gone ? 'gone' : 'running'}`, async () => {
+        const agent = '/work/agent';
+        const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+        const table = new Map([[host.pid, { start: host.start, exe: host.exe }]]);
+        let now = 0;
+        let delayed = false;
+        let observed = false;
+        let calls = 0;
+        const sent = [];
+        const runner = load('run.cjs', {}, {}, {
+          Date: { now: () => now },
+          setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+        });
+        const remote = { target: { root: '/work' }, remote: async (command) => {
+          const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+          assert.deepEqual(options.host, host);
+          if (delayed && !observed) {
+            assert.equal(options.signal, undefined);
+            observed = true;
+          }
+          calls++;
+          const { listing, signals } = remoteProcesses(table, options, { now: () => now });
+          for (const [pid, signal] of signals) {
+            sent.push({ signal, at: listing.signaledAt });
+            if (signal === slow) {
+              if (gone) table.delete(pid);
+              now += 4000;
+              delayed = true;
+            }
+          }
+          return { stdout: JSON.stringify(listing) };
+        } };
+        const stopped = runner.stopHost(remote, { agent, serverNode: host.exe }, host);
+        if (gone) {
+          const result = await stopped;
+          assert.equal(result.signal, slow);
+          assert.equal(result.at, slow === 'SIGTERM' ? 0 : 3000);
+          assert.equal(result.processes.host, false);
+        } else {
+          await assert.rejects(stopped, (error) => error.kind === 'infra'
+            && error.message === 'the remote extension host (pid 100) that VS Code left running still ran 3 seconds after SIGKILL');
+        }
+        assert.equal(observed, true);
+        assert.deepEqual(sent, [
+          { signal: 'SIGTERM', at: 0 },
+          ...(!gone || slow === 'SIGKILL' ? [{ signal: 'SIGKILL', at: slow === 'SIGTERM' ? 4000 : 3000 }] : []),
+        ]);
+        assert.ok(now <= 7000);
+        assert.ok(calls <= 35);
+      });
+    }
+  }
+});
+
+test('host containment cannot report survival when no signal was sent', async () => {
+  let now = 0;
+  const runner = load('run.cjs', {}, {}, {
+    Date: { now: () => now },
+    setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+  });
+  const remote = { target: { root: '/work' }, remote: async () => ({
+    stdout: JSON.stringify({ found: [], host: true, sampledAt: now }),
+  }) };
+  await assert.rejects(runner.stopHost(remote, { agent: '/work/agent', serverNode: '/node' }, { pid: 100, start: '1', exe: '/node' }),
+    (error) => error.kind === 'infra' && error.message === 'could not send SIGTERM to the remote extension host (pid 100)');
+  assert.equal(now, 3000);
+});
+
 test('a late first sample or a late empty sample cannot verify the leak deadline', async () => {
   for (const at of [0, 10000]) {
     for (const samples of [[{ offset: 7000, alive: false }], [{ offset: 7000, alive: true }],
@@ -805,24 +977,36 @@ test('scratch-directory failures produce an INFRA manifest and exit status', asy
 // run.cjs's program that lists and signals processes on the host, over fake
 // processes (see fakeProc), with options as run.cjs gives it them. With
 // pidfd, the host's pidfd helper "runs", and gives result for every target;
-// without it, python3 isn't found there.
-function remoteProcesses(processes, options, { pidfd = false, result = 'sent' } = {}) {
+// without it, python3 isn't found there. proc is the fake of /proc that it
+// reads.
+function remoteProcesses(processes, options, { pidfd = false, result = 'sent', proc = fakeProc(processes), now = Date.now, onHelper = () => {} } = {}) {
   const signals = [];
   const output = [];
   const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
   const spawnSync = (command, args) => {
+    onHelper();
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
     const [name, targets] = JSON.parse(args.at(-1));
     signals.push(['pidfd', name, targets]);
     return { status: 0, stdout: JSON.stringify(targets.map(() => result)) };
   };
-  const modules = { 'node:fs': fakeProc(processes), 'node:child_process': { spawnSync } };
+  const modules = { 'node:fs': proc, 'node:child_process': { spawnSync } };
   vm.runInNewContext(REMOTE_PROCESSES, {
+    Date: { now },
     require: (name) => modules[name] ?? require(name),
     process: { pid: 1, argv: [process.execPath, JSON.stringify({ kill: [], ...options })], kill: (pid, name) => signals.push([pid, name]) },
     console: { log: (line) => output.push(JSON.parse(line)) },
   });
   return { listing: output[0], signals };
+}
+
+// REMOTE_PROCESSES's listing for a real target on this machine: it runs the
+// generated program as the target's node would, against the real /proc.
+function remoteListing(options) {
+  const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+  const listing = spawnSync(process.execPath, ['-e', REMOTE_PROCESSES, JSON.stringify({ kill: [], ...options })], { encoding: 'utf8' });
+  assert.equal(listing.status, 0, listing.stderr);
+  return JSON.parse(listing.stdout);
 }
 
 test('the leak check signals a remote extension host only by its PID, start time, and executable', () => {
@@ -877,6 +1061,22 @@ test('the leak check signals a remote extension host only by its PID, start time
   assert.deepEqual(sent, []);
 });
 
+test('remote signal timestamps acknowledge a send after the helper completes', () => {
+  const agent = '/work/agent';
+  const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+  for (const pidfd of [false, true]) {
+    for (const result of ['sent', 'gone', 'other']) {
+      let now = 0;
+      const { listing, signals } = remoteProcesses(new Map([[host.pid, { start: host.start, exe: host.exe }]]),
+        { root: '/work', agent, host, signal: 'SIGTERM' },
+        { pidfd, result, now: () => now, onHelper: () => { now += 4000; } });
+      assert.equal(listing.signaledAt, pidfd && result !== 'sent' ? undefined : 4000);
+      assert.equal(listing.host, true);
+      assert.equal(signals.length, 1);
+    }
+  }
+});
+
 test('without pidfds, the leak check signals a process that has since been listed as a zombie only while its other threads run', () => {
   // The listing finds the server running. Its main thread then exits, and its
   // other thread, if it has one, runs on.
@@ -898,6 +1098,332 @@ test('without pidfds, the leak check signals a process that has since been liste
     });
     assert.deepEqual(sent, signals, `${threads} threads`);
   }
+});
+
+test('the leak check finds a process whose main thread has exited while another thread runs, by its executable (real process)', { skip: THREAD_SKIP }, async () => {
+  // The copy's executable is under root, as the run's servers' are.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-threaded-'));
+  try {
+    const { child, exited, start } = await startThread({ exeDir: root });
+    try {
+      const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+      const options = { root, agent: path.join(root, 'agent'), kill: [], host: undefined, signal: undefined };
+      const listing = spawnSync(process.execPath, ['-e', REMOTE_PROCESSES, JSON.stringify(options)], { encoding: 'utf8' });
+      assert.equal(listing.status, 0, listing.stderr);
+      const found = JSON.parse(listing.stdout).found.filter((p) => p.pid === child.pid);
+      // The executable, which says that it is the run's, is a live thread's.
+      assert.deepEqual(found.map((p) => [p.pid, p.start, p.exe]), [[child.pid, start, path.join(root, 'python3')]]);
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the teardown and the leak check find a non-dumpable process of the run by its command line (real process)', { skip: THREAD_SKIP }, async () => {
+  // The copy's executable is under root, but the process hides it and its
+  // environment; only its command line, which names the copy, says that it is
+  // the run's.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-hidden-'));
+  try {
+    const { child, exited, start } = await startThread({ exeDir: root, text: HIDDEN_THREAD_COMMAND });
+    try {
+      assert.equal(processFiles(fs, child.pid, { exe: 'link', environ: 'latin1' })?.files?.exe, undefined, 'the process hides its executable');
+      const localhost = require('./e2e/remote-ssh/localhost.cjs');
+      const local = localhost.runProcesses({ work: root, sockets: path.join(root, 'sockets'), marker: 'VIRGIL_TEST_HIDDEN=1', started: [] })
+        .filter((p) => p.pid === child.pid);
+      assert.deepEqual(local.map((p) => [p.pid, p.start]), [[child.pid, start]]);
+      const remote = remoteListing({ root, agent: path.join(root, 'agent') });
+      assert.deepEqual(remote.found.filter((p) => p.pid === child.pid).map((p) => [p.pid, p.start]), [[child.pid, start]]);
+      assert.deepEqual(remote.unidentified, []);
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the teardown and the leak check find a non-dumpable process of the run by its parent (real process)', { skip: THREAD_SKIP }, async () => {
+  // The hidden process runs python3 from PATH with no environment, so neither
+  // its executable nor its command line nor its environment names the run; its
+  // parent, which runs the copy under root, does.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-hidden-parent-'));
+  try {
+    const { parent, parentExited, pid, start } = await startHiddenChild({ exeDir: root });
+    try {
+      assert.equal(processFiles(fs, pid, { exe: 'link', environ: 'latin1' })?.files?.exe, undefined, 'the process hides its executable');
+      const localhost = require('./e2e/remote-ssh/localhost.cjs');
+      const local = localhost.runProcesses({ work: root, sockets: path.join(root, 'sockets'), marker: 'VIRGIL_TEST_HIDDEN=1', started: [] })
+        .filter((p) => p.pid === pid);
+      assert.deepEqual(local.map((p) => [p.pid, p.start]), [[pid, start]]);
+      const remote = remoteListing({ root, agent: path.join(root, 'agent') });
+      assert.deepEqual(remote.found.filter((p) => p.pid === pid).map((p) => [p.pid, p.start]), [[pid, start]]);
+      assert.deepEqual(remote.unidentified, []);
+    } finally {
+      // The parent must exit first, so that its child isn't left a zombie.
+      await stop(parent);
+      await stop({ pid, start });
+      await parentExited;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the teardown and the leak check leave a non-dumpable process outside the run alone (real process)', { skip: THREAD_SKIP }, async () => {
+  // The same hidden process, but running a copy outside root, from a parent
+  // that the run didn't start: nothing says that it is the run's, so it is
+  // neither found nor reported as unidentified.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-run-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'virgil-outside-'));
+  try {
+    const { child, exited } = await startThread({ exeDir: outside, text: HIDDEN_THREAD_COMMAND });
+    try {
+      assert.equal(processFiles(fs, child.pid, { exe: 'link', environ: 'latin1' })?.files?.exe, undefined, 'the process hides its executable');
+      const localhost = require('./e2e/remote-ssh/localhost.cjs');
+      const local = localhost.runProcesses({ work: root, sockets: path.join(root, 'sockets'), marker: 'VIRGIL_TEST_HIDDEN=1', started: [] })
+        .filter((p) => p.pid === child.pid);
+      assert.deepEqual(local, []);
+      const remote = remoteListing({ root, agent: path.join(root, 'agent') });
+      assert.deepEqual(remote.found.filter((p) => p.pid === child.pid), []);
+      assert.ok(!remote.unidentified.includes(child.pid));
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('the leak check finds a process that hides its executable by its command line or its parent', () => {
+  // As a non-dumpable process does: its executable fails with EACCES, so its
+  // command line under root, or its parent, which the run started, says that
+  // it is the run's. The child is listed before its parent, as /proc can list
+  // it.
+  const byCommand = remoteProcesses(new Map([
+    [100, { start: '100', hidden: true, cmdline: ['/work/python3', '-c', 'pass'] }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(byCommand.listing.found, [{ pid: 100, ppid: 1, start: '100' }]);
+  assert.deepEqual(byCommand.listing.unidentified, []);
+  const byParent = remoteProcesses(new Map([
+    [100, { start: '100', ppid: 200, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+    [200, { start: '90', exe: '/work/python3' }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(byParent.listing.found.map((p) => [p.pid, p.ppid]), [[100, 200], [200, 1]]);
+});
+
+test('the leak check finds a hidden process whose parent is a system program that the run\'s process started', () => {
+  // The server starts a system Python, which isn't a leftover itself, and
+  // that starts a non-dumpable child: the chain through the Python still
+  // makes the child the run's, while the Python stays out.
+  const { listing } = remoteProcesses(new Map([
+    [100, { start: '100', exe: '/work/agent/bin/c/node' }],
+    [101, { start: '110', ppid: 100, exe: '/usr/bin/python3' }],
+    [102, { start: '120', ppid: 101, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(listing.found.map((p) => p.pid), [100, 102]);
+  // A PID in the chain that another process has since been given breaks it.
+  const reused = remoteProcesses(new Map([
+    [100, { start: '100', exe: '/work/agent/bin/c/node' }],
+    [101, { start: '130', ppid: 100, exe: '/usr/bin/python3' }],
+    [102, { start: '120', ppid: 101, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(reused.listing.found.map((p) => p.pid), [100]);
+});
+
+test('the leak check does not take a process that hides its executable for its parent\'s child', () => {
+  // Its parent PID is one that another process has since been given: it
+  // started after the child, so it can't be the parent that forked it.
+  const { listing } = remoteProcesses(new Map([
+    [100, { start: '100', ppid: 200, hidden: true, cmdline: ['python3', '-c', 'pass'] }],
+    [200, { start: '200', exe: '/work/python3' }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(listing.found.map((p) => p.pid), [200]);
+});
+
+test('the leak check finds a remote extension host that hides its executable by its PID and start time', () => {
+  // The caller already identified the host, so its PID and start time are
+  // enough, even though its executable now fails with EACCES.
+  const agent = '/remote/server/.vscode-server';
+  const host = { pid: 10, start: '500', exe: `${agent}/bin/c/node` };
+  const { listing, signals } = remoteProcesses(new Map([
+    [10, { start: '500', hidden: true, cmdline: ['node', `${agent}/bin/c/out/server-main.js`] }],
+  ]), { root: '/remote', agent, host, signal: 'SIGTERM' });
+  assert.equal(listing.host, true);
+  assert.deepEqual(listing.found, [{ pid: 10, ppid: 1, start: '500', exe: host.exe }]);
+  assert.deepEqual(signals, [[10, 'SIGTERM']]);
+});
+
+test('host containment resamples an unidentified host and fails within its bound if it stays unknown', async () => {
+  const agent = '/work/agent';
+  const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+  for (const unknownAt of [0, 1]) {
+    for (const outcome of ['gone', 'live', 'unknown']) {
+      let now = 0;
+      let samples = 0;
+      const signals = [];
+      const runner = load('run.cjs', {}, {}, {
+        Date: { now: () => now },
+        setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+      });
+      const remote = { target: { root: '/work' }, remote: async (command) => {
+        const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+        assert.deepEqual(options.host, host);
+        const unknown = samples >= unknownAt && (outcome === 'unknown' || samples === unknownAt);
+        const gone = samples > unknownAt && outcome === 'gone';
+        samples++;
+        const proc = unknown ? fakeThreadedProc({ vanishing: ['101', '102'], exe: host.exe }) : fakeProc(new Map(
+          gone ? [] : [[host.pid, { start: host.start, exe: host.exe }]],
+        ));
+        const result = remoteProcesses(new Map(), options, { proc });
+        if (unknown) assert.equal(result.listing.host, null);
+        signals.push(...result.signals);
+        return { stdout: JSON.stringify({ ...result.listing, sampledAt: now, signaledAt: result.signals.length ? now : undefined }) };
+      } };
+      const stopped = runner.stopHost(remote, { agent, serverNode: host.exe }, host);
+      if (outcome === 'gone') {
+        const result = await stopped;
+        assert.equal(result.processes.host, false);
+        assert.equal(samples, unknownAt + 2);
+        assert.equal(result.signal, unknownAt === 0 ? null : 'SIGTERM');
+      } else {
+        await assert.rejects(stopped, (error) => error.kind === 'infra' && (outcome === 'unknown'
+          ? error.message === "leak check could not identify the host's process with pid 100"
+          : error.message.includes('still ran 3 seconds after SIGKILL')));
+      }
+      assert.ok(now <= 6100);
+      assert.ok(samples < 65);
+      if (outcome === 'unknown' && unknownAt === 0) assert.deepEqual(signals, []);
+    }
+  }
+});
+
+test('host containment retains each pending signal until a fake /proc sample identifies the host', async (t) => {
+  for (const pending of ['SIGTERM', 'SIGKILL']) {
+    for (const outcome of ['stops', 'unidentified', 'survives']) {
+      await t.test(`${pending}: ${outcome}`, async () => {
+        const agent = '/work/agent';
+        const host = { pid: 100, start: '12345', exe: `${agent}/node` };
+        const table = new Map([[host.pid, { start: host.start, exe: host.exe }]]);
+        let now = 0;
+        let dueAt;
+        const delivered = [];
+        const requests = [];
+        const runner = load('run.cjs', {}, {}, {
+          Date: { now: () => now },
+          setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+        });
+        const remote = { target: { root: '/work' }, remote: async (command) => {
+          const options = JSON.parse(/'([^']*)'$/.exec(command)[1]);
+          assert.deepEqual(options.host, host);
+          if (options.signal === pending) dueAt ??= now;
+          const unknown = dueAt !== undefined && (outcome === 'unidentified' || now < dueAt + 200);
+          const proc = unknown ? fakeThreadedProc({ vanishing: ['101', '102'], exe: host.exe }) : fakeProc(table);
+          const { listing, signals } = remoteProcesses(table, options, { proc, now: () => now });
+          requests.push({ signal: options.signal, host: listing.host });
+          if (unknown) {
+            assert.equal(listing.host, null);
+            assert.equal(listing.signaledAt, undefined);
+            assert.deepEqual(signals, []);
+          }
+          for (const [pid, signal] of signals) {
+            delivered.push({ at: now, pid, signal });
+            assert.equal(listing.signaledAt, now);
+            if (outcome === 'stops' && signal === pending) table.delete(pid);
+          }
+          return { stdout: JSON.stringify(listing) };
+        } };
+        const stopped = runner.stopHost(remote, { agent, serverNode: host.exe }, host);
+        if (outcome === 'stops') {
+          const result = await stopped;
+          assert.equal(result.processes.host, false);
+          assert.equal(result.signal, pending);
+          assert.equal(result.at, dueAt + 200);
+          assert.equal(now, result.at + 100);
+        } else {
+          await assert.rejects(stopped, (error) => error.kind === 'infra' && error.message === (outcome === 'unidentified'
+            ? "leak check could not identify the host's process with pid 100"
+            : 'the remote extension host (pid 100) that VS Code left running still ran 3 seconds after SIGKILL'));
+          assert.equal(now, outcome === 'unidentified' ? dueAt + 3000 : 6200);
+        }
+        const expected = pending === 'SIGTERM' ? [] : [{ at: 0, pid: host.pid, signal: 'SIGTERM' }];
+        if (outcome !== 'unidentified') {
+          expected.push({ at: dueAt + 200, pid: host.pid, signal: pending });
+          if (pending === 'SIGTERM' && outcome === 'survives') expected.push({ at: 3200, pid: host.pid, signal: 'SIGKILL' });
+        }
+        assert.deepEqual(delivered, expected);
+        for (const request of requests.filter((sample) => sample.host === null)) assert.equal(request.signal, pending);
+        assert.ok(now <= 6200);
+        assert.ok(requests.length <= 65);
+      });
+    }
+  }
+});
+
+test('the leak check leaves the VS Code Server\'s descendants that run other executables out', () => {
+  // The server runs an executable under agent; its children, such as the shell
+  // that downloads something, run ones from /usr/bin. The leak check waits only
+  // for processes that run an executable from the work directory, as before,
+  // so only the server is found.
+  const { listing } = remoteProcesses(new Map([
+    [100, { start: '100', exe: '/work/agent/bin/c/node' }],
+    [101, { start: '110', ppid: 100, exe: '/usr/bin/dash' }],
+  ]), { root: '/work', agent: '/work/agent' });
+  assert.deepEqual(listing.found.map((p) => p.pid), [100]);
+});
+
+test('the leak check identifies a process whose first live thread exits while it reads, and another still runs', () => {
+  // As the teardown's test above: the first live thread's files are gone by
+  // the time the discovery reads them, and another thread's say that the
+  // process runs the run's executable.
+  const { listing } = remoteProcesses(new Map(), { root: '/work', agent: '/work/agent' }, { proc: fakeThreadedProc() });
+  assert.deepEqual(listing.found, [{ pid: 100, ppid: 1, start: '12345', exe: '/work/python3' }]);
+  assert.deepEqual(listing.unidentified, []);
+});
+
+test('the leak check reports a live process that no thread\'s files describe', () => {
+  const { listing } = remoteProcesses(new Map(), { root: '/work', agent: '/work/agent' }, { proc: fakeThreadedProc({ vanishing: ['101', '102'] }) });
+  assert.deepEqual(listing.found, []);
+  assert.deepEqual(listing.unidentified, [100]);
+});
+
+test('the leak check cannot pass on a sample that could not identify a live process', async () => {
+  let now = 0;
+  const runner = load('run.cjs', { '../run.cjs': require('./e2e/run.cjs') }, {}, {
+    Date: { now: () => now },
+    setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); },
+  });
+  const sample = (unidentified) => JSON.stringify({ found: [], host: false, unidentified, sampledAt: now });
+  // A sample that can't identify 100 is not a shutdown, even early; the next
+  // sample, which identifies every live process, is.
+  const samples = [sample([100]), sample([])];
+  const remote = { target: { root: '/remote' }, remote: async () => ({ stdout: samples.shift() }) };
+  const settled = await runner.settle(remote, { agent: '/remote/server', serverNode: '/node' }, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(settled.unidentified)), []);
+  // One that still can't when the deadline arrives fails, naming the PID.
+  now = 0;
+  const unclear = { target: { root: '/remote' }, remote: async () => ({ stdout: sample([100]) }) };
+  await assert.rejects(runner.settle(unclear, { agent: '/remote/server', serverNode: '/node' }, 0),
+    (error) => error.kind === 'infra' && error.message === "leak check could not identify the host's process with pid 100");
+});
+
+test('the generated remote script runs its discovery on this machine', { skip: process.platform !== 'linux' ? 'the generated script reads /proc' : false }, () => {
+  // Its functions are interpolated into the program's text, so this also
+  // catches one that they call but that isn't.
+  const { REMOTE_PROCESSES } = require(path.join(dir, 'run.cjs'));
+  const options = { root: '/nonexistent-virgil-root', agent: '/nonexistent-virgil-root/agent', kill: [] };
+  const listing = spawnSync(process.execPath, ['-e', REMOTE_PROCESSES, JSON.stringify(options)], { encoding: 'utf8' });
+  assert.equal(listing.status, 0, listing.stderr);
+  const parsed = JSON.parse(listing.stdout);
+  assert.deepEqual(parsed.found, []);
+  assert.equal(parsed.host, false);
+  assert.ok(Array.isArray(parsed.unidentified));
 });
 
 // bootstrap.cjs for a launch in mode, in a window with the workspace folders

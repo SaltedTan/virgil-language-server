@@ -31,9 +31,13 @@ function load(file, modules = {}, overrides = {}, globals = {}) {
 
 // node:fs with a fake /proc of processes, by PID: each has a start time, and
 // may have a state, a parent, a process group, a number of threads, an
-// executable, and an environment.
+// executable, an environment, and a command line, an array of arguments. One
+// that has hidden, as a non-dumpable process does, hides its executable and
+// environment, which then fail with EACCES, while its command line stays
+// readable.
 function fakeProc(processes) {
   const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+  const denied = (file) => Object.assign(new Error(`EACCES: ${file}`), { code: 'EACCES' });
   const entry = (file) => {
     const [, pid, name] = /^\/proc\/(\d+)\/(\w+)$/.exec(file) ?? [];
     const p = processes.get(Number(pid));
@@ -46,10 +50,60 @@ function fakeProc(processes) {
     readFileSync: (file) => {
       const [pid, p, name] = entry(file);
       if (name === 'stat') return `${pid} (x) ${p.state ?? 'S'} ${p.ppid ?? 1} ${p.group ?? 0} ${Array(14).fill(0).join(' ')} ${p.threads ?? 1} 0 ${p.start} 0 0`;
-      if (name === 'environ') return (p.environ ?? []).join('\0');
+      if (name === 'cmdline') return (p.cmdline ?? []).join('\0');
+      if (name === 'environ') {
+        if (p.hidden) throw denied(file);
+        return (p.environ ?? []).join('\0');
+      }
       return '';
     },
-    readlinkSync: (file) => entry(file)[1].exe ?? '/usr/bin/other',
+    readlinkSync: (file) => {
+      const [pid, p, name] = entry(file);
+      if (name === 'exe' && p.hidden) throw denied(file);
+      return p.exe ?? '/usr/bin/other';
+    },
+  };
+}
+
+// A fake /proc of one process whose main thread has exited while other
+// threads run, for the race between choosing a thread and reading its files
+// (see processFiles in e2e/processes.cjs): the threads in vanishing exit once
+// their stat has been read, as one does when the discovery has just chosen
+// it. tids are the process's thread IDs, the main thread's first; Linux lists
+// a process whose main thread has exited as a zombie with its number of
+// threads, while each thread has its own state and files. The last thread
+// still there has exe, environ, and cmdline. The process's stat keeps its
+// thread count, so that a process whose threads have all vanished during the
+// scan is still live, as one that starts a thread then is.
+function fakeThreadedProc({ pid = 100, start = '12345', tids = ['100', '101', '102'], vanishing = ['101'],
+  exe = '/work/python3', environ = 'RUN=1', cmdline = 'python3 -c pass' } = {}) {
+  const gone = new Set();
+  const missing = (file) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+  const line = (id, state, threads) => `${id} (python3) ${state} 1 0 ${Array(14).fill(0).join(' ')} ${threads} 0 ${start} 0 0`;
+  const task = (file) => /^\/proc\/\d+\/task\/(\d+)\/(\w+)$/.exec(file);
+  return {
+    readdirSync: (file) => {
+      if (file === '/proc') return [String(pid)];
+      if (file === `/proc/${pid}/task`) return [...tids];
+      throw missing(file);
+    },
+    readFileSync: (file) => {
+      if (file === `/proc/${pid}/stat`) return line(pid, 'Z', tids.length);
+      const match = task(file);
+      if (match === null || gone.has(match[1]) || match[1] === tids[0]) throw missing(file);
+      if (match[2] === 'stat') {
+        if (vanishing.includes(match[1])) gone.add(match[1]);
+        return line(match[1], 'S', 1);
+      }
+      if (match[2] === 'environ') return environ;
+      if (match[2] === 'cmdline') return cmdline.split(' ').join('\0');
+      throw missing(file);
+    },
+    readlinkSync: (file) => {
+      const match = /^\/proc\/\d+\/task\/(\d+)\/exe$/.exec(file);
+      if (match === null || gone.has(match[1]) || match[1] === tids[0]) throw missing(file);
+      return exe;
+    },
   };
 }
 
@@ -226,4 +280,4 @@ function fakeGroup(processes, signals = []) {
   return { keeper, kill, deliver, signals };
 }
 
-module.exports = { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses, load };
+module.exports = { fakeClock, fakeGroup, fakeKeeper, fakeProc, fakeProcesses, fakeThreadedProc, load };

@@ -12,7 +12,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { fakeClock, fakeGroup, fakeProc, fakeProcesses, load } = require('./support/fakes.cjs');
+const { fakeClock, fakeGroup, fakeProc, fakeProcesses, fakeThreadedProc, load } = require('./support/fakes.cjs');
 
 const processes = require('./e2e/processes.cjs');
 
@@ -153,6 +153,103 @@ test('a process whose main thread has exited while its other threads run gets si
   assert.deepEqual(kills, [[11, 'SIGKILL']]);
 });
 
+test('a process is identified by a thread that outlives the choice of whose files to read, and reported if none does', () => {
+  const files = { exe: 'link', environ: 'latin1', cmdline: 'utf8' };
+  // Its main thread has exited; the first live thread whose files the scan
+  // reads exits meanwhile, and the next one still identifies it.
+  assert.deepEqual(processes.processFiles(fakeThreadedProc(), 100, files), {
+    pid: 100, ppid: 1, start: '12345', files: { exe: '/work/python3', environ: 'RUN=1', cmdline: 'python3\0-c\0pass' },
+  });
+  // With every live thread gone by then, while the process still runs, it is
+  // neither identified nor known to have gone.
+  assert.deepEqual(processes.processFiles(fakeThreadedProc({ vanishing: ['101', '102'] }), 100, files), { pid: 100, ppid: 1, start: '12345', unreadable: true });
+  // A process that has gone, or is a zombie, has no files to identify it.
+  assert.equal(processes.processFiles(fakeProc(new Map([[100, { start: '12345', state: 'Z' }]])), 100, files), undefined);
+});
+
+test('identifying files never combine identities when a PID is reused during a read', () => {
+  for (const pivot of ['stat', 'exe', 'environ', 'cmdline']) {
+    const table = new Map([[100, { ppid: 50, start: '100', exe: '/work/old', environ: ['RUN=1'] }]]);
+    const proc = fakeProc(table);
+    let replaced = false;
+    const replace = (file) => {
+      if (!replaced && file === `/proc/100/${pivot}`) {
+        table.set(100, { ppid: 1, start: '200', exe: '/usr/bin/new' });
+        replaced = true;
+      }
+    };
+    const racing = { ...proc, readdirSync: () => [],
+      readFileSync: (file, ...args) => {
+        const result = proc.readFileSync(file, ...args);
+        replace(file);
+        return result;
+      },
+      readlinkSync: (file) => {
+        const result = proc.readlinkSync(file);
+        replace(file);
+        return result;
+      },
+    };
+    const files = { exe: 'link', environ: 'latin1' };
+    assert.deepEqual(processes.processFiles(racing, 100, files), { pid: 100, ppid: 1, start: '200', unreadable: true }, pivot);
+    assert.deepEqual(processes.processFiles(racing, 100, files), {
+      pid: 100, ppid: 1, start: '200', files: { exe: '/usr/bin/new', environ: '', cmdline: '' },
+    }, pivot);
+  }
+});
+
+test('identifying files rejects a thread ID reused while its process remains live', () => {
+  const proc = fakeThreadedProc();
+  let replaced = false;
+  const racing = { ...proc,
+    readFileSync: (file, ...args) => {
+      const result = proc.readFileSync(file, ...args);
+      return replaced && file === '/proc/100/task/102/stat' ? result.replace(' 12345 ', ' 12346 ') : result;
+    },
+    readlinkSync: (file) => {
+      const result = proc.readlinkSync(file);
+      replaced = true;
+      return result;
+    },
+  };
+  assert.deepEqual(processes.processFiles(racing, 100, { exe: 'link' }), { pid: 100, ppid: 1, start: '12345', unreadable: true });
+  assert.equal(processes.processFiles(racing, 100, { exe: 'link' }).files.exe, '/work/python3');
+});
+
+test('a file that a process doesn\'t have, or that its user may not read, is left out of its files', () => {
+  // A kernel thread, which has no exe, and another user's process, whose exe
+  // and environ this user may not read; cmdline is always read.
+  const stat = (pid, name) => `${pid} (${name}) S 1 0 ${Array(14).fill(0).join(' ')} 1 0 12345 0 0`;
+  const proc = {
+    readdirSync: () => [],
+    readFileSync: (file) => {
+      if (file === '/proc/100/stat') return stat(100, 'kthreadd');
+      if (file === '/proc/100/environ' || file === '/proc/100/cmdline') return '';
+      if (file === '/proc/101/stat') return stat(101, 'ssh-agent');
+      if (file === '/proc/101/cmdline') return 'ssh-agent\0-l\0/tmp/agent';
+      if (file === '/proc/103/stat') return stat(103, 'python3');
+      if (file === '/proc/103/environ') return 'RUN=1';
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    },
+    readlinkSync: (file) => {
+      if (file === '/proc/103/exe') return '/work/python3';
+      throw Object.assign(new Error('ENOENT'), { code: file.startsWith('/proc/101/') ? 'EACCES' : 'ENOENT' });
+    },
+  };
+  assert.deepEqual(processes.processFiles(proc, 100, { exe: 'link', environ: 'latin1' }), { pid: 100, ppid: 1, start: '12345', files: { environ: '', cmdline: '' } });
+  assert.deepEqual(processes.processFiles(proc, 101, { exe: 'link', environ: 'latin1' }), { pid: 101, ppid: 1, start: '12345', files: { cmdline: 'ssh-agent\0-l\0/tmp/agent' } });
+  // cmdline only proves liveness: a failure leaves it out, and the other
+  // files still identify the process.
+  assert.deepEqual(processes.processFiles(proc, 103, { exe: 'link', environ: 'latin1' }), { pid: 103, ppid: 1, start: '12345', files: { exe: '/work/python3', environ: 'RUN=1' } });
+  // With no file readable at all, a live process is not identified; one
+  // whose threads have all gone is neither identified nor known to be gone.
+  const denied = { readdirSync: () => [], readFileSync: (file) => {
+    if (file === '/proc/102/stat') return stat(102, 'sshd');
+    throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+  }, readlinkSync: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); } };
+  assert.deepEqual(processes.processFiles(denied, 102, { exe: 'link', environ: 'latin1' }), { pid: 102, ppid: 1, start: '12345', unreadable: true });
+});
+
 // Starts a real process that the test owns, and returns it with its start
 // time, once it runs.
 async function ownProcess(command, args) {
@@ -221,24 +318,11 @@ ${calls}`;
 });
 
 // A command, in Python, whose main thread exits at once while another thread
-// runs on for 30 seconds; it ignores SIGTERM. Linux lists it as a zombie with
-// two threads meanwhile.
-const THREAD_COMMAND = `
-import ctypes, signal, threading, time
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-threading.Thread(target=time.sleep, args=(30,)).start()
-ctypes.CDLL(None).pthread_exit(None)
-`;
-const threadSkip = process.platform !== 'linux' ? 'only Linux lists a process whose main thread has exited as a zombie' : pythonSkip;
+// runs on, for the tests here and of the Remote-SSH test's discoveries (see
+// support/threads.cjs).
+const { THREAD_COMMAND, THREAD_SKIP, runs } = require('./support/threads.cjs');
 
-// Whether p, a process given by PID and start time, still runs: it hasn't
-// exited, or only its main thread has.
-function runs(p) {
-  const info = processes.processInfo(p.pid);
-  return info?.start === p.start && !(info.state === 'Z' && !(info.threads > 1));
-}
-
-test('a process whose main thread has exited while its other threads run gets signals, through a pidfd or after a check (real processes)', { skip: threadSkip }, async () => {
+test('a process whose main thread has exited while its other threads run gets signals, through a pidfd or after a check (real processes)', { skip: THREAD_SKIP }, async () => {
   const real = require('node:child_process');
   const unchecked = load('processes.cjs', {
     'node:child_process': { ...real, spawnSync: () => ({ error: Object.assign(new Error('spawnSync python3 ENOENT'), { code: 'ENOENT' }) }) },
@@ -584,7 +668,7 @@ async function threadRun(file) {
   }
 }
 
-test('both runners stop a group whose keeper has been stopped when it holds a process whose main thread has exited (real processes)', { skip: threadSkip, timeout: 30000 }, async () => {
+test('both runners stop a group whose keeper has been stopped when it holds a process whose main thread has exited (real processes)', { skip: THREAD_SKIP, timeout: 30000 }, async () => {
   const outcomes = await Promise.allSettled(['run.cjs', 'remote-ssh/run.cjs'].map(threadRun));
   assert.deepEqual(outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason.message] : [])), []);
 });

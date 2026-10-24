@@ -34,14 +34,139 @@ function processInfo(pid) {
   }
 }
 
-// Whether p, a process as processInfo or processTable gives it, is a zombie:
-// it has exited, and its parent hasn't reaped it. Linux lists a process whose
-// main thread has exited as a zombie while its other threads run, and they
-// can still start processes and take signals, so it is no zombie until they
-// have exited too. macOS's ps lists a process as a zombie only once it has
-// exited, whole.
+// Whether a process, given the state and thread count that /proc's stat has,
+// is a zombie: it has exited, and its parent hasn't reaped it. Linux lists a
+// process whose main thread has exited as a zombie while its other threads
+// run, and they can still start processes and take signals, so it is no
+// zombie until they have exited too. macOS's ps lists a process as a zombie
+// only once it has exited, whole.
+function isZombie(state, threads) {
+  return state === 'Z' && !(threads > 1);
+}
+
+// Whether p, a process as processInfo or processTable gives it, is a zombie
+// (see isZombie).
 function zombie(p) {
-  return p.state === 'Z' && !(p.threads > 1);
+  return isZombie(p.state, p.threads);
+}
+
+// The contents of the /proc files that identify the process with this PID, by
+// name: its exe, environ, and cmdline. Reads them from the directory that
+// describes the process, its own while its main thread runs, else that of a
+// thread that still runs, under /proc/<pid>/task/<tid>/, since a process whose
+// main thread has exited keeps none of those itself (see zombie); the teardown
+// and the Remote-SSH leak check identify such a process this way. A thread can
+// exit between the choice and the reads while another thread still runs, so a
+// candidate whose thread has gone once its files have been read gives way to
+// the next one, and every file is read from one thread, never some from one
+// and some from another. files maps each name to how to read it: 'link' for a
+// symlink, such as exe, else the encoding for a read, such as 'latin1' for
+// environ. cmdline is always read as 'utf8' too, and returned, as the thread's
+// liveness: it needs no ptrace access, unlike exe and environ, so a user may
+// read it even where those are denied, and one that has gone has none, so a
+// cmdline read that fails with ENOENT or ESRCH shows that the thread went,
+// even if a stat of it just before still described it; any other failure
+// leaves it out. A candidate with no readable file, as one whose user may
+// read none of them, identifies nothing and gives way to the next thread too.
+// A file that the process doesn't have, as a kernel thread has no exe, or that
+// its user may not read, is otherwise left out.
+// Returns undefined if a process stat read reports ENOENT or ESRCH, or it is
+// a zombie (see isZombie); other stat errors throw. Otherwise
+// { pid, ppid, start, files }, with the
+// process's start time in clock ticks after boot and the contents of the files
+// that it could read. The thread's PID and start time must match before and
+// after the file reads, and the process must still have its initial identity;
+// ppid comes from that same process's final stat, so a reused PID cannot mix
+// a former parent's ownership with a replacement's files. Otherwise returns
+// { pid, ppid, start, unreadable }, if no thread's files could identify the
+// process or its identity changed during the reads. This entry describes the
+// current process, which is neither identified nor known to have gone. A caller
+// reports such a process rather than counting it as gone, and tries again
+// within its bounds, since another thread may still run.
+function processFiles(fs, pid, files) {
+  const stat = (dir) => {
+    try {
+      const text = fs.readFileSync(`${dir}/stat`, 'utf8');
+      const fields = text.slice(text.lastIndexOf(')') + 2).split(' ');
+      return { pid: Number(text.slice(0, text.indexOf(' '))), ppid: Number(fields[1]), start: fields[19], state: fields[0], threads: Number(fields[17]) };
+    } catch (error) {
+      if (['ENOENT', 'ESRCH'].includes(error.code)) return undefined;
+      throw error;
+    }
+  };
+  const initial = stat(`/proc/${pid}`);
+  if (initial === undefined || isZombie(initial.state, initial.threads)) return undefined;
+  let threads = [];
+  try {
+    threads = fs.readdirSync(`/proc/${pid}/task`);
+  } catch (error) {
+    // Another user's process may not list its threads; its files below tell.
+    if (!['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
+  }
+  // Its own directory describes the process while its main thread runs; once
+  // that has exited, only a thread's does.
+  const dirs = initial.state === 'Z' ? [] : [`/proc/${pid}`];
+  for (const tid of threads) dirs.push(`/proc/${pid}/task/${tid}`);
+  for (const dir of dirs) {
+    const before = stat(dir);
+    if (before === undefined || before.state === 'Z') continue;
+    const read = {};
+    let exited = false;
+    for (const [name, how] of Object.entries({ ...files, cmdline: 'utf8' })) {
+      try {
+        read[name] = how === 'link' ? fs.readlinkSync(`${dir}/${name}`) : fs.readFileSync(`${dir}/${name}`, how);
+      } catch (error) {
+        // cmdline only proves that the thread still runs (see above): any
+        // failure leaves it out.
+        if (name !== 'cmdline' && !['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) throw error;
+        if (name === 'cmdline' && (error.code === 'ENOENT' || error.code === 'ESRCH')) exited = true;
+      }
+    }
+    // It may have exited between the reads, which then described it only in
+    // part, or not at all; and a thread that no file describes identifies
+    // nothing, so try the next one.
+    const after = stat(dir);
+    if (exited || after === undefined || after.state === 'Z' || before.pid !== after.pid || before.start !== after.start || Object.keys(read).length === 0) continue;
+    const current = stat(`/proc/${pid}`);
+    if (current === undefined || isZombie(current.state, current.threads)) return undefined;
+    if (current.pid !== initial.pid || current.start !== initial.start) break;
+    return { pid: current.pid, ppid: current.ppid, start: current.start, files: read };
+  }
+  const after = stat(`/proc/${pid}`);
+  if (after === undefined || isZombie(after.state, after.threads)) return undefined;
+  return { pid: after.pid, ppid: after.ppid, start: after.start, unreadable: true };
+}
+
+// Whether a process that processFiles identified is the run's. files are the
+// contents that processFiles read; roots are the directories whose paths mark
+// the run's executables and command lines, such as its work directory; marker,
+// if given, is the environment entry that the run's processes have; known are
+// the identities, { pid, start }, that the run already identified or started;
+// parent(ppid, start), if given, says whether the process with that PID, which
+// started no later than start, is the run's, for the parent chain; descend
+// says whether a process with a readable executable under none of roots is
+// still the run's when it descends from one, as the teardown counts every
+// descendant, while the leak check excludes readable system executables
+// identified only by ancestry; and pid, start, and ppid are the
+// process's. A process with the marker, or with a readable executable under
+// one of roots, is the run's, as is one whose identity is known. A process
+// whose executable can't be read, as a non-dumpable one's can't, may also be
+// the run's if its parent is, or by its readable command line, if an argument
+// names a path under one of roots: that is the evidence left for a process of
+// the run that hides both its executable and its environment. With descend
+// false, readable system executables don't become leftovers just because of
+// ancestry or command-line paths, keeping transient server helpers out. So
+// the same-uid non-dumpable processes that every machine has, such as systemd
+// --user's, stay out: their command lines name nothing under the run's
+// directories, and the run didn't start them.
+function runOwned({ pid, start, ppid, files, roots, marker, known = [], parent, descend = false }) {
+  const { exe, environ, cmdline = '' } = files;
+  if (marker !== undefined && environ !== undefined && environ.split('\0').includes(marker)) return true;
+  if (exe !== undefined && roots.some((root) => exe.startsWith(`${root}/`))) return true;
+  if (known.some((identity) => identity.pid === pid && identity.start === start)) return true;
+  if (parent !== undefined && parent(ppid, start) && (exe === undefined || descend)) return true;
+  if (exe !== undefined) return false;
+  return roots.some((root) => cmdline.split('\0').some((arg) => arg.startsWith(`${root}/`)));
 }
 
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
@@ -429,4 +554,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   return group;
 }
 
-module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, pidfdSupport, processInfo, processTable, signalProcesses, startGroup };
+module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, runOwned, signalProcesses, startGroup, zombie };
