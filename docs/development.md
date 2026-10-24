@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Linux x86-64, or an Apple Silicon Mac with Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`). WSL 2 on Windows is best effort.
-- `git`, `make`, `bash`; Python 3.9+ for project-fixture preparation and cleanup, interactive protocol tests, and editor tests
+- `git`, `make`, `bash`, `curl`; Python 3.9+ for project-fixture preparation and cleanup, interactive protocol tests, and editor tests
 - No separate Virgil install: the build uses the pinned submodule at `vendor/virgil`.
 - Optional locally: Neovim 0.11+ for the headless editor smoke test (required in CI).
 - Optional: the [VS Code development client's prerequisites](../clients/vscode/README.md#setup).
@@ -112,6 +112,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/unit/` | Virgil unit tests using Virgil's `lib/test` (`UnitTests.register`). `AnalysisSupervisor:*` starts `virgil-lsp-worker` from the same directory for compiler crash and hang cases; the crash traces on stderr are expected. Result-budget and malformed-result cases use the unit-test executable as a synthetic worker on the same pipes. | `make test-unit` (with `ARGS='glob'` for a subset) |
 | `test/fixtures/projects/test_cleanup.py` | Fixture permission restoration after passing and failing runs, including through the Makefile's `run-unit-tests` recipe with a stand-in executable, and removal through `make clean`, independent of the build directory | `python3 test/fixtures/projects/test_cleanup.py` |
 | `test/e2e/test_coverage.py` | Consistency of the editor tests' coverage manifest and result schema, described in [Editor test results](../test/e2e/RESULTS.md) | `python3 test/e2e/test_coverage.py` |
+| `test/e2e/clean-install/` | [README installation checks](releasing.md#clean-install-test) | `test_readme.py` and `test_install.py` run in `make test`; see the release guide for the standalone editor run |
 | `test/e2e/test_editor_results.py` | The result stream validator, `scripts/editor-results.py`, on streams of each editor suite built from the coverage manifest, each breaking one of the [stream's rules](../test/e2e/RESULTS.md#result-events) | `python3 test/e2e/test_editor_results.py` |
 | `test/e2e/test_editor_results_render.py` | The results renderer, `scripts/editor-results.py render`, on streams built as `test_editor_results.py` builds them: each cell's wording, the selection's and the markers' errors, the bytes outside the markers, determinism, and `--check`; and that the [rendering example](../test/e2e/results-example/README.md) is up to date | `python3 test/e2e/test_editor_results_render.py`, or with `--write-example` to regenerate the example |
 | `test/cli/run.sh` | Command-line behaviour, exit codes, stdout cleanliness, worker crash, hang, and replacement, 20 analyses of the Aeneas sources, the `repair` command's report on a few corpus cases, benchmark driver regressions (also runnable with `bash test/cli/bench-analysis.sh`) | `test/cli/run.sh build/virgil-lsp` (with `virgil-lsp-worker` beside it) |

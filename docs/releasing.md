@@ -60,7 +60,7 @@ Unlike the server's executables, a VSIX isn't reproducible: its zip entries reco
 
 The reusable editor workflow runs `clean-install-linux` on release dry runs, tags, and the weekly editor run. A separate runner job builds a small [standalone bundle](../test/e2e/clean-install/run.py) containing the three install READMEs, the two public Neovim configs, the existing LazyVim plugin lock, and the drivers. The test job uses `container: ubuntu:24.04`, installs prerequisites explicitly, creates a non-root user with an empty home, and never checks out this repository or Virgil. Each editor gets its own fresh home and profile. The fixture is written by the driver inside that home, rather than copied from this repository.
 
-The test extracts the shell fences immediately after `<!-- clean-install: NAME -->` comments and executes them in README order for each installation path. Missing, duplicated, reordered, or malformed marked steps fail before installation; a failed command names the README step in `run.log`. The server and VSIX must be installed by those commands. Plain Neovim downloads `virgil_lsp.lua` into `${XDG_CONFIG_HOME:-$HOME/.config}/nvim/plugin/`, which Neovim loads at startup after the init file without creating or changing `init.lua` or `init.vim`. `noloadplugins`, `--noplugin`, and `--clean` skip that automatic loading. The download uses a neighboring `.part` file and moves it into place only on success; Neovim does not source `.part` files. Drivers only observe the installed clients: each checks a string-to-int diagnostic, a definition into `lib/util/StringBuilder.v3`, and a hover naming its class, first with no client root or `VIRGIL_LOC`, then after the README's explicit-root command and an editor restart. The explicit root selects the installed library; no separate Virgil checkout is needed.
+The test extracts the shell fences immediately after `<!-- clean-install: NAME -->` comments and executes them in README order for each installation path. Missing, duplicated, reordered, or malformed marked steps fail before installation; a failed command names the README step in `run.log`. The server and VSIX must be installed by those commands. Plain Neovim follows the [plugin-directory installation](../editors/nvim/README.md#plain-neovim), leaving its init files untouched; that README explains startup loading and download preservation. Drivers only observe the installed clients: each checks a string-to-int diagnostic, a definition into `lib/util/StringBuilder.v3`, and a hover naming its class, first with no client root or `VIRGIL_LOC`, then after the README's explicit-root command and an editor restart. The explicit root selects the installed library; no separate Virgil checkout is needed.
 
 Only these README-documented substitutions are made:
 
@@ -150,21 +150,20 @@ The packaging script uses the host target and the same environment variables as 
 
 ## Verifying a download
 
-Download the archive for your platform and `SHA256SUMS` from the release page, or with the GitHub CLI:
+Download the archive for your platform and `SHA256SUMS` from the release page, or with the GitHub CLI (replace `x86-64-linux` with `x86-64-darwin` on macOS):
 
 ```sh
 gh release download v0.1.0-alpha.3 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' --pattern SHA256SUMS
 ```
 
-Then check the archive's line of `SHA256SUMS`:
+For the complete Linux download and verification commands, see the [server README](../README.md#editor-setup) and [VSIX README](../clients/vscode/README.md#installing-from-a-vsix). On macOS, check the archive's exact filename in `SHA256SUMS`:
 
 ```sh
-grep ' virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz$' SHA256SUMS | sha256sum --check        # Linux
-grep ' virgil-lsp-0.1.0-alpha.3-x86-64-darwin.tar.gz$' SHA256SUMS | shasum -a 256 --check   # macOS
+awk -v file=virgil-lsp-0.1.0-alpha.3-x86-64-darwin.tar.gz '$2 == file' SHA256SUMS | shasum -a 256 --check
 ```
 
-Both print `OK` for a good download. Check the VSIX the same way, with its own line: `grep ' virgil-lsp-vscode-0.1.2.vsix$' SHA256SUMS | sha256sum --check`. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
+This prints `OK` for a good download. On macOS, check the VSIX the same way, with its own line: `awk -v file=virgil-lsp-vscode-0.1.2.vsix '$2 == file' SHA256SUMS | shasum -a 256 --check`. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
 
 ## Installing
 
@@ -177,12 +176,13 @@ Install the server where it runs, which is the machine that holds the files ([Wh
 | VS Code Remote-WSL, or Neovim inside WSL 2 | `x86-64-linux` | The WSL distribution, not Windows |
 | Editor on a Mac, local files | `x86-64-darwin` | The Mac |
 
-Extract the archive and put a symlink to `virgil-lsp` on your `PATH`. The worker stays beside the real file:
+For Linux, follow the [README's download, verification, installation, and PATH commands](../README.md#editor-setup). For macOS, [download and verify](#verifying-a-download) the `x86-64-darwin` archive first, then extract it and put a symlink to `virgil-lsp` on your `PATH`:
 
 ```sh
-mkdir -p ~/.local/opt ~/.local/bin
-tar -xzf virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz -C ~/.local/opt
-ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
+mkdir -p ~/.local/opt ~/.local/bin &&
+tar -xzf virgil-lsp-0.1.0-alpha.3-x86-64-darwin.tar.gz -C ~/.local/opt &&
+ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-darwin/virgil-lsp ~/.local/bin/virgil-lsp &&
+export PATH="$HOME/.local/bin:$PATH" &&
 virgil-lsp --version
 ```
 
@@ -209,19 +209,11 @@ xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-darw
 The editors start `virgil-lsp --stdio`:
 
 - **VS Code:** install the [extension](#vs-code-extension) from the release's VSIX. It looks up `virgil-lsp` on the extension host's `PATH`, or uses the absolute path in the machine setting `virgil.server.path`. With Remote-SSH or Remote-WSL, the extension runs on the remote side, so set it in the remote settings ([client settings](../clients/vscode/README.md#settings)).
-- **Neovim and LazyVim:** the configurations run `virgil-lsp` from `PATH`, or the absolute path you give in `cmd` ([Neovim setup](../editors/nvim/README.md)). Plain Neovim loads the downloaded configuration from its `plugin/` directory at startup; its init files are untouched.
+- **Neovim and LazyVim:** follow the [Neovim setup](../editors/nvim/README.md), including plain Neovim's plugin-directory installation.
 
 ### VS Code extension
 
-The release's `virgil-lsp-vscode-<extension version>.vsix` is the extension that the workflow tested against the release's Linux server. The same VSIX works on every platform. Install it where the server runs, as the [table above](#installing) describes: with Remote-SSH or Remote-WSL, in a window connected to the remote machine or WSL distribution, not on the machine showing the editor. Download it and check it against `SHA256SUMS`, then install it:
-
-```sh
-gh release download v0.1.0-alpha.3 --repo SaltedTan/virgil-language-server \
-  --pattern 'virgil-lsp-vscode-*.vsix' --pattern SHA256SUMS
-code --install-extension virgil-lsp-vscode-0.1.2.vsix
-```
-
-or use **Extensions: Install from VSIX...** in VS Code. VS Code doesn't update an extension installed from a VSIX; install the next release's VSIX to upgrade. [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix) covers remote windows, upgrading, and removal, and [compatibility](compatibility.md#editors) records which server versions each extension version works with.
+The release's VSIX, for example `virgil-lsp-vscode-0.1.2.vsix`, is the extension that the workflow tested against the release's servers. The same VSIX works on every platform. Follow [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix) for the Linux release commands, installation on the appropriate host, upgrading, and removal. On macOS, download the VSIX from the release page, [verify it with `shasum`](#verifying-a-download), then use **Extensions: Install from VSIX...**. [Compatibility](compatibility.md#editors) records which server versions each extension version works with.
 
 ### The Virgil root
 
