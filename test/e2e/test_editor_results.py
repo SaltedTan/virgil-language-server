@@ -50,24 +50,28 @@ def sha(text):
 
 
 # A passing run of each automated suite: its setup, the profiles it runs, the
-# conditions that hold, its client mode, and the repetitions of a repeated
-# profile.
+# conditions that hold, each alternative's deciding fact, its client mode, and
+# the repetitions of a repeated profile.
 VARIANTS = {
     "nvim": dict(suite="nvim", setup="nvim-linux", profiles=("main", "wrapper"), conditions=(),
-                 client_mode="none"),
+                 facts={}, client_mode="none"),
     "lazyvim": dict(suite="lazyvim", setup="lazyvim-linux",
                     profiles=("main", "noroot", "noroot-noice-workaround", "wrapper"),
-                    conditions=("no-file-watching", "builtin-lsp-command"), client_mode="none"),
+                    conditions=("no-file-watching", "builtin-lsp-command"),
+                    facts={"neovimBuiltinLspCommand": True,
+                           "didChangeWatchedFilesDynamicRegistration": False}, client_mode="none"),
     "lazyvim-macos": dict(suite="lazyvim", setup="lazyvim-macos",
                           profiles=("main", "noroot", "noroot-noice-workaround", "wrapper"),
-                          conditions=("file-watching", "lspconfig-restart-command"), client_mode="none"),
+                          conditions=("file-watching", "lspconfig-restart-command"),
+                          facts={"neovimBuiltinLspCommand": False,
+                                 "didChangeWatchedFilesDynamicRegistration": True}, client_mode="none"),
     "vscode": dict(suite="vscode", setup="vscode-linux", profiles=("single-file", "workspace", "wrapper"),
-                   conditions=(), client_mode="source"),
+                   conditions=(), facts={}, client_mode="source"),
     "vscode-vsix": dict(suite="vscode", setup="vscode-macos", profiles=("single-file", "workspace", "wrapper"),
-                        conditions=("vsix",), client_mode="vsix"),
+                        conditions=("vsix",), facts={}, client_mode="vsix"),
     "remote-ssh": dict(suite="remote-ssh", setup="ssh-linux-client",
                        profiles=("probe", "single-file", "workspace", "wrapper"), conditions=("vsix",),
-                       client_mode="vsix", repeat=3),
+                       facts={}, client_mode="vsix", repeat=3),
 }
 
 
@@ -137,6 +141,7 @@ def stream(variant, noice=RULE["commit"]):
              "release": None, "purpose": "development", "suite": v["suite"], "setup": v["setup"], "lane": "local",
              "command": ["run.sh"], "coverageSha256": hashlib.sha256(MANIFEST_BYTES).hexdigest(),
              "expected": [{"id": i, "profile": p, "iteration": n} for i, p, n in keys],
+             "facts": copy.deepcopy(v["facts"]),
              "provenance": provenance(v["suite"], v["setup"], v["profiles"], v["client_mode"], noice),
              "attestation": None}
     checks = [check_event(key) for key in keys]
@@ -230,11 +235,11 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(passed, run.passed, run.summary())
         return run
 
-    def assertInvalid(self, events, line, message):
+    def assertInvalid(self, events, line, message, manifest=None):
         """Asserts that the stream is invalid, with its first error on the
         line, and a message that has the fragment."""
         with self.assertRaises(results.Invalid) as context:
-            self.validate(events)
+            self.validate(events, manifest)
         error = context.exception
         self.assertIn(message, error.message)
         self.assertEqual(line, error.line, error.message)
@@ -502,6 +507,85 @@ class PlanTest(ValidatorTest):
         events[1:-1] = [event for event in events[1:-1] if event["profile"] in keep]
         events[0]["provenance"]["configurationSha256"] = {"noroot": sha("noroot")}
         self.assertValid(rebuild(events))
+
+    def test_each_restart_side_follows_its_fact(self):
+        # 0.12-style: the built-in :lsp command exists, so the run plans its
+        # checks. 0.11-style: it doesn't, so the run plans :LspRestart's.
+        self.assertValid(stream("lazyvim"))
+        self.assertValid(stream("lazyvim-macos"))
+        events = stream("lazyvim")
+        events[0]["facts"]["neovimBuiltinLspCommand"] = False
+        self.assertInvalid(events, 1, "expected plans the builtin-lsp-command checks, but "
+                                      "facts.neovimBuiltinLspCommand is false, which selects "
+                                      "lspconfig-restart-command")
+        events = stream("lazyvim-macos")
+        events[0]["facts"]["neovimBuiltinLspCommand"] = True
+        self.assertInvalid(events, 1, "expected plans the lspconfig-restart-command checks, but "
+                                      "facts.neovimBuiltinLspCommand is true, which selects "
+                                      "builtin-lsp-command")
+
+    def test_file_watching_follows_the_declared_capability(self):
+        # true declares file watching; false and absent don't.
+        for value in (True, False, None):
+            with self.subTest(value=value):
+                events = stream("lazyvim" if value is not True else "lazyvim-macos")
+                events[0]["facts"]["didChangeWatchedFilesDynamicRegistration"] = value
+                self.assertValid(events)
+        events = stream("lazyvim")
+        events[0]["facts"]["didChangeWatchedFilesDynamicRegistration"] = True
+        self.assertInvalid(events, 1, "expected plans the no-file-watching checks, but "
+                                      "facts.didChangeWatchedFilesDynamicRegistration is true, which selects "
+                                      "file-watching")
+        for value in (False, None):
+            with self.subTest(value=value):
+                events = stream("lazyvim-macos")
+                events[0]["facts"]["didChangeWatchedFilesDynamicRegistration"] = value
+                self.assertInvalid(events, 1, "expected plans the file-watching checks, but "
+                                              "facts.didChangeWatchedFilesDynamicRegistration is "
+                                              + {False: "false", None: "null"}[value]
+                                              + ", which selects no-file-watching")
+
+    def test_a_missing_fact(self):
+        events = stream("lazyvim")
+        del events[0]["facts"]["neovimBuiltinLspCommand"]
+        self.assertInvalid(events, 1, "expected plans the builtin-lsp-command checks, but facts lacks "
+                                      "neovimBuiltinLspCommand")
+        events = stream("lazyvim-macos")
+        del events[0]["facts"]["didChangeWatchedFilesDynamicRegistration"]
+        self.assertInvalid(events, 1, "expected plans the file-watching checks, but facts lacks "
+                                      "didChangeWatchedFilesDynamicRegistration")
+
+    def test_an_unknown_fact(self):
+        events = stream("lazyvim")
+        events[0]["facts"]["builtinLsp"] = True
+        self.assertInvalid(events, 1, 'facts: has the member "builtinLsp", which the schema doesn\'t allow')
+
+    def test_a_fact_value_that_no_side_takes(self):
+        data = json.loads(MANIFEST_BYTES)
+        for condition in data["conditions"]:
+            if condition["id"] == "no-file-watching":
+                condition["decidedBy"]["values"] = [False]
+        manifest = results.Manifest(json.dumps(data).encode())
+        events = stream("lazyvim")
+        events[0]["coverageSha256"] = manifest.sha256
+        events[0]["facts"]["didChangeWatchedFilesDynamicRegistration"] = None
+        self.assertInvalid(events, 1, "facts.didChangeWatchedFilesDynamicRegistration is null, but no side of "
+                                      "file-watching and no-file-watching takes it", manifest=manifest)
+
+    def test_an_unavailable_fact_keeps_a_run_from_passing(self):
+        events = stream("lazyvim")
+        events[0]["facts"]["neovimBuiltinLspCommand"] = {"value": None,
+                                                          "unavailable": "couldn't test for :lsp"}
+        self.assertInvalid(events, len(events), "status is pass, but the run-start's "
+                                                "facts.neovimBuiltinLspCommand is unavailable")
+        self.assertValid(rebuild(events, status="unavailable"), passed=False)
+
+    def test_an_unneeded_fact_is_allowed(self):
+        # The nvim suite plans no side of either pair, so it needs no fact,
+        # but recording one that its plan doesn't use is not an error.
+        events = stream("nvim")
+        events[0]["facts"]["neovimBuiltinLspCommand"] = True
+        self.assertValid(events)
 
     def test_part_of_a_condition(self):
         events = self.drop(stream("vscode-vsix"), "vscode.startup.installed-copy", "workspace")

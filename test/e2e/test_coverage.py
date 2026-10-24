@@ -330,6 +330,69 @@ class CoverageTest(unittest.TestCase):
                                     f"in suite {suite}")
         self.assertEqual([], problems)
 
+    def test_a_fact_decides_each_alternative(self):
+        run_start = self.schema["$defs"]["runStart"]
+        self.assertIn("facts", run_start["required"], "the run-start requires the facts of version 1")
+        defined = run_start["properties"]["facts"]["properties"]
+        possible = {}
+        for name, node in defined.items():
+            values = []
+            for branch in node.get("oneOf", [node]):
+                if "$ref" not in branch:
+                    values += branch.get("enum", [])
+            possible[name] = values
+        problems = []
+        used = {}
+        for condition in self.manifest["conditions"]:
+            key = condition["id"]
+            other = condition["alternative"]
+            decided = condition.get("decidedBy")
+            if other is None:
+                if decided is not None:
+                    problems.append(f"condition {key}: has decidedBy without an alternative")
+                continue
+            if not isinstance(decided, dict) or set(decided) != {"fact", "values"}:
+                problems.append(f"condition {key}: decidedBy names a fact and its values")
+                continue
+            if decided["fact"] not in defined:
+                problems.append(f"condition {key}: its fact {decided['fact']} is not defined in the schema")
+            values = decided["values"]
+            if not isinstance(values, list) or not values:
+                problems.append(f"condition {key}: decidedBy.values must be a nonempty array")
+                continue
+            if len({json.dumps(value, sort_keys=True) for value in values}) != len(values):
+                problems.append(f"condition {key}: decidedBy.values repeats a value")
+            used.setdefault(decided["fact"], {})[key] = values
+        for fact, sides in used.items():
+            if fact not in defined:
+                continue
+            allowed = possible[fact]
+            covered = []
+            for key, values in sides.items():
+                for value in values:
+                    if not any(RESULTS.same(value, option) for option in allowed):
+                        problems.append(f"condition {key}: {json.dumps(value)} is not a value of fact {fact}")
+            for key, values in sides.items():
+                other = self.conditions[key]["alternative"]
+                if key > other:
+                    continue
+                theirs = used.get(fact, {}).get(other)
+                if theirs is None:
+                    problems.append(f"condition {key}: its alternative {other} doesn't name the fact {fact}")
+                    continue
+                for value in values:
+                    if any(RESULTS.same(value, mine) for mine in theirs):
+                        problems.append(f"condition {key} and its alternative {other} both take "
+                                        f"{json.dumps(value)}")
+                    covered.append(value)
+                covered += theirs
+            missing = [value for value in allowed
+                       if not any(RESULTS.same(value, mine) for mine in covered)]
+            if missing:
+                problems.append(f"fact {fact}: no side takes "
+                                + ", ".join(json.dumps(value) for value in missing))
+        self.assertEqual([], problems)
+
     def test_a_condition_always_holds_only_in_suites_that_run_its_checks(self):
         for changes, message in (
                 ({"vsix": ["remote-ssh", "remote-ssh"]}, "always repeats a suite"),
@@ -452,7 +515,7 @@ class CoverageTest(unittest.TestCase):
         for field, available in fields:
             self.assertEqual(available + [{"$ref": "#/$defs/unavailableProvenance"}],
                              field["oneOf"])
-        # RESULTS.md lists exactly these fields.
+        # RESULTS.md lists exactly these fields and facts.
         self.assertEqual({
             "provenance.server.versionText",
             "provenance.server.target",
@@ -460,6 +523,8 @@ class CoverageTest(unittest.TestCase):
             "provenance.server.workerSha256",
             "provenance.vsix",
             "provenance.fixtureSha256",
+            "facts.neovimBuiltinLspCommand",
+            "facts.didChangeWatchedFilesDynamicRegistration",
         }, unavailable_paths(self.schema),
             "unavailable fields differ from RESULTS.md's list")
 

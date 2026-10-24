@@ -783,6 +783,54 @@ def plan_of(start, manifest):
         if condition_id not in holds and other not in holds and conditional(condition_id) and conditional(other):
             raise Invalid(1, f"expected has checks of neither {condition_id} nor its alternative {other}: "
                              "a run takes one of them")
+
+    # An alternative's side is a fact that the run-start records, as the vsix
+    # condition is provenance (RESULTS.md, "Result events"). The manifest says
+    # which fact decides each pair, and which values select each side.
+    facts = start["facts"]
+    decided = {}    # fact -> {condition id: the values that select it}
+    for condition_id, condition in manifest.conditions.items():
+        entry = condition.get("decidedBy")
+        if condition["alternative"] is None:
+            continue
+        if not isinstance(entry, dict) or set(entry) != {"fact", "values"} \
+                or not isinstance(entry["fact"], str) or not entry["fact"] or not isinstance(entry["values"], list):
+            raise Invalid(1, f"the manifest has no usable decidedBy for {condition_id}: a condition with an "
+                             "alternative names a fact and the values that select it")
+        decided.setdefault(entry["fact"], {})[condition_id] = entry["values"]
+    for name, value in facts.items():
+        sides = decided.get(name)
+        if sides is None:
+            raise Invalid(1, f"facts has the unknown fact {name}: it decides no alternative of the manifest")
+        if isinstance(value, dict):
+            # The unavailable-provenance marker: the fact is valid, and being
+            # unavailable keeps the run from passing, as for other provenance.
+            continue
+        if not any(same(value, option) for values in sides.values() for option in values):
+            raise Invalid(1, f"facts.{name} is {show(value)}, but no side of "
+                             + " and ".join(sorted(sides)) + " takes it")
+    for condition_id, condition in manifest.conditions.items():
+        other = condition["alternative"]
+        if other is None or condition_id > other:
+            continue
+        sides_planned = [side for side in (condition_id, other) if side in holds]
+        if not sides_planned:
+            # A run may plan neither side when a side has no checks in its
+            # profiles, and then needs no fact for the pair.
+            continue
+        fact = condition["decidedBy"]["fact"]
+        if fact not in facts:
+            raise Invalid(1, f"expected plans the {sides_planned[0]} checks, but facts lacks {fact}, "
+                             f"which decides {condition_id} and {other}")
+        value = facts[fact]
+        if isinstance(value, dict):
+            continue
+        selected = next(side for side in (condition_id, other)
+                        if any(same(value, option) for option in manifest.conditions[side]["decidedBy"]["values"]))
+        if selected != sides_planned[0]:
+            raise Invalid(1, f"expected plans the {sides_planned[0]} checks, but facts.{fact} is {show(value)}, "
+                             f"which selects {selected}")
+
     # Every key is in the plan already, by the checks above.
     missing = sorted(set(planned(holds)) - set(keys))
     if missing:

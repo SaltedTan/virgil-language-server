@@ -294,12 +294,33 @@
           "minItems": 1,
           "items": {"$ref": "#/$defs/key"}
         },
+        "facts": {
+          "description": "The observations that decide the side of each alternative, by name. A run records the fact of each pair that its plan needs; it may leave out a fact whose pair has no checks in its profiles. An unavailable fact keeps the run from passing.",
+          "type": "object",
+          "properties": {
+            "neovimBuiltinLspCommand": {
+              "description": "Whether Neovim has the built-in :lsp command, as vim.fn.exists(':lsp') == 2 tests.",
+              "oneOf": [
+                {"enum": [true, false]},
+                {"$ref": "#/$defs/unavailableProvenance"}
+              ]
+            },
+            "didChangeWatchedFilesDynamicRegistration": {
+              "description": "The value that the client declared for capabilities.workspace.didChangeWatchedFiles.dynamicRegistration in its initialize request, or null when it declared none.",
+              "oneOf": [
+                {"enum": [true, false, null]},
+                {"$ref": "#/$defs/unavailableProvenance"}
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "provenance": {"$ref": "#/$defs/provenance"},
         "attestation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/attestation"}]}
       },
       "required": [
         "schema", "event", "runId", "seq", "time", "release", "purpose", "suite", "setup", "lane",
-        "command", "coverageSha256", "expected", "provenance", "attestation"
+        "command", "coverageSha256", "expected", "facts", "provenance", "attestation"
       ],
       "additionalProperties": false,
       "if": {"properties": {"suite": {"const": "manual"}}},
