@@ -1,0 +1,49 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Compile-time instrumentation, unreachable in ordinary builds. Keep all
+// state here so product objects gain no fields. Formatting uses a static
+// buffer and allocates nothing: the default worker is near its GC cliff.
+component BenchProbe {
+	def enabled = false;
+	private def buffer = Array<byte>.new(160);
+	private var end: int;
+	var roundtripStart: int;
+	var workerStart: int;
+	var serverGcStart: int;
+	var serverAllocatedStart: long;
+
+	def now() -> int { return if(enabled, System.ticksUs()); }
+	def gcCount() -> int { return if(enabled, GcStats.gc_count); }
+	def allocated() -> long {
+		return if(enabled, GcStats.allocated_bytes + Semispace.fromSpaceAllocated());
+	}
+	def heap() -> long { return if(enabled, Semispace.fromSpaceUsed()); }
+	def server(id: int, name: string, value: long) {
+		if (enabled) sample("server", id, name, value);
+	}
+	def worker(id: int, name: string, value: long) {
+		if (enabled) sample("worker", id, name, value);
+	}
+	private def sample(process: string, id: int, name: string, value: long) {
+		end = 0;
+		text("BENCH "); text(process); text(" "); number(long.view(id));
+		text(" "); text(name); text(" "); number(value); text("\n");
+		// Only stderr. Neither protocol stdout nor the worker RESULT pipe.
+		System.fileWriteK(Log.STDERR, buffer, 0, end);
+	}
+	private def text(s: string) {
+		for (b in s) buffer[end++] = b;
+	}
+	private def number(value: long) {
+		var n = value;
+		if (n < 0) { buffer[end++] = '-'; n = -n; }
+		var divisor = 1L;
+		while (divisor <= n / 10) divisor *= 10;
+		while (divisor > 0) {
+			buffer[end++] = byte.view(n / divisor) + '0';
+			n %= divisor;
+			divisor /= 10;
+		}
+	}
+}

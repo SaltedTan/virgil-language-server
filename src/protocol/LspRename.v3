@@ -169,6 +169,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		var p = LspRenamePlan.new(at, ctx, sel, edits, files.extract(), ranges.extract());
 		// The snapshot's exact analyzed bytes of every source, edited, within
 		// the budget of a capture (LspAnalysisCapture.capture).
+		var captureStart = BenchProbe.now();
 		var sources = Array<AnalysisSource>.new(s.paths.length), total = 32L;
 		p.snapshotBytes = 1024L;
 		for (i < sources.length) {
@@ -182,6 +183,9 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 				return (true, fail("the renamed sources exceed the analysis size budget"));
 			}
 			sources[i] = AnalysisSource.new(s.paths[i], if(cuts.length > 0, edit(text, cuts, edits), text));
+		}
+		if (BenchProbe.enabled) {
+			BenchProbe.server(0, "rename_capture_us", long.view(BenchProbe.now() - captureStart));
 		}
 		p.sources = sources;
 		r.plan = p;

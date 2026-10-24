@@ -27,6 +27,12 @@ SERVER_LIB  = $(filter-out $(ENTRY_SRC) src/os/%,$(shell find src -name '*.v3' |
 # The worker's heap, chosen from measurements in
 # docs/decisions/0004-analysis-worker-process.md. The server keeps the default.
 WORKER_HEAP ?= 384m
+# BENCH=1 is for a separate build directory only. Normal compilation removes
+# BenchProbe and all its calls. RiGc.stats counts bytes without verbose output.
+BENCH ?= 0
+ifeq ($(BENCH),1)
+BENCH_FLAGS = -redef-field=BenchProbe.enabled=true,RiGc.stats=true
+endif
 # test/unit/main.v3 holds the test entry point and must be passed first.
 TEST_SRC    = test/unit/main.v3 $(filter-out test/unit/main.v3,$(shell find test/unit -name '*.v3' | sort))
 BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
@@ -36,7 +42,19 @@ UNIT_TESTS  = $(BUILD)/unit-tests
 
 .PHONY: all test test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
-all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
+all: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/benchmark-build.json
+
+$(BUILD)/benchmark-build.json: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
+	python3 scripts/bench-build-info.py $(BUILD) $(WORKER_HEAP) $(BENCH) $(V3C_TARGET) \
+	  $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
+# One command builds the opt-in probes and runs all corpus/scenario blocks.
+.PHONY: bench bench-build
+bench-build:
+	$(MAKE) BUILD=$(BUILD)/bench BENCH=1 all
+
+bench: bench-build
+	python3 scripts/bench-lsp.py --exe $(BUILD)/bench/virgil-lsp --require-probes $(BENCH_ARGS)
 
 check-virgil:
 	@test -f $(VIRGIL)/aeneas/DEPS || { \
@@ -48,25 +66,25 @@ buildinfo: check-virgil
 	@scripts/gen-buildinfo.sh $(BUILDINFO)
 
 $(BUILD)/virgil-lsp: buildinfo src/main.v3 $(SERVER_LIB)
-	$(V3C) -output=$(BUILD) -program-name=virgil-lsp \
+	$(V3C) $(BENCH_FLAGS) -output=$(BUILD) -program-name=virgil-lsp \
 	  src/main.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 # The server starts this executable from its own directory.
 $(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
-	$(V3C) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
+	$(V3C) $(BENCH_FLAGS) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 project-fixtures:
 	python3 test/fixtures/projects/prepare.py $(BUILD)
 
 $(BUILD)/unit-tests: buildinfo project-fixtures $(TEST_SRC) $(SERVER_LIB)
-	$(V3C) -output=$(BUILD) -program-name=unit-tests \
+	$(V3C) $(BENCH_FLAGS) -output=$(BUILD) -program-name=unit-tests \
 	  $(TEST_SRC) $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS) $(VIRGIL)/lib/test/*.v3
 
 # A separate process is essential: prior analyses could hide the initial static
 # cache roots in the heap baseline. The probe also accepts source-file arguments.
 $(BUILD)/retain-probe: buildinfo test/analysis/RetainProbe.v3 $(SERVER_LIB)
-	$(V3C) -output=$(BUILD) -program-name=retain-probe \
+	$(V3C) $(BENCH_FLAGS) -output=$(BUILD) -program-name=retain-probe \
 	  test/analysis/RetainProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
 $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LIB)
@@ -85,7 +103,7 @@ test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
 
 # Unit and CLI tests start the worker next to their executables.
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe $(BUILD)/benchmark-build.json
 	$(BUILD)/retain-probe
 	$(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
@@ -100,6 +118,7 @@ test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD
 	python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp
 	python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp
 	python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp
+	python3 test/benchmarks/test_client.py
 	python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
 	test/release/run.sh
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp

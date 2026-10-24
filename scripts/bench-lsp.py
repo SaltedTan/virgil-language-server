@@ -94,7 +94,8 @@ def binary_info(exe):
                          for p in (exe, exe.with_name("virgil-lsp-worker"))},
             "build_info": optional_file(exe.parent / "gen/BuildInfo.v3")}
     manifest = exe.parent / "benchmark-build.json"
-    info["build"] = json.loads(manifest.read_text()) if manifest.exists() else None
+    check(manifest.exists(), f"missing {manifest}; build this executable with make all")
+    info["build"] = json.loads(manifest.read_text())
     return info
 
 
@@ -179,7 +180,7 @@ class Block:
         validate(result)  # Do not publish a fast sample for a failed/fallback answer.
         self.row["samples"].append({"scenario": scenario, "iteration": iteration,
                                     "warmup": iteration < self.args.warmups,
-                                    "version": self.version, "latency_ms": elapsed,
+                                    "version": self.version, "server_pid": self.s.proc.pid, "latency_ms": elapsed,
                                     "probes": probes(logs(self.s, offset))})
 
     def change(self, text):
@@ -228,7 +229,7 @@ class Block:
 
     def finish_session(self):
         if self.s:
-            self.row["processes"].append({"pid": self.s.proc.pid, "options": self.options,
+            self.row["processes"].append({"pid": self.s.proc.pid, "command": [str(self.exe), "--stdio", *self.options],
                                          "resources": resources(self.s.proc.pid), "stderr": logs(self.s)})
             self.s.shutdown()
             self.s.close()
@@ -353,14 +354,26 @@ def main():
         check(corpus.generate() == pinned, "benchmark mutated the corpus")
         result["summary"] = summaries(result["blocks"])
         if args.require_probes:
-            required = {"parse_us", "verify_us", "collect_us", "query_us", "capture_us", "request_encode_us",
-                        "request_decode_us", "result_encode_us", "result_decode_us", "gc_count", "allocated_bytes",
-                        "heap_after_handle_bytes", "live_after_gc_bytes", "force_gc_us"}
-            for build in range(len(executables)):
-                for project in args.project or pinned["projects"]:
-                    measured = {p["metric"] for b in result["blocks"] if b["build"] == build and b["project"] == project
-                                for s in b["samples"] for p in s["probes"]}
-                    check(required <= measured, ("missing probes", build, project, sorted(required - measured)))
+            worker_metrics = {"parse_us", "verify_us", "collect_us", "query_us", "request_decode_us",
+                              "result_encode_us", "gc_count", "allocated_bytes", "heap_after_handle_bytes",
+                              "live_after_gc_bytes", "force_gc_us", "result_bytes"}
+            server_metrics = {"request_encode_us", "result_decode_us", "roundtrip_us", "gc_count", "allocated_bytes"}
+            for block in result["blocks"]:
+                for sample in block["samples"]:
+                    measured = collections.defaultdict(list)
+                    for probe in sample["probes"]:
+                        measured[probe["process"]].append(probe["metric"])
+                    scenario = sample["scenario"]
+                    if scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic"):
+                        for role, required in (("worker", worker_metrics), ("server", server_metrics)):
+                            check(all(measured[role].count(metric) == 1 for metric in required),
+                                  ("missing/duplicate transaction probes", block["build"], block["project"], scenario, role, measured[role]))
+                        capture = "rename_capture_us" if scenario == "rename" else "capture_us"
+                        check(measured["server"].count(capture) == 1, (scenario, "missing capture"))
+                        started = "worker_start_us" in measured["server"]
+                        check(started == (scenario == "fresh_analysis"), (scenario, "unexpected worker replacement/start"))
+                    else:
+                        check(not measured, (scenario, "unexpected analysis on cached/syntax path", dict(measured)))
         for row in result["summary"]:
             if row["metric"] == "latency_ms":
                 print(f"build {row['build']} {row['project']} {row['scenario']}: "
