@@ -15,6 +15,13 @@ import unittest
 from run import examples, extract, substitute
 
 REPO = Path(__file__).resolve().parents[3]
+INITIAL_CONFIGS = [
+    (None, b""),
+    ("init.lua", b"vim.g.keep = 1"),
+    ("init.lua", b'return require("myconfig")'),
+    ("init.vim", b"let g:keep = 1"),
+    ("init.vim", b"let g:keep = 1\nfinish"),
+]
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -70,81 +77,75 @@ class InstallTests(unittest.TestCase):
                               cwd=home, env=env, capture_output=True, timeout=30)
 
     def test_plain_nvim_preserves_init_and_reruns(self):
-        module = self.public / "editors/nvim/virgil_lsp.lua"
-        module.parent.mkdir(parents=True, exist_ok=True)
-        module.write_text("-- downloaded module\n")
+        plugin = self.public / "editors/nvim/virgil_lsp.lua"
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        plugin.write_bytes(b"-- downloaded plugin\n")
         for xdg in [None, "", "custom config"]:
-            for initial in [None, "init.lua", "init.vim"]:
-                with self.subTest(xdg=xdg, initial=initial):
+            for initial, original in INITIAL_CONFIGS:
+                with self.subTest(xdg=xdg, initial=initial, original=original):
                     home, env = self.home()
                     if xdg is not None:
                         env["XDG_CONFIG_HOME"] = str(home / xdg) if xdg else ""
                     config = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "nvim"
-                    original = 'let g:keep = 1' if initial == "init.vim" else '-- keep my settings'
                     if initial:
                         config.mkdir(parents=True)
-                        (config / initial).write_text(original)  # No trailing newline.
-                    init = config / (initial or "init.lua")
-                    require = 'lua require("virgil_lsp")' if initial == "init.vim" else 'require("virgil_lsp")'
-                    first = None
+                        (config / initial).write_bytes(original)
                     for _ in range(2):
                         result = self.paste(self.steps["plain-nvim"], home, env)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertTrue(init.exists(), f"missing {init}")
-                        text = init.read_text()
-                        if initial:
-                            self.assertTrue(text.startswith(original + "\n"))
-                        self.assertEqual(text.splitlines().count(require), 1)
-                        self.assertEqual((config / "lua/virgil_lsp.lua").read_text(), module.read_text())
-                        other = "init.lua" if initial == "init.vim" else "init.vim"
-                        self.assertFalse((config / other).exists(), f"conflicting {other}")
-                        if first is not None:
-                            self.assertEqual(text, first, "rerun changed the init file")
-                        first = text
+                        for name in ["init.lua", "init.vim"]:
+                            if name == initial:
+                                self.assertEqual((config / name).read_bytes(), original)
+                            else:
+                                self.assertFalse((config / name).exists(), f"created {name}")
+                        self.assertEqual((config / "plugin/virgil_lsp.lua").read_bytes(),
+                                         plugin.read_bytes())
                     if xdg:
                         self.assertFalse((home / ".config/nvim").exists())
 
-    def test_plain_nvim_failed_download_leaves_init_alone(self):
-        # A require of a module that didn't download would break every start.
-        module = self.public / "editors/nvim/virgil_lsp.lua"
-        if module.exists():
-            module.unlink()
-        for initial in [None, "init.lua", "init.vim"]:
-            with self.subTest(initial=initial):
-                home, env = self.home()
-                config = home / ".config/nvim"
-                if initial:
-                    config.mkdir(parents=True)
-                    (config / initial).write_text("-- keep my settings\n")
-                result = self.paste(self.steps["plain-nvim"], home, env)
-                self.assertNotEqual(result.returncode, 0)
-                for name in ["init.lua", "init.vim"]:
-                    if name == initial:
-                        self.assertEqual((config / name).read_text(), "-- keep my settings\n")
-                    else:
-                        self.assertFalse((config / name).exists(), f"created {name}")
-
-    def test_nvim_interrupted_rerun_keeps_installation(self):
-        # curl keeps what it received before failing; that must never replace
-        # a module or plugin that the configuration already loads.
-        for step, served in [("plain-nvim", "editors/nvim/virgil_lsp.lua"),
-                             ("lazyvim", "editors/nvim/lazyvim/virgil.lua")]:
-            with self.subTest(step=step):
-                source = self.public / served
-                source.parent.mkdir(parents=True, exist_ok=True)
-                source.write_text("-- downloaded\n")
-                home, env = self.home()
-                self.assertEqual(self.paste(self.steps[step], home, env).returncode, 0)
-                config = home / ".config/nvim"
-                before = {path: path.read_bytes() for path in config.rglob("*") if path.is_file()}
-                QuietHandler.truncated.add("/" + served)
-                try:
-                    result = self.paste(self.steps[step], home, env)
-                finally:
-                    QuietHandler.truncated.discard("/" + served)
-                self.assertNotEqual(result.returncode, 0)
-                for path, data in before.items():
-                    self.assertEqual(path.read_bytes(), data, f"changed {path}")
+    def test_nvim_failed_and_interrupted_reruns_keep_installation(self):
+        for step, served, installed in [
+            ("plain-nvim", "editors/nvim/virgil_lsp.lua", "plugin/virgil_lsp.lua"),
+            ("lazyvim", "editors/nvim/lazyvim/virgil.lua", "lua/plugins/virgil.lua"),
+        ]:
+            for failure in ["failed", "interrupted"]:
+                for xdg in [None, "", "custom config"]:
+                    for initial, original in INITIAL_CONFIGS:
+                        with self.subTest(step=step, failure=failure, xdg=xdg,
+                                          initial=initial, original=original):
+                            source = self.public / served
+                            source.parent.mkdir(parents=True, exist_ok=True)
+                            source.write_bytes(b"-- downloaded plugin\n")
+                            home, env = self.home()
+                            if xdg is not None:
+                                env["XDG_CONFIG_HOME"] = str(home / xdg) if xdg else ""
+                            config = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "nvim"
+                            if initial:
+                                config.mkdir(parents=True)
+                                (config / initial).write_bytes(original)
+                            result = self.paste(self.steps[step], home, env)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            self.assertEqual((config / installed).read_bytes(), source.read_bytes())
+                            before = {path: path.read_bytes() for path in config.rglob("*")
+                                      if path.is_file()}
+                            if failure == "failed":
+                                source.unlink()
+                            else:
+                                QuietHandler.truncated.add("/" + served)
+                            try:
+                                result = self.paste(self.steps[step], home, env)
+                            finally:
+                                QuietHandler.truncated.discard("/" + served)
+                            self.assertNotEqual(result.returncode, 0)
+                            for path, data in before.items():
+                                self.assertEqual(path.read_bytes(), data, f"changed {path}")
+                            for name in ["init.lua", "init.vim"]:
+                                if name == initial:
+                                    self.assertEqual((config / name).read_bytes(), original)
+                                else:
+                                    self.assertFalse((config / name).exists(), f"created {name}")
+                            if xdg:
+                                self.assertFalse((home / ".config/nvim").exists())
 
     def test_lazyvim_uses_xdg_config_home(self):
         plugin = self.public / "editors/nvim/lazyvim/virgil.lua"

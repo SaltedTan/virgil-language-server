@@ -29,21 +29,15 @@ LazyVim's noice.nvim drops `window/showMessage` notifications from every languag
 
 ## Plain Neovim
 
-Download [`virgil_lsp.lua`](virgil_lsp.lua) as a module and load it from your existing `init.vim` or `init.lua` (replace `config_url` as above). This uses the same configuration directory as the LazyVim step, preserves your settings, and adds the module load only once. If neither init file exists, it creates `init.lua`:
+Download [`virgil_lsp.lua`](virgil_lsp.lua) into your configuration's `plugin/` directory (replace `config_url` as above). Neovim loads it automatically at startup after `init.vim` or `init.lua`. This uses the same configuration directory as the LazyVim step; neither init file is created or changed, even for a new configuration. Setting `noloadplugins` or starting with `--noplugin` or `--clean` skips this automatic loading. The file is downloaded beside its destination and moved into place only after a successful download, so a failed or interrupted rerun preserves an earlier installation. Any remaining `.part` file is not sourced: Neovim loads only `*.lua` and `*.vim` plugin files.
 
 <!-- clean-install: plain-nvim -->
 ```sh
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
-mkdir -p "$nvim_config/lua"
-curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/lua/virgil_lsp.lua.part" &&
-mv "$nvim_config/lua/virgil_lsp.lua.part" "$nvim_config/lua/virgil_lsp.lua" &&
-if [ -f "$nvim_config/init.vim" ]; then
-  grep -qxF 'lua require("virgil_lsp")' "$nvim_config/init.vim" || printf '\nlua require("virgil_lsp")\n' >> "$nvim_config/init.vim"
-else
-  touch "$nvim_config/init.lua"
-  grep -qxF 'require("virgil_lsp")' "$nvim_config/init.lua" || printf '\nrequire("virgil_lsp")\n' >> "$nvim_config/init.lua"
-fi
+mkdir -p "$nvim_config/plugin"
+curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/plugin/virgil_lsp.lua.part" &&
+mv "$nvim_config/plugin/virgil_lsp.lua.part" "$nvim_config/plugin/virgil_lsp.lua"
 ```
 
 Alternatively, add the contents of `virgil_lsp.lua` to your `init.lua`.
