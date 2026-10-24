@@ -6,14 +6,15 @@ Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on
 
 ## LazyVim
 
-Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim installation's `lua/plugins/virgil.lua`. The commands use `$XDG_CONFIG_HOME/nvim`, or `~/.config/nvim` when it is unset or empty. Replace `config_url` with the raw source download location for the release version you installed (or an HTTP directory containing its `editors/nvim/` files):
+Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim installation's `lua/plugins/virgil.lua`. The commands use `$XDG_CONFIG_HOME/nvim`, or `~/.config/nvim` when it is unset or empty. Replace `config_url` with the raw source download location for the release version you installed (or an HTTP directory containing its `editors/nvim/` files). The file is downloaded beside its destination and moved into place only once the download succeeds, so a failed download leaves an earlier installation as it was:
 
 <!-- clean-install: lazyvim -->
 ```sh
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/lua/plugins"
-curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$nvim_config/lua/plugins/virgil.lua"
+curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$nvim_config/lua/plugins/virgil.lua.part" &&
+mv "$nvim_config/lua/plugins/virgil.lua.part" "$nvim_config/lua/plugins/virgil.lua"
 ```
 
 Make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
@@ -35,7 +36,8 @@ Download [`virgil_lsp.lua`](virgil_lsp.lua) as a module and load it from your ex
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/lua"
-curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/lua/virgil_lsp.lua" &&
+curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/lua/virgil_lsp.lua.part" &&
+mv "$nvim_config/lua/virgil_lsp.lua.part" "$nvim_config/lua/virgil_lsp.lua" &&
 if [ -f "$nvim_config/init.vim" ]; then
   grep -qxF 'lua require("virgil_lsp")' "$nvim_config/init.vim" || printf '\nlua require("virgil_lsp")\n' >> "$nvim_config/init.vim"
 else

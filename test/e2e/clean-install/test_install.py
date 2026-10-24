@@ -18,8 +18,22 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    # Paths whose response declares more bytes than it sends, as an
+    # interrupted transfer does.
+    truncated = set()
+
     def log_message(self, *_args):
         pass
+
+    def do_GET(self):
+        if self.path not in self.truncated:
+            return super().do_GET()
+        body = b"local broken = "
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body) + 100))
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
 
 
 class InstallTests(unittest.TestCase):
@@ -109,6 +123,28 @@ class InstallTests(unittest.TestCase):
                         self.assertEqual((config / name).read_text(), "-- keep my settings\n")
                     else:
                         self.assertFalse((config / name).exists(), f"created {name}")
+
+    def test_nvim_interrupted_rerun_keeps_installation(self):
+        # curl keeps what it received before failing; that must never replace
+        # a module or plugin that the configuration already loads.
+        for step, served in [("plain-nvim", "editors/nvim/virgil_lsp.lua"),
+                             ("lazyvim", "editors/nvim/lazyvim/virgil.lua")]:
+            with self.subTest(step=step):
+                source = self.public / served
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("-- downloaded\n")
+                home, env = self.home()
+                self.assertEqual(self.paste(self.steps[step], home, env).returncode, 0)
+                config = home / ".config/nvim"
+                before = {path: path.read_bytes() for path in config.rglob("*") if path.is_file()}
+                QuietHandler.truncated.add("/" + served)
+                try:
+                    result = self.paste(self.steps[step], home, env)
+                finally:
+                    QuietHandler.truncated.discard("/" + served)
+                self.assertNotEqual(result.returncode, 0)
+                for path, data in before.items():
+                    self.assertEqual(path.read_bytes(), data, f"changed {path}")
 
     def test_lazyvim_uses_xdg_config_home(self):
         plugin = self.public / "editors/nvim/lazyvim/virgil.lua"
