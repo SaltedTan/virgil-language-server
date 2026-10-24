@@ -69,7 +69,7 @@ Open documents share 1 MiB of text and metadata. Beyond that, the server shows a
 
 - The server executables are unsigned and not notarized. On macOS, a browser marks a download as quarantined, and macOS may then refuse to run it: download with `curl` or `gh`, or remove the attribute as [Installing on macOS](releasing.md#macos) shows. [Verifying a download](releasing.md#verifying-a-download) checks an archive against `SHA256SUMS`.
 - Nothing is published to a package manager, the Visual Studio Marketplace, or Open VSX. Install the server from a release archive and the extension from its VSIX by hand ([Installing](releasing.md#installing), [Installing from a VSIX](../clients/vscode/README.md#installing-from-a-vsix)). VS Code doesn't update an extension installed from a VSIX.
-- The archives don't include Virgil's library sources. A project with `virgilDependencies` needs a Virgil checkout at the revision that `virgil-lsp --version` prints ([The Virgil root](releasing.md#the-virgil-root)).
+- Release archives bundle only Virgil's `lib/`. Projects selecting `rt/`, `aeneas/`, or other sources outside it still need a client-supplied checkout at the revision that `virgil-lsp --version` prints. Development builds have no bundle by default. Missing or mismatched bundles leave no root, and invalid client overrides block fallback ([The Virgil root](configuration.md#the-virgil-root)).
 
 ## What rename refuses
 

@@ -118,16 +118,22 @@ This deliberately favors bounded, reproducible traversal over support for symlin
 
 ### The Virgil root
 
-`virgilDependencies` name files in a Virgil checkout or installation: the directory that holds Virgil's `lib/`, `rt/`, and `bin/`. Patterns are relative to that directory, as in `aeneas/DEPS`, which lists `lib/util/*.v3` and `lib/asm/x86-64/*.v3`. Other paths to the library need rewriting: `$VIRGIL_LIB/util/*.v3` in a build script, or `../../lib/util/*.v3` in the `DEPS` file of one of Virgil's apps, becomes `lib/util/*.v3`.
+`virgilDependencies` name files relative to a Virgil root: a directory holding `lib/`, or a full Virgil checkout or installation. Patterns are relative to that directory, as in `aeneas/DEPS`, which lists `lib/util/*.v3` and `lib/asm/x86-64/*.v3`. Other paths to the library need rewriting: `$VIRGIL_LIB/util/*.v3` in a build script, or `../../lib/util/*.v3` in the `DEPS` file of one of Virgil's apps, becomes `lib/util/*.v3`.
 
-A project file can't name the Virgil root, because its location differs from machine to machine. Set `virgilRoot` in the client's `initializationOptions` to an absolute physical path. If the option is absent or isn't an absolute path string, a project with `virgilDependencies` gets a `MissingVirgilRoot` configuration diagnostic. An absolute root whose required directories cannot be listed instead reports `SourceIO`. The server reads the option only during `initialize`, so the root stays fixed for the session; a changed root takes effect when the server restarts.
+A project file can't name the Virgil root, because its location differs from machine to machine. During `initialize`, the server selects the root once and logs its path and source:
+
+1. A client-supplied `initializationOptions.virgilRoot` takes precedence. It must be an absolute physical path. An empty, relative, or non-string value leaves no root and blocks fallback; a project with `virgilDependencies` gets `MissingVirgilRoot`. An absolute root whose required directories cannot be listed reports `SourceIO`.
+2. When the key is absent or JSON `null`, the server tries `virgil/` beside its own resolved executable, including when launched through a symlink. The bundle's `REVISION` must match the full Virgil revision compiled into the server. The log includes that revision.
+3. A missing, unreadable, or mismatched bundle leaves no root, with a log explaining why. A project requiring `virgilDependencies` then gets `MissingVirgilRoot`; single-file parsing still works.
+
+Release archives include the complete pinned `lib/`, its upstream license, and `REVISION`. Keep `virgil/` beside the executables when moving an install. The bundle contains no `rt/`, `aeneas/`, or `bin/`; projects selecting sources outside `lib/` still need a client-supplied checkout. Development builds have no bundle by default. The root stays fixed for the session; changes take effect when the server restarts. The [bundle ADR](decisions/0007-bundled-virgil-library.md) records the layout and precedence.
 
 The editor clients set the option:
 
 - **VS Code:** the machine setting `virgil.virgilRoot`, or, when it is empty, `VIRGIL_LOC` from the extension host's environment. With Remote-SSH or Remote-WSL, that is the remote machine's environment. The client logs the root it sends, and changing the setting restarts the server ([client settings](../clients/vscode/README.md#settings)).
 - **Neovim:** `init_options.virgilRoot`, which the shipped configurations take from `VIRGIL_LOC` ([Neovim setup](../editors/nvim/README.md#the-virgil-root)).
 
-The server doesn't look for a root itself: it never reads `VIRGIL_LOC` or runs `v3c`. The native runtime doesn't pass the environment to the program (`vendor/virgil/rt/native/RiRuntime.v3` ignores `envp`), so the defaults live in the clients' configuration, where they are visible.
+The server never searches `PATH`, reads `VIRGIL_LOC`, runs `v3c`, or uses the network to find a root. Environment fallback belongs to the clients; executable-relative bundle discovery belongs to the server. Library traversal still rejects symlinks, including a symlinked `virgil/` directory.
 
 A repository that includes Virgil, for example as a submodule, can list the library in `dependencies` instead: `"vendor/virgil/lib/util/*.v3"`.
 

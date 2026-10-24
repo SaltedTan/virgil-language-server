@@ -54,7 +54,7 @@ Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--
   - completion in blink.cmp's menu as you type: the keyword `while`, the local `line` first, and the member `length` after `a.`, each accepted with Enter and undone; and nothing from the server in a comment;
   - a project-file edit on disk, then an unsaved one ([Changes on disk](#changes-on-disk));
   - a restart with the bare command, then with the named one ([Neovim 0.11 and 0.12](#neovim-011-and-012)), and a clean server exit.
-- **`noroot`** opens `.virgil-lsp.json` with `VIRGIL_LOC` unset, and checks startup, the client's attachment, the `MissingVirgilRoot` diagnostic, the warning "Invalid project file …", and a clean server exit.
+- **`noroot`** uses deliberately bundle-less copies of the server and worker and opens `.virgil-lsp.json` with `VIRGIL_LOC` unset, and checks startup, the client's attachment, the `MissingVirgilRoot` diagnostic, the warning "Invalid project file …", and a clean server exit.
 - **`noroot-noice-workaround`** repeats `noroot` with noice's LSP message handler turned off, as the [LazyVim section](../../../editors/nvim/README.md#lazyvim) suggests.
 
 ## Why tmux
