@@ -117,8 +117,7 @@ class RenderTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        # macOS's temporary directory may be under the /var symlink.
-        self.directory = Path(directory.name).resolve()
+        self.directory = Path(directory.name)
         self.doc = self.directory / "manual-testing.md"
         self.doc.write_text(document())
 
@@ -622,12 +621,25 @@ class SelectionTest(RenderTest):
         stream.symlink_to(external)
         self.assertMalformed(selection, f"{stream}: symlinks are not allowed", cli=True)
 
-    def test_symlinks_in_the_selection_path_are_rejected(self):
+    def test_symlinked_ancestors_and_selection_directory_render(self):
+        selection = self.select(run_of("nvim"), names=["lane/stream.jsonl"])
+        status, out, err = self.render(selection, cli=True)
+        self.assertEqual(0, status, err)
+        expected = self.doc.read_bytes()
+        for name, target, relative in (("ancestor", self.directory, selection.relative_to(self.directory)),
+                                       ("directory", selection.parent, Path(selection.name))):
+            with self.subTest(name):
+                alias = self.directory / name
+                alias.symlink_to(target, target_is_directory=True)
+                self.doc.write_text(document())
+                status, out, err = self.render(alias / relative, cli=True)
+                self.assertEqual(0, status, err)
+                self.assertEqual(expected, self.doc.read_bytes())
+                self.assertEqual(0, self.render(alias / relative, "--check", cli=True)[0])
+
+    def test_a_symlinked_selection_file_is_rejected(self):
         selection = self.select(run_of("nvim"))
-        alias = self.directory / "alias"
-        alias.symlink_to(selection.parent, target_is_directory=True)
-        self.assertMalformed(alias / selection.name, f"{alias}: symlinks are not allowed", cli=True)
-        alias.unlink()
+        alias = self.directory / "alias.json"
         alias.symlink_to(selection)
         self.assertMalformed(alias, f"{alias}: symlinks are not allowed", cli=True)
 

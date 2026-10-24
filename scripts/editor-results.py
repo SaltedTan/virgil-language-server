@@ -1442,8 +1442,7 @@ def select(path, manifest, schema, selection_schema):
     order of their paths. Returns its release and a (path, Run) pair for each
     stream. Raises Malformed for the first problem that it finds."""
     try:
-        for component in reversed((path, *path.parents)):
-            reject_symlink(component)
+        reject_symlink(path)
         document = parse_json(path.read_bytes().decode("utf-8"))
     except OSError as error:
         raise Malformed(f"can't read the selection {path}: {error.strerror}") from error
