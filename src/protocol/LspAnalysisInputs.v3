@@ -19,11 +19,30 @@ component LspAnalysisCapture {
 	// Aggregate paths, source bytes, and a conservative metadata allowance.
 	def MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 
+	// Whether {versions} were captured from {sources}' canonical URIs, in
+	// count and order. It compares the URIs that expansion formed, so it
+	// converts no path.
 	def matchesSources(versions: Array<AnalysisDocumentVersion>, sources: Array<ProjectSource>) -> bool {
 		if (versions.length != sources.length) return false;
 		for (i < versions.length) {
-			var key = DocumentUri.normalize(ProjectFiles.uri(sources[i].path));
-			if (key == null || !Strings.equal(key, versions[i].uri)) return false;
+			var key = sources[i].uri;
+			if (key == null || !equal(key, versions[i].uri)) return false;
+		}
+		return true;
+	}
+	// Strings.equal, eight bytes at a time, since a program's URIs can total
+	// 12 MiB. A word is one load, as in AnalysisTables.sipHash; nothing
+	// allocates, so neither array can move, between taking their addresses
+	// and loading.
+	private def equal(a: string, b: string) -> bool {
+		if (a == b) return true;
+		if (a == null || b == null || a.length != b.length) return false;
+		var end = a.length - (a.length & 7), pa = Pointer.atContents(a), pb = Pointer.atContents(b);
+		for (i = 0; i < end; i += 8) {
+			if ((pa + i).load<u64>() != (pb + i).load<u64>()) return false;
+		}
+		for (i = end; i < a.length; i++) {
+			if (a[i] != b[i]) return false;
 		}
 		return true;
 	}

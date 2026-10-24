@@ -60,7 +60,11 @@ class DocumentStore {
 	private var diskEpoch = DocumentVersionIdentity.new();
 
 	def overlay(uri: string) -> DocumentOverlay {
-		var key = DocumentUri.normalize(uri);
+		return canonicalOverlay(DocumentUri.normalize(uri));
+	}
+	// overlay() of a URI that DocumentUri.normalize returned, or of null,
+	// without normalizing it again.
+	def canonicalOverlay(key: string) -> DocumentOverlay {
 		return if(key != null, overlays[key]);
 	}
 	// An open overlay always wins, including an empty document. Non-file URIs

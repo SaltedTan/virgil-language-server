@@ -16,6 +16,7 @@ def X = [
 	T("ProjectExpansion:unreadable_matches", test_unreadable_matches),
 	T("ProjectExpansion:unrelated_and_excluded_entries", test_unrelated_and_excluded_entries),
 	T("ProjectExpansion:colliding_names", test_colliding_names),
+	T("ProjectExpansion:source_uris", test_source_uris),
 	T("WorkspaceProjects:shared_contexts", test_shared_contexts),
 	T("WorkspaceProjects:workspace_roots", test_workspace_roots),
 	T("WorkspaceProjects:configuration_revision", test_configuration_revision),
@@ -31,6 +32,7 @@ def X = [
 	T("WorkspaceProjects:watched_configurations", test_watched_configurations),
 	T("WorkspaceProjects:folder_changes", test_folder_changes),
 	T("WorkspaceProjects:affected_contexts", test_affected_contexts),
+	T("WorkspaceProjects:source_uris", test_workspace_source_uris),
 	()
 ];
 def FIXTURES = "test/fixtures/projects";
@@ -674,6 +676,127 @@ def test_affected_contexts(t: Tester) {
 	t.asserti(2, w.affected(base).length);
 	t.asserti(0, w.affected(ProjectFiles.join(base, "shared/Gree")).length);
 	t.asserti(0, w.affected(ProjectFiles.join(base, "missing.v3")).length);
+}
+def version(uri: string) -> AnalysisDocumentVersion {
+	return AnalysisDocumentVersion.new(uri, 0, null);
+}
+def test_source_uris(t: Tester) {
+	// A source keeps the URI that DocumentUri.normalize forms from its path.
+	for (c in [
+		("/tmp/plain.v3", "file:///tmp/plain.v3"),
+		("/tmp/with space.v3", "file:///tmp/with%20space.v3"),
+		("/tmp/caf\xC3\xA9.v3", "file:///tmp/caf%C3%A9.v3"),
+		("/tmp/./a//b/../100%.v3", "file:///tmp/a/100%25.v3"),
+		("/tmp/\xFF.v3", null)]) {
+		var uri = ProjectSource.new(c.0, true).uri;
+		if (c.1 == null) t.assert(uri == null, "a path that is not UTF-8 has no URI");
+		else if (uri == null) t.fail(Strings.format1("%s has no URI", c.0));
+		else t.assert_string(c.1, uri);
+	}
+	// matchesSources compares captured URIs with the kept ones exactly, in
+	// count and order.
+	var a = ProjectSource.new("/tmp/a.v3", true), b = ProjectSource.new("/tmp/b.v3", false);
+	var none = ProjectSource.new("/tmp/\xFF.v3", true);
+	var va = version(Arrays.dup(a.uri)), vb = version(Arrays.dup(b.uri));
+	t.assert(LspAnalysisCapture.matchesSources([va, vb], [a, b]), "equal URIs in the same order match");
+	t.assert(!LspAnalysisCapture.matchesSources([vb, va], [a, b]), "the order must match");
+	t.assert(!LspAnalysisCapture.matchesSources([va], [a, b]), "a missing source does not match");
+	t.assert(!LspAnalysisCapture.matchesSources([va, vb, va], [a, b]), "an extra source does not match");
+	t.assert(!LspAnalysisCapture.matchesSources([version("file://localhost/tmp/a.v3")], [a]), "another spelling does not match");
+	t.assert(!LspAnalysisCapture.matchesSources([version(null)], [none]), "a source without a URI never matches");
+	// It compares eight bytes at a time: whatever the URI's length, an equal
+	// copy matches and a change to any one byte does not.
+	for (n < 20) {
+		var path = StringBuilder.new().putc('/');
+		for (i < n) path.putc('a');
+		var s = ProjectSource.new(path.extract(), true);
+		t.assert(LspAnalysisCapture.matchesSources([version(Arrays.dup(s.uri))], [s]), Strings.format1("a copy of %s matches", s.uri));
+		for (i < s.uri.length) {
+			var changed = Arrays.dup(s.uri);
+			changed[i] = byte.view(changed[i] ^ 1);
+			t.assert(!LspAnalysisCapture.matchesSources([version(changed)], [s]), Strings.format2("%s with byte %d changed does not match", s.uri, i));
+		}
+	}
+}
+// Checks that {sources} each keep the URI that converting their paths gives
+// now, and that matchesSources accepts those URIs.
+def checkUris(t: Tester, when: string, count: int, sources: Array<ProjectSource>) {
+	t.asserti(count, sources.length);
+	var versions = Array<AnalysisDocumentVersion>.new(sources.length);
+	for (i < sources.length) {
+		var fresh = DocumentUri.normalize(ProjectFiles.uri(sources[i].path)), kept = sources[i].uri;
+		t.assert(fresh != null && kept != null && Strings.equal(fresh, kept), Strings.format2("%s: %s keeps its canonical URI", when, sources[i].path));
+		versions[i] = version(fresh);
+	}
+	t.assert(LspAnalysisCapture.matchesSources(versions, sources), Strings.format1("%s: the converted URIs match", when));
+}
+def removeFixture(t: Tester, path: string) {
+	var pid = HostOs.spawn(["/bin/rm\x00", "-f\x00", Arrays.concat(path, "\x00")], [0, 1, 2]);
+	t.assert(pid > 0, "fixture removal started");
+	if (pid <= 0) return;
+	var status = Array<int>.new(1);
+	t.asserti(pid, HostOs.wait(pid, status));
+	t.asserti(0, status[0]);
+}
+// Every path that replaces a context's sources leaves each source with the
+// URI of its path: loading, reexpansion, a submission's preflight, a
+// configuration change with and without a preflight, and an invalid
+// configuration, which clears them.
+def test_workspace_source_uris(t: Tester) {
+	var base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/source-uris");
+	var config = ProjectFiles.join(base, ".virgil-lsp.json"), added = ProjectFiles.join(base, "new file.v3");
+	removeFixture(t, added);
+	var store = DocumentStore.new(null, 2 * ProjectLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	w.initialize(workspaceParams(base));
+	var c = w.load(config), first = c.contexts[0];
+	checkUris(t, "load", 4, first.sources);
+	var fd = System.fileOpen(added, false);
+	t.assert(fd >= 0, "the new source is created");
+	if (fd < 0) return;
+	System.fileClose(fd);
+	var loaded = first.sources;
+	w.reexpand();
+	t.assert(c.contexts[0] == first && first.sources != loaded, "reexpansion replaces the sources");
+	checkUris(t, "reexpansion", 5, first.sources);
+	loaded = first.sources;
+	w.forAnalysis(ProjectFiles.uri(ProjectFiles.join(base, "plain.v3")));
+	t.assert(c.contexts[0] == first && first.sources != loaded, "the preflight replaces the sources");
+	checkUris(t, "preflight", 5, first.sources);
+	// A configuration change in a preflight replaces the context, and the
+	// preflight clears the old one's sources.
+	var configUri = ProjectFiles.uri(config);
+	store.open(configUri, "json", 1, "{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"with space.v3\",\"100%.v3\"]}]}");
+	w.reexpand();
+	var second = c.contexts[0];
+	t.assert(second != first, "the configuration change replaces the context");
+	checkUris(t, "replaced context", 0, first.sources);
+	checkUris(t, "configuration change", 2, second.sources);
+	if (second.sources.length == 2) t.assert(Strings.endsWith(second.sources[0].path, "/with space.v3"), "pattern order");
+	// Without a preflight, the old context keeps its sources.
+	store.close(configUri);
+	w.refresh();
+	var third = c.contexts[0];
+	t.assert(third != second, "the configuration change replaces the context");
+	checkUris(t, "kept by the old context", 2, second.sources);
+	checkUris(t, "configuration change without a preflight", 5, third.sources);
+	// An overlay too large for the budget, open under another spelling of the
+	// URI, invalidates the configuration, which clears the sources. These
+	// steps name only ASCII files, since a file system that decomposes names,
+	// such as HFS+, lists the accented fixture in another Unicode form.
+	var baseUri = ProjectFiles.uri(base);
+	var spelled = StringBuilder.new().puts("file://localhost").puts(Arrays.range(baseUri, 7, baseUri.length)).puts("/./100%25.v3").extract();
+	t.assert(store.open(spelled, "virgil", 1, Array<byte>.new(ProjectLimits.MAX_BYTES)) == null, "the large overlay is admitted");
+	w.reexpand();
+	t.asserti(1, c.diagnostics.length);
+	if (c.diagnostics.length == 1) t.assert(c.diagnostics[0].code == ProjectConfigCode.SOURCE_BUDGET, "expansion finds the overlay by its canonical URI");
+	t.assert(c.contexts[0] == third, "source changes keep the context");
+	checkUris(t, "invalid configuration", 0, third.sources);
+	store.close(spelled);
+	w.reexpand();
+	t.asserti(0, c.diagnostics.length);
+	checkUris(t, "recovery", 5, third.sources);
+	checkUris(t, "expandNow", 5, w.expandNow(third));
+	removeFixture(t, added);
 }
 def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	var w = DataWriter.new().putb(AnalysisWire.RESULT).put_b32(1).put_b32(1).put_b32(1).put_b64(0).putb(7);

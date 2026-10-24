@@ -110,7 +110,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		r.generation = generation;
 		var keys = Array<string>.new(ctx.sources.length), index = -1;
 		for (i < keys.length) {
-			keys[i] = DocumentUri.normalize(ProjectFiles.uri(ctx.sources[i].path));
+			keys[i] = ctx.sources[i].uri;
 			if (keys[i] == null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "cannot form a document URI");
 			if (index < 0 && Strings.equal(keys[i], r.uri)) index = i;
 		}
