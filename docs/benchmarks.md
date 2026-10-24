@@ -689,8 +689,9 @@ varies before any budget is proposed.
 [`scripts/bench-tolerance.py`](../scripts/bench-tolerance.py) measures the semantic
 answers an editor receives while another file fails to parse. It imports the
 existing benchmark helpers and `Session`; a separate command keeps the successful
-operation timings and output of `bench-lsp.py` unchanged. No server fallback is
-implemented. Run both modes and all states with:
+operation timings and output of `bench-lsp.py` unchanged. The baseline below
+predates [method-body fallback](architecture.md#method-body-fallback); its
+comparison follows the original results. Run both modes and all states with:
 
 ```sh
 mkdir -p build/bench-results
@@ -731,9 +732,10 @@ warm and cold modes:
 
 Warm sessions open and analyze the predecessor, then send the current text as an
 unsaved full-text `didChange`. Cold sessions open the current text immediately;
-they have no analyzed predecessor, although the disposable disk copy ordinarily
-still contains the original program. Closed-file controls instead put the broken
-text on disk. Each replay state gets its own session, seeded from the sequence's
+they have no explicitly warmed predecessor, although the disposable disk copy
+ordinarily still contains the original program. Sequential opens can capture
+that disk predecessor for a later-opened file during an earlier analysis.
+Closed-file controls instead put the broken text on disk. Each replay state gets its own session, seeded from the sequence's
 history; timing does not model user think time.
 
 Definition, plaintext hover, and references with declarations are queried at a
@@ -768,8 +770,8 @@ the current program's oracle. The driver separately feeds each predecessor's
 captured answer to the scorer and requires a wrong verdict. The
 [scoring tests](../test/benchmarks/test_tolerance.py) repeat this with
 [protocol captures](../test/benchmarks/tolerance-negative-oracles.json), including
-the signature change whose identifier ranges still match. No permissive server
-fallback is built. Fifteen extra states cover three variants each of two broken
+the signature change whose identifier ranges still match. These controls guard
+against unrestricted substitution. Fifteen extra states cover three variants each of two broken
 files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
 non-ASCII before the query and one CRLF case), closed-file disk changes with
 watched-file notifications, and project-file changes (remove/add membership and
@@ -857,3 +859,119 @@ These runs used server SHA-256
 `171cde7f9cf9885bfd12d6f3fc7ce7baadf8267b3d4c0cfccd17aae3416d4111`
 and worker SHA-256
 `f658d6d1f707e9a693fc09718f04af896b240d3f200c30cfe3b72fefef1f75be`.
+
+### Method-body fallback comparison
+
+The #243 implementation at `aaa9b3d` is compared with the base executable at
+`e3dbd69`, both using the pinned compiler, enabled probes, and the default
+384 MiB worker heap. Pending documentation accounts for the after build's
+`-dirty` marker. The tolerance runs use CPU 4; successful-operation comparisons
+use CPU 5. Other agents were active on this shared host.
+
+Eligibility was classified independently of returned answers by a native probe
+calling the production `AeneasAdapter.methodBodies` and `LspBodyEligibility`
+functions on every predecessor/current pair. A parseable current state needs no
+fallback and is counted ineligible for substitution. The original corpus's
+`header` label includes control headers and local types inside method bodies:
+four repair states in that category satisfy containment, while all declaration
+headers remain ineligible. Unbalanced intervals, including the Aeneas condition
+and for-header replays, remain ineligible.
+
+The table counts states retaining **all four features**, allowing correct plus
+partial reference and diagnostic sets. Each cell gives before → after counts;
+the denominator is the number of states in that eligibility group.
+
+| Corpus | Edit kind | Eligibility | Warm before → after | Cold before → after |
+| --- | --- | --- | ---: | ---: |
+| Repair | Body | Eligible | 0 → 26 / 26 | 0 → 0 / 26 |
+| Repair | Body | Ineligible | 6 → 6 / 11 | 6 → 6 / 11 |
+| Repair | Header | Eligible | 0 → 4 / 4 | 0 → 0 / 4 |
+| Repair | Header | Ineligible | 0 → 0 / 2 | 0 → 0 / 2 |
+| Repair | Whole file | Ineligible | 0 → 0 / 2 | 0 → 0 / 2 |
+| Replay | Body | Eligible | 0 → 71 / 71 | 0 → 0 / 71 |
+| Replay | Body | Ineligible | 7 → 7 / 7 | 7 → 7 / 7 |
+| Replay | Header | Ineligible | 2 → 2 / 62 | 2 → 2 / 62 |
+| Combined | All | All | 15 → 116 / 185 | 15 → 15 / 185 |
+
+All 97 eligible warm **body** states retain definition, hover, references, and
+independent semantic diagnostics (100% for each feature). Their 309 definition
+answers and 309 hover answers are exact. References have 283 exact and 26 partial answers;
+the partial lists omit only uses inside excluded bodies. Including the four
+eligible control-header states gives 101/101 retained states. No ineligible
+primary state gains a substituted answer.
+
+Per-feature primary counts after fallback follow. Before counts are those in
+[Tolerance baseline](#tolerance-baseline); all before partial counts are zero.
+
+| Corpus / mode | Exact definition | Exact hover | Exact references | Partial references | Exact diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair / warm | 66/87 | 66/87 | 65/87 | 1 | 36/45 | 0 | 0 |
+| Repair / cold | 15/87 | 15/87 | 15/87 | 0 | 6/45 | 0 | 0 |
+| Replay / warm | 300/540 | 300/540 | 274/540 | 26 | 80/140 | 0 | 0 |
+| Replay / cold | 35/540 | 35/540 | 35/540 | 0 | 9/140 | 0 | 0 |
+
+All four negative controls pass in both modes and reject the injected unsafe
+predecessor answer. The shadowing-local control has one partial warm diagnostic
+set: the independent observer error remains, while errors inside the excluded
+body are omitted. There are **zero wrong answers** across all 408 mode records,
+including the fifteen extra states, and zero worker replacements. Every cold
+answer equals its base answer. The warm run has 27 partial reference answers
+in 27 primary states and the one partial diagnostic set above. These are safe
+subsets under the amended scoring rule.
+
+Four cold records have a substitution for a later-opened file: the first open
+started an analysis that captured that file's parseable disk text before its
+broken overlay arrived. This is a valid per-file cache seed even though another
+input failed to parse. That other broken file still prevents semantics, and all
+cold answers remain unchanged. A fresh file with no such analyzed predecessor
+cannot use fallback.
+
+The protocol regression also verifies exactly one completed analysis for a
+contained changed generation, no further analysis for its read-only requests
+or rename refusal, original-text syntax diagnostics, mapped same-file and
+cross-file results, and suppression of an error-limit notice whose last error
+falls inside the excluded body.
+
+Successful-operation runs alternate the two executables over three process
+blocks, two warmups, and five measured operations per block (15 samples per
+build and project). Every semantic check passes. All 33 latency comparisons
+have overlapping p10–p90 intervals; this shared-host run shows no change beyond
+its noise. Worker allocation, collection counts, and live-after-GC bytes match
+exactly for fresh and reused successful analyses in all three projects. Aeneas results are **median (p10–p90), milliseconds**:
+
+| Successful operation | Before | After |
+| --- | ---: | ---: |
+| Fresh analysis | 493.586 (479.631–500.877) | 480.834 (338.727–485.906) |
+| Reused analysis | 460.280 (445.490–488.023) | 452.897 (317.190–495.707) |
+| Definition | 2.725 (1.674–3.009) | 2.734 (1.811–2.973) |
+| Hover | 2.826 (1.793–22.675) | 2.755 (1.746–2.995) |
+| References | 3.609 (2.245–3.905) | 3.699 (2.128–3.917) |
+| Semantic publication | 659.010 (508.385–675.097) | 687.098 (674.583–703.194) |
+
+The base tolerance run took 200.26 seconds and the final after run 253.41
+seconds, including all warm/cold oracle captures and controls. Broken programs
+in the base stop at parsing, while eligible warm states now verify and collect
+semantics, so those whole-suite times compare different work. No macOS timing
+run or additional editor-specific check was added.
+
+The base executable was built at `e3dbd69` and preserved separately before
+implementation. The after build and measurements used these commands, with
+`evidence` set to the task's scratch directory (any writable directory works):
+
+```sh
+make BUILD=build/body-fallback-final BENCH=1 all bench-metadata
+python3 scripts/bench-tolerance.py --exe build/body-fallback-base/virgil-lsp --cpu 4 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-base-partial.json"
+python3 scripts/bench-tolerance.py --exe build/body-fallback-final/virgil-lsp --cpu 4 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-final.json"
+python3 scripts/bench-lsp.py --exe build/body-fallback-base/virgil-lsp \
+  --exe build/body-fallback-final/virgil-lsp --cpu 5 \
+  --output "$evidence/lsp-final-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Before: `5d5a14677d9f84e446e259bbf182710f1dd60cbf7867bb681c1f8608f599ab5d`,
+  `99bf5afed7be95785904c8a5cb7ec71fa5725e0c64f16153e90b297e040ac80f`.
+- After: `40effe7c55866787eba8670498188abbf4e67df98e153ce1fefaf493d89f8fe0`,
+  `4f94b5d4b1cb68b589e7176457dadac81cbf184b7a58a525a6f90805dd6c5dc5`.
