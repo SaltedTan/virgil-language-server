@@ -202,8 +202,8 @@ def execute(exe, state, mode, oracle):
                 else:
                     run.change(path, text)
         if state.get("project_change"):
-            # Remove C from membership, or change language flags, while A is
-            # broken. The oracle is captured with exactly this configuration.
+            # Change source membership or language flags while A is broken.
+            # The oracle is captured with exactly this configuration.
             run.open(".virgil-lsp.json", json.dumps(state["new_config"]), "json")
         actual, samples = run.answers(state["queries"], state["diagnostic_paths"], measure=True)
         elapsed = (time.perf_counter_ns() - start) / 1e6

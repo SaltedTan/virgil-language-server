@@ -1,7 +1,9 @@
 # Performance benchmarks
 
-The benchmark measures whole-program analyses and editor requests over
-real stdio pipes. It uses Python 3.9+ and its standard library, including the
+The performance benchmark measures whole-program analyses and editor
+requests over real stdio pipes. The [syntax-error tolerance benchmark](#semantics-during-syntax-errors)
+measures semantic availability and correctness while editing. Both use Python
+3.9+ and its standard library, including the
 [`Session` protocol client](../test/protocol/worker.py). Timing budgets and scheduled
 CI comparisons are separate work; these measurements do not gate releases.
 
@@ -38,8 +40,9 @@ python3 scripts/bench-lsp.py --exe build/virgil-lsp --output build/bench-results
 python3 scripts/bench-lsp.py --smoke --exe build/virgil-lsp --output /dev/null
 ```
 
-`make test` runs the small smoke case and the client's rejection checks. The smoke
-case takes under a second on the reference host; the full benchmark is not part
+`make test` runs the small smoke case and the client's rejection checks
+(`python3 test/benchmarks/test_client.py`). The smoke case takes under a second
+on the reference host; the full benchmark is not part
 of `make test`. Smoke runs need no benchmark build metadata. The tests compare
 the corpus revision to the superproject's `vendor/virgil` gitlink in the index
 (which matches `HEAD` unless a pin bump is staged). A changed gitlink requires
@@ -498,6 +501,12 @@ with the successful-operation benchmark above.
 `make test` runs nine scoring tests and a five-state smoke replay (two small
 repair states and all three negative controls, in both modes). The smoke run
 takes about 0.2 seconds on the reference host. The full suite remains opt-in.
+Run these checks separately with:
+
+```sh
+python3 test/benchmarks/test_tolerance.py
+python3 scripts/bench-tolerance.py --smoke --exe build/virgil-lsp --output /dev/null
+```
 
 ### Tolerance baseline
 
