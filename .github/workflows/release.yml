@@ -8,7 +8,7 @@ name: Release
 # against the Linux archive's server, runs the editor tests of
 # editor-test-suites.yml on those archives and that VSIX (the LazyVim test on
 # Linux and macOS, the Extension Host test on macOS, and the Remote-SSH test on
-# Linux), writes SHA256SUMS, and publishes them as a GitHub prerelease. Running
+# Linux, plus the clean README install in a Linux container), writes SHA256SUMS, and publishes them as a GitHub prerelease. Running
 # the workflow by hand, or on a pull request that changes the release files or
 # the editor tests, is a dry run: the same jobs without publishing, with the
 # release files kept as a workflow artifact. See docs/releasing.md.
@@ -21,7 +21,12 @@ on:
   pull_request:
     paths:
       - .github/workflows/editor-test-suites.yml
+      - .github/workflows/editor-tests.yml
       - .github/workflows/release.yml
+      - README.md
+      - clients/vscode/README.md
+      - editors/nvim/**
+      - test/e2e/clean-install/**
       - clients/vscode/.vscodeignore
       - clients/vscode/package-lock.json
       - clients/vscode/package.json
@@ -141,6 +146,13 @@ jobs:
             cmp "build/$f" "$RUNNER_TEMP"/archive/*/"$f"
           done
           file "$RUNNER_TEMP"/archive/*/virgil-lsp
+      - name: Record the archive digest for the clean install test
+        run: shasum -a 256 build/release/*.tar.gz > "$RUNNER_TEMP/archive.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: checksum-${{ matrix.target }}
+          path: ${{ runner.temp }}/archive.sha256
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}

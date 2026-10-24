@@ -7,7 +7,7 @@ name: Editor test suites
 # workflow run, on the files of the run that calls this one: the archives in
 # its archive-x86-64-linux and archive-x86-64-darwin artifacts and the VSIX in
 # its vsix artifact, never building the server or packaging the VSIX again.
-# They run the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS,
+# They run a clean README install in an Ubuntu container, the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS,
 # the Extension Host test on macOS on the installed VSIX, and the same suite
 # through VS Code Remote-SSH on Linux. The LazyVim test installs the pinned
 # starter and plugins from GitHub, and the Remote-SSH test VS Code, Remote-SSH,
@@ -40,6 +40,79 @@ permissions:
 # other.
 
 jobs:
+  clean-install-bundle:
+    name: Bundle the README install test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bundle only the READMEs, public editor configs, and standalone drivers
+        run: |
+          python3 test/e2e/clean-install/run.py bundle "$RUNNER_TEMP/clean-install"
+          tar -czf "$RUNNER_TEMP/clean-install.tar.gz" -C "$RUNNER_TEMP/clean-install" .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: clean-install-bundle
+          path: ${{ runner.temp }}/clean-install.tar.gz
+          if-no-files-found: error
+
+  clean-install-linux:
+    name: Clean README install (Linux, archive and VSIX)
+    needs: clean-install-bundle
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version }}
+      VSIX: ${{ inputs.vsix-file }}
+      VSIX_SHA256: ${{ inputs.vsix-sha256 }}
+    steps:
+      # No checkout here, and no repository or Virgil checkout in the bundle.
+      - uses: actions/download-artifact@v8
+        with:
+          name: clean-install-bundle
+          path: /opt/install-bundle
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-x86-64-linux
+          path: /opt/install-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsix
+          path: /opt/install-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: checksum-x86-64-linux
+          path: /opt/install-checksum
+      - name: Install only the named prerequisites in the fresh container
+        run: |
+          tar -xzf /opt/install-bundle/clean-install.tar.gz -C /opt/install-bundle
+          bash /opt/install-bundle/prerequisites.sh container
+          mkdir /opt/empty-home
+          useradd --create-home --skel /opt/empty-home --shell /bin/bash installer
+      - name: Follow the READMEs as a non-root user with an empty home
+        run: |
+          cd /home/installer
+          runuser -u installer -- env -i HOME=/home/installer PATH=/usr/local/bin:/usr/bin:/bin \
+            python3 /opt/install-bundle/run.py run --bundle /opt/install-bundle \
+            --assets /opt/install-assets --archive-sha256 /opt/install-checksum/archive.sha256 \
+            --vsix-sha256 "$VSIX_SHA256" --version "$VERSION" --vsix "$VSIX" \
+            --out /home/installer/results
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: clean-install-linux
+          path: |
+            /home/installer/results/*/run.log
+            /home/installer/results/*/run.sh
+            /home/installer/results/*/*.json
+            /home/installer/results/*/.config/Code/logs/
+            /home/installer/results/*/.local/state/nvim/lsp.log
+            /home/installer/results/public/SHA256SUMS
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
   lazyvim-linux:
     name: LazyVim test (archive, linux, Neovim ${{ matrix.nvim }})
     runs-on: ubuntu-24.04

@@ -3,7 +3,8 @@ name: Editor tests (weekly)
 # Runs the editor tests in full, where pull request CI runs only part of them:
 # the LazyVim test on Linux with Neovim 0.11 and 0.12 and on macOS, the
 # Extension Host test on macOS against a packaged VSIX, and the same suite
-# through VS Code Remote-SSH on Linux. It builds the server archives from
+# through VS Code Remote-SSH on Linux, plus the clean README install in a Linux
+# container. It builds the server archives from
 # source and packages the VSIX as the release workflow does, then runs the
 # jobs of editor-test-suites.yml on them, which the release workflow also runs
 # on each release's own files. The LazyVim test installs the pinned starter
@@ -63,6 +64,13 @@ jobs:
         run: |
           scripts/package-release.sh build/release
           cat build/release/*.manifest.json
+      - name: Record the archive digest for the clean install test
+        run: shasum -a 256 build/release/*.tar.gz > "$RUNNER_TEMP/archive.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: checksum-${{ matrix.target }}
+          path: ${{ runner.temp }}/archive.sha256
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
