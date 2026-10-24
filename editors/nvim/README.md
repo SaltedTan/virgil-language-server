@@ -35,7 +35,7 @@ Download [`virgil_lsp.lua`](virgil_lsp.lua) as a module and load it from your ex
 config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/lua"
-curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/lua/virgil_lsp.lua"
+curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/lua/virgil_lsp.lua" &&
 if [ -f "$nvim_config/init.vim" ]; then
   grep -qxF 'lua require("virgil_lsp")' "$nvim_config/init.vim" || printf '\nlua require("virgil_lsp")\n' >> "$nvim_config/init.vim"
 else

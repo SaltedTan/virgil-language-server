@@ -90,6 +90,26 @@ class InstallTests(unittest.TestCase):
                     if xdg:
                         self.assertFalse((home / ".config/nvim").exists())
 
+    def test_plain_nvim_failed_download_leaves_init_alone(self):
+        # A require of a module that didn't download would break every start.
+        module = self.public / "editors/nvim/virgil_lsp.lua"
+        if module.exists():
+            module.unlink()
+        for initial in [None, "init.lua", "init.vim"]:
+            with self.subTest(initial=initial):
+                home, env = self.home()
+                config = home / ".config/nvim"
+                if initial:
+                    config.mkdir(parents=True)
+                    (config / initial).write_text("-- keep my settings\n")
+                result = self.paste(self.steps["plain-nvim"], home, env)
+                self.assertNotEqual(result.returncode, 0)
+                for name in ["init.lua", "init.vim"]:
+                    if name == initial:
+                        self.assertEqual((config / name).read_text(), "-- keep my settings\n")
+                    else:
+                        self.assertFalse((config / name).exists(), f"created {name}")
+
     def test_lazyvim_uses_xdg_config_home(self):
         plugin = self.public / "editors/nvim/lazyvim/virgil.lua"
         plugin.parent.mkdir(parents=True, exist_ok=True)
