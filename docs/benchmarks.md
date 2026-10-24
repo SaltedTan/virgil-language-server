@@ -416,8 +416,9 @@ filters state IDs. These filters appear in the recorded command. `--work-dir`
 chooses the parent of disposable source copies (default `build/bench-results`);
 use scratch storage on machines with a small shared `/tmp`. Output directories
 must already exist. No fixture, vendor source, or real project file is edited.
-The driver rechecks input hashes and removes its copies. Failed runs preserve
-partial results and a failing session's transcript in `<output>.failure.json`.
+The driver rechecks input hashes and removes its copies. With a file output,
+failed runs preserve partial results and a failing session's transcript in
+`<output>.failure.json`.
 If session teardown also fails, `failed_record.cleanup_errors` records those
 errors while preserving the original exception and session evidence.
 
