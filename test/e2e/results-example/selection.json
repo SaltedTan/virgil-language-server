@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "release": "0.0.0-example",
+  "streams": [
+    {
+      "path": "lazyvim-linux.jsonl",
+      "sha256": "d82fe12fe592d52828dab74128f1f3c5c19e593e0701a79ffc2ce8161c7cfed3"
+    },
+    {
+      "path": "nvim-linux.jsonl",
+      "sha256": "c4c3323448d72138bb31ff58d607b4d8491169782c1b09d23d16c62a8cabc6d9"
+    },
+    {
+      "path": "vscode-macos.jsonl",
+      "sha256": "837ac9f5d568c86cf619d751989e78fc7b79c1c9e87a57a8167d81068749f51a"
+    }
+  ]
+}

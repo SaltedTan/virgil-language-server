@@ -375,6 +375,9 @@ class CoverageTest(unittest.TestCase):
         self.assertRegex(rule["failureCode"], NAME.pattern + r"\Z")
         self.assertRegex(rule["issue"], ISSUE.pattern + r"\Z")
         self.assertTrue(rule["plugin"])
+        # Generated tables name the rule by its label (RESULTS.md, "The matrix").
+        self.assertIsInstance(rule.get("label"), str, "a rule has a label")
+        self.assertTrue(rule["label"].strip(), "a rule's label isn't empty")
         check = self.checks.get(rule["check"])
         self.assertIsNotNone(check, f"unknown check {rule['check']}")
         for suite in check["suites"]:

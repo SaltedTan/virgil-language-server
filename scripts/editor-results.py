@@ -17,23 +17,38 @@
 # pass, and 2 if a stream is invalid or the manifest or the schema can't be
 # used. Other tools can load this file as a module, with importlib, since its
 # name has a hyphen. See test/e2e/RESULTS.md#validating-a-stream.
+#
+# render writes a release's results into a Markdown document, such as
+# docs/manual-testing.md: a table of its runs and its matrix, between the
+# release's markers, from the valid streams that a selection lists (the
+# selection's schema is selection-v1.schema.json, beside the result schema).
+# The output depends only on the inputs. It exits with 0 if it rendered, or
+# found no drift with --check, 1 if --check found drift, which it prints as a
+# unified diff, or a selected run didn't pass, and 2 if an input is malformed.
+# See test/e2e/RESULTS.md#rendering-a-release.
 # Usage: editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
+#        editor-results.py render [--manifest PATH] [--schema PATH] --selection FILE --doc PATH
+#                                 (--write | --check)
 # The manifest and the schema default to coverage.json and
 # results-v1.schema.json in the test/e2e directory beside this script's.
 import argparse
 import datetime
+import difflib
 import hashlib
 import json
 import math
+import os
 import re
+import shlex
 import sys
 import traceback
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote as percent_encode, unquote
 
 E2E = Path(__file__).resolve().parent.parent / "test" / "e2e"
 MANIFEST = E2E / "coverage.json"
 SCHEMA = E2E / "results-v1.schema.json"
+SELECTION_SCHEMA = E2E / "selection-v1.schema.json"
 STATUSES = ("pass", "fail", "xfail", "xpass", "skip")
 OUTCOMES = {"pass": "passed", "fail": "failed", "aborted": "aborted", "unavailable": "unavailable"}
 DRAFT = "https://json-schema.org/draft/2020-12/schema"
@@ -64,6 +79,8 @@ UNAVAILABLE = "/$defs/unavailableProvenance"
 # The definition of a UTC time, whose date must also exist: its pattern
 # accepts February 30.
 TIME = "/$defs/time"
+# The definitions that the result schema must have, and what each describes.
+RESULT_DEFINITIONS = ((UNAVAILABLE, "marks unavailable provenance"), (TIME, "describes a time"))
 # The conditions that fields of the run-start's provenance decide: each holds
 # exactly when every one of its fields passes its test. A run given a VSIX that
 # it couldn't read still used a VSIX, so an unavailable vsix says that vsix
@@ -75,15 +92,21 @@ MANUAL = "manual"
 # The launcher's profile, outside the editor, which has no editor
 # configuration to digest (RESULTS.md, "The manifest").
 WRAPPER = "wrapper"
-# The members of the manifest's entries that validation reads.
+# The members of the manifest's entries that validation and rendering read.
 MANIFEST_FIELDS = {
     "checks": ("id", "suites", "profiles", "level", "when"),
     "suites": ("id", "profiles"),
     "conditions": ("id", "alternative", "always"),
-    "setups": ("id", "suite", "client", "host"),
-    "xfails": ("id", "check", "profile", "plugin", "commit", "failureCode", "requires"),
+    "setups": ("id", "label", "suite", "client", "host", "scope"),
+    "xfails": ("id", "label", "check", "profile", "plugin", "commit", "failureCode", "issue", "requires",
+               "workaroundProfile"),
+    "areas": ("id", "label", "matrix"),
+    "levels": ("id", "wording"),
+    "scopes": ("id", "wording"),
+    "gaps": ("id", "kind", "what"),
 }
 PROFILE_FIELDS = ("id", "workaround", "repeated")
+CELL_FIELDS = ("setup", "feature", "level", "checks", "notCovered")
 SURROGATE = re.compile("[\ud800-\udfff]")
 
 
@@ -341,10 +364,12 @@ def condition(schema):
 
 
 class Schema:
-    """The result schema, which errors() interprets with draft 2020-12
-    semantics for SCHEMA_KEYWORDS, apart from integers (TYPES)."""
+    """The result schema, or the selection's, which errors() interprets with
+    draft 2020-12 semantics for SCHEMA_KEYWORDS, apart from integers (TYPES).
+    definitions are the JSON pointers of the definitions that it must have,
+    each with what it describes."""
 
-    def __init__(self, document):
+    def __init__(self, document, definitions=RESULT_DEFINITIONS):
         if not isinstance(document, dict):
             raise Unusable("the schema must be a JSON object")
         if document.get("$schema") != DRAFT:
@@ -357,14 +382,14 @@ class Schema:
         for reference, pointer in self.references.items():
             if pointer not in self.schemas:
                 raise Unusable(f"the schema's $ref {reference} doesn't name a schema in it")
-        for pointer, what in ((UNAVAILABLE, "marks unavailable provenance"), (TIME, "describes a time")):
+        for pointer, what in definitions:
             if pointer not in self.schemas:
                 raise Unusable(f"the schema has no {pointer}, which {what}")
 
     @classmethod
-    def load(cls, path=SCHEMA):
+    def load(cls, path=SCHEMA, definitions=RESULT_DEFINITIONS):
         try:
-            return cls(parse_json(Path(path).read_bytes().decode("utf-8")))
+            return cls(parse_json(Path(path).read_bytes().decode("utf-8")), definitions)
         except OSError as error:
             raise Unusable(f"can't read the schema {path}: {error.strerror}") from error
         except (ValueError, RecursionError) as error:
@@ -542,7 +567,9 @@ def by_id(items):
 
 class Manifest:
     """The coverage manifest: its checks, suites with their profiles,
-    conditions, setups, and expected-failure rules, and its SHA-256."""
+    conditions, setups, and expected-failure rules, and its SHA-256; and for
+    rendering, the matrix's features and cells, the levels, the scopes, and
+    the gaps. Its dicts keep the manifest's order."""
 
     def __init__(self, data):
         self.sha256 = hashlib.sha256(data).hexdigest()
@@ -558,6 +585,10 @@ class Manifest:
                     missing = [field for field in PROFILE_FIELDS if field not in profile]
                     if missing:
                         raise ValueError(f"a profile of suite {suite['id']} lacks {missing[0]}")
+            for cell in document["matrix"]["cells"]:
+                missing = [field for field in CELL_FIELDS if field not in cell]
+                if missing:
+                    raise ValueError(f"a cell of the matrix lacks {missing[0]}")
             self.checks = by_id(document["checks"])
             self.retired = set(document["retired"])
             self.suites = by_id(document["suites"])
@@ -565,6 +596,11 @@ class Manifest:
             self.conditions = by_id(document["conditions"])
             self.setups = by_id(document["setups"])
             self.xfails = by_id(document["xfails"])
+            self.features = by_id(area for area in document["areas"] if area["matrix"])
+            self.cells = {(cell["setup"], cell["feature"]): cell for cell in document["matrix"]["cells"]}
+            self.levels = by_id(document["levels"])
+            self.scopes = by_id(document["scopes"])
+            self.gaps = by_id(document["gaps"])
         except (ValueError, RecursionError, KeyError, TypeError) as error:
             raise Unusable(f"the manifest can't be used: {error}") from error
 
@@ -997,6 +1033,428 @@ def validate(args):
     return status
 
 
+# Rendering a release (RESULTS.md, "Rendering a release"): its blocks, in the
+# order of their markers in the release's section.
+BLOCKS = ("runs", "matrix")
+EDGES = ("begin", "end")
+# A line that has MARKER_NAME must be a marker, a line of its own, if it is
+# in the release's section or names the release.
+MARKER_NAME = "editor-results:"
+MARKER = re.compile(r"<!-- editor-results:([^\s:]+):([^\s:]+):(begin|end) -->")
+# A heading that ends a release's section: an ATX heading of level 1 to 3.
+HEADING = re.compile(r"#{1,3}(?: |$)")
+RUNS_HEADER = ("Date", "Commit", "Where", "Command", "Editor", "Result")
+NOT_COVERED = "Not covered"
+NOT_YET_RUN = "Not yet run"
+OS_NAMES = {"linux": "Linux", "macos": "macOS", "windows": "Windows", "wsl": "WSL"}
+EDITOR_NAMES = {"nvim": "Neovim", "vscode": "VS Code"}
+TRANSPORT_NAMES = {"ssh": "SSH", "wsl": "WSL"}
+# How many failed checks a table cell names before it counts the rest.
+LISTED = 3
+# The characters that a table cell's text escapes with a backslash: those of
+# Markdown's inline syntax, GitHub's math, and the table's pipe. An underscore
+# is escaped too, unless it is inside a word, as in x86_64.
+ESCAPED = frozenset("\\`*[]<>&~|$")
+# Characters that would end a row, or hide or reorder text: a cell shows each
+# as \uXXXX. They are listed, not taken from unicodedata, whose categories
+# change with Python's version of Unicode.
+INVISIBLE = re.compile("[\x00-\x1f\x7f-\x9f‎‏  ‪-‮⁦-⁩]")
+GITHUB_ISSUE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([0-9]+)")
+GITHUB_RUN = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/([0-9]+)(?:/.*)?")
+# The characters that a link's URL keeps as they are, beside letters, digits,
+# and _.-~, and % for what is already encoded. The rest are percent-encoded,
+# such as spaces, parentheses, brackets, and pipes, which would end the link
+# or the cell.
+URL_SAFE = "/:?#@!$&'*+,;=%"
+
+
+class Malformed(Exception):
+    """An input of render is malformed: the selection, a stream, or the document."""
+
+
+def visible(value):
+    return INVISIBLE.sub(lambda match: f"\\u{ord(match.group()):04x}", value)
+
+
+def text(value):
+    """value as text in a table cell."""
+    out = []
+    for index, char in enumerate(value):
+        in_word = 0 < index < len(value) - 1 and all(
+            near.isascii() and near.isalnum() for near in (value[index - 1], value[index + 1]))
+        out.append("\\" + char if char in ESCAPED or (char == "_" and not in_word) else char)
+    return visible("".join(out))
+
+
+def code(value):
+    """value as a code span in a table cell, in which GitHub reads \\| as |."""
+    value = visible(value).replace("|", "\\|")
+    fence = "`" * (max((len(run) for run in re.findall("`+", value)), default=0) + 1)
+    pad = " " if value[:1] in ("`", " ") or value[-1:] in ("`", " ") else ""
+    return f"{fence}{pad}{value}{pad}{fence}"
+
+
+def link(label, url):
+    """A link with the label as its text, if the URL is an https one, or else
+    the label and the URL as code."""
+    if not url.startswith("https://"):
+        return f"{text(label)} {code(url)}"
+    return f"[{text(label)}]({percent_encode(url, safe=URL_SAFE)})"
+
+
+def listing(items):
+    """The first LISTED items, and how many more there are."""
+    return ", ".join(items[:LISTED]) + (f", and {len(items) - LISTED} more" if len(items) > LISTED else "")
+
+
+def limitation(rule):
+    """An expected-failure rule's label, and a link to its issue."""
+    match = GITHUB_ISSUE.fullmatch(rule["issue"])
+    name = f"{match.group(1)}#{match.group(2)}" if match else rule["issue"]
+    return f"{text(rule['label'])} ({link(name, rule['issue'])})"
+
+
+def machines(provenance):
+    """Where a run ran: its client, the transport to its host, and the
+    translator that ran the server."""
+    def describe(machine):
+        words = f"{OS_NAMES[machine['os']]} {text(machine['release'])}, {text(machine['arch'])}"
+        return words + (f", {text(machine['cpu'])}" if machine["cpu"] else "")
+
+    client, host, transport = provenance["client"], provenance["host"], provenance["transport"]
+    words = describe(client)
+    if transport["kind"] != "local":
+        words += f", over {TRANSPORT_NAMES[transport['kind']]} to " + (
+            "the same machine" if transport["topology"] == "loopback" else describe(host))
+    if host["translation"]:
+        words += f", the server under {text(host['translation'])}"
+    return words
+
+
+def run_cells(run, release, manifest):
+    """The runs table's cells for a run: its date, commit, where it ran, its
+    command, its editor, and its result."""
+    start, end = run.start, run.end
+    provenance = start["provenance"]
+    harness = provenance["harness"]
+    commit = code(harness["revision"][:7]) if harness["revision"] else "Unknown"
+    if harness["dirty"]:
+        commit += ", with local changes"
+    version = provenance["server"]["version"]
+    if version != release:
+        commit += f", server {text(version)}" if version else ", server version unknown"
+
+    where = [text(manifest.setups[start["setup"]]["label"]), code(start["lane"]), machines(provenance)]
+    ci = provenance["ci"]
+    if ci:
+        match = GITHUB_RUN.fullmatch(ci["runUrl"])
+        attempt = f", attempt {ci['attempt']}" if ci["attempt"] > 1 else ""
+        where.append(link(f"run {match.group(1)}" if match else "CI run", ci["runUrl"]) + attempt)
+    if start["purpose"] != "release":
+        where.append(f"{start['purpose']} run")
+
+    editor = provenance["editor"]
+    used = EDITOR_NAMES[editor["name"]] + (f" {text(editor['version'])}" if editor["version"] else ", version unknown")
+    vsix = provenance["vsix"]
+    used += {
+        "vsix": ", extension " + (f"{text(vsix['version'])} " if vsix and "version" in vsix else "")
+                + "installed from a VSIX",
+        "source": ", extension from source",
+        "manual": ", a person's own setup",
+    }.get(provenance["clientMode"], "")
+
+    counts = ", ".join(f"{end['counts'][status]} {status}" for status in STATUSES if end["counts"][status])
+    result = (f"{OUTCOMES[end['status']].capitalize()} ({end['checkCount']} of "
+              f"{plural(end['expectedCount'], 'observation')})" + (f": {counts}" if counts else ""))
+    clauses = []
+    for status, verb in (("fail", "failed"), ("xpass", "passed unexpectedly")):
+        ids = sorted({check["id"] for check in run.checks if check["status"] == status})
+        if ids:
+            clauses.append(f"{verb}: " + listing([code(check_id) for check_id in ids]))
+    if end["exitCode"] is None and end["signal"] is None:
+        clauses.append("no exit code")
+    elif end["exitCode"] not in (None, 0):
+        clauses.append(f"exit code {end['exitCode']}")
+    if end["signal"] is not None:
+        clauses.append(f"signal {end['signal']}")
+    if end["cleanup"] != "verified":
+        clauses.append(f"cleanup {end['cleanup']}")
+    if end["issues"]:
+        clauses.append(plural(len(end["issues"]), "issue"))
+    if run.unavailable:
+        clauses.append("provenance unavailable")
+    for rule in sorted({check["expectation"] for check in run.checks if check["status"] == "xfail"}):
+        clauses.append("XFAIL: " + limitation(manifest.xfails[rule]))
+    result += "".join(f"; {clause}" for clause in clauses)
+    return [start["time"][:10], commit, "; ".join(where), code(shlex.join(start["command"])), used, result]
+
+
+def observations(cell, runs, manifest):
+    """Yields the check event of each observation that a cell needs from runs
+    of its setup, or None where a run lacks it: each observation, in a profile
+    that isn't a workaround, of each of the cell's checks whose condition
+    holds in the run, or has an alternative of which the run planned neither
+    side, as when the run left out the checks' profile."""
+    for run in runs:
+        profiles = manifest.profiles[run.start["suite"]]
+        events = {(check["id"], check["profile"], check["iteration"]): check for check in run.checks}
+        for check_id in cell["checks"]:
+            check = manifest.checks[check_id]
+            when = check["when"]
+            if when is not None and when not in run.plan.holds:
+                other = manifest.conditions[when]["alternative"]
+                if other is None or other in run.plan.holds:
+                    continue
+            for profile in check["profiles"]:
+                if profile in profiles and not profiles[profile]["workaround"]:
+                    for iteration in range(1, run.plan.iterations.get(profile, 1) + 1):
+                        yield events.get((check_id, profile, iteration))
+
+
+def cell_text(setup, feature, runs, manifest):
+    """The matrix's cell for a setup and a feature, from the selected runs."""
+    wording = manifest.scopes[setup["scope"]]["wording"]
+    if wording is not None:
+        return wording
+    cell = manifest.cells[(setup["id"], feature)]
+    if not cell["checks"]:
+        return NOT_COVERED
+    runs = [run for run in runs if (run.start["setup"], run.start["suite"]) == (setup["id"], setup["suite"])]
+    if not runs:
+        return NOT_YET_RUN
+    events = list(observations(cell, runs, manifest))
+    failed = sorted({(event["id"], event["status"]) for event in events
+                     if event is not None and event["status"] in ("fail", "xpass")})
+    if failed:
+        return "Fail: " + listing([code(check_id) + (" (unexpected pass)" if status == "xpass" else "")
+                                   for check_id, status in failed])
+    why = [word for word, found in (
+        ("skipped", any(event is not None and event["status"] == "skip" for event in events)),
+        ("not observed", not events or None in events)) if found]
+    if why:
+        return f"Partial ({', '.join(why)})"
+    rules = [manifest.xfails[rule] for rule in sorted({event["expectation"] for event in events
+                                                         if event["status"] == "xfail"})]
+    if rules:
+        separate = "; workaround profile separate" if any(rule["workaroundProfile"] for rule in rules) else ""
+        return "Known limitation: " + ", ".join(map(limitation, rules)) + separate
+    gaps = [text(manifest.gaps[gap]["what"]) for gap in cell["notCovered"] if manifest.gaps[gap]["kind"] == "behavior"]
+    return manifest.levels[cell["level"]]["wording"] + ("; not covered: " + "; ".join(gaps) if gaps else "")
+
+
+def table(header, rows):
+    """A Markdown table, with a blank line before and after it."""
+    lines = ["| " + " | ".join(header) + " |", "|" + " --- |" * len(header)]
+    lines += ["| " + " | ".join(row) + " |" for row in rows]
+    return "\n" + "\n".join(lines) + "\n\n"
+
+
+def render_blocks(release, runs, manifest):
+    """The text of each block: the runs, sorted by the manifest's order of
+    their setups, then suite, lane, and run ID, and the matrix, with a row for
+    each setup and a column for each feature, in the manifest's order."""
+    order = {setup: index for index, setup in enumerate(manifest.setups)}
+    runs = sorted(runs, key=lambda run: (order[run.start["setup"]], run.start["suite"], run.start["lane"],
+                                         run.start["runId"]))
+    features = list(manifest.features.values())
+    return {
+        "runs": table(RUNS_HEADER, [run_cells(run, release, manifest) for run in runs]),
+        "matrix": table(["Setup"] + [text(feature["label"]) for feature in features],
+                        [[text(setup["label"])] + [cell_text(setup, feature["id"], runs, manifest)
+                                                   for feature in features]
+                         for setup in manifest.setups.values()]),
+    }
+
+
+def splice(document, release, blocks):
+    """The document with the interior of each block's markers, in the
+    release's section, replaced by the block's text, and every other byte as
+    it was. Raises Malformed, with the line of the first problem."""
+    lines = document.split("\n")
+    starts = [0]
+    for line in lines[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+    heading = f"### {release}"
+    found = [number for number, line in enumerate(lines) if line == heading]
+    if not found:
+        raise Malformed(f"no heading {heading}")
+    if len(found) > 1:
+        raise Malformed(f"line {found[1] + 1}: a second heading {heading}, after line {found[0] + 1}")
+    first = found[0]
+    last = next((number for number in range(first + 1, len(lines)) if HEADING.match(lines[number])), len(lines))
+    section = f"the section {heading}, lines {first + 1} to {last}"
+    markers = {}
+    for number, line in enumerate(lines):
+        if MARKER_NAME not in line:
+            continue
+        inside = first < number < last
+        match = MARKER.fullmatch(line)
+        if match is None:
+            if inside or f"{MARKER_NAME}{release}:" in line:
+                raise Malformed(f"line {number + 1}: a marker must be a line of its own, such as "
+                                f"<!-- {MARKER_NAME}{release}:runs:begin -->")
+            continue
+        name, block, edge = match.groups()
+        if name != release:
+            if inside:
+                raise Malformed(f"line {number + 1}: a marker of release {name} is in {section}")
+            continue
+        if block not in BLOCKS:
+            raise Malformed(f"line {number + 1}: the block {block} is neither runs nor matrix")
+        if not inside:
+            raise Malformed(f"line {number + 1}: the marker {block}:{edge} is outside {section}")
+        if (block, edge) in markers:
+            raise Malformed(f"line {number + 1}: the marker {block}:{edge} repeats the one on line "
+                            f"{markers[(block, edge)] + 1}")
+        markers[(block, edge)] = number
+    order = [(block, edge) for block in BLOCKS for edge in EDGES]
+    for block, edge in order:
+        if (block, edge) not in markers:
+            raise Malformed(f"line {first + 1}: the section {heading} lacks the marker "
+                            f"<!-- {MARKER_NAME}{release}:{block}:{edge} -->")
+    for before, after in zip(order, order[1:]):
+        if markers[after] < markers[before]:
+            raise Malformed(f"line {markers[after] + 1}: the marker {':'.join(after)} comes before "
+                            f"{':'.join(before)}, on line {markers[before] + 1}: the markers go in the order "
+                            + ", ".join(":".join(marker) for marker in order))
+    out, position = [], 0
+    for block in BLOCKS:
+        out += [document[position:starts[markers[(block, "begin")] + 1]], blocks[block]]
+        position = starts[markers[(block, "end")]]
+    return "".join(out) + document[position:]
+
+
+def read_document(path):
+    try:
+        document = path.read_bytes().decode("utf-8")
+    except OSError as error:
+        raise Malformed(f"{path}: can't read it: {error.strerror}") from error
+    except UnicodeDecodeError as error:
+        raise Malformed(f"{path}: is not UTF-8: byte {error.start + 1} is 0x{error.object[error.start]:02x}") from error
+    if "\r" in document:
+        line = document.count("\n", 0, document.index("\r")) + 1
+        raise Malformed(f"{path}: line {line} has a CR: the document must have LF line endings")
+    return document
+
+
+def streams_in(directory, selection):
+    """The paths, relative to the directory, of the files in it and its
+    subdirectories whose names end in .jsonl, but the selection, sorted."""
+    def stop(error):
+        raise error
+
+    found = []
+    for root, _, files in os.walk(directory, onerror=stop):
+        for name in files:
+            path = Path(root, name)
+            if name.endswith(".jsonl") and path != selection:
+                found.append(path.relative_to(directory).as_posix())
+    return sorted(found)
+
+
+def select(path, manifest, schema, selection_schema):
+    """Reads the selection at the path and the streams that it lists, in the
+    order of their paths. Returns its release and a (path, Run) pair for each
+    stream. Raises Malformed for the first problem that it finds."""
+    try:
+        document = parse_json(path.read_bytes().decode("utf-8"))
+    except OSError as error:
+        raise Malformed(f"can't read the selection {path}: {error.strerror}") from error
+    except (ValueError, RecursionError) as error:
+        raise Malformed(f"the selection {path} is not JSON: {error}") from error
+    errors = selection_schema.errors(document)
+    if errors:
+        raise Malformed(f"the selection {path}: {errors[0]}")
+    release = document["release"]
+    entries = sorted(document["streams"], key=lambda entry: entry["path"])
+    for entry, after in zip(entries, entries[1:]):
+        if entry["path"] == after["path"]:
+            raise Malformed(f"the selection {path} lists {entry['path']} twice")
+    directory = path.parent
+    listed = {entry["path"] for entry in entries}
+    try:
+        stray = [found for found in streams_in(directory, path) if found not in listed]
+    except OSError as error:
+        raise Malformed(f"can't list the streams beside the selection {path}: {error}") from error
+    if stray:
+        raise Malformed(f"{directory / stray[0]}: the selection {path} doesn't list this stream: it must list "
+                        "every stream in its directory")
+    runs, ids, slots = [], {}, {}
+    for entry in entries:
+        stream = directory / entry["path"]
+        try:
+            data = stream.read_bytes()
+        except OSError as error:
+            raise Malformed(f"{stream}: can't read it: {error.strerror}") from error
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry["sha256"]:
+            raise Malformed(f"{stream}: its SHA-256 is {digest}, but the selection gives {entry['sha256']}")
+        try:
+            run = validate_stream(data, manifest, schema)
+        except Invalid as error:
+            raise Malformed(f"{stream}: invalid: {error}") from error
+        start = run.start
+        if start["release"] != release:
+            raise Malformed(f"{stream}: its release is {show(start['release'])}, not the selection's {show(release)}")
+        if start["runId"] in ids:
+            raise Malformed(f"{stream}: its run {start['runId']} is also that of {ids[start['runId']]}: a run's "
+                            "ID is its own")
+        slot = (start["suite"], start["setup"], start["lane"])
+        if slot in slots:
+            raise Malformed(f"{stream}: suite {slot[0]}, setup {slot[1]}, and lane {slot[2]} are also those of "
+                            f"{slots[slot]}: select one run for each")
+        ids[start["runId"]], slots[slot] = stream, stream
+        runs.append((stream, run))
+    return release, runs
+
+
+def split_lines(text):
+    """The text's lines, split at LF only, each with its LF but the last."""
+    parts = text.split("\n")
+    return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def render(args):
+    try:
+        manifest = Manifest.load(args.manifest)
+        schema = Schema.load(args.schema)
+        selection_schema = Schema.load(SELECTION_SCHEMA, definitions=())
+    except Unusable as error:
+        print(f"editor-results.py: {error}", file=sys.stderr)
+        return 2
+    doc = Path(args.doc)
+    try:
+        release, runs = select(Path(args.selection), manifest, schema, selection_schema)
+        old = read_document(doc)
+        try:
+            new = splice(old, release, render_blocks(release, [run for _, run in runs], manifest))
+        except Malformed as error:
+            raise Malformed(f"{doc}: {error}") from error
+    except Malformed as error:
+        print(f"editor-results.py: {error}", file=sys.stderr)
+        return 2
+    status = 0
+    for path, run in runs:
+        if not run.passed:
+            print(f"{path}: {run.summary()}")
+            status = 1
+    if new == old:
+        print(f"{doc}: the results of {release} are up to date")
+    elif args.check:
+        for line in difflib.unified_diff(split_lines(old), split_lines(new), str(doc), f"{doc}, rendered"):
+            sys.stdout.write(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+        print(f"{doc}: the results of {release} are out of date; render them with --write")
+        status = 1
+    else:
+        try:
+            doc.write_bytes(new.encode("utf-8"))
+        except OSError as error:
+            print(f"editor-results.py: {doc}: can't write it: {error.strerror}", file=sys.stderr)
+            return 2
+        print(f"{doc}: rendered the results of {release}")
+    return status
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="editor-results.py", description=(
         "Validate the editor tests' result streams (test/e2e/RESULTS.md)."))
@@ -1009,8 +1467,25 @@ def main(argv=None):
     command.add_argument("--schema", default=str(SCHEMA), metavar="PATH",
                          help="the result schema (default: test/e2e/results-v1.schema.json)")
     command.add_argument("streams", nargs="+", metavar="STREAM", help="a result stream")
+    command.set_defaults(run=validate)
+    command = commands.add_parser("render", help="render a release's results tables", description=(
+        "Render the runs table and the matrix of a release, between its markers in the document, from the "
+        "streams that the selection lists. Exits with 0 if it rendered, or found no drift with --check, 1 if "
+        "--check found drift or a selected run didn't pass, and 2 if an input is malformed."))
+    command.add_argument("--manifest", default=str(MANIFEST), metavar="PATH",
+                         help="the coverage manifest (default: test/e2e/coverage.json)")
+    command.add_argument("--schema", default=str(SCHEMA), metavar="PATH",
+                         help="the result schema (default: test/e2e/results-v1.schema.json)")
+    command.add_argument("--selection", required=True, metavar="FILE",
+                         help="the release and its streams, with their paths relative to this file's directory")
+    command.add_argument("--doc", required=True, metavar="PATH", help="the Markdown document, with the markers")
+    mode = command.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--write", action="store_true", help="write the rendered tables into the document")
+    mode.add_argument("--check", action="store_true",
+                      help="compare the document with the rendered tables, and print a diff of any drift")
+    command.set_defaults(run=render)
     args = parser.parse_args(argv)
-    return validate(args)
+    return args.run(args)
 
 
 if __name__ == "__main__":

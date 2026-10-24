@@ -6,7 +6,7 @@ The editor tests give each of their checks a stable ID, and will record what eac
 - [`results-v1.schema.json`](results-v1.schema.json), the JSON Schema of version 1 of the result events.
 - [`test_coverage.py`](test_coverage.py), which `make test` runs, checks that the two files are consistent.
 
-The tests don't write results yet; they still print their `PASS` and `FAIL` lines. [`scripts/editor-results.py`](../../scripts/editor-results.py) [validates a stream](#validating-a-stream) against both files. Writers in the tests, a renderer, and generated tables for the new release in `docs/manual-testing.md` come in later changes, which follow this page's rules. Past results and prose stay hand-written.
+The tests don't write results yet; they still print their `PASS` and `FAIL` lines. [`scripts/editor-results.py`](../../scripts/editor-results.py) [validates a stream](#validating-a-stream) against both files, and [renders a release's tables](#rendering-a-release) from valid streams. Writers in the tests, the release gate, and generated tables for a new release in `docs/manual-testing.md` come in later changes, which follow this page's rules. Past results and prose stay hand-written.
 
 ## Check IDs
 
@@ -35,7 +35,7 @@ An ID leaves out the release, platform, editor version, plugin versions, profile
 | `matrix` | A cell for each feature of each automated setup: its checks, its level, and the gaps that it doesn't cover. |
 | `checklist` | Steps 1 to 17 of the VS Code manual checklist, each with its checks and gaps. |
 | `gaps`, `gapKinds` | What no check covers. |
-| `xfails` | The [expected failure](#expected-failures-and-workaround-profiles). |
+| `xfails` | The [expected failure](#expected-failures-and-workaround-profiles), with the `label` that generated tables call it by. |
 
 ## Evidence levels
 
@@ -135,10 +135,108 @@ It reads the schema itself, with draft 2020-12's meaning for the keywords that t
 
 [`test_editor_results.py`](test_editor_results.py), which `make test` runs, builds a passing stream for each suite from the manifest, and breaks each rule in turn.
 
+## Rendering a release
+
+`scripts/editor-results.py render` generates a release's results in a Markdown document, such as [`docs/manual-testing.md`](../../docs/manual-testing.md#results): a table of its runs and its matrix, from the valid streams that a selection lists. It has the validator's requirements, and its output depends only on its inputs, not on the clock, the locale, the order of the selection or of a directory, or where the files are:
+
+```sh
+python3 scripts/editor-results.py render [--manifest PATH] [--schema PATH] --selection FILE --doc PATH (--write | --check)
+```
+
+With `--write`, it writes the tables into the document. With `--check`, it compares them with the document's, without writing, and prints a unified diff of any drift. It exits with:
+
+- 0 if it rendered the tables, or `--check` found no drift, and every selected run passed;
+- 1 if `--check` found drift, or a selected run didn't pass, which it renders all the same and names;
+- 2 if an input is malformed, the selection, a stream, or the document, or the manifest or the schema can't be used. It writes nothing then.
+
+[`test_editor_results_render.py`](test_editor_results_render.py), which `make test` runs, renders streams that it builds as the validator's tests do, checks each of the rules below, and checks that [`results-example/`](results-example/README.md), which shows the output, is up to date.
+
+### The selection
+
+A selection names the release and lists the streams that count for it, each by its path relative to the selection's directory, with the SHA-256 of its bytes. [`selection-v1.schema.json`](selection-v1.schema.json) is its schema, which the script reads as it reads the result schema:
+
+```json
+{
+  "version": 1,
+  "release": "0.1.0-alpha.4",
+  "streams": [
+    {"path": "lazyvim-linux.jsonl", "sha256": "<the file's SHA-256>"},
+    {"path": "vscode-remote-ssh-linux.jsonl", "sha256": "<the file's SHA-256>"}
+  ]
+}
+```
+
+The selection is malformed unless:
+
+- it lists every file whose name ends in `.jsonl` in its directory and the directory's subdirectories, so that no attempt is left out unnoticed, and each file has the SHA-256 that it gives;
+- each stream is valid, by the rules above, with the selection's `release`;
+- no two streams have the same run ID, or the same slot: a suite, a setup, and a lane. The renderer never chooses between two attempts, such as by taking the later one.
+
+### Markers
+
+The tables go between markers in the release's section of the document: the lines after its heading, `### <release>`, up to the next heading of level 1 to 3. Each marker is a line of its own, and the four go in this order:
+
+```html
+<!-- editor-results:0.1.0-alpha.4:runs:begin -->
+<!-- editor-results:0.1.0-alpha.4:runs:end -->
+<!-- editor-results:0.1.0-alpha.4:matrix:begin -->
+<!-- editor-results:0.1.0-alpha.4:matrix:end -->
+```
+
+Only the lines between each pair change: they become a blank line, the table, and a blank line. Every other byte of the document stays as it was, so the release's prose and the other releases' results stay hand-written. The document must be UTF-8, with LF line endings. These are errors:
+
+- no heading of the release, or a second one;
+- a missing marker, or a second one;
+- markers out of order, or outside the section;
+- a marker of another release in the section;
+- a line with `editor-results:` that isn't a marker of its own, in the section or naming the release.
+
+### The runs table
+
+The runs table has a row for each selected run, sorted by the manifest's order of the runs' setups, then by suite, lane, and run ID. Its columns come from the run-start and the run-end, and the stream holds the detail:
+
+| Column | What it shows |
+| --- | --- |
+| Date | The run-start's date, in UTC. |
+| Commit | The first seven digits of the harness's revision, or "Unknown"; "with local changes" if its checkout had them; and the server's version, if it differs from the release. |
+| Where | The setup; the lane; the client's OS, its release, architecture, and CPU, the transport to the host, and the translator that ran the server, if any; a link to the CI run; and the run's purpose, unless it is `release`. |
+| Command | The command, quoted for a shell. |
+| Editor | The editor and its version, and for VS Code, where the extension came from. |
+| Result | Whether the run passed, failed, was aborted, or was unavailable, with its counts. For a run that didn't pass, its failed checks and its unexpected passes, by ID, the first three of each, then how many more; its exit code or signal; its cleanup; the number of its issues; and any unavailable provenance. Then the expected failure, if the run has it: "XFAIL:", with its rule's label and issue. |
+
+The [example](results-example/README.md)'s row of LazyVim on Linux:
+
+| Date | Commit | Where | Command | Editor | Result |
+| --- | --- | --- | --- | --- | --- |
+| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
+
+### The matrix
+
+The matrix has a row for each setup in `coverage.json`, and a column for each feature, in the manifest's order. A cell of an automated setup comes from its manifest cell's checks: each observation that the setup's selected runs planned, in every profile and repetition, or would have planned in a profile that they left out. A workaround profile never counts, and of a pair of alternatives, the side that a run planned does. A cell reads the first of these that applies:
+
+| Cell | Wording | Example |
+| --- | --- | --- |
+| A setup outside the automated scope | Its scope's wording | Not tested (best effort), Not tested (deferred) |
+| A cell without checks | "Not covered" | Not covered |
+| No selected run of the setup | "Not yet run" | Not yet run |
+| A check failed, or passed unexpectedly | "Fail:", and the checks by ID, the first three, then how many more, each unexpected pass followed by "(unexpected pass)" | Fail: `lazyvim.configuration.warning` (unexpected pass) |
+| A check was skipped, or has no observation | "Partial", and why: skipped, not observed, or both | Partial (skipped, not observed) |
+| The only observation that didn't pass is the expected failure | "Known limitation:", the rule's label and issue, and that its workaround profile is separate | Known limitation: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)); workaround profile separate |
+| Every observation passed | The cell's level's wording, then its `behavior` gaps after "not covered:", each by its `what` | Pass (API); not covered: the jump with CTRL-\] |
+
+An observation without a check is never a pass: a run that stopped early, or that left out a profile, leaves its cells partial. The expected failure is a known limitation only where [its rule](#expected-failures-and-workaround-profiles) made it an `xfail`, and only if the cell's other observations passed: beside a failure, the cell fails. A passing cell names its behavior gaps, which a check could cover, but not its visual gaps, which no check can: its level already says that no check saw how the editor showed it. A setup outside the automated scope has no cells, so it reads its scope's wording even if a run of it was selected. A manual record doesn't change a cell.
+
+The example's rows of Neovim and LazyVim on Linux:
+
+| Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Workspace symbols | Signature help | Rename | Completion |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Neovim, Linux | Pass (API); not covered: undoing the fix of bad.v3, which brings the parser error back | Pass (API) | Pass (API); not covered: the jump with CTRL-\] | Pass (API) | Pass (API); not covered: a change to the project file on disk; a missing Virgil root, with its MissingVirgilRoot diagnostic and Invalid project file warning | Not covered | Pass (API) | Pass (API) | Pass (API); not covered: a call still being typed, and nothing just past the ) | Pass (API); not covered: the refusal while the type error stands | Pass (API); not covered: no completion from the server in a comment |
+| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Known limitation: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)); workaround profile separate | Pass (API) | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (UI state) |
+
 ## Adding a check
 
 1. Choose an ID as [above](#check-ids), and add the check to `checks` with the suites and profiles that run it, its level, its condition, and a description of what it asserts.
 2. Add it to the matrix cell of its feature for each automated setup whose suite runs it, and to the checklist steps it covers; remove the gaps that it now covers, and update each cell's `level`.
-3. Run `python3 test/e2e/test_coverage.py` and `python3 test/e2e/test_editor_results.py`, or `make test`.
+3. Regenerate the [rendering example](results-example/README.md) with `python3 test/e2e/test_editor_results_render.py --write-example`, then run `python3 test/e2e/test_coverage.py`, `python3 test/e2e/test_editor_results.py`, and `python3 test/e2e/test_editor_results_render.py`, or `make test`.
 
-`test_coverage.py` checks that the files parse; that keys and IDs are unique and well formed, with known areas, suites, profiles, levels, and conditions; that each suite in a condition's `always` runs some of the condition's checks and isn't in its alternative's `always` too; that each level has its wording, as the schema has it; that no required check is manual; that every cell of every setup is mapped, not covered, or out of scope; that the checklist's steps are 1 to 17 and each maps to checks, is not covered, or is out of scope; that every check of a feature is in its cells; that each gap is used; that the expected-failure rule is the approved warning-only exception, with its check, plugin, exact commit and issue URL, failure code, profiles, and prerequisites; that unavailable prerequisite provenance requires a reason and is allowed only in the fields that [Result events](#result-events) lists; that a passing `run-end` has no failures, unexpected passes, or skips; and that the schema's references resolve. It reads only the two files, not the tests that they describe, so keeping `source` and the descriptions true is the reviewer's job.
+`test_coverage.py` checks that the files parse; that keys and IDs are unique and well formed, with known areas, suites, profiles, levels, and conditions; that each suite in a condition's `always` runs some of the condition's checks and isn't in its alternative's `always` too; that each level has its wording, as the schema has it; that no required check is manual; that every cell of every setup is mapped, not covered, or out of scope; that the checklist's steps are 1 to 17 and each maps to checks, is not covered, or is out of scope; that every check of a feature is in its cells; that each gap is used; that the expected-failure rule is the approved warning-only exception, with its check, plugin, exact commit and issue URL, failure code, profiles, and prerequisites, and has a label; that unavailable prerequisite provenance requires a reason and is allowed only in the fields that [Result events](#result-events) lists; that a passing `run-end` has no failures, unexpected passes, or skips; and that the schema's references resolve. It reads only the two files, not the tests that they describe, so keeping `source` and the descriptions true is the reviewer's job.
