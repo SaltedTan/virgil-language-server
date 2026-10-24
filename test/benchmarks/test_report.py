@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check advisory flags, GC accounting, and the recorded Linux baseline table."""
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -113,7 +114,18 @@ class RefTest(unittest.TestCase):
     def git(self, *args, **kwargs):
         return subprocess.check_output(["git", *args], cwd=self.path, text=True, **kwargs).strip()
 
-    def commit(self, date):
+    def commit(self, date, tooling=True, pin="pinned"):
+        # A commit with the benchmark tooling and a Virgil submodule entry
+        # whose commit, as in the real repository, isn't in this one.
+        script = self.path / "scripts/bench-build-info.py"
+        if tooling:
+            script.parent.mkdir(exist_ok=True)
+            script.write_text("")
+        elif script.exists():
+            script.unlink()
+        self.git("add", "-A", "--", ".", ":!vendor")
+        gitlink = hashlib.sha1(pin.encode()).hexdigest()
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{gitlink},vendor/virgil")
         env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
         self.git("commit", "-q", "--allow-empty", "-m", date, env=env)
         return self.git("rev-parse", "HEAD")
@@ -130,7 +142,7 @@ class RefTest(unittest.TestCase):
         self.git("merge", "-q", "--no-ff", "side", "-m", "merge side", env=env)
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
         self.assertEqual(compare.select_refs("schedule", {}, "ignored", "ignored", self.now),
-                         (old, self.git("rev-parse", "HEAD")))
+                         (old, self.git("rev-parse", "HEAD"), None))
 
     def test_no_week_old_commit_falls_back_to_reachable_release_tag(self):
         release = self.commit("2026-10-24T00:00:00Z")
@@ -142,13 +154,44 @@ class RefTest(unittest.TestCase):
     def test_dispatch_resolves_inputs_and_pr_uses_actual_head_and_base(self):
         base = self.commit("2026-10-17T00:00:00Z")
         new = self.commit("2026-10-25T00:00:00Z")
-        self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, new, self.now), (base, new))
+        self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, new, self.now), (base, new, None))
         self.git("update-ref", "refs/remotes/origin/newer", new)
-        self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, "newer", self.now), (base, new))
+        self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, "newer", self.now), (base, new, None))
         event = {"pull_request": {"base": {"sha": base}, "head": {"sha": new}}}
-        self.assertEqual(compare.select_refs("pull_request", event, "ignored", "ignored", self.now), (base, new))
+        self.assertEqual(compare.select_refs("pull_request", event, "ignored", "ignored", self.now), (base, new, None))
         with self.assertRaises(ValueError):
             compare.resolve("--help")
+
+    def test_weekly_base_without_tooling_moves_forward_on_first_parent(self):
+        requested = self.commit("2026-10-16T00:00:00Z", tooling=False)
+        self.commit("2026-10-19T00:00:00Z", tooling=False)
+        self.git("checkout", "-qb", "side")
+        self.commit("2026-10-20T00:00:00Z")  # Supported, but only on a side branch.
+        self.git("checkout", "-q", "-")
+        first = self.commit("2026-10-21T00:00:00Z")
+        env = {**os.environ, "GIT_AUTHOR_DATE": "2026-10-24T00:00:00Z",
+               "GIT_COMMITTER_DATE": "2026-10-24T00:00:00Z"}
+        self.git("merge", "-q", "--no-ff", "side", "-m", "merge side", env=env)
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        base, new, note = compare.select_refs("schedule", {}, "ignored", "ignored", self.now)
+        self.assertEqual((base, new), (first, self.git("rev-parse", "HEAD")))
+        self.assertIn(requested, note)
+        self.assertIn(first, note)
+        self.assertEqual(compare.select_refs("workflow_dispatch", {}, "last-week", new, self.now)[0], first)
+
+    def test_weekly_base_with_another_pin_moves_forward(self):
+        self.commit("2026-10-16T00:00:00Z", pin="older")
+        first = self.commit("2026-10-20T00:00:00Z")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual(compare.select_refs("schedule", {}, "ignored", "ignored", self.now)[0], first)
+
+    def test_no_comparable_revision_fails_and_explicit_refs_never_move(self):
+        base = self.commit("2026-10-16T00:00:00Z", tooling=False)
+        new = self.commit("2026-10-24T00:00:00Z", tooling=False)
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        with self.assertRaises(ValueError):
+            compare.select_refs("schedule", {}, "ignored", "ignored", self.now)
+        self.assertEqual(compare.select_refs("workflow_dispatch", {}, base, new, self.now), (base, new, None))
 
 
 if __name__ == "__main__":

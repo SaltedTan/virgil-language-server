@@ -41,13 +41,44 @@ def previous_week(new, now):
     return resolve(git("describe", "--tags", "--match", "v[0-9]*", "--abbrev=0", new))
 
 
+def comparable(revision, pin):
+    """Whether revision has the benchmark tooling (#237) and the pinned Virgil
+    of the tooling checkout's corpus."""
+    def entry(path):
+        # The tree entry's object name. A submodule's commit isn't in this
+        # repository, so don't require the object itself.
+        command = ["git", "rev-parse", "--verify", "--quiet", f"{revision}:{path}"]
+        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+    return entry("scripts/bench-build-info.py") is not None and entry("vendor/virgil") == pin
+
+
+def automatic_base(requested, newer):
+    """The week-old baseline, or, if it predates the benchmark tooling or the
+    pinned Virgil, the first later revision on newer's first-parent history
+    that has both, with a note saying so. A comparison that would only fail
+    because history is too short moves forward instead."""
+    pin = git("rev-parse", "HEAD:vendor/virgil")
+    if comparable(requested, pin):
+        return requested, None
+    for revision in git("rev-list", "--first-parent", "--reverse", f"{requested}..{newer}").splitlines():
+        if comparable(revision, pin):
+            return revision, (f"The week-old baseline {requested} predates the benchmark tooling or "
+                              f"the pinned Virgil; the baseline moved forward to {revision}.")
+    raise ValueError(f"no first-parent revision from {requested} to {newer} has the benchmark tooling and the pinned Virgil")
+
+
 def select_refs(event_name, event, base, new, now):
+    """The base and new revisions, and a note if an automatic base moved.
+    Explicit refs are used as given, so one without benchmark support fails."""
     if event_name == "pull_request":
         return (resolve(event["pull_request"]["base"]["sha"]),
-                resolve(event["pull_request"]["head"]["sha"]))
+                resolve(event["pull_request"]["head"]["sha"]), None)
     newer = resolve("origin/main" if event_name == "schedule" else new)
-    older = previous_week(newer, now) if event_name == "schedule" or base == "last-week" else resolve(base)
-    return older, newer
+    if event_name == "schedule" or base == "last-week":
+        older, note = automatic_base(previous_week(newer, now), newer)
+        return older, newer, note
+    return resolve(base), newer, None
 
 
 def run(*args, cwd=ROOT):
@@ -55,7 +86,7 @@ def run(*args, cwd=ROOT):
     subprocess.run(list(map(str, args)), cwd=cwd, check=True)
 
 
-def compare(base, new, work, output):
+def compare(base, new, work, output, note=None):
     work.mkdir(parents=True)  # Refuse to reuse a previous run's builds.
     output.mkdir(parents=True, exist_ok=True)
     paths = [work / "base", work / "next"]
@@ -79,7 +110,8 @@ def compare(base, new, work, output):
                 raise ValueError("expected exactly one BuildInfo revision")
             info.write_text(text)
             run("make", "-o", "buildinfo", "BUILD=build/bench", "BENCH=1", "all", "bench-metadata", cwd=path)
-        (output / "refs.json").write_text(json.dumps({"base": base, "new": new}, indent=2) + "\n")
+        refs = {"base": base, "new": new, "note": note}
+        (output / "refs.json").write_text(json.dumps(refs, indent=2) + "\n")
         run(sys.executable, ROOT / "scripts/bench-lsp.py",
             "--exe", paths[0] / "build/bench/virgil-lsp",
             "--exe", paths[1] / "build/bench/virgil-lsp",
@@ -103,8 +135,15 @@ def main():
     event = json.loads(Path(event_path).read_text()) if event_path else {}
     refs = select_refs(os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch"), event,
                        args.base_ref, args.new_ref, datetime.datetime.now(datetime.timezone.utc))
-    print(f"Comparing base {refs[0]} with new {refs[1]}", flush=True)
-    compare(*refs, args.work_dir.resolve(), args.output_dir.resolve())
+    base, new, note = refs
+    print(f"Comparing base {base} with new {new}", flush=True)
+    if note:
+        print(f"::notice::{note}", flush=True)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a") as f:
+                f.write(note + "\n\n")
+    compare(base, new, args.work_dir.resolve(), args.output_dir.resolve(), note)
 
 
 if __name__ == "__main__":

@@ -238,10 +238,14 @@ with identical `build/bench` directories. Generated BuildInfo uses full commit
 SHAs for equal-length revision strings; tracked sources are unchanged. Both
 refs must have benchmark probes and metadata support (introduced in
 [#237](https://github.com/SaltedTan/virgil-language-server/pull/237)), and must use
-the same pinned Virgil as the tooling checkout's corpus. Older refs or pin
-changes fail the build/comparison rather than produce misleading results. In
-particular, the first scheduled baseline may predate benchmark support; dispatch
-with two supported refs until the weekly baseline catches up.
+the same pinned Virgil as the tooling checkout's corpus. An explicit ref without
+them fails the comparison rather than produce misleading results. A week-old
+baseline without them, such as the first scheduled runs' (benchmark support
+landed on 2026-10-24) or one from before a Virgil pin bump, moves forward along
+`main`'s first-parent history to the first commit that has both; a notice and
+the job summary say which commit was requested and which was used, and
+`refs.json` records the note. If no commit up to the newer build has both, the
+comparison fails.
 
 One client invocation measures all three projects, alternating build order by
 process block, with three blocks, two warmups, and five measured operations per
