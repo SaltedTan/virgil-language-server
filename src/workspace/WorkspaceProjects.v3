@@ -49,6 +49,7 @@ class WorkspaceProjects(store: DocumentStore) {
 	var virgilRoot: string;
 	var ownershipSteps = MAX_OWNERSHIP_STEPS;
 	var warn: string -> void;
+	var info: string -> void;
 	var onConfig: WorkspaceConfig -> void;
 	var renameSnapshot: AnalysisSnapshot;
 	private var discovered: bool;
@@ -72,13 +73,42 @@ class WorkspaceProjects(store: DocumentStore) {
 		} else addFolder(roots, params["rootUri"]);
 		folders = roots.extract();
 		folders = Arrays.sort(folders, 0, folders.length, ProjectFiles.before);
-		// Only an absolute path string sets the root. A missing, null,
-		// non-string, empty, or relative virgilRoot leaves none.
+		// Absent and JSON null mean no client root. Every other supplied value
+		// is an override, even if invalid: never hide a bad setting by using a
+		// different library. The editor configs omit an unset root.
+		var supplied = false;
 		if (JsonValue.JObject.?(params["initializationOptions"])) {
 			var options = JsonValue.JObject.!(params["initializationOptions"]).v;
-			if (options.has("virgilRoot") && JsonValue.String.?(options["virgilRoot"])) {
-				var path = JsonValue.String.!(options["virgilRoot"]).v;
-				if (path.length > 0 && path[0] == '/') virgilRoot = DocumentUri.filePath(ProjectFiles.uri(path));
+			if (options.has("virgilRoot") && options["virgilRoot"] != JsonValue.Null) {
+				supplied = true;
+				if (JsonValue.String.?(options["virgilRoot"])) {
+					var path = JsonValue.String.!(options["virgilRoot"]).v;
+					if (path != null && path.length > 0 && path[0] == '/') virgilRoot = DocumentUri.filePath(ProjectFiles.uri(path));
+				}
+			}
+		}
+		if (supplied) {
+			if (info != null) info(if(virgilRoot != null, Strings.format1("Virgil root: %s (client)", virgilRoot),
+				"Virgil root: none (invalid client root; bundle fallback disabled)"));
+		} else {
+			var bundle = ExecutableFiles.adjacent("virgil");
+			var reason = "cannot resolve the executable path";
+			if (bundle != null) {
+				var revision = ProjectFiles.load(ProjectFiles.join(bundle, "REVISION"), 41);
+				reason = "bundle REVISION is missing or unreadable";
+				if (revision != null) {
+					if (revision.length > 0 && revision[revision.length - 1] == '\n') revision = Arrays.range(revision, 0, revision.length - 1);
+					reason = "bundle REVISION does not match the server";
+					if (Strings.equal(revision, BuildInfo.VIRGIL_REVISION)) {
+						reason = "bundle lib directory is missing or unreadable";
+						var fd = ProjectFiles.open(ProjectFiles.join(bundle, "lib"), true);
+						if (fd >= 0) { HostOs.close(fd); virgilRoot = bundle; }
+					}
+				}
+			}
+			if (info != null) {
+				if (virgilRoot != null) info(Strings.format2("Virgil root: %s (bundle, revision %s)", virgilRoot, BuildInfo.VIRGIL_REVISION));
+				else info(Strings.format1("Virgil root: none (%s)", reason));
 			}
 		}
 		// Discovery waits until after the initialize response, on first use.

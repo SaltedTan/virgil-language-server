@@ -113,11 +113,7 @@ component WorkerProcesses {
 	// The worker executable in the running executable's directory, or null
 	// if this process can't find its own path.
 	def defaultPath() -> string {
-		var exe = HostOs.executablePath();
-		if (exe == null) return null;
-		var slash = exe.length - 1;
-		while (slash >= 0 && exe[slash] != '/') slash--;
-		return Strings.format2("%s%s", Arrays.range(exe, 0, slash + 1), AnalysisWire.WORKER_NAME);
+		return ExecutableFiles.adjacent(AnalysisWire.WORKER_NAME);
 	}
 	// Describes a wait status from HostOs.wait.
 	def describeStatus(status: int) -> string {

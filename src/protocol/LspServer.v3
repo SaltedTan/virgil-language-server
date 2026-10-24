@@ -114,6 +114,7 @@ class LspServer {
 		signatureHelp.parser = parserDiagnostics;
 		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
 		projects.warn = projectWarning;
+		projects.info = projectInfo;
 		projects.onConfig = configChanged;
 		documentSync.onOpen = documentOpened;
 		documentSync.onChange = documentChanged;

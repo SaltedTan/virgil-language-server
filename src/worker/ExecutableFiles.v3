@@ -1,0 +1,12 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// HostOs returns the kernel's executable path, resolving an executable symlink
+// and its ancestors. Both the worker and the library use this physical base.
+component ExecutableFiles {
+	def adjacent(name: string) -> string {
+		var exe = HostOs.executablePath();
+		if (exe == null || exe.length == 0 || exe[0] != '/') return null;
+		return ProjectFiles.join(ProjectFiles.parent(exe), name);
+	}
+}
