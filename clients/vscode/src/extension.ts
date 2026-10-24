@@ -29,6 +29,12 @@ const WORKER_NAME = 'virgil-lsp-worker';
 const WATCHED_FILES = ['**/.virgil-lsp.json', '**/*.v3'];
 // Matches vscode-languageclient 10.1.2's default stop() shutdown timeout.
 const NOTIFICATION_DRAIN_TIMEOUT_MS = 2000;
+// The codes of the errors after which the connection to the server closes: a
+// read or a write of the server's pipe that fails, as when the server has
+// gone (EPIPE, or ECONNRESET if it left input unread), and a write after
+// that (ERR_STREAM_DESTROYED). Node destroys the pipe on a failed read or
+// write, and the connection closes with it, even if the server still runs.
+const CLOSING_ERRORS = new Set(['EPIPE', 'ECONNRESET', 'ERR_STREAM_DESTROYED']);
 
 // A startup problem the user can fix. Its message says how.
 class StartupError extends Error {}
@@ -54,13 +60,16 @@ class QueuedLanguageClient extends LanguageClient {
         // The default handler stops the client on an error without a count,
         // such as the EPIPE of a write to a server that has just died (#216),
         // and a stopping client ignores the connection's close, which is what
-        // restarts a crashed server. A failed write destroys the server's
-        // input stream, which closes the connection at once, even if the
-        // server still runs; so does the server's exit. The close decides
-        // instead. A message from the server that the client can't parse is
-        // dropped, and the client reads on. The library still logs each
-        // error, without a notification.
-        error: () => ({ action: ErrorAction.Continue, handled: true }),
+        // restarts a crashed server. After an error that closes the
+        // connection, the close decides instead; the library still logs the
+        // error, without a notification. Any other error, such as output
+        // from the server that isn't a message, can leave the connection
+        // open, with no close to decide, so the default handler does: it
+        // reports the error and, for a read error like that one, stops the
+        // client.
+        error: (error, message, count) => CLOSING_ERRORS.has((error as NodeJS.ErrnoException).code ?? '')
+          ? { action: ErrorAction.Continue, handled: true }
+          : defaultHandler!.error(error, message, count),
         // The library's policy: restart, unless the server crashed 5 times in
         // 3 minutes; then stop, with its message.
         closed: () => defaultHandler!.closed(),

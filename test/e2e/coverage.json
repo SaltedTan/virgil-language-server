@@ -1489,6 +1489,16 @@
       "description": "The server runs as the child of a script that keeps the client's output open after the server exits. The test kills the server with SIGKILL, waits for its exit status, 137, and requests a hover, which the client writes to the dead server: the write fails with EPIPE, and the client logs it. The client then restarts the server exactly once, without stopping: the log says the server will restart, once, and never \"Shutting down server.\" or that it will not be restarted, and the script records two starts. The restarted server's input starts with initialize, then has initialized and didOpens for the open bad.v3 and words/Words.v3 with the editor's text and version, and its diagnostics return. Released, the script exits, and only the restarted server's virgil-lsp is left, with no worker but its own."
     },
     {
+      "id": "vscode.recovery.lost-framing",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api-process",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The server runs as the child of a script that, once bad.v3 has its parser diagnostic and words/Words.v3 its type error, writes a line that isn't a message to the client, before the server's answer to a hover. The client logs that the connection to the server is erroring and \"Shutting down server.\", and stops: the diagnostics of bad.v3 and words/Words.v3 and the document symbols of bad.v3 are gone at once. The log then says that stopping the server timed out, and that the script exited, with SIGKILL or status 137, once; the script, the server, and its worker are gone, the script recorded no other start, and the log never says that the server will restart or will not be restarted."
+    },
+    {
       "id": "vscode.recovery.crash-limit",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],

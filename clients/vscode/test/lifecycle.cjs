@@ -133,12 +133,21 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       if (this.failStop) throw new Error('shutdown failed');
     }
     // Each call starts a count of crashes; the fifth close stops the client.
+    // As the library's does, error() continues for a count from 1 to 3; it
+    // records each call and its result in `errors`.
     createDefaultErrorHandler() {
       let crashes = 0;
-      return {
-        error: () => ({ action: ErrorAction.Shutdown }),
+      const errors = [];
+      this.defaultErrorHandler = {
+        errors,
+        error(error, message, count) {
+          const result = { action: count >= 1 && count <= 3 ? ErrorAction.Continue : ErrorAction.Shutdown };
+          errors.push({ args: [error, message, count], result });
+          return result;
+        },
         closed: () => ({ action: ++crashes <= 4 ? CloseAction.Restart : CloseAction.DoNotRestart }),
       };
+      return this.defaultErrorHandler;
     }
     connectionClosed() {
       this.$state = 'initial';
@@ -419,17 +428,56 @@ test('a restart queued behind a failed recovery starts one replacement', async (
   await host.extension.deactivate();
 });
 
-test("connection errors never stop the client, and its closes follow the library's restart policy", async () => {
+// Node's errors for a pipe that failed, with their codes.
+function pipeError(code, text) {
+  return Object.assign(new Error(text), { code });
+}
+
+test('errors that close the connection let the close decide, and the default handler decides others', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const [client] = host.clients;
+  const { errorHandler } = client.options;
+  // The stream's own error for a failed write has no message or count
+  // (#216), as a read error has; the failed write reports one with both, and
+  // so does each write after it.
+  for (const [error, message, count] of [
+    [pipeError('EPIPE', 'write EPIPE'), undefined, undefined],
+    [pipeError('EPIPE', 'write EPIPE'), { method: 'textDocument/didOpen' }, 1],
+    [pipeError('ECONNRESET', 'write ECONNRESET'), { method: 'textDocument/didOpen' }, 1],
+    [pipeError('ECONNRESET', 'read ECONNRESET'), undefined, undefined],
+    [pipeError('ERR_STREAM_DESTROYED', 'Cannot call write after a stream was destroyed'), { method: 'exit' }, 4],
+  ]) {
+    assert.deepEqual(plain(await errorHandler.error(error, message, count)),
+      { action: ErrorAction.Continue, handled: true }, error.message);
+  }
+  assert.deepEqual(client.defaultErrorHandler.errors, []);
+  // Output that isn't a message, a message that isn't JSON or can't be
+  // written, and a write after the client ended the server's input don't
+  // close the connection at once: the default handler gets each error as it
+  // came, and its result is the client's.
+  const others = [
+    [new Error('Header must provide a Content-Length property.\n{"banner\\ncontent-length":"38"}'), undefined, undefined],
+    [new SyntaxError('Unexpected token \'b\', "banner" is not valid JSON'), undefined, undefined],
+    [new TypeError('Do not know how to serialize a BigInt'), undefined, undefined],
+    [pipeError('ERR_STREAM_WRITE_AFTER_END', 'write after end'), { method: 'exit' }, 1],
+  ];
+  for (const [error, message, count] of others) {
+    const result = await errorHandler.error(error, message, count);
+    const { args, result: decided } = client.defaultErrorHandler.errors.at(-1);
+    assert.deepEqual(args, [error, message, count]);
+    assert.equal(result, decided, error.message);
+  }
+  assert.deepEqual(client.defaultErrorHandler.errors.map(({ result }) => result.action),
+    [ErrorAction.Shutdown, ErrorAction.Shutdown, ErrorAction.Shutdown, ErrorAction.Continue]);
+  assert.deepEqual(host.events, ['start:0']);
+  await host.extension.deactivate();
+});
+
+test("a client's closes follow the library's restart policy, counted for each client", async () => {
   const host = extensionHost();
   await host.activate();
   const { errorHandler } = host.clients[0].options;
-  // The stream's own error for a failed write has no message or count
-  // (#216), as a read error has; the failed write reports one with both.
-  for (const [message, count] of [[undefined, undefined], [{ method: 'textDocument/didOpen' }, 1], [{ method: 'exit' }, 4]]) {
-    assert.deepEqual(plain(await errorHandler.error(new Error('write EPIPE'), message, count)),
-      { action: ErrorAction.Continue, handled: true });
-  }
-  assert.deepEqual(host.events, ['start:0']);
   // One default handler counts every close of the client.
   const closes = [];
   for (let crash = 0; crash < 5; crash++) closes.push((await errorHandler.closed()).action);

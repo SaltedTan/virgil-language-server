@@ -515,6 +515,7 @@ async function workspace(extension) {
   await actionDuringRecovery(failures, words, 'restart');
   await actionDuringRecovery(failures, words, 'configuration');
   await writeAfterServerDied(failures, bad, words);
+  await lostFraming(failures, bad, words);
   await crashLimit(failures, bad, words);
   await pendingEditRestart(failures, bad, words);
   assert.deepEqual(failures, [], 'scenarios failed');
@@ -719,9 +720,15 @@ function shellWord(word) {
 // child's PID to "child", and appends "PID status" to "exits" when it exits;
 // then, keeping the client's output open, the script runs on until
 // "lingering" is gone, or for 20 seconds, writes "PID removed" or
-// "PID timeout" to "released", and exits with status 0. Any other start runs
-// the server in its place, with the script's PID. The client looks for the
-// worker beside the script, so a link to the real one is there.
+// "PID timeout" to "released", and exits with status 0. A start that finds a
+// file "stray" renames it to "straying", runs the server as its child in the
+// same way, writes the child's PID to "child", and waits while the child
+// runs and "straying" is there; once a file "inject" is there, it writes a
+// line to its output, which the client reads after the server's, renames
+// "inject" to "injected", and waits for the child, then appends "PID status"
+// to "exits" and exits with that status. Any other start runs the server in
+// its place, with the script's PID. The client looks for the worker beside
+// the script, so a link to the real one is there.
 function recoveryServer(directory, server) {
   const script = path.join(directory, 'virgil-lsp');
   fs.writeFileSync(script, `#!/bin/sh
@@ -757,6 +764,24 @@ elif [ -e "$state/linger" ]; then
   done
   echo "$$ $reason" >> "$state/released"
   exit 0
+elif [ -e "$state/stray" ]; then
+  mv "$state/stray" "$state/straying"
+  exec 3<&0 0</dev/null
+  ${shellWord(server)} "$@" <&3 3<&- &
+  child=$!
+  exec 3<&-
+  echo $child > "$state/child"
+  while kill -0 $child 2>/dev/null && [ -e "$state/straying" ] && [ ! -e "$state/inject" ]; do
+    sleep 0.05
+  done
+  if [ -e "$state/inject" ]; then
+    echo 'virgil-lsp wrapper: starting the server'
+    mv "$state/inject" "$state/injected"
+  fi
+  wait $child
+  status=$?
+  echo "$$ $status" >> "$state/exits"
+  exit $status
 elif [ ! -e "$state/record" ]; then
   exec ${shellWord(server)} "$@"
 fi
@@ -1078,6 +1103,73 @@ async function writeAfterServerDied(failures, bad, words) {
       await waitFor('the servers started from the script to exit',
         () => recorded(directory, 'exits').length === recorded(directory, 'starts').length
           && recorded(directory, 'released').length === lingered);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+// Output on the server's stdout that isn't a message, such as a line that a
+// wrapper on virgil.server.path writes, leaves the connection open, but the
+// client can no longer tell where a message starts: every later one fails to
+// read, so no response arrives. vscode-languageclient's default error handler
+// reports the error, with an error notification, and stops the client, and
+// the extension leaves the error to it, rather than keep a client that can't
+// hear its server. The server's answer to shutdown can't be read either, so
+// the stop times out, and 2 seconds later the library kills the processes
+// that it started. The server starts as the child of a recoveryServer script,
+// which writes one line to the client when the test asks.
+async function lostFraming(failures, bad, words) {
+  const server = setting('virgil.server.path');
+  const directory = fs.mkdtempSync(path.join(path.dirname(project), 'framing-'));
+  const remaining = () => {
+    const [child] = recorded(directory, 'child').map(Number);
+    return groupProcesses().filter((p) => p.args.includes(directory) || p.pid === child || p.ppid === child);
+  };
+  await scenario(failures, 'a line on the server\'s output that is not a message: the client reports it and stops', async () => {
+    fs.writeFileSync(path.join(directory, 'stray'), '');
+    const { pid } = await startRecoveryServer(server, directory);
+    await expectParserDiagnostic(bad);
+    await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+    const log = logFromHere();
+    fs.writeFileSync(path.join(directory, 'inject'), '');
+    await waitFor('the script to write the line', () => fs.existsSync(path.join(directory, 'injected')));
+    // The server's answer to a hover now follows the line. The hover itself
+    // can stay pending.
+    vscode.commands.executeCommand('vscode.executeHoverProvider', bad.document.uri, new vscode.Position(0, 0))
+      .then(() => {}, () => {});
+    await waitFor('the client to report the error and stop', () => log().includes('Shutting down server.'))
+      .catch((error) => { throw new Error(`${error.message}; the log since the line:\n${log()}`); });
+    expectInOrder(log(), ['[error] Client Virgil Language Server: connection to server is erroring.', 'Shutting down server.']);
+    // The stopping client's diagnostics and features went with it.
+    assert.deepEqual([diagnostics(bad), diagnostics(words)], [[], []]);
+    assert.deepEqual(await symbols(bad), []);
+    // The library kills the script, and the server and its worker with it.
+    const killed = /Server process exited with (signal SIGKILL|code 137)\./;
+    await waitFor('the library to kill the script and the server', () => killed.test(log()) && remaining().length === 0)
+      .catch((error) => { throw new Error(`${error.message}; running: ${JSON.stringify(remaining())}; the log since the line:\n${log()}`); });
+    const text = log();
+    expectInOrder(text, ['Stopping server timed out', 'Server process exited with ']);
+    assert.deepEqual([count(text, 'Server process exited with '), count(text, 'Server will restart.'), count(text, 'will not be restarted')], [1, 0, 0], text);
+    assert.deepEqual(recorded(directory, 'starts'), [String(pid)], 'the client started another server');
+  }, async () => {
+    try {
+      fs.rmSync(path.join(directory, 'straying'), { force: true });
+      // A client that still runs the script, as one that let the error pass
+      // would, can't stop it either: the library kills it 2 seconds after the
+      // stop times out, so the restore waits for that before it checks the
+      // restarted server.
+      if (setting('virgil.server.path') !== server) {
+        const log = logFromHere();
+        await setSetting('virgil.server.path', server);
+        await waitFor('the server to start again', () => {
+          const text = log();
+          return text.includes(`Starting ${server} --stdio`) && text.includes('Started virgil-lsp ');
+        }, 20000);
+      }
+      await waitFor('the script and its server to exit', () => remaining().length === 0, 15000);
+      await restoreServer(server, words);
+      await expectParserDiagnostic(bad);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
