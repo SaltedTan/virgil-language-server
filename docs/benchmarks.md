@@ -433,7 +433,7 @@ The same all-feature state counts split by edit kind follow, for either mode:
 
 | Corpus | Body | Header | Whole file |
 | --- | ---: | ---: | ---: |
-| Repair | 6/38 | 0/5 | 0/2 |
+| Repair | 6/37 | 0/6 | 0/2 |
 | Replay | 7/78 | 2/62 | — |
 
 Available answers were all correct. All three negative controls passed the safe

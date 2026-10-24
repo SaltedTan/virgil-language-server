@@ -158,7 +158,9 @@ class Corpus:
             original = sources[path]
             at = original.index(needle.replace("|", "", 1)) + len(needle.split("|")[0])
             end = original.index("\n", at) if cut == "line" else len(original)
-            kind = "whole_file" if cut == "file" else "header" if name in ("aeneas-condition", "aeneas-for-header") else "body"
+            # aeneas-member-chain cuts a member access inside an if condition.
+            kind = "whole_file" if cut == "file" else "header" if name in (
+                "aeneas-condition", "aeneas-for-header", "aeneas-member-chain") else "body"
             yield self.state(project, name, "repair", kind, {path: original},
                              {path: original[:at] + original[end:]}, "original upstream file")
             if name in replay:
