@@ -62,11 +62,11 @@ class Session:
                     msg = json.loads(body[:size])
                     self.transcript.append(("recv", msg))
                     assert msg["jsonrpc"] == "2.0", msg
-                    if "id" in msg:
+                    if "id" in msg and "method" not in msg:
                         key = (type(msg["id"]), msg["id"])
                         assert key not in self.answered, ("duplicate response", msg)
                         self.answered.add(key)
-                    else:
+                    elif "id" not in msg:
                         assert msg["method"] == "textDocument/publishDiagnostics", msg
                     return msg
             remaining = deadline - time.monotonic()
@@ -108,7 +108,7 @@ class Session:
     def shutdown(self):
         assert self.result(self.send("shutdown"), 3) is None
         self.send("exit", request=False)
-        self.proc.stdin.close()
+        self.close_input()
         assert self.proc.wait(timeout=5) == 0
         assert not self.buffer and not self.proc.stdout.read(), "unsolicited extra response"
         assert not self.waiting, self.waiting
@@ -117,17 +117,27 @@ class Session:
         self.err.seek(0)
         return self.err.read().decode(errors="replace")
 
-    def close(self):
-        if self.proc.poll() is None:
-            # EOF lets the server reap its worker even after a test assertion.
+    def close_input(self):
+        try:
             self.proc.stdin.close()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-        self.proc.stdout.close()
-        self.err.close()
+        except OSError:
+            pass
+
+    def close(self):
+        self.close_input()
+        try:
+            if self.proc.poll() is None:
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait()
+        finally:
+            for stream in (self.proc.stdout, self.err):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 def error(session, id, code, text=""):
@@ -321,7 +331,7 @@ def exercise(exe, work):
         assert s.result(shutdown, 3) is None
         error(s, s.analyze([uri]), -32600)
         s.send("exit", request=False)
-        s.proc.stdin.close()
+        s.close_input()
         assert s.proc.wait(timeout=5) == 0
         assert not s.buffer and not s.proc.stdout.read()
         assert not s.waiting
@@ -392,7 +402,7 @@ def startup_and_eof(exe, work):
                 s.send("exit", request=False)
             elif ending == "exit":
                 s.send("exit", request=False)
-            s.proc.stdin.close()
+            s.close_input()
             if ending != "shutdown":
                 error(s, pending, -32800)
             assert s.proc.wait(timeout=5) == (0 if ending == "shutdown" else 1)

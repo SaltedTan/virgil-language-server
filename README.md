@@ -61,4 +61,4 @@ Bug reports, documentation, tests, and code are all welcome. Please read [CONTRI
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). The pinned Virgil compiler in `vendor/virgil` is a separately licensed upstream dependency; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The project's code is licensed under the [Apache License, Version 2.0](LICENSE). Third-party material retains its upstream licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
