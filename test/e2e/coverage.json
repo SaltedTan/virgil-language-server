@@ -308,24 +308,40 @@
       "id": "file-watching",
       "alternative": "no-file-watching",
       "always": [],
+      "decidedBy": {
+        "fact": "didChangeWatchedFilesDynamicRegistration",
+        "values": [true]
+      },
       "description": "The client declares workspace.didChangeWatchedFiles.dynamicRegistration, as Neovim does on macOS, so the server registers file watchers."
     },
     {
       "id": "no-file-watching",
       "alternative": "file-watching",
       "always": [],
+      "decidedBy": {
+        "fact": "didChangeWatchedFilesDynamicRegistration",
+        "values": [false, null]
+      },
       "description": "The client doesn't declare file watching, as Neovim on Linux doesn't; the server notices a change on disk at the next .v3 change."
     },
     {
       "id": "builtin-lsp-command",
       "alternative": "lspconfig-restart-command",
       "always": [],
+      "decidedBy": {
+        "fact": "neovimBuiltinLspCommand",
+        "values": [true]
+      },
       "description": "Neovim has its built-in :lsp command (0.12 and later), and nvim-lspconfig defines no :LspRestart."
     },
     {
       "id": "lspconfig-restart-command",
       "alternative": "builtin-lsp-command",
       "always": [],
+      "decidedBy": {
+        "fact": "neovimBuiltinLspCommand",
+        "values": [false]
+      },
       "description": "Neovim has no built-in :lsp command (0.11), and restarts use nvim-lspconfig's :LspRestart."
     }
   ],
