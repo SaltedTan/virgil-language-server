@@ -17,6 +17,9 @@ function deferred() {
 // The language client's public states. Its private ones (initial, starting,
 // startFailed, running, stopping, stopped) map to these.
 const State = { Stopped: 1, Running: 2, Starting: 3, StartFailed: 4 };
+// What an error handler returns, as the language client numbers them.
+const ErrorAction = { Continue: 1, Shutdown: 2 };
+const CloseAction = { DoNotRestart: 1, Restart: 2 };
 
 // `documents` are open in the editor, so each client opens them as it starts.
 function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [] } = {}) {
@@ -129,6 +132,23 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       this.starting = undefined;
       if (this.failStop) throw new Error('shutdown failed');
     }
+    // Each call starts a count of crashes; the fifth close stops the client.
+    // As the library's does, error() continues for a count from 1 to 3; it
+    // records each call and its result in `errors`.
+    createDefaultErrorHandler() {
+      let crashes = 0;
+      const errors = [];
+      this.defaultErrorHandler = {
+        errors,
+        error(error, message, count) {
+          const result = { action: count >= 1 && count <= 3 ? ErrorAction.Continue : ErrorAction.Shutdown };
+          errors.push({ args: [error, message, count], result });
+          return result;
+        },
+        closed: () => ({ action: ++crashes <= 4 ? CloseAction.Restart : CloseAction.DoNotRestart }),
+      };
+      return this.defaultErrorHandler;
+    }
     connectionClosed() {
       this.$state = 'initial';
       this.connection.closed = true;
@@ -179,7 +199,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
         },
       };
       if (name === 'vscode') return vscode;
-      if (name === 'vscode-languageclient/node') return { LanguageClient, State, TransportKind: { stdio: 0 } };
+      if (name === 'vscode-languageclient/node') return { ErrorAction, LanguageClient, State, TransportKind: { stdio: 0 } };
       if (name === 'node:fs/promises') return {
         realpath: async (file) => file,
         stat: async () => ({ isFile: () => true }),
@@ -405,6 +425,66 @@ test('a restart queued behind a failed recovery starts one replacement', async (
   await assert.rejects(host.clients[0].sendNotification('didChange'), /Client is not running/);
   assert.deepEqual(host.events, ['start:0', 'start:0', 'start:1']);
   assert.equal(host.clients[1].$state, 'running');
+  await host.extension.deactivate();
+});
+
+// Node's errors for a pipe that failed, with their codes.
+function pipeError(code, text) {
+  return Object.assign(new Error(text), { code });
+}
+
+test('errors that close the connection let the close decide, and the default handler decides others', async () => {
+  const host = extensionHost();
+  await host.activate();
+  const [client] = host.clients;
+  const { errorHandler } = client.options;
+  // The stream's own error for a failed write has no message or count
+  // (#216), as a read error has; the failed write reports one with both, and
+  // so does each write after it.
+  for (const [error, message, count] of [
+    [pipeError('EPIPE', 'write EPIPE'), undefined, undefined],
+    [pipeError('EPIPE', 'write EPIPE'), { method: 'textDocument/didOpen' }, 1],
+    [pipeError('ECONNRESET', 'write ECONNRESET'), { method: 'textDocument/didOpen' }, 1],
+    [pipeError('ECONNRESET', 'read ECONNRESET'), undefined, undefined],
+    [pipeError('ERR_STREAM_DESTROYED', 'Cannot call write after a stream was destroyed'), { method: 'exit' }, 4],
+  ]) {
+    assert.deepEqual(plain(await errorHandler.error(error, message, count)),
+      { action: ErrorAction.Continue, handled: true }, error.message);
+  }
+  assert.deepEqual(client.defaultErrorHandler.errors, []);
+  // Output that isn't a message, a message that isn't JSON or can't be
+  // written, and a write after the client ended the server's input don't
+  // close the connection at once: the default handler gets each error as it
+  // came, and its result is the client's.
+  const others = [
+    [new Error('Header must provide a Content-Length property.\n{"banner\\ncontent-length":"38"}'), undefined, undefined],
+    [new SyntaxError('Unexpected token \'b\', "banner" is not valid JSON'), undefined, undefined],
+    [new TypeError('Do not know how to serialize a BigInt'), undefined, undefined],
+    [pipeError('ERR_STREAM_WRITE_AFTER_END', 'write after end'), { method: 'exit' }, 1],
+  ];
+  for (const [error, message, count] of others) {
+    const result = await errorHandler.error(error, message, count);
+    const { args, result: decided } = client.defaultErrorHandler.errors.at(-1);
+    assert.deepEqual(args, [error, message, count]);
+    assert.equal(result, decided, error.message);
+  }
+  assert.deepEqual(client.defaultErrorHandler.errors.map(({ result }) => result.action),
+    [ErrorAction.Shutdown, ErrorAction.Shutdown, ErrorAction.Shutdown, ErrorAction.Continue]);
+  assert.deepEqual(host.events, ['start:0']);
+  await host.extension.deactivate();
+});
+
+test("a client's closes follow the library's restart policy, counted for each client", async () => {
+  const host = extensionHost();
+  await host.activate();
+  const { errorHandler } = host.clients[0].options;
+  // One default handler counts every close of the client.
+  const closes = [];
+  for (let crash = 0; crash < 5; crash++) closes.push((await errorHandler.closed()).action);
+  assert.deepEqual(closes, [...Array(4).fill(CloseAction.Restart), CloseAction.DoNotRestart]);
+  // A restart's new client counts from zero.
+  await host.restart();
+  assert.equal((await host.clients[1].options.errorHandler.closed()).action, CloseAction.Restart);
   await host.extension.deactivate();
 });
 
