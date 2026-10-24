@@ -3,7 +3,8 @@
 
 def T = UnitTests.register;
 def X = [T("LspBodySnapshot:provenance_and_eviction", test_provenance),
-	T("LspBodySnapshot:capture_bounds_and_closed_files", test_capture), ()];
+	T("LspBodySnapshot:capture_bounds_and_closed_files", test_capture),
+	T("LspBodySnapshot:project_cache_lifetime", test_project_lifetime), ()];
 def OLD = "/* é😀\t */ component A { def broken() -> int { return 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
 def CURRENT = "/* é😀\t */ component A { def broken() -> int { var x = ;\n\treturn 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
 
@@ -72,5 +73,33 @@ def test_capture(t: Tester) {
 	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
 	t.assert_eq(null, inputs.versions[i].substitution);
 	t.assertb(CURRENT, inputs.sources[i].input);
+	s.server.close();
+}
+def test_project_lifetime(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, OLD);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	t.assertb("def c = 1;\n", cache.get(ctx, s.uri("C.v3")));
+	// Watcher-driven expansion removes a source from the same context.
+	s.remove(t, "C.v3");
+	var event = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	event["uri"] = JsonValue.String(s.uri("C.v3"));
+	event["type"] = JsonValue.Int(3); // FileChangeType.Deleted changes membership.
+	params["changes"] = JsonValue.JArray([JsonValue.JObject(event)]);
+	s.server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	s.settle();
+	t.assert_eq(ctx, s.context());
+	t.assert_eq(null, cache.get(ctx, s.uri("C.v3")));
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	// An invalid replacement retires the context, including every cached
+	// input, while its older snapshots may still be retained independently.
+	s.open(".virgil-lsp.json", 1, "{");
+	s.settle();
+	t.assert(!ctx.config.current, "configuration retired");
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	t.assert_eq(null, ctx.parseableTexts);
+	t.assertl(0, cache.retainedBytes);
 	s.server.close();
 }
