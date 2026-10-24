@@ -603,6 +603,12 @@ class CoverageTest(unittest.TestCase):
                          "SUITE_PROVENANCE must name exactly the manifest's suites; "
                          "update the table in scripts/editor-results.py")
 
+    def test_manual_targets_agree_with_the_checklist(self):
+        targets = self.schema["$defs"]["manualTarget"]["oneOf"]
+        self.assertEqual(list(CHECKLIST_STEPS), targets[1]["properties"]["step"]["enum"])
+        self.assertFalse(any("manual" in check["suites"] for check in self.manifest["checks"]),
+                         "manual records observe targets, never automated checks")
+
     def test_schema_agrees_with_the_manifest(self):
         defs = self.schema["$defs"]
         self.assertEqual([s["id"] for s in self.manifest["suites"]], defs["suite"]["enum"])

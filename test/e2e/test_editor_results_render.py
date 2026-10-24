@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 
 import test_editor_results as builder
-from test_editor_results import RULE, encode, fail, find, only, rebuild, results, stream
+from test_editor_results import RULE, encode, fail, find, manual_stream, only, rebuild, results, stream
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE.parent.parent / "scripts" / "editor-results.py"
@@ -39,6 +39,16 @@ def run_of(variant, number=1, lane="local", release=RELEASE, **start):
     for event in events:
         event["runId"] = f"run-{number}"
     events[0].update(release=release, lane=lane, **start)
+    return events
+
+
+def manual_run(failed=False):
+    """An optional record alongside the release's automated runs."""
+    events = manual_stream(failed=failed)
+    for event in events:
+        event["runId"] = "manual-1"
+    events[0]["release"] = RELEASE
+    events[0]["provenance"]["editor"]["version"] = "1.142.0"
     return events
 
 
@@ -435,13 +445,6 @@ class RunsTableTest(unittest.TestCase):
         events[0]["provenance"]["harness"].update(revision=None, dirty=None)
         self.assertEqual(["Unknown, server 0.1.0-alpha.3", "Neovim, version unknown"],
                          [row(events)[i] for i in (1, 4)])
-        # A manual stream can't validate yet: no check lists the manual suite,
-        # and expected needs one. Set the mode on the validated run instead,
-        # to check the cell's wording.
-        run = validated(events)
-        run.start["provenance"]["clientMode"] = "manual"
-        self.assertEqual("Neovim, version unknown, a person's own setup",
-                         results.run_cells(run, RELEASE, MANIFEST)[4])
 
     def test_cells_are_escaped(self):
         events = run_of("nvim", lane="a|b *c* <d> [e](f) `g` $h$ ~i~ &amp;_j_ k_l \\|\n\u202e")
@@ -477,6 +480,56 @@ class RunsTableTest(unittest.TestCase):
                 for number, version in ((3, "0.10.0"), (1, "0.12.6"), (4, "0.9.5"), (2, "0.11.6"))]
         table = results.render_blocks(RELEASE, runs, MANIFEST)["runs"]
         self.assertEqual(["0.9.5", "0.10.0", "0.11.6", "0.12.6"], re.findall(r"\| Neovim ([0-9.]+) \|", table))
+
+
+class ManualTableTest(RenderTest):
+    def test_manual_records_are_separate_and_do_not_change_cells(self):
+        automated = run_of("vscode")
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                events = manual_run(failed)
+                self.assertEqual(cells(automated), cells(automated, events))
+                self.assertEqual(cells(), cells(events))
+                before = results.render_blocks(RELEASE, [validated(automated)], MANIFEST)
+                after = results.render_blocks(RELEASE, [validated(events), validated(automated)], MANIFEST)
+                self.assertEqual(before["matrix"], after["matrix"])
+                self.assertTrue(after["runs"].startswith(before["runs"]))
+                manual_table = after["runs"][len(before["runs"]):]
+                self.assertIn("Optional manual observations (do not change automated results)", manual_table)
+                self.assertIn("Example tester | VS Code, Linux | VS Code 1.142.0", manual_table)
+                self.assertIn("Hover: " + ("Fail (manual): The hover popup did not appear." if failed
+                                            else "Pass (manual)"), manual_table)
+                self.assertIn("Checklist step 7: Pass (manual)", manual_table)
+                self.assertIn("I observed the listed targets in this setup.", manual_table)
+                self.assertIn("observed 2026-10-24T00:00:02Z; recorded 2026-10-24T00:01:00Z", manual_table)
+                selection = self.select(automated, events)
+                status, out, err = self.render(selection)
+                self.assertEqual((1 if failed else 0, ""), (status, err), out)
+                self.assertEqual(status, self.render(selection, "--check")[0])
+
+    def test_missing_manual_target_is_not_a_pass(self):
+        events = manual_run()
+        del events[1]
+        rebuild(events, status="aborted")
+        status, _, err = self.render(self.select(events))
+        self.assertEqual((1, ""), (status, err))
+        self.assertIn("Hover: Not observed; Checklist step 7: Pass (manual)", self.doc.read_text())
+        self.assertIn("| Aborted |", self.doc.read_text())
+
+    def test_manual_text_and_review_links_are_escaped(self):
+        events = manual_run()
+        attestation = events[0]["attestation"]
+        attestation.update(tester="Tester|<x>", statement="Seen *this*\nnext",
+                           reviewUrl="https://example.org/review) [x]|y")
+        events[1]["note"] = "Popup | <text>"
+        run = validated(events)
+        line = results.table(["Date", "Who", "Setup", "Editor", "Observations", "Result", "Attestation"],
+                             [results.manual_cells(run, MANIFEST)]).strip().split("\n")[2]
+        self.assertEqual(8, unescaped_pipes(line), line)
+        self.assertIn(results.text("Tester|<x>"), line)
+        self.assertIn(results.text("Seen *this*\nnext"), line)
+        self.assertIn(results.text("Popup | <text>"), line)
+        self.assertIn("[review](https://example.org/review%29%20%5Bx%5D%7Cy)", line)
 
 
 class SelectionTest(RenderTest):
@@ -839,7 +892,8 @@ class DeterminismTest(RenderTest):
         fail(events, find(events, "nvim.hover.response"))
         return [leg("0.12.6", 1), run_of("lazyvim-macos", 2, lane="lazyvim-macos"),
                 rebuild(events, status="fail"), run_of("vscode-vsix", 4, lane="vscode-vsix-macos"),
-                run_of("remote-ssh", 5, lane="vscode-remote-ssh-linux"), leg("0.11.6", 6)]
+                run_of("remote-ssh", 5, lane="vscode-remote-ssh-linux"), leg("0.11.6", 6),
+                manual_run()]
 
     def test_the_order_of_the_inputs_doesnt_matter(self):
         streams = self.streams()
@@ -1025,6 +1079,13 @@ def example_streams():
             for side in ("client", "host"):
                 provenance[side]["release"] = "6.8.0"
         streams[name] = encode(events)
+    events = manual_stream()
+    for event in events:
+        event["runId"] = "example-manual-vscode-linux"
+    events[0].update(release=EXAMPLE_RELEASE, purpose="demo")
+    events[0]["provenance"]["editor"]["version"] = "1.142.0"
+    events[0]["provenance"]["server"].update(versionText=f"virgil-lsp {EXAMPLE_RELEASE}", version=EXAMPLE_RELEASE)
+    streams["manual-vscode-linux.jsonl"] = encode(events)
     return streams
 
 

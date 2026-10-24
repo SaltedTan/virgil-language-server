@@ -2,10 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/SaltedTan/virgil-language-server/blob/main/test/e2e/results-v1.schema.json",
   "title": "Editor test results, version 1",
-  "description": "One event of a JSON Lines results stream: one run-start, a check for each planned observation, and one run-end. test/e2e/RESULTS.md describes the stream's rules, and test/e2e/coverage.json the checks.",
+  "description": "One event of a JSON Lines results stream: one run-start, a check or manual observation for each planned target, and one run-end. test/e2e/RESULTS.md describes the stream's rules, and test/e2e/coverage.json the checks.",
   "oneOf": [
     {"$ref": "#/$defs/runStart"},
     {"$ref": "#/$defs/check"},
+    {"$ref": "#/$defs/observation"},
     {"$ref": "#/$defs/runEnd"}
   ],
   "$defs": {
@@ -66,6 +67,23 @@
       },
       "required": ["id", "profile", "iteration"],
       "additionalProperties": false
+    },
+    "manualTarget": {
+      "description": "A matrix feature in the run's setup, or a VS Code manual checklist step (only in VS Code).",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {"feature": {"$ref": "#/$defs/name"}},
+          "required": ["feature"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {"step": {"enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]}},
+          "required": ["step"],
+          "additionalProperties": false
+        }
+      ]
     },
     "machine": {
       "type": "object",
@@ -289,10 +307,9 @@
           "$ref": "#/$defs/sha256"
         },
         "expected": {
-          "description": "Every planned observation, sorted by id, profile, then iteration.",
+          "description": "Every planned check, sorted by id, profile, then iteration; for manual runs, targets sorted by feature, then step.",
           "type": "array",
-          "minItems": 1,
-          "items": {"$ref": "#/$defs/key"}
+          "minItems": 1
         },
         "facts": {
           "description": "The observations that decide the side of each alternative, by name. A run records the fact of each pair that its plan needs; it may leave out a fact whose pair has no checks in its profiles. An unavailable fact keeps the run from passing.",
@@ -324,8 +341,14 @@
       ],
       "additionalProperties": false,
       "if": {"properties": {"suite": {"const": "manual"}}},
-      "then": {"properties": {"attestation": {"$ref": "#/$defs/attestation"}}},
-      "else": {"properties": {"attestation": {"type": "null"}}}
+      "then": {"properties": {
+        "attestation": {"$ref": "#/$defs/attestation"},
+        "expected": {"items": {"$ref": "#/$defs/manualTarget"}}
+      }},
+      "else": {"properties": {
+        "attestation": {"type": "null"},
+        "expected": {"items": {"$ref": "#/$defs/key"}}
+      }}
     },
     "check": {
       "type": "object",
@@ -391,6 +414,23 @@
         }
       ]
     },
+    "observation": {
+      "description": "A person's observation of a planned target, only in a manual run.",
+      "type": "object",
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema"},
+        "event": {"const": "observation"},
+        "runId": {"$ref": "#/$defs/runId"},
+        "seq": {"type": "integer", "minimum": 1},
+        "time": {"$ref": "#/$defs/time"},
+        "target": {"$ref": "#/$defs/manualTarget"},
+        "status": {"enum": ["pass", "fail"]},
+        "level": {"const": "manual"},
+        "note": {"type": "string", "minLength": 1, "maxLength": 1000}
+      },
+      "required": ["schema", "event", "runId", "seq", "time", "target", "status", "level"],
+      "additionalProperties": false
+    },
     "runEnd": {
       "type": "object",
       "properties": {
@@ -400,7 +440,7 @@
         "seq": {"type": "integer", "minimum": 1},
         "time": {"$ref": "#/$defs/time"},
         "complete": {
-          "description": "Whether every planned observation has exactly one check event and the launcher finished its own checks and teardown.",
+          "description": "Whether every planned observation has exactly one check or manual observation event and the launcher finished its own checks and teardown.",
           "type": "boolean"
         },
         "status": {
@@ -409,7 +449,7 @@
         },
         "durationMs": {"type": "integer", "minimum": 0},
         "expectedCount": {"type": "integer", "minimum": 0},
-        "checkCount": {"type": "integer", "minimum": 0},
+        "checkCount": {"description": "The number of result events: checks, or observations in a manual run.", "type": "integer", "minimum": 0},
         "counts": {
           "description": "The observations in each status. A passing run has fail, xpass, and skip at 0; conditions keep irrelevant checks out of expected, so a pass has no legitimate skips.",
           "type": "object",

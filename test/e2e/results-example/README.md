@@ -1,6 +1,6 @@
 # Rendered results example
 
-This directory shows what [`scripts/editor-results.py render`](../../../scripts/editor-results.py) generates ([Rendering a release](../RESULTS.md#rendering-a-release)). It isn't evidence for any release. Its streams are demo runs that [`test_editor_results_render.py`](../test_editor_results_render.py) builds from [`coverage.json`](../coverage.json) with the validator tests' builder: the headless Neovim test on Linux, the LazyVim test on Linux, in the two legs of its lane, at Neovim 0.11.6 and 0.12.6, each with its expected failure, and the Extension Host test on macOS, on an installed VSIX. [`selection.json`](selection.json) lists them. `make test` checks that the streams, the selection, and the tables below are up to date. After a change to `coverage.json`, regenerate them:
+This directory shows what [`scripts/editor-results.py render`](../../../scripts/editor-results.py) generates ([Rendering a release](../RESULTS.md#rendering-a-release)). It isn't evidence for any release. Its streams are demo runs that [`test_editor_results_render.py`](../test_editor_results_render.py) builds from [`coverage.json`](../coverage.json) with the validator tests' builder: the headless Neovim test on Linux, the LazyVim test on Linux, in the two legs of its lane, at Neovim 0.11.6 and 0.12.6, each with its expected failure, and the Extension Host test on macOS, on an installed VSIX, plus an attested manual selection of hover and VS Code checklist step 7 on Linux, shown separately. [`selection.json`](selection.json) lists them. `make test` checks that the streams, the selection, and the tables below are up to date. After a change to `coverage.json`, regenerate them:
 
 ```sh
 python3 test/e2e/test_editor_results_render.py --write-example
@@ -20,6 +20,12 @@ The prose of a release's section stays hand-written, outside the markers. Only t
 | 2026-10-24 | `2222222` | Neovim, Linux; `test`; Linux 6.8.0, x86_64; demo run | `make test` | Neovim 0.11.6 | Passed (22 of 22 observations): 22 pass |
 | 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
 | 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.12.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
+
+Optional manual observations (do not change automated results):
+
+| Date | Who | Setup | Editor | Observations | Result | Attestation |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-10-24 | Example tester | VS Code, Linux | VS Code 1.142.0 | Hover: Pass (manual); Checklist step 7: Pass (manual) | Passed | I observed the listed targets in this setup.; observed 2026-10-24T00:00:02Z; recorded 2026-10-24T00:01:00Z |
 
 <!-- editor-results:0.0.0-example:runs:end -->
 

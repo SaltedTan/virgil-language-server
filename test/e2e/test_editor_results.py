@@ -154,17 +154,42 @@ def stream(variant, noice=RULE["commit"]):
     return rebuild([start] + checks + [end])
 
 
+def manual_stream(editor="vscode", failed=False):
+    """An attested partial selection of features and checklist steps."""
+    events = stream("vscode" if editor == "vscode" else "nvim")
+    start = events[0]
+    start.update(suite="manual", command=["manual"], facts={},
+                 expected=[{"feature": "hover"}] + ([{"step": 7}] if editor == "vscode" else []),
+                 attestation={"tester": "Example tester", "observedAt": "2026-10-24T00:00:02Z",
+                              "recordedAt": "2026-10-24T00:01:00Z",
+                              "statement": "I observed the listed targets in this setup.", "reviewUrl": None})
+    start["provenance"].update(clientMode="manual", configurationSha256={})
+    observations = [{"schema": 1, "event": "observation", "runId": "run-1", "seq": 0,
+                     "time": "2026-10-24T00:00:02Z", "target": copy.deepcopy(target),
+                     "status": "fail" if failed and index == 0 else "pass", "level": "manual"}
+                    for index, target in enumerate(start["expected"])]
+    if failed:
+        observations[0]["note"] = "The hover popup did not appear."
+    return rebuild([start] + observations + events[-1:], status="fail" if failed else "pass")
+
+
+def result_key(event):
+    if "id" in event:
+        return event["id"], event["profile"], event["iteration"]
+    return tuple(sorted(event.get("target", event).items()))
+
+
 def rebuild(events, **end):
     """Renumbers seq and recounts the run-end from the checks, then sets the
     run-end's fields in end. The run-end's status is unchanged unless given."""
     for seq, event in enumerate(events):
         event["seq"] = seq
-    checks = [event for event in events if event["event"] == "check"]
-    planned = {(key["id"], key["profile"], key["iteration"]) for key in events[0]["expected"]}
+    checks = [event for event in events if event["event"] in ("check", "observation")]
+    planned = {result_key(key) for key in events[0]["expected"]}
     last = events[-1]
     last.update(expectedCount=len(events[0]["expected"]), checkCount=len(checks),
                 counts={status: sum(check["status"] == status for check in checks) for status in STATUSES},
-                complete=planned <= {(c["id"], c["profile"], c["iteration"]) for c in checks})
+                complete=planned <= {result_key(c) for c in checks})
     last.update(end)
     return events
 
@@ -291,6 +316,109 @@ class PassingStreamTest(ValidatorTest):
         events[1:-1] = [event for event in events[1:-1] if event["profile"] == "wrapper"]
         events[0]["provenance"]["configurationSha256"] = {}
         self.assertValid(rebuild(events))
+
+
+class ManualTest(ValidatorTest):
+    def test_attested_features_and_checklist_steps(self):
+        for editor in ("vscode", "nvim"):
+            with self.subTest(editor):
+                run = self.assertValid(manual_stream(editor))
+                self.assertEqual([], run.checks)
+                self.assertEqual({}, run.plan.iterations)
+                self.assertEqual(len(run.plan.keys), len(run.observations))
+        run = self.assertValid(manual_stream(failed=True), passed=False)
+        self.assertEqual(1, run.end["counts"]["pass"])
+        self.assertEqual(1, run.end["counts"]["fail"])
+
+    def test_attestation_is_required_only_for_manual(self):
+        for absent in (False, True):
+            events = manual_stream()
+            if absent:
+                del events[0]["attestation"]
+            else:
+                events[0]["attestation"] = None
+            self.assertInvalid(events, 1, "attestation")
+        events = stream("vscode")
+        events[0]["attestation"] = manual_stream()[0]["attestation"]
+        self.assertInvalid(events, 1, "attestation")
+
+    def test_event_kinds_do_not_mix(self):
+        events = manual_stream()
+        events[1] = stream("vscode")[1]
+        self.assertInvalid(events, 2, "a manual run cannot contain check events")
+        events = stream("vscode")
+        events[1] = manual_stream()[1]
+        self.assertInvalid(events, 2, "a vscode run cannot contain observation events")
+        events = stream("vscode")
+        events[0]["expected"] = [{"feature": "hover"}]
+        self.assertInvalid(events, 1, "expected[0]")
+
+    def test_plan_targets(self):
+        events = manual_stream("nvim")
+        events[0]["expected"].append({"step": 7})
+        self.assertInvalid(events, 1, "a checklist step requires the vscode editor")
+        events = manual_stream()
+        events[0]["expected"] = []
+        self.assertInvalid(events, 1, "expected: has 0 items, fewer than 1")
+        events = manual_stream()
+        events[0]["expected"][0] = {"feature": "startup"}
+        self.assertInvalid(events, 1, "startup is not a matrix feature")
+        for target in ({"step": 0}, {"step": 18}, {"step": True}, {"step": 7.0},
+                       {"feature": "hover", "step": 7}, {"id": "vscode.hover.response"}):
+            with self.subTest(target):
+                events = manual_stream()
+                events[0]["expected"] = [target]
+                self.assertInvalid(events, 1, "expected[0]")
+        events = manual_stream()
+        events[0]["expected"].reverse()
+        self.assertInvalid(events, 1, "expected[1] sorts before expected[0]")
+        events = manual_stream()
+        events[0]["expected"].insert(1, {"feature": "hover"})
+        self.assertInvalid(events, 1, "expected[1] repeats expected[0]")
+        # Steps compare numerically, features by code point, regardless of
+        # the manifest's display order. There is no complete-coverage rule.
+        events = manual_stream()
+        events[0]["expected"] = [{"feature": "completion"}, {"feature": "diagnostics"},
+                                  {"step": 2}, {"step": 10}, {"step": 17}]
+        events[1:-1] = [dict(events[1], target=target) for target in events[0]["expected"]]
+        self.assertValid(rebuild(events))
+        events[0]["expected"][-2:] = reversed(events[0]["expected"][-2:])
+        self.assertInvalid(events, 1, "expected[4] sorts before expected[3]")
+
+    def test_observations_are_planned_and_unique(self):
+        events = manual_stream()
+        events[1]["target"] = {"feature": "definition"}
+        self.assertInvalid(events, 2, "feature definition is not in the plan")
+        events = manual_stream()
+        events.insert(2, copy.deepcopy(events[1]))
+        self.assertInvalid(rebuild(events), 3, "feature hover is observed again, after line 2")
+        for change, message in (({"level": "api"}, "level"), ({"status": "skip"}, "status"),
+                                ({"status": "xfail"}, "status"), ({"note": ""}, "note"),
+                                ({"note": "x" * 1001}, "note")):
+            with self.subTest(change=change):
+                events = manual_stream()
+                events[1].update(change)
+                self.assertInvalid(events, 2, message)
+
+    def test_run_end_counts_and_missing_targets(self):
+        events = manual_stream()
+        del events[1]
+        self.assertValid(rebuild(events, status="aborted"), passed=False)
+        events[-1]["complete"] = True
+        self.assertInvalid(events, len(events), "feature hover has no observation")
+        events = manual_stream()
+        events[-1].update(complete=False, status="aborted")
+        self.assertInvalid(events, len(events), "every planned observation has its observation")
+        for field, value, message in (("checkCount", 3, "stream has 2 observations"),
+                                       ("expectedCount", 3, "run-start plans 2 observations"),
+                                       ("counts", dict.fromkeys(STATUSES, 0), "stream has 2 pass observations")):
+            with self.subTest(field=field):
+                events = manual_stream()
+                events[-1][field] = value
+                self.assertInvalid(events, len(events), message)
+        events = manual_stream(failed=True)
+        events[-1].update(status="pass", counts={**events[-1]["counts"], "pass": 2, "fail": 0})
+        self.assertInvalid(events, len(events), "counts.pass is 2, but the stream has 1 pass observation")
 
 
 class EncodingTest(ValidatorTest):
@@ -1127,9 +1255,7 @@ class ProvenanceTest(ValidatorTest):
                          str(context.exception))
 
         # A manual record is of a person's own setup, in either editor, and
-        # records no VSIX. No stream of the manual suite validates yet: no
-        # check lists it, and expected needs one, so check its provenance
-        # directly.
+        # records no VSIX. Check the provenance table directly too.
         def manual_start(editor, vsix=None):
             start = stream("nvim")[0]
             start["suite"] = "manual"
