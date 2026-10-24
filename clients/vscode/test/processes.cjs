@@ -1037,6 +1037,39 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
     assert.equal(run.timers.size, 0);
   });
 
+  test(`${file} keeps a clean keeper release successful when an unrelated process disappears during a scan`, async () => {
+    const table = new Map([[50, { start: '90', group: 50, stays: true }], [51, { start: '100', group: 50 }]]);
+    const proc = fakeProc(table);
+    const read = proc.readFileSync;
+    let racing = false;
+    proc.readFileSync = (name) => {
+      if (racing && name === '/proc/99/stat') {
+        racing = false;
+        table.delete(99);
+      }
+      return read(name);
+    };
+    const run = localRunGroup(table, { file, proc });
+    run.keeper.command(51);
+    run.keeper.stopped = true;
+    table.delete(51);
+    run.keeper.exit(0, null);
+    run.keeper.close();
+    assert.equal(run.keeper.released, 'release\n');
+    run.advance(10000);
+    // An incomplete scan doesn't prove that a member joined the empty group
+    // while its keeper was being released.
+    table.set(99, { start: '200', group: 99 });
+    racing = true;
+    run.advance(50);
+    run.keeper.resume();
+    const result = await run.result();
+    assert.equal(result?.code, 0);
+    assert.equal(result?.stopped, undefined);
+    if (file !== 'run.cjs') assert.equal(result.groupLeft, false);
+    assert.equal(run.timers.size, 0);
+  });
+
   for (const interrupted of [false, true]) {
     test(`${file} lets Node exit after ${interrupted ? 'an interrupted' : 'a clean'} command's keeper survives release`, () => {
       const script = `

@@ -245,7 +245,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // result's stopped says so: it detaches from the group, and so stops reading
 // the output, so that the test can exit while the group, even its keeper, or
 // a process that holds the output pipes runs on (see detach in
-// ../processes.cjs).
+// ../processes.cjs). Keeper release has its own bound, even after a clean
+// exit (see release in ../processes.cjs).
 function runGroup(command, args, { env, input, timeout, signal, onData, onExit }) {
   return new Promise((resolve) => {
     const output = { stdout: [], stderr: [] };
@@ -306,7 +307,7 @@ function runGroup(command, args, { env, input, timeout, signal, onData, onExit }
         abandon = Date.now() + KILL_WAIT_MS;
       } else if (exited !== undefined && empty) {
         finish();
-      } else if (exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
+      } else if (!releasing && exited !== undefined && stopped === undefined && Date.now() > exited.at + GROUP_EXIT_MS) {
         groupLeft = true;
         stop(`left processes running ${GROUP_EXIT_MS / 1000} seconds after it exited`);
       }

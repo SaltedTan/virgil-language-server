@@ -256,10 +256,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
 // before the caller removes the temporary directory, or, if it hasn't
 // KILL_WAIT_MS after SIGKILL, at once, with the result's stopped saying so,
 // and detached from the group, so that the test can exit while the group,
-// even its keeper, runs on (see detach in processes.cjs). If the group still
-// runs one of the servers SERVER_EXIT_MS after the command itself has
-// exited, the group is stopped as well. The group's keeper (see
-// startGroup in processes.cjs) keeps the group's number the run's until then,
+// even its keeper, runs on (see detach in processes.cjs). Keeper release has
+// its own bound, even after a clean exit (see release in processes.cjs).
+// If the group still runs one of the servers SERVER_EXIT_MS after the
+// command itself has exited, the group is stopped as well. The group's keeper
+// (see startGroup in processes.cjs) keeps the group's number the run's until then,
 // or until the group's SIGKILL, and sends the group the test's signals; if it
 // goes before, the test signals only the processes that it saw in the group,
 // each by its PID and start time.
@@ -280,10 +281,10 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         if (!finish() && result.error === undefined && servers.length > 0) void expectServersGone();
       },
     });
-    // Resolves once the command has exited and the group holds no process but
-    // its keeper, or is no longer the run's, and Node.js has reaped the
-    // released keeper; or, with anyway, at once, without the keeper; returns
-    // whether it has.
+    // Starts finishing once the command has exited and the group holds no
+    // process but its keeper, or is no longer the run's. Waits for the bounded
+    // keeper release; with anyway, resolves at once, without the keeper.
+    // Returns whether finishing has started.
     const finish = (anyway = false) => {
       if (finished) return true;
       if (!anyway && releasing) return true;

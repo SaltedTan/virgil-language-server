@@ -211,8 +211,9 @@ function signalProcesses(processes, name) {
 // way. The keeper survives SIGINT, SIGTERM, and SIGHUP, which the rest of the
 // group gets as usual, so the group stays the run's until the runner releases
 // the keeper, or asks for SIGKILL; if the runner goes, or detaches from the
-// group (see detach), the keeper stops the group. stdio is spawn's for the
-// command's standard input, output, and error, each 'pipe', 'inherit', or
+// group (see detach), before releasing the keeper, the keeper stops the group.
+// stdio is spawn's for the command's standard input, output, and error,
+// each 'pipe', 'inherit', or
 // 'ignore'; the returned group's stdin, stdout, and stderr are the pipes.
 // onExit gets the command's exit as { code, signal }, or { error } if it
 // didn't start.
@@ -380,7 +381,11 @@ function startGroup(command, args, { env, stdio, onExit }) {
       }
     },
     // Lets the keeper exit, once the runner has seen the command exit and no
-    // other process left in the group; resolves once Node.js has reaped it.
+    // other process left in the group. Resolves with whether Node.js has
+    // reaped it, either on exit or on detach. The release watchdog sends
+    // SIGKILL after KEEPER_REPLY_MS and detaches KEEPER_KILL_WAIT_MS later if
+    // the keeper still hasn't exited; a runner can detach sooner when its
+    // already-armed group stop deadline expires.
     release: () => new Promise((resolve) => {
       if (keeperGone || number === undefined) {
         resolve(true);
@@ -408,9 +413,9 @@ function startGroup(command, args, { env, stdio, onExit }) {
     // holds the command's pipes, runs on: closes the runner's end of every
     // pipe to the keeper and the command, after which none of their output or
     // reports arrive, and onExit is no longer called, and no longer waits for
-    // the keeper. A keeper that is still there finds its input ended without a
-    // release, as when the runner goes. Returns whether Node.js has reaped the
-    // keeper.
+    // the keeper. Unless already released, a keeper that is still there finds
+    // its input ended without a release, as when the runner goes. Returns
+    // whether Node.js has reaped the keeper.
     detach: () => {
       const gone = keeperGone || !led();
       reported = true;
