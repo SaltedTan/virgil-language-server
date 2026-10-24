@@ -126,7 +126,7 @@ A project file can't name the Virgil root, because its location differs from mac
 2. When the key is absent or JSON `null`, the server tries `virgil/` beside its own resolved executable, including when launched through a symlink. The bundle's `REVISION` must match the full Virgil revision compiled into the server. The log includes that revision.
 3. A missing, unreadable, or mismatched bundle leaves no root, with a log explaining why. A project requiring `virgilDependencies` then gets `MissingVirgilRoot`; single-file parsing still works.
 
-Release archives include the complete pinned `lib/`, its upstream license, and `REVISION`. Keep `virgil/` beside the executables when moving an install. The bundle contains no `rt/`, `aeneas/`, or `bin/`; projects selecting sources outside `lib/` still need a client-supplied checkout. Development builds have no bundle by default. The root stays fixed for the session; changes take effect when the server restarts. The [bundle ADR](decisions/0007-bundled-virgil-library.md) records the layout and precedence.
+[Release archives](releasing.md#what-a-release-contains) include the complete pinned `lib/` under `virgil/`. Keep it beside the executables when moving an install. Projects selecting sources outside `lib/` still need a client-supplied checkout. Development builds have no bundle by default. The root stays fixed for the session; changes take effect when the server restarts. The [bundle ADR](decisions/0007-bundled-virgil-library.md) records the decision and rationale.
 
 The editor clients set the option:
 
@@ -184,7 +184,7 @@ Each problem in a project file is reported as a configuration diagnostic. None i
 | `ExpansionLimit` | Source count, traversal (including directory-entry overflow), project count, or retained source-list capacity exceeded |
 | `SourceBudget` | Aggregate source bytes, paths, and metadata exceed the analysis budget |
 | `SourceIO` | A selected, non-excluded source could not be opened or inspected, a selected file became nonregular, a directory required for traversal could not be listed, or configuration could not be read within its size/capacity limits |
-| `MissingVirgilRoot` | Nonempty `virgilDependencies` without a configured Virgil root |
+| `MissingVirgilRoot` | Nonempty `virgilDependencies` without a root selected by [the root-selection rules](#the-virgil-root) |
 
 Each diagnostic has a range of bytes in the file. It covers the offending value, or a field's name for `UnknownField` and `DuplicateField`. `MissingField` points at the opening brace of the object that lacks the field. `InvalidJson` points where parsing stopped, or at the start of a file that is too large. Diagnostics come in the file's order, at most 100 of them.
 

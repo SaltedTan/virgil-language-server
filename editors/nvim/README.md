@@ -32,7 +32,7 @@ Project files name Virgil's own libraries relative to a Virgil checkout or insta
 export VIRGIL_LOC=$HOME/virgil
 ```
 
-Or replace `vim.env.VIRGIL_LOC` with the path. With no client root, release installs use `virgil/` beside the resolved server executable after checking its pinned revision. Keep that directory beside the executables. Missing or mismatched bundles get `MissingVirgilRoot`; invalid client roots block fallback. Sources outside `lib/`, such as `rt/` or `aeneas/`, require a full checkout override. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
+Or replace `vim.env.VIRGIL_LOC` with the path. See [The Virgil root](../../docs/configuration.md#the-virgil-root) for bundle placement, root errors, and projects needing a checkout override. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
 
 ## Project files
 
