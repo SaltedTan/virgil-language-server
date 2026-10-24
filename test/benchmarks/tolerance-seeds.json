@@ -1,0 +1,221 @@
+{
+  "call-after-string-and-comment": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": ");",
+    "files": {
+      "test/fixtures/repair/cases/call-after-string-and-comment.v3": "f373880d428efaa6647fdc6871b5c5113c2656c648766a505ea9fcb6604cf455"
+    }
+  },
+  "call-empty-arguments": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "1, 2);",
+    "files": {
+      "test/fixtures/repair/cases/call-empty-arguments.v3": "1decc03684af69d2bbe67e98576244e4a43562cf9c10c09b97caa2e51627c2dc"
+    }
+  },
+  "call-generic": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "1);",
+    "files": {
+      "test/fixtures/repair/cases/call-generic.v3": "2ad25767cc35398980228cbeee88d9bb5d9c707aec7808151a1949aebee5616c"
+    }
+  },
+  "call-nested-missing-paren": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "3))",
+    "files": {
+      "test/fixtures/repair/cases/call-nested-missing-paren.v3": "88ca22858c42c8ce68f1e052baac37a4718bc705418e56d07a65fb41abbfaa88"
+    }
+  },
+  "call-open-arguments": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "2);",
+    "files": {
+      "test/fixtures/repair/cases/call-open-arguments.v3": "af9a5e86550ff3ff6c50abbfff9232642c456b36dab6012a71667744a9047af9"
+    }
+  },
+  "call-trailing-comma": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "2",
+    "files": {
+      "test/fixtures/repair/cases/call-trailing-comma.v3": "5665672819cc406594dc494df0253e22005011f279d358086db5124366f91a2c"
+    }
+  },
+  "else-branch": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "",
+    "files": {
+      "test/fixtures/repair/cases/else-branch.v3": "eb46ac1268deb68903ea606d0d052b3eb5e74fb92126cb51b1f8ed1df67611bf"
+    }
+  },
+  "if-condition-open": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "true)",
+    "files": {
+      "test/fixtures/repair/cases/if-condition-open.v3": "f4a23d213d7895e1aa2d4b0079635b9c84508ce6380ea5b51fd7fcab6397b43e"
+    }
+  },
+  "index-open": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "0];",
+    "files": {
+      "test/fixtures/repair/cases/index-open.v3": "c3527b6382305da6c2fa06ad9c272ca21473f025acd0941a41aebb9bb112c29d"
+    }
+  },
+  "local-type": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "int;",
+    "files": {
+      "test/fixtures/repair/cases/local-type.v3": "bab273781847937df577cb39b54f1f5d2a5cb9ef152e8fa03e1b07b40b12e4f1"
+    }
+  },
+  "member-end-of-statement": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-end-of-statement.v3": "3c8b509576dc227fceb91c66a5da6b5fd40fa51676a2330cbab6427796aafb72"
+    }
+  },
+  "member-in-component-field": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-in-component-field.v3": "dcbcb810f570747ea19b192578f77817b1843431f2e168308dc34f875cef2096"
+    }
+  },
+  "member-in-condition": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor)",
+    "files": {
+      "test/fixtures/repair/cases/member-in-condition.v3": "e649efe12bd1f2d1fb7916494c2937545486f0fd74ffcb617c3a2110e44cf698"
+    }
+  },
+  "member-in-field-initializer": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-in-field-initializer.v3": "819de8774892d0ce28638a3529af7d2850ed33fd22679e1f8d3ffb73d9abac83"
+    }
+  },
+  "member-in-lambda": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-in-lambda.v3": "f1454804420f6b1e9cb846043ad4794b2ff220f59fe00740745992c387f09dce"
+    }
+  },
+  "member-in-match-arm": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-in-match-arm.v3": "2857044e76469f315cbc1986a58eb58efe010be54ee986f77c628d83250b7a3e"
+    }
+  },
+  "member-mid-expression": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor",
+    "files": {
+      "test/fixtures/repair/cases/member-mid-expression.v3": "489186bd8dfe6ca4fdd09a4a9bed98f939a06d2cf2412e8cf88fecfeb8a1a936"
+    }
+  },
+  "member-of-call-result": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-of-call-result.v3": "88927ffd95825c04bfd1ffb333efdb7cd6adea70cdc4d8045fb18e8c00a7c73e"
+    }
+  },
+  "member-of-this": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-of-this.v3": "a5fd1814a6203afea94c1e533c26d8e87efaa6ac7aa02d9862b105fb30d9d7cd"
+    }
+  },
+  "member-of-type": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/member-of-type.v3": "2cc1fcdde1e9d94972f9145e7a60f830af683a86f98bfab17381e6061f7d1696"
+    }
+  },
+  "member-with-prefix": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "rm()",
+    "files": {
+      "test/fixtures/repair/cases/member-with-prefix.v3": "bb5ec9e5da08487935c57854c6c476996ab64b2e05bb6ce9112f4704a27782e3"
+    }
+  },
+  "missing-brace-end-of-method": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "}",
+    "files": {
+      "test/fixtures/repair/cases/missing-brace-end-of-method.v3": "04448dd6822f5335c8dbac3bee70d73fd858d5d406e3b9e88b966982bbd913f6"
+    }
+  },
+  "missing-semicolon": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": ";",
+    "files": {
+      "test/fixtures/repair/cases/missing-semicolon.v3": "80702775839a2be760cf47bcd8c1be907d526457e21447bdae0d702cac6bd1ae"
+    }
+  },
+  "return-expression": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "0;",
+    "files": {
+      "test/fixtures/repair/cases/return-expression.v3": "3dc9d3e70f7726984f905630a3b175858640dd0c68ac1e0d258bfee7b072031f"
+    }
+  },
+  "statement-keyword-prefix": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": ";",
+    "files": {
+      "test/fixtures/repair/cases/statement-keyword-prefix.v3": "3c2ea8bf86f8d553f73ea5bd081ad69cac0e51ed7f1d76d0ce6673f601a725f7"
+    }
+  },
+  "syntax-error-after-cursor": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/syntax-error-after-cursor.v3": "629c4ccd4cd8aa20c3ed9e58b34466505023dd568bd8e900fd80c0dbaf43a8c6"
+    }
+  },
+  "syntax-error-elsewhere-in-file": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/syntax-error-elsewhere-in-file.v3": "2df5597285e5488d2b2370d2439c40b0a1c0c092a43fe62746e6948a10ae12ca"
+    }
+  },
+  "syntax-error-in-other-file": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/syntax-error-in-other-file/main.v3": "64fa0a5097ec6e2466e04c61544680fc051c6c4bb3df55b51ec9ca8d94ac8993",
+      "test/fixtures/repair/cases/syntax-error-in-other-file/other.v3": "87711d868e16f6bb6a0201f46c5ba7d44638c9014c99299f26fb1b17c6aac5b7"
+    }
+  },
+  "type-error-elsewhere-in-file": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/type-error-elsewhere-in-file.v3": "638b4dbfad0abcadc93412c037520726cd61a9b764aa65830d421c670ea04a23"
+    }
+  },
+  "type-error-in-other-file": {
+    "policy": "synthetic first parseable ladder repair (remote initializer completed)",
+    "insertion": "virgilLspCursor;",
+    "files": {
+      "test/fixtures/repair/cases/type-error-in-other-file/main.v3": "278cd5a4ce23a087b2c180d34825ae6da75dfd8e9fb6192f8941273c9db0e868",
+      "test/fixtures/repair/cases/type-error-in-other-file/other.v3": "e89ac4d0af44d7f0abf68b8c1d001511fec8da44eb9b92989732f63f46bf800f"
+    }
+  },
+  "var-initializer": {
+    "policy": "synthetic hand-checked predecessor",
+    "insertion": "0;",
+    "files": {
+      "test/fixtures/repair/cases/var-initializer.v3": "fed8d8b37929e61323ccc7acc8241e7299af28614a883ea0c98c55cef1b5c578"
+    }
+  }
+}
