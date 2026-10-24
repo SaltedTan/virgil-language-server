@@ -391,3 +391,155 @@ Aeneas medians from six measured operations per build:
 This short control bounds the observed effect on these samples; noise and probe
 syscalls remain. It establishes no sub-millisecond equivalence. No macOS timing
 baseline was collected.
+
+## Semantics during syntax errors
+
+[`scripts/bench-tolerance.py`](../scripts/bench-tolerance.py) measures the semantic
+answers an editor receives while another file fails to parse. It imports the
+existing benchmark helpers and `Session`; a separate command keeps the successful
+operation timings and output of `bench-lsp.py` unchanged. No server fallback is
+implemented. Run both modes and all states with:
+
+```sh
+mkdir -p build/bench-results
+make BUILD=build/bench BENCH=1 all bench-metadata
+python3 scripts/bench-tolerance.py --exe build/bench/virgil-lsp --cpu 4 \
+  --output build/bench-results/tolerance.json
+```
+
+A normal executable works too, after `make all bench-metadata`; its probe arrays
+are empty. `--suite repair|replay|negative|extra` selects a group, and `--only TEXT`
+filters state IDs. These filters appear in the recorded command. `--work-dir`
+chooses the parent of disposable source copies (default `build/bench-results`);
+use scratch storage on machines with a small shared `/tmp`. Output directories
+must already exist. No fixture, vendor source, or real project file is edited.
+The driver rechecks input hashes and removes its copies. Failed runs preserve
+partial results and a failing session's transcript in `<output>.failure.json`.
+
+The main corpus has 185 states, each measured in a fresh server session in both
+warm and cold modes:
+
+- The [repair corpus](decisions/0006-incomplete-code-repair.md#cases): 31 fixture
+  cases and 14 Aeneas sites. Broken fixtures retain their exact text with only the
+  cursor marker removed. Their predecessors are explicitly labeled synthetic.
+  The reviewed [seed manifest](../test/benchmarks/tolerance-seeds.json) pins fixture
+  hashes and uses hand-checked insertions where straightforward. Other seeds use
+  the first parseable repair ladder candidate, completing a remote missing
+  initializer when necessary. Parseable seeds may still have type errors. Aeneas
+  predecessors are the original pinned upstream files.
+- 140 byte insertion states at six sites: the Aeneas component member, nested
+  call, condition, and for header, plus `Arrays.` accesses in `StringBuilder.v3`
+  and `Vector.v3`. Delete the line suffix and reinsert its ASCII bytes one at a
+  time. Each state's predecessor is the most recent parseable version *before*
+  that state, starting with the upstream original. The CLI parser validates this
+  history; measured semantic answers always use the protocol.
+
+Warm sessions open and analyze the predecessor, then send the current text as an
+unsaved full-text `didChange`. Cold sessions open the current text immediately;
+they have no analyzed predecessor, although the disposable disk copy ordinarily
+still contains the original program. Closed-file controls instead put the broken
+text on disk. Each replay state gets its own session, seeded from the sequence's
+history; timing does not model user think time.
+
+Definition, plaintext hover, and references with declarations are queried at a
+resolved observer call and fixed bound sites in untouched `Paths.v3`, `Char.v3`,
+and `StringBuilder.v3`. The edited file is excluded even at a replay's final
+restored byte: there are exactly 400 real-file query sites across the 140 states,
+plus 140 observer sites. The observer also contains a deliberate type error.
+Semantic diagnostic publications in observed intact files are compared as sets,
+preserving URI, range, code, message, severity, and source. Parser diagnostics are
+excluded. Queries wait for the current analysis, then one snapshot inspection
+checks configuration, membership, and document freshness. There are no sleeps or
+snapshot polling loops.
+
+Oracles use the same protocol on the parseable predecessor or the original
+program with the intended semantic edit retained and only the syntax error
+removed. JSON retains these answers, source overlays, configuration, and each
+state's answers and scores. Disposable URI prefixes become `project:///`; target
+paths and every range remain significant. Hover text and ranges compare exactly;
+reference and diagnostic sets ignore ordering only. `available` counts a nonempty
+answer or an oracle-matching legitimate empty answer. `correct` counts an exact
+match. Missing a nonempty oracle is unavailable and incorrect, but is not a
+`wrong` binding. A nonempty mismatch is wrong, including a partial reference or
+diagnostic set.
+
+Three negative controls delete a declaration, change its signature, or introduce
+a shadowing local, alongside a syntax error. Their policy accepts suppression or
+the current program's oracle. The driver separately feeds each predecessor's
+captured answer to the scorer and requires a wrong verdict. The
+[scoring tests](../test/benchmarks/test_tolerance.py) repeat this with
+[protocol captures](../test/benchmarks/tolerance-negative-oracles.json), including
+the signature change whose identifier ranges still match. No permissive server
+fallback is built. Fifteen extra states cover three variants each of two broken
+files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
+non-ASCII before the query and one CRLF case), closed-file disk changes with
+watched-file notifications, and project-file changes (remove/add membership and
+change a language flag). The pinned compiler rejects CRLF, so that case uses an
+LF oracle and expects semantic suppression today.
+
+JSON has the performance harness's revision, binary SHA-256, build, host, affinity,
+command, and input-hash metadata. `states` retains mode, seed policy, edit kind,
+text hashes, current parse outcomes, snapshots, answers, scores, and raw samples.
+Edit kinds are `body`, `header` (condition/for headers and declaration headers in
+controls), and `whole_file` (truncation). `summary.features` splits availability,
+correctness, exact matches, and wrong answers by suite, mode, kind, and feature;
+`summary.latency_ms` reports p50/p95 by suite, mode, and query kind. Definition is
+queried first and includes analysis waiting; later requests generally use the
+completed snapshot. Diagnostic latency is an **upper bound** from state start to
+the post-navigation publication inspection, not the exact publication instant.
+Process records retain worker replacements and stderr; probe-enabled builds add
+the existing phase, allocation, and heap counters. RSS is sampled before shutdown.
+These measurements include unavailable answers and must not be compared directly
+with the successful-operation benchmark above.
+
+`make test` runs nine scoring tests and a five-state smoke replay (two small
+repair states and all three negative controls, in both modes). The smoke run
+takes about 0.2 seconds on the reference host. The full suite remains opt-in.
+
+### Tolerance baseline
+
+Measured on 2026-10-25 at `220733d` (server sources unchanged from `6406edc`) and pinned Virgil
+`7cf038fc13a5474836bec8b14c7a3e796fd07fa5`, with probes enabled, the default
+384 MiB worker heap, CPU 4, Python 3.9.25, and the Intel Core i7-14700KF host
+described above. The build's `-dirty` marker reflects pending documentation only.
+Other work ran on this machine. Warm and cold counts were identical:
+
+| Corpus (per mode) | States with all four features | Correct definition / hover / reference answers, each | Correct diagnostic sets | Wrong answers |
+| --- | ---: | ---: | ---: | ---: |
+| Repair | 6/45 | 15/87 | 6/45 | 0 |
+| Replay | 9/140 | 35/540 | 9/140 | 0 |
+| Combined | 15/185 | 50/627 | 15/185 | 0 |
+
+The same all-feature state counts split by edit kind follow, for either mode:
+
+| Corpus | Body | Header | Whole file |
+| --- | ---: | ---: | ---: |
+| Repair | 6/41 | 0/2 | 0/2 |
+| Replay | 7/78 | 2/62 | — |
+
+Available answers were all correct. All three negative controls passed the safe
+suppression policy in both modes and rejected the injected predecessor answer.
+The fifteen extra states produced no wrong answers. This establishes the current
+low-availability baseline; these deterministic cases do not estimate availability
+across arbitrary editing sessions.
+
+The full runs took 212.93 and 210.61 seconds for 406 state/mode records each,
+including the three negative controls and fifteen extra cases. Every per-state
+answer and score, aggregate feature count, input hash, driver hash, and binary
+hash matched between runs. Both recorded zero worker replacements and complete
+worker heap probes. First-run latency below pools only
+the 185 primary states, including unavailable answers, in **milliseconds (p50 /
+p95)**. Navigation has 627 samples per feature per mode; diagnostic inspection has
+185 per mode.
+
+| Query kind | Warm | Cold |
+| --- | ---: | ---: |
+| Definition, including analysis waiting | 2.256 / 104.981 | 2.325 / 217.395 |
+| Hover | 2.224 / 2.360 | 2.240 / 2.395 |
+| References | 2.225 / 2.621 | 2.248 / 2.727 |
+| Diagnostic inspection upper bound | 127.045 / 399.817 | 235.614 / 812.473 |
+
+These runs used server SHA-256
+`171cde7f9cf9885bfd12d6f3fc7ce7baadf8267b3d4c0cfccd17aae3416d4111`
+and worker SHA-256
+`f658d6d1f707e9a693fc09718f04af896b240d3f200c30cfe3b72fefef1f75be`.
