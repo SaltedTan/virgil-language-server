@@ -92,8 +92,8 @@ MANUAL = "manual"
 # The client modes and editors that a suite's runs record: the Neovim suites
 # run the client that the editor has, every VS Code run installs the extension
 # from source or from a VSIX, and Remote-SSH always runs it from a VSIX. A
-# manual record is of a person's own setup, in either editor, and may be of any
-# suite, so the suite agreement below doesn't apply to it.
+# manual record, of a person's own setup in either editor, is the manual
+# suite's alone: its client mode is manual exactly when its suite is.
 SUITE_PROVENANCE = {
     "nvim": (("none",), ("nvim",)),
     "lazyvim": (("none",), ("nvim",)),
@@ -680,8 +680,9 @@ class Plan:
 def check_suite_provenance(start):
     """Checks the run-start's client mode, VSIX, and editor against each other
     and its suite, whatever the run's plan (RESULTS.md, "Result events"). A
-    manual record is of a person's own setup, in either editor. Raises Invalid
-    on line 1."""
+    manual record, of a person's own setup in either editor, is the manual
+    suite's alone, so its client mode is manual exactly when its suite is.
+    Raises Invalid on line 1."""
     suite = start["suite"]
     provenance = start["provenance"]
     mode = provenance["clientMode"]
@@ -692,8 +693,6 @@ def check_suite_provenance(start):
         raise Invalid(1, f"provenance.clientMode is {show(mode)}, but provenance.vsix is "
                          + ("null" if vsix is None else "an object")
                          + ": clientMode is vsix exactly when vsix is not null")
-    if mode == MANUAL:
-        return
     modes, editors = SUITE_PROVENANCE[suite]
     if mode not in modes:
         raise Invalid(1, f"provenance.clientMode is {show(mode)}, but a run of suite {suite} records "

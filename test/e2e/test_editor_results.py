@@ -1023,17 +1023,50 @@ class ProvenanceTest(ValidatorTest):
                 self.assertInvalid(events, 1, f'provenance.editor.name is "{editor}", but a run of suite {suite} '
                                               f"uses {'nvim' if suite in ('nvim', 'lazyvim') else 'vscode'}")
 
-    def test_a_manual_record_is_a_persons_own_setup(self):
-        # It records no VSIX, and either editor, whatever the suite.
-        for variant in ("nvim", "vscode"):
+    def test_manual_mode_is_the_manual_suites_alone(self):
+        # An automated suite's run can't call itself manual to skip the
+        # agreement: the client mode is manual exactly when the suite is.
+        for variant in ("nvim", "lazyvim", "vscode"):
             with self.subTest(variant):
                 events = stream(variant)
                 events[0]["provenance"].update(clientMode="manual", vsix=None)
-                self.assertValid(events)
-        events = stream("nvim")
-        events[0]["provenance"].update(clientMode="manual", vsix=copy.deepcopy(UNREADABLE_VSIX))
-        self.assertInvalid(events, 1, 'provenance.clientMode is "manual", but provenance.vsix is an object: '
-                                      "clientMode is vsix exactly when vsix is not null")
+                self.assertInvalid(events, 1, 'provenance.clientMode is "manual", but a run of suite '
+                                              f"{VARIANTS[variant]['suite']} records "
+                                              + ("none" if variant in ("nvim", "lazyvim") else "source or vsix"))
+        # The Remote-SSH plan holds its vsix condition in every run, which
+        # rejects a manual mode first, so check its provenance directly.
+        start = stream("remote-ssh")[0]
+        start["provenance"].update(clientMode="manual", vsix=None)
+        with self.assertRaises(results.Invalid) as context:
+            results.check_suite_provenance(start)
+        self.assertEqual('line 1: provenance.clientMode is "manual", but a run of suite remote-ssh records vsix',
+                         str(context.exception))
+
+        # A manual record is of a person's own setup, in either editor, and
+        # records no VSIX. No stream of the manual suite validates yet: no
+        # check lists it, and expected needs one, so check its provenance
+        # directly.
+        def manual_start(editor, vsix=None):
+            start = stream("nvim")[0]
+            start["suite"] = "manual"
+            start["provenance"].update(clientMode="manual", vsix=vsix)
+            start["provenance"]["editor"]["name"] = editor
+            return start
+
+        for editor in ("nvim", "vscode"):
+            with self.subTest(editor):
+                results.check_suite_provenance(manual_start(editor))
+        start = manual_start("nvim", copy.deepcopy(UNREADABLE_VSIX))
+        with self.assertRaises(results.Invalid) as context:
+            results.check_suite_provenance(start)
+        self.assertEqual('line 1: provenance.clientMode is "manual", but provenance.vsix is an object: '
+                         "clientMode is vsix exactly when vsix is not null", str(context.exception))
+        start = manual_start("nvim")
+        start["provenance"]["clientMode"] = "none"
+        with self.assertRaises(results.Invalid) as context:
+            results.check_suite_provenance(start)
+        self.assertEqual('line 1: provenance.clientMode is "none", but a run of suite manual records manual',
+                         str(context.exception))
 
     def test_configuration_digests(self):
         events = stream("lazyvim")
