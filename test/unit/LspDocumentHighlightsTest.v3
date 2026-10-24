@@ -12,6 +12,7 @@
 def T = UnitTests.register;
 def X = [
 	T("LspDocumentHighlights:assignment_kinds", test_assignment_kinds),
+	T("LspDocumentHighlights:assignment_kinds_more", test_assignment_kinds_more),
 	T("LspDocumentHighlights:locals_and_captures", test_locals_and_captures),
 	T("LspDocumentHighlights:members_and_generics", test_members_and_generics),
 	T("LspDocumentHighlights:components_and_classes", test_components_and_classes),
@@ -288,6 +289,49 @@ def test_assignment_kinds(t: Tester) {
 		("identity", [2, 1]),
 		("value", [1, 2])
 	];
+	expectKinds(t, s, analysis, text, expected);
+	// Two different fields share the spelling; only the receiver's field
+	// joins the Box declaration, and its receiver remains a read above.
+	var field = at(text, "b.field =", 2), result = s.answer(t, "Refs.v3", field.0, field.1);
+	var entries = JsonValue.JArray.!(result).v;
+	t.asserti(4, entries.length);
+	for (i < entries.length) t.asserti(if(i == 3, 1, 3), intAt(entries[i], "kind"));
+	field = at(text, "var field", 4);
+	entries = JsonValue.JArray.!(s.answer(t, "Refs.v3", field.0, field.1)).v;
+	t.asserti(2, entries.length);
+	t.asserti(1, intAt(entries[0], "kind"));
+	t.asserti(3, intAt(entries[1], "kind"));
+	s.server.close();
+}
+// Forms beyond the first fixture: an unsigned shift assignment, an
+// increment used as a value, writes through chained and indexed receivers,
+// and a field written in a constructor.
+def test_assignment_kinds_more(t: Tester) {
+	var text = "component More {\n  def body(x: int, d: Outer, cells: Array<Cell>, k: int) -> int {\n    var y: int;\n    x >>>= 1;\n    y = x++;\n    d.inner.leaf = y;\n    cells[k].slot = y;\n    return x + y;\n  }\n}\nclass Outer { var inner: Inner; }\nclass Inner { var leaf: int; }\nclass Cell { var slot: int; }\nclass Made {\n  var made: int;\n  new(v: int) { made = v; }\n}\n";
+	var s = HighlightsTestSession.new(t, text);
+	s.open("Refs.v3", 1, text);
+	s.settle();
+	t.assert(s.context().snapshot.verified, "the fixture verifies");
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], false);
+	t.assert(analysis.verified, "the collector fixture verifies");
+	expectKinds(t, s, analysis, text, [
+		("x", [1, 3, 3, 2]),
+		("y", [1, 3, 2, 2, 2]),
+		("d", [1, 2]),
+		("inner", [2, 1]),
+		("leaf", [3, 1]),
+		("cells", [1, 2]),
+		("k", [1, 2]),
+		("slot", [3, 1]),
+		("made", [1, 3]),
+		("v", [1, 2])
+	]);
+	s.server.close();
+}
+// Checks each name's highlights, from its first occurrence, against its
+// expected kinds in source order (1 Text, 2 Read, 3 Write), and the
+// collector's write flag on each use.
+def expectKinds(t: Tester, s: HighlightsTestSession, analysis: ProgramAnalysis, text: string, expected: Array<(string, Array<int>)>) {
 	for (entry in expected) {
 		var name = entry.0, kinds = entry.1, spots = Vector<HighlightSpot>.new();
 		var line = 0, column = 0;
@@ -313,18 +357,6 @@ def test_assignment_kinds(t: Tester) {
 		var first = spots[0];
 		expectHighlightSpots(t, s, s.answer(t, "Refs.v3", first.line, first.begin), spots.extract(), name);
 	}
-	// Two different fields share the spelling; only the receiver's field
-	// joins the Box declaration, and its receiver remains a read above.
-	var field = at(text, "b.field =", 2), result = s.answer(t, "Refs.v3", field.0, field.1);
-	var entries = JsonValue.JArray.!(result).v;
-	t.asserti(4, entries.length);
-	for (i < entries.length) t.asserti(if(i == 3, 1, 3), intAt(entries[i], "kind"));
-	field = at(text, "var field", 4);
-	entries = JsonValue.JArray.!(s.answer(t, "Refs.v3", field.0, field.1)).v;
-	t.asserti(2, entries.length);
-	t.asserti(1, intAt(entries[0], "kind"));
-	t.asserti(3, intAt(entries[1], "kind"));
-	s.server.close();
 }
 def test_locals_and_captures(t: Tester) {
 	var s = session(t);
