@@ -109,8 +109,12 @@ def warm(exe, root):
         assert not substitutions(initial)
         c.change(BROKEN)
         snap = c.snapshot()
+        assert snap['generation'] == initial['generation'] + 1, (initial, snap)
         sub, = substitutions(snap)
         assert sub['uri'] == c.uri('A.v3') and sub['version'] == 2, sub
+        before = c.query('hover', 'A.v3', 'broken')
+        assert before == {'contents': {'kind': 'plaintext', 'value': 'def broken() -> int'},
+                          'range': span(BROKEN, 'broken')}, before
         expected = {'uri': c.uri('A.v3'), 'range': span(BROKEN, 'target', BROKEN.index('def target'))}
         assert c.query('definition') == expected
         assert c.query('definition', 'A.v3', 'target(); }\n\tdef wrong') == expected
