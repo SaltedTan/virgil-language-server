@@ -193,7 +193,12 @@ class Corpus:
                 project = self.project("extra/" + name, texts)
                 project["queries"].append(query("B.v3", texts["B.v3"], "A.f(1)", "f"))
                 previous = {p: texts[p] for p in current}
-                yield self.state(project, name, "extra", "whole_file" if variant and category == "closed-file-on-disk" else "body",
+                kind = "body"
+                if variant == 1 and category == "closed-file-on-disk":
+                    kind = "whole_file"
+                elif variant == 2 and category in ("two-broken-files", "closed-file-on-disk"):
+                    kind = "header"
+                yield self.state(project, name, "extra", kind,
                                  previous, current, "original small program", **options)
 
     def verify_inputs(self):

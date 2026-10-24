@@ -126,7 +126,9 @@ test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUIL
 	python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp
 	python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp
 	python3 test/benchmarks/test_client.py
+	python3 test/benchmarks/test_tolerance.py
 	python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
+	python3 scripts/bench-tolerance.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
 	test/release/run.sh
 	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
 
