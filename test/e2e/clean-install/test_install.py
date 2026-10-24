@@ -7,6 +7,7 @@ import hashlib
 import http.server
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -65,9 +66,9 @@ class InstallTests(unittest.TestCase):
                     if xdg is not None:
                         env["XDG_CONFIG_HOME"] = str(home / xdg) if xdg else ""
                     config = Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "nvim"
-                    config.mkdir(parents=True)
                     original = 'let g:keep = 1' if initial == "init.vim" else '-- keep my settings'
                     if initial:
+                        config.mkdir(parents=True)
                         (config / initial).write_text(original)  # No trailing newline.
                     init = config / (initial or "init.lua")
                     require = 'lua require("virgil_lsp")' if initial == "init.vim" else 'require("virgil_lsp")'
@@ -105,6 +106,8 @@ class InstallTests(unittest.TestCase):
                 if xdg:
                     self.assertFalse((home / ".config/nvim").exists())
 
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "the README checksum commands target Linux and require sha256sum")
     def test_checksum_gates_install_in_plain_bash(self):
         archive = f'virgil-lsp-{self.values["server_version"]}-x86-64-linux.tar.gz'
         vsix = f'virgil-lsp-vscode-{self.values["extension_version"]}.vsix'
