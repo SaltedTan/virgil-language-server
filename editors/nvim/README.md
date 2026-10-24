@@ -2,11 +2,22 @@
 
 > **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. A [scripted LazyVim test](../../test/e2e/lazyvim/README.md) runs the LazyVim configuration locally and in [CI](../../test/e2e/lazyvim/README.md#ci), and the [results](../../docs/manual-testing.md#results) record its runs.
 
-Requires Neovim 0.11 or later. No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
+Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on PATH](../../README.md#editor-setup). LazyVim additionally requires an existing [LazyVim starter installation](https://www.lazyvim.org/installation) and its prerequisites (including Git and a C compiler for parsers). No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
 ## LazyVim
 
-Copy [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to `~/.config/nvim/lua/plugins/virgil.lua`, and make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
+Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim installation's `lua/plugins/virgil.lua`. The commands use `$XDG_CONFIG_HOME/nvim`, or `~/.config/nvim` when it is unset or empty. Replace `config_url` with the raw source download location for the release version you installed (or an HTTP directory containing its `editors/nvim/` files). The file is downloaded beside its destination and moved into place only once the download succeeds, so a failed download leaves an earlier installation as it was:
+
+<!-- clean-install: lazyvim -->
+```sh
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
+nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+mkdir -p "$nvim_config/lua/plugins"
+curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$nvim_config/lua/plugins/virgil.lua.part" &&
+mv "$nvim_config/lua/plugins/virgil.lua.part" "$nvim_config/lua/plugins/virgil.lua"
+```
+
+Make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
 
 LazyVim's keys reach the server: `gd`, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more.
 
@@ -18,7 +29,20 @@ LazyVim's noice.nvim drops `window/showMessage` notifications from every languag
 
 ## Plain Neovim
 
-Add the contents of [`virgil_lsp.lua`](virgil_lsp.lua) to your `init.lua`. To reproduce a problem without your own configuration:
+Download [`virgil_lsp.lua`](virgil_lsp.lua) into your configuration's `plugin/` directory (replace `config_url` as above). Neovim loads it automatically at startup after `init.vim` or `init.lua`. This uses the same configuration directory as the LazyVim step; neither init file is created or changed, even for a new configuration. Setting `noloadplugins` or starting with `--noplugin` or `--clean` skips this automatic loading. The file is downloaded beside its destination and moved into place only after a successful download, so a failed or interrupted rerun preserves an earlier installation. Any remaining `.part` file is not sourced: Neovim loads only `*.lua` and `*.vim` plugin files.
+
+<!-- clean-install: plain-nvim -->
+```sh
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.3/editors/nvim
+nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+mkdir -p "$nvim_config/plugin"
+curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/plugin/virgil_lsp.lua.part" &&
+mv "$nvim_config/plugin/virgil_lsp.lua.part" "$nvim_config/plugin/virgil_lsp.lua"
+```
+
+Alternatively, add the contents of `virgil_lsp.lua` to your `init.lua`.
+
+To reproduce a problem from a source checkout without your own configuration:
 
 ```sh
 nvim --clean -u editors/nvim/virgil_lsp.lua path/to/file.v3
@@ -30,6 +54,13 @@ Project files name Virgil's own libraries relative to a Virgil checkout or insta
 
 ```sh
 export VIRGIL_LOC=$HOME/virgil
+```
+
+For a release install, you can select its bundled library explicitly instead (replace the version and target for your install):
+
+<!-- clean-install: nvim-root -->
+```sh
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-linux/virgil"
 ```
 
 Or replace `vim.env.VIRGIL_LOC` with the path. See [The Virgil root](../../docs/configuration.md#the-virgil-root) for bundle placement, root errors, and projects needing a checkout override. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
