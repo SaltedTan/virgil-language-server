@@ -158,7 +158,8 @@ class LspWorkspaceSymbolSearch(store: DocumentStore, query: string, max: int) {
 		}
 	}
 	private def matchesDocument(e: (string, AnalysisSnapshot, int)) -> bool {
-		return e.1.documentVersions[e.2].matchesDocument(store);
+		var v = e.1.documentVersions[e.2];
+		return v.substitution == null && v.matchesDocument(store);
 	}
 	// Locals, parameters, and type parameters are not workspace symbols, nor
 	// are constructors, which are all named "new".

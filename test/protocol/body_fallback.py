@@ -86,6 +86,9 @@ class Case:
         assert all(v['current'] for v in value['documentVersions']), value
         return value
 
+    def symbols(self, query):
+        return self.s.result(self.s.send('workspace/symbol', {'query': query}))
+
     def diagnostics(self, name):
         publications = [m['params'] for direction, m in self.s.transcript if direction == 'recv'
                         and m.get('method') == 'textDocument/publishDiagnostics'
@@ -107,11 +110,19 @@ def warm(exe, root):
         c.open('B.v3')
         initial = c.snapshot()
         assert not substitutions(initial)
+        target, = c.symbols('target')
+        assert target['name'] == 'target' and target['location'] == {
+            'uri': c.uri('A.v3'), 'range': span(A, 'target', A.index('def target'))}, target
         c.change(BROKEN)
         snap = c.snapshot()
         assert snap['generation'] == initial['generation'] + 1, (initial, snap)
         sub, = substitutions(snap)
         assert sub['uri'] == c.uri('A.v3') and sub['version'] == 2, sub
+        assert c.symbols('target') == []
+        symbols = c.symbols('')
+        assert symbols and all(s['location']['uri'] == c.uri('B.v3') for s in symbols), symbols
+        use, = c.symbols('use')
+        assert use['location'] == {'uri': c.uri('B.v3'), 'range': span(B, 'use')}, use
         before = c.query('hover', 'A.v3', 'broken')
         assert before == {'contents': {'kind': 'plaintext', 'value': 'def broken() -> int'},
                           'range': span(BROKEN, 'broken')}, before
@@ -157,12 +168,22 @@ def warm(exe, root):
         c.change(A)
         assert not substitutions(c.snapshot())
         assert len(c.query('references')) == 4
+        assert c.symbols('target') == [target]
+        repaired = BROKEN.replace('var bad = ;', 'var bad = 1;')
+        c.change(repaired)
+        assert not substitutions(c.snapshot())
+        moved, = c.symbols('target')
+        assert moved['location'] == {
+            'uri': c.uri('A.v3'), 'range': span(repaired, 'target', repaired.index('def target'))}, moved
         # Project development capture uses the same policy; explicit URIs keep
         # their exact-text path and must never acquire a substitution.
         c.change(BROKEN)
         c.snapshot()
         result = c.s.result(c.s.send('virgil-lsp/analyze', {'uri': c.uri('A.v3')}))
         assert len(substitutions(result)) == 1
+        assert c.symbols('target') == []
+        symbols = c.symbols('')
+        assert symbols and all(s['location']['uri'] == c.uri('B.v3') for s in symbols), symbols
         result = c.s.result(c.s.analyze([c.uri('A.v3'), c.uri('B.v3')]))
         assert not substitutions(result) and any(d['kind'] == 'ParseError' for d in result['diagnostics'])
         c.close()

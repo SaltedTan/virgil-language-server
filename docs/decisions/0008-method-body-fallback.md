@@ -61,7 +61,9 @@ diagnostics. Reference and highlight lists can be partial; diagnostic sets
 can omit errors in the excluded body. Prepare rename, rename, and its preflight
 refuse a snapshot with any substitution. Completion and signature help retain
 their current-text cursor-repair paths and do not consume degraded semantics.
-Document and workspace symbols retain their syntactic paths.
+Document symbols retain their current-text syntactic path. Workspace symbols
+skip an analysis's substituted file entirely, trying that file's next analysis
+or omitting it; other files in the degraded snapshot still contribute symbols.
 
 ## Consequences
 
