@@ -228,9 +228,11 @@ The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays a
 `main` with the first commit in its first-parent history whose committer date is
 at least seven days before the run. If no such commit exists, it uses the nearest
 reachable release tag (`v[0-9]*`). Manual dispatch accepts `base_ref` and `new_ref`;
-the defaults are `last-week` and `origin/main`. A pull request that changes the
-workflow, its benchmark scripts, their build inputs, or benchmark tests compares
-its head SHA with its base SHA, using the pull request's benchmark tooling.
+the defaults are `last-week` and `origin/main`. `last-week` selects from
+`new_ref`'s first-parent history with the same date and release-tag fallback.
+A pull request that changes the workflow, its benchmark scripts, their build
+inputs, or benchmark tests compares its head SHA with its base SHA, using the
+pull request's benchmark tooling.
 
 [`scripts/bench-compare.py`](../scripts/bench-compare.py) builds both refs with
 `BENCH=1` and `bench-metadata`, in fresh equal-length `base` and `next` checkouts
@@ -242,8 +244,8 @@ the same pinned Virgil as the tooling checkout's corpus. An explicit ref without
 them fails the comparison rather than produce misleading results. A week-old
 baseline without them, such as the first scheduled runs' (benchmark support
 landed on 2026-10-24) or one from before a Virgil pin bump, moves forward along
-`main`'s first-parent history to the first commit that has both; a notice and
-the job summary say which commit was requested and which was used, and
+the newer ref's first-parent history to the first commit that has both; a notice
+and the job summary say which commit was requested and which was used, and
 `refs.json` records the note. If no commit up to the newer build has both, the
 comparison fails.
 
