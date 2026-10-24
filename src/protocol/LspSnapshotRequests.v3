@@ -47,8 +47,8 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 	def maps(j: int, begin: int, end: int) -> bool {
 		return snapshot.currentRange(j, begin, end).0 >= 0;
 	}
-	// The Location of the bytes from {begin} to {end} in the snapshot's file
-	// {j}, whose text {m} converts.
+	// The snapshot's effective byte range is mapped before {m} converts current
+	// text to protocol positions. An excluded range has no Location.
 	def location(j: int, m: PositionMap, begin: int, end: int) -> JsonValue {
 		var span = snapshot.currentRange(j, begin, end);
 		if (span.0 < 0) return JsonValue.Null;
@@ -57,7 +57,8 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 		location["range"] = rawRange(m, span.0, span.1);
 		return JsonValue.JObject(location);
 	}
-	// The LSP Range of the bytes from {begin} to {end} in the text {m} converts.
+	// As for {location}, {begin} and {end} are effective-text offsets, while
+	// {m} converts current text. An excluded range has no LSP Range.
 	def range(m: PositionMap, begin: int, end: int) -> JsonValue {
 		var span = snapshot.currentRange(index, begin, end);
 		return if(span.0 >= 0, rawRange(m, span.0, span.1), JsonValue.Null);
