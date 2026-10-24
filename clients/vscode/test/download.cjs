@@ -16,7 +16,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 test('SIGTERM to the Extension Host runner alone stops the first download and its tar', {
   skip: process.platform !== 'linux' && 'the tar probe uses Linux /proc', timeout: 30000,
 }, async (t) => {
-  const root = fs.mkdtempSync(path.join(process.env.VIRGIL_DOWNLOAD_PROBE_ROOT ?? __dirname, '.download-'));
+  const root = fs.mkdtempSync(path.join(__dirname, '.download-'));
   const marker = path.join(root, 'pids.json');
   const preload = path.join(root, 'preload.cjs');
   const log = fs.openSync(path.join(root, 'runner.log'), 'w');
@@ -61,7 +61,7 @@ const download = electron.downloadAndUnzipVSCode;
 electron.downloadAndUnzipVSCode = (options) => download({ ...options, cachePath: ${JSON.stringify(path.join(root, '.vscode-test'))} });
 `);
   child = spawn(process.execPath, [path.join(__dirname, 'e2e/run.cjs'), path.join(root, 'virgil-lsp')], {
-    env: { ...process.env, PATH: `${root}:${process.env.PATH}`, NODE_OPTIONS: `--require=${preload}` },
+    env: { ...process.env, PATH: `${root}:${process.env.PATH}`, NODE_OPTIONS: `--require="${preload.replace(/[\\"]/g, '\\$&')}"` },
     stdio: ['ignore', log, log],
   });
   exited = new Promise((resolve, reject) => {
