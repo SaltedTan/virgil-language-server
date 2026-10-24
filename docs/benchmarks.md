@@ -334,6 +334,8 @@ use scratch storage on machines with a small shared `/tmp`. Output directories
 must already exist. No fixture, vendor source, or real project file is edited.
 The driver rechecks input hashes and removes its copies. Failed runs preserve
 partial results and a failing session's transcript in `<output>.failure.json`.
+If session teardown also fails, `failed_record.cleanup_errors` records those
+errors while preserving the original exception and session evidence.
 
 The main corpus has 185 states, each measured in a fresh server session in both
 warm and cold modes:
@@ -414,10 +416,10 @@ the existing phase, allocation, and heap counters. RSS is sampled before shutdow
 These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
-`make test` runs nine scoring tests and a five-state smoke replay (two small
-repair states and all three negative controls, in both modes). The smoke run
-takes about 0.2 seconds on the reference host. The full suite remains opt-in.
-Run these checks separately with:
+`make test` runs scoring and cleanup regression checks and a five-state smoke
+replay (two small repair states and all three negative controls, in both modes).
+The smoke run takes about 0.2 seconds on the reference host. The full suite
+remains opt-in. Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
