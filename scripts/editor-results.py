@@ -172,7 +172,7 @@ def observation(key):
 def parse_json(text):
     """Parses JSON text, and raises ValueError for what Python's json module
     accepts but RESULTS.md doesn't: a repeated key in an object, NaN, Infinity,
-    and a number too large to be finite."""
+    an integer with more than 20 digits, and a number too large to be finite."""
     def pairs(items):
         result = {}
         for key, value in items:
@@ -184,13 +184,19 @@ def parse_json(text):
     def constant(name):
         raise ValueError(f"{name} is not JSON")
 
+    def integer(literal):
+        if len(literal.lstrip("-")) > 20:
+            raise ValueError("an integer has more than 20 digits")
+        return int(literal)
+
     def number(literal):
         value = float(literal)
         if math.isinf(value):
             raise ValueError(f"the number {literal} is too large")
         return value
 
-    return json.loads(text, object_pairs_hook=pairs, parse_constant=constant, parse_float=number)
+    return json.loads(text, object_pairs_hook=pairs, parse_constant=constant,
+                      parse_int=integer, parse_float=number)
 
 
 def strings(value):

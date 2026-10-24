@@ -9,6 +9,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import resource
 import subprocess
@@ -318,6 +319,18 @@ class EncodingTest(ValidatorTest):
         for name, data, line, message in cases:
             with self.subTest(name):
                 self.assertInvalid(data, line, message)
+
+    def test_integer_literal_boundary(self):
+        for sign in ("", "-"):
+            with self.subTest(sign=sign):
+                literal = sign + "9" * 20
+                self.assertEqual(int(literal), results.parse_json(literal))
+                data = encode(stream("nvim")).replace(b'"durationMs":500',
+                                                      ('"durationMs":' + literal + "9").encode(), 1)
+                self.assertInvalid(data, 2, "an integer has more than 20 digits")
+        events = stream("nvim")
+        events[1]["durationMs"] = 10 ** 20 - 1
+        self.assertValid(events)
 
     def test_escaped_text_is_fine(self):
         events = stream("nvim")
@@ -1186,13 +1199,13 @@ class CommandTest(unittest.TestCase):
         path.write_bytes(data if isinstance(data, bytes) else encode(data))
         return name
 
-    def run_command(self, *args):
+    def run_command(self, *args, env=None):
         def limit():
             resource.setrlimit(resource.RLIMIT_AS, (MEMORY, MEMORY))
 
         # From another directory, so the manifest and schema are found beside the script.
         result = subprocess.run([sys.executable, str(SCRIPT), "validate", *args], cwd=self.directory,
-                                capture_output=True, text=True, preexec_fn=limit if sys.platform == "linux" else None)
+                                capture_output=True, text=True, env=env, preexec_fn=limit if sys.platform == "linux" else None)
         return result.returncode, result.stdout, result.stderr
 
     def test_exit_statuses_and_output(self):
@@ -1215,13 +1228,19 @@ class CommandTest(unittest.TestCase):
         self.assertEqual((2, f"{failed_line}missing.jsonl: invalid: can't read it: No such file or directory\n", ""),
                          self.run_command(failed, "missing.jsonl"))
 
+    def test_long_integer_with_python_limit_disabled(self):
+        data = encode(stream("nvim")).replace(b'"durationMs":500', b'"durationMs":' + b"9" * 5000, 1)
+        name = self.write("long-integer.jsonl", data)
+        self.assertEqual((2, f"{name}: invalid: line 2: an integer has more than 20 digits\n", ""),
+                         self.run_command(name, env={**os.environ, "PYTHONINTMAXSTRDIGITS": "0"}))
+
     def test_a_huge_iteration(self):
         # Finding the first missing iteration doesn't count up to the last.
         events = stream("remote-ssh")
-        events[0]["expected"] = [{"id": "ssh.identity.remote-host", "profile": "single-file", "iteration": 10 ** 30}]
+        events[0]["expected"] = [{"id": "ssh.identity.remote-host", "profile": "single-file", "iteration": 10 ** 19}]
         huge = self.write("huge.jsonl", events[:1])
         passed = self.write("passed.jsonl", stream("nvim"))
-        self.assertEqual((2, f"{huge}: invalid: line 1: expected has profile single-file in iterations {10 ** 30}, "
+        self.assertEqual((2, f"{huge}: invalid: line 1: expected has profile single-file in iterations {10 ** 19}, "
                              "without iteration 1\n"
                              f"{passed}: valid, run passed (21 of 21 observations): 21 pass, 0 fail, 0 xfail, "
                              "0 xpass, 0 skip\n", ""),

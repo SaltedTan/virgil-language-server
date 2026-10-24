@@ -127,7 +127,7 @@ If the warning is observed there, it is an `xpass`, which fails the run, so that
 python3 scripts/editor-results.py validate [--manifest PATH] [--schema PATH] STREAM...
 ```
 
-It reads the schema itself, with draft 2020-12's meaning for the keywords that the schema uses, and refuses a schema with any other keyword. A `pattern` is an ECMA-262 regular expression, an `integer` is written without a fraction or an exponent, and a `time`'s date must exist. It prints a line for each stream: `valid`, with whether the run passed and the count of each status, or `invalid`, with the line of the first error it finds. It exits with:
+It reads the schema itself, with draft 2020-12's meaning for the keywords that the schema uses, and refuses a schema with any other keyword. A `pattern` is an ECMA-262 regular expression, an `integer` is written without a fraction or an exponent and has at most 20 digits (a leading minus sign does not count), and a `time`'s date must exist. It prints a line for each stream: `valid`, with whether the run passed and the count of each status, or `invalid`, with the line of the first error it finds. It exits with:
 
 - 0 if every stream is valid and its run passed;
 - 1 if every stream is valid, but a run failed, was aborted, or was unavailable;
