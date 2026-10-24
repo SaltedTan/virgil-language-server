@@ -9,7 +9,7 @@ This page lists what the v0.1 alpha doesn't do, or does only in part, as of `0.1
 
 ## Semantic features need a project file
 
-Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, hover, references, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs the editor to send a Virgil root; without one, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
+Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, hover, references, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs a Virgil root: the one the editor sends, or else the library that a release archive bundles. With neither, as with a development build and no root set, or when the editor sends a root that isn't an absolute path, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).
 
 ## No error-tolerant parsing
 
