@@ -53,8 +53,8 @@ class LspServer {
 	var sendNotification: Array<byte> -> void;
 	private var documentSync: LspDocumentSync;
 	private var developmentAnalysis: LspDevelopmentAnalysis;
-	// Definition, hover, references, signature help, and rename requests,
-	// answered from snapshots.
+	// Keep snapshot selection and waiting consistent across methods; see
+	// docs/architecture.md#definition for the shared rules.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private var prepareRename: LspPrepareRename;
@@ -96,14 +96,16 @@ class LspServer {
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
 		snapshotRequests.registerPrepared(dispatcher, "textDocument/references", "references",
 			LspReferences.REQUIRES, LspReferences.prepare);
+		snapshotRequests.registerPrepared(dispatcher, "textDocument/documentHighlight", "document highlights",
+			LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare);
 		signatureHelp = LspSignatureHelp.new(documents, projects, publishNotification);
 		signatureHelp.register(dispatcher, snapshotRequests);
 		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
 		rename.register(dispatcher);
-		// Rename, completion, and repaired signature help requests can be
-		// cancelled while they wait.
+		// Waiting snapshot requests, rename, completion, and repaired
+		// signature help requests can be cancelled.
 		dispatcher.onNotification("$/cancelRequest", cancel);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
@@ -372,6 +374,7 @@ class LspServer {
 		capabilities["hoverProvider"] = JsonValue.Bool(true);
 		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["referencesProvider"] = JsonValue.Bool(true);
+		capabilities["documentHighlightProvider"] = JsonValue.Bool(true);
 		// RenameOptions may only be sent to a client that declares
 		// textDocument.rename.prepareSupport; others get true, and need no
 		// prepareRename.
@@ -414,6 +417,7 @@ class LspServer {
 		rename.cancel(n);
 		completion.cancel(n);
 		signatureHelp.cancel(n);
+		snapshotRequests.cancel(n);
 	}
 	// The client's first notification after initialize.
 	private def initialized(n: JsonRpcMessage.Notification) {

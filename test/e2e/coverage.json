@@ -111,6 +111,11 @@
       "matrix": true
     },
     {
+      "id": "document-highlight",
+      "label": "Document highlights",
+      "matrix": true
+    },
+    {
       "id": "workspace-symbols",
       "label": "Workspace symbols",
       "matrix": true
@@ -567,6 +572,16 @@
       "required": true,
       "source": "test/e2e/nvim/check.lua",
       "description": "References of StringBuilder, with its declaration, are the use, the class's name, and uses in other lib/util files, each spelling the name, sorted, without repeats."
+    },
+    {
+      "id": "nvim.document-highlight.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Document highlights of StringBuilder are exactly its use in words/Words.v3, with kind Text and no other file's ranges."
     },
     {
       "id": "nvim.rename.apply-undo",
@@ -1289,6 +1304,16 @@
       "description": "The reference provider returns the use, the class's name, and uses in other lib/util files, each spelling StringBuilder."
     },
     {
+      "id": "vscode.document-highlight.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Document highlights of StringBuilder are exactly its use in words/Words.v3, with kind Text and no other file's ranges."
+    },
+    {
       "id": "vscode.rename.refusal",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -1754,6 +1779,13 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "document-highlight",
+        "level": "api",
+        "checks": ["vscode.document-highlight.response"],
+        "notCovered": ["vscode.document-highlight-rendering"]
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "workspace-symbols",
         "level": "api",
         "checks": ["vscode.workspace-symbols.join"],
@@ -1831,6 +1863,13 @@
       },
       {
         "setup": "vscode-macos",
+        "feature": "document-highlight",
+        "level": "api",
+        "checks": ["vscode.document-highlight.response"],
+        "notCovered": ["vscode.document-highlight-rendering"]
+      },
+      {
+        "setup": "vscode-macos",
         "feature": "workspace-symbols",
         "level": "api",
         "checks": ["vscode.workspace-symbols.join"],
@@ -1905,6 +1944,13 @@
         "level": "api",
         "checks": ["vscode.references.library"],
         "notCovered": ["vscode.references-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "document-highlight",
+        "level": "api",
+        "checks": ["vscode.document-highlight.response"],
+        "notCovered": ["vscode.document-highlight-rendering"]
       },
       {
         "setup": "ssh-linux-client",
@@ -1982,6 +2028,13 @@
         "level": "api",
         "checks": ["nvim.references.library"],
         "notCovered": ["nvim.references-list"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "document-highlight",
+        "level": "api",
+        "checks": ["nvim.document-highlight.response"],
+        "notCovered": ["nvim.document-highlight-rendering"]
       },
       {
         "setup": "nvim-linux",
@@ -2059,6 +2112,13 @@
         "level": "api",
         "checks": ["nvim.references.library"],
         "notCovered": ["nvim.references-list"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "document-highlight",
+        "level": "api",
+        "checks": ["nvim.document-highlight.response"],
+        "notCovered": ["nvim.document-highlight-rendering"]
       },
       {
         "setup": "nvim-macos",
@@ -2136,6 +2196,13 @@
         "level": "api",
         "checks": ["lazyvim.references.library"],
         "notCovered": ["lazyvim.references-list"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "document-highlight",
+        "level": null,
+        "checks": [],
+        "notCovered": ["lazyvim.document-highlight-navigation"]
       },
       {
         "setup": "lazyvim-linux",
@@ -2213,6 +2280,13 @@
         "level": "api",
         "checks": ["lazyvim.references.library"],
         "notCovered": ["lazyvim.references-list"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "document-highlight",
+        "level": null,
+        "checks": [],
+        "notCovered": ["lazyvim.document-highlight-navigation"]
       },
       {
         "setup": "lazyvim-macos",
@@ -2286,9 +2360,9 @@
       },
       {
         "step": 7,
-        "summary": "words/Words.v3: the type error, definition, hover, parameter hints, references, and workspace symbols.",
-        "checks": ["vscode.diagnostics.semantic", "vscode.definition.response", "vscode.hover.response", "vscode.signature.complete", "vscode.references.library", "vscode.workspace-symbols.join"],
-        "notCovered": ["vscode.problems-view", "vscode.definition-editor", "vscode.hover-popup", "vscode.parameter-hints", "vscode.references-view", "vscode.symbol-picker"]
+        "summary": "words/Words.v3: the type error, definition, hover, parameter hints, references, document highlights, and workspace symbols.",
+        "checks": ["vscode.diagnostics.semantic", "vscode.definition.response", "vscode.hover.response", "vscode.signature.complete", "vscode.references.library", "vscode.document-highlight.response", "vscode.workspace-symbols.join"],
+        "notCovered": ["vscode.problems-view", "vscode.definition-editor", "vscode.hover-popup", "vscode.parameter-hints", "vscode.references-view", "vscode.symbol-picker", "vscode.document-highlight-rendering"]
       },
       {
         "step": 8,
@@ -2549,6 +2623,24 @@
       "id": "lazyvim.layout",
       "kind": "visual",
       "what": "how windows, menus, prompts, and messages look, beyond their text and state",
+      "planned": null
+    },
+    {
+      "id": "vscode.document-highlight-rendering",
+      "kind": "visual",
+      "what": "the rendered document highlights",
+      "planned": null
+    },
+    {
+      "id": "nvim.document-highlight-rendering",
+      "kind": "visual",
+      "what": "the rendered document highlights",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.document-highlight-navigation",
+      "kind": "behavior",
+      "what": "document highlights and navigation with ]] and [[",
       "planned": null
     }
   ],

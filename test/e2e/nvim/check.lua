@@ -217,6 +217,19 @@ local function check()
   assert(found_use and found_class and vim.tbl_count(library_files) > 1,
     "unexpected references: " .. vim.inspect(references))
 
+  -- nvim.document-highlight.response: only this document's StringBuilder use.
+  response, err = client:request_sync("textDocument/documentHighlight", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
+  }, 10000, words_buf)
+  assert(response and not response.err, "document highlights failed: " .. vim.inspect(err or response.err))
+  assert(vim.deep_equal(response.result, {
+    { kind = 1, range = {
+      start = { line = use_line, character = start - 1 },
+      ["end"] = { line = use_line, character = start - 1 + #"StringBuilder" },
+    } },
+  }), "unexpected document highlights: " .. vim.inspect(response.result))
+  print("PASS: nvim.document-highlight.response")
+
   -- Rename needs a program that verifies, so an unsaved edit fixes the type
   -- error first. The client's own rename, with its prepareRename and the
   -- server's versioned edit, renames both uses of the local line, and one
@@ -370,7 +383,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, document highlights, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

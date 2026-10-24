@@ -44,13 +44,12 @@ component LspReferences {
 	// analyzed are left out, and only those.
 	def answer(at: LspSnapshotPosition, offset: int, includeDeclaration: bool, limit: int,
 			maxBytes: int) -> (bool, JsonRpcReply) {
-		var s = at.snapshot, path = at.path(), decl = s.definitionAtOffset(path, offset);
-		if (decl == null) decl = s.declarationAtOffset(path, offset);
+		var s = at.snapshot, decl = declaration(at, offset);
 		if (decl == null) return (false, JsonRpcReply.Result(JsonValue.Null));
 		// An index method's name, "[]" or "[]=", and its index operations
 		// select their opening bracket; a named call, such as c.[](i),
 		// spells the whole name.
-		var name = decl.name, bracket = name.length > 0 && name[0] == '[';
+		var name = decl.name;
 		var locations = Vector<JsonValue>.new(), bytes = 0;
 		for (file in s.references(decl, includeDeclaration)) {
 			var target = at.target(file.0), j = target.0, text = target.1;
@@ -63,7 +62,7 @@ component LspReferences {
 				var begin = spans[k], end = spans[k + 1];
 				// "this" and a default ".new" resolve to their class, but do
 				// not name it.
-				if (!spells(text, begin, end, name) && !(bracket && spells(text, begin, end, "["))) continue;
+				if (!names(text, begin, end, name)) continue;
 				if (locations.length == limit) {
 					var error = JsonRpcError.new(LspErrorCode.REQUEST_FAILED,
 						Strings.format2("the declaration %s has more than %d references", name, limit));
@@ -79,6 +78,15 @@ component LspReferences {
 			}
 		}
 		return (true, JsonRpcReply.Result(JsonValue.JArray(locations.extract())));
+	}
+	// Shared selection and name filtering for references and document highlights.
+	def declaration(at: LspSnapshotPosition, offset: int) -> AnalysisDeclaration {
+		var s = at.snapshot, path = at.path(), decl = s.definitionAtOffset(path, offset);
+		return if(decl != null, decl, s.declarationAtOffset(path, offset));
+	}
+	def names(text: Array<byte>, begin: int, end: int, name: string) -> bool {
+		return spells(text, begin, end, name)
+			|| (name.length > 0 && name[0] == '[' && spells(text, begin, end, "["));
 	}
 	// Whether the bytes from {begin} to {end} of {text} are {name}.
 	private def spells(text: Array<byte>, begin: int, end: int, name: string) -> bool {

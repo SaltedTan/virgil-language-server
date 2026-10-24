@@ -233,12 +233,7 @@ The matrix has a row for each setup in `coverage.json`, and a column for each fe
 
 An observation without a check is never a pass: a run that stopped early, or that left out a profile, leaves its cells partial. The expected failure is a known limitation only where [its rule](#expected-failures-and-workaround-profiles) made it an `xfail`, and only if the cell's other observations passed: beside a failure, the cell fails. A passing cell names its behavior gaps, which a check could cover, but not its visual gaps, which no check can: its level already says that no check saw how the editor showed it. A setup outside the automated scope has no cells, so it reads its scope's wording even if a run of it was selected. A manual record doesn't change a cell.
 
-The example's rows of Neovim and LazyVim on Linux:
-
-| Setup | Diagnostics | Document symbols | Definition | Hover | Configuration changes | Restart | References | Workspace symbols | Signature help | Rename | Completion |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Neovim, Linux | Pass (API); not covered: undoing the fix of bad.v3, which brings the parser error back | Pass (API) | Pass (API); not covered: the jump with CTRL-\] | Pass (API) | Pass (API); not covered: a change to the project file on disk; a missing Virgil root, with its MissingVirgilRoot diagnostic and Invalid project file warning | Not covered | Pass (API) | Pass (API) | Pass (API); not covered: a call still being typed, and nothing just past the ) | Pass (API); not covered: the refusal while the type error stands | Pass (API); not covered: no completion from the server in a comment |
-| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Known limitation: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)); workaround profile separate | Pass (API) | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (UI state) |
+See the [generated example matrix](results-example/README.md#results) for the Neovim and LazyVim rows on Linux.
 
 ## Adding a check
 
