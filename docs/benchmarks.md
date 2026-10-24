@@ -476,38 +476,50 @@ baseline was collected.
 
 ## macOS reference baseline
 
-This baseline will come from the hosted `macos-15` GitHub Actions runner: Apple
-Silicon running the x86-64-darwin server and worker under Rosetta 2, with no CPU
-pinning. It is a different host and execution environment from the Linux
-reference above; its numbers are not comparable with that baseline.
+Measured on 2026-10-24 (22:34 UTC) by the `Compare builds (macos-15)` job of
+[run 40139072206](https://github.com/SaltedTan/virgil-language-server/actions/runs/40139072206),
+the pull request that added the weekly comparison, at revision
+`027c8d62190f7c0a650542059410a2d2e8a1d2f3`, whose server sources are those of
+`677be00`, with Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5`. The host was
+the hosted `macos-15` runner: an Apple M1 (Virtual) with 3 logical CPUs, macOS
+15.7.9, Python 3.14.7, running the x86-64-darwin server and worker under
+Rosetta 2, with no CPU pinning (macOS has no `taskset`). Its load average was
+5.5 when the run started (16.7 over five minutes), so other work shared the
+machine. It is a different host and execution environment from the Linux
+reference above; its numbers are not comparable with that baseline, and they
+are a reference, not budgets.
 
-**Pending measurement:** the lead will replace the placeholder cells below from
-this pull request's `benchmarks-macos-15` artifact, copying `baseline.md` and
-recording the run URL, date, exact host, revision, corpus hash, and sample count
-from `comparison.json`. No macOS timings have been collected locally. The
-workflow generates that table with:
+The table is the job's `baseline.md`, which the workflow generates from the
+newer build's samples in `comparison.json`:
 
 ```sh
 python3 scripts/bench-report.py results/comparison.json --baseline > results/baseline.md
 ```
 
-The newer build alone supplies the table, with the same scenarios, units,
-default heap, and median (p10–p90) format as the Linux reference. Each cell will
-contain milliseconds from 15 measured operations; warmups are excluded.
+All three pinned projects ran in three process blocks with two warmups and five
+measured operations per scenario per block, so each cell summarizes 15 measured
+operations; warmups are excluded. The default heaps were used, and the corpus
+SHA-256 was
+`625735d5760c6bbe9e3ee16aadd01367e5a674cef15567773822c11d37043350`. Median
+(p10–p90), in milliseconds:
 
 | Scenario | small | util | Aeneas |
 | --- | ---: | ---: | ---: |
-| `fresh_analysis` | Pending | Pending | Pending |
-| `reused_analysis` | Pending | Pending | Pending |
-| `syntax_diagnostic` | Pending | Pending | Pending |
-| `semantic_diagnostic` | Pending | Pending | Pending |
-| `completion_miss` | Pending | Pending | Pending |
-| `completion_hit` | Pending | Pending | Pending |
-| `definition` | Pending | Pending | Pending |
-| `hover` | Pending | Pending | Pending |
-| `references` | Pending | Pending | Pending |
-| `prepareRename` | Pending | Pending | Pending |
-| `rename` | Pending | Pending | Pending |
+| `fresh_analysis` | 46.438 (43.906–52.099) | 117.437 (107.836–129.663) | 1340.596 (1255.567–1699.763) |
+| `reused_analysis` | 0.937 (0.832–1.034) | 42.825 (35.153–55.366) | 989.911 (924.980–1293.568) |
+| `syntax_diagnostic` | 0.287 (0.259–0.364) | 1.002 (0.910–1.515) | 1.691 (1.565–2.578) |
+| `semantic_diagnostic` | 203.917 (203.123–204.735) | 250.413 (245.318–259.054) | 1178.017 (1124.797–1309.753) |
+| `completion_miss` | 3.209 (2.963–4.334) | 32.865 (28.763–35.843) | 480.467 (414.266–640.432) |
+| `completion_hit` | 1.729 (1.535–3.037) | 3.024 (2.348–4.485) | 9.402 (7.998–18.820) |
+| `definition` | 0.269 (0.245–0.332) | 1.279 (1.231–1.350) | 6.022 (4.962–69.074) |
+| `hover` | 0.296 (0.235–0.537) | 1.355 (1.234–1.727) | 5.525 (4.875–10.619) |
+| `references` | 0.292 (0.279–0.360) | 1.432 (1.305–1.613) | 6.936 (6.309–12.444) |
+| `prepareRename` | 1.770 (1.645–2.455) | 26.103 (23.860–30.834) | 243.000 (214.236–328.126) |
+| `rename` | 4.894 (4.149–6.270) | 106.033 (92.241–116.272) | 1514.359 (1391.423–1773.595) |
+
+The wide upper ranges on Aeneas, such as `definition`'s 69 ms p90, reflect the
+shared virtual host. Weekly runs on the same runner type will show how much it
+varies before any budget is proposed.
 
 ## Semantics during syntax errors
 
