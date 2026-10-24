@@ -114,6 +114,14 @@ async function workspaceSymbols(query) {
   return (result ?? []).map((symbol) => [symbol.name, symbol.kind, symbol.location.uri.fsPath, ...range(symbol.location)]);
 }
 
+// Exact Text highlights at a document position.
+async function documentHighlights(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeDocumentHighlights', editor.document.uri, new vscode.Position(line, character),
+  );
+  return (result ?? []).map((highlight) => [...range(highlight), highlight.kind]);
+}
+
 // The file, range, and text of each Location that a references request at
 // line:character returns.
 async function references(editor, line, character) {
@@ -324,6 +332,12 @@ async function workspace(extension) {
   assert.deepEqual(uses.filter((u) => u.text !== 'StringBuilder'
     || (u.file !== words.document.uri.fsPath && !u.file.startsWith(libraryDirectory))), []);
   assert.ok(new Set(uses.map((u) => u.file)).size > 2, 'no references in other library files');
+
+  // vscode.document-highlight.response: only this document's StringBuilder use.
+  assert.deepEqual(await documentHighlights(words, use, column), [
+    [use, column, use, column + 'StringBuilder'.length, vscode.DocumentHighlightKind.Text],
+  ]);
+  console.log('PASS: vscode.document-highlight.response');
 
   // While the type error stands, the server refuses to rename the local line,
   // with its reason, both when VS Code prepares the rename, as F2 does, and
