@@ -11,6 +11,7 @@ def X = [
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
 	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
 	T("AnalysisWire:result_buffer_capacity", test_result_buffer_capacity),
+	T("AnalysisWire:result_size_matches_writes", test_result_size_matches_writes),
 	T("AnalysisWire:result_frame_boundary", test_result_frame_boundary),
 	T("AnalysisWire:truncated_messages", test_truncated_messages),
 	T("AnalysisWire:invalid_counts_and_indexes", test_invalid_counts_and_indexes),
@@ -323,6 +324,73 @@ def test_result_buffer_capacity(t: Tester) {
 			t.asserti(w.end(), AnalysisWire.finishResult(w, 123L).length);
 		}
 	}
+}
+
+// The sizing pass counts exactly the bytes that the real pass writes, for
+// every result shape. An undercount would silently regress to buffer growth,
+// and an overcount would waste memory; see encodeResultWithQuery.
+def assertCounted(t: Tester, what: string, sized: (DataWriter, long)) {
+	var written = long.view(sized.0.end());
+	if (written != sized.1) t.fail3("%s: the sizer counted %d bytes but the writer wrote %d", what, sized.1, written);
+}
+
+// The counted encoding of the diagnostic-bearing result that {paddedResult}
+// makes, with exactly {bytes} frame bytes.
+def paddedCounted(bytes: int) -> (DataWriter, long) {
+	var message = Array<byte>.new(bytes);
+	var diagnostic = AnalysisDiagnostic.new("p.v3", 1, 1, 1, 1, "Error", message);
+	var analysis = ProgramAnalysis.new([diagnostic], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	var trial = AnalysisWire.encodeResult(1, 1, 1, analysis, -1, -1, null);
+	var overhead = trial.end() - bytes;
+	diagnostic = AnalysisDiagnostic.new("p.v3", 1, 1, 1, 1, "Error", Ranges.dup(message[0 ... bytes - overhead]));
+	analysis = ProgramAnalysis.new([diagnostic], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	return AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, analysis, -1, -1, null, null, null, null);
+}
+
+def test_result_size_matches_writes(t: Tester) {
+	// Success, with and without occurrences; unresolved and syntax errors.
+	for (paths in [[SHAPES, MAIN], [SHAPES, UNRESOLVED], [SHAPES, SYNTAX_ERROR]]) {
+		var sources = load(t, paths);
+		if (sources == null) return;
+		var analysis = AeneasAdapter.analyzeProgram(sources, [], true);
+		for (occurrences in [false, true]) {
+			var files: Array<(string, Array<AnalysisOccurrence>)>;
+			if (occurrences) files = [(paths[0], analysis.occurrences(paths[0])), (paths[1], analysis.occurrences(paths[1]))];
+			assertCounted(t, paths[1], AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, analysis, -1, -1, files, null, null, null));
+		}
+	}
+	// An empty program, with and without an occurrence section.
+	var empty = AeneasAdapter.analyzeProgram([], [], false);
+	assertCounted(t, "empty without occurrences", AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, empty, -1, -1, null, null, null, null));
+	assertCounted(t, "empty with occurrences", AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, empty, -1, -1, [], null, null, null));
+	// Diagnostics only, with a message long enough for a multi-byte length.
+	var message = Array<byte>.new(300);
+	var diagnostic = AnalysisDiagnostic.new("p.v3", 1, 1, 1, 1, "Error", message);
+	var diagnosticsOnly = ProgramAnalysis.new([diagnostic], AnalysisStats.new(0, 0, 0, -1), false, false, null);
+	assertCounted(t, "diagnostics only", AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, diagnosticsOnly, -1, -1, null, null, null, null));
+	// The allocation boundaries, where a one-byte undercount hides in the
+	// padding.
+	for (bytes in [255, 256, 257]) {
+		var sized = paddedCounted(bytes);
+		assertCounted(t, "boundary", sized);
+		t.asserti(bytes, sized.0.end());
+	}
+	// Scope, member, and call answers, with and without occurrences.
+	var scopedSources = scopeSources(), scoped = AeneasAdapter.analyzeForScope(scopedSources, [], false);
+	var scopedFiles = [("s.v3", scoped.occurrences("s.v3")), ("t.v3", scoped.occurrences("t.v3"))];
+	var scope = scoped.scopeAt("s.v3", 0, AnalysisScopeKinds.TYPES, "");
+	assertCounted(t, "scope", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, scoped, 12, 42, scopedFiles, scope, null, null));
+	assertCounted(t, "scope without files", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, scoped, -1, 42, [], scope, null, null));
+	var memberedSources = memberSources(), membered = AeneasAdapter.analyzeForScope(memberedSources, [], false);
+	var memberedFiles = [("s.v3", membered.occurrences("s.v3")), ("t.v3", membered.occurrences("t.v3"))];
+	var members = membered.membersAt("s.v3", afterDot(1), "");
+	assertCounted(t, "members", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, membered, 12, 42, memberedFiles, null, members, null));
+	assertCounted(t, "members without files", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, membered, -1, 42, [], null, members, null));
+	var calledSources = callSources(), called = AeneasAdapter.analyzeForScope(calledSources, [], false);
+	var calledFiles = [("s.v3", called.occurrences("s.v3")), ("t.v3", called.occurrences("t.v3"))];
+	var call = called.callAt("s.v3", openOf("f(1"));
+	assertCounted(t, "call", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, called, 12, 42, calledFiles, null, null, call));
+	assertCounted(t, "call without files", AnalysisWire.encodeResultWithQueryCounted(7, 3, 4567, called, -1, 42, [], null, null, call));
 }
 
 def test_result_frame_boundary(t: Tester) {

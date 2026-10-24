@@ -196,6 +196,26 @@ component AnalysisWire {
 	def encodeResultWithQuery(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
 			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
 			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> DataWriter {
+		var sized = encodeResultWithQueryCounted(id, analyses, uidNext, analysis, collectUs, globalTypeTotal,
+			files, scope, members, call);
+		var written = long.view(sized.0.end());
+		// The sizing pass and the writer ran the same code, so a mismatch is an
+		// internal error, not a protocol error. Virgil has no exception handling,
+		// and the encoder returns a writer rather than the worker's exit status,
+		// so fail the way a runtime trap does: System.error prints the stack and
+		// ends the worker, which the server reports as a crash.
+		if (sized.1 != written) {
+			System.error("InternalError", Strings.format2("result sizer counted %d bytes but the writer wrote %d", sized.1, written));
+		}
+		return sized.0;
+	}
+	// Encodes a RESULT as {encodeResultWithQuery} does, and returns the writer
+	// with the number of bytes the sizing pass counted. The two must be equal;
+	// {encodeResultWithQuery} checks that. The unit tests check the same pair
+	// for every result shape.
+	def encodeResultWithQueryCounted(id: int, analyses: int, uidNext: int, analysis: ProgramAnalysis,
+			collectUs: int, globalTypeTotal: int, files: Array<(string, Array<AnalysisOccurrence>)>,
+			scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer, call: AnalysisCallAnswer) -> (DataWriter, long) {
 		// The call answer's signature index plus one, or zero, or -1 if its
 		// call is not sent.
 		var callSignature = if(files != null && call != null, checkCall(call, analysis.callSignatureCount()), -1);
@@ -250,7 +270,9 @@ component AnalysisWire {
 	// the frame capacity, rounded up to the runtime's eight-byte allocation
 	// alignment. At most seven unused bytes keep array padding out of the
 	// worker's retained-heap probe. Neither pass changes encoding or limits.
-	private def encodeSized(prefix: DataWriter -> void, body: DataWriter -> void) -> DataWriter {
+	// Returns the writer and the counted size, which must equal its length;
+	// the caller checks that (see encodeResultWithQuery).
+	private def encodeSized(prefix: DataWriter -> void, body: DataWriter -> void) -> (DataWriter, long) {
 		var size = AnalysisResultSizer.new();
 		prefix(size);
 		body(size);
@@ -261,7 +283,7 @@ component AnalysisWire {
 		else if (size.bytes <= int.max) w.grow(int.view(size.bytes));
 		prefix(w);
 		body(w);
-		return w;
+		return (w, size.bytes);
 	}
 
 	// The signature index plus one, or zero, of {call}'s record, if it is
@@ -279,7 +301,7 @@ component AnalysisWire {
 	}
 	private def encodeOccurrences(prefix: DataWriter -> void, analysis: ProgramAnalysis, files: Array<(string, Array<AnalysisOccurrence>)>,
 			calls: Array<int>, uses: Array<int>, scope: AnalysisScopeAnswer, members: AnalysisMemberAnswer,
-			call: AnalysisCallAnswer) -> DataWriter {
+			call: AnalysisCallAnswer) -> (DataWriter, long) {
 		// A path is its file's index in {files}, the request's distinct paths
 		// in order, plus one. The paths key an ordered map, which takes
 		// O(log n) whatever they are; see OrderedStringMap.
