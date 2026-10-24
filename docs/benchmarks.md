@@ -90,13 +90,13 @@ list in order. Configuration files and text changes exist only as open overlays;
 the harness never writes source files or project files to fixture directories.
 
 Every measured operation checks its answer before accepting the sample. Analyses
-require no diagnostics, the exact source list, current document versions, and an
-advancing generation. Navigation checks the definition's exact location, hover's
-signature prefix and range, and every reference location. Completion requires the
-named semantic item and its detail, so a keyword-only fallback fails. Rename
-requires every expected edit, the new name, and each document's expected version;
-the returned edits are never applied. Diagnostics must have the exact code,
-message, range, source, severity, URI, and edited version.
+require the scenario's expected diagnostics, the exact source list, current
+document versions, and an advancing generation. Navigation checks the definition's
+exact location, hover's signature prefix and range, and every reference location.
+Completion requires the named semantic item and its detail, so a keyword-only
+fallback fails. Rename requires every expected edit, the new name, and each
+document's expected version; the returned edits are never applied. Diagnostics
+must have the exact code, message, range, source, severity, URI, and edited version.
 
 ## Scenarios and boundaries
 
