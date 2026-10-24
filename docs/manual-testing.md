@@ -17,7 +17,7 @@ The editor tests use the same fixture, [`test/e2e/nvim/fixture`](../test/e2e/nvi
 The editor tests don't cover:
 
 - VS Code Remote-WSL. Nothing runs inside WSL 2.
-- VS Code Remote-SSH from a Mac, or to another machine. The Remote-SSH test connects a Linux client to the same machine. Of checklist step 17, it checks a restart and a configuration change during a server's recovery, but not closing the window during it, which only the Extension Host test checks.
+- VS Code Remote-SSH from a Mac, or to another machine. The Remote-SSH test connects a Linux client to the same machine. See the [VS Code procedure](#vs-code) for its recovery checks and remaining gaps.
 - An installed VSIX on macOS on every pull request. CI runs the Extension Host test there only on the extension from source; the weekly editor tests and the release workflow run it on an installed VSIX, including the release dry run of a pull request that changes the release path or the editor tests.
 - In plain Neovim, configuration changes other than an unsaved edit to the project file: changes on disk and a missing Virgil root. The Extension Host test covers them in VS Code, with changed settings, and the LazyVim test covers them in LazyVim.
 - Restarting the server from plain Neovim. The LazyVim test restarts it with `:LspRestart`, or `:lsp restart` on Neovim 0.12.
