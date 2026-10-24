@@ -170,7 +170,7 @@ The selection is malformed unless:
 
 - it lists every file whose name ends in `.jsonl` in its directory and the directory's subdirectories, so that no attempt is left out unnoticed, and each file has the SHA-256 that it gives;
 - each stream is valid, by the rules above, with the selection's `release`;
-- no two streams have the same run ID, or the same slot: a suite, a setup, and a lane. The renderer never chooses between two attempts, such as by taking the later one.
+- no two streams have the same run ID, or the same slot: a suite, a setup, a lane, and the editor's version, `provenance.editor.version`. The version is part of it because one CI job can run its lane at several editor versions, as `lazyvim-linux` runs Neovim 0.11.6 and 0.12.6, and each such leg is evidence of its own. A stream whose editor version is null could be of any leg, so it shares the slot of every stream of its suite, setup, and lane. The renderer never chooses between two attempts, such as by taking the later one.
 
 ### Markers
 
@@ -193,7 +193,7 @@ Only the lines between each pair change: they become a blank line, the table, an
 
 ### The runs table
 
-The runs table has a row for each selected run, sorted by the manifest's order of the runs' setups, then by suite, lane, and run ID. Its columns come from the run-start and the run-end, and the stream holds the detail:
+The runs table has a row for each selected run, sorted by the manifest's order of the runs' setups, then by suite, lane, editor version, with its numbers compared as numbers, and run ID. Its columns come from the run-start and the run-end, and the stream holds the detail:
 
 | Column | What it shows |
 | --- | --- |
@@ -204,11 +204,12 @@ The runs table has a row for each selected run, sorted by the manifest's order o
 | Editor | The editor and its version, and for VS Code, where the extension came from. |
 | Result | Whether the run passed, failed, was aborted, or was unavailable, with its counts. For a run that didn't pass, its failed checks and its unexpected passes, by ID, the first three of each, then how many more; its exit code or signal; its cleanup; the number of its issues; and any unavailable provenance. Then the expected failure, if the run has it: "XFAIL:", with its rule's label and issue. |
 
-The [example](results-example/README.md)'s row of LazyVim on Linux:
+The [example](results-example/README.md)'s rows of LazyVim on Linux, a run of each leg of its lane:
 
 | Date | Commit | Where | Command | Editor | Result |
 | --- | --- | --- | --- | --- | --- |
 | 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
+| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.12.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
 
 ### The matrix
 

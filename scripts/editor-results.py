@@ -1249,12 +1249,20 @@ def table(header, rows):
     return "\n" + "\n".join(lines) + "\n\n"
 
 
+def version_order(version):
+    """A sort key for an editor version, or None, that compares its runs of
+    digits as numbers, so that 0.9 comes before 0.10."""
+    return [int(part) if index % 2 else part for index, part in enumerate(re.split("([0-9]+)", version or ""))]
+
+
 def render_blocks(release, runs, manifest):
     """The text of each block: the runs, sorted by the manifest's order of
-    their setups, then suite, lane, and run ID, and the matrix, with a row for
-    each setup and a column for each feature, in the manifest's order."""
+    their setups, then suite, lane, editor version, and run ID, and the
+    matrix, with a row for each setup and a column for each feature, in the
+    manifest's order."""
     order = {setup: index for index, setup in enumerate(manifest.setups)}
     runs = sorted(runs, key=lambda run: (order[run.start["setup"]], run.start["suite"], run.start["lane"],
+                                         version_order(run.start["provenance"]["editor"]["version"]),
                                          run.start["runId"]))
     features = list(manifest.features.values())
     return {
@@ -1399,11 +1407,19 @@ def select(path, manifest, schema, selection_schema):
         if start["runId"] in ids:
             raise Malformed(f"{stream}: its run {start['runId']} is also that of {ids[start['runId']]}: a run's "
                             "ID is its own")
-        slot = (start["suite"], start["setup"], start["lane"])
-        if slot in slots:
-            raise Malformed(f"{stream}: suite {slot[0]}, setup {slot[1]}, and lane {slot[2]} are also those of "
-                            f"{slots[slot]}: select one run for each")
-        ids[start["runId"]], slots[slot] = stream, stream
+        suite, setup, lane = start["suite"], start["setup"], start["lane"]
+        version = start["provenance"]["editor"]["version"]
+        # The streams of a lane, by editor version. A stream whose editor
+        # version is unknown could be of any leg, so it shares each one's slot.
+        legs = slots.setdefault((suite, setup, lane), {})
+        if version is not None and version in legs:
+            raise Malformed(f"{stream}: suite {suite}, setup {setup}, lane {lane}, and editor version {version} are "
+                            f"also those of {legs[version]}: select one run for each")
+        if legs and (version is None or None in legs):
+            raise Malformed(f"{stream}: suite {suite}, setup {setup}, and lane {lane} are also those of "
+                            f"{next(iter(legs.values()))}, and the editor version of one or both is unknown: select "
+                            "one run for each")
+        ids[start["runId"]], legs[version] = stream, stream
         runs.append((stream, run))
     return release, runs
 

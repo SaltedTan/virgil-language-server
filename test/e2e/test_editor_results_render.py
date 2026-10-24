@@ -42,6 +42,26 @@ def run_of(variant, number=1, lane="local", release=RELEASE, **start):
     return events
 
 
+def at_version(events, version):
+    """The run's events at an editor version. A LazyVim run on Neovim 0.11,
+    which has no built-in :lsp command, restarts with :LspRestart."""
+    events[0]["provenance"]["editor"]["version"] = version
+    if events[0]["suite"] == "lazyvim" and (version or "").startswith("0.11."):
+        rename = {"lazyvim.restart.builtin": "lazyvim.restart.legacy"}
+        for event in events[1:-1]:
+            event["id"] = rename.get(event["id"], event["id"])
+        events[0]["expected"] = sorted(({**key, "id": rename.get(key["id"], key["id"])}
+                                        for key in events[0]["expected"]),
+                                       key=lambda key: (key["id"], key["profile"], key["iteration"]))
+    return rebuild(events)
+
+
+def leg(version, number=1, **start):
+    """A passing run of LazyVim on Linux in the lazyvim-linux lane, the CI job
+    that runs a leg at each pinned Neovim version."""
+    return at_version(run_of("lazyvim", number, lane="lazyvim-linux", **start), version)
+
+
 def validated(events):
     return results.validate_stream(encode(events), MANIFEST, SCHEMA)
 
@@ -66,6 +86,12 @@ def document(release=RELEASE, runs="", matrix="", before="", after=""):
             "More prose, which stays.\n\n"
             f"<!-- editor-results:{release}:matrix:begin -->\n{matrix}<!-- editor-results:{release}:matrix:end -->\n"
             f"{after}\n### 0.1.0-alpha.3\n\nPast results stay hand-written.\n")
+
+
+def matrix_row(text, label):
+    """A setup's cells in a document's rendered matrix, by feature."""
+    line = next(line for line in text.split("\n") if line.startswith(f"| {label} |"))
+    return dict(zip(MANIFEST.features, line[2:-2].split(" | ")[1:]))
 
 
 def unescaped_pipes(line):
@@ -282,22 +308,25 @@ class MatrixWordingTest(unittest.TestCase):
         self.assertEqual("Partial (not observed)", found[("lazyvim-linux", "hover")])
 
     def test_runs_of_a_setup_count_together(self):
-        # Two lanes of LazyVim on Linux, each with one side of the restart
-        # command's alternatives: neither lacks the other side.
-        legacy = run_of("lazyvim", 2, lane="lazyvim-linux-nvim-0.11")
-        for event in legacy[1:-1]:
-            if event["id"] == "lazyvim.restart.builtin":
-                event["id"] = "lazyvim.restart.legacy"
-        legacy[0]["expected"] = sorted(
-            ({**key, "id": "lazyvim.restart.legacy"} if key["id"] == "lazyvim.restart.builtin" else key
-             for key in legacy[0]["expected"]), key=lambda key: (key["id"], key["profile"], key["iteration"]))
-        found = cells(run_of("lazyvim", lane="lazyvim-linux-nvim-0.12"), rebuild(legacy))
+        # Two legs of the lazyvim-linux lane, at Neovim 0.11.6 and 0.12.6,
+        # each with one side of the restart command's alternatives: neither
+        # lacks the other side.
+        found = cells(leg("0.11.6", 1), leg("0.12.6", 2))
         self.assertEqual("Pass (API)", found[("lazyvim-linux", "restart")])
-        # A failure in either lane fails the cell.
-        events = run_of("lazyvim", 3, lane="lazyvim-linux-nvim-0.12")
-        fail(events, find(events, "lazyvim.hover.popup"))
-        found = cells(rebuild(events, status="fail"), rebuild(legacy))
-        self.assertEqual("Fail: `lazyvim.hover.popup`", found[("lazyvim-linux", "hover")])
+        self.assertEqual(KNOWN_LIMITATION, found[("lazyvim-linux", "configuration")])
+        # A failure in either leg fails the cell, whether its check is one
+        # that both legs plan or only that leg's side.
+        for version, check_id, feature in (("0.11.6", "lazyvim.hover.popup", "hover"),
+                                           ("0.12.6", "lazyvim.hover.popup", "hover"),
+                                           ("0.11.6", "lazyvim.restart.legacy", "restart"),
+                                           ("0.12.6", "lazyvim.restart.builtin", "restart")):
+            with self.subTest(version=version, check=check_id):
+                legs = {"0.11.6": leg("0.11.6", 1), "0.12.6": leg("0.12.6", 2)}
+                events = legs[version]
+                fail(events, find(events, check_id))
+                rebuild(events, status="fail")
+                found = cells(*legs.values())
+                self.assertEqual(f"Fail: `{check_id}`", found[("lazyvim-linux", feature)])
 
     def test_every_repetition_counts(self):
         events = run_of("remote-ssh")
@@ -429,6 +458,11 @@ class RunsTableTest(unittest.TestCase):
         lanes = re.findall(r"; `([a-z])`; ", table)
         # By the manifest's order of the setups, then the lane.
         self.assertEqual(["m", "z", "a", "b", "a"], lanes)
+        # Then the editor version, by its numbers, before the run ID.
+        runs = [validated(at_version(run_of("nvim", number, lane="test"), version))
+                for number, version in ((3, "0.10.0"), (1, "0.12.6"), (4, "0.9.5"), (2, "0.11.6"))]
+        table = results.render_blocks(RELEASE, runs, MANIFEST)["runs"]
+        self.assertEqual(["0.9.5", "0.10.0", "0.11.6", "0.12.6"], re.findall(r"\| Neovim ([0-9.]+) \|", table))
 
 
 class SelectionTest(RenderTest):
@@ -464,15 +498,60 @@ class SelectionTest(RenderTest):
     def test_duplicate_slots(self):
         # Two attempts of a slot: the renderer doesn't choose the latest.
         selection = self.select(run_of("nvim", 1, lane="test"), run_of("nvim", 2, lane="test"))
-        self.assertMalformed(selection, "stream-1.jsonl: suite nvim, setup nvim-linux, and lane test are also those "
-                                        f"of {selection.parent / 'stream-0.jsonl'}: select one run for each")
-        # Another lane, or another setup, is another slot.
+        self.assertMalformed(selection, "stream-1.jsonl: suite nvim, setup nvim-linux, lane test, and editor version 1 "
+                                        f"are also those of {selection.parent / 'stream-0.jsonl'}: select one run for "
+                                        "each")
+        # Two attempts of a leg of a lane, at the same editor version.
+        selection = self.select(leg("0.12.6", 1), leg("0.11.6", 2), leg("0.12.6", 3), directory="legs")
+        self.assertMalformed(selection, "stream-2.jsonl: suite lazyvim, setup lazyvim-linux, lane lazyvim-linux, and "
+                                        f"editor version 0.12.6 are also those of {selection.parent / 'stream-0.jsonl'}")
+        # Another lane, setup, or editor version is another slot.
         events = run_of("nvim", 3, lane="test")
         events[0]["setup"] = "nvim-macos"
         for side in ("client", "host"):
             events[0]["provenance"][side]["os"] = "macos"
-        selection = self.select(run_of("nvim", 1, lane="test"), run_of("nvim", 2, lane="local"), events)
+        selection = self.select(run_of("nvim", 1, lane="test"), run_of("nvim", 2, lane="local"), events,
+                                at_version(run_of("nvim", 4, lane="test"), "0.12.6"))
         self.assertEqual(0, self.render(selection)[0])
+
+    def test_legs_of_a_lane(self):
+        # The lazyvim-linux job's legs, at Neovim 0.12.6 and 0.11.6, each in
+        # its own row, by version, and both in the matrix's cells.
+        for attempt, names in enumerate((["a.jsonl", "b.jsonl"], ["b.jsonl", "a.jsonl"])):
+            with self.subTest(names):
+                selection = self.select(leg("0.12.6", 1), leg("0.11.6", 2), names=names, directory=f"order-{attempt}")
+                status, out, err = self.render(selection)
+                self.assertEqual((0, ""), (status, err), out)
+                text = self.doc.read_text()
+                self.assertEqual(["0.11.6", "0.12.6"], re.findall(r"`lazyvim-linux`;.* \| Neovim ([0-9.]+) \|", text))
+                self.assertEqual("Pass (API)", matrix_row(text, "LazyVim, Linux")["restart"])
+        # A failure in either leg fails its cells, and the render.
+        for version in ("0.11.6", "0.12.6"):
+            with self.subTest(version):
+                legs = {"0.11.6": leg("0.11.6", 1), "0.12.6": leg("0.12.6", 2)}
+                fail(legs[version], find(legs[version], "lazyvim.hover.popup"))
+                rebuild(legs[version], status="fail")
+                selection = self.select(*legs.values(), directory=f"failed-{version}")
+                self.assertEqual(1, self.render(selection)[0])
+                row_ = matrix_row(self.doc.read_text(), "LazyVim, Linux")
+                self.assertEqual(("Fail: `lazyvim.hover.popup`", "Pass (API)"), (row_["hover"], row_["restart"]))
+
+    def test_an_unknown_editor_version(self):
+        # A stream without its editor version could be of any leg of its
+        # lane, so it shares each one's slot, whichever comes first.
+        unknown = "the editor version of one or both is unknown: select one run for each"
+        for case, streams in (("first", [leg(None, 1), leg("0.12.6", 2)]),
+                              ("last", [leg("0.11.6", 1), leg("0.12.6", 2), leg(None, 3)]),
+                              ("both", [leg(None, 1), leg(None, 2)])):
+            with self.subTest(case):
+                selection = self.select(*streams, directory=case)
+                self.assertMalformed(selection, f"{selection.parent / f'stream-{len(streams) - 1}.jsonl'}: suite "
+                                                "lazyvim, setup lazyvim-linux, and lane lazyvim-linux are also those "
+                                                f"of {selection.parent / 'stream-0.jsonl'}, and {unknown}")
+        # Alone in its lane, it renders.
+        selection = self.select(leg(None, 1), at_version(run_of("lazyvim", 2), "0.12.6"), directory="alone")
+        self.assertEqual(0, self.render(selection)[0])
+        self.assertIn("| Neovim, version unknown |", self.doc.read_text())
 
     def test_duplicate_run_ids(self):
         selection = self.select(run_of("nvim", 1, lane="a"), run_of("lazyvim", 1, lane="b"))
@@ -643,9 +722,9 @@ class DeterminismTest(RenderTest):
     def streams(self):
         events = run_of("nvim", 3, lane="local")
         fail(events, find(events, "nvim.hover.response"))
-        return [run_of("lazyvim", 1, lane="lazyvim-linux"), run_of("lazyvim-macos", 2, lane="lazyvim-macos"),
+        return [leg("0.12.6", 1), run_of("lazyvim-macos", 2, lane="lazyvim-macos"),
                 rebuild(events, status="fail"), run_of("vscode-vsix", 4, lane="vscode-vsix-macos"),
-                run_of("remote-ssh", 5, lane="vscode-remote-ssh-linux")]
+                run_of("remote-ssh", 5, lane="vscode-remote-ssh-linux"), leg("0.11.6", 6)]
 
     def test_the_order_of_the_inputs_doesnt_matter(self):
         streams = self.streams()
@@ -736,11 +815,13 @@ class CheckTest(RenderTest):
 
 
 # The example in results-example/: demo runs of three setups, each passing,
-# with the LazyVim run's expected failure.
+# with the LazyVim runs' expected failure. LazyVim on Linux has a leg at each
+# of its lane's Neovim versions.
+LAZYVIM_COMMAND = ["test/e2e/lazyvim/run.sh", "--archive", "<archive>", "--out", "<dir>"]
 EXAMPLE_RUNS = {
     "nvim-linux.jsonl": ("nvim", "nvim-linux", "test", ["make", "test"], "0.11.6"),
-    "lazyvim-linux.jsonl": ("lazyvim", "lazyvim-linux", "lazyvim-linux",
-                            ["test/e2e/lazyvim/run.sh", "--archive", "<archive>", "--out", "<dir>"], "0.11.6"),
+    "lazyvim-linux-0.11.6.jsonl": ("lazyvim", "lazyvim-linux", "lazyvim-linux", LAZYVIM_COMMAND, "0.11.6"),
+    "lazyvim-linux-0.12.6.jsonl": ("lazyvim", "lazyvim-linux", "lazyvim-linux", LAZYVIM_COMMAND, "0.12.6"),
     "vscode-macos.jsonl": ("vscode-vsix", "vscode-macos", "vscode-vsix-macos",
                            ["npm", "run", "test:e2e", "--", "--vsix", "<vsix>", "<archive>/virgil-lsp"], "1.142.0"),
 }
@@ -752,10 +833,10 @@ def example_streams():
     for name, (variant, setup, lane, command, version) in EXAMPLE_RUNS.items():
         events = run_of(variant, lane=lane, release=EXAMPLE_RELEASE, purpose="demo", command=command)
         for event in events:
-            event["runId"] = f"example-{setup}"
+            event["runId"] = f"example-{name[:-len('.jsonl')]}"
+        events = at_version(events, version)
         provenance = events[0]["provenance"]
         provenance["server"].update(versionText=f"virgil-lsp {EXAMPLE_RELEASE}", version=EXAMPLE_RELEASE)
-        provenance["editor"]["version"] = version
         if setup.endswith("macos"):
             provenance["server"]["target"] = "x86-64-darwin"
             for side in ("client", "host"):

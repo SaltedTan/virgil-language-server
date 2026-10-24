@@ -3,8 +3,12 @@
   "release": "0.0.0-example",
   "streams": [
     {
-      "path": "lazyvim-linux.jsonl",
-      "sha256": "d82fe12fe592d52828dab74128f1f3c5c19e593e0701a79ffc2ce8161c7cfed3"
+      "path": "lazyvim-linux-0.11.6.jsonl",
+      "sha256": "7865e475252723051f7e063c2c3d49767f669df50c23126a614d689e83088077"
+    },
+    {
+      "path": "lazyvim-linux-0.12.6.jsonl",
+      "sha256": "37de67947da4c7920cbcd07f620097ac9367407f4910f79df34e9651d02d0f79"
     },
     {
       "path": "nvim-linux.jsonl",
