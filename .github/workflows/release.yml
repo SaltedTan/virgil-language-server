@@ -31,6 +31,8 @@ on:
       - scripts/package-release.sh
       - scripts/release-notes.py
       - scripts/smoke-test-release.sh
+      - scripts/release-library.py
+      - test/release/**
       - test/e2e/lazyvim/**
       - test/e2e/nvim/fixture/**
   workflow_dispatch:
@@ -129,7 +131,7 @@ jobs:
           fi
           cat build/release/*.manifest.json
       - name: Smoke-test the extracted archive
-        run: scripts/smoke-test-release.sh "$ARCHIVE"
+        run: test/release/run.sh --archive "$ARCHIVE"
       - name: Check that make test tested the packaged executables
         # The build is deterministic, so the package's fresh build must match.
         run: |

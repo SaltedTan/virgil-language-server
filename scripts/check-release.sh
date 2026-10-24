@@ -6,7 +6,15 @@
 # tag must be "v" followed by VERSION, VERSION must be a semantic version, and
 # CHANGELOG.md must have a "## [<version>]" section. See docs/releasing.md.
 # Usage: check-release.sh <tag> [<repository-root>]
+#        check-release.sh --archive <archive>
 set -euo pipefail
+
+# Archive verification is also used before extraction by the smoke test.
+if [ "${1:-}" = --archive ]; then
+    ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    pinned=$(git -C "$ROOT" rev-parse HEAD:vendor/virgil)
+    exec python3 "$ROOT/scripts/release-library.py" check "${2:?usage: check-release.sh --archive <archive>}" "$pinned"
+fi
 
 TAG=${1:?usage: check-release.sh <tag> [<repository-root>]}
 ROOT=${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
