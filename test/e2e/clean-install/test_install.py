@@ -169,12 +169,20 @@ class InstallTests(unittest.TestCase):
         archive = f'virgil-lsp-{self.values["server_version"]}-x86-64-linux.tar.gz'
         vsix = f'virgil-lsp-vscode-{self.values["extension_version"]}.vsix'
         for step, filename in [("server", archive), ("vsix-download", vsix)]:
-            for checksum in ["wrong", "missing", "valid"]:
+            for checksum in ["wrong", "missing", "near-match", "valid"]:
                 with self.subTest(step=step, checksum=checksum):
                     home, env = self.home()
                     (self.public / filename).write_bytes(b"corrupted download\n")
-                    expected = b"original download\n" if checksum == "wrong" else b"corrupted download\n"
+                    expected = (b"original download\n" if checksum in ["wrong", "near-match"]
+                                else b"corrupted download\n")
                     listed_file = filename if checksum != "missing" else "other-file"
+                    if checksum == "near-match":
+                        # A different file must not authorize installing the download,
+                        # even when its name matches the requested name as a regex.
+                        listed_file = filename.replace(".", "x")
+                        download_dir = home / "Downloads/virgil-lsp" if step == "server" else home
+                        download_dir.mkdir(parents=True, exist_ok=True)
+                        (download_dir / listed_file).write_bytes(expected)
                     sums = f"{hashlib.sha256(expected).hexdigest()}  {listed_file}\n"
                     (self.public / "SHA256SUMS").write_text(sums)
                     (home / "SHA256SUMS").write_text(sums)

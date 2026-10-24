@@ -64,7 +64,7 @@ mkdir -p "$HOME/Downloads/virgil-lsp" &&
 cd "$HOME/Downloads/virgil-lsp" &&
 curl --fail --location "$download_url/$archive" -o "$archive" &&
 curl --fail --location "$download_url/SHA256SUMS" -o SHA256SUMS &&
-grep "  $archive$" SHA256SUMS | sha256sum --check --strict &&
+awk -v file="$archive" '$2 == file' SHA256SUMS | sha256sum --check --strict &&
 mkdir -p "$HOME/.local/opt" "$HOME/.local/bin" &&
 tar -xzf "$archive" -C "$HOME/.local/opt" &&
 ln -sf "$HOME/.local/opt/virgil-lsp-$server_version-x86-64-linux/virgil-lsp" "$HOME/.local/bin/virgil-lsp" &&

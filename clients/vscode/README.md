@@ -25,7 +25,7 @@ Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl
    extension_version=0.1.2
    vsix=virgil-lsp-vscode-$extension_version.vsix
    curl --fail --location "$download_url/$vsix" -o "$vsix" &&
-   grep "  $vsix$" SHA256SUMS | sha256sum --check --strict &&
+   awk -v file="$vsix" '$2 == file' SHA256SUMS | sha256sum --check --strict &&
    code --install-extension "$vsix"
    ```
 
