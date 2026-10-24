@@ -104,8 +104,8 @@ class LspServer {
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
 		rename.register(dispatcher);
-		// Rename, completion, and repaired signature help requests can be
-		// cancelled while they wait.
+		// Waiting snapshot requests, rename, completion, and repaired
+		// signature help requests can be cancelled.
 		dispatcher.onNotification("$/cancelRequest", cancel);
 		workspaceEvents.register(dispatcher);
 		workspaceEvents.schedule = scheduleWatched;
@@ -417,6 +417,7 @@ class LspServer {
 		rename.cancel(n);
 		completion.cancel(n);
 		signatureHelp.cancel(n);
+		snapshotRequests.cancel(n);
 	}
 	// The client's first notification after initialize.
 	private def initialized(n: JsonRpcMessage.Notification) {
