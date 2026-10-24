@@ -377,7 +377,7 @@ class RunsTableTest(unittest.TestCase):
 
     def test_the_expected_failure(self):
         cells_ = row(run_of("lazyvim", lane="lazyvim-linux"))
-        self.assertEqual("Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: " + NOICE, cells_[5])
+        self.assertEqual("Passed (58 of 58 observations): 57 pass, 1 xfail; XFAIL: " + NOICE, cells_[5])
         self.assertEqual("LazyVim, Linux; `lazyvim-linux`; Linux 1, x86_64; development run", cells_[2])
         self.assertEqual("`2222222`, server 0.1.0-alpha.3", cells_[1])
 
@@ -396,7 +396,7 @@ class RunsTableTest(unittest.TestCase):
         self.assertEqual("Failed (22 of 22 observations): 22 pass; no exit code", row(events)[5])
         events = run_of("lazyvim")
         events[find(events, RULE["check"], RULE["profile"])].update(status="xpass", reason="shown", failureCode=None)
-        self.assertEqual("Failed (57 of 57 observations): 56 pass, 1 xpass; passed unexpectedly: "
+        self.assertEqual("Failed (58 of 58 observations): 57 pass, 1 xpass; passed unexpectedly: "
                          f"`{RULE['check']}`", row(rebuild(events, status="fail"))[5])
         # A run whose preflight failed, without its worker.
         events = run_of("nvim")
