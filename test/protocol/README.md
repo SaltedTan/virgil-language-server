@@ -1,7 +1,8 @@
 # Protocol tests
 
-These tests drive `virgil-lsp --stdio` over its real pipes. Every receive has a
-deadline, and failures print the decoded transcript and the server's stderr.
+These tests drive `virgil-lsp --stdio` over its real pipes. The interactive
+Python sessions give every receive a deadline and print the decoded transcript
+and the server's stderr on failure.
 
 - `run.sh` replays golden input bytes and compares output bytes and the exit
   status; its header owns the transcript format.
@@ -20,8 +21,8 @@ that hand-written requests miss, such as the absent `initializationOptions` of
 these steps to add a client:
 
 1. Build the server from a clean checkout and record its commit
-   (`git rev-parse --short HEAD`); the existing fixtures were captured at
-   `025082d`.
+   (`git rev-parse --short HEAD`) and the capture date. Each fixture's
+   `fixture.json` records its provenance.
 2. Isolate the editor's state from yours and use a scratch project outside the
    repository. For VS Code, pass `--user-data-dir` and `--extensions-dir`; for
    Neovim, set `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_STATE_HOME`.
@@ -36,10 +37,10 @@ these steps to add a client:
    let `initialize` and `initialized` finish, then close the editor so the
    server gets a `shutdown`, `exit`, and exit status 0.
 5. Decode the client's frames into one capture directory per client,
-   `<name>/client.json`, an array of the messages in order. The research
-   scripts that produced the current captures (`capture_clients.py`,
-   `capture_nvim.lua`, `capture_vscode.cjs`, and `stdio_proxy.py`) show the
-   shape.
+   `<name>/client.json`, an array of decoded JSON-RPC objects in order,
+   starting with `initialize`. Preserve notifications and replies to the
+   server's requests, including any reply to `client/registerCapability`
+   after `didOpen`; the normalizer selects the initialization exchange.
 6. Normalize them, from the repository root:
 
    ```sh
@@ -48,13 +49,14 @@ these steps to add a client:
 
    This writes `test/protocol/clients/<name>/messages.json` and
    `fixture.json` for every capture directory. Add the new client's name,
-   editor version, and client library to `CAPTURES` in `normalize.py` first.
-   The normalizer replaces the captured project root with `/work/project`, a
-   `virgilRoot` outside it with `/work/virgil`, and `processId` with a fixed
-   number; it leaves every other member and every absent, `null`, `[]`, and
-   `{}` distinction as sent, and stops on a machine path that no rule covers.
-   `Content-Length` is written when the test frames the messages. It is not
-   run by `make test`, so rerun it only to add or refresh a capture.
+   editor version, and client library to `CAPTURES` in `normalize.py` first,
+   and set the metadata's `captured` and `serverCommit` fields there to the
+   recorded date and commit. These values are hard-coded for the batch, so
+   include only the new or refreshed captures in `CAPTURES_DIR`.
+   The [normalizer's docstring](clients/normalize.py) owns the selection and
+   normalization rules. Review the output for machine paths even when the
+   path guard passes. The normalizer is not run by `make test`, so rerun it
+   only to add or refresh a capture.
 7. Keep raw logs out of the repository: they contain source text and machine
    paths. Commit only the normalized `messages.json` and `fixture.json`.
 

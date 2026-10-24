@@ -29,12 +29,13 @@ Normalization replaces machine-specific values and nothing else:
     folder named after the project directory becomes "project";
   * initializationOptions.virgilRoot, a checkout outside the project, with
     /work/virgil;
-  * processId with a fixed number (or null, which stays null);
+  * a present, non-null processId with a fixed number;
   * Content-Length is recomputed on replay, since messages are stored as JSON.
 
 Every other member, and every absent, null, [] and {} distinction, is kept as
-sent. Absolute paths that no rule covers stop the script, so a new capture
-cannot leak a user path silently.
+sent, including member and array order. Remaining strings containing /home/,
+/Users/, /root/, /private/, or /tmp/ stop the script; paths elsewhere require
+manual review before committing a new capture.
 """
 
 import argparse
