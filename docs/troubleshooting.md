@@ -8,7 +8,7 @@ Messages are quoted as the extension and server print them. A part in angle brac
 
 ### VS Code: reading the output channel
 
-Open the Output view and choose "Virgil Language Server". Each time the extension starts the server, it first writes a `Server selection:` line that names the server it chose and why, then `Starting <path> --stdio`, and, once the server has answered, `Started virgil-lsp <version>`. If a check fails before the server starts, or the server doesn't start, the channel says `The server did not start: <reason>`, and VS Code shows an error notification, "Virgil language server did not start: <reason>", with a **Show Output** button. The reason says what to fix. After fixing it, run **Virgil: Restart Language Server**. A change to `virgil.server.path` or `virgil.virgilRoot` restarts the server by itself.
+Open the Output view and choose "Virgil Language Server". When the extension first activates or you request a restart, it writes a `Server selection:` line that names the server it chose and why, then `Starting <path> --stdio`, and, once the server has answered, `Started virgil-lsp <version>`. If a check fails before the server starts, or the server doesn't start, the channel says `The server did not start: <reason>`, and VS Code shows an error notification, "Virgil language server did not start: <reason>", with a **Show Output** button. The reason says what to fix. After fixing it, run **Virgil: Restart Language Server**. A change to `virgil.server.path` or `virgil.virgilRoot` restarts the server by itself.
 
 The extension chooses the server in this order ([Settings](../clients/vscode/README.md#settings)):
 
