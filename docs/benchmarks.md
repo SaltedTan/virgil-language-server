@@ -386,42 +386,47 @@ The wire sends a default source-type target per declaration and sparse exception
 
 ## Inlay hints
 
-Measured on 2026-10-25 against `origin/main` (`eec5004`), on the Intel Core i7-14700KF host with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in equal-length `build/base-265` and `build/next-265` directories, with `BENCH=1 all bench-metadata` and identical generated BuildInfo text. After the code commits changed HEAD, the candidate rebuild copied the baseline BuildInfo and used `make -o buildinfo` to preserve it. The baseline sources were extracted for its build, then the feature sources were restored byte for byte; the manifests record the actual source hashes.
+Measured on 2026-10-25 against `origin/main` (`015b6d93`), after rebasing the feature and fixing the first review's findings. The host is an Intel Core i7-14700KF with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in equal-length `build/base-265-r1` and `build/next-265-r1` directories, with `BENCH=1 all bench-metadata` and identical generated BuildInfo text. The baseline sources were extracted for its build, then the feature sources were restored byte for byte. The candidate rebuild copied the baseline BuildInfo and used `make -o buildinfo` to preserve it. The metadata's actual source hashes match `015b6d93` and implementation commit `7063356f` respectively.
 
-A read-only `pgrep -af bench-` check preceded the comparison. It held the shared benchmark lock and pinned the client and its children to P-core hardware thread 12. All three pinned projects used six alternating blocks, two warmups, and five measured operations per block. Every semantic check passed; no samples were removed.
+Read-only process checks preceded the comparisons. They held the shared benchmark lock and pinned the client and its children to P-core hardware thread 12. Each comparison used all three pinned projects, six alternating process blocks, two warmups, and five measured operations per block. Every semantic check passed; no samples were removed.
 
 ```sh
 flock /path/to/shared/bench.lock taskset -c 12 \
   python3 scripts/bench-lsp.py \
-  --exe build/base-265/virgil-lsp --exe build/next-265/virgil-lsp \
+  --exe build/base-265-r1/virgil-lsp --exe build/next-265-r1/virgil-lsp \
   --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12 \
   --output comparison-final.json
+# Repeat with --inlay-refresh --output comparison-refresh.json.
 ```
 
-Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+The refresh option advertises and acknowledges `workspace.inlayHint.refreshSupport` and adds `refresh_analysis`: repeated project-scoped analyses after discovering the unsaved project configuration. Explicit URI-list analyses have no project context, so merely advertising the capability during the ordinary fresh/reused scenarios would not measure refresh comparison. The added scenario runs the comparison on each transaction with warm coordinate caches, and requires an actual refresh from a feature-capable server. Its latency includes the project request and hint comparison before the response. The initial cold coordinate scan is outside this scenario's measured samples.
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario. The first table uses the ordinary comparison; the refresh rows use the separate refresh-enabled comparison.
 
 | Measurement | Main | With inlay hints |
 | --- | ---: | ---: |
-| Small fresh analysis | 0.459 (0.430–0.526) | 0.459 (0.431–0.501) |
-| Small reused analysis | 0.144 (0.136–0.155) | 0.149 (0.143–0.158) |
-| Util fresh analysis | 15.125 (14.947–15.366) | 15.360 (15.142–15.514) |
-| Util reused analysis | 13.225 (12.622–13.397) | 13.507 (13.083–13.710) |
-| Aeneas fresh analysis, end to end | 334.194 (321.183–345.223) | 344.951 (331.035–351.525) |
-| Aeneas fresh occurrence collection | 113.696 (110.230–117.599) | 120.385 (116.175–123.973) |
-| Aeneas fresh result encoding | 58.850 (56.882–62.591) | 62.964 (58.950–64.187) |
-| Aeneas fresh result decoding | 16.671 (16.474–17.393) | 18.657 (18.460–19.265) |
-| Aeneas reused analysis, end to end | 305.912 (280.532–334.300) | 306.798 (287.657–328.089) |
-| Aeneas reused occurrence collection | 100.183 (95.609–106.429) | 102.567 (101.827–109.911) |
-| Aeneas reused result encoding | 58.495 (54.730–61.751) | 57.398 (56.663–61.518) |
-| Aeneas reused result decoding | 14.738 (14.359–16.685) | 16.816 (16.355–18.538) |
+| Small fresh analysis, end to end | 0.451 (0.431–0.486) | 0.445 (0.423–0.471) |
+| Small reused analysis, end to end | 0.141 (0.135–0.149) | 0.142 (0.135–0.148) |
+| Util fresh analysis, end to end | 15.337 (15.006–15.595) | 15.226 (15.024–15.705) |
+| Util reused analysis, end to end | 13.441 (13.132–13.594) | 13.154 (12.833–13.533) |
+| Aeneas fresh analysis, end to end | 330.180 (318.154–341.912) | 332.061 (321.087–344.939) |
+| Aeneas fresh occurrence collection | 113.956 (110.179–117.088) | 117.556 (113.416–122.162) |
+| Aeneas fresh result encoding | 59.322 (56.329–63.127) | 58.477 (56.168–63.038) |
+| Aeneas fresh result decoding | 16.680 (16.433–17.249) | 18.227 (18.015–18.566) |
+| Aeneas reused analysis, end to end | 291.635 (276.826–311.637) | 294.273 (283.137–311.686) |
+| Aeneas reused occurrence collection | 97.525 (95.803–100.839) | 101.067 (99.572–104.294) |
+| Aeneas reused result encoding | 55.120 (54.300–58.594) | 54.857 (53.899–57.380) |
+| Aeneas reused result decoding | 14.794 (14.287–16.643) | 16.360 (15.831–18.197) |
+| Aeneas analysis with refresh comparison | 292.259 (284.816–307.381) | 304.793 (297.473–316.556) |
+| Aeneas refresh occurrence collection | 96.254 (95.379–97.715) | 99.999 (99.034–104.382) |
+| Aeneas refresh result encoding | 54.623 (54.299–55.533) | 54.585 (54.155–57.006) |
+| Aeneas refresh result decoding | 14.928 (14.293–33.506) | 16.140 (15.902–16.875) |
 
-Aeneas reused analysis is within noise: its median rises 0.886 ms (0.29%), with overlapping p10–p90 intervals. Fresh analysis rises 10.758 ms (3.22%), also with overlapping intervals, but the phase probes show remaining work: collection adds 6.689 ms, encoding 4.114 ms, and decoding 1.986 ms at the median. Reused collection adds 2.384 ms and decoding 2.078 ms, while encoding saves 1.098 ms. Small analysis remains within noise; util adds 0.235 ms fresh and 0.282 ms reused, with overlapping intervals. This comparison does not establish the requested absence of measurable cost for fresh Aeneas analysis. Further work should reduce parameter-record collection and validation, and avoid encoding and decoding their spans twice.
+Fresh Aeneas latency changes by +1.881 ms (+0.57%). The baseline and feature median absolute deviations are 6.119 and 7.315 ms. Reused Aeneas latency changes by +2.638 ms (+0.90%). The baseline and feature median absolute deviations are 13.921 and 10.366 ms. Project-scoped analysis with refresh comparison Aeneas latency changes by +12.534 ms (+4.29%). The baseline and feature median absolute deviations are 7.478 and 6.394 ms. The ordinary end-to-end changes are within run-to-run noise. Project-scoped refresh analysis adds 12.534 ms (4.29%), more than either build's median absolute deviation, despite overlapping p10–p90 intervals. The requested absence of measurable cost is therefore not established. In addition, fresh decoding still has nonoverlapping p10–p90 intervals. The collector now caches parameter IDs and eligibility by callee, stores local labels on declarations and argument labels with existing call spans, and merges records instead of decoding and radix-sorting a separate hint stream. Preparing call bytes once removes the earlier encoding penalty. Full resolved-type validation and remaining hint eligibility work still add collection work; strict span, local-declaration, and label-index validation still visits every wire hint record. The next reduction would carry parameter labels in the retained call-argument encoding too, removing the duplicate parameter spans and their decoding/validation pass. The enabled refresh path also rereads and fingerprints all 52,137 hints, including 11,089 local type-target lookups, on every analysis. Cached source positions avoid repeat conversions, but avoiding the remaining scan requires per-file content fingerprints that include external label and link changes, or shared fingerprints produced during encoding/decoding. The existing phase probes do not isolate refresh comparison, so its cost cannot be assigned exactly by subtracting phase medians. Phase medians are separate measurements, not additive savings guarantees.
 
-The first implementation triggered one worker GC on every reused Aeneas transaction. Compact collection bytes replace growing integer vectors and extraction copies. Two shared arrays radix-sort hint records by source offset; labels and numeric string translations are cached, local declarations are reused, hint output is presized, and declaration tables reserve the registered declaration count instead of allocating successive growth buffers. These buffers stay worker-local.
+Fresh Aeneas worker allocation is 193,161,456 → 193,707,512 bytes at the median. Reused Aeneas worker allocation is 193,008,032 → 193,554,024 bytes at the median. Every measured worker transaction in both comparisons collects zero times in both builds, excluding the explicit final collection; its median and p10–p90 are all zero. Worker-only caches and prepared buffers are not retained by snapshots. Snapshot hint encoding and conservative charges are unchanged by this fix round.
 
-Every measured worker transaction collects zero times in both builds, excluding the explicit final collection. Aeneas fresh worker allocation rises from 193,161,456 to 193,182,504 bytes (21,048 bytes, 0.011%); reused allocation medians rise from 193,008,032 to 193,029,080. The extra cached label indexes and shared sorting buffers stay worker-local. Aeneas carries 52,137 hints in 288,644 retained encoded bytes. Its total retained charge still falls by 438,196 bytes (3.28%) because the packed occurrence coordinates save more than the hints add.
-
-The decoded-allocation and retained-charge figures below come from six independent size-probe runs per project and build, using identical relative source paths without editor provenance. Decoded allocation and retained charge are constant across those runs. The small candidate's raw wire probe varies by one byte because elapsed statistics use variable-length integers. Wire sizes below are the fresh-analysis worker probes' medians; their p10 and p90 are identical.
+The decoded-allocation and retained-charge figures below come from six independent size-probe runs per project and build, using identical relative source paths without editor provenance. Both charges are constant across those runs, so their medians and p10–p90 are the same. Wire sizes are the fresh-analysis worker probes' medians; their p10 and p90 are identical.
 
 | Project | Wire bytes, main → hints | Decoded allocation, main → hints | Retained charge, main → hints |
 | --- | ---: | ---: | ---: |
@@ -429,7 +434,17 @@ The decoded-allocation and retained-charge figures below come from six independe
 | Util | 172,674 → 181,571 | 756,219 → 740,346 | 762,224 → 746,351 |
 | Aeneas | 4,054,897 → 4,342,621 | 13,311,167 → 12,872,971 | 13,346,797 → 12,908,601 |
 
-Wire version 13 adds compact hint records and bounded display strings. Packing compiler line/column coordinates into one stored integer when both fit 16 bits saves four actual bytes per occurrence, with full-width fallback. Aeneas decoded allocation and retained charge remain below the unchanged 80% guard for the 16 MiB result budget; the frame and admission limits are unchanged.
+Wire version 13 adds compact hint records and bounded display strings. Packing compiler line/column coordinates into one stored integer when both fit 16 bits saves four actual bytes per occurrence, with full-width fallback. Aeneas decoded allocation and retained charge remain below the unchanged 80% guard for the 16 MiB result budget; frame and admission limits are unchanged.
+
+The review's link-cost probe ran under the same lock and CPU affinity, with one warmup and three measured unchanged-snapshot requests per case. Within each request, validated target text/maps are cached by snapshot file and locations by declaration ID; each new request still checks target freshness.
+
+| Hints | Target padding | Before, median ms | After, median ms |
+| ---: | ---: | ---: | ---: |
+| 100 | 0 bytes | 1.556 | 0.587 |
+| 100 | 262,144 bytes | 211.541 | 2.930 |
+| 200 | 262,144 bytes | 433.157 | 3.255 |
+| 400 | 262,144 bytes | 866.187 | 4.351 |
+
 
 ## Scheduled comparison
 

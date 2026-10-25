@@ -145,7 +145,7 @@ Both hint kinds are on by default. Set `initializationOptions.inlayHints.types` 
 {"initializationOptions":{"inlayHints":{"types":true,"parameterNames":false}}}
 ```
 
-VS Code passes the settings `virgil.inlayHints.types` and `virgil.inlayHints.parameterNames` and restarts the server when either changes. Neovim uses `init_options = { inlayHints = { types = true, parameterNames = false } }`; restart its language server after a change. The editor's own inlay-hint switch applies on top. See the [hint rules](architecture.md#inlay-hints), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#inlay-hints).
+VS Code passes the settings `virgil.inlayHints.types` and `virgil.inlayHints.parameterNames` and restarts the server when either changes. Neovim uses `init_options = { inlayHints = { types = true, parameterNames = false } }`; restart its language server after a change. The editor's own inlay-hint switch applies on top. Clients that advertise refresh support receive a refresh only when enabled labels, UTF-16 positions, or link targets change; a text version or unrelated trailing comment alone does not trigger one. See the [hint rules](architecture.md#inlay-hints), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#inlay-hints).
 
 ### Compiler flags
 
