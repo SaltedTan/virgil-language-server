@@ -7,7 +7,7 @@
 // extension is installed on that host with the VS Code Server's own CLI, and
 // the language server runs there. Usage, from clients/vscode on Linux:
 //
-//   node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH]
+//   node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH]
 //     [--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work]
 //     [--sshd PATH]
 //
@@ -96,7 +96,7 @@ function infrastructure(what, step) {
 
 class UsageError extends Error {}
 
-const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH] '
+const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH] '
   + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH]';
 
 function options() {
@@ -105,6 +105,7 @@ function options() {
     parsed = parseArgs({
       options: {
         vsix: { type: 'string' },
+        bundled: { type: 'boolean', default: false },
         server: { type: 'string' },
         archive: { type: 'string' },
         'virgil-root': { type: 'string' },
@@ -125,6 +126,7 @@ function options() {
   const resolve = (value) => (value === undefined ? undefined : path.resolve(cwd, value));
   const values = {
     vsix: resolve(parsed.vsix),
+    bundled: parsed.bundled,
     server: resolve(parsed.server),
     archive: resolve(parsed.archive),
     virgilRoot: resolve(parsed['virgil-root']) ?? path.join(repo, 'vendor/virgil'),
@@ -136,16 +138,19 @@ function options() {
   if (values.vsix === undefined) throw new UsageError('--vsix is required');
   if (!fs.existsSync(values.vsix)) throw new UsageError(`no VSIX at ${values.vsix}; package the extension first`);
   if (values.server !== undefined && values.archive !== undefined) throw new UsageError('give --server or --archive, not both');
-  if (values.archive === undefined) values.server ??= path.join(repo, 'build/virgil-lsp');
+  if (values.bundled && (values.server !== undefined || values.archive !== undefined || parsed['virgil-root'] !== undefined)) {
+    throw new UsageError('--bundled cannot be combined with an external server or root');
+  }
+  if (!values.bundled && values.archive === undefined) values.server ??= path.join(repo, 'build/virgil-lsp');
   if (values.archive !== undefined && !/\.tar\.gz$/.test(values.archive)) throw new UsageError(`not a .tar.gz archive: ${values.archive}`);
   if (values.archive !== undefined && !fs.existsSync(values.archive)) throw new UsageError(`no archive at ${values.archive}`);
   if (values.server !== undefined && !fs.existsSync(path.dirname(values.server))) throw new UsageError(`no directory ${path.dirname(values.server)}`);
   if (!/^[1-9][0-9]*$/.test(parsed.repeat)) throw new UsageError(`--repeat takes a positive whole number, not ${parsed.repeat}`);
   values.repeat = Number(parsed.repeat);
-  if (!fs.existsSync(path.join(values.virgilRoot, 'lib/util/StringBuilder.v3'))) {
+  if (!values.bundled && !fs.existsSync(path.join(values.virgilRoot, 'lib/util/StringBuilder.v3'))) {
     throw new UsageError(`no Virgil sources at ${values.virgilRoot}; run: git submodule update --init vendor/virgil`);
   }
-  values.virgilRoot = fs.realpathSync(values.virgilRoot);
+  if (!values.bundled) values.virgilRoot = fs.realpathSync(values.virgilRoot);
   if (!fs.existsSync(values.workDir)) throw new UsageError(`no directory ${values.workDir}`);
   values.workDir = fs.realpathSync(values.workDir);
   // Remote-SSH's installation script and the SSH configuration take these
@@ -200,7 +205,7 @@ function treeSha256(dir) {
 
 // One file from a zip archive, such as a VSIX: its central directory gives
 // the entry's local header, whose data is stored or deflated.
-function readZipEntry(file, name) {
+function readZipEntry(file, name, optional = false) {
   const zip = fs.readFileSync(file);
   let end = zip.length - 22;
   while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end--;
@@ -219,7 +224,7 @@ function readZipEntry(file, name) {
     }
     at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
   }
-  throw new Error(`${file} has no ${name}`);
+  if (!optional) throw new Error(`${file} has no ${name}`);
 }
 
 // Quotes a word for the POSIX shell that runs a command over SSH.
@@ -611,6 +616,11 @@ function suiteLines() {
   };
 }
 
+function isVSCodeServer(exe, agent, extensionPath) {
+  return (exe ?? '').startsWith(`${agent}/`)
+    && !(extensionPath !== undefined && exe.startsWith(`${extensionPath}/server/`));
+}
+
 // A Node.js program for the target's VS Code Server, whose argument is JSON:
 // it prints, as JSON, the run's processes (see runOwned), other than itself
 // and zombies, with their parents' PIDs and their start times, and
@@ -640,10 +650,11 @@ function suiteLines() {
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
-const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
+const { root, agent, extensionPath, kill, host, signal } = JSON.parse(process.argv[1]);
 ${isZombie}
 ${processFiles}
 ${runOwned}
+${isVSCodeServer}
 const found = [];
 const killed = [];
 const unidentified = [];
@@ -727,7 +738,7 @@ for (const entry of table) {
   const exe = entry.files.exe ?? identity?.exe;
   const start = entry.start;
   if (host && entry.pid === host.pid && start === host.start && exe === host.exe) hostRuns = true;
-  if (kill.includes(entry.pid + '@' + start) && !(exe ?? '').startsWith(agent + '/')) killed.push([entry.pid, start]);
+  if (kill.includes(entry.pid + '@' + start) && !isVSCodeServer(exe, agent, extensionPath)) killed.push([entry.pid, start]);
   found.push(exe === undefined ? { pid: entry.pid, ppid: entry.ppid, start } : { pid: entry.pid, ppid: entry.ppid, start, exe });
 }
 if (hostRuns && signal) signaledAt = send(signal, [[host.pid, host.start]]);
@@ -740,7 +751,7 @@ console.log(JSON.stringify({ found, host: hostRuns, signaledAt, unidentified, sa
 // processes that could not be identified. Sends signal to host, then kills
 // the processes in kill, subject to REMOTE_PROCESSES's identity checks.
 async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
-  const options = { root: run.target.root, agent: layout.agent, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
+  const options = { root: run.target.root, agent: layout.agent, extensionPath: layout.extensionPath, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
   const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(JSON.stringify(options))}`, { allowFailure: true });
   let listing;
   try {
@@ -748,7 +759,7 @@ async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   } catch {
     throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
   }
-  const server = (p) => (p.exe ?? '').startsWith(`${layout.agent}/`);
+  const server = (p) => isVSCodeServer(p.exe, layout.agent, layout.extensionPath);
   return {
     found: listing.found, left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length,
     host: listing.host, signaledAt: listing.signaledAt, unidentified: listing.unidentified ?? [], sampledAt: listing.sampledAt,
@@ -943,6 +954,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     extensionPath: layout.extensionPath,
     extensionVersion: vsix.version,
     project: layout.project,
+    bundled: run.values.bundled,
     // The workspace folders that VS Code must have, as the remote extension
     // host sees them: suite.cjs runs its single-file tests without any, and
     // its workspace tests otherwise.
@@ -953,7 +965,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   if (mode !== 'probe') {
     await run.remote(`rm -rf ${sh(layout.project)} && cp -R ${sh(layout.fixture)} ${sh(layout.project)} `
       + `&& mkdir -p ${sh(path.posix.dirname(layout.machineSettings))} && cat > ${sh(layout.machineSettings)}`, {
-      input: `${JSON.stringify({
+      input: `${JSON.stringify(run.values.bundled ? {} : {
         'virgil.server.path': path.posix.join(layout.server, 'virgil-lsp'),
         'virgil.virgilRoot': layout.virgilRoot,
       }, null, 2)}\n`,
@@ -1116,7 +1128,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   return record;
 }
 
-async function test(run) {
+function readVSIX(run) {
   const { values } = run;
   const vsixManifest = JSON.parse(readZipEntry(values.vsix, 'extension/package.json'));
   const vsix = {
@@ -1125,15 +1137,35 @@ async function test(run) {
     id: `${vsixManifest.publisher}.${vsixManifest.name}`,
     version: vsixManifest.version,
     extensionKind: vsixManifest.extensionKind ?? null,
+    target: JSON.parse(readZipEntry(values.vsix, 'extension/server-target.json', true) ?? '{}').target,
   };
   if (vsix.id !== EXTENSION_ID) throw new Failure('fail', `${values.vsix} holds ${vsix.id}, not ${EXTENSION_ID}`);
+  if (values.bundled && vsix.target !== 'linux-x64') throw new Failure('fail', 'Remote-SSH bundled test needs linux-x64');
   run.manifest.vsix = vsix;
-  const server = await serverFiles(run);
-  run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
+  return vsix;
+}
+
+async function locateExtension(run, layout, vsix) {
+  const name = `${vsix.id}-${vsix.version}`;
+  const names = [name, ...(vsix.target === undefined ? [] : [`${name}-${vsix.target}`])];
+  const locate = `const fs = require('fs'); const path = require('path');
+    const root = ${JSON.stringify(layout.extensions)};
+    const names = ${JSON.stringify(names)};
+    const matches = fs.readdirSync(root).filter(n => names.includes(n));
+    if (matches.length !== 1) process.exit(1); console.log(path.join(root, matches[0]));`;
+  return (await run.remote(`${sh(layout.serverNode)} -e ${sh(locate)}`)).stdout.trim();
+}
+
+async function test(run) {
+  const { values } = run;
+  const vsix = readVSIX(run);
+  const server = values.bundled ? undefined : await serverFiles(run);
+  if (values.bundled) run.manifest.server = { bundled: true, vsixSha256: vsix.sha256 };
+  if (!values.bundled) run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
   const suite = path.join(__dirname, '..', 'suite.cjs');
   run.manifest.tests = { suiteSha256: sha256(suite), bootstrapSha256: sha256(path.join(__dirname, 'bootstrap.cjs')) };
   console.log(`VS Code Remote-SSH test: VS Code ${VSCODE_VERSION}, Remote-SSH ${REMOTE_SSH_VERSION}, `
-    + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.archive ?? values.server}`);
+    + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.bundled ? 'the VSIX bundle' : values.archive ?? values.server}`);
 
   const executable = await downloadVSCode(run);
   const product = JSON.parse(fs.readFileSync(path.join(path.dirname(executable), 'resources/app/product.json'), 'utf8'));
@@ -1201,17 +1233,21 @@ async function test(run) {
 
   // The files that the tests need on the target.
   const layout = remoteLayout(target.root, product.commit, vsix);
-  await run.upload(server.dir, server.names, layout.server);
-  await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
+  if (!values.bundled) {
+    await run.upload(server.dir, server.names, layout.server);
+    await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
+  }
   await run.upload(path.join(repo, 'test/e2e/nvim/fixture'), ['.'], layout.fixture);
   await run.upload(path.dirname(suite), ['suite.cjs'], layout.tests);
   await run.upload(__dirname, ['bootstrap.cjs'], layout.tests);
   await run.upload(path.dirname(values.vsix), [path.basename(values.vsix)], layout.inputs);
   await run.remote(`mkdir -p ${sh(path.posix.join(layout.tests, 'no-extension'))} ${sh(layout.results)}`);
-  const version = await run.remote(`${sh(path.posix.join(layout.server, 'virgil-lsp'))} --version`, { allowFailure: true });
-  run.manifest.server.version = version.code === 0 ? version.stdout.trim() : null;
-  console.log(`-- uploaded the server, the Virgil root's lib, the fixture, and the tests to ${target.root}`);
-  if (version.code !== 0) run.fail(`virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+  if (!values.bundled) {
+    const version = await run.remote(`${sh(path.posix.join(layout.server, 'virgil-lsp'))} --version`, { allowFailure: true });
+    run.manifest.server.version = version.code === 0 ? version.stdout.trim() : null;
+    console.log(`-- uploaded the server, the Virgil root's lib, the fixture, and the tests to ${target.root}`);
+    if (version.code !== 0) run.fail(`virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+  }
 
   // The first connection installs the VS Code Server that matches the
   // client's commit, which the VSIX installation needs.
@@ -1233,6 +1269,7 @@ async function test(run) {
   infrastructure('write vsix-install.log', () => fs.writeFileSync(path.join(run.evidence, 'vsix-install.log'), installation.stdout + installation.stderr));
   if (installation.code !== 0) throw new Failure('fail', `installing ${remoteVsix} on ${target.alias} exited with ${installation.code}; see vsix-install.log`);
   const listed = (await run.remote(`${sh(layout.cli)} ${flags} --list-extensions --show-versions`)).stdout.split('\n').map((line) => line.trim());
+  layout.extensionPath = await locateExtension(run, layout, vsix);
   const manifest = JSON.parse((await run.remote(`cat ${sh(path.posix.join(layout.extensionPath, 'package.json'))}`, { allowFailure: true })).stdout || '{}');
   const checks = {
     listed: listed.includes(`${vsix.id}@${vsix.version}`),
@@ -1541,4 +1578,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, settle, stopHost, options, launch, main };
+module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, readVSIX, locateExtension, settle, stopHost, options, launch, main };

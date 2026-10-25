@@ -912,7 +912,7 @@ test('a process whose main thread has exited while its other threads run gets si
   for (const fake of pidfdSkip ? [unchecked] : [processes, unchecked]) {
     const { child, exited, start } = await ownProcess('python3', ['-I', '-c', THREAD_COMMAND]);
     try {
-      const info = await until(() => (processes.processInfo(child.pid)?.state === 'Z' ? processes.processInfo(child.pid) : undefined), 5000);
+      const info = await until(() => { const now = processes.processInfo(child.pid); return now?.state === 'Z' ? now : undefined; }, 5000);
       assert.equal(info?.threads, 2);
       assert.deepEqual(fake.signalProcesses([{ pid: child.pid, start }], 'SIGKILL'), ['sent']);
       assert.equal(await exited, 'SIGKILL');
@@ -960,7 +960,8 @@ test('the keeper stops its group when the runner goes without releasing it (real
       if (text.includes('\n')) resolve(JSON.parse(text));
     });
   });
-  const running = (p) => processes.processInfo(p.pid)?.start === p.start && processes.processInfo(p.pid).state !== 'Z';
+  // One read per check: a process can exit between two reads.
+  const running = (p) => { const info = processes.processInfo(p.pid); return info?.start === p.start && info.state !== 'Z'; };
   const keeperInfo = { pid: keeper, start: processes.processInfo(keeper).start };
   try {
     runner.kill('SIGKILL');
@@ -1046,7 +1047,7 @@ test('both runners stop a group whose keeper has been stopped, keeper and all, w
       for (const deadline = Date.now() + ms; !done() && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 20));
       return done();
     };
-    const alive = (p) => processes.processInfo(p.pid)?.start === p.start && processes.processInfo(p.pid).state !== 'Z';
+    const alive = (p) => { const info = processes.processInfo(p.pid); return info?.start === p.start && info.state !== 'Z'; };
     let found = [];
     let keeper;
     try {

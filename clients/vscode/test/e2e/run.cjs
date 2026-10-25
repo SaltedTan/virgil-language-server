@@ -10,7 +10,10 @@
 //
 //   node test/e2e/run.cjs [--vsix path/to/extension.vsix] [--logs DIR] [path/to/virgil-lsp]
 //
-// The default is build/virgil-lsp at the repository root. By default VS Code
+// Without --vsix the default is build/virgil-lsp at the repository root.
+// With --vsix and no server argument, test the bundled server with no server
+// or root setting and no external server on PATH. Pass a server argument
+// for a universal VSIX. By default VS Code
 // loads the extension from this directory as an extension under development.
 // With --vsix, each launch instead installs the packaged extension into its
 // empty extensions directory with --install-extension, as a user would, and
@@ -73,8 +76,9 @@ async function main() {
     throw new Error(`--logs takes a new or empty directory, and ${logs} is not one`);
   }
   // The server starts the worker beside its own resolved path.
-  const server = fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
-  for (const file of [server, path.join(path.dirname(server), 'virgil-lsp-worker')]) {
+  const bundled = vsix !== undefined && positionals.length === 0;
+  const server = bundled ? undefined : fs.existsSync(argument) ? fs.realpathSync(argument) : argument;
+  for (const file of server === undefined ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')]) {
     try {
       fs.accessSync(file, fs.constants.X_OK);
     } catch {
@@ -108,9 +112,10 @@ async function main() {
     const project = path.join(work, 'project');
     fs.cpSync(path.join(repo, 'test/e2e/nvim/fixture'), project, { recursive: true });
     const settings = {
-      'virgil.server.path': server,
-      // The fixture project's virgilDependencies resolve against the pinned checkout.
-      'virgil.virgilRoot': fs.realpathSync(path.join(repo, 'vendor/virgil')),
+      ...(bundled ? {} : {
+        'virgil.server.path': server,
+        'virgil.virgilRoot': fs.realpathSync(path.join(repo, 'vendor/virgil')),
+      }),
       'telemetry.telemetryLevel': 'off',
       'chat.disableAIFeatures': true,
       'update.mode': 'none',
@@ -122,7 +127,7 @@ async function main() {
     };
     console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
-    const servers = [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
+    const servers = bundled ? [] : [server, path.join(path.dirname(server), 'virgil-lsp-worker')];
     const options = { executable, settings, project, vsix, servers, keep: logs !== undefined, signal: controller.signal };
     // A launch that fails returns a failure (see failure), or throws; one that
     // failed the way the unresponsive-window flake does before the extension
@@ -228,6 +233,11 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
     ...(vsix === undefined ? {} : { VIRGIL_E2E_EXTENSIONS_DIR: extensions }),
     ...(records === undefined ? {} : { VIRGIL_E2E_RECOVERY: records }),
   });
+  if (vsix !== undefined && settings['virgil.server.path'] === undefined) {
+    env.PATH = (env.PATH ?? '').split(path.delimiter).filter((entry) =>
+      !fs.existsSync(path.join(entry, 'virgil-lsp'))).join(path.delimiter);
+    env.VIRGIL_E2E_BUNDLED = '1';
+  }
   const name = path.basename(dir);
   if (vsix !== undefined) {
     const installation = await runGroup(resolveCliPathFromVSCodeExecutablePath(executable), [
@@ -246,6 +256,12 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
       console.error(`FAIL: ${name} installation of ${vsix} ${outcome(installation)}`);
       return failure(userData, 'installation', outcome(installation));
     }
+  }
+  if (env.VIRGIL_E2E_BUNDLED) {
+    const installed = fs.readdirSync(extensions).find((name) => name.startsWith('virgil-language-server.virgil-lsp-vscode-'));
+    if (installed === undefined) throw new Error('installed extension is missing');
+    servers = ['virgil-lsp', 'virgil-lsp-worker'].map((name) => path.join(extensions, installed, 'server', name));
+    for (const file of servers) fs.accessSync(file, fs.constants.X_OK);
   }
   const result = await runGroup(executable, args, { env, stdin: 'inherit', signal, servers });
   if (!succeeded(result)) {

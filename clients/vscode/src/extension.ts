@@ -48,6 +48,7 @@ const CLOSING_ERRORS = new Set(['EPIPE', 'ECONNRESET', 'ERR_STREAM_DESTROYED']);
 class StartupError extends Error {}
 
 let output: vscode.LogOutputChannel;
+let extensionPath: string;
 let client: QueuedLanguageClient | undefined;
 // Starts and stops run one at a time, in the order they were requested.
 let queue: Promise<void> = Promise.resolve();
@@ -191,6 +192,7 @@ class QueuedLanguageClient extends LanguageClient {
 }
 
 export function activate(context: vscode.ExtensionContext): Promise<void> {
+  extensionPath = context.extensionPath;
   const channel = vscode.window.createOutputChannel(CHANNEL_NAME, { log: true });
   output = ignoreWriteFailures(channel);
   context.subscriptions.push(
@@ -325,7 +327,35 @@ async function resolveServer(): Promise<string> {
       + 'and install virgil-lsp inside the WSL distribution.',
     );
   }
-  const setting = vscode.workspace.getConfiguration().get<string>(SERVER_PATH_SETTING, 'virgil-lsp').trim();
+  const configured = vscode.workspace.getConfiguration().get<string>(SERVER_PATH_SETTING, '').trim();
+  let setting = configured;
+  if (configured !== '') {
+    output.info(`Server selection: ${configured} (explicit ${SERVER_PATH_SETTING})`);
+  } else {
+    const marker = path.join(extensionPath, 'server-target.json');
+    let target: string | undefined;
+    try {
+      target = JSON.parse(await fs.readFile(marker, 'utf8')).target;
+      if (typeof target !== 'string') throw new Error('missing target');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new StartupError(`Invalid bundled server metadata: ${describe(error)}. Reinstall the VSIX.`);
+      }
+    }
+    if (target !== undefined) {
+      const host = `${process.platform}-${process.arch}`;
+      if (target !== host) {
+        throw new StartupError(`This VSIX bundles a server for ${target}, but the workspace extension host is ${host}. `
+          + `Install the VSIX for the workspace host (including Remote-SSH or WSL), or set ${SERVER_PATH_SETTING}.`);
+      }
+      setting = path.join(extensionPath, 'server', 'virgil-lsp');
+      output.info(`Server selection: ${setting} (bundled for ${target}; no explicit ${SERVER_PATH_SETTING})`);
+      if (target === 'darwin-arm64') output.info('The bundled x86-64 server requires Rosetta 2 on Apple Silicon.');
+    } else {
+      setting = 'virgil-lsp';
+      output.info(`Server selection: virgil-lsp on PATH (no bundle and no explicit ${SERVER_PATH_SETTING})`);
+    }
+  }
   const executable = await findExecutable(setting);
   // The server finds the worker beside its resolved path, not beside a symlink.
   const resolved = await fs.realpath(executable);

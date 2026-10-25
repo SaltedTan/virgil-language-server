@@ -7,7 +7,8 @@
 # VS Code extension with the version recorded in the VSIX itself. Every
 # manifest in the asset directory must record the same version, tag, and
 # revisions, and its archive must be present. The directory must hold exactly
-# one VSIX, named <name>-<version>.vsix after its extension/package.json.
+# four VSIX files: universal, linux-x64, darwin-arm64, and darwin-x64,
+# named after their common extension identity and version.
 # GitHub doesn't resolve relative links in a release, so the CHANGELOG
 # section's repository links, such as [Hover](docs/architecture.md#hover), are
 # rewritten with the Downloads links' repository URL and ref: the manifests'
@@ -234,11 +235,22 @@ def release_links(section, url, ref):
     return LINK.sub(rewrite, section)
 
 
-def extension(assets):
+def extensions(assets):
     vsixes = sorted(glob.glob(os.path.join(assets, "*.vsix")))
-    if len(vsixes) != 1:
-        fail("expected one VS Code extension (*.vsix) in %s, found %d" % (assets, len(vsixes)))
-    path = vsixes[0]
+    if len(vsixes) != 4:
+        fail("expected four VS Code extensions (*.vsix) in %s, found %d" % (assets, len(vsixes)))
+    found = [extension(path) for path in vsixes]
+    first = found[0][1]
+    expected = {"%s-%s%s.vsix" % (first["name"], first["version"], suffix)
+                for suffix in ("", "-linux-x64", "-darwin-arm64", "-darwin-x64")}
+    if {name for name, _ in found} != expected:
+        fail("VSIX files do not cover universal, linux-x64, darwin-arm64, and darwin-x64")
+    if any(any(ext[k] != first[k] for k in ("name", "publisher", "version")) for _, ext in found):
+        fail("VSIX identities disagree")
+    return ", ".join("`%s`" % name for name, _ in found), first
+
+
+def extension(path):
     name = os.path.basename(path)
     if not zipfile.is_zipfile(path):
         fail(name + " is not a zip file")
@@ -266,7 +278,8 @@ def extension(assets):
             string_fault(manifest.get(k), "a non-empty string") is None
             for k in ("name", "publisher", "version")):
         fail(name + ": extension/package.json lacks a name, publisher, or version")
-    if name != "%s-%s.vsix" % (manifest["name"], manifest["version"]):
+    if name not in {"%s-%s%s.vsix" % (manifest["name"], manifest["version"], suffix)
+                    for suffix in ("", "-linux-x64", "-darwin-arm64", "-darwin-x64")}:
         fail("%s holds version %s of %s" % (name, manifest["version"], manifest["name"]))
     return name, manifest
 
@@ -292,7 +305,7 @@ def main():
             fail("missing archive " + archive)
     if first["dirty"]:
         fail("the archives were built from a modified checkout")
-    vsix, ext = extension(assets)
+    vsix, ext = extensions(assets)
 
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     repository = os.environ.get("GITHUB_REPOSITORY", "SaltedTan/virgil-language-server")
@@ -317,10 +330,11 @@ def main():
         "",
         "### VS Code extension",
         "",
-        "`%s` is version %s of the VS Code extension (`%s.%s`)%s. Its versions are "
-        "independent of the server's, and it doesn't include a server: install a server archive "
-        "on the machine that holds your files, then [install the extension](%s/blob/%s/docs/releasing.md#vs-code-extension) "
-        "there from the VSIX."
+        "%s are version %s of the VS Code extension (`%s.%s`)%s. Its versions are "
+        "independent of the server's. Install the VSIX for your workspace host: linux-x64, "
+        "darwin-arm64 (x86-64 server under Rosetta 2), or darwin-x64. These bundle the tested "
+        "server, worker, and pinned library. The universal VSIX needs an external server. "
+        "See [installation instructions](%s/blob/%s/docs/releasing.md#vs-code-extension)."
         % (vsix, ext["version"], ext["publisher"], ext["name"],
            ", a preview" if ext.get("preview") is True else "", url, ref),
         "",

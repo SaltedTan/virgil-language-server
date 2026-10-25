@@ -251,13 +251,31 @@ async function expectParserDiagnostic(editor) {
 
 // Opening a .v3 file without a folder activates the extension through the
 // language it contributes.
+function selectedServer() {
+  return setting('virgil.server.path') || path.join(
+    vscode.extensions.getExtension('virgil-language-server.virgil-lsp-vscode').extensionPath, 'server', 'virgil-lsp');
+}
+
+async function checkBundledSelection(extension) {
+  if (process.env.VIRGIL_E2E_BUNDLED !== '1') return;
+  assert.ok(fs.existsSync(path.join(extension.extensionPath, 'server-target.json')), 'installed VSIX has no bundle');
+  assert.equal(setting('virgil.server.path'), '', 'bundled startup must have no server override');
+  assert.equal(setting('virgil.virgilRoot'), '', 'bundled startup must have no library override');
+  for (const entry of (process.env.PATH || '').split(path.delimiter)) {
+    assert.ok(!fs.existsSync(path.join(entry, 'virgil-lsp')), 'external server on PATH: ' + entry);
+  }
+  // VS Code flushes the output channel asynchronously, after diagnostics may arrive.
+  await waitFor('bundled server selection in the output channel', () => channelLog().includes('(bundled for '));
+}
+
 async function singleFile(extension) {
   assert.equal(extension.isActive, false, 'the extension was active before a Virgil document opened');
   const bad = await open('bad.v3');
   assert.equal(bad.document.languageId, 'virgil');
   await waitFor('activation by a .v3 document', () => extension.isActive);
   await expectParserDiagnostic(bad);
-  const server = vscode.workspace.getConfiguration().get('virgil.server.path');
+  const server = selectedServer();
+  await checkBundledSelection(extension);
   // The channel writes its log file asynchronously.
   await waitFor('the server to start from virgil.server.path', () => channelLog().includes(`Starting ${server} --stdio`));
   console.log('PASS: VS Code activation on a .v3 file and parser diagnostics');
@@ -269,8 +287,10 @@ async function workspace(extension) {
   await waitFor('activation by the workspace project file', () => extension.isActive);
   assert.deepEqual(vscode.workspace.textDocuments.filter((d) => d.languageId === 'virgil'), []);
   await waitFor('the server to start', () => channelLog().includes('Started virgil-lsp '));
-  const root = vscode.workspace.getConfiguration().get('virgil.virgilRoot');
-  assert.ok(channelLog().includes(`Virgil root: ${root} (from virgil.virgilRoot)`),
+  await checkBundledSelection(extension);
+  const configuredRoot = setting('virgil.virgilRoot');
+  const root = configuredRoot || path.join(path.dirname(selectedServer()), 'virgil');
+  if (configuredRoot) assert.ok(channelLog().includes(`Virgil root: ${root} (from virgil.virgilRoot)`),
     'the Virgil root was not taken from virgil.virgilRoot');
 
   const bad = await open('bad.v3');
@@ -627,8 +647,10 @@ async function trace(failures, words) {
 // can't be resolved. The output channel and the diagnostic are checked by
 // separate scenarios, each from its own restart.
 async function noVirgilRoot(failures, words) {
-  const root = setting('virgil.virgilRoot');
-  const server = setting('virgil.server.path');
+  const originalRoot = setting('virgil.virgilRoot');
+  const root = originalRoot || path.join(path.dirname(selectedServer()), 'virgil');
+  if (!originalRoot) await setSetting('virgil.virgilRoot', root);
+  const server = selectedServer();
   const config = vscode.Uri.file(path.join(project, '.virgil-lsp.json'));
   // Root errors need an intentionally incomplete install now that archives
   // carry a default library. Copy the executables; a symlink resolves back
@@ -684,6 +706,13 @@ async function noVirgilRoot(failures, words) {
     expectNoServerError(log);
   }, restore);
   await restoreServer(server, words);
+  if (!originalRoot) {
+    const log = logFromHere();
+    await setSetting('virgil.virgilRoot', originalRoot);
+    await waitFor('the bundled root restart to finish', () =>
+      log().includes('No Virgil root:') && log().includes('Started virgil-lsp '));
+    await waitFor('the restored bundled library diagnostics', () => hasTypeError(words), 40000);
+  }
   fs.rmSync(directory, { recursive: true, force: true });
 }
 
@@ -705,7 +734,7 @@ async function restoreServer(server, words) {
 // An absolute virgil.server.path that doesn't exist stops the server, and no
 // client runs. The error notification beside the log message is visual.
 async function missingServer(failures, words) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const missing = path.join(path.dirname(project), 'missing', 'virgil-lsp');
   await scenario(failures, 'nonexistent virgil.server.path: the output channel, no client, and recovery', async () => {
     const log = logFromHere();
@@ -724,7 +753,7 @@ async function missingServer(failures, words) {
 // A virgil.server.path without virgil-lsp-worker beside it: a copy of the
 // server in a directory of its own, so that the real worker is never moved.
 async function missingWorker(failures, words) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'no-worker-'));
   const copy = path.join(directory, 'virgil-lsp');
   await scenario(failures, 'virgil.server.path without virgil-lsp-worker: the output channel and recovery', async () => {
@@ -1008,7 +1037,7 @@ function expectInOrder(text, lines) {
 // counts a server as stopped once it has sent exit, so the recovered server's
 // exit can be logged after the replacement's start.
 async function actionDuringRecovery(failures, words, action) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
   const name = action === 'restart'
@@ -1096,7 +1125,7 @@ async function actionDuringRecovery(failures, words, action) {
 // that write fails every time. The client must restart the server exactly
 // once, from the same script, which copies the restarted server's input.
 async function writeAfterServerDied(failures, bad, words) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'write-error-'));
   const documents = [bad.document, words.document];
   await scenario(failures, 'server killed, then a write to it fails with EPIPE: one restart, which gets the open documents', async () => {
@@ -1175,7 +1204,7 @@ async function writeAfterServerDied(failures, bad, words) {
 // that it started. The server starts as the child of a recoveryServer script,
 // which writes one line to the client when the test asks.
 async function lostFraming(failures, bad, words, pendingRequest = false) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'framing-'));
   const remaining = () => {
     const [child] = recorded(directory, 'child').map(Number);
@@ -1275,7 +1304,7 @@ async function lostFraming(failures, bad, words, pendingRequest = false) {
 // keeps that policy. The test kills the server 5 times in a row, each time
 // once the server that the client started has published bad.v3's diagnostic.
 async function crashLimit(failures, bad, words) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'crashes-'));
   const limit = 'The Virgil Language Server server crashed 5 times in the last 3 minutes. '
     + 'The server will not be restarted. See the output for more information.';
@@ -1332,7 +1361,7 @@ async function crashLimit(failures, bad, words) {
 // goes away with a fixed release, so the scenario neither requires nor forbids
 // it, and no check of this suite counts it as a failure.
 async function pendingEditRestart(failures, bad, words) {
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'pending-'));
   const { document } = bad;
@@ -1434,7 +1463,7 @@ function extensionHostLog() {
 async function closeDuringRecovery(extension, directory) {
   await waitFor('activation by the workspace project file', () => extension.isActive);
   await waitFor('the server to start', () => channelLog().includes('Started virgil-lsp '));
-  const server = setting('virgil.server.path');
+  const server = selectedServer();
   const { pid } = await startRecoveryServer(server, directory);
   await expectParserDiagnostic(await open('bad.v3'));
   await killAndHold(directory, pid, server, extensionHostLog());

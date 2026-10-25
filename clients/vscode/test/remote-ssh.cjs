@@ -597,6 +597,53 @@ test('missing product executables fail before an upload, for direct and archive 
   }
 });
 
+test('VSIX targets survive external server overrides and locate the installed extension', async (t) => {
+  const root = fs.mkdtempSync(path.join(__dirname, '.remote-ssh-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { readVSIX, locateExtension } = require(path.join(dir, 'run.cjs'));
+  const manifest = { publisher: 'virgil-language-server', name: 'virgil-lsp-vscode', version: '0.1.3', extensionKind: ['workspace'] };
+  const name = `${manifest.publisher}.${manifest.name}-${manifest.version}`;
+  for (const target of [undefined, 'linux-x64', 'darwin-arm64', 'darwin-x64']) {
+    const vsixFile = path.join(root, `${target ?? 'universal'}.vsix`);
+    const entries = {
+      'extension/package.json': JSON.stringify(manifest),
+      'extension.vsixmanifest': `<PackageManifest><Metadata><Identity${target === undefined ? '' : ` TargetPlatform="${target}"`}/></Metadata></PackageManifest>`,
+      ...(target === undefined ? {} : { 'extension/server-target.json': JSON.stringify({ target }) }),
+    };
+    execFileSync('python3', ['-c',
+      'import json, sys, zipfile\nwith zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:\n'
+      + ' for name, data in json.load(sys.stdin).items(): z.writestr(name, data)', vsixFile],
+    { input: JSON.stringify(entries) });
+    for (const mode of ['server', 'archive', 'bundled']) {
+      await t.test(`${target ?? 'universal'} with ${mode}`, async () => {
+        const extensions = fs.mkdtempSync(path.join(root, 'extensions-'));
+        const run = {
+          values: { vsix: vsixFile, [mode]: mode === 'bundled' ? true : '/external/input' },
+          manifest: {},
+          remote: async (command) => ({ stdout: execFileSync('sh', ['-c', command], { encoding: 'utf8' }) }),
+        };
+        if (mode === 'bundled' && target !== 'linux-x64') {
+          assert.throws(() => readVSIX(run), (error) => error.kind === 'fail' && /bundled test needs linux-x64/.test(error.message));
+          return;
+        }
+        const vsix = readVSIX(run);
+        assert.equal(vsix.target, target);
+        assert.equal(run.manifest.vsix.target, target);
+        const layout = { extensions, serverNode: process.execPath };
+        for (const installed of [name, ...(target === undefined ? [] : [`${name}-${target}`])]) {
+          const directory = path.join(extensions, installed);
+          fs.mkdirSync(directory);
+          assert.equal(await locateExtension(run, layout, vsix), directory);
+          fs.rmdirSync(directory);
+        }
+        const invalid = path.join(extensions, `${name}-undefined`);
+        fs.mkdirSync(invalid);
+        await assert.rejects(locateExtension(run, layout, vsix));
+      });
+    }
+  }
+});
+
 test('leak checks use the client-exit or host-stop time rather than the retrieval time', async () => {
   for (const at of [0, 10000]) {
     let now = at + 3000;
@@ -772,6 +819,9 @@ test('launch samples at client exit and preserves deadlines across reports and h
     { serverExit: 6000, reportAt: 7000, result: 'INFRA' },
     { linger: true, reportAt: 1500, result: 'PASS' },
     { linger: true, ignoresHost: true, reportAt: 1500, result: 'FAIL' },
+    { bundled: true, serverExit: 0, reportAt: 1500, result: 'PASS' },
+    { bundled: true, serverExit: Infinity, reportAt: 1500, result: 'FAIL' },
+    { bundled: true, linger: true, ignoresHost: true, reportAt: 1500, result: 'FAIL' },
   ]) {
     let now = 0;
     let next = 1;
@@ -807,6 +857,8 @@ test('launch samples at client exit and preserves deadlines across reports and h
     const sampleTimes = [];
     const notes = [];
     const failures = [];
+    const cleanupSignals = [];
+    const extensionPath = '/remote/server/extensions/virgil-language-server.virgil-lsp-vscode-0.1.3-linux-x64';
     let stoppedAt;
     let reportStarted;
     const runner = load('run.cjs', {
@@ -828,6 +880,19 @@ test('launch samples at client exit and preserves deadlines across reports and h
           const hostRuns = scenario.linger && stoppedAt === undefined;
           const serverRuns = scenario.linger ? scenario.ignoresHost || stoppedAt === undefined : now < scenario.serverExit;
           if (options.signal) stoppedAt = now;
+          if (scenario.bundled) {
+            const table = new Map([
+              [11, { start: '400', exe: '/remote/server/node' }],
+              ...(hostRuns ? [[10, { start: '500', exe: '/remote/server/node' }]] : []),
+              ...(serverRuns ? [
+                [20, { ppid: 10, start: '600', exe: `${extensionPath}/server/virgil-lsp` }],
+                [21, { ppid: 20, start: '610', exe: `${extensionPath}/server/virgil-lsp-worker` }],
+              ] : []),
+            ]);
+            const { listing, signals } = remoteProcesses(table, options, { now: () => now });
+            cleanupSignals.push(...signals);
+            return { stdout: JSON.stringify(listing) };
+          }
           return { stdout: JSON.stringify({
             found: [
               ...(hostRuns ? [{ pid: 10, start: '500', exe: '/remote/server/node' }] : []),
@@ -847,6 +912,7 @@ test('launch samples at client exit and preserves deadlines across reports and h
     const layout = {
       results: '/results', data: '/data', project: '/project', tests: '/tests', fixture: '/fixture',
       machineSettings: '/settings/machine.json', server: '/remote', agent: '/remote/server', serverNode: '/remote/server/node',
+      extensionPath,
     };
     const result = runner.launch(run, 'late', 'single-file', { executable: '/code', layout, vsix: { version: '1' } })
       .then((record) => ({ record }), (error) => ({ error }));
@@ -868,6 +934,13 @@ test('launch samples at client exit and preserves deadlines across reports and h
     if (scenario.linger) {
       assert.equal(stoppedAt, 5000);
       assert.equal(completed.record.remoteExtensionHost.stoppedWith, 'SIGTERM');
+    }
+    if (scenario.bundled) {
+      assert.equal(completed.record.vscodeServerProcesses, 1);
+      assert.deepEqual(Array.from(completed.record.leftRunning, (p) => p.exe), scenario.result === 'FAIL'
+        ? [`${extensionPath}/server/virgil-lsp`, `${extensionPath}/server/virgil-lsp-worker`] : []);
+      assert.deepEqual(cleanupSignals.filter(([pid]) => pid !== 10), scenario.result === 'FAIL'
+        ? [[20, 'SIGKILL'], [21, 'SIGKILL']] : []);
     }
     assert.equal(timers.size, 0);
   }
@@ -1008,6 +1081,22 @@ function remoteListing(options) {
   assert.equal(listing.status, 0, listing.stderr);
   return JSON.parse(listing.stdout);
 }
+
+test('bundled servers are cleanup targets while VS Code infrastructure stays exempt', () => {
+  const agent = '/remote/server/.vscode-server';
+  const extensionPath = `${agent}/extensions/virgil-language-server.virgil-lsp-vscode-0.1.3-linux-x64`;
+  const processes = new Map([
+    [10, { start: '500', exe: `${agent}/bin/c/node` }],
+    [20, { start: '600', exe: `${extensionPath}/server/virgil-lsp` }],
+    [21, { start: '610', exe: `${extensionPath}/server/virgil-lsp-worker` }],
+  ]);
+  const options = { root: '/remote', agent, extensionPath, kill: ['10@500', '20@600', '21@610'] };
+  for (const pidfd of [false, true]) {
+    const { signals } = remoteProcesses(processes, options, { pidfd });
+    assert.deepEqual(signals, pidfd ? [['pidfd', 'SIGKILL', [[20, '600'], [21, '610']]]]
+      : [[20, 'SIGKILL'], [21, 'SIGKILL']]);
+  }
+});
 
 test('the leak check signals a remote extension host only by its PID, start time, and executable', () => {
   const agent = '/remote/server/.vscode-server';

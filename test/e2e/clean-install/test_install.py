@@ -167,7 +167,7 @@ class InstallTests(unittest.TestCase):
                          "the README checksum commands target Linux and require sha256sum")
     def test_checksum_gates_install_in_plain_bash(self):
         archive = f'virgil-lsp-{self.values["server_version"]}-x86-64-linux.tar.gz'
-        vsix = f'virgil-lsp-vscode-{self.values["extension_version"]}.vsix'
+        vsix = f'virgil-lsp-vscode-{self.values["extension_version"]}-linux-x64.vsix'
         for step, filename in [("server", archive), ("vsix-download", vsix)]:
             for checksum in ["wrong", "missing", "near-match", "valid"]:
                 with self.subTest(step=step, checksum=checksum):

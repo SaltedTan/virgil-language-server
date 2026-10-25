@@ -54,7 +54,9 @@ See [docs/development.md](docs/development.md) for details.
 
 ## Editor setup
 
-Install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` installed, run the following in a terminal. Replace `server_version` with the release version and `download_url` with that release's asset download location (or a directory served over HTTP containing the downloaded assets). The checksum comes from the same release; download it along with the archive.
+For VS Code, [install the VSIX for your workspace platform](clients/vscode/README.md#installing-from-a-vsix): `linux-x64`, `darwin-arm64` (requires Rosetta 2), or `darwin-x64`. It includes the server, worker, and pinned library. No separate server installation or path setting is needed. The universal VSIX is available for external-server installations.
+
+For Neovim, LazyVim, or an external VS Code server, install the server first. On Linux x86-64, with `curl`, `tar`, and `sha256sum` installed, run the following in a terminal. Replace `server_version` with the release version and `download_url` with that release's asset download location (or a directory served over HTTP containing the downloaded assets). The checksum comes from the same release; download it along with the archive.
 
 <!-- clean-install: server -->
 ```sh

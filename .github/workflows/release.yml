@@ -4,9 +4,9 @@
 name: Release
 
 # A version tag builds, tests, packages, and smoke-tests the server archives on
-# both supported hosts, packages the VS Code extension and tests that VSIX
-# against the Linux archive's server, runs the editor tests of
-# editor-test-suites.yml on those archives and that VSIX (the LazyVim test on
+# both supported hosts, packages three bundled VSIX targets and a universal
+# fallback, and runs the editor tests of
+# editor-test-suites.yml on those archives and VSIX files (the LazyVim test on
 # Linux and macOS, the Extension Host test on macOS, and the Remote-SSH test on
 # Linux, plus the clean README install in a Linux container), writes SHA256SUMS,
 # and publishes them as a GitHub prerelease. Running the workflow by hand, or
@@ -30,6 +30,10 @@ on:
       - clients/vscode/package.json
       - clients/vscode/test/e2e/**
       - scripts/check-release.sh
+      - scripts/package-vsix.py
+      - scripts/vsix-payload.py
+      - .github/workflows/package-vsix.yml
+      - clients/vscode/src/**
       - scripts/check-vsix.py
       - scripts/package-release.sh
       - scripts/release-notes.py
@@ -158,86 +162,10 @@ jobs:
           if-no-files-found: error
 
   vsix:
-    # Packages the VSIX once, as CI's vscode-client job does, and runs the
-    # Extension Host test against that file with the server from the Linux
-    # archive, extracted as a user would. The checksums job attaches the same
-    # file, which it checks against the SHA-256 recorded here. If a launch of
-    # the test fails, the job uploads that launch's VS Code logs.
-    name: Package and test the VS Code extension
     needs: [check, build]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      file: ${{ steps.package.outputs.file }}
-      sha256: ${{ steps.package.outputs.sha256 }}
-    env:
-      ARCHIVE: virgil-lsp-${{ needs.check.outputs.version }}-x86-64-linux
-    steps:
-      # The test's fixture project uses the pinned Virgil checkout's libraries.
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
-      - uses: actions/download-artifact@v8
-        with:
-          name: archive-x86-64-linux
-          path: ${{ runner.temp }}/archive
-      - name: Extract the server
-        run: |
-          mkdir "$RUNNER_TEMP/server"
-          tar -xzf "$RUNNER_TEMP/archive/$ARCHIVE.tar.gz" -C "$RUNNER_TEMP/server"
-          "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp" --version
-      - name: Install dependencies from the lockfile
-        working-directory: clients/vscode
-        run: npm ci
-      - name: Package the VSIX
-        id: package
-        working-directory: clients/vscode
-        run: |
-          npm run package
-          file=virgil-lsp-vscode-$(node -p 'require("./package.json").version').vsix
-          sha256=$(sha256sum "$file" | cut -d ' ' -f 1)
-          echo "$sha256  $file"
-          echo "file=$file" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-      - name: Check the VSIX's contents
-        env:
-          VSIX: clients/vscode/${{ steps.package.outputs.file }}
-        run: |
-          unzip -l "$VSIX"
-          scripts/check-vsix.py "$VSIX"
-      - name: Extension Host test against the installed VSIX
-        # The runner image includes xvfb-run, as in ci.yml.
-        working-directory: clients/vscode
-        env:
-          VSIX: ${{ steps.package.outputs.file }}
-        run: |
-          xvfb-run -a npm run test:e2e -- --vsix "$VSIX" --logs "$RUNNER_TEMP/vscode-logs" \
-            "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp"
-      - uses: actions/upload-artifact@v7
-        # Also after a pass: a launch retried after an unresponsive window
-        # keeps the failed attempt's logs. Missing logs matter only on failure.
-        if: ${{ !cancelled() }}
-        with:
-          name: vsix-extension-host-logs-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/vscode-logs
-          if-no-files-found: ${{ job.status == 'failure' && 'warn' || 'ignore' }}
-          retention-days: 30
-      - name: Check that the VSIX is unchanged
-        working-directory: clients/vscode
-        env:
-          VSIX: ${{ steps.package.outputs.file }}
-          SHA256: ${{ steps.package.outputs.sha256 }}
-        run: echo "$SHA256  $VSIX" | sha256sum --check --strict
-      - uses: actions/upload-artifact@v7
-        with:
-          name: vsix
-          path: clients/vscode/${{ steps.package.outputs.file }}
-          if-no-files-found: error
+    uses: ./.github/workflows/package-vsix.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
 
   editor-tests:
     # The jobs that the weekly editor-tests.yml also runs, here on this run's
@@ -248,8 +176,6 @@ jobs:
     uses: ./.github/workflows/editor-test-suites.yml
     with:
       version: ${{ needs.check.outputs.version }}
-      vsix-file: ${{ needs.vsix.outputs.file }}
-      vsix-sha256: ${{ needs.vsix.outputs.sha256 }}
 
   checksums:
     name: Write and verify SHA256SUMS
@@ -265,14 +191,14 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@v8
         with:
-          name: vsix
-          path: release/assets
-      - name: Check that the VSIX is the tested one
-        working-directory: release/assets
-        env:
-          VSIX: ${{ needs.vsix.outputs.file }}
-          SHA256: ${{ needs.vsix.outputs.sha256 }}
-        run: echo "$SHA256  $VSIX" | sha256sum --check --strict
+          pattern: vsix-*
+          path: ${{ runner.temp }}/vsix
+      - name: Collect only the checked VSIX files and verify their producer digests
+        run: |
+          for target in linux-x64 darwin-arm64 darwin-x64 universal; do
+            (cd "$RUNNER_TEMP/vsix/vsix-$target" && sha256sum --check --strict "$target.sha256")
+            cp "$RUNNER_TEMP/vsix/vsix-$target/"*.vsix release/assets/
+          done
       - name: Write and verify SHA256SUMS
         working-directory: release/assets
         # Every file in this directory is a release asset, so SHA256SUMS

@@ -203,12 +203,13 @@ jobs:
       - name: Extension Host test
         working-directory: clients/vscode
         run: xvfb-run -a npm run test:e2e -- --logs "$RUNNER_TEMP/vscode-logs/source"
-      - name: Package the VSIX
+      - name: Package the Linux archive and platform VSIX
+        run: |
+          scripts/package-release.sh build/release
+          scripts/package-vsix.py linux-x64 --archive build/release/*.tar.gz --out "$RUNNER_TEMP/vsix"
+      - name: Extension Host test against the installed platform VSIX
         working-directory: clients/vscode
-        run: npm run package
-      - name: Extension Host test against the installed VSIX
-        working-directory: clients/vscode
-        run: xvfb-run -a npm run test:e2e -- --vsix virgil-lsp-vscode-*.vsix --logs "$RUNNER_TEMP/vscode-logs/vsix"
+        run: xvfb-run -a npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode-logs/vsix"
       - uses: actions/upload-artifact@v7
         # Also after a pass: a launch retried after an unresponsive window
         # keeps the failed attempt's logs. Missing logs matter only on failure.
