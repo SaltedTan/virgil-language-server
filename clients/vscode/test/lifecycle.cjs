@@ -300,7 +300,7 @@ for (const action of ['restart', 'configure', 'deactivate']) {
   });
 }
 
-for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'deactivate']) {
+for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames', 'deactivate']) {
   test(`diff-editor pending opens survive recovery followed by ${action}`, async () => {
     const host = extensionHost({
       diffEditors: [
@@ -350,7 +350,7 @@ test('restart drains a failed notification without hiding its failure or blockin
   await host.extension.deactivate();
 });
 
-for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'deactivate']) {
+for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames', 'deactivate']) {
   test(`${action} proceeds after a recovery notification write never settles`, { timeout: 1000 }, async () => {
     const host = extensionHost({ documents: ['a.v3'] });
     await host.activate();
@@ -574,7 +574,7 @@ for (const [title, settings, env, expected] of [
   test(title, async () => {
     const host = extensionHost({ settings, env });
     await host.activate();
-    assert.deepEqual(plain(host.clients[0].options.initializationOptions), expected);
+    assert.deepEqual(plain(host.clients[0].options.initializationOptions), { ...expected, inlayHints: { types: true, parameterNames: true } });
     assert.deepEqual(host.warnings, []);
     await host.extension.deactivate();
   });
@@ -583,7 +583,7 @@ for (const [title, settings, env, expected] of [
 test('a relative virgil.virgilRoot is reported and blocks fallback, even with VIRGIL_LOC', async () => {
   const host = extensionHost({ settings: { 'virgil.virgilRoot': 'vendor/virgil' }, env: { VIRGIL_LOC: VIRGIL_ROOT } });
   await host.activate();
-  assert.deepEqual(plain(host.clients[0].options.initializationOptions), { virgilRoot: 'vendor/virgil' });
+  assert.deepEqual(plain(host.clients[0].options.initializationOptions), { virgilRoot: 'vendor/virgil', inlayHints: { types: true, parameterNames: true } });
   assert.equal(host.warnings.length, 1);
   assert.match(host.warnings[0], /virgil\.virgilRoot must be an absolute path, not vendor\/virgil/);
   await host.extension.deactivate();
@@ -598,7 +598,7 @@ test('changing virgil.virgilRoot restarts the server with the new root', async (
   await host.configure('virgil.virgilRoot');
   await settle();
   assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
-  assert.deepEqual(plain(host.clients[1].options.initializationOptions), { virgilRoot: VIRGIL_ROOT });
+  assert.deepEqual(plain(host.clients[1].options.initializationOptions), { virgilRoot: VIRGIL_ROOT, inlayHints: { types: true, parameterNames: true } });
   await host.extension.deactivate();
 });
 
@@ -666,5 +666,19 @@ for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
     await host.activate();
     assert.equal(host.clients.length, 0);
     assert.ok(host.messages.some((m) => m.includes('The server did not start:') && m.includes(name)));
+  });
+}
+for (const key of ['types', 'parameterNames']) {
+  test(`changing virgil.inlayHints.${key} restarts with that hint kind disabled`, async () => {
+    const host = extensionHost();
+    await host.activate();
+    host.values[`virgil.inlayHints.${key}`] = false;
+    await host.configure(`virgil.inlayHints.${key}`);
+    await settle();
+    assert.equal(host.clients.length, 2);
+    assert.deepEqual(plain(host.clients[1].options.initializationOptions.inlayHints), {
+      types: key !== 'types', parameterNames: key !== 'parameterNames',
+    });
+    await host.extension.deactivate();
   });
 }

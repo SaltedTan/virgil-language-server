@@ -6,6 +6,7 @@
 // use the compiler's one-based coordinates, just as the development CLI does.
 class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
 	var parser: LspParserDiagnostics;
+	var hintsAnalyzed: (ProjectContext, AnalysisSnapshot) -> void;
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 	private var pendingVersions: Array<AnalysisDocumentVersion>;
@@ -92,6 +93,9 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 					pendingInputs.cacheCompleted(pendingProject, projects.parseableText, snapshot);
 					snapshot.recordProject(pendingProject);
 					pendingProject.snapshot = snapshot;
+					var current = snapshot.matchesProject() && LspAnalysisCapture.matchesSources(snapshot.documentVersions, pendingProject.sources);
+					for (v in snapshot.documentVersions) current = current && v.matchesDocument(store);
+					if (current && hintsAnalyzed != null) hintsAnalyzed(pendingProject, snapshot);
 				}
 			}
 			finish(reply(outcome));

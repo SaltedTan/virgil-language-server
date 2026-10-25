@@ -1,0 +1,164 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def X = [
+	UnitTests.register("AnalysisHints:resolved", resolved),
+	UnitTests.register("AnalysisHints:call_use_cursor", call_use_cursor),
+	UnitTests.register("AnalysisHints:errors", errors),
+	UnitTests.register("AnalysisHints:elided_errors", elided_errors),
+	UnitTests.register("AnalysisHints:wire_utf8", wire_utf8),
+	UnitTests.register("AnalysisHints:refresh_positions", refresh_positions),
+	UnitTests.register("AnalysisHints:bounds", bounds),
+	UnitTests.register("AnalysisHints:wire_validation", wire_validation),
+	()
+];
+def PATH = "test/fixtures/analysis/inlay-hints/main.v3";
+def make(t: Tester, text: string, verified: bool) -> AnalysisSnapshot {
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(PATH, text)], [], false);
+	if (verified) {
+		for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
+		t.assert(a.verified, "fixture verifies");
+	}
+	var sized = AnalysisWire.encodeResultWithQueryCounted(1, 1, 1, a, 0, 0, [(PATH, a.occurrences(PATH))], null, null, null);
+	t.assertl(sized.1, long.view(sized.0.end()));
+	var data = Ranges.dup(AnalysisWire.finishResult(sized.0, 0L)[4 ...]);
+	match (AnalysisWire.decodeResult(data, 1, [PATH])) {
+		Decoded(r) => return r.snapshot;
+		_ => t.fail("hints failed to decode");
+	}
+	return null;
+}
+def find(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) if (Strings.equal(Arrays.range(text, i, i + needle.length), needle)) return i;
+	return -1;
+}
+def hint(t: Tester, s: AnalysisSnapshot, text: string, needle: string, label: string, local: bool) {
+	var begin = find(text, needle), c = s.fileIndex(PATH).hintCursor();
+	if (begin < 0) return t.fail1("missing fixture text: %s", needle);
+	while (c.next()) {
+		if (c.begin != begin) continue;
+		t.assert((c.local > 0) == local, "hint kind");
+		if (label == null) return t.fail1("unexpected hint at %s", needle);
+		t.assert_string(label, s.hintString(c.label));
+		return;
+	}
+	if (label != null) t.fail1("missing hint at %s", needle);
+}
+def resolved(t: Tester) {
+	var text = System.fileLoad(PATH), s = make(t, text, true);
+	if (s == null) return;
+	hint(t, s, text, "unused =", "Box<Box<Foo>>", true);
+	hint(t, s, text, "explicit:", null, true);
+	hint(t, s, text, "literal = 1", "int", true);
+	hint(t, s, text, "literal = false", "bool", true);
+	hint(t, s, text, "copied =", "T", true);
+	hint(t, s, text, "long =", "Box<Box<Box<Box<Box<Box<Box<Box<Foo>>>>\xE2\x80\xA6", true);
+	hint(t, s, text, "made =", "Constructed", true);
+	hint(t, s, text, "circle =", "Shape.Circle", true);
+	hint(t, s, text, "dot =", "Shape.Dot", true);
+	hint(t, s, text, "red =", "Color", true);
+	for (pair in [("4);", "count"), ("5);", "radius"), ("1, 2);", "count"), ("2);", "value"), ("Hints.field);\n    same", "value"), ("86);", "value")])
+		hint(t, s, text, pair.0, pair.1, false);
+	for (needle in ["count, Hints.field", "73);", "74);", "tuple);", "_, 75", "75);", "76);", "Hints.field);\n    fn"])
+		hint(t, s, text, needle, null, false);
+	var target = s.typeDefinitionAtOffset(PATH, find(text, "unused =")).1;
+	t.assert(target != null && Strings.equal(target.name, "Box"), "type label reuses source target");
+}
+def errors(t: Tester) {
+	var text = "component Bad { def run() { var missing = absent; var wrong: Unknown = null; var error = absent(); } }";
+	var s = make(t, text, false);
+	if (s == null) return;
+	for (name in ["missing =", "wrong:", "error ="]) hint(t, s, text, name, null, true);
+}
+def bounds(t: Tester) {
+	for (text in ["int", "1234567890123456789012345678901234567890", "\xC3\xA9"]) t.assert_string(text, AnalysisHintText.bound(text));
+	t.assert_string("123456789012345678901234567890123456789\xE2\x80\xA6", AnalysisHintText.bound("12345678901234567890123456789012345678901"));
+}
+// Real reader budget and malformed records, independent of the encoder.
+def wire_validation(t: Tester) {
+	for (record in ["\x01\x01\x00\x00", "\x01\x01\x7F\x00", "\x01\x01\x00\x01", "\x7F\x01\x00\x00", "\x01\x00\x00\x00", "\x01\x01\x01\x00"]) {
+		var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(1).puta(record).extract();
+		var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+		var f = AnalysisSnapshotFile.new([], [], [], [], 0, 0);
+		reader.readHints(f, [], ["value"]);
+		t.assert(!reader.finish(), "invalid local record rejected; parameters belong to calls");
+	}
+}
+
+def elided_errors(t: Tester) {
+	for (name in ["deep-unknown", "wide-unknown"]) {
+		var text = System.fileLoad(Strings.format1("test/fixtures/analysis/inlay-hints/%s.v3", name));
+		var s = make(t, text, false);
+		if (s != null) hint(t, s, text, "bad =", null, true);
+	}
+}
+def wire_utf8(t: Tester) {
+	var invalid = Array<byte>.new(100);
+	for (i < invalid.length) invalid[i] = 0x80;
+	var d = AnalysisDeclaration.new(AnalysisDeclKind.LOCAL, "v", AnalysisRange.new("x.v3", 1, 2, 1, 3, 1, 2));
+	var signatures = AnalysisSnapshotSignatures.new([], [], [0], [], []);
+	for (label in ["\x80", "\xC0\xAF", "\xF0\x80\x80\x80", "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xE2\x80", invalid]) {
+		var data = DataWriter.new().putb(AnalysisWire.RESULT).puta("\x01\x01\x01\x01\x00").extract();
+		var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+		reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], [label]);
+		t.assert(!reader.finish(), "invalid UTF-8 type label rejected");
+		data = DataWriter.new().putb(AnalysisWire.RESULT).puta("\x01\x01\x0B\x00\x00\x04\x01").extract();
+		reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+		reader.readCalls(AnalysisSnapshotFile.new([], [], [], [], 0, 0), signatures, [label]);
+		t.assert(!reader.finish(), "invalid UTF-8 argument label rejected");
+	}
+	for (record in ["\x01\x0B\x00\x00\x04\x01", "\x01\x0B\x00\x00\x04\x02", "\x01\x0B\x00\x00\x04", "\x01\x0B\x00\x00\x00\x01"]) {
+		var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(1).puta(record).extract();
+		var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT), f = AnalysisSnapshotFile.new([], [], [], [], 0, 0);
+		reader.readCalls(f, signatures, ["value"]);
+		if (record.length == 6 && record[4] == 4 && record[5] == 1) {
+			t.assert(reader.finish(), "valid argument label");
+			t.assertl(70L, reader.allocationBytes());
+			var c = f.hintCursor();
+			t.assert(c.next() && c.begin == 2 && c.end == 3 && c.local == 0 && c.label == 0 && !c.next(), "argument becomes hint without duplicate span");
+		} else t.assert(!reader.finish(), "invalid argument label or span rejected");
+	}
+	// Validation cached for parameter strings must not bypass type bounds.
+	var data = DataWriter.new().putb(AnalysisWire.RESULT)
+		.puta("\x01\x01\x0B\x00\x00\x04\x01\x01\x01\x01\x01\x00").extract();
+	var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT), strings = ["?"];
+	reader.readCalls(AnalysisSnapshotFile.new([], [], [], [], 0, 0), signatures, strings);
+	reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], strings);
+	t.assert(!reader.finish(), "validation cache distinguishes label kinds");
+}
+
+def refresh_positions(t: Tester) {
+	for (text in ["/* \xC3\xA9\xF0\x9D\x84\x9E */\tvar x = 1;\n\n", "a\r\nb\rc\n", "x\x80\xE2\x80?\xF0\x80\x80\x80\n"]) {
+		var map = PositionMap.new(text, PositionEncoding.UTF16), scan = LspHintPositionCursor.new(text);
+		for (i = 0; i <= text.length; i++) {
+			scan.advance(i);
+			var p = map.offsetToPosition(i);
+			t.asserti(p.line, scan.line);
+			t.asserti(p.character, scan.character);
+		}
+		var target = LspHintTargetFingerprint.new(0ul, null);
+		for (i = text.length; i >= 0; i--) {
+			var p = map.offsetToPosition(i), actual = target.position(text, i);
+			t.asserti(p.line, actual.line);
+			t.asserti(p.character, actual.character);
+		}
+	}
+}
+
+// The streaming validator must agree with the original lookup for both range
+// encodings, interleaved builtin uses, gaps, boundaries, and backward targets.
+def call_use_cursor(t: Tester) {
+	for (compact in [false, true]) {
+		var ranges: Array<int> = if(compact, [65537, 0, 2, 65541, 4, 2, 65545, 9, 2],
+			[1, 1, 0, 2, 1, 5, 4, 2, 1, 9, 9, 2]);
+		var file = AnalysisSnapshotFile.new(ranges, [0, 0, 0], [], [1, 3, 2, 2, 0, 1, 7, 7, 1, 0], 0, 0);
+		file.compactCoordinates = compact;
+		for (ending in [false, true]) {
+			var cursor = AnalysisCallUseCursor.new(file);
+			for (offset in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 8, 0, 10, 4, 12]) {
+				var expected = if(ending, file.useEndingAt(offset), file.useAt(offset)) >= 0;
+				t.assert(cursor.matches(offset, ending) == expected, "callee cursor agrees with binary lookup");
+			}
+		}
+	}
+}

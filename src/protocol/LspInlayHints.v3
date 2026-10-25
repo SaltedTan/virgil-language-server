@@ -1,0 +1,301 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Range requests share definition's selection, waiting, cancellation, and
+// target freshness. Settings are fixed at initialization, like virgilRoot.
+class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, store: DocumentStore, projects: WorkspaceProjects) {
+	var types = true;
+	var parameterNames = true;
+	var refreshSupport: bool;
+	private var refreshing: bool;
+	private var dirty: bool;
+	private var positions = OrderedStringMap<LspHintPositionFingerprint>.new();
+
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		requests.registerRange(dispatcher, "textDocument/inlayHint", "inlay hints", prepare, empty);
+	}
+	def configure(options: HashMap<string, JsonValue>, capability: HashMap<string, JsonValue>) {
+		var hints = object(options, "inlayHints");
+		types = hints == null || hints["types"] != JsonValue.Bool(false);
+		parameterNames = hints == null || hints["parameterNames"] != JsonValue.Bool(false);
+		refreshSupport = capability != null && capability["refreshSupport"] == JsonValue.Bool(true);
+	}
+	private def empty(reason: string) -> JsonRpcReply { return JsonRpcReply.Result(JsonValue.JArray([])); }
+	private def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		var range = object(params, "range"), start = object(range, "start"), end = object(range, "end");
+		var sl = integer(start, "line"), sc = integer(start, "character");
+		var el = integer(end, "line"), ec = integer(end, "character");
+		if (sl < 0 || sc < 0 || el < sl || ec < 0 || (el == sl && ec < sc)) return null;
+		return answer(el, ec, _, _);
+	}
+	private def answer(line: int, character: int, at: LspSnapshotPosition, begin: int) -> (bool, JsonRpcReply) {
+		var end = at.map.positionToOffset(line, character), result = Vector<JsonValue>.new();
+		var file = at.snapshot.fileIndex(at.path()), links = LspDefinitionLocations.new(at);
+		if (file != null) {
+			var c = file.hintCursor();
+			while (c.next()) {
+				var isType = c.local > 0, span = at.snapshot.currentRange(at.index, c.begin, c.end);
+				if (span.0 < 0) continue;
+				var position = if(isType, span.1, span.0);
+				if (position < begin || position >= end || c.end > at.text.length || (isType && !types) || (!isType && !parameterNames)) continue;
+				var h = Strings.newMap<JsonValue>();
+				h["position"] = jsonPosition(at.map.offsetToPosition(position));
+				h["kind"] = JsonValue.Int(if(isType, 1, 2));
+				var text = at.snapshot.hintString(c.label);
+				if (isType) {
+					var label = Strings.newMap<JsonValue>();
+					label["value"] = JsonValue.String(StringBuilder.new().puts(": ").puts(text).extract());
+					var target = at.snapshot.hintTarget(file, c.local, c.begin);
+					if (target > 0) {
+						var location = links.location(target);
+						if (location != JsonValue.Null) label["location"] = location;
+					}
+					h["label"] = JsonValue.JArray([JsonValue.JObject(label)]);
+				} else {
+					h["label"] = JsonValue.String(StringBuilder.new().puts(text).puts(":").extract());
+					h["paddingRight"] = JsonValue.Bool(true);
+				}
+				result.put(JsonValue.JObject(h));
+			}
+		}
+		return (true, JsonRpcReply.Result(JsonValue.JArray(result.extract())));
+	}
+	// Baselines belong to open documents, not replaceable project contexts.
+	// Resolve owners together, so each governing configuration is read once.
+	private def openDocuments() -> (Array<DocumentOverlay>, Array<ProjectContext>) {
+		var docs = Vector<DocumentOverlay>.new(), paths = Vector<string>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var path = DocumentUri.filePath(uri);
+			if (path != null && !Strings.endsWith(path, "/.virgil-lsp.json")) { docs.put(doc); paths.put(path); }
+		});
+		return (docs.extract(), projects.owners(paths.extract()));
+	}
+	def documentClosed(uri: string) { positions.remove(uri); }
+	def documentUnowned(uri: string) {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		rememberEmpty(uri);
+		refresh();
+	}
+	private def rememberEmpty(uri: string) {
+		var seed = 0xcbf29ce484222325ul;
+		remember(uri, LspHintPositionFingerprint.new(null, seed, seed,
+			hashInt(hashInt(seed, int.view(seed)), int.view(seed >> 32))));
+	}
+	// Membership can disappear without any analysis completing. A newly
+	// active context may already have a current snapshot; compare that too.
+	def scopesChanged() {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		var open = openDocuments(), seen = Vector<ProjectContext>.new();
+		for (i < open.0.length) {
+			var ctx = open.1[i];
+			if (ctx == null) {
+				rememberEmpty(open.0[i].uri);
+				continue;
+			}
+			var visited = false;
+			for (j < seen.length) if (seen[j] == ctx) visited = true;
+			if (visited) continue;
+			seen.put(ctx);
+			var snapshot = ctx.snapshot;
+			if (snapshot == null || !snapshot.matchesProject() || !LspAnalysisCapture.matchesSources(snapshot.documentVersions, ctx.sources)) continue;
+			var current = true;
+			for (v in snapshot.documentVersions) current = current && v.matchesDocument(store);
+			if (current) compare(ctx, snapshot, open.0, open.1);
+		}
+		refresh();
+	}
+	// Automatic diagnostics already resolved every snapshot file's owner.
+	// Reuse that selection instead of repeating configuration reads and scans.
+	def analyzedOwners(ctx: ProjectContext, snapshot: AnalysisSnapshot, owners: Array<ProjectContext>) {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		var docs = Vector<DocumentOverlay>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var i = snapshot.documentIndex(uri);
+			if (i >= 0 && owners[i] == ctx) docs.put(doc);
+		});
+		compare(ctx, snapshot, docs.extract(), null);
+		refresh();
+	}
+	def analyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		var open = openDocuments();
+		compare(ctx, snapshot, open.0, open.1);
+		refresh();
+	}
+	private def remember(uri: string, next: LspHintPositionFingerprint) {
+		var previous = positions[uri];
+		if (previous != null && previous.result != next.result) dirty = true;
+		positions[uri] = next;
+	}
+	private def compare(ctx: ProjectContext, snapshot: AnalysisSnapshot,
+			docs: Array<DocumentOverlay>, owners: Array<ProjectContext>) {
+		var targets = OrderedStringMap<LspHintTargetFingerprint>.new();
+		var texts = Array<Array<byte>>.new(snapshot.paths.length), checked = Array<bool>.new(snapshot.paths.length);
+		for (d < docs.length) {
+			if (owners != null && owners[d] != ctx) continue;
+			var doc = docs[d], uri = doc.uri, i = snapshot.documentIndex(uri);
+			if (i < 0) continue;
+			var path = snapshot.paths[i], version = snapshot.documentVersions[i], file = snapshot.fileIndex(path);
+			var hash = 0xcbf29ce484222325ul, offsets = hash;
+			if (file != null) {
+				var c = file.hintCursor();
+				while (c.next()) {
+					var isType = c.local > 0;
+					if ((isType && !types) || (!isType && !parameterNames)) continue;
+					var span = snapshot.currentRange(i, c.begin, c.end);
+					if (span.0 < 0) continue;
+					offsets = hashInt(offsets, if(isType, span.1, span.0));
+					hash = hashInt(hash, if(isType, 1, 2));
+					hash = hashString(hash, snapshot.hintString(c.label));
+					if (isType) {
+						var code = snapshot.hintTarget(file, c.local, c.begin);
+						var value = if(code > 0, targetFingerprint(ctx, snapshot, snapshot.declarations[code - 1], texts, checked, targets));
+						hash = hashInt(hashInt(hash, int.view(value)), int.view(value >> 32));
+					}
+				}
+			}
+			var previous = positions[uri], coordinates = 0xcbf29ce484222325ul;
+			if (previous != null && previous.identity == version.identity && previous.offsets == offsets)
+				coordinates = previous.positions;
+			else if (file != null) {
+				var map = LspHintPositionCursor.new(doc.text), c = file.hintCursor();
+				while (c.next()) {
+					if ((c.local > 0 && !types) || (c.local == 0 && !parameterNames)) continue;
+					var span = snapshot.currentRange(i, c.begin, c.end);
+					if (span.0 < 0) continue;
+					map.advance(if(c.local > 0, span.1, span.0));
+					coordinates = hashInt(hashInt(coordinates, map.line), map.character);
+				}
+			}
+			hash = hashInt(hashInt(hash, int.view(coordinates)), int.view(coordinates >> 32));
+			remember(uri, LspHintPositionFingerprint.new(version.identity, offsets, coordinates, hash));
+		}
+		ctx.hintTargets = targets;
+	}
+	private def analyzedText(snapshot: AnalysisSnapshot, i: int, texts: Array<Array<byte>>, checked: Array<bool>) -> Array<byte> {
+		if (!checked[i]) { checked[i] = true; var effective = LspAnalysisCapture.analyzedText(store, snapshot, i);
+			if (effective != null) texts[i] = LspAnalysisCapture.currentText(store, snapshot, i, effective); }
+		return texts[i];
+	}
+	private def targetFingerprint(ctx: ProjectContext, snapshot: AnalysisSnapshot, d: AnalysisDeclaration,
+			texts: Array<Array<byte>>, checked: Array<bool>,
+			targets: OrderedStringMap<LspHintTargetFingerprint>) -> u64 {
+		var i = -1;
+		for (j < snapshot.paths.length) if (Strings.equal(snapshot.paths[j], d.range.path)) { i = j; break; }
+		if (i < 0 || i >= snapshot.documentVersions.length || d.range.beginOffset < 0) return 0;
+		if (!snapshot.documentVersions[i].matchesDocument(store)) return 0;
+		var span = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
+		if (span.0 < 0) return 0;
+		var cache = targets[d.range.path];
+		if (cache == null) {
+			cache = ctx.hintTargets[d.range.path];
+			if (cache == null || cache.source != snapshot.documentVersions[i].hash || cache.identity != snapshot.documentVersions[i].identity)
+				cache = LspHintTargetFingerprint.new(snapshot.documentVersions[i].hash, snapshot.documentVersions[i].identity);
+			targets.add(d.range.path, cache);
+		}
+		// Equal analyzed identities have identical bytes, so successful coordinates stay valid.
+		// Unavailable text is comparison-local; caching it would prevent recovery.
+		var index = cache.offsets.find(span.0);
+		if (index >= 0) return cache.hashes[index];
+		var text = analyzedText(snapshot, i, texts, checked);
+		if (text == null || span.1 > text.length) return 0;
+		var hash = hashString(0xcbf29ce484222325ul, d.range.path);
+		var begin = cache.position(text, span.0), end = cache.position(text, span.1);
+		hash = hashInt(hashInt(hash, begin.line), begin.character);
+		hash = hashInt(hashInt(hash, end.line), end.character);
+		cache.offsets.add(span.0);
+		cache.hashes.put(hash);
+		return hash;
+	}
+	private def hashString(hash: u64, text: string) -> u64 {
+		hash = hashInt(hash, text.length);
+		for (b in text) hash = (hash ^ b) * 0x100000001b3ul;
+		return hash;
+	}
+	private def hashInt(hash: u64, value: int) -> u64 {
+		for (i < 4) { hash = (hash ^ byte.view(value)) * 0x100000001b3ul; value = value >> 8; }
+		return hash;
+	}
+
+	private def refresh() {
+		if (!refreshSupport || refreshing || !dirty) return;
+		dirty = false;
+		refreshing = true;
+		send(pending.sendBy("workspace/inlayHint/refresh", JsonRpcParams.Absent, System.ticksMs() + 10000, refreshed));
+	}
+	def close() { refreshSupport = false; dirty = false; positions = OrderedStringMap<LspHintPositionFingerprint>.new(); }
+	private def refreshed(reply: JsonRpcReply) { refreshing = false; refresh(); }
+	private def jsonPosition(p: LspPosition) -> JsonValue {
+		var value = Strings.newMap<JsonValue>();
+		value["line"] = JsonValue.Int(p.line);
+		value["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(value);
+	}
+	private def object(o: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		return if(o != null && o.has(key) && JsonValue.JObject.?(o[key]), JsonValue.JObject.!(o[key]).v);
+	}
+	private def integer(o: HashMap<string, JsonValue>, key: string) -> int {
+		return if(o != null && o.has(key) && JsonValue.Int.?(o[key]), JsonValue.Int.!(o[key]).v, -1);
+	}
+}
+
+// Source stamps decide when to recompute UTF-16 positions; only the resulting
+// positions enter the published fingerprint. No source text or maps survive.
+class LspHintPositionFingerprint(identity: DocumentVersionIdentity, offsets: u64, positions: u64, result: u64) { }
+
+// Hint offsets increase. Scan only the intervening bytes, without dense
+// per-byte maps or one position object per hint during refresh comparison.
+class LspHintPositionCursor(text: Array<byte>) {
+	private var offset: int;
+	def var line: int;
+	def var character: int;
+	def advance(target: int) {
+		target = Ints.min(target, text.length);
+		while (offset < target) {
+			var b = text[offset], length = PositionUtf8.sequenceLength(text, offset);
+			if (b == '\r' && offset + 1 < text.length && text[offset + 1] == '\n') length = 2;
+			if (offset + length > target) return;
+			offset += length;
+			if (b == '\r' || b == '\n') { line++; character = 0; }
+			else character += if(length == 4, 2, 1);
+		}
+	}
+}
+
+// Targets in unchanged source keep their converted coordinates, keyed by the
+// declaration's unique name offset. Only files still referenced survive the
+// next comparison; neither source bytes nor declarations are retained.
+class LspHintTargetFingerprint(source: u64, identity: DocumentVersionIdentity) {
+	def offsets = AnalysisIndexMap<int>.new(AnalysisTables.hashInt, fun (a: int, b: int) => a == b);
+	def hashes = Vector<u64>.new();
+	private var lineStarts: Array<int>;
+	def position(text: Array<byte>, offset: int) -> LspPosition {
+		if (lineStarts == null) {
+			var starts = Vector<int>.new();
+			starts.put(0);
+			var i = 0;
+			while (i < text.length) {
+				if (text[i] == '\r') {
+					if (i + 1 < text.length && text[i + 1] == '\n') i++;
+					starts.put(i + 1);
+				} else if (text[i] == '\n') starts.put(i + 1);
+				i++;
+			}
+			lineStarts = starts.extract();
+		}
+		var lo = 0, hi = lineStarts.length;
+		while (lo + 1 < hi) {
+			var mid = lo + (hi - lo) / 2;
+			if (lineStarts[mid] <= offset) lo = mid;
+			else hi = mid;
+		}
+		var begin = lineStarts[lo], character = 0;
+		while (begin < offset && text[begin] != '\r' && text[begin] != '\n') {
+			var length = PositionUtf8.sequenceLength(text, begin);
+			if (begin + length > offset) break;
+			begin += length;
+			character += if(length == 4, 2, 1);
+		}
+		return LspPosition.new(lo, character);
+	}
+}

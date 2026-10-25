@@ -28,7 +28,7 @@ const CHANNEL_NAME = 'Virgil Language Server';
 const SERVER_PATH_SETTING = 'virgil.server.path';
 const VIRGIL_ROOT_SETTING = 'virgil.virgilRoot';
 // Settings read only when the server starts.
-const RESTART_SETTINGS = [SERVER_PATH_SETTING, VIRGIL_ROOT_SETTING];
+const RESTART_SETTINGS = [SERVER_PATH_SETTING, VIRGIL_ROOT_SETTING, 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames'];
 // The server starts this executable from the directory of its own resolved
 // path (/proc/self/exe on Linux, proc_pidpath on macOS).
 const WORKER_NAME = 'virgil-lsp-worker';
@@ -247,7 +247,13 @@ async function start(): Promise<void> {
       // Project files, so that configuration diagnostics follow unsaved edits.
       { scheme: 'file', pattern: '**/.virgil-lsp.json' },
     ],
-    initializationOptions: virgilRoot === undefined ? {} : { virgilRoot },
+    initializationOptions: {
+      ...(virgilRoot === undefined ? {} : { virgilRoot }),
+      inlayHints: {
+        types: vscode.workspace.getConfiguration().get<boolean>('virgil.inlayHints.types', true),
+        parameterNames: vscode.workspace.getConfiguration().get<boolean>('virgil.inlayHints.parameterNames', true),
+      },
+    },
     // Changes made outside the editor, such as a checkout, refresh projects.
     // The client batches these events with those of the server's own
     // registration, and the server handles a repeated event once.

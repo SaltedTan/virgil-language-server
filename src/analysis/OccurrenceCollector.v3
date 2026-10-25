@@ -56,7 +56,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// AnalysisWire.encodeCalls), except that its opening parenthesis is its
 	// offset, its callee is an offset before it (CALLEE_OFFSET) or none, and
 	// its signature is an index plus one from AnalysisDisplay.callSignature;
-	// AnalysisCallCursor reads them with {absolute}. A few bytes a call,
+	// In these absolute records bit 1 instead marks a label ID plus one
+	// after each argument (zero suppresses that argument). AnalysisCallCursor
+	// reads them with {absolute}. A few bytes a call,
 	// rather than objects, keep the garbage of a large program's calls small
 	// enough that collection does not make the worker collect its heap.
 	def var builtins: Array<AnalysisBuiltinUse>;
@@ -158,12 +160,15 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		siteList.put(decl);
 		declarationSource(decl);
 	}
-	private def siteVar(v: VarDecl) {
+	private def siteVar(v: VarDecl) -> AnalysisDeclaration {
 		// Verification appends synthetic capture parameters to lambda params.
 		// Their tokens are uses in the body, not source declarations.
-		for (l = captures; l != null; l = l.tail) if (l.head.0 == v) return;
+		for (l = captures; l != null; l = l.tail) if (l.head.0 == v) return null;
 		// "_" declares nothing a use can name.
-		if (v != null && !v.isUnderscore()) site(make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v));
+		if (v == null || v.isUnderscore()) return null;
+		var d = make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v);
+		site(d);
+		return d;
 	}
 	private def siteTypeParams(list: List<TypeParamType>) {
 		for (l = list; l != null; l = l.tail) site(declare(AnalysisDeclKind.TYPE_PARAM, l.head.token, l.head));
@@ -312,7 +317,13 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	private def varDecl(v: VarDecl) {
 		if (v == null) return;
-		siteVar(v);
+		var d = siteVar(v);
+		if (d != null && !ParamDecl.?(v) && v.tref == null) {
+			var label = display.hintText(v.vtype);
+			if (label >= 0 && d.range.beginOffset >= 0) {
+				AnalysisWorkerDeclaration.!(d).hintLabel = label;
+			}
+		}
 		typeRef(v.tref);
 		expr(v.init);
 	}
@@ -583,6 +594,22 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		c.next();
 		return AnalysisCallAnswer.new(c.open, record, if(c.calleeDelta > 0, lastDeclaration));
 	}
+	private def parameterHints(e: AppExpr, target: AnalysisDeclaration, b: VarBinding, arity: int) -> Array<int> {
+		if (arity == 0 || AppBinding.None.?(e.appbind) || AppBinding.Partial.?(e.appbind)) return null;
+		var labels = display.hintParams(target, b), args = e.args.exprs;
+		// Tuple expansion and partially applied calls have no one-to-one map.
+		if (labels == null || labels.length != arity) return null;
+		for (a = args.list; a != null; a = a.tail) if (ParamExpr.?(a.head)) return null;
+		return labels;
+	}
+	private def redundantArgument(arg: Expr, label: int) -> bool {
+		while (TupleExpr.?(arg)) {
+			var list = TupleExpr.!(arg).exprs.list;
+			if (list == null || list.tail != null) break;
+			arg = list.head;
+		}
+		return VarExpr.?(arg) && Strings.equal(VarExpr.!(arg).ident.name.image, display.hintString(label));
+	}
 	// Records the call {e}, after its callee, whose name is the last use
 	// recorded if it is a use at all. Its parentheses and arguments are found
 	// from the tokens around them, which the parser captured with their
@@ -649,17 +676,24 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			skipped++;
 			return -1;
 		}
-		var callee = -1, target: AnalysisDeclaration, b: VarBinding;
-		if (VarExpr.?(e.func)) {
-			var v = VarExpr.!(e.func);
+		var callee = -1, target: AnalysisDeclaration, b: VarBinding, func = e.func;
+		while (TupleExpr.?(func)) {
+			var parts = TupleExpr.!(func).exprs.list;
+			if (parts == null || parts.tail != null) break;
+			func = parts.head;
+		}
+		if (VarExpr.?(func)) {
+			var v = VarExpr.!(func);
 			b = v.varbind;
 			if (lastToken == v.ident.name && lastOffset < open) {
 				callee = lastOffset;
 				target = lastDeclaration;
 			}
 		}
+		var labels = parameterHints(e, target, b, n);
 		var signature = display.callSignature(target, b, e.func.exactType);
-		var flags = if(callee >= 0, AnalysisCallFlags.CALLEE_OFFSET) | if(close - 1 > end, AnalysisCallFlags.CLOSE_GAP);
+		var flags = if(callee >= 0, AnalysisCallFlags.CALLEE_OFFSET) | if(close - 1 > end, AnalysisCallFlags.CLOSE_GAP)
+			| if(labels != null, AnalysisCallFlags.CALLEE_AT_PAREN);
 		if (open <= lastOpen) callsInOrder = false;
 		lastOpen = open;
 		callCount++;
@@ -671,10 +705,16 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		// Each argument's length times four plus the bytes before it, or three
 		// and then those bytes.
 		end = open + 1;
-		for (i = 0; i < argSpans.length; i += 2) {
+		var argument = list.list;
+		for (i = 0; i < argSpans.length; (i += 2, argument = argument.tail)) {
 			var gap = argSpans[i] - end, length = argSpans[i + 1] - argSpans[i];
 			putU(w, 4 * length + if(gap < 3, gap, 3));
 			if (gap >= 3) putU(w, gap);
+			if (labels != null) {
+				var label = labels[i / 2];
+				if (label >= 0 && redundantArgument(argument.head, label)) label = -1;
+				putU(w, label + 1);
+			}
 			end = argSpans[i + 1];
 		}
 		if (close - 1 > end) putU(w, close - 1 - end);

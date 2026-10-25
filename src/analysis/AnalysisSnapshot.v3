@@ -116,6 +116,7 @@ class AnalysisSnapshot {
 	def setStrings(table: Array<string>) {
 		strings = table;
 	}
+	def hintString(i: int) -> string { return strings[i]; }
 	// Records the signatures that the files' calls refer to.
 	def setSignatures(s: AnalysisSnapshotSignatures) {
 		signatures = s;
@@ -309,7 +310,7 @@ class AnalysisSnapshot {
 		else {
 			var use = file.findOffset(offset);
 			if (use >= 0) {
-				begin = file.ranges[4 * use + 2];
+				begin = file.occurrenceBegin(use);
 				declaration = file.target(use);
 			}
 			else {
@@ -322,6 +323,13 @@ class AnalysisSnapshot {
 		if (target < 0) target = if(declaration >= 0, declarations[declaration].typeTarget);
 		return (true, if(target > 0, declarations[target - 1]));
 	}
+	// A validated type-hint record already names its local declaration and
+	// exact span. Reuse the source-type override without searching the sites.
+	def hintTarget(file: AnalysisSnapshotFile, local: int, begin: int) -> int {
+		var target = if(file.typeTargets != null, file.typeTargets.find(begin), -1);
+		return if(target < 0, declarations[local - 1].typeTarget, target);
+	}
+
 	// The references of {decl}, one of {declarations}: the uses that
 	// definitionAtOffset resolves to it, or to another declaration with the
 	// same name token, such as a data type's single case or a class
@@ -349,7 +357,7 @@ class AnalysisSnapshot {
 			var spans = Array<int>.new(2 * count), n = 0;
 			for (i < targets.length) {
 				if (!among(ids, file.target(i)) || (own && file.spans(i, r.beginOffset, r.endOffset))) continue;
-				var begin = file.ranges[4 * i + 2], end = begin + file.ranges[4 * i + 3];
+				var begin = file.occurrenceBegin(i), end = file.occurrenceEnd(i);
 				if (name && r.beginOffset < begin) {
 					spans[n++] = r.beginOffset;
 					spans[n++] = r.endOffset;
@@ -492,15 +500,17 @@ class AnalysisSnapshotFiles {
 }
 
 // The index of one file, without an object per use: {ranges} holds the begin
-// line, begin column, begin offset, and byte length of occurrence i at 4 * i,
-// and {targets} holds its declaration index in the low 31 bits and its
+// line, begin column, begin offset, and byte length of occurrence i at 4 * i.
+// With compactCoordinates, it instead holds packed 16-bit line/column, begin
+// offset, and byte length at 3 * i. The full-width fallback preserves larger
+// compiler coordinates. The array {targets} holds its declaration index in the low 31 bits and its
 // assignment flag in the sign bit. This adds no retained allocation. An
 // occurrence is a token span (see AnalysisRange.isTokenSpan): it ends on its
 // begin line, and its length is also its compiler column span. Occurrences
 // are in source order and do not overlap. {typed} holds pairs of an
 // occurrence index, in increasing order, and the string index of that
 // occurrence's use-site type. {builtins} holds five ints per builtin use: a
-// range as an occurrence's, and the string index of its type; builtin uses
+// full-width range and the string index of its type; builtin uses
 // are also token spans in source order. The file's declaration sites are
 // the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
 // source order. The file's {callCount} calls are kept in their wire
@@ -509,6 +519,11 @@ class AnalysisSnapshotFiles {
 // builtin use's index.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
 		firstSite: int, siteCount: int) {
+	var compactCoordinates: bool;
+	def occurrenceBegin(i: int) -> int { return ranges[if(compactCoordinates, 3 * i + 1, 4 * i + 2)]; }
+	def occurrenceEnd(i: int) -> int { return occurrenceBegin(i) + ranges[if(compactCoordinates, 3 * i + 2, 4 * i + 3)]; }
+	private def occurrenceLine(i: int) -> int { return if(compactCoordinates, int.view(u32.view(ranges[3 * i]) >> 16), ranges[4 * i]); }
+	private def occurrenceColumn(i: int) -> int { return if(compactCoordinates, ranges[3 * i] & 65535, ranges[4 * i + 1]); }
 	def siteAt(declarations: Array<AnalysisDeclaration>, offset: int) -> int {
 		var low = firstSite, high = low + siteCount;
 		while (low < high) {
@@ -525,6 +540,12 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 		return targets[i] < 0;
 	}
 	var typeTargets: AnalysisSnapshotTypeTargets;
+	def var hintCount: int;
+	def var hints: Array<byte> = [];
+	def setHints(count: int, encoded: Array<byte>) { hintCount = count; hints = encoded; }
+	def hintCursor() -> AnalysisFileHintCursor {
+		return AnalysisFileHintCursor.new(AnalysisHintCursor.new(DataReader.new(hints), hintCount), callCursor());
+	}
 	def var callCount: int;
 	def var calls: Array<byte> = [];
 
@@ -534,12 +555,12 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 		calls = encoded;
 	}
 	def range(path: string, i: int) -> AnalysisRange {
-		return span(path, ranges, 4 * i);
+		var line = occurrenceLine(i), column = occurrenceColumn(i), begin = occurrenceBegin(i), end = occurrenceEnd(i);
+		return AnalysisRange.new(path, line, column, line, column + end - begin, begin, end);
 	}
 	// Whether occurrence {i} has exactly the byte range from {begin} to {end}.
 	def spans(i: int, begin: int, end: int) -> bool {
-		var r = 4 * i;
-		return ranges[r + 2] == begin && ranges[r + 2] + ranges[r + 3] == end;
+		return occurrenceBegin(i) == begin && occurrenceEnd(i) == end;
 	}
 	def callCursor() -> AnalysisCallCursor {
 		return AnalysisCallCursor.new(DataReader.new(calls), callCount);
@@ -547,19 +568,19 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 	// The use index of the use that starts at {offset}, or -1.
 	def useAt(offset: int) -> int {
 		var i = findOffset(offset);
-		if (i >= 0) return if(ranges[4 * i + 2] == offset, i, -1);
+		if (i >= 0) return if(occurrenceBegin(i) == offset, i, -1);
 		i = findBuiltin(offset);
 		return if(i >= 0 && builtins[5 * i + 2] == offset, targets.length + i, -1);
 	}
 	// The use index of the use that ends just before {offset}, or -1.
 	def useEndingAt(offset: int) -> int {
 		var i = findOffset(offset - 1);
-		if (i >= 0) return if(ranges[4 * i + 2] + ranges[4 * i + 3] == offset, i, -1);
+		if (i >= 0) return if(occurrenceEnd(i) == offset, i, -1);
 		i = findBuiltin(offset - 1);
 		return if(i >= 0 && builtins[5 * i + 2] + builtins[5 * i + 3] == offset, targets.length + i, -1);
 	}
 	def useBegin(use: int) -> int {
-		return if(use < targets.length, ranges[4 * use + 2], builtins[5 * (use - targets.length) + 2]);
+		return if(use < targets.length, occurrenceBegin(use), builtins[5 * (use - targets.length) + 2]);
 	}
 	def builtinCount() -> int {
 		return builtins.length / 5;
@@ -597,14 +618,13 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 		// in source order. Find the first token ending after the query point.
 		var low = 0, high = targets.length;
 		while (low < high) {
-			var mid = low + (high - low) / 2, r = 4 * mid;
-			var endLine = ranges[r], endColumn = ranges[r + 1] + ranges[r + 3];
+			var mid = low + (high - low) / 2;
+			var endLine = occurrenceLine(mid), endColumn = occurrenceColumn(mid) + occurrenceEnd(mid) - occurrenceBegin(mid);
 			if (endLine < line || (endLine == line && endColumn <= column)) low = mid + 1;
 			else high = mid;
 		}
 		if (low >= targets.length) return -1;
-		var r = 4 * low;
-		var beginLine = ranges[r], beginColumn = ranges[r + 1];
+		var beginLine = occurrenceLine(low), beginColumn = occurrenceColumn(low);
 		if (line < beginLine || (line == beginLine && column < beginColumn)) return -1;
 		return low;
 	}
@@ -612,7 +632,13 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 	// The end offset is exclusive, so the offset just past an occurrence is
 	// not in it.
 	def findOffset(offset: int) -> int {
-		return search(ranges, 4, offset);
+		var low = 0, high = targets.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (occurrenceEnd(mid) <= offset) low = mid + 1;
+			else high = mid;
+		}
+		return if(low < targets.length && occurrenceBegin(low) <= offset, low, -1);
 	}
 	// Searches spans of {stride} ints, each starting with a range as an
 	// occurrence's.
@@ -665,6 +691,12 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 	// After nextArg, the argument's begin and exclusive end.
 	def var argBegin: int;
 	def var argEnd: int;
+	// Label string ID plus one, or zero. Both callee bits mark wire labels.
+	// In absolute records bit 1 marks labels,
+	// since worker callees always use explicit offsets, never AT_PAREN.
+	def var argHint: int;
+	def hasHints() -> bool { return if(absolute, (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0, (flags & 3) == 3); }
+	def rewindArgs(at: int) { r.at(at); position = open + 1; }
 	// The opening parenthesis of the last call read, or -1.
 	private var last = -1;
 	// Where the next argument may start.
@@ -678,7 +710,7 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		remaining = 1;
 	}
 	def calleeEndsAtParen() -> bool {
-		return (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0;
+		return (flags & 3) == AnalysisCallFlags.CALLEE_AT_PAREN;
 	}
 	// Reads the next call's head. False after the last call or if it is malformed.
 	def next() -> bool {
@@ -690,13 +722,12 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		// Opening parentheses strictly increase.
 		if (!absolute && last >= 0 && (delta < 1 || delta > int.max - last)) return fail("calls out of order");
 		open = last = if(absolute || last < 0, delta, last + delta);
-		var head = uleb(), both = AnalysisCallFlags.CALLEE_AT_PAREN | AnalysisCallFlags.CALLEE_OFFSET;
+		var head = uleb();
 		flags = head & 7;
 		argCount = head >> 3;
-		if ((flags & both) == both) return fail("invalid call flags");
 		var offset = (flags & AnalysisCallFlags.CALLEE_OFFSET) != 0;
 		calleeDelta = if(offset, uleb());
-		if (offset && (calleeDelta < 1 || calleeDelta > open)) return fail("invalid callee offset");
+		if (offset && (calleeDelta < if(!absolute && hasHints(), 0, 1) || calleeDelta > open)) return fail("invalid callee offset");
 		signature = uleb();
 		// Each argument takes at least a byte.
 		if (argCount > r.available() || open == int.max) return fail("invalid call");
@@ -710,7 +741,8 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		if (!r.ok || length < 1 || gap > int.max - position || length > int.max - position - gap) return fail("invalid argument range");
 		argBegin = position + gap;
 		argEnd = position = argBegin + length;
-		return true;
+		argHint = if(hasHints(), uleb());
+		return r.ok;
 	}
 	def skipArgs() {
 		for (i < argCount) if (!nextArg()) return;

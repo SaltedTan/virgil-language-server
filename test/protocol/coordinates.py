@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 12, self.hello
+        assert self.hello["protocol"] == 13, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -162,7 +162,9 @@ class Worker:
                 path, first, sites = paths[reader.integer()], reader.integer(), reader.integer()
                 assert all(d["path"] == path for d in declarations[first:first + sites])
                 uses = []
-                for _ in range(reader.integer()):
+                # Negative counts select compact server storage; the wire
+                # still carries all four original coordinate integers.
+                for _ in range(abs(reader.integer())):
                     # Begin line, column, and offset, and the length of both spans.
                     line, column, offset, length = [reader.integer() for _ in range(4)]
                     target = reader.integer()
@@ -191,23 +193,41 @@ class Worker:
                     offset = delta if index % 32 == 0 else type_offset + delta
                     assert offset > type_offset and 0 <= target <= len(declarations)
                     type_offset = offset
-                # Calls, in unsigned LEB128; see AnalysisWire.encodeCall.
+                # Calls, in unsigned LEB128; see AnalysisWire.encodeCalls.
                 open_ = 0
                 for _ in range(reader.integer()):
                     open_ += reader.unsigned()
                     head = reader.unsigned()
-                    callee = open_ - reader.unsigned() if head & 2 else None
+                    callee_delta = reader.unsigned() if head & 2 else 0
+                    callee = open_ - callee_delta if callee_delta else None
+                    labeled = head & 3 == 3
                     signature = reader.unsigned()
-                    end, args = open_ + 1, []
+                    end, args, labels = open_ + 1, [], []
                     for _ in range(head >> 3):
                         value = reader.unsigned()
                         gap = reader.unsigned() if value & 3 == 3 else value & 3
                         args.append([end + gap, end + gap + (value >> 2)])
                         end = args[-1][1]
+                        if labeled:
+                            label = reader.unsigned()
+                            assert 0 <= label <= len(strings), label
+                            labels.append(strings[label - 1] if label else None)
+                        else:
+                            labels.append(None)
                     close = end + (reader.unsigned() if head & 4 else 0) + 1
                     calls.append(dict(path=path, open=open_, close=close, args=args, callee=callee,
-                                      calleeAtParen=bool(head & 1),
+                                      calleeAtParen=(head & 3 == 1), parameterHints=labels,
                                       signature=signatures[signature - 1] if signature else None))
+                hint_begin = 0
+                for _ in range(reader.integer()):
+                    delta, length, local, label = [reader.integer() for _ in range(4)]
+                    assert delta >= 0 and length > 0
+                    hint_begin += delta
+                    assert 1 <= local <= len(declarations) and 0 <= label < len(strings)
+                    if local:
+                        decl = declarations[local - 1]
+                        assert decl["path"] == path and decl["offsets"] == [hint_begin, hint_begin + length]
+
         reader.finish()
         return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1], skippedUses=stats[6],
                     diagnostics=diagnostics, occurrences=occurrences, builtins=builtins, calls=calls)
@@ -351,7 +371,9 @@ def main():
                 (outer + 3, data.index(b'));') + 2), (inner + 3, data.index(b'));') + 1)], result['calls']
             assert result['calls'][0]['args'] == [[outer + 5, outer + 6], [inner, data.index(b'));') + 1]], result['calls']
             assert result['calls'][1]['args'] == [[inner + 4, inner + 5], [data.index(b'3)'), data.index(b'3)') + 1]]
-            assert all(c['calleeAtParen'] and c['signature']['label'] == 'def add(a: int, b: int) -> int'
+            assert [c['callee'] for c in result['calls']] == [outer, inner], result['calls']
+            assert all(not c['calleeAtParen'] and c['parameterHints'] == ['a', 'b']
+                       and c['signature']['label'] == 'def add(a: int, b: int) -> int'
                        and c['signature']['params'] == ['a: int', 'b: int'] for c in result['calls']), result['calls']
             assert result['skippedUses'] == 0, result
 

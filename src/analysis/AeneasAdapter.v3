@@ -224,6 +224,8 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.sites;
 	}
+	def hintStringCount() -> int { return display.hintStringCount(); }
+	def hintString(i: int) -> string { return display.hintString(i); }
 	// Resolves a collector's source-type code, shared with declaration sites,
 	// occurrences, and builtin uses. Inlay hints can reuse it with display data.
 	def typeDeclarationCount() -> int { return display.declarationCount(); }

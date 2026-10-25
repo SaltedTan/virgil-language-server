@@ -808,7 +808,7 @@ def occurrenceSnapshot(generation: int) -> AnalysisSnapshot {
 	w.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(162929);
 	// Uses are in byte order; a range's charge does not depend on its offset.
 	for (i < 162929) w.put_sleb32(1).put_sleb32(1).put_sleb32(i).put_sleb32(1).put_sleb32(0);
-	w.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0);
+	w.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	match (AnalysisWire.decodeResult(w.extract(), generation, ["p.v3"])) {
 		Decoded(result) => return result.snapshot;
 		_ => return null;

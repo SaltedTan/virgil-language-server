@@ -93,9 +93,13 @@ The server's features need no further settings. [Completion](../../docs/architec
 
 ## Settings
 
+[Inlay hints](../../docs/architecture.md#inlay-hints) show inferred local types and direct-call parameter names. The two server switches below are independent; VS Code's `editor.inlayHints.enabled` also controls their display. The Extension Host test reads exact labels and UTF-16 positions through `vscode.executeInlayHintProvider`.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `virgil.server.path` | empty | Empty selects the bundled server, or `virgil-lsp` on `PATH` in the universal VSIX. An explicit value overrides the bundle: a command name looked up on the extension host's `PATH`, or an absolute path. Relative paths are rejected. This is a machine setting: set it in user settings, or in the remote settings with Remote-SSH and Remote-WSL. Workspace settings can't change it. Changing it restarts the server. |
+| `virgil.inlayHints.types` | `true` | Show inferred local types. Changing it restarts the server. |
+| `virgil.inlayHints.parameterNames` | `true` | Show parameter names at direct calls. Changing it restarts the server. |
 | `virgil.virgilRoot` | empty | The absolute physical path of the Virgil checkout or installation, the directory that holds `lib/`. Project files' `virgilDependencies`, such as `lib/util/*.v3`, are relative to it ([Configuration](../../docs/configuration.md#the-virgil-root)). When empty, the extension uses `VIRGIL_LOC` from the extension host's environment: with Remote-SSH or Remote-WSL, the remote machine's. A machine setting, like `virgil.server.path`. Changing it restarts the server; a change to `VIRGIL_LOC` needs a new window. |
 | `virgil.trace.server` | `messages` | How much of each LSP message the trace records: `messages`, `compact`, or `verbose`. |
 

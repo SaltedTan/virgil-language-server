@@ -1,0 +1,35 @@
+class Foo { }
+class Box<T>(item: T) { }
+class Constructed { var count: int; new(count) { } }
+type Shape { case Circle(radius: int); case Dot; }
+enum Color { Red, Green }
+component Hints {
+  def field = 1;
+  def take(count: int, value: int) -> int { return count + value; }
+  def same(field: int) -> int { return field; }
+  def one(value: int) -> int { return value; }
+  def generic<T>(value: T) -> T { var copied = value; return copied; }
+  def run(count: int, fn: int -> int) {
+    /* é𝄞 */ var unused = Box<Box<Foo>>.new(Box<Foo>.new(Foo.new()));
+    var explicit: Box<Foo> = Box<Foo>.new(Foo.new());
+    var literal = 1;
+    if (true) { var literal = false; }
+    var long = Box<Box<Box<Box<Box<Box<Box<Box<Foo>>>>>>>>.new(null);
+    var made = Constructed.new(4);
+    var circle = Shape.Circle(5);
+    var dot = Shape.Dot;
+    var red = Color.Red;
+    take(1, 2);
+    take(count, Hints.field);
+    one(Hints.field);
+    same(Hints.field);
+    fn(73);
+    var indirect = one;
+    indirect(74);
+    var partial = take(_, 75);
+    var tuple = (1, 2);
+    take(tuple);
+    int.view(76);
+    (one)(86);
+  }
+}

@@ -1,0 +1,1 @@
+class Box<T>(value:T) {} component C { def run() { var bad = Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Unknown>>>>>>>>>>>>>>.new(null); } }

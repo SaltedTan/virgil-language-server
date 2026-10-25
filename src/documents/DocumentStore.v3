@@ -59,6 +59,8 @@ class DocumentStore {
 	private var diskStamps = OrderedStringMap<DocumentVersionIdentity>.new();
 	private var diskEpoch = DocumentVersionIdentity.new();
 
+	// Visit only documents the client has open, without copying their text.
+	def eachOpen(visit: (string, DocumentOverlay) -> void) { overlays.apply(visit); }
 	def overlay(uri: string) -> DocumentOverlay {
 		return canonicalOverlay(DocumentUri.normalize(uri));
 	}

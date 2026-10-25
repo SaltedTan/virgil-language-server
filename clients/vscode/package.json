@@ -83,6 +83,18 @@
           "default": "messages",
           "scope": "window",
           "markdownDescription": "How much of each LSP message to record in the trace. The trace goes to the \"Virgil Language Server\" output channel while its log level is Trace: run **Developer: Set Log Level...** and choose Trace for that channel."
+        },
+        "virgil.inlayHints.types": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Show inferred local types as inlay hints. Changing this setting restarts the language server."
+        },
+        "virgil.inlayHints.parameterNames": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Show parameter names at direct calls as inlay hints. Changing this setting restarts the language server."
         }
       }
     }

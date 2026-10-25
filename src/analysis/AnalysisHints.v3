@@ -1,0 +1,134 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Forty Unicode code points, including the elision marker. Display text is
+// valid UTF-8; continuation bytes never count as another character.
+component AnalysisHintText {
+	def bound(text: string) -> string {
+		var chars = 0, cut = 0;
+		for (i < text.length) {
+			if ((text[i] & 0xC0) == 0x80) continue;
+			if (chars == 39) cut = i;
+			if (++chars > 40) return StringBuilder.new().putr(text[0 ... cut]).puts("\xE2\x80\xA6").extract();
+		}
+		return text;
+	}
+	def valid(text: string, isType: bool) -> bool {
+		if (text == null || text.length == 0) return false;
+		var chars = 0;
+		for (i = 0; i < text.length;) {
+			var decoded = Utf8.decode1(text[i ...]);
+			if (decoded.0 <= 0 || decoded.1 < 32 || decoded.1 == 127 || (isType && decoded.1 == '?')) return false;
+			i += decoded.0;
+			chars++;
+		}
+		return !isType || chars <= 40;
+	}
+}
+
+// Snapshot local hints stay in their validated wire encoding: begin delta,
+// span length, local declaration ID plus one, and string-table ID.
+// Parameter labels are read from call records by AnalysisFileHintCursor.
+class AnalysisHintCursor(r: DataReader, var remaining: int) {
+	def var begin: int;
+	def var end: int;
+	def var local: int;
+	def var label: int;
+	def next() -> bool {
+		if (remaining <= 0 || !r.ok) return false;
+		remaining--;
+		var delta = r.read_sleb32(), length = r.read_sleb32();
+		local = r.read_sleb32();
+		label = r.read_sleb32();
+		if (delta < 0 || delta > int.max - begin || length <= 0 || length > int.max - begin - delta) {
+			r.fail("invalid hint span");
+			return false;
+		}
+		begin += delta;
+		end = begin + length;
+		return r.ok;
+	}
+}
+
+// Local hints alone have their own spans. Parameter labels travel with the
+// existing call arguments, so neither spans nor validation are repeated.
+class AnalysisHintEncoding(analysis: ProgramAnalysis, strings: AnalysisStringTable, ids: Array<int>,
+		targets: AnalysisTypeTargetEncoding) {
+	def var count: int;
+	def label(id: int) -> int {
+		if (ids[id] == 0) ids[id] = strings.add(analysis.hintString(id)) + 1;
+		return ids[id];
+	}
+	def encode(path: string, declarations: Array<AnalysisDeclaration>) -> Range<byte> {
+		var output = DataWriter.new(), previous = 0;
+		count = 0;
+		for (d in declarations) {
+			if (!AnalysisWorkerDeclaration.?(d)) continue;
+			var id = AnalysisWorkerDeclaration.!(d).hintLabel;
+			if (id < 0) continue;
+			output.put_sleb32(d.range.beginOffset - previous).put_sleb32(d.range.endOffset - d.range.beginOffset)
+				.put_sleb32(targets.declaration(d) + 1).put_sleb32(label(id) - 1);
+			previous = d.range.beginOffset;
+			count++;
+		}
+		return output.alias();
+	}
+}
+
+// Merge locals with labeled arguments only when a file's hints are requested.
+// Calls arrive by opening parenthesis. A small heap holds later arguments of
+// enclosing calls until their nested calls have been visited.
+class AnalysisFileHintCursor(locals: AnalysisHintCursor, calls: AnalysisCallCursor) {
+	private def pending = Vector<(int, int, int)>.new();
+	private var started: bool;
+	private var hasLocal: bool;
+	private var hasCall: bool;
+	def var begin: int;
+	def var end: int;
+	def var local: int;
+	def var label: int;
+	def next() -> bool {
+		if (!started) { started = true; hasLocal = locals.next(); hasCall = calls.next(); }
+		while (hasCall) {
+			var before = if(hasLocal, locals.begin, int.max);
+			if (pending.length > 0) before = Ints.min(before, pending[0].0);
+			if (calls.open >= before) break;
+			for (i < calls.argCount) {
+				calls.nextArg();
+				if (calls.argHint > 0) push(calls.argBegin, calls.argEnd, calls.argHint - 1);
+			}
+			calls.finish();
+			hasCall = calls.next();
+		}
+		if (hasLocal && (pending.length == 0 || locals.begin <= pending[0].0)) {
+			begin = locals.begin; end = locals.end; local = locals.local; label = locals.label;
+			hasLocal = locals.next();
+			return true;
+		}
+		if (pending.length == 0) return false;
+		var value = pending[0], last = pending[pending.length - 1];
+		pending.length--;
+		if (pending.length > 0) {
+			var i = 0;
+			while (2 * i + 1 < pending.length) {
+				var child = 2 * i + 1;
+				if (child + 1 < pending.length && pending[child + 1].0 < pending[child].0) child++;
+				if (last.0 <= pending[child].0) break;
+				pending[i] = pending[child]; i = child;
+			}
+			pending[i] = last;
+		}
+		begin = value.0; end = value.1; local = 0; label = value.2;
+		return true;
+	}
+	private def push(begin: int, end: int, label: int) {
+		var value = (begin, end, label), i = pending.length;
+		pending.put(value);
+		while (i > 0) {
+			var parent = (i - 1) / 2;
+			if (pending[parent].0 <= begin) break;
+			pending[i] = pending[parent]; i = parent;
+		}
+		pending[i] = value;
+	}
+}

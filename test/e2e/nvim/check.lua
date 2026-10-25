@@ -139,6 +139,26 @@ local function check()
     and location.range["end"].line == class_line and location.range["end"].character == 19,
     "unexpected definition: " .. vim.inspect(location))
 
+  vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(root, "words", "Inlay.v3")))
+  local inlay_buf = vim.api.nvim_get_current_buf()
+  vim.lsp.inlay_hint.enable(true, { bufnr = inlay_buf })
+  wait_for("inlay hints through Neovim", function()
+    return #vim.lsp.inlay_hint.get({ bufnr = inlay_buf }) == 2
+  end)
+  local hints = vim.lsp.inlay_hint.get({ bufnr = inlay_buf })
+  table.sort(hints, function(a, b) return a.inlay_hint.position.character < b.inlay_hint.position.character end)
+  -- Neovim stores received UTF-16 positions as buffer byte columns.
+  local function position(hint)
+    local p = hint.inlay_hint.position
+    local text = vim.api.nvim_buf_get_lines(0, p.line, p.line + 1, true)[1]
+    return { line = p.line, character = vim.str_utfindex(text, "utf-16", p.character) }
+  end
+  assert(vim.deep_equal(position(hints[1]), { line = 4, character = 33 })
+    and hints[1].inlay_hint.label[1].value == ": int" and hints[1].inlay_hint.kind == 1, vim.inspect(hints))
+  assert(vim.deep_equal(position(hints[2]), { line = 4, character = 41 })
+    and hints[2].inlay_hint.label == "count:" and hints[2].inlay_hint.kind == 2, vim.inspect(hints))
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- The puts call returns StringBuilder; the local line has built-in int.
   local type_column = vim.api.nvim_buf_get_lines(words_buf, use_line, use_line + 1, true)[1]:find(".puts(", 1, true)
   response, err = client:request_sync("textDocument/typeDefinition", {
@@ -416,7 +436,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, hover, signature help, references, document highlights, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

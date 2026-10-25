@@ -327,7 +327,7 @@ Exit criteria:
 | P1       | signature help        | [call sites](docs/architecture.md#signature-help) | Nested calls and partial argument lists       |
 | P1       | completion            | scope/type context plus partial parser | Incomplete syntax, ranking, latency           |
 | P2       | semantic tokens       | verified occurrence kinds              | Delta encoding and overlap policy             |
-| P2       | inlay hints           | inferred types/parameters              | Noise policy and performance                  |
+| P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
 | P2       | code actions          | classified diagnostics                 | Safe, mechanically provable edits             |
 | Deferred | formatting            | a future canonical formatter           | Language-wide style and comment preservation  |
 

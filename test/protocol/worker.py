@@ -92,7 +92,7 @@ class Session:
 
     def initialize(self):
         result = self.result(self.send("initialize", {}))
-        assert set(result["capabilities"]) == {"textDocumentSync", "completionProvider", "definitionProvider", "typeDefinitionProvider", "documentHighlightProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "workspace", "workspaceSymbolProvider"}
+        assert set(result["capabilities"]) == {"textDocumentSync", "completionProvider", "definitionProvider", "typeDefinitionProvider", "inlayHintProvider", "documentHighlightProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "workspace", "workspaceSymbolProvider"}
 
     def snapshot(self, expected, timeout=3):
         assert self.result(self.send("virgil-lsp/snapshot"), timeout) == expected
@@ -330,6 +330,10 @@ def exercise(exe, work):
         error(s, pending, -32800, "shutting down")
         assert s.result(shutdown, 3) is None
         error(s, s.analyze([uri]), -32600)
+        # A client may still cancel a request after shutdown, before exit, as
+        # VS Code does for a pending inlay hint request; the server answered
+        # it at shutdown, so the cancellation gets no reply.
+        s.send("$/cancelRequest", {"id": pending}, request=False)
         s.send("exit", request=False)
         s.close_input()
         assert s.proc.wait(timeout=5) == 0

@@ -42,8 +42,18 @@ class AnalysisIndexMap<K>(hash: K -> int, equal: (K, K) -> bool) {
 		if (2 * keys.length > slots.length) grow();
 		return index;
 	}
-	private def grow() {
-		slots = Array<int>.new(2 * slots.length);
+	// Reserve a known declaration count before filling, avoiding dead growth
+	// buffers near the worker heap limit. Existing indexes keep their order.
+	def reserve(count: int) {
+		if (count <= keys.length) return;
+		keys.grow(count);
+		var size = slots.length;
+		while (size / 2 < count && size < (1 << 29)) size *= 2;
+		if (size > slots.length) resize(size);
+	}
+	private def grow() { resize(2 * slots.length); }
+	private def resize(size: int) {
+		slots = Array<int>.new(size);
 		var mask = slots.length - 1;
 		for (index < keys.length) {
 			var i = AnalysisTables.mix(hash(keys[index])) & mask;

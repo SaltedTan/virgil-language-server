@@ -32,6 +32,7 @@ const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { KEEPER_KILL_WAIT_MS, startGroup } = require('./processes.cjs');
+const { fromShutdown } = require('./shutdown.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
@@ -195,12 +196,15 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
   fs.mkdirSync(development, { recursive: true });
   fs.mkdirSync(path.join(userData, 'User'), { recursive: true });
   // Breadcrumbs request document symbols when the recovered client registers
-  // its provider. That request waits behind the client's pending didOpens, and
-  // a stop that begins during the wait, as the window close here is, can send
-  // it after shutdown through a race in vscode-languageclient (#212), failing
-  // the recovery's strict shutdown sequence. The launch checks the recovery and
-  // the stop, not UI work, so it turns the automatic request off.
-  const launchSettings = recovery ? { ...settings, 'breadcrumbs.enabled': false } : settings;
+  // its provider, and VS Code requests inlay hints for the visible documents.
+  // Such a request waits behind the client's pending didOpens, and a stop that
+  // begins during the wait, as the window close here is, can send it after
+  // shutdown through a race in vscode-languageclient (#212), failing the
+  // recovery's strict shutdown sequence. The launch checks the recovery and
+  // the stop, not UI work, so it turns the automatic requests off.
+  const launchSettings = recovery
+    ? { ...settings, 'breadcrumbs.enabled': false, 'editor.inlayHints.enabled': 'off' }
+    : settings;
   fs.writeFileSync(path.join(userData, 'User', 'settings.json'), JSON.stringify(launchSettings, null, 2));
   // Chromium's log holds the renderer's console messages, which VS Code's
   // logs don't, and the warnings and errors of Chromium's processes, which
@@ -623,13 +627,6 @@ function openedBeforeExit(input, uri) {
   const exit = input.findLastIndex((message) => message.method === 'exit');
   return input.some((message, index) => index < exit
     && message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri === uri);
-}
-
-// The methods that a server received from shutdown on, without the didOpen
-// notifications before the last one, as fromShutdown in suite.cjs.
-function fromShutdown(received) {
-  const rest = received.slice(received.indexOf('shutdown'));
-  return [...rest.slice(0, -1).filter((method) => method !== 'textDocument/didOpen'), ...rest.slice(-1)];
 }
 
 // The Remote-SSH test, remote-ssh/run.cjs, uses the same VS Code version and

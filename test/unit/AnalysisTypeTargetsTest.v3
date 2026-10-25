@@ -27,7 +27,7 @@ def checkpoints(t: Tester) {
 			var offset = if(i == 0, 0, 10 + (i - 1) * 4), prior = if(i <= 1, 0, 10 + (i - 2) * 4);
 			w.put_sleb32(if(i % 32 == 0, offset, offset - prior)).put_sleb32(i % 2);
 		}
-		match (decode(w.put_sleb32(0))) {
+		match (decode(w.put_sleb32(0).put_sleb32(0))) {
 			Decoded(r) => {
 				var file = r.snapshot.fileIndex("p.v3"), table = file.typeTargets;
 				for (offset = -1; offset <= count * 4 + 20; offset++) {
@@ -43,7 +43,7 @@ def malformed(t: Tester) {
 	// Every prefix of a multi-checkpoint stream is malformed; the file still requires its call count.
 	var raw = base(70, true).put_sleb32(71);
 	for (i = 0; i <= 70; i++) raw.put_sleb32(if(i % 32 == 0, if(i == 0, 0, 10 + (i - 1) * 4), if(i == 1, 10, 4))).put_sleb32(i % 2);
-	raw.put_sleb32(0);
+	raw.put_sleb32(0).put_sleb32(0);
 	var data = raw.extract();
 	for (n = 0; n < data.length; n++) t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(Arrays.range(data, 0, n), 1, ["p.v3"])), "truncated payload");
 	// Offset inside a recorded identifier, a gap, negative or overlarge code, too many entries,
@@ -57,7 +57,7 @@ def malformed(t: Tester) {
 	for (bad in [0, 10, 134, 135, int.max]) {
 		var w = base(34, false).put_sleb32(34);
 		for (i < 34) w.put_sleb32(if(i == 0, 10, if(i == 32, bad, 4))).put_sleb32(0);
-		t.assert(AnalysisResultDecode.Malformed.?(decode(w.put_sleb32(0))), "invalid checkpoint offset");
+		t.assert(AnalysisResultDecode.Malformed.?(decode(w.put_sleb32(0).put_sleb32(0))), "invalid checkpoint offset");
 	}
 }
 
@@ -75,7 +75,7 @@ def merged_names(t: Tester) {
 		previous = offset;
 		code = 1 - code;
 	}
-	match (decode(w.put_sleb32(0))) {
+	match (decode(w.put_sleb32(0).put_sleb32(0))) {
 		Decoded(r) => {
 			code = 0;
 			for (offset in [0, 10, 14, 30, 50]) {

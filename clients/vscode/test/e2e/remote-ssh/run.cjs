@@ -1238,7 +1238,7 @@ async function test(run) {
     await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
   }
   await run.upload(path.join(repo, 'test/e2e/nvim/fixture'), ['.'], layout.fixture);
-  await run.upload(path.dirname(suite), ['suite.cjs'], layout.tests);
+  await run.upload(path.dirname(suite), ['suite.cjs', 'shutdown.cjs'], layout.tests);
   await run.upload(__dirname, ['bootstrap.cjs'], layout.tests);
   await run.upload(path.dirname(values.vsix), [path.basename(values.vsix)], layout.inputs);
   await run.remote(`mkdir -p ${sh(path.posix.join(layout.tests, 'no-extension'))} ${sh(layout.results)}`);

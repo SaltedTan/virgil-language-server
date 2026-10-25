@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
+const { fromShutdown } = require('./shutdown.cjs');
 
 const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
 const CHANNEL_LOG = 'Virgil Language Server.log';
@@ -315,7 +316,7 @@ async function workspace(extension) {
 
   // Only a program that resolves StringBuilder from lib/util, through the
   // project's virgilDependencies and virgil.virgilRoot, has this single error.
-  const words = await open('words', 'Words.v3');
+  let words = await open('words', 'Words.v3');
   const semantic = await waitForDiagnostics('semantic diagnostics for words/Words.v3', words, 40000);
   assert.deepEqual(semantic.map((d) => [code(d), d.source, d.message, d.range.start.line]), [
     ['TypeError', 'aeneas', 'expected int in var initialization, got Array<byte>', 6],
@@ -336,6 +337,16 @@ async function workspace(extension) {
     [library, declaration, 6, declaration, 19],
   ]);
   assert.deepEqual(await typeDefinitions(words, use, words.document.lineAt(use).text.indexOf('line:')), []);
+  await vscode.window.showTextDocument(words.document, { preview: false });
+  const inlay = await open('words', 'Inlay.v3');
+  const hints = await vscode.commands.executeCommand('vscode.executeInlayHintProvider',
+    inlay.document.uri, new vscode.Range(0, 0, inlay.document.lineCount, 0));
+  assert.deepEqual(hints.map((h) => [h.position.line, h.position.character, h.kind,
+    typeof h.label === 'string' ? h.label : h.label.map((p) => p.value).join('')]), [
+    [4, 33, vscode.InlayHintKind.Type, ': int'],
+    [4, 41, vscode.InlayHintKind.Parameter, 'count:'],
+  ]);
+  words = await vscode.window.showTextDocument(words.document);
   // Hover over the same use shows the class's signature in a Virgil code block.
   assert.deepEqual(await hovers(words, use, column), [
     [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
@@ -562,7 +573,7 @@ async function workspace(extension) {
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, type definition, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
+    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
     + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
 
   // The scenarios that restart the server, or could disturb it, come last.
@@ -910,21 +921,12 @@ function openedBeforeExit(received, uri) {
     && message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri === uri);
 }
 
-// The methods that a server received from shutdown on, without the didOpen
-// notifications before the last one. The client sends a didOpen for each open
-// document once it is running, and one whose check that the client is running
-// passed just before a stop began can still follow shutdown, on the
-// connection, which stays open until exit.
-function fromShutdown(received) {
-  const rest = received.slice(received.indexOf('shutdown'));
-  return [...rest.slice(0, -1).filter((method) => method !== 'textDocument/didOpen'), ...rest.slice(-1)];
-}
-
 // Throws unless the held start with PID held received initialize first, then
 // initialized, so the recovery had finished, and the didOpen for the open
 // bad.v3, then shutdown and exit last, and then exited with status 0. The
 // didOpen may come on either side of shutdown, because a slow write can follow
-// it, but it must reach the server before exit.
+// it, but it must reach the server before exit. Cancellations may also follow
+// shutdown (see shutdown.cjs).
 function expectStoppedAfterRecovery(directory, held) {
   const input = fs.readFileSync(path.join(directory, `input-${held}`));
   const received = messages(input);
@@ -1039,19 +1041,22 @@ function expectInOrder(text, lines) {
 async function actionDuringRecovery(failures, words, action) {
   const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
+  const inlayHints = setting('editor.inlayHints.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
   const name = action === 'restart'
     ? 'server killed, and Virgil: Restart Language Server during the recovery'
     : 'server killed, and virgil.server.path changed during the recovery';
   await scenario(failures, `${name}: the recovery, then shutdown and exit, then one replacement`, async () => {
     // Breadcrumbs request document symbols when the recovered client's
-    // provider registers. That request waits behind the client's pending
-    // didOpens, and when the action's stop begins during that wait,
+    // provider registers, and VS Code requests inlay hints for the visible
+    // documents. Such a request waits behind the client's pending didOpens,
+    // and when the action's stop begins during that wait,
     // vscode-languageclient sends it after shutdown (#212), which this
     // scenario's strict shutdown sequence rejects. The scenario checks the
-    // recovery and stop, not UI work, so it turns the automatic request off
+    // recovery and stop, not UI work, so it turns the automatic requests off
     // instead of loosening the assertion.
     await setSetting('breadcrumbs.enabled', false);
+    await setSetting('editor.inlayHints.enabled', 'off');
     // The trace starts before the server that is killed, so that no
     // $/setTrace is on its way to it then.
     const traced = logFromHere();
@@ -1108,6 +1113,7 @@ async function actionDuringRecovery(failures, words, action) {
       await level(vscode.LogLevel.Info);
       await restoreServer(server, words);
       await setSetting('breadcrumbs.enabled', breadcrumbs);
+      await setSetting('editor.inlayHints.enabled', inlayHints);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -1363,6 +1369,7 @@ async function crashLimit(failures, bad, words) {
 async function pendingEditRestart(failures, bad, words) {
   const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
+  const inlayHints = setting('editor.inlayHints.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'pending-'));
   const { document } = bad;
   const uri = document.uri.toString();
@@ -1370,12 +1377,14 @@ async function pendingEditRestart(failures, bad, words) {
   const active = vscode.window.activeTextEditor?.document;
   await scenario(failures, 'Virgil: Restart Language Server with an unsaved edit still pending: '
     + 'the new server gets its exact text, then a later edit', async () => {
-    // Breadcrumbs request document symbols as the edit lands. Such a request
-    // flushes the pending full-text change to the old server, and if the
-    // restart's stop begins during that flush, the library sends it after
-    // shutdown (#212). The scenario checks the pending edit, not UI work, so
-    // it turns the automatic request off; the assertions stay as strict.
+    // Breadcrumbs request document symbols, and VS Code inlay hints, as the
+    // edit lands. Such a request flushes the pending full-text change to the
+    // old server, and if the restart's stop begins during that flush, the
+    // library sends it after shutdown (#212). The scenario checks the pending
+    // edit, not UI work, so it turns the automatic requests off; the
+    // assertions stay as strict.
     await setSetting('breadcrumbs.enabled', false);
+    await setSetting('editor.inlayHints.enabled', 'off');
     assert.ok(document.getText() === saved && !document.isDirty, 'bad.v3 is not as saved');
     const editor = await vscode.window.showTextDocument(document, { preview: false });
     fs.writeFileSync(path.join(directory, 'record'), '');
@@ -1423,6 +1432,7 @@ async function pendingEditRestart(failures, bad, words) {
   }, async () => {
     try {
       await setSetting('breadcrumbs.enabled', breadcrumbs);
+      await setSetting('editor.inlayHints.enabled', inlayHints);
       if (document.isDirty) {
         await vscode.window.showTextDocument(document, { preview: false });
         await vscode.commands.executeCommand('workbench.action.files.revert');

@@ -16,7 +16,7 @@ component LspDefinition {
 		return location(at, found.1, found.0);
 	}
 	// Definition and type definition share target freshness and conversion.
-	private def location(at: LspSnapshotPosition, decl: AnalysisDeclaration, found: bool) -> (bool, JsonValue) {
+	def location(at: LspSnapshotPosition, decl: AnalysisDeclaration, found: bool) -> (bool, JsonValue) {
 		if (decl == null) return (found, JsonValue.Null);
 		if (decl.range.beginOffset < 0) return (true, JsonValue.Null);
 		// The target's bytes must still be the ones the worker analyzed.
@@ -24,5 +24,35 @@ component LspDefinition {
 		if (j < 0) return (true, JsonValue.Null);
 		var map = at.positionMap(j, target.1);
 		return (true, at.location(j, map, decl.range.beginOffset, decl.range.endOffset));
+	}
+}
+
+// One inlay-hint request can link hundreds of locals to the same declaration.
+// Check each target file exactly once with definition's analyzedText rules,
+// and share both its conversion map and each declaration's JSON location.
+// Nothing survives the synchronous request, including failed freshness checks.
+class LspDefinitionLocations(at: LspSnapshotPosition) {
+	private def maps = Array<PositionMap>.new(at.snapshot.paths.length);
+	private def checked = Array<bool>.new(at.snapshot.paths.length);
+	private def declarations = AnalysisIndexMap<int>.new(AnalysisTables.hashInt,
+		fun (a: int, b: int) => a == b);
+	private def locations = Vector<JsonValue>.new();
+	def location(code: int) -> JsonValue {
+		var i = declarations.add(code);
+		if (i < locations.length) return locations[i];
+		var d = at.snapshot.declarations[code - 1];
+		var result: JsonValue = JsonValue.Null;
+		var j = -1;
+		for (k < at.snapshot.paths.length) if (Strings.equal(at.snapshot.paths[k], d.range.path)) { j = k; break; }
+		if (j >= 0 && d.range.beginOffset >= 0) {
+			if (!checked[j]) {
+				checked[j] = true;
+				var text = at.analyzedText(j);
+				if (text != null) maps[j] = at.positionMap(j, text);
+			}
+			if (maps[j] != null) result = at.location(j, maps[j], d.range.beginOffset, d.range.endOffset);
+		}
+		locations.put(result);
+		return result;
 	}
 }

@@ -16,6 +16,8 @@ The headless Neovim, Extension Host, and scripted LazyVim tests use the same fix
 
 The VS Code and plain Neovim suites check exact document highlight ranges and Read, Write, and Text kinds in the fixture. The LazyVim suite waits for snacks.nvim words to hold the symbol's highlights, then checks next and previous navigation through `]]` and `[[`.
 
+All three editor suites check inferred type and parameter-name inlay hints at exact UTF-16 positions after non-ASCII text, through `vscode.executeInlayHintProvider` and `vim.lsp.inlay_hint.get()`; LazyVim also checks that hints are enabled by default.
+
 All three editor suites also check that type definition on the `puts` call goes to the exact `StringBuilder` class name in the library and that the `int` local has no type location. VS Code calls `vscode.executeTypeDefinitionProvider`; plain Neovim drives `vim.lsp.buf.type_definition()`, and LazyVim drives `gy` and checks its destination.
 
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.

@@ -404,6 +404,28 @@ local function main_checks()
     return string.format("jumped to %d:%d", cursor[1], cursor[2] + 1)
   end)
 
+  step("inlay hints (LazyVim API)", function()
+    vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(root, "words", "Inlay.v3")))
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for("LazyVim inlay hints", function()
+      return vim.lsp.inlay_hint.is_enabled({ bufnr = buf }) and #vim.lsp.inlay_hint.get({ bufnr = buf }) == 2
+    end)
+    local hints = vim.lsp.inlay_hint.get({ bufnr = buf })
+    table.sort(hints, function(a, b) return a.inlay_hint.position.character < b.inlay_hint.position.character end)
+    -- Neovim stores received UTF-16 positions as buffer byte columns.
+    local function position(hint)
+      local p = hint.inlay_hint.position
+      local text = vim.api.nvim_buf_get_lines(0, p.line, p.line + 1, true)[1]
+      return { line = p.line, character = vim.str_utfindex(text, "utf-16", p.character) }
+    end
+    assert(vim.deep_equal(position(hints[1]), { line = 4, character = 33 })
+      and hints[1].inlay_hint.label[1].value == ": int" and hints[1].inlay_hint.kind == 1, vim.inspect(hints))
+    assert(vim.deep_equal(position(hints[2]), { line = 4, character = 41 })
+      and hints[2].inlay_hint.label == "count:" and hints[2].inlay_hint.kind == 2, vim.inspect(hints))
+    vim.api.nvim_set_current_buf(words_buf)
+    return ": int at 5:34; count: at 5:42; hints enabled by LazyVim"
+  end)
+
   local type_column = line_text:find(".puts(", 1, true)
   step("type definition (request)", function()
     local location = request(client, "textDocument/typeDefinition", {
@@ -1071,6 +1093,11 @@ local function main_checks()
       local last = type_error_published()()
       return last and last.version == vim.lsp.util.buf_versions[words_buf]
     end, 20000)
+    -- Let the preceding cursor move finish snacks.nvim words and hint refresh
+    -- requests. Semantic requests also reread configuration on use, independently
+    -- of file watching, so they must finish before this negative watcher check.
+    sleep(1000)
+    request(client, "workspace/symbol", { query = "" }, words_buf)
     assert(#latest(config_uri).diagnostics == 0,
       "configuration diagnostics before the on-disk edit: " .. codes(latest(config_uri)))
     vim.fn.writefile(edited, path)

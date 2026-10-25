@@ -11,6 +11,7 @@
 // tests start with, apart from the test that changes it.
 def T = UnitTests.register;
 def X = [
+	T("AnalysisTables:reserved_indexes", test_reserved_indexes),
 	T("AnalysisTables:siphash_vectors", test_siphash_vectors),
 	T("AnalysisTables:colliding_strings", test_colliding_strings),
 	T("AnalysisTables:colliding_signatures", test_colliding_signatures),
@@ -450,4 +451,16 @@ def test_random_words(t: Tester) {
 	var a = HostOs.randomWords(), b = HostOs.randomWords();
 	t.assert(a.0 != b.0 || a.1 != b.1, "two keys differ");
 	t.assert(a.0 != 0 || a.1 != 0, "a key is not zero");
+}
+
+// Reserving a partially filled, colliding table preserves every dense ID and
+// still allows growth beyond the original estimate.
+def test_reserved_indexes(t: Tester) {
+	var table = AnalysisIndexMap<int>.new(fun (x: int) => 0, fun (a: int, b: int) => a == b);
+	for (i < 20) t.asserti(i, table.add(i));
+	table.reserve(100);
+	for (i < 200) t.asserti(i, table.add(i));
+	table.reserve(10);
+	for (i < 200) t.asserti(i, table.find(i));
+	t.asserti(-1, table.find(201));
 }

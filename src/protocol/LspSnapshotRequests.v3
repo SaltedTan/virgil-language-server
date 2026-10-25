@@ -12,6 +12,8 @@
 // context.includeDeclaration, while the request waits.
 class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: string,
 	prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
+	var ranged: bool;
+	var failure: string -> JsonRpcReply;
 	def handle(request: JsonRpcMessage.Request) {
 		owner.receive(this, request);
 	}
@@ -84,6 +86,7 @@ class LspSnapshotRequest(lookup: (LspSnapshotPosition, int) -> (bool, JsonRpcRep
 	failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void, id: JsonRpcId, uri: string,
 	line: int, character: int, identity: DocumentVersionIdentity, disk: DocumentVersionIdentity) {
 	var answered: bool;
+	var ranged: bool;
 }
 // The requests waiting for one pending analysis, in arrival order. It is that
 // analysis's listener (LspSemanticDiagnostics.whenAnalyzed), so a context has
@@ -145,6 +148,14 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
 		dispatcher.onDeferredRequest(method, LspSnapshotMethod.new(this, label, requires, prepare).handle);
 	}
+	def registerRange(dispatcher: JsonRpcDispatcher, method: string, label: string,
+			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
+			failure: string -> JsonRpcReply) {
+		var handler = LspSnapshotMethod.new(this, label, "a valid textDocument.uri and range", prepare);
+		handler.ranged = true;
+		handler.failure = failure;
+		dispatcher.onDeferredRequest(method, handler.handle);
+	}
 	private def always(answer: (LspSnapshotPosition, int) -> (bool, JsonValue),
 			params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
 		return succeed(answer, _, _);
@@ -205,7 +216,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	}
 	// Answers or defers {request} for {method}.
 	def receive(method: LspSnapshotMethod, request: JsonRpcMessage.Request) {
-		submit(request, method.label, method.requires, method.prepare, null, null);
+		submitAt(request, method.label, method.requires, method.prepare, method.failure, null, method.ranged);
 	}
 	// Answers or defers {request}, as a registered method with {label},
 	// {requires}, {prepare}, and {failure} would be,
@@ -216,8 +227,13 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	def submit(request: JsonRpcMessage.Request, label: string, requires: string,
 			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
 			failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void) -> LspSnapshotRequest {
+		return submitAt(request, label, requires, prepare, failure, deliver, false);
+	}
+	private def submitAt(request: JsonRpcMessage.Request, label: string, requires: string,
+			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
+			failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void, ranged: bool) -> LspSnapshotRequest {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
-		var doc = objectMember(params, "textDocument"), position = objectMember(params, "position");
+		var doc = objectMember(params, "textDocument"), position = if(ranged, objectMember(objectMember(params, "range"), "start"), objectMember(params, "position"));
 		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
 		var key = if(uri != null, DocumentUri.normalize(uri));
 		var line = intMember(position, "line"), character = intMember(position, "character");
@@ -230,14 +246,14 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		}
 		var ctx = projects.forDocument(key).active;
 		if (ctx == null || whenAnalyzed == null || (ctx.snapshot != null && current(ctx, ctx.snapshot))) {
-			reply(deliver, request.id, locate(lookup, failure, ctx, key, line, character));
+			reply(deliver, request.id, locate(lookup, failure, ctx, key, line, character, ranged));
 			return null;
 		}
 		// Join the waiters of the analysis this request waits for.
 		var candidate = LspSnapshotWaiters.new(this);
 		var waiters = whenAnalyzed(ctx, candidate);
 		if (waiters == null) {
-			reply(deliver, request.id, locate(lookup, failure, ctx, key, line, character));
+			reply(deliver, request.id, locate(lookup, failure, ctx, key, line, character, ranged));
 			return null;
 		}
 		if (waiters == candidate && !waiters.fired) batches.put(waiters);
@@ -247,6 +263,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		var overlay = store.overlay(key);
 		var r = LspSnapshotRequest.new(lookup, failure, deliver, request.id, key, line, character,
 			if(overlay != null, overlay.identity), if(overlay == null, store.diskStamp(key)));
+		r.ranged = ranged;
 		waiters.requests.put(r);
 		arrivals.put(r);
 		waitingCount++;
@@ -281,7 +298,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			// The position refers to the text the request was made against.
 			var doc = store.overlay(r.uri);
 			var same = if(doc != null, doc.identity == r.identity, r.identity == null && store.diskStamp(r.uri) == r.disk);
-			finish(r, if(same, locate(r.lookup, r.failure, active[r.uri], r.uri, r.line, r.character),
+			finish(r, if(same, locate(r.lookup, r.failure, active[r.uri], r.uri, r.line, r.character, r.ranged),
 				reject(r.failure, if(r.failure != null, "the document changed while the rename request waited", "the document changed"))));
 		}
 		compact();
@@ -348,7 +365,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// reason it cannot be answered. Without a failure, that reply is null.
 	private def locate(lookup: (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
 			failure: string -> JsonRpcReply, ctx: ProjectContext, key: string, line: int,
-			character: int) -> JsonRpcReply {
+			character: int, ranged: bool) -> JsonRpcReply {
 		var s = if(ctx != null, ctx.snapshot);
 		if (ctx == null) return reject(failure, "the document is not in a loaded project");
 		if (s == null) return reject(failure, "the document's project has not been analyzed");
@@ -361,14 +378,16 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		if (text == null) return reject(failure, "the analyzed text of the document is no longer available");
 		var currentText = LspAnalysisCapture.currentText(store, s, i, text);
 		var map = PositionMap.new(currentText, PositionEncoding.UTF16), currentOffset = map.positionToOffset(line, character);
-		var offset = s.effectiveOffset(i, currentOffset);
+		// Ranges filter their mapped results in current-text coordinates; their
+		// start may itself lie in an excluded method body.
+		var offset = if(ranged, currentOffset, s.effectiveOffset(i, currentOffset));
 		if (offset < 0) return reject(failure, "the position is inside a method body excluded from the analysis");
 		var at = LspSnapshotPosition.new(store, s, i, text, map), found = lookup(at, offset);
 		// A cursor just past an identifier selects it. Something found at
 		// offset - 1 but not at {offset} ends exactly at {offset}, so only the
 		// identifier the cursor touches qualifies, and whatever contains
 		// {offset} always wins.
-		if (!found.0 && currentOffset > 0) {
+		if (!ranged && !found.0 && currentOffset > 0) {
 			var before = s.effectiveOffset(i, currentOffset - 1);
 			if (before >= 0) found = lookup(at, before);
 		}

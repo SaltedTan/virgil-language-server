@@ -6,6 +6,8 @@
 class ProjectRevision(uri: string, number: int) { var current = true; }
 class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	var parseableTexts: OrderedStringMap<ParseableText>;
+	// Converted inlay link targets, without retaining an older snapshot.
+	var hintTargets = OrderedStringMap<LspHintTargetFingerprint>.new();
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
 	var lastUsed: long;

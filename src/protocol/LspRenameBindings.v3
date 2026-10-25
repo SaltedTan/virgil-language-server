@@ -104,7 +104,7 @@ component LspRenameBindings {
 				map[a.firstSite + i] = b.firstSite + i;
 			}
 			siteEnd = Ints.max(siteEnd, a.firstSite + a.siteCount);
-			var moved = spans(a.ranges, b.ranges, 4, cuts, edits);
+			var moved = occurrenceSpans(a, b, cuts, edits);
 			if (moved >= 0) return Strings.format2("%s would change the uses at %s", what, where(path, moved));
 			moved = spans(a.builtins, b.builtins, 5, cuts, edits);
 			if (moved >= 0) return Strings.format2("%s would change the builtin uses at %s", what, where(path, moved));
@@ -123,7 +123,7 @@ component LspRenameBindings {
 					map[t] = u;
 					continue;
 				}
-				var begin = a.ranges[4 * i + 2], place = where(path, begin);
+				var begin = a.occurrenceBegin(i), place = where(path, begin);
 				if (edits.isSite(edits.cuts(path), begin)) {
 					return Strings.format2("%s would make the use at %s refer to another declaration", what, place);
 				}
@@ -151,6 +151,14 @@ component LspRenameBindings {
 	// The offset in the unedited text of the first of the spans {a}, of
 	// {stride} ints each and starting with a range as AnalysisSnapshotFile's,
 	// that {b} lacks once translated, or -1 if {b} has exactly those.
+	private def occurrenceSpans(a: AnalysisSnapshotFile, b: AnalysisSnapshotFile, cuts: Array<int>, edits: LspRenameEdits) -> int {
+		for (i < a.targets.length) {
+			var begin = a.occurrenceBegin(i), end = a.occurrenceEnd(i);
+			if (i >= b.targets.length || b.occurrenceBegin(i) != edits.shift(cuts, begin)
+					|| b.occurrenceEnd(i) != edits.shift(cuts, end)) return begin;
+		}
+		return if(b.targets.length > a.targets.length, edits.unshift(cuts, b.occurrenceBegin(a.targets.length)), -1);
+	}
 	private def spans(a: Array<int>, b: Array<int>, stride: int, cuts: Array<int>, edits: LspRenameEdits) -> int {
 		for (r = 0; r < a.length; r += stride) {
 			var begin = a[r + 2], end = begin + a[r + 3];

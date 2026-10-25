@@ -21,6 +21,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "test/protocol"))
 from worker import Session
+from inlay_hints import HintsSession
 
 spec = importlib.util.spec_from_file_location("corpus", ROOT / "scripts/bench-corpus.py")
 corpus = importlib.util.module_from_spec(spec)
@@ -282,10 +283,12 @@ class Block:
 
     def session(self):
         self.analysis_generation = 0
-        self.s = Session(self.exe, *self.options)
-        self.request("initialize", {"initializationOptions": {"virgilRoot": str(ROOT / "vendor/virgil")},
-                     "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": True}},
+        self.s = (HintsSession if self.args.inlay_refresh else Session)(self.exe, *self.options)
+        initialized = self.request("initialize", {"initializationOptions": {"virgilRoot": str(ROOT / "vendor/virgil")},
+                     "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": True},
+                                     "inlayHint": {"refreshSupport": self.args.inlay_refresh}},
                                       "textDocument": {"hover": {"contentFormat": ["plaintext"]}}}})
+        self.has_inlay_hints = initialized['capabilities'].get('inlayHintProvider', False)
         notify(self.s, "initialized", {})
         open_document(self.s, ROOT / self.p["query"]["path"], self.text)
 
@@ -315,6 +318,20 @@ class Block:
             open_document(self.s, ROOT / self.p["base"] / ".virgil-lsp.json", json.dumps(config), "json")
             self.definition(self.request("textDocument/definition", self.query))
             self.snapshot()
+            if self.args.inlay_refresh:
+                # Explicit URI lists have no project context and cannot run
+                # the refresh comparison. Measure project-scoped transactions
+                # after the unsaved configuration has been discovered.
+                self.analysis_generation = self.snapshot()["generation"]
+                # Discovering the config can add hints to an already open
+                # single-file document. Only subsequent unchanged analyses
+                # are required to leave the refresh count unchanged.
+                refreshes_before = len(self.s.refreshes)
+                for i in range(count):
+                    self.measure("refresh_analysis", i,
+                                 lambda: self.request("virgil-lsp/analyze", {"uri": self.uri}), self.analysis)
+                if self.has_inlay_hints:
+                    check(len(self.s.refreshes) == refreshes_before, "unchanged project analyses refreshed hints")
             for i in range(count):
                 for method, extra, validate in (
                     ("definition", {}, self.definition),
@@ -406,6 +423,7 @@ def main():
     parser.add_argument("--output", default="-", help="JSON file, or - for stdout")
     parser.add_argument("--smoke", action="store_true", help="small fixture, one block/operation, no warmups")
     parser.add_argument("--require-probes", action="store_true", help="fail unless all phase/GC metrics are present")
+    parser.add_argument("--inlay-refresh", action="store_true", help="advertise and acknowledge inlay-hint refresh requests")
     parser.add_argument("--error-result", action="store_true",
                         help="also repeat Aeneas analyses with an unresolved name and 900 extra functions (#240)")
     parser.add_argument("--typing-burst", action="store_true",
@@ -423,7 +441,8 @@ def main():
               "git_status": corpus.git_revision(ROOT, "status", "--short"), "host": host_info(affinity),
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
               "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups,
-                                "error_result": args.error_result, "typing_burst": args.typing_burst},
+                                "error_result": args.error_result, "typing_burst": args.typing_burst,
+                                "inlay_refresh": args.inlay_refresh},
               "builds": [binary_info(p, args.smoke) for p in executables], "blocks": []}
     try:
         for block in range(args.blocks):
@@ -458,7 +477,7 @@ def main():
                               (scenario, "missing useful transactions"))
                         check(measured["worker"].count("result_encode_us") >= 2,
                               (scenario, "missing worker results"))
-                    elif scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis"):
+                    elif scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis", "refresh_analysis"):
                         for role, required in (("worker", worker_metrics), ("server", server_metrics)):
                             check(all(measured[role].count(metric) == 1 for metric in required),
                                   ("missing/duplicate transaction probes", block["build"], block["project"], scenario, role, measured[role]))
