@@ -268,7 +268,7 @@ test('macOS records and checks microsecond identities, and never mixes native an
   assert.deepEqual(kills, [[10, 'SIGTERM'], [10, 'SIGKILL']]);
 });
 
-test('macOS group scans do not read unrelated users processes', () => {
+test('macOS group scans do not read unrelated processes owned by other users', () => {
   const start = 'Thu Oct 23 17:13:01 2026';
   const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }], [99, { start, group: 99 }]]);
   const setup = fakeGroup(table);
@@ -695,10 +695,12 @@ _Static_assert(offsetof(struct proc_bsdinfo, pbi_start_tvusec) == 128, "microsec
     assert.equal(compiled.status, 0, compiled.stderr);
     let matched = false;
     for (let attempt = 0; attempt < 10 && !matched; attempt++) {
-      const first = await ownProcess('sleep', ['30']);
+      // The CI runner's inherited group can also hold privileged processes.
+      // Give each child its own group, as the real runners do with keepers.
+      const first = await ownProcess('sleep', ['30'], { detached: true });
       let second;
       try {
-        second = await ownProcess('sleep', ['30']);
+        second = await ownProcess('sleep', ['30'], { detached: true });
         assert.match(first.start, /^darwin:\d+\.\d{6}$/);
         assert.match(second.start, /^darwin:\d+\.\d{6}$/);
         if (first.start.split('.')[0] !== second.start.split('.')[0]) continue;
@@ -832,8 +834,8 @@ test('a file that a process doesn\'t have, or that its user may not read, is lef
 
 // Starts a real process that the test owns, and returns it with its start
 // time, once it runs.
-async function ownProcess(command, args) {
-  const child = spawn(command, args, { stdio: 'ignore' });
+async function ownProcess(command, args, options = {}) {
+  const child = spawn(command, args, { ...options, stdio: 'ignore' });
   await new Promise((resolve) => child.on('spawn', resolve));
   const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve(signal ?? code)));
   return { child, exited, start: processes.processInfo(child.pid).start };
@@ -1048,7 +1050,7 @@ test('both runners stop a group whose keeper has been stopped, keeper and all, w
     let found = [];
     let keeper;
     try {
-      assert.ok(await wait(() => (found = processes.processTable().processes.filter((p) => p.group === group.pid && p.pid !== group.pid)).length > 0, 5000), file);
+      assert.ok(await wait(() => (found = processes.processTable(group.pid).processes.filter((p) => p.group === group.pid && p.pid !== group.pid)).length > 0, 5000), file);
       keeper = processes.processInfo(group.pid);
       processes.signalProcesses([keeper], 'SIGSTOP');
       assert.ok(await wait(() => processes.processInfo(keeper.pid)?.state === 'T', 2000), file);
@@ -1230,7 +1232,7 @@ async function threadRun(file) {
   const keeper = processes.processInfo(group.pid);
   let command;
   try {
-    command = await until(() => processes.processTable().processes
+    command = await until(() => processes.processTable(group.pid).processes
       .find((p) => p.group === keeper.pid && p.pid !== keeper.pid && p.state === 'Z' && p.threads > 1), 5000);
     assert.notEqual(command, undefined, `${file}: the command's main thread didn't exit`);
     processes.signalProcesses([keeper], 'SIGSTOP');
@@ -1282,7 +1284,7 @@ const running = runner.runGroup('sleep', ['30'], { env: process.env, stdin: 'ign
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 (async () => {
   let command;
-  while ((command = processes.processTable().processes.find((p) => p.group === group.pid && p.pid !== group.pid)) === undefined) await pause(20);
+  while ((command = processes.processTable(group.pid).processes.find((p) => p.group === group.pid && p.pid !== group.pid)) === undefined) await pause(20);
   const keeper = processes.processInfo(group.pid);
   processes.signalProcesses([keeper], 'SIGSTOP');
   while (processes.processInfo(keeper.pid)?.state !== 'T') await pause(20);
