@@ -1,0 +1,36 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+class Foo { }
+layout L { +0 value: u8; =1; }
+class Box {
+    def get() -> Foo { return Foo.new(); }
+    def id<T>(p: T) -> T { return p; }
+}
+component C {
+    def make() -> Foo { return Foo.new(); }
+    def factory() -> (void -> Foo) { return make; }
+    def id<T>(p: T) -> T { return p; }
+    def f(p: Foo, r: Range<byte>) {
+        var fn = make;
+        var box = Box.new();
+        var direct = make();
+        var paren = (make)();
+        var nested = (((make)))();
+        var local = fn();
+        var localParen = ((fn))();
+        var method = box.get();
+        var methodParen = ((box.get))();
+        var generic = id<Foo>(p);
+        var genericParen = ((id<Foo>))(p);
+        var memberGeneric = box.id<Foo>(p);
+        var memberParen = ((box.id<Foo>))(p);
+        var ctor = Foo.new();
+        var ctorParen = ((Foo.new))();
+        var builtin = (Ref<L>.of)(r);
+        var chained = factory()();
+        var chainParen = ((factory()))();
+        var methodValue = box.get;
+        var functionValue = (make);
+        var localValue = (fn);
+    }
+}

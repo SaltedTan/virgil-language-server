@@ -6,6 +6,7 @@ def T = UnitTests.register;
 def X = [
 	T("TypeDefinition:resolved_types", resolved_types),
 	T("TypeDefinition:unresolved_types", unresolved_types),
+	T("TypeDefinition:callee_forms", callee_forms),
 	T("TypeDefinition:library_types", library_types),
 	T("TypeDefinition:compact_checkpoints", compact_checkpoints),
 	()
@@ -138,4 +139,21 @@ def compact_checkpoints(t: Tester) {
 		for (skip in [0, prefix.length]) expect(t, s, sources, use, skip, if(i % 7 == 0, -1, 0), "class Other", 6);
 	}
 	t.assert(!s.typeDefinitionAtOffset(sources[0].path, 0).0, "keyword is not an occurrence");
+}
+
+// Calls use their result type only at the name of their own callee. A call
+// on another call's function result does not change the inner callee's type.
+def callee_forms(t: Tester) {
+	var path = "test/fixtures/analysis/type-definition/callees.v3";
+	var sources = [AnalysisSource.new(path, System.fileLoad(path))];
+	var s = snapshot(t, sources, true);
+	if (s == null) return;
+	for (use in [("direct = make()", 9), ("(make)()", 1), ("(((make)))()", 3), ("fn();", 0), ("((fn))()", 2),
+			("box.get();", 4), ("((box.get))()", 6), ("generic = id<Foo>(p)", 10), ("((id<Foo>))(p)", 2),
+			("box.id<Foo>(p);", 4), ("((box.id<Foo>))(p)", 6), ("ctor = Foo.new()", 11), ("((Foo.new))()", 6)])
+		expect(t, s, sources, use.0, use.1, 0, "class Foo", 6);
+	expect(t, s, sources, "(Ref<L>.of)(r)", 8, 0, "layout L", 7);
+	for (use in [("factory()();", 0), ("factory()))()", 0), ("box.get;", 4), ("(make);", 1), ("(fn);", 1)])
+		expect(t, s, sources, use.0, use.1, -1, "", 0);
+	for (use in ["chained =", "chainParen ="]) expect(t, s, sources, use, 0, 0, "class Foo", 6);
 }

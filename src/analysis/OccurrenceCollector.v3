@@ -535,7 +535,15 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitString(e: StringExpr, env: void) { }
 	def visitApp(e: AppExpr, env: void) {
 		expr(e.func);
-		if (VarExpr.?(e.func) && lastToken == VarExpr.!(e.func).ident.name) {
+		// Parentheses preserve a callee's name. Do not follow applications:
+		// in factory()(), factory's result is the inner function value.
+		var callee = e.func;
+		while (TupleExpr.?(callee)) {
+			var list = TupleExpr.!(callee).exprs.list;
+			if (list == null || list.tail != null) break;
+			callee = list.head;
+		}
+		if (VarExpr.?(callee) && lastToken == VarExpr.!(callee).ident.name) {
 			var target = sourceCode(resolvedTypeDeclaration(e.exactType));
 			if (lastDeclaration != null) result[result.length - 1].sourceType = target;
 			else builtinUses[builtinUses.length - 1].sourceType = target;
