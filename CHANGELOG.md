@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Platform-specific VS Code packages for Linux x64 and macOS bundle the tested server, worker, and pinned Virgil library. An explicit `virgil.server.path` overrides the bundle; the universal VSIX retains the external-server fallback. Apple Silicon uses the Intel server under Rosetta 2 ([installation](clients/vscode/README.md#installing-from-a-vsix), [#267](https://github.com/SaltedTan/virgil-language-server/issues/267)).
 - [Go to Type Definition](docs/architecture.md#type-definition) follows compiler-resolved value and call-result types, including generics, type parameters, and the `Ref<L>` layout exception. Built-in, structural, and unresolved types have no location; VS Code, Neovim, and LazyVim navigation is covered by editor tests ([#258](https://github.com/SaltedTan/virgil-language-server/issues/258)).
 
 - A [clean install test](docs/releasing.md#clean-install-test) follows the marked README commands for VS Code, plain Neovim, and LazyVim in a fresh Linux container, using each release or weekly run's archive and VSIX with producer-recorded checksums. It checks diagnostics, definition, and hover with the shipped library and an explicit root ([#250](https://github.com/SaltedTan/virgil-language-server/issues/250)).
