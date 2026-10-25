@@ -454,6 +454,10 @@ Text, Read, and Write kinds from the effective occurrence index. Prepare rename,
 rename, and its preflight refuse every degraded snapshot; completion and signature help retain their existing current-text
 repair paths. Sources without cached parseable text and closed broken sources
 are not substituted.
+Document symbols still parse the current overlay for their outline, but omit
+snapshot signature details for a substituted file: its declarations use cached
+text offsets, which cannot be matched against the current outline's offsets.
+Unsubstituted files in the same snapshot can still supply signature details.
 [ADR-0008](decisions/0008-method-body-fallback.md) records the accepted decision;
 [body snapshot tests](../test/unit/LspBodySnapshotTest.v3) and the
 [protocol test](../test/protocol/body_fallback.py) exercise its lifetime and policy.

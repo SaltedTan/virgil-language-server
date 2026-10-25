@@ -18,6 +18,7 @@ def X = [
 	T("LspDocumentSymbols:client_kind_capability", test_symbol_client_kinds),
 	T("LspDocumentSymbols:details_current_snapshot", test_symbol_details),
 	T("LspDocumentSymbols:details_stale_snapshot", test_symbol_details_stale),
+	T("LspDocumentSymbols:details_substituted_snapshot", test_symbol_details_substituted),
 	T("LspDocumentSymbols:details_outside_project", test_symbol_details_outside_project),
 	T("LspDocumentSymbols:version_only_change", test_symbol_version_only),
 	()
@@ -613,6 +614,47 @@ def test_symbol_details_stale(t: Tester) {
 	checkNoDetails(t, s.outline(t, s.uri()));
 	s.settle();
 	t.assert_string(DETAILS_OUTLINE, details(s.outline(t, s.uri())));
+	s.server.close();
+}
+
+def test_symbol_details_substituted(t: Tester) {
+	var s = SymbolTestSession.new(t);
+	var original = "component A { def f() { } def a() -> int { return 1; } def b() -> bool { return true; } }";
+	var current = "component A { def f() { \r\n                           } def a() -> int { return 1; } def b() -> bool { return true; } }";
+	var enriched = "A = component A\n  f = def f()\n  a = def a() -> int\n  b = def b() -> bool\n";
+	s.open(s.uri(), 1, original);
+	s.settle();
+	t.assert_string(enriched, details(s.outline(t, s.uri())));
+	s.change(2, current);
+	s.settle();
+	for (development in [false, true]) {
+		if (development) {
+			var generation = s.snapshot().generation;
+			var params = Strings.newMap<JsonValue>();
+			params["uri"] = JsonValue.String(s.uri());
+			s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(s.nextId++), "virgil-lsp/analyze", JsonRpcParams.ByName(params)).encode());
+			t.assert(s.supervisor.busy(), "development analysis submitted");
+			s.settle();
+			t.assert(s.snapshot().generation > generation, "development snapshot replaced automatic snapshot");
+		}
+		var snapshot = s.snapshot();
+		t.assert(snapshot.parsed && snapshot.degraded(), "cached body substituted");
+		t.assert(snapshot.matchesDocument(s.server.documents, s.uri()), "substitution has current overlay identity");
+		t.assert(snapshot.documentVersions[snapshot.documentIndex(s.uri())].substitution != null, "outlined file substituted");
+		var outline = s.outline(t, s.uri());
+		t.assert_string("A\n  f\n  a\n  b\n", details(outline));
+		var members = children(outline[0]);
+		for (i = 1; i < members.length; i++) {
+			var symbol = JsonValue.JObject.!(members[i]).v;
+			var selection = JsonValue.JObject.!(symbol["selectionRange"]).v;
+			checkPosition(t, selection["start"], 1, 33 + (i - 1) * 29);
+			checkPosition(t, selection["end"], 1, 34 + (i - 1) * 29);
+		}
+	}
+	s.change(3, original);
+	s.settle();
+	t.assert(!s.snapshot().degraded(), "repair restores current analyzed text");
+	t.assert_string(enriched, details(s.outline(t, s.uri())));
 	s.server.close();
 }
 
