@@ -989,3 +989,74 @@ identical, so the primary counts above remain unchanged. The new control's
 warm answers exactly match its current-program oracle, including diagnostics;
 its cold answers are permitted suppression. All five controls reject their
 injected unsafe predecessor answers.
+
+#### Rebase and integration check (2026-10-25)
+
+After rebasing onto main `eec5004` (wire version 12), the implementation at
+`6152ea61` rejects unterminated lexical regions even when the cursor scanner
+recovers before the changed interval ends. The new unit and stdio regressions
+cover that rule, mapped type definitions with growing and shrinking edits,
+excluded queries and type targets, and retained Read, Write, and Text highlight
+kinds. ADR-0008 is accepted.
+
+The full paired tolerance runs compare main's sources with `6152ea61`, built
+in this checkout as `build/r3base` and `build/r3next` with `BENCH=1` and the
+384 MiB worker heap. Source hashes were checked against main and against the
+restored implementation. Both builds have identical generated BuildInfo text;
+its revision names the implementation checkout with pending documentation,
+so the source hashes identify the baseline. The pinned compiler remains
+`7cf038fc`. The run held the shared benchmark lock after `pgrep -af bench-`
+found no running benchmark, and `taskset` pinned the driver and children to
+CPU 12 on the same i7-14700KF Linux host. Editor tests had finished.
+
+Both runs complete all 410 records with **zero wrong answers and zero worker
+replacements**. All 205 cold answers equal main's, and every after answer equals
+round 2's. Independent eligibility classification still finds 97 eligible warm
+body states and four eligible control-header states; all retain the four
+measured features. The 27 partial reference lists, one partial diagnostic set,
+and five unsafe controls are unchanged. The primary counts above therefore
+still hold. The baseline takes 209.00 seconds and the implementation 229.99
+seconds; these whole-suite times still compare different work because eligible
+broken inputs now undergo verification.
+
+The successful-operation comparison uses six alternating process blocks,
+two warmups, and five measured operations per block: 30 samples per build,
+project, and operation. All semantic checks pass, all 33 latency p10–p90
+intervals overlap, and no samples are removed. Worker allocation, GC counts,
+and live-after-GC distributions match exactly for fresh and reused analyses in
+all three projects. These measurements establish no latency regression.
+Aeneas results are **median (p10–p90), milliseconds**:
+
+| Successful operation | Main | Rebased fallback |
+| --- | ---: | ---: |
+| Fresh analysis | 338.629 (333.466–342.804) | 335.481 (326.972–339.442) |
+| Reused analysis | 305.593 (279.518–329.595) | 302.592 (284.682–327.940) |
+| Definition | 1.831 (1.658–19.066) | 1.674 (1.547–1.827) |
+| Hover | 1.746 (1.599–1.857) | 1.725 (1.549–1.896) |
+| References | 2.388 (2.185–2.501) | 2.309 (2.183–2.446) |
+| Completion cache hit | 2.676 (2.606–3.340) | 2.637 (2.597–2.858) |
+| Completion cache miss | 132.413 (130.849–149.593) | 132.818 (131.687–146.218) |
+| Semantic publication | 513.689 (490.185–533.547) | 534.480 (508.376–539.468) |
+
+The measured commands, using the paired builds above and a writable `evidence`
+directory, are:
+
+```sh
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-tolerance.py --exe build/r3base/virgil-lsp --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-base.json"
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-tolerance.py --exe build/r3next/virgil-lsp --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-next.json"
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-lsp.py --exe build/r3base/virgil-lsp \
+  --exe build/r3next/virgil-lsp --cpu 12 --blocks 6 --warmups 2 --operations 5 \
+  --require-probes --output "$evidence/lsp-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Main sources: `c532424aeb5a4c1c4b6f3f40419ae709553eed963110dbab65cf1a6a2cd13e9e`,
+  `0892797acc6551aaed67992a209875c1dc38f05985b2daf3a3393ae362d0ba83`.
+- Rebased fallback: `1fe1db517385d2af97e5c20809f6a76c220ffa05f3880afdf088d5a2954cd21a`,
+  `f4be6e6bc739289eed7a89c8078b2edd26a0ee7f6261543e4e7501e9f234fab5`.

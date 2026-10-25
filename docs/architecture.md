@@ -424,8 +424,11 @@ must lie strictly within one method or constructor's braces in the cached text.
 parser and consumed-token index; snapshot declaration sites select only names.
 The existing completion cursor scanner checks that both intervals start and end
 in ordinary code, never close a brace open before the interval, and finish at
-their starting brace depth. This rejects literals/comments crossing a boundary,
-unbalanced edits, and an insertion that moves later methods to another owner.
+their starting brace depth. Unterminated strings, byte literals, and block
+comments are ineligible, even if the scanner recovers at a newline or another
+error boundary before the interval ends. This also rejects literals/comments
+crossing a boundary, unbalanced edits, and an insertion that moves later methods
+to another owner.
 Headers, field initializers, and intervals spanning bodies are ineligible.
 
 The worker receives one effective program, with eligible cached texts in place
@@ -443,13 +446,15 @@ check. `currentText` supplies the checked current overlay for protocol positions
 Queries map current byte offsets into effective text; returned ranges map back
 before UTF-16 conversion. Offsets before the interval stay fixed, those after
 it shift by the length difference, and queries or ranges touching the excluded
-body, including its braces, do not map. Definition, hover, references, highlights,
-and semantic diagnostics use these maps. Reference and highlight lists can be
-partial. Prepare rename, rename, and its preflight refuse every degraded
-snapshot; completion and signature help retain their existing current-text
+body, including its braces, do not map. Definition, type definition, hover,
+references, highlights, and semantic diagnostics use these maps. Type definition shares definition's
+query and target exclusions, including a target in another substituted file.
+Reference and highlight lists can be partial; retained highlights keep their
+Text, Read, and Write kinds from the effective occurrence index. Prepare rename,
+rename, and its preflight refuse every degraded snapshot; completion and signature help retain their existing current-text
 repair paths. Sources without cached parseable text and closed broken sources
 are not substituted.
-[ADR-0008](decisions/0008-method-body-fallback.md) records the proposed decision;
+[ADR-0008](decisions/0008-method-body-fallback.md) records the accepted decision;
 [body snapshot tests](../test/unit/LspBodySnapshotTest.v3) and the
 [protocol test](../test/protocol/body_fallback.py) exercise its lifetime and policy.
 
@@ -510,7 +515,7 @@ The encoder chooses one default target per declaration while indexing names and 
 
 The reader bounds the count, offsets, and target codes, advances ordered cursors through uses and declaration sites to check that every override begins an indexed name, and charges the same bytes and checkpoints against the snapshot allocation budget. The default integer fits within the existing conservative 128-byte declaration charge: on x86-64 the declaration and range each occupy 40 bytes, plus an 8-byte array slot. This keeps compiler objects and rendered types out of the snapshot. Inlay hints can reuse these source targets alongside display data without repeating type resolution.
 
-`LspDefinition.typeAnswer` shares [definition's](#definition) snapshot selection, freshness, waiting, cancellation, and UTF-16 position conversion, including checking the target's analyzed bytes. A recognized name with no source type remains `null` even beside another name. Any project parse error suppresses the answer until all its files parse; a current snapshot remains usable after worker replacement. The compiler/wire [unit tests](../test/unit/TypeDefinitionTest.v3) cover the type rules, and the [stdio test](../test/protocol/type_definition.py) covers edits, UTF-16, project membership, parse errors, and replacement. VS Code checks the provider; Neovim drives `vim.lsp.buf.type_definition()` and LazyVim drives `gy`, with exact library locations and a no-location value in each suite.
+`LspDefinition.typeAnswer` shares [definition's](#definition) snapshot selection, freshness, waiting, cancellation, and UTF-16 position conversion, including checking the target's analyzed bytes. A recognized name with no source type remains `null` even beside another name. A project parse error suppresses the answer unless [method-body fallback](#method-body-fallback) applies: queries and type targets in excluded bodies return `null`, and other locations map from effective bytes to current UTF-16 positions. If any effective input still fails to parse, the answer is `null`; a current snapshot remains usable after worker replacement. The compiler/wire [unit tests](../test/unit/TypeDefinitionTest.v3) cover the type rules, and the [stdio test](../test/protocol/type_definition.py) covers edits, UTF-16, project membership, parse errors, and replacement. VS Code checks the provider; Neovim drives `vim.lsp.buf.type_definition()` and LazyVim drives `gy`, with exact library locations and a no-location value in each suite.
 
 ## Hover
 
@@ -580,7 +585,7 @@ These lists may be partial and must not be treated as a complete set of uses.
 
 `LspDocumentHighlights` (`src/protocol/LspDocumentHighlights.v3`) answers `textDocument/documentHighlight`, and the server advertises `documentHighlightProvider: true`. Parameters are a `TextDocumentPositionParams`, with no context; a malformed URI or position receives `InvalidParams`. It shares [references](#references)' declaration selection, name filtering, snapshot freshness, waiting, and position rules, including a cursor just past a name. `LspReferences.declaration` selects a use's target or the declaration's own name, and `LspReferences.names` excludes navigation aliases such as `this` and a default `.new`, while preserving index operators' opening brackets.
 
-**Contract.** The reply includes the declaration's name if it is in the requested document, and every recorded use in that document that spells the name, in source order and without duplicates. Every entry has a UTF-16 `range` and a `DocumentHighlightKind`: the declaration's own name is always `Text` (1), including parameters and initialized locals and fields; an assigned use is `Write` (3); every other recorded use is `Read` (2), including method and type names. The requested document's effective text selects names, and its current-text position map supplies every range; no other file is read again. During [method-body fallback](#method-body-fallback), highlights omit excluded bodies and can be partial. Selecting `this` or a default `.new` selects its class, but neither alias is highlighted. Shared name tokens and index operators follow the references contract, including compound index assignments selecting only `[]=`. A position selecting nothing, an unavailable snapshot or analyzed text, a stale snapshot without pending analysis, and a project's parse failure get `null`, as references do.
+**Contract.** The reply includes the declaration's name if it is in the requested document, and every recorded use in that document that spells the name, in source order and without duplicates. Every entry has a UTF-16 `range` and a `DocumentHighlightKind`: the declaration's own name is always `Text` (1), including parameters and initialized locals and fields; an assigned use is `Write` (3); every other recorded use is `Read` (2), including method and type names. The requested document's effective text selects names, and its current-text position map supplies every range; no other file is read again. During [method-body fallback](#method-body-fallback), highlights omit excluded bodies and can be partial. Selecting `this` or a default `.new` selects its class, but neither alias is highlighted. Shared name tokens and index operators follow the references contract, including compound index assignments selecting only `[]=`. A position selecting nothing, an unavailable snapshot or analyzed text, a stale snapshot without pending analysis, and a project's effective parse failure get `null`, as references do.
 
 **Writes.** Assignment targets (`x = ...` and compound operators such as `x += ...`) and both prefix and postfix `++`/`--` are writes. In `a.f = ...`, only `f` is written; `a` is read. In `a[i] = ...`, the array variable and index are read: Virgil arrays are references, and the element is written, not the variable. The same rules apply to compound assignments and increments. An overloaded index target records its `[]=` bracket as a write, while an ordinary index read records `[]` as a read; an explicit call to either method is a read of its name. Compound assignment and increments both read and write, but LSP allows one kind, so Write takes precedence.
 

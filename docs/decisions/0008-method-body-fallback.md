@@ -1,6 +1,6 @@
 # 0008. Reanalyze last-parseable text for contained method-body edits
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-25
 - Discussion: [#243](https://github.com/SaltedTan/virgil-language-server/issues/243)
 
@@ -35,6 +35,8 @@ server's parse and consumed-token index; declaration-site ranges cover names
 only. Use keyword completion's existing cursor scanner for lexical state and
 raw brace balance. The interval must start and end in ordinary code in both
 texts, never drop below its starting brace depth, and finish at that depth.
+Unterminated strings, byte literals, and block comments are ineligible even
+when the cursor scanner recovers to ordinary code before the interval ends.
 
 The byte-interval test alone was unsafe: an insertion could close a method and
 its component and open another, changing an unchanged later declaration's owner.
@@ -52,8 +54,8 @@ budget. Cache eviction cannot remove a retained snapshot's effective bytes.
 Its document stamp remains the current overlay identity compared at capture.
 Configuration, membership, admission, and freshness checks remain in force.
 
-Definition, hover, references, highlights, and semantic diagnostics suppress
-queries and locations in the entire substituted body, including its braces.
+Definition, type definition, hover, references, highlights, and semantic
+diagnostics suppress queries and locations in the entire substituted body, including its braces.
 Map other offsets before converting current bytes to UTF-16: offsets before
 the interval stay fixed; offsets after it shift by the length difference.
 Ranges spanning an excluded body are unmappable. Keep current-text syntax
