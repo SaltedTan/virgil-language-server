@@ -383,31 +383,11 @@ component AnalysisWire {
 		}
 		typeEncoding.translateDefaults();
 		for (i < files.length) typeEncoding.prepareFile(i, sites[i], files[i].1, builtins[i]);
-		// Collectors retain compact bytes. Two shared arrays order every file
-		// by offset with radix sort, without per-hint objects.
-		var hintData = Array<Range<byte>>.new(files.length), hintCounts = Array<int>.new(files.length), largest = 0;
-		for (i < files.length) { hintCounts[i] = analysis.hintCount(files[i].0); largest = Ints.max(largest, hintCounts[i]); }
-		var h = Array<int>.new(4 * largest), hintScratch = Array<int>.new(4 * largest);
-		var hintStrings = Array<int>.new(analysis.hintStringCount());
+		var hintData = Array<Range<byte>>.new(files.length), hintCounts = Array<int>.new(files.length);
+		var hints = AnalysisHintEncoding.new(analysis, strings, Array<int>.new(analysis.hintStringCount()), typeEncoding);
 		for (i < files.length) {
-			var n = hintCounts[i], r = DataReader.new(analysis.hintRecords(files[i].0));
-			for (j = 0; j < 4 * n; j += 4) {
-				h[j] = r.read_sleb32();
-				h[j + 1] = r.read_sleb32();
-				h[j + 2] = r.read_sleb32();
-				h[j + 3] = r.read_sleb32();
-			}
-			AnalysisHintOrder.sort(h, hintScratch, n);
-			var encoded = DataWriter.new().grow(6 * n), previous = 0;
-			for (j = 0; j < 4 * n; j += 4) {
-				var local = if(h[j + 2] > 0, 1 + typeEncoding.declaration(analysis.typeDeclaration(h[j + 2])));
-				encoded.put_sleb32(h[j] - previous).put_sleb32(h[j + 1]);
-				var label = h[j + 3];
-				if (hintStrings[label] == 0) hintStrings[label] = 1 + strings.add(analysis.hintString(label));
-				encoded.put_sleb32(local).put_sleb32(hintStrings[label] - 1);
-				previous = h[j];
-			}
-			hintData[i] = encoded.alias();
+			hintData[i] = hints.encode(files[i].0, sites[i]);
+			hintCounts[i] = hints.count;
 		}
 		// Both wire passes reuse the numeric string and path IDs as well as
 		// declaration IDs; none needs to hash the same declaration again.
@@ -435,6 +415,13 @@ component AnalysisWire {
 			if (strings.find(sig.label) < 0) text.add(sig.label);
 			for (p in sig.params) if (strings.find(p) < 0) text.add(p);
 		}
+		// Validate and translate call bytes once, shared by sizing and writing.
+		var callData = Array<Range<byte>>.new(files.length), check = AnalysisCallCheck.new(uses.length);
+		for (i < files.length) {
+			var encoded = DataWriter.new(), f = files[i];
+			encodeCalls(encoded, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
+			callData[i] = encoded.alias();
+		}
 		return encodeSized(prefix, fun (w: DataWriter) {
 			w.put_sleb32(strings.length());
 			for (i < strings.length()) putString(w, strings[i]);
@@ -459,7 +446,6 @@ component AnalysisWire {
 				for (p in sig.params) w.put_sleb32(stringRef(strings, text, p));
 			}
 			w.put_sleb32(files.length);
-			var check = AnalysisCallCheck.new(uses.length);
 			for (i < files.length) {
 				var f = files[i], counts = typeEncoding.counts[i];
 				w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
@@ -475,7 +461,7 @@ component AnalysisWire {
 				w.put_sleb32(counts.2).putr(typeEncoding.builtinUses[i]);
 				w.put_sleb32(typeEncoding.overrideCounts[i]).putr(typeEncoding.overrides[i]);
 				w.put_sleb32(calls[i]);
-				encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
+				w.putr(callData[i]);
 				w.put_sleb32(hintCounts[i]).putr(hintData[i]);
 			}
 			if (call != null) encodeCall(w, call, decls, rank);
@@ -509,13 +495,12 @@ component AnalysisWire {
 	// bytes between it and the previous argument's end (the first's from just
 	// after the parenthesis), or three if they follow as another number; and,
 	// with CLOSE_GAP, the bytes between the last argument and the closing
-	// parenthesis. The collector's records (see OccurrenceCollector.calls)
-	// end the same way, so their arguments and closing gap are sent as they
-	// are. A callee is the use that ends at the parenthesis, if it does, and
+	// parenthesis. Collector records with parameter labels strip those
+	// worker-only IDs here; other argument bytes are copied unchanged. A callee is the use that ends at the parenthesis, if it does, and
 	// is sent only if its use is.
 	private def encodeCalls(w: DataWriter, c: AnalysisCallCursor, check: AnalysisCallCheck,
 			occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>, rank: Array<int>) {
-		var last = 0, data = c.r.data;
+		var last = 0;
 		while (c.next()) {
 			var from = c.r.pos;
 			if (!check.sends()) continue;
@@ -527,10 +512,25 @@ component AnalysisWire {
 			putU(w, c.argCount * 8 + flags);
 			if ((flags & AnalysisCallFlags.CALLEE_OFFSET) != 0) putU(w, c.calleeDelta);
 			putU(w, if(c.signature > 0, rank[c.signature - 1]));
-			w.putr(data[from ... c.r.pos]);
+			putCallArguments(w, c, from);
 			last = open;
 		}
 	}
+	private def putCallArguments(w: DataWriter, c: AnalysisCallCursor, from: int) {
+		if (!c.hasHints()) { w.putr(c.r.data[from ... c.r.pos]); return; }
+		c.rewindArgs(from);
+		var end = c.open + 1;
+		for (i < c.argCount) {
+			c.nextArg();
+			var gap = c.argBegin - end;
+			putU(w, 4 * (c.argEnd - c.argBegin) + if(gap < 3, gap, 3));
+			if (gap >= 3) putU(w, gap);
+			end = c.argEnd;
+		}
+		c.finish();
+		if ((c.flags & AnalysisCallFlags.CLOSE_GAP) != 0) putU(w, c.close - 1 - end);
+	}
+
 	// A call answer is its call, as the first of a file's calls is encoded,
 	// except that it names its callee, if it has one, by the offset before its
 	// "(" (CALLEE_OFFSET), since the answer has no uses; then the index plus
@@ -545,7 +545,7 @@ component AnalysisWire {
 		putU(w, c.argCount * 8 + (c.flags & (AnalysisCallFlags.CALLEE_OFFSET | AnalysisCallFlags.CLOSE_GAP)));
 		if (c.calleeDelta > 0) putU(w, c.calleeDelta);
 		putU(w, if(c.signature > 0, rank[c.signature - 1]));
-		w.putr(call.record[from ... c.r.pos]);
+		putCallArguments(w, c, from);
 		w.put_sleb32(if(call.target != null, 1 + decls.find(call.target)));
 	}
 	// Decodes a RESULT into the worker's state and a snapshot with
@@ -855,6 +855,10 @@ type AnalysisResultDecode {
 // Reads one message, bounding every count and index by the bytes and tables
 // actually present, so that a malformed message is rejected without trapping.
 class AnalysisWireReader {
+	// One byte per string, within the string table's conservative metadata
+	// charge. This temporary cache is not retained by the snapshot.
+	private var hintLabels: Array<byte>;
+	private var hintLabelStrings: Array<string>;
 	private var r: DataReader;
 	private var remaining: long;
 	def var overBudget: bool;
@@ -1071,12 +1075,20 @@ class AnalysisWireReader {
 		var count = r.read_sleb32(), start = r.pos;
 		if (count < 0 || count > r.available() / 4) return fail("invalid hint count");
 		if (count == 0) return;
+		if (hintLabelStrings != strings) {
+			hintLabelStrings = strings;
+			hintLabels = Array<byte>.new(strings.length);
+		}
 		var cursor = AnalysisHintCursor.new(r, count), previous = -1;
 		while (cursor.next()) {
 			var local = cursor.local, label = cursor.label;
 			if (cursor.begin <= previous || local < 0 || local > declarations.length
 					|| label < 0 || label >= strings.length) return fail("invalid hint index");
-			if (!AnalysisHintText.valid(strings[label], local > 0)) return fail("invalid hint label");
+			var bit: byte = if(local > 0, 2, 1);
+			if ((hintLabels[label] & bit) == 0) {
+				if (!AnalysisHintText.valid(strings[label], local > 0)) return fail("invalid hint label");
+				hintLabels[label] |= bit;
+			}
 			if (local > 0) {
 				var i = local - 1;
 				if (i < file.firstSite || i >= file.firstSite + file.siteCount) return fail("hint local outside file");

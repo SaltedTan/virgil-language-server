@@ -22,6 +22,8 @@ component AnalysisDisplayText {
 // type, which is rendered from {syntax} when a use first needs it.
 class AnalysisWorkerDeclaration extends AnalysisDeclaration {
 	def syntax: Decl;
+	var hintLabel = -1;
+	var parameterHintIds: Array<int>;
 	def ownType: Type;
 	var typeText: string;
 	var rendered: bool;
@@ -49,6 +51,11 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	private def types = AnalysisTypeKeyMap<Type>.new(hashType, sameTypeHash, compareTypes);
 	private def typeTexts = Vector<string>.new();
 	private def typeHintIds = Vector<int>.new();
+	private def hintTypes = AnalysisTypeKeyMap<Type>.new(hashType, sameTypeHash, compareTypes);
+	// 1: visiting, 2: fully known, 3: contains an unknown or a cycle.
+	private def hintTypeStates = Vector<byte>.new();
+	private def hintTypeStack = Vector<int>.new();
+	private def hintChildren = Vector<List<Type>>.new();
 	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
 	// Distinct source-type targets, registered when collection resolves one.
@@ -187,18 +194,50 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		return text;
 	}
 
-	// Hints share the display's interned strings. Reject unknown nested types
-	// too; a partial spelling containing "?" is not an inferred type hint.
+	// Check the complete resolved DAG before rendering can elide its depth or
+	// width. An explicit stack bounds native stack use; each distinct type is
+	// checked once, including subtrees shared by many locals.
+	private def knownHintType(t: Type) -> bool {
+		if (unknown(t)) return false;
+		var root = hintTypes.add(t);
+		if (root < hintTypeStates.length) return hintTypeStates[root] == 2;
+		hintTypeStates.put(1);
+		hintTypeStack.put(root);
+		hintChildren.put(t.nested);
+		while (hintTypeStack.length > 0) {
+			var top = hintTypeStack.length - 1, index = hintTypeStack[top], children = hintChildren[top];
+			if (children == null || hintTypeStates[index] == 3) {
+				if (hintTypeStates[index] == 1) hintTypeStates[index] = 2;
+				hintTypeStack.length--;
+				hintChildren.length--;
+				if (top > 0 && hintTypeStates[index] == 3) hintTypeStates[hintTypeStack[top - 1]] = 3;
+				continue;
+			}
+			hintChildren[top] = children.tail;
+			var child = resolve(children.head, 0);
+			if (unknown(child)) { hintTypeStates[index] = 3; continue; }
+			var next = hintTypes.add(child);
+			if (next < hintTypeStates.length) {
+				if (hintTypeStates[next] != 2) hintTypeStates[index] = 3;
+			} else {
+				hintTypeStates.put(1);
+				hintTypeStack.put(next);
+				hintChildren.put(child.nested);
+			}
+		}
+		return hintTypeStates[root] == 2;
+	}
 	def hintText(t: Type) -> int {
 		t = resolve(t, 0);
 		if (unknown(t)) return -1;
 		var index = types.add(t), text = typeTextAt(t, index);
 		if (typeHintIds[index] != -2) return typeHintIds[index];
 		var code = -1;
-		if (text != null) {
-			var valid = true;
-			for (b in text) if (b == '?') valid = false;
-			if (valid) code = strings.add(AnalysisHintText.bound(text));
+		if (text != null && knownHintType(t)) {
+			// Rendering can also decline a spelling (for example an incomplete
+			// function type). That is independent of structural resolution.
+			var spelling = AnalysisHintText.bound(text);
+			if (AnalysisHintText.valid(spelling, true)) code = strings.add(spelling);
 		}
 		typeHintIds[index] = code;
 		return code;
@@ -209,18 +248,27 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	def hintString(i: int) -> string { return strings[i]; }
 
 	// Real parameter declarations only, never signature display labels.
-	def hintParams(target: AnalysisDeclaration, b: VarBinding) -> VstList<ParamDecl> {
+	def hintParams(target: AnalysisDeclaration, b: VarBinding) -> Array<int> {
 		if (target == null) return null;
 		match (b) {
-			ObjectMethod, ClassMethod, ComponentMethod, ClassNew, VariantCase => ;
+			ObjectMethod, ComponentMethod, ClassNew, VariantCase => ;
 			_ => return null;
 		}
-		match (AnalysisWorkerDeclaration.!(target).syntax) {
-			x: VstMethod => return x.func.params;
-			x: VstClass => return if(VarBinding.ClassNew.?(b), x.params);
-			x: VstCaseMember => return if(x.decl != null, x.decl.params);
+		var d = AnalysisWorkerDeclaration.!(target);
+		if (d.parameterHintIds != null) return d.parameterHintIds;
+		var params: VstList<ParamDecl>;
+		match (d.syntax) {
+			x: VstMethod => params = x.func.params;
+			x: VstClass => params = if(VarBinding.ClassNew.?(b), x.params);
+			x: VstCaseMember => params = if(x.decl != null, x.decl.params);
 		}
-		return null;
+		var ids = Array<int>.new(if(params != null, params.length())), i = 0;
+		for (p = if(params != null, params.list); p != null; (p = p.tail, i++)) {
+			var token = p.head.token, name = token.image;
+			ids[i] = if(name != null && !Strings.equal(name, "_") && token.beginLine > 0, strings.add(name), -1);
+		}
+		d.parameterHintIds = ids;
+		return ids;
 	}
 
 	// The index of the signature that verification checked a call against,

@@ -16,9 +16,11 @@ component AnalysisHintText {
 	def valid(text: string, isType: bool) -> bool {
 		if (text == null || text.length == 0) return false;
 		var chars = 0;
-		for (b in text) {
-			if (b < 32 || b == 127 || (isType && b == '?')) return false;
-			if ((b & 0xC0) != 0x80) chars++;
+		for (i = 0; i < text.length;) {
+			var decoded = Utf8.decode1(text[i ...]);
+			if (decoded.0 <= 0 || decoded.1 < 32 || decoded.1 == 127 || (isType && decoded.1 == '?')) return false;
+			i += decoded.0;
+			chars++;
 		}
 		return !isType || chars <= 40;
 	}
@@ -49,27 +51,80 @@ class AnalysisHintCursor(r: DataReader, var remaining: int) {
 	def position() -> int { return if(local > 0, end, begin); }
 }
 
-// Stable byte-wise radix sort reuses two record arrays across all files.
-// Nonnegative source offsets need at most four passes and no comparisons.
-component AnalysisHintOrder {
-	private def bins = Array<int>.new(256);
-	def sort(a: Array<int>, scratch: Array<int>, count: int) {
-		var src = a, dst = scratch, largest = 0;
-		for (i < count) largest = Ints.max(largest, a[4 * i]);
-		for (shift = 0; shift < 32 && (u32.view(largest) >> byte.view(shift)) != 0; shift += 8) {
-			for (i < 256) bins[i] = 0;
-			for (i < count) bins[(src[4 * i] >> byte.view(shift)) & 255]++;
-			var total = 0;
-			for (i < 256) { var n = bins[i]; bins[i] = total; total += n; }
-			for (i < count) {
-				var out = 4 * bins[(src[4 * i] >> byte.view(shift)) & 255]++;
-				dst[out] = src[4 * i];
-				dst[out + 1] = src[4 * i + 1];
-				dst[out + 2] = src[4 * i + 2];
-				dst[out + 3] = src[4 * i + 3];
+// Merge local declaration sites with call arguments in source order. Calls
+// arrive by opening parenthesis; a small heap holds the later arguments of
+// enclosing calls until their nested calls have been visited. Each span is
+// read from the existing call record, without a second collected span stream
+// or a whole-file hint sort.
+class AnalysisHintEncoding(analysis: ProgramAnalysis, strings: AnalysisStringTable, ids: Array<int>,
+		targets: AnalysisTypeTargetEncoding) {
+	private def pending = Vector<(int, int, int)>.new();
+	private var sites: Array<AnalysisDeclaration>;
+	private var site: int;
+	private var previous: int;
+	private var output: DataWriter;
+	def var count: int;
+	def encode(path: string, declarations: Array<AnalysisDeclaration>) -> Range<byte> {
+		sites = declarations;
+		site = previous = count = 0;
+		pending.length = 0;
+		output = DataWriter.new().grow(6 * analysis.hintCount(path));
+		var records = analysis.callRecords(path), c = AnalysisCallCursor.new(DataReader.new(records.0), records.1);
+		c.absolute = true;
+		while (c.next()) {
+			flush(c.open);
+			for (i < c.argCount) {
+				c.nextArg();
+				if (c.argHint > 0) push(c.argBegin, c.argEnd, c.argHint - 1);
 			}
-			var tmp = src; src = dst; dst = tmp;
+			c.finish();
 		}
-		if (src != a) for (i < 4 * count) a[i] = src[i];
+		flush(int.max);
+		locals(int.max);
+		return output.alias();
+	}
+	private def locals(before: int) {
+		while (site < sites.length && sites[site].range.beginOffset < before) {
+			var d = sites[site++];
+			if (!AnalysisWorkerDeclaration.?(d)) continue;
+			var label = AnalysisWorkerDeclaration.!(d).hintLabel;
+			if (label >= 0) put(d.range.beginOffset, d.range.endOffset, targets.declaration(d) + 1, label);
+		}
+	}
+	private def put(begin: int, end: int, local: int, label: int) {
+		if (ids[label] == 0) ids[label] = strings.add(analysis.hintString(label)) + 1;
+		output.put_sleb32(begin - previous).put_sleb32(end - begin).put_sleb32(local).put_sleb32(ids[label] - 1);
+		previous = begin;
+		count++;
+	}
+	private def push(begin: int, end: int, label: int) {
+		var value = (begin, end, label), i = pending.length;
+		pending.put(value);
+		while (i > 0) {
+			var parent = (i - 1) / 2;
+			if (pending[parent].0 <= begin) break;
+			pending[i] = pending[parent];
+			i = parent;
+		}
+		pending[i] = value;
+	}
+	private def flush(before: int) {
+		while (pending.length > 0 && pending[0].0 < before) {
+			var value = pending[0], last = pending[pending.length - 1];
+			pending.length--;
+			if (pending.length > 0) {
+				var i = 0;
+				while (2 * i + 1 < pending.length) {
+					var child = 2 * i + 1;
+					if (child + 1 < pending.length && pending[child + 1].0 < pending[child].0) child++;
+					if (last.0 <= pending[child].0) break;
+					pending[i] = pending[child];
+					i = child;
+				}
+				pending[i] = last;
+			}
+			locals(value.0);
+			put(value.0, value.1, 0, value.2);
+		}
 	}
 }

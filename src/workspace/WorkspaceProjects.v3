@@ -9,6 +9,8 @@ class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	// Last published inlay hints, without retaining an older snapshot.
 	var hasHintFingerprint: bool;
 	var hintFingerprint: u64;
+	var hintPositions = OrderedStringMap<LspHintPositionFingerprint>.new();
+	var hintTargets = OrderedStringMap<LspHintTargetFingerprint>.new();
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
 	var lastUsed: long;

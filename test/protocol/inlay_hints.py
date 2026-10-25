@@ -74,15 +74,89 @@ def run(exe, root, types, names, support):
         s.send('textDocument/didSave', {'textDocument': {'uri': path.as_uri()}}, request=False)
         assert query(s, path) == want
         assert len(s.refreshes) == count, s.transcript
+        unchanged = TEXT + '// unrelated trailing comment\n'
+        change(s, path, unchanged, 2)
+        assert query(s, path) == want
+        assert len(s.refreshes) == count, s.transcript
+        change(s, path, unchanged, 3)
+        assert query(s, path) == want
+        assert len(s.refreshes) == count, s.transcript
         changed = '\n' + TEXT
-        change(s, path, changed, 2)
+        change(s, path, changed, 4)
         assert query(s, path) == expected(path, types, names, changed)
         assert len(s.refreshes) == count + int(support and (types or names)), s.transcript
-        change(s, path, 'component Broken {', 3)
+        change(s, path, 'component Broken {', 5)
         assert query(s, path) == []
         for params in [None, {}, {'textDocument': {'uri': path.as_uri()},
             'range': {'start': {'line': 2, 'character': 0}, 'end': {'line': 1, 'character': 0}}}]:
             assert s.reply(s.send('textDocument/inlayHint', params))['error']['code'] == -32602
+        s.shutdown()
+    finally:
+        s.close()
+
+
+def cross_file(exe, root):
+    path, library = root / 'Main.v3', root / 'Library.v3'
+    text = 'component Main { def run() { var a = Library.make(1); var b = Library.make(2); } }\n'
+    lib = 'class Box {}\ncomponent Library { def make(count: int) -> Box { return Box.new(); } }\n'
+    path.write_text(text)
+    library.write_text(lib)
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'cross', 'sources': ['Main.v3', 'Library.v3']}]}))
+    s = HintsSession(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'capabilities': {'workspace': {'inlayHint': {'refreshSupport': True}}}}))
+        open_file(s, path, text)
+        first = query(s, path)
+        assert len(first) == 4
+        for h in first[::2]:
+            assert h['label'][0]['location'] == location(library, lib, 'Box'), h
+        # Repeated links share conversion only within this request; a later
+        # request must notice an unreported disk edit in the target file.
+        library.write_text('// shifted on disk\n' + lib)
+        stale = query(s, path)
+        assert all('location' not in h['label'][0] for h in stale[::2]), stale
+        library.write_text(lib)
+        assert query(s, path) == first
+        open_file(s, library, lib)
+        assert query(s, path) == first
+        before = len(s.refreshes)
+        renamed = lib.replace('count:', 'amount:')
+        change(s, library, renamed, 2)
+        second = query(s, path)
+        assert [h['label'] for h in second[1::2]] == ['amount:', 'amount:'], second
+        assert second[::2] == first[::2]
+        assert len(s.refreshes) == before + 1, s.transcript
+        before = len(s.refreshes)
+        change(s, library, renamed + '// trailing comment\n', 3)
+        assert query(s, path) == second
+        assert len(s.refreshes) == before, s.transcript
+        shifted = '\n' + renamed
+        change(s, library, shifted, 4)
+        third = query(s, path)
+        assert len(s.refreshes) == before + 1, s.transcript
+        assert third[1::2] == second[1::2]
+        for h in third[::2]:
+            assert h['label'][0]['location'] == location(library, shifted, 'Box'), h
+        # Link ranges compare actual UTF-16 positions, not compiler columns,
+        # byte offsets, or a source hash. Library itself has no hints here.
+        fourth_text = '/* é */ ' + renamed
+        change(s, library, fourth_text, 5)
+        fourth = query(s, path)
+        before = len(s.refreshes)
+        change(s, library, '/* a */ ' + renamed, 6)
+        assert query(s, path) == fourth
+        assert len(s.refreshes) == before, s.transcript
+        sixth_text = '/* aa */ ' + renamed
+        change(s, library, sixth_text, 7)
+        sixth = query(s, path)
+        assert len(s.refreshes) == before + 1, s.transcript
+        assert sixth != fourth
+        before = len(s.refreshes)
+        change(s, library, '/* aa */\t' + renamed, 8)
+        assert query(s, path) == sixth
+        assert len(s.refreshes) == before, s.transcript
         s.shutdown()
     finally:
         s.close()
@@ -94,6 +168,7 @@ def main():
         for types, names, support in [(True, True, False), (True, True, True),
                                       (False, True, True), (True, False, True), (False, False, True)]:
             run(exe, Path(work), types, names, support)
+        cross_file(exe, Path(work))
     print('protocol inlay hints: UTF-16 labels/links, ranges, settings, freshness, worker replacement, refresh passed')
 
 if __name__ == '__main__':

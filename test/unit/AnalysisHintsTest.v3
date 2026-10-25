@@ -4,6 +4,9 @@
 def X = [
 	UnitTests.register("AnalysisHints:resolved", resolved),
 	UnitTests.register("AnalysisHints:errors", errors),
+	UnitTests.register("AnalysisHints:elided_errors", elided_errors),
+	UnitTests.register("AnalysisHints:wire_utf8", wire_utf8),
+	UnitTests.register("AnalysisHints:refresh_positions", refresh_positions),
 	UnitTests.register("AnalysisHints:bounds", bounds),
 	UnitTests.register("AnalysisHints:wire_validation", wire_validation),
 	()
@@ -81,5 +84,45 @@ def wire_validation(t: Tester) {
 			t.assert(reader.finish(), "valid parameter record");
 			t.assertl(68L, reader.allocationBytes());
 		} else t.assert(!reader.finish(), "invalid record rejected");
+	}
+}
+
+def elided_errors(t: Tester) {
+	for (name in ["deep-unknown", "wide-unknown"]) {
+		var text = System.fileLoad(Strings.format1("test/fixtures/analysis/inlay-hints/%s.v3", name));
+		var s = make(t, text, false);
+		if (s != null) hint(t, s, text, "bad =", null, true);
+	}
+}
+def wire_utf8(t: Tester) {
+	var invalid = Array<byte>.new(100);
+	for (i < invalid.length) invalid[i] = 0x80;
+	var d = AnalysisDeclaration.new(AnalysisDeclKind.LOCAL, "v", AnalysisRange.new("x.v3", 1, 2, 1, 3, 1, 2));
+	for (label in ["\x80", "\xC0\xAF", "\xF0\x80\x80\x80", "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xE2\x80", invalid]) {
+		for (local in [0, 1]) {
+			var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(1)
+				.put_sleb32(1).put_sleb32(1).put_sleb32(local).put_sleb32(0).extract();
+			var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+			reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], [label]);
+			t.assert(!reader.finish(), "invalid UTF-8 rejected for either hint kind");
+		}
+	}
+	// A valid parameter string must still be checked as a type label.
+	var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(2)
+		.puta("\x00\x01\x00\x00\x01\x01\x01\x00").extract();
+	var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+	reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], ["?"]);
+	t.assert(!reader.finish(), "validation cache distinguishes label kinds");
+}
+
+def refresh_positions(t: Tester) {
+	for (text in ["/* \xC3\xA9\xF0\x9D\x84\x9E */\tvar x = 1;\n\n", "a\r\nb\rc\n", "x\x80\xE2\x80?\xF0\x80\x80\x80\n"]) {
+		var map = PositionMap.new(text, PositionEncoding.UTF16), scan = LspHintPositionCursor.new(text);
+		for (i = 0; i <= text.length; i++) {
+			scan.advance(i);
+			var p = map.offsetToPosition(i);
+			t.asserti(p.line, scan.line);
+			t.asserti(p.character, scan.character);
+		}
 	}
 }

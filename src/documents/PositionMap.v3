@@ -71,7 +71,7 @@ class PositionMap {
 		for (line < lspStarts.length) {
 			var i = lspStarts[line], end = lspEnds[line], character = 0;
 			while (i < end) {
-				var len = sequenceLength(i);
+				var len = PositionUtf8.sequenceLength(text, i);
 				for (j < len) lspCharacters[i + j] = character;
 				character += units(i, len);
 				i += len;
@@ -107,7 +107,7 @@ class PositionMap {
 		if (line >= lspStarts.length) return length();
 		var i = lspStarts[line], end = lspEnds[line], count = 0;
 		while (i < end) {
-			var len = sequenceLength(i);
+			var len = PositionUtf8.sequenceLength(text, i);
 			var next = count + units(i, len);
 			if (next > character) break;
 			count = next;
@@ -188,14 +188,18 @@ class PositionMap {
 	private def units(i: int, len: int) -> int {
 		match (encoding) {
 			UTF16 => return if(len == 4, 2, 1);
-			UTF8 => return if(len == expectedLength(text[i]), len, 3);
+			UTF8 => return if(len == PositionUtf8.expectedLength(text[i]), len, 3);
 			UTF32 => return 1;
 		}
 	}
+}
+
+// Shared replacement-character boundaries for dense and streaming positions.
+component PositionUtf8 {
 	// The length of the UTF-8 sequence that byte {b} starts, or 0 if it
 	// cannot start one. A sequence found by {sequenceLength} is a complete
 	// character, rather than a U+FFFD, exactly when it has this length.
-	private def expectedLength(b: byte) -> int {
+	def expectedLength(b: byte) -> int {
 		if (b < 0x80) return 1;
 		if (b < 0xC2) return 0;
 		if (b < 0xE0) return 2;
@@ -205,7 +209,7 @@ class PositionMap {
 	}
 	// The length of the character that starts at byte {i}: a complete UTF-8
 	// sequence, or the bytes read as one U+FFFD.
-	private def sequenceLength(i: int) -> int {
+	def sequenceLength(text: Array<byte>, i: int) -> int {
 		var b = text[i];
 		var need = expectedLength(b);
 		if (need <= 1) return 1;

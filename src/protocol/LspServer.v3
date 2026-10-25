@@ -102,7 +102,7 @@ class LspServer {
 			LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare);
 		signatureHelp = LspSignatureHelp.new(documents, projects, publishNotification);
 		signatureHelp.register(dispatcher, snapshotRequests);
-		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending);
+		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending, documents);
 		inlayHints.register(dispatcher, snapshotRequests);
 		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);

@@ -323,6 +323,13 @@ class AnalysisSnapshot {
 		if (target < 0) target = if(declaration >= 0, declarations[declaration].typeTarget);
 		return (true, if(target > 0, declarations[target - 1]));
 	}
+	// A validated type-hint record already names its local declaration and
+	// exact span. Reuse the source-type override without searching the sites.
+	def hintTarget(file: AnalysisSnapshotFile, local: int, begin: int) -> int {
+		var target = if(file.typeTargets != null, file.typeTargets.find(begin), -1);
+		return if(target < 0, declarations[local - 1].typeTarget, target);
+	}
+
 	// The references of {decl}, one of {declarations}: the uses that
 	// definitionAtOffset resolves to it, or to another declaration with the
 	// same name token, such as a data type's single case or a class
@@ -682,6 +689,11 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 	// After nextArg, the argument's begin and exclusive end.
 	def var argBegin: int;
 	def var argEnd: int;
+	// Worker-only label plus one. In absolute records bit 1 marks labels,
+	// since worker callees always use explicit offsets, never AT_PAREN.
+	def var argHint: int;
+	def hasHints() -> bool { return absolute && (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0; }
+	def rewindArgs(at: int) { r.at(at); position = open + 1; }
 	// The opening parenthesis of the last call read, or -1.
 	private var last = -1;
 	// Where the next argument may start.
@@ -710,7 +722,7 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		var head = uleb(), both = AnalysisCallFlags.CALLEE_AT_PAREN | AnalysisCallFlags.CALLEE_OFFSET;
 		flags = head & 7;
 		argCount = head >> 3;
-		if ((flags & both) == both) return fail("invalid call flags");
+		if (!absolute && (flags & both) == both) return fail("invalid call flags");
 		var offset = (flags & AnalysisCallFlags.CALLEE_OFFSET) != 0;
 		calleeDelta = if(offset, uleb());
 		if (offset && (calleeDelta < 1 || calleeDelta > open)) return fail("invalid callee offset");
@@ -727,7 +739,8 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		if (!r.ok || length < 1 || gap > int.max - position || length > int.max - position - gap) return fail("invalid argument range");
 		argBegin = position + gap;
 		argEnd = position = argBegin + length;
-		return true;
+		argHint = if(hasHints(), uleb());
+		return r.ok;
 	}
 	def skipArgs() {
 		for (i < argCount) if (!nextArg()) return;

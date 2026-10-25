@@ -16,10 +16,6 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// argument spans of the call being recorded.
 	private def callRecords = DataWriter.new();
 	private def argSpans = Vector<int>.new();
-	// Compact absolute spans, local declaration codes, and label IDs. The
-	// encoder orders them using one shared scratch buffer for all files.
-	private def hintData = DataWriter.new();
-	def var hints: Range<byte>;
 	def var hintCount: int;
 	// The last call's opening parenthesis, and whether every call so far
 	// opened after the one before it.
@@ -61,7 +57,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// AnalysisWire.encodeCalls), except that its opening parenthesis is its
 	// offset, its callee is an offset before it (CALLEE_OFFSET) or none, and
 	// its signature is an index plus one from AnalysisDisplay.callSignature;
-	// AnalysisCallCursor reads them with {absolute}. A few bytes a call,
+	// In these absolute records bit 1 instead marks a label ID plus one
+	// after each argument (zero suppresses that argument). AnalysisCallCursor
+	// reads them with {absolute}. A few bytes a call,
 	// rather than objects, keep the garbage of a large program's calls small
 	// enough that collection does not make the worker collect its heap.
 	def var builtins: Array<AnalysisBuiltinUse>;
@@ -90,7 +88,6 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		builtins = AnalysisTables.sort(builtinUses.extract(), builtinBefore);
 		sites = sortSites(siteList.extract());
 		calls = sortCalls();
-		hints = hintData.alias();
 		return AnalysisTables.sort(result.extract(), before);
 	}
 	// The walk finds a file's components, classes, and other declarations in
@@ -324,8 +321,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var d = siteVar(v);
 		if (d != null && !ParamDecl.?(v) && v.tref == null) {
 			var label = display.hintText(v.vtype);
-			if (label >= 0 && d.range.beginOffset >= 0)
-				hint(d.range.beginOffset, d.range.endOffset, d.typeTarget, label);
+			if (label >= 0 && d.range.beginOffset >= 0) {
+				AnalysisWorkerDeclaration.!(d).hintLabel = label;
+				hintCount++;
+			}
 		}
 		typeRef(v.tref);
 		expr(v.init);
@@ -612,33 +611,21 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// application has no call: a constructor's super(...) clause, an index
 	// operation, and an operator. See docs/architecture.md#call-sites.
 	// Returns the offset just past the call's closing parenthesis, or -1.
-	private def hint(begin: int, end: int, local: int, label: int) {
-		hintData.put_sleb32(begin).put_sleb32(end - begin).put_sleb32(local).put_sleb32(label);
-		hintCount++;
+	private def parameterHints(e: AppExpr, target: AnalysisDeclaration, b: VarBinding) -> Array<int> {
+		if (AppBinding.None.?(e.appbind) || AppBinding.Partial.?(e.appbind)) return null;
+		var labels = display.hintParams(target, b), args = e.args.exprs;
+		// Tuple expansion and partially applied calls have no one-to-one map.
+		if (labels == null || labels.length != args.length()) return null;
+		for (a = args.list; a != null; a = a.tail) if (ParamExpr.?(a.head)) return null;
+		return labels;
 	}
-	private def parameterHints(e: AppExpr, target: AnalysisDeclaration, b: VarBinding) {
-		var params = display.hintParams(target, b);
-		if (params == null || VarBinding.ClassMethod.?(b) || AppBinding.None.?(e.appbind) || AppBinding.Partial.?(e.appbind)) return;
-		var count = params.length(), args = e.args.exprs;
-		// Tuple expansion and partially applied calls do not have a one-to-one
-		// mapping of source arguments to named parameters.
-		if (count != args.length()) return;
-		for (a = args.list; a != null; a = a.tail) {
-			if (ParamExpr.?(a.head)) return;
+	private def redundantArgument(arg: Expr, label: int) -> bool {
+		while (TupleExpr.?(arg)) {
+			var list = TupleExpr.!(arg).exprs.list;
+			if (list == null || list.tail != null) break;
+			arg = list.head;
 		}
-		var p = params.list, i = 0;
-		for (a = args.list; a != null; (a = a.tail, p = p.tail, i++)) {
-			var name = p.head.token.image;
-			if (name == null || Strings.equal(name, "_") || p.head.token.beginLine <= 0) continue;
-			var arg = a.head;
-			while (TupleExpr.?(arg)) {
-				var list = TupleExpr.!(arg).exprs.list;
-				if (list == null || list.tail != null) break;
-				arg = list.head;
-			}
-			if (VarExpr.?(arg) && Strings.equal(VarExpr.!(arg).ident.name.image, name)) continue;
-			hint(argSpans[2 * i], argSpans[2 * i + 1], 0, display.hintName(name));
-		}
+		return VarExpr.?(arg) && Strings.equal(VarExpr.!(arg).ident.name.image, display.hintString(label));
 	}
 	private def call(e: AppExpr) -> int {
 		// The end of the last argument, if endOf found it before, which is
@@ -705,9 +692,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				target = lastDeclaration;
 			}
 		}
-		parameterHints(e, target, b);
+		var labels = parameterHints(e, target, b);
 		var signature = display.callSignature(target, b, e.func.exactType);
-		var flags = if(callee >= 0, AnalysisCallFlags.CALLEE_OFFSET) | if(close - 1 > end, AnalysisCallFlags.CLOSE_GAP);
+		var flags = if(callee >= 0, AnalysisCallFlags.CALLEE_OFFSET) | if(close - 1 > end, AnalysisCallFlags.CLOSE_GAP)
+			| if(labels != null, AnalysisCallFlags.CALLEE_AT_PAREN);
 		if (open <= lastOpen) callsInOrder = false;
 		lastOpen = open;
 		callCount++;
@@ -719,10 +707,17 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		// Each argument's length times four plus the bytes before it, or three
 		// and then those bytes.
 		end = open + 1;
-		for (i = 0; i < argSpans.length; i += 2) {
+		var argument = list.list;
+		for (i = 0; i < argSpans.length; (i += 2, argument = argument.tail)) {
 			var gap = argSpans[i] - end, length = argSpans[i + 1] - argSpans[i];
 			putU(w, 4 * length + if(gap < 3, gap, 3));
 			if (gap >= 3) putU(w, gap);
+			if (labels != null) {
+				var label = labels[i / 2];
+				if (label >= 0 && redundantArgument(argument.head, label)) label = -1;
+				putU(w, label + 1);
+				if (label >= 0) hintCount++;
+			}
 			end = argSpans[i + 1];
 		}
 		if (close - 1 > end) putU(w, close - 1 - end);

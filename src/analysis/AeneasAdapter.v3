@@ -224,12 +224,6 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.sites;
 	}
-	def hintRecords(path: string) -> Range<byte> {
-		var file = files[path];
-		if (file == null) return null;
-		file.occurrences();
-		return file.hints;
-	}
 	def hintCount(path: string) -> int {
 		var file = files[path];
 		if (file == null) return 0;
@@ -415,7 +409,6 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 	def var located: int;
 	def var builtins: Array<AnalysisBuiltinUse>;
 	def var sites: Array<AnalysisDeclaration>;
-	def var hints: Range<byte>;
 	def var hintCount: int;
 	def var calls: Range<byte>;
 	def var callCount: int;
@@ -428,7 +421,6 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 			located = collector.located;
 			builtins = collector.builtins;
 			sites = collector.sites;
-			hints = collector.hints;
 			hintCount = collector.hintCount;
 			calls = collector.calls;
 			callCount = collector.callCount;
