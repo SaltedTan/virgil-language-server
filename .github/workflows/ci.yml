@@ -253,6 +253,9 @@ jobs:
       - name: Install client dependencies from the lockfile
         working-directory: clients/vscode
         run: npm ci
+      - name: Process runner tests (macOS libproc and both Darwin layouts)
+        working-directory: clients/vscode
+        run: node --test test/processes.cjs
       - name: Extension Host test
         working-directory: clients/vscode
         run: npm run test:e2e -- --logs "$RUNNER_TEMP/vscode-logs/source"

@@ -124,14 +124,17 @@ function fakeClock() {
       Date: { now: () => now },
       setTimeout: (fn, ms) => add(fn, ms), setInterval: (fn, ms) => add(fn, ms, ms), clearTimeout: clear, clearInterval: clear,
     },
-    advance: (ms) => {
+    // Coalescing models a delayed event-loop turn: overdue callbacks run at
+    // the new time, with each interval called once, rather than replaying
+    // every missed tick. Useful when callbacks inspect real processes.
+    advance: (ms, { coalesce = false } = {}) => {
       const end = now + ms;
       for (;;) {
         const [id, timer] = [...timers].filter(([, t]) => t.at <= end).sort(([, a], [, b]) => a.at - b.at)[0] ?? [];
         if (timer === undefined) break;
-        now = timer.at;
+        now = coalesce ? end : timer.at;
         if (timer.every === undefined) timers.delete(id);
-        else timer.at += timer.every;
+        else timer.at = now + timer.every;
         timer.fn();
       }
       now = end;
@@ -222,12 +225,14 @@ function fakeKeeper(pid) {
 // startGroup, and kill as process.kill. With pidfd, the pidfd helper "runs":
 // signals gets ['pidfd', name, targets] for each call, and deliver(pid, name)
 // each signal to a target that is still that process, alive; without it,
-// python3 isn't found. platform is process.platform, and ps, if given, gives
-// spawnSync's result for ps's arguments; globals, such as a fake clock's, are
-// load()'s.
-function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps, globals, proc = fakeProc(processes) } = {}) {
+// the pidfd helper isn't found. platform is process.platform, and ps, if given,
+// gives spawnSync's result for ps's arguments; globals, such as a fake clock's,
+// are load()'s.
+function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps, darwinPids, darwinInfo, globals, proc = fakeProc(processes) } = {}) {
   const spawnSync = (command, args) => {
     if (command === 'ps') return ps(args);
+    if (platform === 'darwin' && darwinInfo !== undefined && args[2] === require('../e2e/processes.cjs').DARWIN_PROCESS_INFO) return darwinInfo(JSON.parse(args.at(-1)));
+    if (platform === 'darwin' && darwinPids !== undefined && args[2] === require('../e2e/processes.cjs').DARWIN_GROUP_PIDS) return { status: 0, stdout: JSON.stringify(darwinPids(Number(args.at(-1)))) };
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
     const [name, targets] = JSON.parse(args.at(-1));
     signals.push(['pidfd', name, targets]);

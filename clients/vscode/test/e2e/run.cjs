@@ -372,17 +372,18 @@ function runGroup(command, args, { env, stdin, signal, servers = [] }) {
         let running;
         try {
           const listed = groupProcesses(group.pid, servers);
-          const members = group.look()?.processes;
-          if (members === undefined) return;
-          running = listed.filter((p) => members.some((member) => member.pid === p.pid));
+          const scan = group.look();
+          if (scan === undefined) return;
+          running = scan.unavailable ? undefined : listed.filter((p) => scan.processes.some((member) => member.pid === p.pid));
         } catch (error) {
           stop(`could not be checked for servers left running: ${error.message}`);
           return;
         }
-        if (running.length === 0 || stopped !== undefined) return;
+        if (running?.length === 0 || stopped !== undefined) return;
         if (Date.now() > limit) {
-          const left = running.map((p) => `${path.basename(p.executable)} (pid ${p.pid})`).join(', ');
-          stop(`left ${left} running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`);
+          const left = running?.map((p) => `${path.basename(p.executable)} (pid ${p.pid})`).join(', ');
+          stop(left === undefined ? `could not check for servers left running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`
+            : `left ${left} running ${SERVER_EXIT_MS / 1000} seconds after VS Code exited`);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
