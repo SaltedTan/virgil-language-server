@@ -236,4 +236,4 @@ git -C ~/src/virgil checkout <virgil revision>
 export VIRGIL_LOC=~/src/virgil    # or set virgil.virgilRoot in VS Code
 ```
 
-With Remote-SSH or WSL, any optional checkout and client root must be on the remote machine or in the WSL distribution.
+With Remote-SSH or WSL, the server's `virgil/` library must be on the same machine as the server: install the whole archive on the remote machine or in the WSL distribution, or the platform VSIX for that host. Any optional checkout and client root must also be on that machine.
