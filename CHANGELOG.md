@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The VS Code [Extension Host](clients/vscode/README.md#extension-host-test) and [Remote-SSH](clients/vscode/README.md#remote-ssh-test) test runners now check macOS group membership through libproc before releasing a keeper, so a helper that forks and is reaped during a `ps` listing cannot hide its surviving child. Where Python or libproc is unavailable, they confirm an empty scan at least 50 milliseconds later ([#206](https://github.com/SaltedTan/virgil-language-server/issues/206)).
+
 - An interrupt during the VS Code [Extension Host test](clients/vscode/README.md#extension-host-test)'s first download now also stops the `tar` that extracts it, including when the signal reaches only the runner's PID. The runner exits with the signal's status after stopping the download ([#209](https://github.com/SaltedTan/virgil-language-server/issues/209)).
 - Optional [manual editor result records](test/e2e/RESULTS.md#result-events) can now plan matrix features and VS Code checklist steps, report attested observations, and render separately from automated results without changing them ([#234](https://github.com/SaltedTan/virgil-language-server/issues/234)).
 - In VS Code, pending requests now fail promptly when malformed server output makes the client stop. A rename whose response followed the bad output could previously stay pending even after the shutdown timeout and the server's termination ([Extension Host test](clients/vscode/README.md#extension-host-test), [#222](https://github.com/SaltedTan/virgil-language-server/issues/222)).

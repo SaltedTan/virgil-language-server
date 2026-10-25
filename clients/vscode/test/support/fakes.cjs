@@ -225,9 +225,10 @@ function fakeKeeper(pid) {
 // python3 isn't found. platform is process.platform, and ps, if given, gives
 // spawnSync's result for ps's arguments; globals, such as a fake clock's, are
 // load()'s.
-function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps, globals, proc = fakeProc(processes) } = {}) {
+function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps, darwinPids, globals, proc = fakeProc(processes) } = {}) {
   const spawnSync = (command, args) => {
     if (command === 'ps') return ps(args);
+    if (platform === 'darwin' && darwinPids !== undefined) return { status: 0, stdout: JSON.stringify(darwinPids(Number(args.at(-1)))) };
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
     const [name, targets] = JSON.parse(args.at(-1));
     signals.push(['pidfd', name, targets]);

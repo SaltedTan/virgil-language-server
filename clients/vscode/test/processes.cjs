@@ -19,6 +19,92 @@ const processes = require('./e2e/processes.cjs');
 const pidfdSkip = process.platform !== 'linux' ? 'pidfds are a Linux feature'
   : processes.pidfdSupport() === true ? false : `no pidfds here: ${processes.pidfdSupport()}`;
 const pythonSkip = spawnSync('python3', ['-I', '-c', '']).status === 0 ? false : 'python3 is not on PATH';
+const macSkip = process.platform !== 'darwin' ? 'macOS libproc regression' : pythonSkip;
+
+// Reproduce the result of ps's two-phase walk while real processes fork and
+// are reaped: omit the surviving child from exactly the first listing after
+// its parent is reaped. Subsequent scans and the native group listing are real.
+for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
+  test(`${file} keeps a forking macOS group's child alive until stopped (real processes)`, { skip: macSkip }, async () => {
+    const directory = fs.mkdtempSync(path.join(__dirname, '.processes-'));
+    const ready = path.join(directory, 'ready');
+    let child;
+    let omitted = false;
+    let observed;
+    let native = false;
+    const real = require('node:child_process');
+    const owned = load('processes.cjs', {
+      'node:child_process': { ...real, spawnSync: (command, args, options) => {
+        const result = real.spawnSync(command, args, options);
+        if (command === 'python3' && args[2] === processes.DARWIN_GROUP_PIDS) {
+          assert.ok(Array.isArray(JSON.parse(result.stdout)), result.stderr);
+          native = true;
+        }
+        if (command === 'ps' && args[0] === '-A' && !omitted && fs.existsSync(ready)) {
+          const [parent, pid] = JSON.parse(fs.readFileSync(ready, 'utf8'));
+          const lines = result.stdout.split('\n');
+          if (!lines.some((line) => Number(line.trim().split(/\s+/)[0]) === parent)) {
+            child = processes.processInfo(pid);
+            assert.ok(child && child.state !== 'Z');
+            omitted = true;
+            result.stdout = lines.filter((line) => Number(line.trim().split(/\s+/)[0]) !== pid).join('\n');
+          }
+        }
+        return result;
+      } },
+    });
+    const wrapped = { ...owned, startGroup: (...args) => {
+      const group = owned.startGroup(...args);
+      const look = group.look;
+      group.look = () => {
+        const was = omitted;
+        const result = look();
+        if (!was && omitted) observed = result;
+        return result;
+      };
+      return group;
+    } };
+    const runner = load(file, { [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: wrapped }, {}, { setInterval, clearInterval });
+    const controller = new AbortController();
+    let result;
+    const running = runner.runGroup('python3', ['-I', '-c', `
+import json, os, sys, time
+directory = sys.argv[1]
+helper = os.fork()
+if helper == 0:
+    child = os.fork()
+    if child == 0:
+        time.sleep(30)
+        os._exit(0)
+    with open(directory + '/child', 'w') as file:
+        json.dump(child, file)
+    os._exit(0)
+os.waitpid(helper, 0)
+with open(directory + '/child') as file:
+    child = json.load(file)
+with open(directory + '/ready', 'w') as file:
+    json.dump([os.getpid(), child], file)
+`, directory], { env: process.env, stdin: 'ignore', timeout: 60000, signal: controller.signal }).then((value) => { result = value; });
+    try {
+      assert.ok(await until(() => observed, 10000), file);
+      assert.equal(native, true, 'CI must exercise libproc, not silently fall back');
+      assert.equal(observed.empty, false, 'the listing that missed the child cannot release the keeper');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(result, undefined, file);
+      assert.equal(processes.processInfo(child.pid)?.start, child.start);
+      controller.abort();
+      assert.ok(await until(() => result, 10000), file);
+      assert.equal(result.stopped, 'was interrupted');
+      const after = processes.processInfo(child.pid);
+      assert.ok(after === undefined || after.start !== child.start || after.state === 'Z');
+    } finally {
+      controller.abort();
+      if (child) processes.signalProcesses([child], 'SIGKILL');
+      await running;
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 // ps's output for a fake process table on a system without /proc: each
 // process has a start time, as ps prints it, and may have a state, a parent,
@@ -787,11 +873,11 @@ test('a group whose keeper Node.js has reaped is never signaled by its number, e
 // remote-ssh/run.cjs: fake processes, by default from a fake /proc, or from
 // ps with platform 'darwin', and a fake clock and group (see fakeGroup), whose
 // keeper is PID 50.
-function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [], file = 'run.cjs', proc, ps = fakePs(table) } = {}) {
+function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [], file = 'run.cjs', proc, ps = fakePs(table), darwinPids } = {}) {
   const { keeper, kill, deliver, signals } = fakeGroup(table);
   const clock = fakeClock();
   const runner = load(file, {
-    [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fakeProcesses(table, { keeper, kill, deliver, pidfd, signals, platform, ps, proc, globals: clock.globals }),
+    [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fakeProcesses(table, { keeper, kill, deliver, pidfd, signals, platform, ps, proc, darwinPids, globals: clock.globals }),
     'node:child_process': { spawnSync: () => ({ status: 0, stdout: [...table].map(([pid, p]) => `${pid} ${p.group} ${p.args ?? 'x'}\n`).join('') }) },
   }, { pid: 1, kill, platform }, clock.globals);
   const controller = new AbortController();
@@ -890,37 +976,48 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
     table.delete(52);
     table.delete(53);
     run.advance(50);
+    run.advance(50);
     assert.equal((await run.result()).code, 0);
     assert.deepEqual(run.signals, []);
   });
 
-  test(`${file} misses the child of a macOS helper that forks and is reaped during a ps listing`, async () => {
-    // A limitation, which clients/vscode/README.md describes: the kernel has
-    // listed 52's PID; 52 starts 53, which the listing misses, and is reaped
-    // before ps looks it up, so ps leaves it out without saying so. The group
-    // looks empty while 53 runs.
-    const start = 'Thu Oct 23 17:13:01 2026';
-    const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
-    let racing = false;
-    const ps = fakePs(table, (pid) => {
-      if (racing && pid === 52) {
-        racing = false;
-        table.delete(52);
-        table.set(53, { start, group: 50 });
-      }
+  for (const native of [false, true]) {
+    test(`${file} finds and stops the child of a macOS helper that forks and is reaped during a ps listing (native: ${native})`, async () => {
+      // The kernel has listed 52's PID; 52 starts 53, which the listing misses, and is reaped
+      // before ps looks it up, so ps leaves it out without saying so. The group
+      // looks empty for one scan while 53 runs.
+      const start = 'Thu Oct 23 17:13:01 2026';
+      const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+      let racing = false;
+      const ps = fakePs(table, (pid) => {
+        if (racing && pid === 52) {
+          racing = false;
+          table.delete(52);
+          table.set(53, { start, group: 50 });
+        }
+      });
+      const run = localRunGroup(table, { file, platform: 'darwin', ps, darwinPids: native ? () => [...table.keys()] : undefined });
+      run.keeper.command(51);
+      table.delete(51);
+      table.set(52, { start, group: 50 });
+      racing = true;
+      run.keeper.exit(0, null);
+      run.keeper.close();
+      assert.equal(await run.result(), undefined);
+      assert.equal(run.keeper.released, undefined);
+      run.advance(49);
+      assert.equal(await run.result(), undefined);
+      run.advance(1);
+      assert.equal(await run.result(), undefined);
+      run.interrupt();
+      run.advance(5100);
+      run.advance(50);
+      assert.equal((await run.result()).stopped, 'was interrupted');
+      assert.equal(table.has(53), false);
+      assert.deepEqual(run.signals, [['keeper', 'SIGTERM'], ['keeper', 'SIGKILL']]);
     });
-    const run = localRunGroup(table, { file, platform: 'darwin', ps });
-    run.keeper.command(51);
-    table.delete(51);
-    table.set(52, { start, group: 50 });
-    racing = true;
-    run.keeper.exit(0, null);
-    run.keeper.close();
-    assert.equal((await run.result())?.code, 0);
-    assert.equal(run.keeper.released, 'release\n');
-    assert.deepEqual(run.signals, []);
-    assert.equal(table.has(53), true);
-  });
+
+  }
 
   test(`${file} counts a zombie as exited once a later look finds it still a zombie`, async () => {
     for (const platform of ['linux', 'darwin']) {
@@ -939,7 +1036,7 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
       assert.equal(run.keeper.released, undefined, platform);
       // 52's parent reaps it before the next look; 53's never does.
       table.delete(52);
-      run.advance(50);
+      run.advance(platform === 'darwin' ? 100 : 50);
       const result = await run.result();
       assert.deepEqual([result?.code, result?.stopped], [0, undefined], platform);
       assert.equal(run.keeper.released, 'release\n', platform);

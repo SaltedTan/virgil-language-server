@@ -198,6 +198,44 @@ function psTable(selection) {
   });
 }
 
+// Unlike KERN_PROC_ALL (ps), XNU's PROC_PGRP_ONLY copies the group's PIDs
+// under proc_list_lock, without a later lookup that can silently drop a
+// reaped helper. See bsd/kern/proc_info.c's proc_listpids. A full buffer may
+// be truncated, so grow it until there is spare room. Failure uses the timed
+// confirmation in look(), including where Python or libproc is unavailable.
+const DARWIN_GROUP_PIDS = `
+import ctypes, json, sys
+try:
+    lib = ctypes.CDLL('/usr/lib/libproc.dylib')
+    listing = lib.proc_listpgrppids
+    listing.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    listing.restype = ctypes.c_int
+    size = 256
+    while size <= 1048576:
+        buf = (ctypes.c_int * size)()
+        count = listing(int(sys.argv[1]), buf, ctypes.sizeof(buf))
+        if count < 0:
+            break
+        if count < size:
+            print(json.dumps(list(buf)[:count]))
+            sys.exit()
+        size *= 2
+except (AttributeError, OSError):
+    pass
+print('null')
+`;
+
+function darwinGroupPids(group) {
+  const helper = spawnSync('python3', ['-I', '-c', DARWIN_GROUP_PIDS, String(group)], { encoding: 'utf8' });
+  try {
+    const pids = JSON.parse(helper.stdout);
+    if (helper.status === 0 && Array.isArray(pids) && pids.every((pid) => Number.isInteger(pid) && pid > 0)) return pids;
+  } catch {
+    // The timed confirmation also covers a failed helper.
+  }
+  return undefined;
+}
+
 // A Python program that sends a signal to processes, each given by its PID
 // and start time, through a pidfd: it opens the pidfd and only then checks the
 // start time, in /proc, so the signal reaches that process or none, never
@@ -359,6 +397,8 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // The zombies that the last look found in the group, each by PID and start
   // time (see look).
   let zombies = new Map();
+  // The first apparently empty macOS scan, if native group listing fails.
+  let emptySince;
   // The signals that the runner has asked the keeper for, in order, and that
   // the keeper hasn't said it sent, each with the timer for its answer.
   const requested = [];
@@ -417,7 +457,22 @@ function startGroup(command, args, { env, stdio, onExit }) {
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
-    const empty = complete && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
+    let empty = complete && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
+    if (process.platform === 'darwin') {
+      const pids = darwinGroupPids(number);
+      if (pids !== undefined) {
+        emptySince = undefined;
+        // A child missed by ps, or a member that is now live, prevents release.
+        empty &&= pids.every((pid) => pid === number || members.some((p) => p.pid === pid && zombie(p)));
+      } else {
+        // Calls can come back-to-back from exit, pipe-close, and poll events;
+        // only a scan at least 50 ms later confirms the first empty result.
+        const now = Date.now();
+        if (!empty) emptySince = undefined;
+        else if (emptySince === undefined) emptySince = now;
+        empty &&= now - emptySince >= 50;
+      }
+    }
     zombies = new Map(members.filter(zombie).map((p) => [p.pid, p.start]));
     return { processes: found, empty };
   };
@@ -554,4 +609,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   return group;
 }
 
-module.exports = { KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, runOwned, signalProcesses, startGroup, zombie };
+module.exports = { DARWIN_GROUP_PIDS, KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, runOwned, signalProcesses, startGroup, zombie };
