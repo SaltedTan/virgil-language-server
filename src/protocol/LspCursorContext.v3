@@ -156,6 +156,9 @@ class LspCursorScanner(text: Array<byte>) {
 	var braceFrom = int.max;
 	def var braceDepth: int;
 	def var braceMinimum: int;
+	// Completion recovers after malformed literals; fallback containment must
+	// still reject every unterminated region encountered before the cursor.
+	def var unterminatedRegion: bool;
 	def NO_DECL = -1;
 	def STARTED = -2;		// the declaration or statement starts with no keyword
 	def PATTERN_HEAD = -3;
@@ -261,6 +264,7 @@ class LspCursorScanner(text: Array<byte>) {
 					if (text[j] == '\n') newline = true;
 					j++;
 				}
+				if (!closed) unterminatedRegion = true;
 				if (end < j || (end == j && !closed)) return LspCursorPlace.BLOCK_COMMENT;
 				i = j;
 			} else if (c == '\"') {
@@ -277,11 +281,13 @@ class LspCursorScanner(text: Array<byte>) {
 					if (b < ' ') break;
 					j += if(b == '\\' && j + 1 < n && text[j + 1] >= ' ', 2, 1);
 				}
+				if (!closed) unterminatedRegion = true;
 				if (end < j || (end == j && !closed)) return LspCursorPlace.STRING;
 				token(LspCursorToken.LITERAL, i);
 				i = j;
 			} else if (c == '\'') {
 				var r = byteLiteral(i), j = r.0;
+				if (!r.1) unterminatedRegion = true;
 				if (end < j || (end == j && !r.1)) return LspCursorPlace.CHARACTER;
 				token(LspCursorToken.LITERAL, i);
 				i = j;

@@ -138,8 +138,9 @@ def warm(exe, root):
                 {'uri': c.uri('B.v3'), 'range': span(B, 'target')}]
         assert c.query('references') == refs
         highlights = c.query('documentHighlight', 'A.v3', 'target() ->')
-        assert highlights == [{'range': loc['range'], 'kind': 1} for loc in refs[:2]], highlights
-        for method in ('definition', 'hover', 'references', 'documentHighlight'):
+        assert highlights == [{'range': loc['range'], 'kind': kind}
+                              for loc, kind in zip(refs[:2], (1, 2))], highlights
+        for method in ('definition', 'typeDefinition', 'hover', 'references', 'documentHighlight'):
             assert c.query(method, 'A.v3', 'target(); }\n\t/*') is None, method
         for name in ('A.v3', 'B.v3'):
             diagnostics = c.diagnostics(name)
@@ -162,6 +163,7 @@ def warm(exe, root):
         c.change(A.replace('broken()', 'broken(x: )'))
         assert not substitutions(c.snapshot())
         assert c.query('definition') is None
+        assert c.query('typeDefinition') is None
         assert c.query('hover') is None
         assert c.diagnostics('B.v3') == []
         # Repair restores the ordinary complete reference set without restart.
@@ -191,6 +193,89 @@ def warm(exe, root):
         c.s.close()
 
 
+def unterminated_regions(exe, root):
+    old = A.replace('return target();', 'var x = 1; return target();', 1)
+    c = Case(exe, root, old)
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        assert c.query('definition') is not None
+        for statement in ('var x = "oops\n;', "var x = 'a\n;", 'var x = /* oops\n;'):
+            c.change(old.replace('var x = 1;', statement))
+            assert not substitutions(c.snapshot()), statement
+            assert c.query('definition') is None, statement
+            assert c.query('typeDefinition') is None, statement
+            assert c.diagnostics('B.v3') == [], statement
+            c.change(old)
+            assert c.query('definition') is not None
+        c.close()
+    finally:
+        c.s.close()
+
+
+def newer_features(exe, root):
+    old = ('/* é😀\t */ class Before { }\n'
+           'component A {\n'
+           '\tvar field: Before = Before.new();\n'
+           '\tdef broken() { var local = After.new(); field = Before.new(); }\n'
+           '\tdef target() -> After { return After.new(); }\n'
+           '\tdef elsewhere() -> After { /* é😀\t */ field = Before.new(); void(field); return target(); }\n'
+           '}\n'
+           '/* é😀\t */ class After { }\n')
+    c = Case(exe, root, old)
+    c.texts['B.v3'] = 'component B { def use() -> After { return A.target(); } }\n'
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        c.snapshot()
+        complete = c.query('documentHighlight', 'A.v3', 'field:')
+        assert [h['kind'] for h in complete] == [1, 3, 3, 2], complete
+        # Exercise both signs of the translation, including moved lines and
+        # non-ASCII bytes before the same-file query and type destination.
+        for replacement in ('var bad = ;', '/* é😀\t */ var bad = ;\n' * 8):
+            current = old.replace('var local = After.new(); field = Before.new();', replacement)
+            c.change(current)
+            assert len(substitutions(c.snapshot())) == 1
+            before = {'uri': c.uri('A.v3'), 'range': span(current, 'Before')}
+            after = {'uri': c.uri('A.v3'), 'range': span(current, 'After', current.index('class After'))}
+            assert c.query('typeDefinition', 'A.v3', 'field:') == before
+            assert c.query('typeDefinition', 'A.v3', 'field =') == before
+            assert c.query('typeDefinition', 'A.v3', 'target();') == after
+            assert c.query('typeDefinition') == after
+            # At a type name, definition and type definition agree exactly.
+            for name, needle in (('A.v3', 'After { return'), ('B.v3', 'After')):
+                assert c.query('typeDefinition', name, needle) == after
+                assert c.query('definition', name, needle) == after
+            assert c.query('typeDefinition', 'A.v3', 'broken()') is None
+            assert c.query('typeDefinition', 'A.v3', 'bad =') is None
+            assert c.query('definition', 'A.v3', 'bad =') is None
+            # The removed write is absent; retained declaration/read/write
+            # kinds use effective offsets even when current offsets shift.
+            highlights = c.query('documentHighlight', 'A.v3', 'field:')
+            assert highlights == [
+                {'range': span(current, 'field'), 'kind': 1},
+                {'range': span(current, 'field', current.index('def elsewhere')), 'kind': 3},
+                {'range': span(current, 'field', current.index('void(field)')), 'kind': 2},
+            ], highlights
+        # Keep old type-bearing tokens in the broken body. Their cached
+        # targets remain available internally but must never be returned.
+        c.change(old.replace('var local', 'var syntax = ; var local'))
+        assert len(substitutions(c.snapshot())) == 1
+        for needle in ('local =', 'After.new(); field', 'field = Before.new(); }'):
+            for method in ('definition', 'typeDefinition', 'documentHighlight'):
+                assert c.query(method, 'A.v3', needle) is None, (method, needle)
+        c.change(old.replace('broken()', 'broken(x: )'))
+        assert not substitutions(c.snapshot())
+        assert c.query('definition') is None
+        assert c.query('typeDefinition') is None
+        c.change(old)
+        assert c.query('typeDefinition') == {'uri': c.uri('A.v3'), 'range': span(old, 'After', old.index('class After'))}
+        assert c.query('documentHighlight', 'A.v3', 'field:') == complete
+        c.close()
+    finally:
+        c.s.close()
+
+
 def unavailable(exe, root, closed):
     c = Case(exe, root, A if closed else BROKEN)
     try:
@@ -203,6 +288,7 @@ def unavailable(exe, root, closed):
             c.notify('workspace/didChangeWatchedFiles', {'changes': [{'uri': c.uri('A.v3'), 'type': 2}]})
         assert not substitutions(c.snapshot())
         assert c.query('definition') is None
+        assert c.query('typeDefinition') is None
         assert c.diagnostics('B.v3') == []
         c.close()
     finally:
@@ -308,14 +394,15 @@ def main():
     exe = Path(sys.argv[1]).resolve()
     # Keep disposable projects beside the build, away from the shared /tmp.
     with tempfile.TemporaryDirectory(prefix='body-fallback-', dir=exe.parent) as work:
-        for name, run in (('warm', warm), ('error-limit', error_limit),
+        for name, run in (('warm', warm), ('unterminated-regions', unterminated_regions),
+                          ('newer-features', newer_features), ('error-limit', error_limit),
                           ('excluded-error-limit', excluded_error_limit), ('current-error-limit', current_error_limit),
                           ('large-cache', large_cache), ('cold', lambda e, p: unavailable(e, p, False)),
                           ('closed', lambda e, p: unavailable(e, p, True))):
             root = Path(work).resolve() / name
             root.mkdir()
             run(exe, root)
-    print('body fallback: warm, cold, closed-file, mapped queries, error limits, large cache, and edit refusals passed')
+    print('body fallback: warm, cold, closed-file, mapped type definitions, highlight kinds, lexical rejection, error limits, large cache, and edit refusals passed')
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspBodyFallback:eligibility", test_eligibility),
 	T("LspBodyFallback:containment", test_containment),
+	T("LspBodyFallback:unterminated_regions", test_unterminated_regions),
 	T("LspBodyFallback:body_ranges", test_body_ranges),
 	T("LspBodyFallback:mapping", test_mapping),
 	()
@@ -52,6 +53,24 @@ def test_containment(t: Tester) {
 	var original = "component A {\n    def broken() { var x = 0; }\n    def target() -> int { return 1; }\n}\n";
 	var current = "component A {\n    def broken() { } } component C { def broken() { var malformed = ; var x = 0; }\n    def target() -> int { return 1; }\n}\n";
 	check(t, original, current, false);
+}
+def test_unterminated_regions(t: Tester) {
+	var old = wrap("var x = 1;");
+	// A recovered newline (or a byte literal's missing closing quote) must
+	// not make a later ordinary-code interval endpoint eligible.
+	for (body in ["var x = \"oops\n;", "var x = 'a\n;", "var x = 'ab;", "var x = /* oops\n;"]) {
+		check(t, old, wrap(body), false);
+	}
+	// The common suffix starts at ';': the changed interval ends exactly
+	// after the newline, where completion's scanner has recovered to code.
+	var current = wrap("var x = \"oops\n;");
+	var end = current.length - "; } def g() -> int { return 1; } }".length;
+	t.assert_eq(LspCursorPlace.CODE, LspCursorScanner.new(current).scan(end).place);
+	check(t, old, current, false);
+	// Closed regions containing the same brace and quote bytes remain safe.
+	check(t, old, wrap("var x = \"oops\"; var bad = ;"), true);
+	check(t, old, wrap("var x = 'a'; var bad = ;"), true);
+	check(t, old, wrap("var x = /* oops */ ;"), true);
 }
 def test_body_ranges(t: Tester) {
 	var text = "var field = fun () { }; def f() { } class C { new() { } def g() { var s = \"} {\"; /* } */ { } } } type V { case One { def h() { } } }";

@@ -60,6 +60,6 @@ component LspBodyEligibility {
 	private def contained(text: Array<byte>, begin: int, end: int) -> bool {
 		var scan = LspCursorScanner.new(text);
 		scan.braceFrom = begin;
-		return code(scan.scan(end).place) && scan.braceDepth == 0 && scan.braceMinimum == 0;
+		return code(scan.scan(end).place) && !scan.unterminatedRegion && scan.braceDepth == 0 && scan.braceMinimum == 0;
 	}
 }
