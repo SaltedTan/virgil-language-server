@@ -14,8 +14,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  tested:
+    # main requires pull requests to be up to date before they merge, and
+    # merges squash them, so a push to main usually carries exactly the tree
+    # that its pull request's CI just tested. When a merged pull request's head
+    # has this commit's tree and CI passed on it, the other jobs are skipped;
+    # otherwise, or if this check fails, they run.
+    name: Check whether a pull request tested this tree
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - name: Find the merged pull request's passing CI run
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          tree=$(gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha)
+          tested=false
+          for head in $(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[] | select(.merged_at != null) | .head.sha'); do
+            [ "$(gh api "repos/$REPO/git/commits/$head" --jq .tree.sha)" = "$tree" ] || continue
+            runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success" --jq .total_count)
+            if [ "$runs" -gt 0 ]; then
+              echo "CI passed on pull request head $head, which has this commit's tree $tree"
+              tested=true
+            fi
+          done
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+
   test:
     name: Build and test (pinned Virgil, linux x86-64)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -58,6 +96,8 @@ jobs:
     # docs/compatibility.md for CI policy and test/e2e/lazyvim/README.md#ci.
     name: LazyVim test (built server, linux)
     needs: test
+    # Explicit, because the skipped tested job would otherwise skip this one.
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
     runs-on: ubuntu-24.04
     # A run takes about a minute after setup; the test's own deadlines, 600
     # seconds to install the plugins and parsers and 240 for each run, end a
@@ -115,6 +155,8 @@ jobs:
     # Apple Silicon runs the x86-64-darwin build under Rosetta 2 until Virgil
     # supports arm64-darwin (ADR-0003). See docs/compatibility.md for CI policy.
     name: Build and test (pinned Virgil, macOS Apple Silicon via Rosetta 2)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: macos-15
     timeout-minutes: 20
     env:
@@ -150,6 +192,8 @@ jobs:
 
   vscode-client:
     name: VS Code client (type-check and test, linux)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -184,6 +228,8 @@ jobs:
     # fails, the job uploads that launch's VS Code logs, one artifact for each
     # attempt of the run.
     name: VS Code Extension Host test (built server, linux)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.tested != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -228,6 +274,7 @@ jobs:
     # uploads a failed launch's VS Code logs as the Linux job does.
     name: VS Code Extension Host test (built server, macOS Apple Silicon via Rosetta 2)
     needs: test-macos
+    if: ${{ !cancelled() && needs.test-macos.result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 15
     steps:
