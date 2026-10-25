@@ -19,7 +19,7 @@ mv "$nvim_config/lua/plugins/virgil.lua.part" "$nvim_config/lua/plugins/virgil.l
 
 Make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
 
-LazyVim's keys reach the server: `gd`, `gy` for type definition, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more.
+LazyVim's keys reach the server: `gd`, `gy` for type definition, `gI` for implementation, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more.
 
 LazyVim's noice.nvim drops `window/showMessage` notifications from every language server ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)), so warnings such as "Invalid project file …" don't appear, although the project file's diagnostics do. To see them, turn off noice's LSP message handler in a plugin spec, so that Neovim's own handler shows them:
 
@@ -117,7 +117,9 @@ same line, its references in that file and other closed library files, its
 document highlight, only that use's exact range in the current buffer with the
 Read kind, type definition on a call result into the library and no location for a built-in value, the jump through `vim.lsp.buf.type_definition()`, the exact ranges and kinds of a local's highlights in another
 fixture file (its declaration Text, its assignment and increment Write, and
-its other uses Read), a rename
+its other uses Read), the exact subclasses and overriding methods that
+implementation returns in a class hierarchy, and the jump through
+`vim.lsp.buf.implementation()` to a class's one subclass, a rename
 of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
 error, and its undo, keyword completion of `whi` to `while` and completion of
 `li` to the local `line` in the unsaved, unparsable buffer, each applied with

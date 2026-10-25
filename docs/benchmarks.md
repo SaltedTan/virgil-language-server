@@ -472,6 +472,41 @@ The second round’s link-cost probe ran under the same lock and CPU affinity, w
 | 200 | 262,144 bytes | 433.157 | 3.316 |
 | 400 | 262,144 bytes | 866.187 | 4.329 |
 
+## Implementation navigation
+
+Measured on 2026-10-25 against main `5e8ede9`, this change's base, on the Intel Core i7-14700KF reference host with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built as for [type-definition navigation](#type-definition-navigation): in this physical checkout, in `build/base-r2` and `build/next-r2`, with `BENCH=1 all bench-metadata` and identical generated BuildInfo text, from main's extracted sources and then from the restored ones, whose hashes both build manifests matched. The comparison held the shared benchmark lock after a read-only process check found no other benchmark, ran on P-core hardware thread 12, and used the same command: six alternating process blocks, two warmups, and five measured operations per block for all three pinned projects, with every semantic check passing and no samples removed.
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+
+| Measurement | Main | With implementation parents |
+| --- | ---: | ---: |
+| Small fresh analysis | 0.439 (0.428–0.521) | 0.431 (0.423–0.453) |
+| Small reused analysis | 0.141 (0.137–0.154) | 0.142 (0.132–0.149) |
+| Util fresh analysis | 15.115 (14.951–15.457) | 15.294 (15.149–15.888) |
+| Util reused analysis | 13.185 (13.037–13.380) | 13.417 (13.288–14.058) |
+| Aeneas fresh analysis, end to end | 329.047 (327.128–333.609) | 334.568 (331.495–340.380) |
+| Aeneas fresh occurrence collection | 118.317 (117.480–121.031) | 119.981 (119.040–124.452) |
+| Aeneas fresh result encoding | 57.441 (56.675–58.999) | 57.775 (57.127–60.045) |
+| Aeneas fresh result decoding | 15.432 (15.327–15.575) | 16.013 (15.910–16.431) |
+| Aeneas reused analysis, end to end | 296.342 (272.940–319.611) | 297.745 (276.789–306.647) |
+| Aeneas reused occurrence collection | 99.868 (98.588–103.762) | 101.675 (100.882–105.864) |
+| Aeneas reused result encoding | 51.672 (50.960–55.552) | 51.673 (51.099–55.579) |
+| Aeneas reused result decoding | 13.525 (13.185–15.265) | 13.955 (13.562–15.985) |
+
+The Aeneas fresh analysis median is 5.521 ms (1.68%) higher and the reused one 1.403 ms (0.47%) higher, with overlapping intervals; small and util medians differ by at most 1.8%. This comparison establishes no measurable end-to-end latency cost. Result encoding, which also drops the parents on any inheritance cycle, is 0.335 ms higher fresh and 0.001 ms higher reused at the median, with overlapping intervals, and decoding, which reads one more integer per declaration and checks the parents' kinds and that they form no cycle, is 0.581 ms higher and 0.430 ms higher, with disjoint intervals fresh and overlapping ones reused. A pinned decode of the same Aeneas result inside one process, 40 times in each of six interleaved runs per build, takes 15,579 µs on main and 15,828 µs with the parents (+1.6%), the median of the runs' medians, for reading, checking, and keeping one more integer per declaration; without the cycle check it takes 15,852 µs, so the check costs nothing measurable.
+
+Every measured worker transaction collected zero times in both candidates, excluding the explicit final collection. The server collected once in each Aeneas semantic-diagnostic operation and at most once in an Aeneas rename in both candidates, and main's also at most once in an Aeneas completion miss and at most once in an Aeneas reused analysis. Aeneas fresh worker allocation changes from 193,831,072 to 193,930,120 bytes (+0.05%), for the collector's parent pairs, the encoder's links and its cycle check's byte for each, and the larger result, and the server's from 21,499,920 to 21,754,336 (+1.18%), mostly the decoded parents, one integer per declaration, and the cycle check's byte per declaration. A reused Aeneas analysis ends 22,152 bytes short of a worker collection, at 201,326,592 bytes, half the worker heap, where main's ends 165,512 short; of the 143,360-byte difference, 99,048 is allocated during the analysis and 44,312 is held from the one before, about the result's 44,316 more bytes. An earlier encoder, which also kept a parent and a cycle-check byte for every declaration, 210 KB more, made each reused Aeneas analysis collect, adding 148 ms to its encoding.
+
+The following sizes come from six size-probe runs per project and build, as for type-definition navigation, and a seventh run of the change that also queries every class and method. Every size and charge is constant across those runs. Wire lengths from the benchmark's worker probes, which also encode collection time, are 4,258,483 → 4,302,799 for Aeneas and constant across all its measured samples.
+
+| Project | Wire bytes, main → parents | Decoded allocation | Retained charge | Reverse index |
+| --- | ---: | ---: | ---: | ---: |
+| Small | 634 → 645 | 5,450, unchanged | 6,810, unchanged | none: no parents |
+| Util | 179,847 → 182,481 | 738,632, unchanged | 744,637, unchanged | 276 |
+| Aeneas | 4,258,481 → 4,302,797 | 12,782,964, unchanged | 12,818,594, unchanged | 5,372 |
+
+The wire sends one parent per declaration: one byte for each of Aeneas's 42,007 declarations, and up to two more for each of the 1,311 that have a parent, 44,316 bytes (1.04%) in all. The integer fits within the conservative 128-byte declaration charge, so decoded allocation and retained charge are unchanged. The first implementation query adds the reverse index, 128 bytes and 4 for each declaration that has a parent, so a queried Aeneas snapshot retains 12,823,966 bytes, within the 80% guard (13,421,772) that `OccurrenceCoverage` checks after decoding. A first version kept an offset for every declaration, 173,408 bytes for Aeneas, which exceeded that guard before main's compact occurrence coordinates and would now leave 429,770 bytes; the sparse index leaves 597,806. In one unpinned probe run, the first Aeneas query, which builds the index, took 140 µs, and each later class or method query at most 78 µs, including the 162 implementations of `Opcode` in 52 µs; 336 of the 7,675 classes and methods have implementations.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
