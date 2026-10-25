@@ -26,9 +26,9 @@ component AnalysisHintText {
 	}
 }
 
-// Snapshot hint records stay in their validated wire encoding: begin delta,
-// span length, local declaration ID plus one, and
-// string-table ID. A type hint sits at the end; a parameter hint at the begin.
+// Snapshot local hints stay in their validated wire encoding: begin delta,
+// span length, local declaration ID plus one, and string-table ID.
+// Parameter labels are read from call records by AnalysisFileHintCursor.
 class AnalysisHintCursor(r: DataReader, var remaining: int) {
 	def var begin: int;
 	def var end: int;

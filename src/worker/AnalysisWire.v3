@@ -1025,10 +1025,6 @@ class AnalysisWireReader {
 		}
 		return true;
 	}
-	// Reads a use's line, column, byte offset, and length into {a} from
-	// index {i}, and returns its end offset. A use is a token span that
-	// starts at or after {end}, the end of the previous use, so that uses
-	// are in byte order without overlaps, as a binary search requires.
 	// A negative count selects three stored range ints: packed 16-bit line
 	// and column, offset, length. Full coordinates retain four range ints.
 	// Both wire forms still send and validate all four numbers.
@@ -1049,6 +1045,10 @@ class AnalysisWireReader {
 		a[i + 2] = length;
 		return offset + length;
 	}
+	// Reads a use's line, column, byte offset, and length into {a} from
+	// index {i}, and returns its end offset. A use is a token span that
+	// starts at or after {end}, the end of the previous use, so that uses
+	// are in byte order without overlaps, as a binary search requires.
 	def readSpan(a: Array<int>, i: int, end: int) -> int {
 		var line = r.read_sleb32(), column = r.read_sleb32(), offset = r.read_sleb32(), length = r.read_sleb32();
 		if (line < 1 || column < 1 || offset < end || length < 1 || length > int.max - offset || length > int.max - column) {
@@ -1072,9 +1072,6 @@ class AnalysisWireReader {
 			else r.fail("builtin use overlaps an occurrence");
 		}
 	}
-	// A sparse type-target map. Every key must begin a recorded use or
-	// declaration name, strictly in source order. Bounds apply even to a
-	// no-parse snapshot; no index can escape the declaration table.
 	def readHints(file: AnalysisSnapshotFile, declarations: Array<AnalysisDeclaration>, strings: Array<string>) {
 		var count = r.read_sleb32(), start = r.pos;
 		if (count < 0 || count > r.available() / 4) return fail("invalid hint count");
@@ -1104,6 +1101,9 @@ class AnalysisWireReader {
 		}
 		file.setHints(count, copyFrom(start, 64));
 	}
+	// A sparse type-target map. Every key must begin a recorded use or
+	// declaration name, strictly in source order. Bounds apply even to a
+	// no-parse snapshot; no index can escape the declaration table.
 	def readTypeTargets(file: AnalysisSnapshotFile, declarations: Array<AnalysisDeclaration>) -> AnalysisSnapshotTypeTargets {
 		var count = r.read_sleb32(), start = r.pos;
 		if (count < 0 || count > r.available() / 2) {
