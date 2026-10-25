@@ -247,25 +247,34 @@ def expectError(t: Tester, a: ProgramAnalysis, kind: string) {
 	for (d in a.diagnostics) if (Strings.equal(d.kind, kind)) return;
 	t.fail1("no %s reported", kind);
 }
-// Verification reports inheritance cycles, and the snapshot can hold them:
-// each class of a cycle gives the others, never itself, and the search ends.
-// A class that extends itself has no base.
+// Verification reports inheritance cycles, which keep their diagnostics: the
+// worker sends no parent of a class on a cycle, which the reader would
+// reject, so the result decodes and each gives no implementations, or only
+// a class that extends one from outside. A class that extends itself has no
+// base.
 def inheritance_cycles(t: Tester) {
 	var text = "class P extends Q {\n\tdef m() { }\n}\nclass Q extends R {\n\tdef m() { }\n}\nclass R extends P {\n\tdef m() { }\n}\nclass S extends S {\n\tdef m() { }\n}\nclass Tail extends P { }\n";
 	var sources = [AnalysisSource.new("cycle.v3", text)], a = analyze(t, sources, [], false);
 	expectError(t, a, "InheritanceError");
 	var s = decode(t, a, sources, null);
 	if (s == null) return;
-	var p = (0, "class P", 6), q = (0, "class Q", 6), r = (0, "class R", 6), tail = (0, "class Tail", 6);
-	expect(t, s, sources, 0, "class P", 6, AnalysisDeclKind.CLASS, [q, r, tail]);
-	expect(t, s, sources, 0, "class Q", 6, AnalysisDeclKind.CLASS, [p, r, tail]);
-	expect(t, s, sources, 0, "extends P", 8, AnalysisDeclKind.CLASS, [q, r, tail]);
+	var tail = (0, "class Tail", 6);
+	expect(t, s, sources, 0, "class P", 6, AnalysisDeclKind.CLASS, [tail]);
+	expect(t, s, sources, 0, "class Q", 6, AnalysisDeclKind.CLASS, []);
+	expect(t, s, sources, 0, "class R", 6, AnalysisDeclKind.CLASS, []);
+	expect(t, s, sources, 0, "extends P", 8, AnalysisDeclKind.CLASS, [tail]);
 	expect(t, s, sources, 0, "class S", 6, AnalysisDeclKind.CLASS, []);
 	expect(t, s, sources, 0, "class Tail", 6, AnalysisDeclKind.CLASS, []);
-	for (use in ["def m() { }\n}\nclass Q", "def m() { }\n}\nclass S", "def m() { }\n}\nclass Tail"]) {
-		var d = select(t, s, sources, 0, use, 4);
-		if (d != null) s.implementations(d);
+	for (use in ["def m() { }\n}\nclass Q", "def m() { }\n}\nclass R", "def m() { }\n}\nclass S", "def m() { }\n}\nclass Tail"]) {
+		expect(t, s, sources, 0, use, 4, AnalysisDeclKind.METHOD, []);
 	}
+	// Two classes that extend each other, as the smallest cycle.
+	var pair = [AnalysisSource.new("pair.v3", "class A extends B {\n\tdef m() { }\n}\nclass B extends A {\n\tdef m() { }\n}\n")];
+	var b = analyze(t, pair, [], false);
+	expectError(t, b, "InheritanceError");
+	s = decode(t, b, pair, null);
+	if (s == null) return;
+	for (use in ["class A", "class B"]) expect(t, s, pair, 0, use, 6, AnalysisDeclKind.CLASS, []);
 }
 // A library's classes in the program count as the program's own. The
 // program is every file of lib/util and one of its own, whose class extends

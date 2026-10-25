@@ -23,7 +23,8 @@ B = ('component C {\n'
      '/* é𝄞\t */ class Circle extends Shape {\n'
      '\tdef area() -> int { return 2; }\n'
      '}\n')
-# Builtin types where a type starts, and builtins used as values.
+# Builtin types where a type starts, builtins used as values, and an
+# inheritance cycle, which verification reports.
 C = ('component D {\n'
      '\tvar a: Array<int>;\n'
      '\tvar u: u32;\n'
@@ -32,7 +33,10 @@ C = ('component D {\n'
      '\t\tvar b = Array<bool>.new(1);\n'
      '\t\treturn int.max + a.length + b.length;\n'
      '\t}\n'
-     '}\n')
+     '}\n'
+     'class P extends Q { }\n'
+     'class Q extends P { }\n'
+     'class Tail extends P { }\n')
 # Builtin types that only read-only arrays add, in a project that sets them,
 # where the program verifies.
 R = 'component R { var a: array<int>; var r: range<int>; }\n'
@@ -118,6 +122,15 @@ def run(exe, root):
                              ('Array<bool>', 0), ('Array<bool>', 6), ('int.max', 0), ('int.max', 4)):
             assert query(s, c, C, needle, skip) == [], needle
         assert query(s, c, C, 'Missing', 2) is None
+        # The cycle keeps its diagnostic, and the worker's result, which
+        # sends no parent of a class on the cycle, is accepted: the classes
+        # on it give only a class that extends one from outside.
+        published = [m['params'] for d, m in s.transcript if d == 'recv' and m.get('method') == 'textDocument/publishDiagnostics'
+                     and m['params']['uri'] == c.as_uri()]
+        assert published and any(d['code'] == 'InheritanceError' for d in published[-1]['diagnostics']), published
+        assert query(s, c, C, 'class P', 6) == [location(c, C, 'class Tail', 'Tail')]
+        assert query(s, c, C, 'class Q', 6) == []
+        assert 'malformed' not in s.logs(), s.logs()
         # Nothing selected: a comment.
         assert query(s, b, B, 'é𝄞\t */ class Circle', 1) is None
         # A stale snapshot with an analysis pending waits for the new one.

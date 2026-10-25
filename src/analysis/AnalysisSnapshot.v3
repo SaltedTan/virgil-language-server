@@ -54,8 +54,8 @@ class AnalysisSnapshot {
 	private var signatures: AnalysisSnapshotSignatures;
 	// Each declaration's parent, as its index in {declarations} plus one, or
 	// zero, or null if none has one: a class's or a variant case's base, or
-	// the method that a method overrides. The decoder checked their kinds,
-	// and the declaration charge covers this int for each declaration. See
+	// the method that a method overrides. The decoder checked their kinds
+	// and that they form no cycle, and the declaration charge covers this int for each declaration. See
 	// docs/architecture.md#implementation.
 	private var parents: Array<int>;
 	// The reverse of {parents}, which the first implementations query builds
@@ -410,9 +410,9 @@ class AnalysisSnapshot {
 	// by offset, each location once and never {decl}'s own. For a class,
 	// these are the classes that extend it and, for a variant, its cases; for
 	// a method, the methods that override it. Any other declaration has none.
-	// Each declaration has one parent, so the search reaches a declaration
-	// twice only through a cycle back to {decl}, which it never adds. The
-	// first query builds the reverse index. See
+	// Each declaration has one parent, and the decoder rejects cycles, so
+	// the search reaches each declaration once, and never {decl}. The first
+	// query builds the reverse index. See
 	// docs/architecture.md#implementation.
 	def implementations(decl: AnalysisDeclaration) -> Array<AnalysisDeclaration> {
 		if (parents == null || decl == null) return [];
@@ -429,9 +429,7 @@ class AnalysisSnapshot {
 		var found = Vector<int>.new();
 		for (k = -1; k < found.length; k++) {
 			var code = if(k < 0, d, found[k]) + 1;
-			for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) {
-				if (children[j] != d) found.put(children[j]);
-			}
+			for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) found.put(children[j]);
 		}
 		var located = Vector<int>.new();
 		for (k < found.length) {
