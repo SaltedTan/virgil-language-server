@@ -148,7 +148,7 @@ jobs:
         run: test/release/run.sh --archive "$ARCHIVE"
       - name: Check that make test tested the packaged executables
         # The build is deterministic, so the package's fresh build must match.
-        # On a pull request, the executables CI's make test tested must match.
+        # For pull-request test coverage, see docs/releasing.md#dry-runs.
         run: |
           mkdir "$RUNNER_TEMP/archive"
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/archive"
