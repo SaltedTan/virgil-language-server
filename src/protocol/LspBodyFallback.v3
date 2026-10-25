@@ -1,0 +1,65 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// One common-prefix/common-suffix interval, strictly within a parsed method
+// or constructor's braces. All offsets are bytes, ends exclusive. The whole
+// body, including its braces, is excluded from semantic answers.
+class LspBodyFallback(begin: int, effectiveEnd: int, currentEnd: int,
+		bodyBegin: int, effectiveBodyEnd: int) {
+	def delta = currentEnd - effectiveEnd;
+	def currentBodyEnd = effectiveBodyEnd + delta;
+	def toEffective(offset: int) -> int {
+		if (offset >= bodyBegin && offset < currentBodyEnd) return -1;
+		return if(offset >= currentEnd, offset - delta, offset);
+	}
+	def toCurrent(offset: int) -> int {
+		if (offset >= bodyBegin && offset < effectiveBodyEnd) return -1;
+		return if(offset >= effectiveEnd, offset + delta, offset);
+	}
+	// A nonempty range must not touch the body; a point uses the same
+	// half-open containment rule as a query. Endpoints alone are insufficient
+	// for a diagnostic spanning the entire body.
+	def maps(begin: int, end: int) -> bool {
+		return begin >= 0 && end >= begin &&
+			if(begin == end, toCurrent(begin) >= 0, end <= bodyBegin || begin >= effectiveBodyEnd);
+	}
+}
+
+component LspBodyEligibility {
+	// Bodies are [opening brace, byte after closing brace), obtained from
+	// the server's parse of the last parseable text (AeneasAdapter.methodBodies).
+	// A null result carries the reason; no text or history is retained here.
+	def compare(effective: Array<byte>, current: Array<byte>, bodies: Array<(int, int)>) -> (LspBodyFallback, string) {
+		var begin = 0, oldEnd = effective.length, newEnd = current.length;
+		while (begin < oldEnd && begin < newEnd && effective[begin] == current[begin]) begin++;
+		if (begin == oldEnd && begin == newEnd) return (null, "unchanged text");
+		while (oldEnd > begin && newEnd > begin && effective[oldEnd - 1] == current[newEnd - 1]) {
+			oldEnd--;
+			newEnd--;
+		}
+		var bodyBegin = -1, bodyEnd = -1;
+		for (body in bodies) {
+			if (body.0 < begin && oldEnd <= body.1 - 1) {
+				bodyBegin = body.0;
+				bodyEnd = body.1;
+				break;
+			}
+		}
+		if (bodyBegin < 0) return (null, "change is not strictly inside one method or constructor body");
+		if (!code(LspCursorScanner.new(effective).scan(begin).place) ||
+			!code(LspCursorScanner.new(current).scan(begin).place)) return (null, "change starts in a literal or comment");
+		if (!contained(effective, begin, oldEnd)) return (null, "cached interval is not lexically and structurally contained");
+		if (!contained(current, begin, newEnd)) return (null, "current interval is not lexically and structurally contained");
+		return (LspBodyFallback.new(begin, oldEnd, newEnd, bodyBegin, bodyEnd), null);
+	}
+	private def code(place: LspCursorPlace) -> bool {
+		// NUMBER is completion's cursor classification, not a lexical region
+		// hiding braces. Its final byte is still ordinary code for this check.
+		return place == LspCursorPlace.CODE || place == LspCursorPlace.NUMBER;
+	}
+	private def contained(text: Array<byte>, begin: int, end: int) -> bool {
+		var scan = LspCursorScanner.new(text);
+		scan.braceFrom = begin;
+		return code(scan.scan(end).place) && !scan.unterminatedRegion && scan.braceDepth == 0 && scan.braceMinimum == 0;
+	}
+}

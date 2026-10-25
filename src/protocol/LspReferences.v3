@@ -41,7 +41,7 @@ component LspReferences {
 	// except the uses that do not spell the name; or RequestFailed if there
 	// are more than {limit}, or if their encoded JSON needs more than
 	// {maxBytes}. The locations in a file whose bytes are no longer the ones
-	// analyzed are left out, and only those.
+	// analyzed, or inside a substituted body, are left out.
 	def answer(at: LspSnapshotPosition, offset: int, includeDeclaration: bool, limit: int,
 			maxBytes: int) -> (bool, JsonRpcReply) {
 		var s = at.snapshot, decl = declaration(at, offset);
@@ -54,12 +54,13 @@ component LspReferences {
 		for (file in s.references(decl, includeDeclaration)) {
 			var target = at.target(file.0), j = target.0, text = target.1;
 			if (j < 0) continue;
-			var map = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16)), spans = file.1;
+			var map = at.positionMap(j, text), spans = file.1;
 			// Every Location of a file repeats that file's URI string, which they
 			// share, and encoding it repeats its bytes.
 			var locationBytes = JsonRpcJson.stringBytes(s.documentVersions[j].uri) + LOCATION_BYTES;
 			for (k = 0; k < spans.length; k += 2) {
 				var begin = spans[k], end = spans[k + 1];
+				if (!at.maps(j, begin, end)) continue;
 				// "this" and a default ".new" resolve to their class, but do
 				// not name it.
 				if (!names(text, begin, end, name)) continue;

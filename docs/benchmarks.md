@@ -689,8 +689,9 @@ varies before any budget is proposed.
 [`scripts/bench-tolerance.py`](../scripts/bench-tolerance.py) measures the semantic
 answers an editor receives while another file fails to parse. It imports the
 existing benchmark helpers and `Session`; a separate command keeps the successful
-operation timings and output of `bench-lsp.py` unchanged. No server fallback is
-implemented. Run both modes and all states with:
+operation timings and output of `bench-lsp.py` unchanged. The baseline below
+predates [method-body fallback](architecture.md#method-body-fallback); its
+comparison follows the original results. Run both modes and all states with:
 
 ```sh
 mkdir -p build/bench-results
@@ -731,9 +732,10 @@ warm and cold modes:
 
 Warm sessions open and analyze the predecessor, then send the current text as an
 unsaved full-text `didChange`. Cold sessions open the current text immediately;
-they have no analyzed predecessor, although the disposable disk copy ordinarily
-still contains the original program. Closed-file controls instead put the broken
-text on disk. Each replay state gets its own session, seeded from the sequence's
+they have no explicitly warmed predecessor, although the disposable disk copy
+ordinarily still contains the original program. Sequential opens can capture
+that disk predecessor for a later-opened file during an earlier analysis.
+Closed-file controls instead put the broken text on disk. Each replay state gets its own session, seeded from the sequence's
 history; timing does not model user think time.
 
 Definition, plaintext hover, and references with declarations are queried at a
@@ -752,21 +754,28 @@ program with the intended semantic edit retained and only the syntax error
 removed. JSON retains these answers, source overlays, configuration, and each
 state's answers and scores. Disposable URI prefixes become `project:///`; target
 paths and every range remain significant. Hover text and ranges compare exactly;
-reference and diagnostic sets ignore ordering only. `available` counts a nonempty
+reference and diagnostic items compare exactly, ignoring set ordering. `available` counts a nonempty
 answer or an oracle-matching legitimate empty answer. `correct` counts an exact
 match. Missing a nonempty oracle is unavailable and incorrect, but is not a
-`wrong` binding. A nonempty mismatch is wrong, including a partial reference or
-diagnostic set.
+`wrong` binding. For references and diagnostics, a nonempty proper subset of the
+oracle is `partial`; a result containing any foreign item is `wrong`. Duplicate
+counts are preserved. Definition and hover remain single exact answers. The
+negative controls also count permitted empty suppression as `correct`, while
+`matches_oracle` always records exact equality.
 
-Three negative controls delete a declaration, change its signature, or introduce
-a shadowing local, alongside a syntax error. Their policy accepts suppression or
+Five negative controls delete a declaration, change its signature, introduce
+a shadowing local, insert braces inside a body that move an unchanged later
+method to another component, or replace a body whose type errors contributed
+to the error limit, alongside a syntax error. Their policy accepts suppression or
 the current program's oracle. The driver separately feeds each predecessor's
 captured answer to the scorer and requires a wrong verdict. The
 [scoring tests](../test/benchmarks/test_tolerance.py) repeat this with
 [protocol captures](../test/benchmarks/tolerance-negative-oracles.json), including
-the signature change whose identifier ranges still match. No permissive server
-fallback is built. Fifteen extra states cover three variants each of two broken
-files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
+the signature change whose identifier ranges still match. These controls guard
+against unrestricted substitution and foreign error-limit notices. The error-limit
+control uses 13 old body errors because the benchmark observer contributes
+another error before the intact caller reaches 15. Fifteen extra states cover
+three variants each of two broken files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
 non-ASCII before the query and one CRLF case), closed-file disk changes with
 watched-file notifications, and project-file changes (remove/add membership and
 change a language flag). The pinned compiler rejects CRLF, so that case uses an
@@ -779,7 +788,7 @@ Edit kinds are `body` (an expression or statement inside a routine or member
 body), `header` (a condition or for header, or a declaration header such as a
 parameter list, return type, or variable type), and `whole_file` (truncation).
 Each fixture's kind is pinned in the script's classification table.
-`summary.features` splits availability, correctness, exact matches, and wrong
+`summary.features` splits availability, correctness, partial and missing answers, exact matches, and wrong
 answers by suite, mode, kind, and feature;
 `summary.latency_ms` reports p50/p95 by suite, mode, and query kind. Definition is
 queried first and includes analysis waiting; later requests generally use the
@@ -790,8 +799,8 @@ the existing phase, allocation, and heap counters. RSS is sampled before shutdow
 These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
-`make test` runs scoring and cleanup regression checks and a five-state smoke
-replay (two small repair states and all three negative controls, in both modes).
+`make test` runs scoring and cleanup regression checks and a seven-state smoke
+replay (two small repair states and all five negative controls, in both modes).
 The smoke run takes about 0.2 seconds on the reference host. The full suite
 remains opt-in. Run these checks separately with:
 
@@ -808,11 +817,11 @@ Measured on 2026-10-25 at `220733d` (server sources unchanged from `6406edc`) an
 described above. The build's `-dirty` marker reflects pending documentation only.
 Other work ran on this machine. Warm and cold counts were identical:
 
-| Corpus (per mode) | States with all four features | Correct definition / hover / reference answers, each | Correct diagnostic sets | Wrong answers |
-| --- | ---: | ---: | ---: | ---: |
-| Repair | 6/45 | 15/87 | 6/45 | 0 |
-| Replay | 9/140 | 35/540 | 9/140 | 0 |
-| Combined | 15/185 | 50/627 | 15/185 | 0 |
+| Corpus (per mode) | States with all four features | Correct definition / hover / reference answers, each | Partial references | Correct diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair | 6/45 | 15/87 | 0 | 6/45 | 0 | 0 |
+| Replay | 9/140 | 35/540 | 0 | 9/140 | 0 | 0 |
+| Combined | 15/185 | 50/627 | 0 | 15/185 | 0 | 0 |
 
 The same all-feature state counts split by edit kind follow, for either mode:
 
@@ -826,6 +835,12 @@ suppression policy in both modes and rejected the injected predecessor answer.
 The fifteen extra states produced no wrong answers. This establishes the current
 low-availability baseline; these deterministic cases do not estimate availability
 across arbitrary editing sessions.
+
+The full base rerun for #243 used `e3dbd69`, CPU 4, and the amended scorer
+and fourth negative control. All 408 state/mode records completed in 200.26
+seconds with zero partial and zero wrong answers. Every answer and legacy
+score matched the original 406 records plus the separately captured boundary
+control; the primary counts above are unchanged.
 
 The full runs took 212.93 and 210.61 seconds for 406 state/mode records each,
 including the three negative controls and fifteen extra cases. Every per-state
@@ -847,3 +862,201 @@ These runs used server SHA-256
 `171cde7f9cf9885bfd12d6f3fc7ce7baadf8267b3d4c0cfccd17aae3416d4111`
 and worker SHA-256
 `f658d6d1f707e9a693fc09718f04af896b240d3f200c30cfe3b72fefef1f75be`.
+
+### Method-body fallback comparison
+
+The #243 implementation at `aaa9b3d` is compared with the base executable at
+`e3dbd69`, both using the pinned compiler, enabled probes, and the default
+384 MiB worker heap. Pending documentation accounts for the after build's
+`-dirty` marker. The tolerance runs use CPU 4; successful-operation comparisons
+use CPU 5. Other agents were active on this shared host.
+
+Eligibility was classified independently of returned answers by a native probe
+calling the production `AeneasAdapter.methodBodies` and `LspBodyEligibility`
+functions on every predecessor/current pair. A parseable current state needs no
+fallback and is counted ineligible for substitution. The original corpus's
+`header` label includes control headers and local types inside method bodies:
+four repair states in that category satisfy containment, while all declaration
+headers remain ineligible. Unbalanced intervals, including the Aeneas condition
+and for-header replays, remain ineligible.
+
+The table counts states retaining **all four features**, allowing correct plus
+partial reference and diagnostic sets. Each cell gives before → after counts;
+the denominator is the number of states in that eligibility group.
+
+| Corpus | Edit kind | Eligibility | Warm before → after | Cold before → after |
+| --- | --- | --- | ---: | ---: |
+| Repair | Body | Eligible | 0 → 26 / 26 | 0 → 0 / 26 |
+| Repair | Body | Ineligible | 6 → 6 / 11 | 6 → 6 / 11 |
+| Repair | Header | Eligible | 0 → 4 / 4 | 0 → 0 / 4 |
+| Repair | Header | Ineligible | 0 → 0 / 2 | 0 → 0 / 2 |
+| Repair | Whole file | Ineligible | 0 → 0 / 2 | 0 → 0 / 2 |
+| Replay | Body | Eligible | 0 → 71 / 71 | 0 → 0 / 71 |
+| Replay | Body | Ineligible | 7 → 7 / 7 | 7 → 7 / 7 |
+| Replay | Header | Ineligible | 2 → 2 / 62 | 2 → 2 / 62 |
+| Combined | All | All | 15 → 116 / 185 | 15 → 15 / 185 |
+
+All 97 eligible warm **body** states retain definition, hover, references, and
+independent semantic diagnostics (100% for each feature). Their 309 definition
+answers and 309 hover answers are exact. References have 283 exact and 26 partial answers;
+the partial lists omit only uses inside excluded bodies. Including the four
+eligible control-header states gives 101/101 retained states. No ineligible
+primary state gains a substituted answer.
+
+Per-feature primary counts after fallback follow. Before counts are those in
+[Tolerance baseline](#tolerance-baseline); all before partial counts are zero.
+
+| Corpus / mode | Exact definition | Exact hover | Exact references | Partial references | Exact diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair / warm | 66/87 | 66/87 | 65/87 | 1 | 36/45 | 0 | 0 |
+| Repair / cold | 15/87 | 15/87 | 15/87 | 0 | 6/45 | 0 | 0 |
+| Replay / warm | 300/540 | 300/540 | 274/540 | 26 | 80/140 | 0 | 0 |
+| Replay / cold | 35/540 | 35/540 | 35/540 | 0 | 9/140 | 0 | 0 |
+
+All four negative controls pass in both modes and reject the injected unsafe
+predecessor answer. The shadowing-local control has one partial warm diagnostic
+set: the independent observer error remains, while errors inside the excluded
+body are omitted. There are **zero wrong answers** across all 408 mode records,
+including the fifteen extra states, and zero worker replacements. Every cold
+answer equals its base answer. The warm run has 27 partial reference answers
+in 27 primary states and the one partial diagnostic set above. These are safe
+subsets under the amended scoring rule.
+
+Four cold records have a substitution for a later-opened file: the first open
+started an analysis that captured that file's parseable disk text before its
+broken overlay arrived. This is a valid per-file cache seed even though another
+input failed to parse. That other broken file still prevents semantics, and all
+cold answers remain unchanged. A fresh file with no such analyzed predecessor
+cannot use fallback.
+
+The protocol regression also verifies exactly one completed analysis for a
+contained changed generation, no further analysis for its read-only requests
+or rename refusal, original-text syntax diagnostics, mapped same-file and
+cross-file results, and suppression of an error-limit notice whose last error
+falls inside the excluded body.
+
+Successful-operation runs alternate the two executables over three process
+blocks, two warmups, and five measured operations per block (15 samples per
+build and project). Every semantic check passes. All 33 latency comparisons
+have overlapping p10–p90 intervals; this shared-host run shows no change beyond
+its noise. Worker allocation, collection counts, and live-after-GC bytes match
+exactly for fresh and reused successful analyses in all three projects. Aeneas results are **median (p10–p90), milliseconds**:
+
+| Successful operation | Before | After |
+| --- | ---: | ---: |
+| Fresh analysis | 493.586 (479.631–500.877) | 480.834 (338.727–485.906) |
+| Reused analysis | 460.280 (445.490–488.023) | 452.897 (317.190–495.707) |
+| Definition | 2.725 (1.674–3.009) | 2.734 (1.811–2.973) |
+| Hover | 2.826 (1.793–22.675) | 2.755 (1.746–2.995) |
+| References | 3.609 (2.245–3.905) | 3.699 (2.128–3.917) |
+| Semantic publication | 659.010 (508.385–675.097) | 687.098 (674.583–703.194) |
+
+The base tolerance run took 200.26 seconds and the final after run 253.41
+seconds, including all warm/cold oracle captures and controls. Broken programs
+in the base stop at parsing, while eligible warm states now verify and collect
+semantics, so those whole-suite times compare different work. No macOS timing
+run or additional editor-specific check was added.
+
+The base executable was built at `e3dbd69` and preserved separately before
+implementation. The after build and measurements used these commands, with
+`evidence` set to the task's scratch directory (any writable directory works):
+
+```sh
+make BUILD=build/body-fallback-final BENCH=1 all bench-metadata
+python3 scripts/bench-tolerance.py --exe build/body-fallback-base/virgil-lsp --cpu 4 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-base-partial.json"
+python3 scripts/bench-tolerance.py --exe build/body-fallback-final/virgil-lsp --cpu 4 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-final.json"
+python3 scripts/bench-lsp.py --exe build/body-fallback-base/virgil-lsp \
+  --exe build/body-fallback-final/virgil-lsp --cpu 5 \
+  --output "$evidence/lsp-final-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Before: `5d5a14677d9f84e446e259bbf182710f1dd60cbf7867bb681c1f8608f599ab5d`,
+  `99bf5afed7be95785904c8a5cb7ec71fa5725e0c64f16153e90b297e040ac80f`.
+- After: `40effe7c55866787eba8670498188abbf4e67df98e153ce1fefaf493d89f8fe0`,
+  `4f94b5d4b1cb68b589e7176457dadac81cbf184b7a58a525a6f90805dd6c5dc5`.
+
+The round-2 cache and error-limit fixes were rerun with probes on CPU 6, using
+`make BUILD=build/body-fallback-r2 BENCH=1 all bench-metadata` and the same
+tolerance command with that executable. The fifth negative control adds two
+mode records: all 410 complete in 224.97 seconds, with zero wrong answers,
+27 partial reference answers, one partial diagnostic set, and zero worker
+replacements. All 408 answers shared with the preceding review run are
+identical, so the primary counts above remain unchanged. The new control's
+warm answers exactly match its current-program oracle, including diagnostics;
+its cold answers are permitted suppression. All five controls reject their
+injected unsafe predecessor answers.
+
+#### Rebase and integration check (2026-10-25)
+
+After rebasing onto main `eec5004` (wire version 12), the implementation at
+`6152ea61` rejects unterminated lexical regions even when the cursor scanner
+recovers before the changed interval ends. The new unit and stdio regressions
+cover that rule, mapped type definitions with growing and shrinking edits,
+excluded queries and type targets, and retained Read, Write, and Text highlight
+kinds. ADR-0008 is accepted.
+
+The full paired tolerance runs compare main's sources with `6152ea61`, built
+in this checkout as `build/r3base` and `build/r3next` with `BENCH=1` and the
+384 MiB worker heap. Source hashes were checked against main and against the
+restored implementation. Both builds have identical generated BuildInfo text;
+its revision names the implementation checkout with pending documentation,
+so the source hashes identify the baseline. The pinned compiler remains
+`7cf038fc`. The run held the shared benchmark lock after `pgrep -af bench-`
+found no running benchmark, and `taskset` pinned the driver and children to
+CPU 12 on the same i7-14700KF Linux host. Editor tests had finished.
+
+Both runs complete all 410 records with **zero wrong answers and zero worker
+replacements**. All 205 cold answers equal main's, and every after answer equals
+round 2's. Independent eligibility classification still finds 97 eligible warm
+body states and four eligible control-header states; all retain the four
+measured features. The 27 partial reference lists, one partial diagnostic set,
+and five unsafe controls are unchanged. The primary counts above therefore
+still hold. The baseline takes 209.00 seconds and the implementation 229.99
+seconds; these whole-suite times still compare different work because eligible
+broken inputs now undergo verification.
+
+The successful-operation comparison uses six alternating process blocks,
+two warmups, and five measured operations per block: 30 samples per build,
+project, and operation. All semantic checks pass, all 33 latency p10–p90
+intervals overlap, and no samples are removed. Worker allocation, GC counts,
+and live-after-GC distributions match exactly for fresh and reused analyses in
+all three projects. These measurements establish no latency regression.
+Aeneas results are **median (p10–p90), milliseconds**:
+
+| Successful operation | Main | Rebased fallback |
+| --- | ---: | ---: |
+| Fresh analysis | 338.629 (333.466–342.804) | 335.481 (326.972–339.442) |
+| Reused analysis | 305.593 (279.518–329.595) | 302.592 (284.682–327.940) |
+| Definition | 1.831 (1.658–19.066) | 1.674 (1.547–1.827) |
+| Hover | 1.746 (1.599–1.857) | 1.725 (1.549–1.896) |
+| References | 2.388 (2.185–2.501) | 2.309 (2.183–2.446) |
+| Completion cache hit | 2.676 (2.606–3.340) | 2.637 (2.597–2.858) |
+| Completion cache miss | 132.413 (130.849–149.593) | 132.818 (131.687–146.218) |
+| Semantic publication | 513.689 (490.185–533.547) | 534.480 (508.376–539.468) |
+
+The measured commands, using the paired builds above and a writable `evidence`
+directory, are:
+
+```sh
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-tolerance.py --exe build/r3base/virgil-lsp --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-base.json"
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-tolerance.py --exe build/r3next/virgil-lsp --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-next.json"
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-lsp.py --exe build/r3base/virgil-lsp \
+  --exe build/r3next/virgil-lsp --cpu 12 --blocks 6 --warmups 2 --operations 5 \
+  --require-probes --output "$evidence/lsp-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Main sources: `c532424aeb5a4c1c4b6f3f40419ae709553eed963110dbab65cf1a6a2cd13e9e`,
+  `0892797acc6551aaed67992a209875c1dc38f05985b2daf3a3393ae362d0ba83`.
+- Rebased fallback: `1fe1db517385d2af97e5c20809f6a76c220ffa05f3880afdf088d5a2954cd21a`,
+  `f4be6e6bc739289eed7a89c8078b2edd26a0ee7f6261543e4e7501e9f234fab5`.

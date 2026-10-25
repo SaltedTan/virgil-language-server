@@ -1,8 +1,8 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// An automatic analysis the supervisor is running. The sources were dropped
-// once the worker request held a copy; {inputs} keeps their provenance.
+// An automatic analysis the supervisor is running. Inputs keep bounded source
+// bytes until completion so the last-parseable cache can record exact inputs.
 class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) {
 	// The listener of {LspSemanticDiagnostics.whenAnalyzed}, or null.
 	var listener: LspSnapshotWaiters;
@@ -31,6 +31,7 @@ class LspAnalysisJob(begin: AnalysisSupervisor -> AnalysisOutcome, complete: Ana
 // docs/architecture.md#semantic-diagnostics and docs/architecture.md#rename.
 class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, supervisor: AnalysisSupervisor,
 		lists: LspDiagnosticLists, send: Array<byte> -> void) {
+	var parser: LspParserDiagnostics;
 	// See "Semantic diagnostics" in docs/architecture.md for the measurements.
 	def DEBOUNCE_MS = 200;
 	var warn: string -> void;
@@ -228,11 +229,14 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		var captured = LspAnalysisCapture.capture(store, keys, true);
 		if (captured.1 != null) return failed(ctx, captured.1);
 		var inputs = captured.0;
+		if (parser != null) {
+			var reason = inputs.substitute(store, ctx, projects.parseableText, parser);
+			if (reason != null) return failed(ctx, reason);
+		}
 		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
 			return failed(ctx, "retained analysis snapshots exceed the workspace budget");
 		}
 		var outcome = supervisor.begin(inputs.sources, ctx.definition.compilerArgs, AnalysisWire.WANT_OCCURRENCES);
-		inputs.sources = null;
 		match (outcome) {
 			Failed(failure, reason) => failed(ctx, reason);
 			_ => running = LspSemanticRun.new(ctx, keys, inputs);
@@ -259,6 +263,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 				snapshot.recordDocumentVersions(run.inputs.versions);
 				// Notice a configuration replaced on disk before trusting the result.
 				projects.refresh();
+				run.inputs.cacheCompleted(ctx, projects.parseableText, snapshot);
 				snapshot.recordProject(ctx);
 				ctx.snapshot = snapshot;
 				failureReported = false;
@@ -281,27 +286,36 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		var found = Array<Vector<LspDiagnostic>>.new(paths.length);
 		var maps = Array<PositionMap>.new(paths.length);
 		var last = -1, lastDiagnostic: AnalysisDiagnostic;
+		var excludedError = false;
 		for (d in snapshot.diagnostics) {
 			if (d.path == null || !index.has(d.path)) {
 				log(warn, Strings.format2("project %s reported a diagnostic without a source document: %s", ctx.definition.name, d.toString()));
 				continue;
 			}
 			var i = index[d.path];
+			var mapped = snapshot.currentRange(i, d.beginOffset, d.endOffset);
+			if (mapped.0 < 0) excludedError = true;
 			if (owners[i] != ctx) continue;
+			last = i;
+			lastDiagnostic = d;
+			if (mapped.0 < 0) continue;
 			if (maps[i] == null) {
-				var text = LspAnalysisCapture.analyzedText(store, snapshot, i);
+				var text = LspAnalysisCapture.currentText(store, snapshot, i, LspAnalysisCapture.analyzedText(store, snapshot, i));
 				if (text == null) return discard(ctx, snapshot, Strings.format1("%s changed on disk after its sources were captured", run.keys[i]));
 				maps[i] = PositionMap.new(text, PositionEncoding.UTF16);
 				found[i] = Vector<LspDiagnostic>.new();
 			}
-			found[i].put(LspDiagnostics.compiler(maps[i], d));
-			last = i;
-			lastDiagnostic = d;
+			found[i].put(LspDiagnostics.make(maps[i], mapped.0, mapped.1, 1, "aeneas", d.kind, Strings.nonnull(d.message)));
 		}
 		// At its error limit Aeneas stops checking, hiding errors in later
 		// declarations and files; say so where the last reported error is.
-		if (last >= 0 && snapshot.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS) {
-			found[last].put(LspDiagnostics.make(maps[last], lastDiagnostic.beginOffset, lastDiagnostic.endOffset, 3, "virgil-lsp", "ErrorLimit",
+		// Excluded errors can cause this limit even when the last error is
+		// visible. Omitting its notice is safe; publishing a foreign one is not.
+		if (!excludedError && last >= 0 && snapshot.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS) {
+			var mapped = snapshot.currentRange(last, lastDiagnostic.beginOffset, lastDiagnostic.endOffset);
+			// The notice belongs at the actual last error, not at an earlier
+			// visible error when the last one is in an excluded body.
+			if (mapped.0 >= 0) found[last].put(LspDiagnostics.make(maps[last], mapped.0, mapped.1, 3, "virgil-lsp", "ErrorLimit",
 				Strings.format1("Aeneas stops checking after %d errors, so errors elsewhere in this program may be missing.", AeneasAdapter.PROGRAM_MAX_ERRORS)));
 		}
 		var keep = OrderedStringMap<bool>.new();

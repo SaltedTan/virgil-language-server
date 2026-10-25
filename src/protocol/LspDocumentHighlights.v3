@@ -22,6 +22,7 @@ component LspDocumentHighlights {
 			var spans = file.1;
 			for (k = 0; k < spans.length; k += 2) {
 				var begin = spans[k], end = spans[k + 1];
+				if (!at.maps(at.index, begin, end)) continue;
 				if (!LspReferences.names(at.text, begin, end, decl.name)) continue;
 				if (highlights.length == limit) {
 					return (true, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED,

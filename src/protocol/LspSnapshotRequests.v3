@@ -17,7 +17,8 @@ class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: str
 	}
 }
 // A request's document in a current snapshot, for an answer function: file
-// {index} of {snapshot}, whose analyzed text is {text}, which {map} converts.
+// {index} of {snapshot}, whose effective analyzed text is {text}. The position
+// map converts current text; ranges pass through the snapshot's mapping first.
 class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, index: int,
 		text: Array<byte>, map: PositionMap) {
 	def path() -> string {
@@ -40,16 +41,29 @@ class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, inde
 	def analyzedText(j: int) -> Array<byte> {
 		return if(j == index, text, LspAnalysisCapture.analyzedText(store, snapshot, j));
 	}
-	// The Location of the bytes from {begin} to {end} in the snapshot's file
-	// {j}, whose text {m} converts.
+	def positionMap(j: int, analyzed: Array<byte>) -> PositionMap {
+		return if(j == index, map, PositionMap.new(LspAnalysisCapture.currentText(store, snapshot, j, analyzed), PositionEncoding.UTF16));
+	}
+	def maps(j: int, begin: int, end: int) -> bool {
+		return snapshot.currentRange(j, begin, end).0 >= 0;
+	}
+	// The snapshot's effective byte range is mapped before {m} converts current
+	// text to protocol positions. An excluded range has no Location.
 	def location(j: int, m: PositionMap, begin: int, end: int) -> JsonValue {
+		var span = snapshot.currentRange(j, begin, end);
+		if (span.0 < 0) return JsonValue.Null;
 		var location = Strings.newMap<JsonValue>();
 		location["uri"] = JsonValue.String(snapshot.documentVersions[j].uri);
-		location["range"] = range(m, begin, end);
+		location["range"] = rawRange(m, span.0, span.1);
 		return JsonValue.JObject(location);
 	}
-	// The LSP Range of the bytes from {begin} to {end} in the text {m} converts.
+	// As for {location}, {begin} and {end} are effective-text offsets, while
+	// {m} converts current text. An excluded range has no LSP Range.
 	def range(m: PositionMap, begin: int, end: int) -> JsonValue {
+		var span = snapshot.currentRange(index, begin, end);
+		return if(span.0 >= 0, rawRange(m, span.0, span.1), JsonValue.Null);
+	}
+	private def rawRange(m: PositionMap, begin: int, end: int) -> JsonValue {
 		var range = Strings.newMap<JsonValue>();
 		range["start"] = position(m.offsetToPosition(begin));
 		range["end"] = position(m.offsetToPosition(end));
@@ -345,13 +359,19 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		if (i < 0) return reject(failure, "the document is not part of the project's analysis");
 		var text = LspAnalysisCapture.analyzedText(store, s, i);
 		if (text == null) return reject(failure, "the analyzed text of the document is no longer available");
-		var map = PositionMap.new(text, PositionEncoding.UTF16), offset = map.positionToOffset(line, character);
+		var currentText = LspAnalysisCapture.currentText(store, s, i, text);
+		var map = PositionMap.new(currentText, PositionEncoding.UTF16), currentOffset = map.positionToOffset(line, character);
+		var offset = s.effectiveOffset(i, currentOffset);
+		if (offset < 0) return reject(failure, "the position is inside a method body excluded from the analysis");
 		var at = LspSnapshotPosition.new(store, s, i, text, map), found = lookup(at, offset);
 		// A cursor just past an identifier selects it. Something found at
 		// offset - 1 but not at {offset} ends exactly at {offset}, so only the
 		// identifier the cursor touches qualifies, and whatever contains
 		// {offset} always wins.
-		if (!found.0 && offset > 0) found = lookup(at, offset - 1);
+		if (!found.0 && currentOffset > 0) {
+			var before = s.effectiveOffset(i, currentOffset - 1);
+			if (before >= 0) found = lookup(at, before);
+		}
 		return if(found.0, found.1,
 			reject(failure, "there is no renameable name at this position (an operator, literal, comment, or whitespace)"));
 	}

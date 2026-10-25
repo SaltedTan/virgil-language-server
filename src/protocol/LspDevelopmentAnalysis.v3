@@ -5,9 +5,11 @@
 // No semantic diagnostic publication or LSP coordinate conversion: diagnostics
 // use the compiler's one-based coordinates, just as the development CLI does.
 class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSupervisor, send: Array<byte> -> void) {
+	var parser: LspParserDiagnostics;
 	private var pending: bool;
 	private var pendingId: JsonRpcId;
 	private var pendingVersions: Array<AnalysisDocumentVersion>;
+	private var pendingInputs: LspAnalysisInputs;
 	private var projects: WorkspaceProjects;
 	private var pendingProject: ProjectContext;
 	def withProjects(projects: WorkspaceProjects) -> this { this.projects = projects; }
@@ -55,6 +57,10 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		var captured = LspAnalysisCapture.capture(store, keys, pendingProject != null);
 		if (captured.1 != null) return invalid(captured.1);
 		var inputs = captured.0;
+		if (pendingProject != null && parser != null) {
+			var reason = inputs.substitute(store, pendingProject, projects.parseableText, parser);
+			if (reason != null) return invalid(reason);
+		}
 		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
 			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
 		// Explicit URIs form no project, so they use the default language options.
@@ -64,6 +70,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			Failed(failure, reason) => return workerError(reason);
 			_ => {
 				pendingVersions = inputs.versions;
+				pendingInputs = inputs;
 				return null;
 			}
 		}
@@ -82,6 +89,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 				snapshot.recordDocumentVersions(pendingVersions);
 				if (pendingProject != null) {
 					if (projects != null) projects.refresh();
+					pendingInputs.cacheCompleted(pendingProject, projects.parseableText, snapshot);
 					snapshot.recordProject(pendingProject);
 					pendingProject.snapshot = snapshot;
 				}
@@ -98,6 +106,7 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 		pending = false;
 		pendingId = JsonRpcId.Null;
 		pendingVersions = null;
+		pendingInputs = null;
 		pendingProject = null;
 		match (reply) {
 			Result(v) => send(JsonRpcMessage.Response(id, v).encode());
@@ -135,6 +144,15 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			item["uri"] = JsonValue.String(v.uri);
 			item["version"] = if(v.identity == null, JsonValue.Null, JsonValue.Int(v.reportedVersion(store)));
 			item["current"] = JsonValue.Bool(s.matchesProject() && v.matchesDocument(store));
+			if (v.substitution != null) {
+				var sub = Strings.newMap<JsonValue>(), m = v.substitution.mapping;
+				sub["begin"] = JsonValue.Int(m.begin);
+				sub["effectiveEnd"] = JsonValue.Int(m.effectiveEnd);
+				sub["currentEnd"] = JsonValue.Int(m.currentEnd);
+				sub["bodyBegin"] = JsonValue.Int(m.bodyBegin);
+				sub["bodyEnd"] = JsonValue.Int(m.currentBodyEnd);
+				item["substitution"] = JsonValue.JObject(sub);
+			}
 			versions[i] = JsonValue.JObject(item);
 		}
 		obj["documentVersions"] = JsonValue.JArray(versions);

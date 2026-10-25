@@ -11,5 +11,6 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0005](0005-project-file-format.md) | Project file format, version 1 | Accepted |
 | [0006](0006-incomplete-code-repair.md) | Semantic context for completion in incomplete code | Accepted |
 | [0007](0007-bundled-virgil-library.md) | Bundled Virgil library and root precedence | Accepted |
+| [0008](0008-method-body-fallback.md) | Reanalyze last-parseable text for contained method-body edits | Accepted |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.

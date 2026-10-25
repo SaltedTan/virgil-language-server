@@ -33,7 +33,7 @@ The original investigation's negative findings remain: `ErrorGen.fatalReport` ha
 
 The spike's architectural conclusion still applies: semantic verification cannot safely run inside the server process. See [ADR-0004](decisions/0004-analysis-worker-process.md) for whole-program failure containment and the [development command guide](development.md#running) for CLI failure output.
 
-Single-file parsing still runs in the server, as ADR-0004 decided. [Issue #61](https://github.com/SaltedTan/virgil-language-server/issues/61) chose guards in the adapter's parser driver for rows 13 and 18–24 instead of moving parsing out of process, which would add latency to every edit and need a fallback while no worker is available. [Issue #70](https://github.com/SaltedTan/virgil-language-server/issues/70) added one for row 25. All three entry points share `AnalysisSingleFileParser`, its recovery, its stack limit, and its chain limit.
+Single-file parsing still runs in the server, as ADR-0004 decided. [Issue #61](https://github.com/SaltedTan/virgil-language-server/issues/61) chose guards in the adapter's parser driver for rows 13 and 18–24 instead of moving parsing out of process, which would add latency to every edit and need a fallback while no worker is available. [Issue #70](https://github.com/SaltedTan/virgil-language-server/issues/70) added one for row 25. All parser entry points share `AnalysisSingleFileParser`, its recovery, its stack limit, and its chain limit.
 
 The stack limit covers row 13. Parser recursion may use up to 1 MB of the 2 MB stack, measured from where parsing starts, or less if needed to keep room for the chain limit and a 64 KB reserve above the runtime's red zone. At the next token skip beyond that limit, the parser reports `nesting too deep; parsing stopped here` if the error limit permits and continues as if the input ended there, dropping later errors. The nesting depth at that cutoff depends on the input, compiled frame sizes, and available stack.
 
@@ -47,6 +47,7 @@ The guards cost little time. `virgil-lsp parse` on the eight largest Aeneas sour
 | --- | --- | --- |
 | `parseFile` | 12 (bounded token extraction), 13 (stack limit), 18–24 (range recovery), 25 (chain limit) | None |
 | `documentSymbols` | 12, 13, 18–24, and 25, as for `parseFile` | None |
+| `methodBodies` | 12, 13, 18–24, and 25, as for `parseFile`; cached-text admission is bounded by [method-body fallback](architecture.md#method-body-fallback) | None |
 | `analyzeProgram` | 12, 13, 18–24, and 25 through the shared parser; remaining rows by the worker process boundary | None; worker failures cause replacement |
 
 The regression cases are in [`test_parse_range_without_bounds`, `test_parse_deep_nesting`, and `test_parse_long_chains`](../test/unit/AeneasAdapterTest.v3), with server transcripts in [`diagnostics-malformed-ranges`](../test/protocol/diagnostics-malformed-ranges/), [`diagnostics-deep-nesting`](../test/protocol/diagnostics-deep-nesting/), and [`diagnostics-long-chains`](../test/protocol/diagnostics-long-chains/).

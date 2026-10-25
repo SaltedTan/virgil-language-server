@@ -1,0 +1,42 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [T("ParseableTextCache:lru_and_metadata", test_lru),
+	T("ParseableTextCache:context_and_membership", test_lifetime), ()];
+def context() -> ProjectContext { return ProjectContext.new(ProjectRevision.new("file:///project.json", 1), null); }
+def test_lru(t: Tester) {
+	var cache = ParseableTextCache.new(), a = context(), b = context();
+	var one = Array<byte>.new(1024 * 1024);
+	cache.put(a, "a", one);
+	cache.put(a, "b", one);
+	cache.put(b, "c", one);
+	t.assert_eq(one, cache.get(a, "a"));
+	cache.put(b, "d", one);
+	t.assert_eq(null, cache.get(a, "b"));
+	t.assert_eq(one, cache.get(b, "c"));
+	t.assertl(3L * (one.length + 513), cache.retainedBytes);
+	cache.put(a, "too-large", Array<byte>.new(cache.MAX_BYTES));
+	t.assert_eq(null, cache.get(a, "too-large"));
+	t.assert(cache.retainedBytes <= cache.MAX_BYTES, "cache exceeds its global cap");
+	cache.put(a, "a", "replacement");
+	t.assertb("replacement", cache.get(a, "a"));
+	cache.removeContext(a);
+	cache.removeContext(b);
+	t.assertl(0, cache.retainedBytes);
+	t.assert_eq(null, a.parseableTexts);
+}
+def test_lifetime(t: Tester) {
+	var cache = ParseableTextCache.new(), a = context(), b = context();
+	cache.put(a, "same", "first");
+	cache.put(b, "same", "second");
+	t.assertb("first", cache.get(a, "same"));
+	t.assertb("second", cache.get(b, "same"));
+	cache.retainSources(a);
+	t.assert_eq(null, cache.get(a, "same"));
+	t.assertb("second", cache.get(b, "same"));
+	b.config.current = false;
+	cache.removeContext(b);
+	cache.put(b, "same", "retired");
+	t.assertl(0, cache.retainedBytes);
+}

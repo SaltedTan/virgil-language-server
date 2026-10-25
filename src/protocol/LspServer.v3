@@ -131,6 +131,7 @@ class LspServer {
 		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification).withProjects(projects);
 		developmentAnalysis.register(dispatcher);
 		semanticDiagnostics = LspSemanticDiagnostics.new(documents, projects, supervisor, diagnosticLists, publishNotification);
+		semanticDiagnostics.parser = developmentAnalysis.parser = parserDiagnostics;
 		semanticDiagnostics.development = developmentAnalysis;
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;

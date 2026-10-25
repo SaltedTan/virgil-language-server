@@ -60,8 +60,15 @@ def score(feature, actual, expected, allow_absent=False):
     # An expected empty result is a legitimate, available answer. Missing a
     # nonempty oracle is unavailable; it must never count as a wrong binding.
     available = not empty or equal
+    partial = False
+    if feature in ("references", "diagnostics") and not empty and not equal and expected:
+        # Compare whole items exactly, retaining duplicate counts as well as
+        # every protocol field. An omitted item is safe; a foreign one is not.
+        items = lambda values: collections.Counter(json.dumps(v, sort_keys=True) for v in values)
+        partial = len(actual) < len(expected) and not (items(actual) - items(expected))
     return {"available": available, "correct": equal or (allow_absent and empty),
-            "wrong": available and not equal, "matches_oracle": equal}
+            "partial": partial, "missing": not available,
+            "wrong": available and not equal and not partial, "matches_oracle": equal}
 
 
 def portable(value, base):
@@ -259,7 +266,7 @@ def summary(rows):
             group = (row["suite"], row["mode"], row["edit_kind"], feature)
             counts = groups.setdefault(group, collections.Counter())
             counts["total"] += 1
-            for label in ("available", "correct", "wrong", "matches_oracle"):
+            for label in ("available", "correct", "partial", "missing", "wrong", "matches_oracle"):
                 counts[label] += int(verdict[label])
         for sample in row["samples"]:
             latencies[(row["suite"], row["mode"], sample["feature"])].append(sample["latency_ms"])
@@ -305,7 +312,7 @@ def main():
             else:
                 cases += list(corpus.large()) + list(corpus.controls())
                 bench.check(collections.Counter(s["suite"] for s in cases) == {
-                    "repair": 45, "replay": 140, "negative": 3, "extra": 15}, "state inventory changed")
+                    "repair": 45, "replay": 140, "negative": 5, "extra": 15}, "state inventory changed")
                 bench.check(sum(len(s["queries"]) - 1 for s in cases if s["suite"] == "replay") == 400,
                             "unchanged real-file replay query inventory changed")
             if args.only:
@@ -367,12 +374,13 @@ def main():
         result["wall_seconds"] = time.monotonic() - start
         result["summary"] = summary(result["states"])
         wrong = sum(s["wrong"] for row in result["states"] for s in row["scores"].values())
+        partial = sum(s["partial"] for row in result["states"] for s in row["scores"].values())
         if args.smoke:
             bench.check(wrong == 0, "wrong smoke answer")
             for row in result["states"]:
                 if row["id"] == "member-with-prefix":
                     bench.check(all(s["correct"] for s in row["scores"].values()), row)
-        print(f"tolerance: {len(result['states'])} state/mode records, {wrong} wrong answers, "
+        print(f"tolerance: {len(result['states'])} state/mode records, {partial} partial, {wrong} wrong answers, "
               f"{result['wall_seconds']:.2f}s", file=sys.stderr)
     except BaseException as error:
         result["error"] = repr(error)

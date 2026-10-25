@@ -5,6 +5,7 @@
 // or deleting a configuration permanently invalidates all its old snapshots.
 class ProjectRevision(uri: string, number: int) { var current = true; }
 class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
+	var parseableTexts: OrderedStringMap<ParseableText>;
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
 	var lastUsed: long;
@@ -33,6 +34,7 @@ class DocumentProjects(configPath: string, contexts: Array<ProjectContext>, acti
 }
 
 class WorkspaceProjects(store: DocumentStore) {
+	def parseableText = ParseableTextCache.new();
 	def FILE = ".virgil-lsp.json";
 	def MAX_CONFIGS = 128;
 	def MAX_PROJECTS = 128;
@@ -373,6 +375,7 @@ class WorkspaceProjects(store: DocumentStore) {
 	}
 	// Retires {c}'s projects and clears its published diagnostics.
 	private def forget(c: WorkspaceConfig) {
+		for (ctx in c.contexts) parseableText.removeContext(ctx);
 		if (c.revision != null) c.revision.current = false;
 		c.revision = ProjectRevision.new(ProjectFiles.uri(c.path), ++nextRevision);
 		c.revision.current = false;
@@ -464,6 +467,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		var available = MAX_PROJECTS - projectCount;
 		var changed = c.revision == null || !same || c.unreadable != unreadable || (c.capacityRejected && c.rejectedAvailable != available);
 		if (changed) {
+			for (ctx in c.contexts) parseableText.removeContext(ctx);
 			if (c.revision != null) c.revision.current = false;
 			c.revision = ProjectRevision.new(uri, ++nextRevision);
 			c.text = text; c.unreadable = unreadable; c.contexts = []; c.diagnostics = []; c.capacityRejected = false;
@@ -509,6 +513,7 @@ class WorkspaceProjects(store: DocumentStore) {
 		c.diagnostics = diagnostics.extract();
 		// One invalid project invalidates the whole file, not just that program.
 		if (c.diagnostics.length > 0) { for(ctx in c.contexts) ctx.sources = []; }
+		for (ctx in c.contexts) parseableText.retainSources(ctx);
 		publish(c);
 	}
 	private def publish(c: WorkspaceConfig) {

@@ -1,0 +1,194 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [T("LspBodySnapshot:provenance_and_eviction", test_provenance),
+	T("LspBodySnapshot:excluded_type_target", test_excluded_type_target),
+	T("LspBodySnapshot:capture_bounds_and_closed_files", test_capture),
+	T("LspBodySnapshot:cache_parse_progress", test_cache_parse_progress),
+	T("LspBodySnapshot:predecessor_size_limit", test_predecessor_size_limit),
+	T("LspBodySnapshot:project_cache_lifetime", test_project_lifetime), ()];
+def OLD = "/* é😀\t */ component A { def broken() -> int { return 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
+def CURRENT = "/* é😀\t */ component A { def broken() -> int { var x = ;\n\treturn 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n";
+
+def test_provenance(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, OLD);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	t.assert(s.store.change(s.uri("A.v3"), 2, CURRENT) == null, "body edited");
+	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
+	t.assert(snapshot.parsed && snapshot.degraded(), "one effective program parsed");
+	var sub = snapshot.documentVersions[i].substitution;
+	t.assert(sub != null, "substitution provenance retained");
+	if (sub == null) return s.server.close();
+	t.assertb(OLD, s.text(snapshot, "A.v3"));
+	t.assertb(CURRENT, LspAnalysisCapture.currentText(s.store, snapshot, i, s.text(snapshot, "A.v3")));
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	t.asserti(-1, snapshot.effectiveOffset(i, sub.mapping.bodyBegin));
+	t.asserti(-1, snapshot.currentRange(i, sub.mapping.bodyBegin - 1, sub.mapping.effectiveBodyEnd + 1).0);
+	t.asserti(CURRENT.length, snapshot.currentRange(i, OLD.length, OLD.length).0);
+	cache.removeContext(ctx);
+	t.assertb(OLD, s.text(snapshot, "A.v3"));
+	t.assert(snapshot.retainedBytes >= sub.bytes, "retained effective bytes stay charged after eviction");
+	// Version-only updates retain the compared identity, while every later
+	// full-text update invalidates it, even if the bytes happen to be equal.
+	t.assert(s.store.changeVersion(s.uri("A.v3"), 3) == null, "version only");
+	t.assert(snapshot.matchesDocument(s.store, s.uri("A.v3")), "version identity retained");
+	t.assert(s.store.change(s.uri("A.v3"), 4, CURRENT) == null, "later full text");
+	t.assert(!snapshot.matchesDocument(s.store, s.uri("A.v3")), "substitution is stale");
+	t.assert_eq(null, s.text(snapshot, "A.v3"));
+	snapshot = s.analyze(t);
+	t.assert(!snapshot.parsed && !snapshot.degraded(), "eviction removes future fallback only");
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	s.server.close();
+}
+def test_capture(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, OLD);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assert(s.store.change(s.uri("A.v3"), 2, CURRENT) == null, "body edited");
+	var keys = Array<string>.new(ctx.sources.length);
+	for (i < keys.length) keys[i] = ctx.sources[i].uri;
+	var inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+	var parser = LspParserDiagnostics.new(LspDiagnosticLists.new(s.store, null));
+	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+	var paths = Array<string>.new(inputs.sources.length);
+	for (i < paths.length) paths[i] = inputs.sources[i].path;
+	var snapshot = AnalysisSnapshot.new(1, paths, true, false, [], null, false, []);
+	snapshot.recordDocumentVersions(inputs.versions);
+	t.assertl(inputs.snapshotBytes, snapshot.retainedBytes);
+	var i = snapshot.documentIndex(s.uri("A.v3"));
+	t.assertb(OLD, inputs.sources[i].input);
+	cache.removeContext(ctx);
+	inputs.cacheCompleted(ctx, cache, snapshot);
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	var projects = s.server.projects;
+	t.assert(!projects.admitSnapshot(ctx, snapshot, projects.MAX_SNAPSHOT_BYTES - snapshot.retainedBytes + 1), "provenance participates in admission");
+	// A cached closed source is never substituted. Its current disk input is
+	// sent unchanged even though an eligible predecessor is in the cache.
+	t.assert(s.store.close(s.uri("A.v3")) == null, "closed");
+	s.write(t, "A.v3", CURRENT);
+	cache.put(ctx, s.uri("A.v3"), OLD);
+	inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+	t.assert_eq(null, inputs.versions[i].substitution);
+	t.assertb(CURRENT, inputs.sources[i].input);
+	s.server.close();
+}
+def test_project_lifetime(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, OLD);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	t.assertb("def c = 1;\n", cache.get(ctx, s.uri("C.v3")));
+	// Watcher-driven expansion removes a source from the same context.
+	s.remove(t, "C.v3");
+	var event = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	event["uri"] = JsonValue.String(s.uri("C.v3"));
+	event["type"] = JsonValue.Int(3); // FileChangeType.Deleted changes membership.
+	params["changes"] = JsonValue.JArray([JsonValue.JObject(event)]);
+	s.server.handle(JsonRpcMessage.Notification("workspace/didChangeWatchedFiles", JsonRpcParams.ByName(params)).encode());
+	s.settle();
+	t.assert_eq(ctx, s.context());
+	t.assert_eq(null, cache.get(ctx, s.uri("C.v3")));
+	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
+	// An invalid replacement retires the context, including every cached
+	// input, while its older snapshots may still be retained independently.
+	s.open(".virgil-lsp.json", 1, "{");
+	s.settle();
+	t.assert(!ctx.config.current, "configuration retired");
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	t.assert_eq(null, ctx.parseableTexts);
+	t.assertl(0, cache.retainedBytes);
+	s.server.close();
+}
+
+def test_cache_parse_progress(t: Tester) {
+	// Real adapter diagnostics: a bad middle file still lets later files
+	// parse unless the cumulative syntax error limit has been reached.
+	for (limit in [false, true]) {
+		var paths = ["/A.v3", "/B.v3", "/C.v3"];
+		var texts = ["component A { }", if(limit, "\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\rcomponent B { }", "component B { def broken( { }"),
+			"component C { def wrong() -> int { return true; } }"];
+		var inputs = LspAnalysisInputs.new(Array<AnalysisDocumentVersion>.new(3), 0);
+		inputs.sources = Array<AnalysisSource>.new(3);
+		var ctx = ProjectContext.new(ProjectRevision.new("file:///project.json", 1), null);
+		ctx.sources = Array<ProjectSource>.new(3);
+		for (i < 3) {
+			ctx.sources[i] = ProjectSource.new(paths[i], true);
+			inputs.versions[i] = AnalysisDocumentVersion.new(ctx.sources[i].uri, 1, null);
+			inputs.sources[i] = AnalysisSource.new(paths[i], texts[i]);
+		}
+		var analysis = AeneasAdapter.analyzeProgram(inputs.sources, [], false);
+		t.assert(!analysis.parsed, "middle file has syntax errors");
+		t.assert_eq(limit, analysis.diagnostics.length >= AeneasAdapter.PROGRAM_MAX_ERRORS);
+		var snapshot = AnalysisSnapshot.new(1, paths, analysis.parsed, analysis.verified, analysis.diagnostics, null, false, []);
+		var cache = ParseableTextCache.new();
+		inputs.cacheCompleted(ctx, cache, snapshot);
+		t.assertb(texts[0], cache.get(ctx, ctx.sources[0].uri));
+		t.assert_eq(null, cache.get(ctx, ctx.sources[1].uri));
+		if (limit) t.assert_eq(null, cache.get(ctx, ctx.sources[2].uri));
+		else t.assertb(texts[2], cache.get(ctx, ctx.sources[2].uri));
+	}
+}
+
+def test_predecessor_size_limit(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	s.open("A.v3", 1, CURRENT);
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	// This oversized disk predecessor would be eligible and parseable, but
+	// reparsing it must obey the open-document byte limit before allocating.
+	var prefix = "component A { def broken() { ", suffix = "} }\n";
+	var effective = Array<byte>.new(DocumentLimits.MAX_BYTES + 1);
+	for (i < prefix.length) effective[i] = prefix[i];
+	for (i = prefix.length; i < effective.length - suffix.length; i++) effective[i] = ' ';
+	for (i < suffix.length) effective[effective.length - suffix.length + i] = suffix[i];
+	t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, "component A { def broken() { var syntax = ; } }\n"));
+	// Keep the current overlay small; the size rule is about the predecessor.
+	cache.put(ctx, s.uri("A.v3"), effective);
+	var keys = [DocumentUri.normalize(s.uri("A.v3"))];
+	var inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+	var parser = LspParserDiagnostics.new(LspDiagnosticLists.new(s.store, null));
+	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+	t.assert_eq(null, inputs.versions[0].substitution);
+	s.server.close();
+}
+
+// Exercise target exclusion separately from query exclusion. Such a target
+// cannot normally escape a method's scope, but the protocol boundary must
+// reject it even if a future collector records one.
+def test_excluded_type_target(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	var old = "class Box { } component A { def broken() { var local = 1; } def a() -> Box { return Box.new(); } }";
+	var current = "class Box { } component A { def broken() { var local = ; } def a() -> Box { return Box.new(); } }";
+	s.open("A.v3", 1, old);
+	s.open("B.v3", 1, "component B { def b() -> Box { return A.a(); } }");
+	s.settle();
+	t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, current));
+	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
+	var j = snapshot.documentIndex(s.uri("B.v3")), text = s.text(snapshot, "B.v3");
+	var at = LspSnapshotPosition.new(s.store, snapshot, j, text, PositionMap.new(text, PositionEncoding.UTF16));
+	var offset = -1, local = -1;
+	for (k < snapshot.declarations.length) {
+		var d = snapshot.declarations[k];
+		if (Strings.equal(d.name, "local")) local = k;
+		if (Strings.equal(d.name, "b")) offset = d.range.beginOffset;
+	}
+	t.assert(offset >= 0 && local >= 0, "fixture declarations recorded");
+	if (offset < 0 || local < 0) return s.server.close();
+	// A declaration site uses its default. Redirect that default to an
+	// excluded local to check that location conversion cannot expose it.
+	for (d in snapshot.declarations) if (Strings.equal(d.name, "b")) d.typeTarget = local + 1;
+	t.assert(snapshot.degraded(), "fallback snapshot retained");
+	t.assert_eq(snapshot.declarations[local], snapshot.typeDefinitionAtOffset(s.path("B.v3"), offset).1);
+	var answer = LspDefinition.typeAnswer(at, offset);
+	t.assert(answer.0, "recognized name must not try the preceding byte");
+	t.assert_eq(JsonValue.Null, answer.1);
+	t.asserti(-1, snapshot.currentRange(i, snapshot.declarations[local].range.beginOffset,
+		snapshot.declarations[local].range.endOffset).0);
+	s.server.close();
+}

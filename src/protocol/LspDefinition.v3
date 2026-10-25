@@ -22,7 +22,7 @@ component LspDefinition {
 		// The target's bytes must still be the ones the worker analyzed.
 		var target = at.target(decl.range.path), j = target.0;
 		if (j < 0) return (true, JsonValue.Null);
-		var map = if(j == at.index, at.map, PositionMap.new(target.1, PositionEncoding.UTF16));
+		var map = at.positionMap(j, target.1);
 		return (true, at.location(j, map, decl.range.beginOffset, decl.range.endOffset));
 	}
 }

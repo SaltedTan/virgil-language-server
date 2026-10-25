@@ -204,6 +204,34 @@ class Corpus:
             state["queries"] = [q]
             state["stale_queries"] = [query("B.v3", b, "A.f(1)", "f")]
             yield state
+        # An insertion inside the old body can move unchanged later members
+        # to another component. Brace containment must hold in both texts.
+        original = ("component A {\n    def broken() { var x = 0; }\n"
+                    "    def target() -> int { return 1; }\n}\n")
+        caller = "component B { def use() -> int { return A.target(); } }\n"
+        fixed = original.replace("{ var x = 0;", "{ } } component C { def broken() { var x = 0;")
+        broken = fixed.replace("var x = 0;", "var malformed = ; var x = 0;")
+        project = self.project("negative/body-boundary-escape", {"A.v3": original, "B.v3": caller})
+        state = self.state(project, "body-boundary-escape", "negative", "body",
+                           {"A.v3": original}, {"A.v3": broken}, "original small program",
+                           oracle={"A.v3": fixed}, allow_absent=True)
+        state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
+        yield state
+        # Removed body errors must not leave a foreign ErrorLimit notice at
+        # the last visible error in an intact file. Navigation stays bound.
+        # The benchmark's Observer supplies the fourteenth error before B.
+        errors = ''.join('var x%d: int = true; ' % n for n in range(13))
+        original = ('component A { def target() -> int { return 1; } '
+                    'def broken() { ' + errors + '} }\n')
+        caller = ('component B { def use() -> int { return A.target(); } '
+                  'def wrong() -> int { return "bad"; } }\n')
+        project = self.project("negative/excluded-error-limit", {"A.v3": original, "B.v3": caller})
+        state = self.state(project, "excluded-error-limit", "negative", "body",
+                           {"A.v3": original}, {"A.v3": original.replace(errors, 'var syntax = ; ')},
+                           "original small program with body type errors",
+                           oracle={"A.v3": original.replace(errors, 'var syntax = 1; ')}, allow_absent=True)
+        state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
+        yield state
         # Three variants per boundary, including distinct fresh diagnostic kinds.
         for variant in (0, 1, 2):
             broken = a.replace("return x;", "return x.;")

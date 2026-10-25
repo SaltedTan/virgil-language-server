@@ -6,9 +6,59 @@
 // record their length and a 64-bit FNV-1a hash, so that text read again to
 // convert ranges can be checked against what the worker analyzed (see
 // {LspAnalysisCapture.analyzedText}). Submitters drop {sources} once the
-// worker request holds a copy.
-class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, snapshotBytes: long) {
+// completed analysis has updated the last-parseable text cache.
+class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBytes: long) {
 	var sources: Array<AnalysisSource>;
+	// One capture, one analysis: reuse the current overlay's existing parse
+	// outcome to decide fallback before submitting any worker request.
+	def substitute(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
+			parser: LspParserDiagnostics) -> string {
+		var bytes = 32L;
+		for (s in sources) bytes += 16L + s.path.length + s.input.length;
+		for (i < sources.length) {
+			var doc = store.overlay(versions[i].uri);
+			if (doc == null || parser.parses(doc, context.definition.compilerArgs)) continue;
+			var effective = cache.get(context, doc.uri);
+			// Closed disk files can seed larger texts. Reparse a predecessor only
+			// within the same byte limit as an open document's parser diagnostics.
+			if (effective == null || effective.length > DocumentLimits.MAX_BYTES) continue;
+			var bodies = AeneasAdapter.methodBodies(sources[i].path, effective, context.definition.compilerArgs);
+			if (bodies == null) continue;
+			var result = LspBodyEligibility.compare(effective, doc.text, bodies).0;
+			if (result == null) continue;
+			bytes += effective.length - sources[i].input.length;
+			if (bytes > LspAnalysisCapture.MAX_SOURCE_BYTES) return "analysis sources exceed the analysis size budget";
+			var sub = AnalysisSubstitution.new(effective, result);
+			versions[i].substitution = sub;
+			snapshotBytes += sub.bytes;
+			sources[i] = AnalysisSource.new(sources[i].path, effective);
+		}
+		return null;
+	}
+	// Cache only a completed analysis's own parseable inputs, without parsing
+	// in the server. AeneasAdapter.parseProgram visits sources in order until
+	// its error limit: a visited file with no syntax diagnostics parsed, but
+	// files after the cutoff have no diagnostics because they were not visited.
+	def cacheCompleted(context: ProjectContext, cache: ParseableTextCache, snapshot: AnalysisSnapshot) {
+		if (!context.config.current) return;
+		var errors = OrderedStringMap<int>.new();
+		if (!snapshot.parsed) {
+			for (d in snapshot.diagnostics) errors[d.path] = errors[d.path] + 1;
+		}
+		var keep = OrderedStringMap<bool>.new();
+		for (s in context.sources) keep[s.uri] = true;
+		var seenErrors = 0;
+		for (i < sources.length) {
+			if (seenErrors >= AeneasAdapter.PROGRAM_MAX_ERRORS) break;
+			var source = sources[i];
+			var count = errors[source.path];
+			seenErrors += count;
+			if (count > 0) continue;
+			if (versions[i].substitution != null) continue;
+			if (!keep.has(versions[i].uri)) continue;
+			cache.put(context, versions[i].uri, source.input);
+		}
+	}
 }
 
 // Captures whole-program inputs for the development request and automatic
@@ -91,8 +141,9 @@ component LspAnalysisCapture {
 	}
 	// The text that produced source {i} of {snapshot} (see
 	// AnalysisSnapshot.documentIndex), or null if it is not available: the
-	// overlay if the analyzed identity is still open, or the disk file if
-	// it still has the captured length and hash. The file is read again within
+	// overlay (or retained effective bytes for a substitution) if the analyzed
+	// identity is still open, or the disk file if it still has the captured
+	// length and hash. The file is read again within
 	// that length, without following symlinks. Null for an index out of range,
 	// so for an unrecorded URI too. Only that source is checked; the caller
 	// decides whether the rest of the snapshot is current.
@@ -101,10 +152,17 @@ component LspAnalysisCapture {
 		var v = snapshot.documentVersions[i];
 		if (v.identity != null) {
 			var doc = store.overlay(v.uri);
-			return if(doc != null && doc.identity == v.identity, doc.text);
+			if (doc == null || doc.identity != v.identity) return null;
+			return if(v.substitution != null, v.substitution.effective, doc.text);
 		}
 		var path = DocumentUri.filePath(v.uri);
 		var text = if(path != null && v.length >= 0, ProjectFiles.load(path, v.length));
 		return if(text != null && text.length == v.length && hash(text) == v.hash, text);
+	}
+	// Text for protocol coordinates, after the same analyzed-identity check.
+	def currentText(store: DocumentStore, snapshot: AnalysisSnapshot, i: int, effective: Array<byte>) -> Array<byte> {
+		if (effective == null) return null;
+		return if(snapshot.documentVersions[i].substitution != null,
+			store.overlay(snapshot.documentVersions[i].uri).text, effective);
 	}
 }

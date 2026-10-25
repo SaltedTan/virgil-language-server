@@ -1,0 +1,114 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspBodyFallback:eligibility", test_eligibility),
+	T("LspBodyFallback:containment", test_containment),
+	T("LspBodyFallback:unterminated_regions", test_unterminated_regions),
+	T("LspBodyFallback:body_ranges", test_body_ranges),
+	T("LspBodyFallback:mapping", test_mapping),
+	()
+];
+def wrap(body: string) -> string {
+	return Strings.format1("component A { def f() { %s } def g() -> int { return 1; } }", body);
+}
+def compare(old: string, current: string) -> (LspBodyFallback, string) {
+	var bodies = AeneasAdapter.methodBodies("A.v3", old, []);
+	return LspBodyEligibility.compare(old, current, bodies);
+}
+def check(t: Tester, old: string, current: string, eligible: bool) {
+	var r = compare(old, current);
+	if ((r.0 != null) != eligible) t.fail3("expected eligible=%s for %s: %s", eligible, current, Strings.nonnull(r.1));
+	t.assert_eq(r.0 == null, r.1 != null);
+}
+def test_eligibility(t: Tester) {
+	var old = wrap("var x = 1;");
+	check(t, old, wrap("var x = ;"), true);
+	check(t, old, wrap("var x = 1.;"), true);
+	check(t, old, wrap("{ var x = ; }"), true);
+	check(t, old, old, false);
+	check(t, old, "component A { def f(x: ) { var x = 1; } def g() -> int { return 1; } }", false);
+	check(t, "component A { var x = 1; }", "component A { var x = ; }", false);
+	check(t, old, "component A { def f() { var x = ; } def g() -> int { return ; } }", false);
+	check(t, old, "component A { def f() ; var x = 1; } def g() -> int { return 1; } }", false);
+	check(t, old, "component A { def f() { var x = 1; ; def g() -> int { return 1; } }", false);
+	check(t, old, "", false);
+}
+def test_containment(t: Tester) {
+	var old = wrap("var x = 1;");
+	for (body in ["{ var x = ;", "} var x = ;", "} { var x = ;", "var x = \";", "var x = ';", "// var x = ;", "/* var x = ;"]) {
+		check(t, old, wrap(body), false);
+	}
+	var nested = wrap("{ var x = 1; }");
+	check(t, nested, wrap("{ var x = 1; "), false);
+	check(t, wrap("var x = \"abc\";"), wrap("var x = \"ab!c\";"), false);
+	check(t, wrap("/* abc */ var x = 1;"), wrap("/* ab!c */ var x = 1;"), false);
+	check(t, wrap("// abc\nvar x = 1;"), wrap("// ab!c\nvar x = 1;"), false);
+	check(t, wrap("var x = 'a';"), wrap("var x = 'b';"), false);
+	check(t, old, wrap("/* } { */ var x = ;"), true);
+	check(t, old, wrap("// } {\nvar x = ;"), true);
+	check(t, old, wrap("var text = \"} {\"; var x = ;"), true);
+	check(t, old, wrap("var byte = '}'; var x = ;"), true);
+	var original = "component A {\n    def broken() { var x = 0; }\n    def target() -> int { return 1; }\n}\n";
+	var current = "component A {\n    def broken() { } } component C { def broken() { var malformed = ; var x = 0; }\n    def target() -> int { return 1; }\n}\n";
+	check(t, original, current, false);
+}
+def test_unterminated_regions(t: Tester) {
+	var old = wrap("var x = 1;");
+	// A recovered newline (or a byte literal's missing closing quote) must
+	// not make a later ordinary-code interval endpoint eligible.
+	for (body in ["var x = \"oops\n;", "var x = 'a\n;", "var x = 'ab;", "var x = /* oops\n;"]) {
+		check(t, old, wrap(body), false);
+	}
+	// The common suffix starts at ';': the changed interval ends exactly
+	// after the newline, where completion's scanner has recovered to code.
+	var current = wrap("var x = \"oops\n;");
+	var end = current.length - "; } def g() -> int { return 1; } }".length;
+	t.assert_eq(LspCursorPlace.CODE, LspCursorScanner.new(current).scan(end).place);
+	check(t, old, current, false);
+	// Closed regions containing the same brace and quote bytes remain safe.
+	check(t, old, wrap("var x = \"oops\"; var bad = ;"), true);
+	check(t, old, wrap("var x = 'a'; var bad = ;"), true);
+	check(t, old, wrap("var x = /* oops */ ;"), true);
+}
+def test_body_ranges(t: Tester) {
+	var text = "var field = fun () { }; def f() { } class C { new() { } def g() { var s = \"} {\"; /* } */ { } } } type V { case One { def h() { } } }";
+	var bodies = AeneasAdapter.methodBodies("A.v3", text, []);
+	t.asserti(4, bodies.length);
+	for (b in bodies) {
+		t.asserti('{', text[b.0]);
+		t.asserti('}', text[b.1 - 1]);
+	}
+	t.assert_eq(null, AeneasAdapter.methodBodies("A.v3", "def f() { var x = ; }", []));
+	var simple = AeneasAdapter.methodBodies("A.v3", "def f() => 1; def g() { }", ["-lang:simple-bodies"]);
+	t.asserti(1, simple.length);
+}
+def test_mapping(t: Tester) {
+	var old = wrap("var x = 1;"), current = wrap("\t/* é😀 */ var x = ;");
+	var r = compare(old, current).0;
+	verify(t, r != null);
+	var delta = current.length - old.length;
+	t.asserti(delta, r.delta);
+	for (i < old.length + 1) {
+		if (i >= r.bodyBegin && i < r.effectiveBodyEnd) {
+			t.asserti(-1, r.toCurrent(i));
+		} else {
+			var mapped = r.toCurrent(i);
+			t.asserti(if(i < r.bodyBegin, i, i + delta), mapped);
+			t.asserti(i, r.toEffective(mapped));
+		}
+	}
+	for (i = r.bodyBegin; i < r.currentBodyEnd; i++) t.asserti(-1, r.toEffective(i));
+	verify(t, r.maps(0, r.bodyBegin));
+	verify(t, r.maps(r.effectiveBodyEnd, old.length));
+	verify(t, !r.maps(r.bodyBegin - 1, r.effectiveBodyEnd + 1));
+	verify(t, !r.maps(r.bodyBegin, r.bodyBegin));
+	verify(t, !r.maps(-1, 0));
+	var longer = wrap("\t/* é😀 */ var x = 123;"), shorter = wrap("var x = ;");
+	var shrink = compare(longer, shorter).0;
+	t.asserti(shorter.length - longer.length, shrink.delta);
+	t.asserti(shorter.length, shrink.toCurrent(longer.length));
+}
+
+def verify(t: Tester, cond: bool) { t.assert(cond, "body fallback assertion failed"); }

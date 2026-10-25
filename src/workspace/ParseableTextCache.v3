@@ -1,0 +1,78 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+class ParseableText(context: ProjectContext, uri: string, text: Array<byte>) {
+	// Includes the entry, map node, array header, LRU links, and an allowance
+	// for the context's map. The URI and bytes are charged even when shared.
+	def bytes = 512L + uri.length + text.length;
+	var previous: ParseableText;
+	var next: ParseableText;
+}
+
+// One last parseable text per context/URI. The global LRU includes metadata
+// in its 4 MiB cap; eviction only removes future fallback availability.
+class ParseableTextCache {
+	def MAX_BYTES = 4 * 1024 * 1024;
+	def var retainedBytes: long;
+	private var oldest: ParseableText;
+	private var newest: ParseableText;
+	def get(context: ProjectContext, uri: string) -> Array<byte> {
+		var e = if(context.parseableTexts != null, context.parseableTexts[uri]);
+		if (e == null) return null;
+		unlink(e);
+		append(e);
+		return e.text;
+	}
+	// Called only with a completed analysis's own parseable input, never its
+	// substituted input. Retired contexts cannot acquire entries again.
+	def put(context: ProjectContext, uri: string, text: Array<byte>) {
+		if (!context.config.current) return;
+		var old = if(context.parseableTexts != null, context.parseableTexts[uri]);
+		if (old != null) remove(old);
+		var entry = ParseableText.new(context, uri, text);
+		if (entry.bytes > MAX_BYTES) return;
+		while (retainedBytes + entry.bytes > MAX_BYTES) remove(oldest);
+		if (context.parseableTexts == null) context.parseableTexts = OrderedStringMap<ParseableText>.new();
+		context.parseableTexts[uri] = entry;
+		retainedBytes += entry.bytes;
+		append(entry);
+	}
+	def removeContext(context: ProjectContext) {
+		var e = oldest;
+		while (e != null) {
+			var next = e.next;
+			if (e.context == context) remove(e);
+			e = next;
+		}
+	}
+	// Source expansion has completed, including any failure that clears it.
+	def retainSources(context: ProjectContext) {
+		var keep = OrderedStringMap<bool>.new();
+		for (s in context.sources) keep[s.uri] = true;
+		var e = oldest;
+		while (e != null) {
+			var next = e.next;
+			if (e.context == context && !keep.has(e.uri)) remove(e);
+			e = next;
+		}
+	}
+	private def remove(e: ParseableText) {
+		unlink(e);
+		e.context.parseableTexts.remove(e.uri);
+		if (e.context.parseableTexts.length == 0) e.context.parseableTexts = null;
+		retainedBytes -= e.bytes;
+	}
+	private def unlink(e: ParseableText) {
+		if (e.previous != null) e.previous.next = e.next;
+		else oldest = e.next;
+		if (e.next != null) e.next.previous = e.previous;
+		else newest = e.previous;
+		e.previous = e.next = null;
+	}
+	private def append(e: ParseableText) {
+		e.previous = newest;
+		if (newest != null) newest.next = e;
+		else oldest = e;
+		newest = e;
+	}
+}
