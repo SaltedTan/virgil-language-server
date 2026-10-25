@@ -410,6 +410,10 @@ class RunTest(unittest.TestCase):
             for boundary in ("group-launch", "probe-launch", "probe-reap", "probe-exited", "restrict-launch"):
                 for signum in handlers:
                     with self.subTest(boundary=boundary, signal=signum):
+                        for relative in RESTRICTED:
+                            stale = self.build / "unit-slots" / "1" / "project-fixtures" / relative
+                            stale.mkdir(parents=True)
+                            stale.chmod(0)
                         self.stand_in()
                         children = []
 

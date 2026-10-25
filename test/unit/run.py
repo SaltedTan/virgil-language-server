@@ -262,6 +262,7 @@ def main(jobs, build, unit_tests, patterns):
 
 
 def run(jobs, build, unit_tests, children):
+    remove_slots(build)
     unit_tests = os.path.abspath(unit_tests)
     expected = total(build, unit_tests, children)
     if children.signum:
@@ -271,7 +272,6 @@ def run(jobs, build, unit_tests, children):
     runner = Slots(names, children, jobs == 1)
     threads = []
     started = time.monotonic()
-    remove_slots(build)
     try:
         executables = slots(build, unit_tests, jobs)
         for executable in executables:
