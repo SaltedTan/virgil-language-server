@@ -382,7 +382,7 @@ Successful full-snapshot wire sizes are identical to the reviewed type-definitio
 | Util | 168,738 → 172,674 | 751,779 → 756,219 | 757,784 → 762,224 |
 | Aeneas | 3,936,046 → 4,054,897 | 13,250,205 → 13,311,167 | 13,285,835 → 13,346,797 |
 
-The wire sends a default source-type target per declaration and sparse exceptions, including explicit nulls. Aeneas wire growth remains 118,851 bytes (3.02%), and retained charge grows by 60,962 bytes (0.46%) for the compressed overrides and their checkpoints. The default integer remains within the existing conservative 128-byte declaration/range charge: the x86-64 declaration and range each occupy 40 bytes, plus an 8-byte array slot. Both Aeneas charges stay below the unchanged 80% budget guard. Bounds checks and allocation charges are unchanged; no compiler types or rendered type strings are added to the snapshot.
+The wire sends a default source-type target per declaration and sparse exceptions, including explicit nulls. Aeneas wire growth remains 118,851 bytes (3.02%), and retained charge grows by 60,962 bytes (0.46%) for the compressed overrides and their checkpoints. The default integer remains within the existing conservative 128-byte declaration/range charge: the x86-64 declaration and range each occupy 40 bytes, plus an 8-byte array slot. Both Aeneas charges stay below the unchanged 80% budget guard. The frame and decoded-allocation limits are unchanged; no compiler types or rendered type strings are added to the snapshot.
 
 ## Scheduled comparison
 
