@@ -27,7 +27,7 @@ component AnalysisHintText {
 }
 
 // Snapshot hint records stay in their validated wire encoding: begin delta,
-// span length, local declaration ID plus one (zero for parameter names), and
+// span length, local declaration ID plus one, and
 // string-table ID. A type hint sits at the end; a parameter hint at the begin.
 class AnalysisHintCursor(r: DataReader, var remaining: int) {
 	def var begin: int;
@@ -51,51 +51,77 @@ class AnalysisHintCursor(r: DataReader, var remaining: int) {
 	def position() -> int { return if(local > 0, end, begin); }
 }
 
-// Merge local declaration sites with call arguments in source order. Calls
-// arrive by opening parenthesis; a small heap holds the later arguments of
-// enclosing calls until their nested calls have been visited. Each span is
-// read from the existing call record, without a second collected span stream
-// or a whole-file hint sort.
+// Local hints alone have their own spans. Parameter labels travel with the
+// existing call arguments, so neither spans nor validation are repeated.
 class AnalysisHintEncoding(analysis: ProgramAnalysis, strings: AnalysisStringTable, ids: Array<int>,
 		targets: AnalysisTypeTargetEncoding) {
-	private def pending = Vector<(int, int, int)>.new();
-	private var sites: Array<AnalysisDeclaration>;
-	private var site: int;
-	private var previous: int;
-	private var output: DataWriter;
 	def var count: int;
+	def label(id: int) -> int {
+		if (ids[id] == 0) ids[id] = strings.add(analysis.hintString(id)) + 1;
+		return ids[id];
+	}
 	def encode(path: string, declarations: Array<AnalysisDeclaration>) -> Range<byte> {
-		sites = declarations;
-		site = previous = count = 0;
-		pending.length = 0;
-		output = DataWriter.new().grow(6 * analysis.hintCount(path));
-		var records = analysis.callRecords(path), c = AnalysisCallCursor.new(DataReader.new(records.0), records.1);
-		c.absolute = true;
-		while (c.next()) {
-			flush(c.open);
-			for (i < c.argCount) {
-				c.nextArg();
-				if (c.argHint > 0) push(c.argBegin, c.argEnd, c.argHint - 1);
-			}
-			c.finish();
+		var output = DataWriter.new(), previous = 0;
+		count = 0;
+		for (d in declarations) {
+			if (!AnalysisWorkerDeclaration.?(d)) continue;
+			var id = AnalysisWorkerDeclaration.!(d).hintLabel;
+			if (id < 0) continue;
+			output.put_sleb32(d.range.beginOffset - previous).put_sleb32(d.range.endOffset - d.range.beginOffset)
+				.put_sleb32(targets.declaration(d) + 1).put_sleb32(label(id) - 1);
+			previous = d.range.beginOffset;
+			count++;
 		}
-		flush(int.max);
-		locals(int.max);
 		return output.alias();
 	}
-	private def locals(before: int) {
-		while (site < sites.length && sites[site].range.beginOffset < before) {
-			var d = sites[site++];
-			if (!AnalysisWorkerDeclaration.?(d)) continue;
-			var label = AnalysisWorkerDeclaration.!(d).hintLabel;
-			if (label >= 0) put(d.range.beginOffset, d.range.endOffset, targets.declaration(d) + 1, label);
+}
+
+// Merge locals with labeled arguments only when a file's hints are requested.
+// Calls arrive by opening parenthesis. A small heap holds later arguments of
+// enclosing calls until their nested calls have been visited.
+class AnalysisFileHintCursor(locals: AnalysisHintCursor, calls: AnalysisCallCursor) {
+	private def pending = Vector<(int, int, int)>.new();
+	private var started: bool;
+	private var hasLocal: bool;
+	private var hasCall: bool;
+	def var begin: int;
+	def var end: int;
+	def var local: int;
+	def var label: int;
+	def position() -> int { return if(local > 0, end, begin); }
+	def next() -> bool {
+		if (!started) { started = true; hasLocal = locals.next(); hasCall = calls.next(); }
+		while (hasCall) {
+			var before = if(hasLocal, locals.begin, int.max);
+			if (pending.length > 0) before = Ints.min(before, pending[0].0);
+			if (calls.open >= before) break;
+			for (i < calls.argCount) {
+				calls.nextArg();
+				if (calls.argHint > 0) push(calls.argBegin, calls.argEnd, calls.argHint - 1);
+			}
+			calls.finish();
+			hasCall = calls.next();
 		}
-	}
-	private def put(begin: int, end: int, local: int, label: int) {
-		if (ids[label] == 0) ids[label] = strings.add(analysis.hintString(label)) + 1;
-		output.put_sleb32(begin - previous).put_sleb32(end - begin).put_sleb32(local).put_sleb32(ids[label] - 1);
-		previous = begin;
-		count++;
+		if (hasLocal && (pending.length == 0 || locals.begin <= pending[0].0)) {
+			begin = locals.begin; end = locals.end; local = locals.local; label = locals.label;
+			hasLocal = locals.next();
+			return true;
+		}
+		if (pending.length == 0) return false;
+		var value = pending[0], last = pending[pending.length - 1];
+		pending.length--;
+		if (pending.length > 0) {
+			var i = 0;
+			while (2 * i + 1 < pending.length) {
+				var child = 2 * i + 1;
+				if (child + 1 < pending.length && pending[child + 1].0 < pending[child].0) child++;
+				if (last.0 <= pending[child].0) break;
+				pending[i] = pending[child]; i = child;
+			}
+			pending[i] = last;
+		}
+		begin = value.0; end = value.1; local = 0; label = value.2;
+		return true;
 	}
 	private def push(begin: int, end: int, label: int) {
 		var value = (begin, end, label), i = pending.length;
@@ -103,28 +129,8 @@ class AnalysisHintEncoding(analysis: ProgramAnalysis, strings: AnalysisStringTab
 		while (i > 0) {
 			var parent = (i - 1) / 2;
 			if (pending[parent].0 <= begin) break;
-			pending[i] = pending[parent];
-			i = parent;
+			pending[i] = pending[parent]; i = parent;
 		}
 		pending[i] = value;
-	}
-	private def flush(before: int) {
-		while (pending.length > 0 && pending[0].0 < before) {
-			var value = pending[0], last = pending[pending.length - 1];
-			pending.length--;
-			if (pending.length > 0) {
-				var i = 0;
-				while (2 * i + 1 < pending.length) {
-					var child = 2 * i + 1;
-					if (child + 1 < pending.length && pending[child + 1].0 < pending[child].0) child++;
-					if (last.0 <= pending[child].0) break;
-					pending[i] = pending[child];
-					i = child;
-				}
-				pending[i] = last;
-			}
-			locals(value.0);
-			put(value.0, value.1, 0, value.2);
-		}
 	}
 }

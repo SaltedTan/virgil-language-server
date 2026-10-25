@@ -543,7 +543,9 @@ class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array
 	def var hintCount: int;
 	def var hints: Array<byte> = [];
 	def setHints(count: int, encoded: Array<byte>) { hintCount = count; hints = encoded; }
-	def hintCursor() -> AnalysisHintCursor { return AnalysisHintCursor.new(DataReader.new(hints), hintCount); }
+	def hintCursor() -> AnalysisFileHintCursor {
+		return AnalysisFileHintCursor.new(AnalysisHintCursor.new(DataReader.new(hints), hintCount), callCursor());
+	}
 	def var callCount: int;
 	def var calls: Array<byte> = [];
 
@@ -689,10 +691,11 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 	// After nextArg, the argument's begin and exclusive end.
 	def var argBegin: int;
 	def var argEnd: int;
-	// Worker-only label plus one. In absolute records bit 1 marks labels,
+	// Label string ID plus one, or zero. Both callee bits mark wire labels.
+	// In absolute records bit 1 marks labels,
 	// since worker callees always use explicit offsets, never AT_PAREN.
 	def var argHint: int;
-	def hasHints() -> bool { return absolute && (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0; }
+	def hasHints() -> bool { return if(absolute, (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0, (flags & 3) == 3); }
 	def rewindArgs(at: int) { r.at(at); position = open + 1; }
 	// The opening parenthesis of the last call read, or -1.
 	private var last = -1;
@@ -707,7 +710,7 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		remaining = 1;
 	}
 	def calleeEndsAtParen() -> bool {
-		return (flags & AnalysisCallFlags.CALLEE_AT_PAREN) != 0;
+		return (flags & 3) == AnalysisCallFlags.CALLEE_AT_PAREN;
 	}
 	// Reads the next call's head. False after the last call or if it is malformed.
 	def next() -> bool {
@@ -719,13 +722,12 @@ class AnalysisCallCursor(r: DataReader, var remaining: int) {
 		// Opening parentheses strictly increase.
 		if (!absolute && last >= 0 && (delta < 1 || delta > int.max - last)) return fail("calls out of order");
 		open = last = if(absolute || last < 0, delta, last + delta);
-		var head = uleb(), both = AnalysisCallFlags.CALLEE_AT_PAREN | AnalysisCallFlags.CALLEE_OFFSET;
+		var head = uleb();
 		flags = head & 7;
 		argCount = head >> 3;
-		if (!absolute && (flags & both) == both) return fail("invalid call flags");
 		var offset = (flags & AnalysisCallFlags.CALLEE_OFFSET) != 0;
 		calleeDelta = if(offset, uleb());
-		if (offset && (calleeDelta < 1 || calleeDelta > open)) return fail("invalid callee offset");
+		if (offset && (calleeDelta < if(!absolute && hasHints(), 0, 1) || calleeDelta > open)) return fail("invalid callee offset");
 		signature = uleb();
 		// Each argument takes at least a byte.
 		if (argCount > r.available() || open == int.max) return fail("invalid call");

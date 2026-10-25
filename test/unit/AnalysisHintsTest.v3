@@ -80,10 +80,7 @@ def wire_validation(t: Tester) {
 		var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
 		var f = AnalysisSnapshotFile.new([], [], [], [], 0, 0);
 		reader.readHints(f, [], ["value"]);
-		if (Strings.equal(record, "\x01\x01\x00\x00")) {
-			t.assert(reader.finish(), "valid parameter record");
-			t.assertl(68L, reader.allocationBytes());
-		} else t.assert(!reader.finish(), "invalid record rejected");
+		t.assert(!reader.finish(), "invalid local record rejected; parameters belong to calls");
 	}
 }
 
@@ -98,20 +95,34 @@ def wire_utf8(t: Tester) {
 	var invalid = Array<byte>.new(100);
 	for (i < invalid.length) invalid[i] = 0x80;
 	var d = AnalysisDeclaration.new(AnalysisDeclKind.LOCAL, "v", AnalysisRange.new("x.v3", 1, 2, 1, 3, 1, 2));
+	var signatures = AnalysisSnapshotSignatures.new([], [], [0], [], []);
 	for (label in ["\x80", "\xC0\xAF", "\xF0\x80\x80\x80", "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xE2\x80", invalid]) {
-		for (local in [0, 1]) {
-			var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(1)
-				.put_sleb32(1).put_sleb32(1).put_sleb32(local).put_sleb32(0).extract();
-			var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
-			reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], [label]);
-			t.assert(!reader.finish(), "invalid UTF-8 rejected for either hint kind");
-		}
+		var data = DataWriter.new().putb(AnalysisWire.RESULT).puta("\x01\x01\x01\x01\x00").extract();
+		var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+		reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], [label]);
+		t.assert(!reader.finish(), "invalid UTF-8 type label rejected");
+		data = DataWriter.new().putb(AnalysisWire.RESULT).puta("\x01\x01\x0B\x00\x00\x04\x01").extract();
+		reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
+		reader.readCalls(AnalysisSnapshotFile.new([], [], [], [], 0, 0), signatures, [label]);
+		t.assert(!reader.finish(), "invalid UTF-8 argument label rejected");
 	}
-	// A valid parameter string must still be checked as a type label.
-	var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(2)
-		.puta("\x00\x01\x00\x00\x01\x01\x01\x00").extract();
-	var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT);
-	reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], ["?"]);
+	for (record in ["\x01\x0B\x00\x00\x04\x01", "\x01\x0B\x00\x00\x04\x02", "\x01\x0B\x00\x00\x04", "\x01\x0B\x00\x00\x00\x01"]) {
+		var data = DataWriter.new().putb(AnalysisWire.RESULT).put_sleb32(1).puta(record).extract();
+		var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT), f = AnalysisSnapshotFile.new([], [], [], [], 0, 0);
+		reader.readCalls(f, signatures, ["value"]);
+		if (record.length == 6 && record[4] == 4 && record[5] == 1) {
+			t.assert(reader.finish(), "valid argument label");
+			t.assertl(70L, reader.allocationBytes());
+			var c = f.hintCursor();
+			t.assert(c.next() && c.begin == 2 && c.end == 3 && c.local == 0 && c.label == 0 && !c.next(), "argument becomes hint without duplicate span");
+		} else t.assert(!reader.finish(), "invalid argument label or span rejected");
+	}
+	// Validation cached for parameter strings must not bypass type bounds.
+	var data = DataWriter.new().putb(AnalysisWire.RESULT)
+		.puta("\x01\x01\x0B\x00\x00\x04\x01\x01\x01\x01\x01\x00").extract();
+	var reader = AnalysisWireReader.new(data, AnalysisWire.RESULT), strings = ["?"];
+	reader.readCalls(AnalysisSnapshotFile.new([], [], [], [], 0, 0), signatures, strings);
+	reader.readHints(AnalysisSnapshotFile.new([], [], [], [], 0, 1), [d], strings);
 	t.assert(!reader.finish(), "validation cache distinguishes label kinds");
 }
 

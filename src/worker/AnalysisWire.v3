@@ -409,18 +409,18 @@ component AnalysisWire {
 		for (i < uses.length) if (uses[i] > 0) order[used++] = i;
 		order = AnalysisTables.sort(order, fun (a: int, b: int) => uses[a] > uses[b]);
 		for (i < order.length) rank[order[i]] = i + 1;
+		// Validate and translate call bytes once, shared by sizing and writing.
+		var callData = Array<Range<byte>>.new(files.length), check = AnalysisCallCheck.new(uses.length);
+		for (i < files.length) {
+			var encoded = DataWriter.new(), f = files[i];
+			encodeCalls(encoded, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank, hints);
+			callData[i] = encoded.alias();
+		}
 		var text = AnalysisStringTable.new();
 		for (i in order) {
 			var sig = analysis.callSignature(i);
 			if (strings.find(sig.label) < 0) text.add(sig.label);
 			for (p in sig.params) if (strings.find(p) < 0) text.add(p);
-		}
-		// Validate and translate call bytes once, shared by sizing and writing.
-		var callData = Array<Range<byte>>.new(files.length), check = AnalysisCallCheck.new(uses.length);
-		for (i < files.length) {
-			var encoded = DataWriter.new(), f = files[i];
-			encodeCalls(encoded, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
-			callData[i] = encoded.alias();
 		}
 		return encodeSized(prefix, fun (w: DataWriter) {
 			w.put_sleb32(strings.length());
@@ -495,28 +495,31 @@ component AnalysisWire {
 	// bytes between it and the previous argument's end (the first's from just
 	// after the parenthesis), or three if they follow as another number; and,
 	// with CLOSE_GAP, the bytes between the last argument and the closing
-	// parenthesis. Collector records with parameter labels strip those
-	// worker-only IDs here; other argument bytes are copied unchanged. A callee is the use that ends at the parenthesis, if it does, and
+	// parenthesis. Both callee bits together mark argument labels: the
+	// explicit callee delta is then zero if absent, and each argument ends
+	// with a label string ID plus one (zero suppresses that argument). A
+	// callee is otherwise the use that ends at the parenthesis, if it does, and
 	// is sent only if its use is.
 	private def encodeCalls(w: DataWriter, c: AnalysisCallCursor, check: AnalysisCallCheck,
-			occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>, rank: Array<int>) {
+			occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>, rank: Array<int>, hints: AnalysisHintEncoding) {
 		var last = 0;
 		while (c.next()) {
 			var from = c.r.pos;
 			if (!check.sends()) continue;
 			var open = c.open, flags = c.flags & AnalysisCallFlags.CLOSE_GAP;
 			var calleeEnd = if(c.calleeDelta > 0, useEnd(occurrences, builtins, open - c.calleeDelta), -1);
-			if (calleeEnd == open) flags |= AnalysisCallFlags.CALLEE_AT_PAREN;
+			if (check.labeled) flags |= 3;
+			else if (calleeEnd == open) flags |= AnalysisCallFlags.CALLEE_AT_PAREN;
 			else if (calleeEnd >= 0) flags |= AnalysisCallFlags.CALLEE_OFFSET;
 			putU(w, open - last);
 			putU(w, c.argCount * 8 + flags);
-			if ((flags & AnalysisCallFlags.CALLEE_OFFSET) != 0) putU(w, c.calleeDelta);
+			if ((flags & AnalysisCallFlags.CALLEE_OFFSET) != 0) putU(w, if(calleeEnd >= 0, c.calleeDelta));
 			putU(w, if(c.signature > 0, rank[c.signature - 1]));
-			putCallArguments(w, c, from);
+			putCallArguments(w, c, from, if(check.labeled, hints));
 			last = open;
 		}
 	}
-	private def putCallArguments(w: DataWriter, c: AnalysisCallCursor, from: int) {
+	private def putCallArguments(w: DataWriter, c: AnalysisCallCursor, from: int, hints: AnalysisHintEncoding) {
 		if (!c.hasHints()) { w.putr(c.r.data[from ... c.r.pos]); return; }
 		c.rewindArgs(from);
 		var end = c.open + 1;
@@ -525,6 +528,7 @@ component AnalysisWire {
 			var gap = c.argBegin - end;
 			putU(w, 4 * (c.argEnd - c.argBegin) + if(gap < 3, gap, 3));
 			if (gap >= 3) putU(w, gap);
+			if (hints != null) putU(w, if(c.argHint > 0, hints.label(c.argHint - 1)));
 			end = c.argEnd;
 		}
 		c.finish();
@@ -545,7 +549,7 @@ component AnalysisWire {
 		putU(w, c.argCount * 8 + (c.flags & (AnalysisCallFlags.CALLEE_OFFSET | AnalysisCallFlags.CLOSE_GAP)));
 		if (c.calleeDelta > 0) putU(w, c.calleeDelta);
 		putU(w, if(c.signature > 0, rank[c.signature - 1]));
-		putCallArguments(w, c, from);
+		putCallArguments(w, c, from, null);
 		w.put_sleb32(if(call.target != null, 1 + decls.find(call.target)));
 	}
 	// Decodes a RESULT into the worker's state and a snapshot with
@@ -655,7 +659,7 @@ component AnalysisWire {
 				file.compactCoordinates = compact;
 				r.checkDisjoint(file, builtins);
 				file.typeTargets = r.readTypeTargets(file, declarations);
-				r.readCalls(file, signatures);
+				r.readCalls(file, signatures, strings);
 				r.readHints(file, declarations, strings);
 				files.add(fileIndex, file);
 			}
@@ -1082,7 +1086,7 @@ class AnalysisWireReader {
 		var cursor = AnalysisHintCursor.new(r, count), previous = -1;
 		while (cursor.next()) {
 			var local = cursor.local, label = cursor.label;
-			if (cursor.begin <= previous || local < 0 || local > declarations.length
+			if (cursor.begin <= previous || local <= 0 || local > declarations.length
 					|| label < 0 || label >= strings.length) return fail("invalid hint index");
 			var bit: byte = if(local > 0, 2, 1);
 			if ((hintLabels[label] & bit) == 0) {
@@ -1202,7 +1206,8 @@ class AnalysisWireReader {
 	// charged as their bytes, and checks each: their opening parentheses
 	// strictly increase, their argument lists nest, a callee is one of the
 	// file's uses, and a signature is one of {signatures}.
-	def readCalls(file: AnalysisSnapshotFile, signatures: AnalysisSnapshotSignatures) {
+	def readCalls(file: AnalysisSnapshotFile, signatures: AnalysisSnapshotSignatures, strings: Array<string>) {
+		if (hintLabelStrings != strings) { hintLabelStrings = strings; hintLabels = Array<byte>.new(strings.length); }
 		// The open delta, head, and signature take a byte each.
 		var count = readCount(3, 0), start = r.pos;
 		var cursor = AnalysisCallCursor.new(r, count), closes = Array<int>.new(16), depth = 0;
@@ -1214,7 +1219,15 @@ class AnalysisWireReader {
 				if (file.useAt(open - cursor.calleeDelta) < 0) r.fail("invalid callee");
 			}
 			if (cursor.signature > signatures.count()) r.fail("invalid signature index");
-			for (i = 0; i < cursor.argCount && r.ok; i++) cursor.nextArg();
+			for (i = 0; i < cursor.argCount && r.ok; i++) {
+				if (!cursor.nextArg()) break;
+				var label = cursor.argHint - 1;
+				if (label >= strings.length) return fail("invalid parameter label index");
+				if (label >= 0 && (hintLabels[label] & 1) == 0) {
+					if (!AnalysisHintText.valid(strings[label], false)) return fail("invalid parameter label");
+					hintLabels[label] |= 1;
+				}
+			}
 			if (!r.ok || !cursor.finish()) break;
 			while (depth > 0 && closes[depth - 1] <= open) depth--;
 			if (depth > 0 && cursor.close > closes[depth - 1]) {
@@ -1236,7 +1249,7 @@ class AnalysisWireReader {
 	def readCall(declarations: Array<AnalysisDeclaration>, signatures: AnalysisSnapshotSignatures) -> AnalysisCall {
 		var cursor = AnalysisCallCursor.new(r, 1);
 		if (!cursor.next()) return null;
-		if (cursor.calleeEndsAtParen()) r.fail("invalid callee");
+		if (cursor.calleeEndsAtParen() || cursor.hasHints()) r.fail("invalid callee");
 		if (cursor.signature > signatures.count()) r.fail("invalid signature index");
 		if (!reserve(64 + 8L * cursor.argCount)) return null;
 		var args = Array<int>.new(2 * cursor.argCount);
@@ -1394,6 +1407,7 @@ class AnalysisWireReader {
 // whose argument lists nest, as the decoder requires. The collector makes no
 // other kind. Allocates only to grow its stack of closing parentheses.
 class AnalysisCallCheck(signatures: int) {
+	def var labeled: bool;
 	private def closes = Vector<int>.new();
 	private var cursor: AnalysisCallCursor;
 	private var previous: int;
@@ -1410,7 +1424,11 @@ class AnalysisCallCheck(signatures: int) {
 	// whether to send it.
 	def sends() -> bool {
 		var c = cursor;
-		for (i < c.argCount) if (!c.nextArg()) return false;
+		labeled = false;
+		for (i < c.argCount) {
+			if (!c.nextArg()) return false;
+			if (c.argHint > 0) labeled = true;
+		}
 		if (!c.finish() || c.open <= previous || c.signature > signatures) return false;
 		while (closes.length > 0 && closes[closes.length - 1] <= c.open) closes.length--;
 		if (closes.length > 0 && c.close > closes[closes.length - 1]) return false;
