@@ -279,6 +279,31 @@ class AnalysisSnapshot {
 		var i = file.findOffset(offset);
 		return if(i >= 0, declarations[file.target(i)]);
 	}
+	// Whether a recorded name contains {offset}, and the source declaration
+	// of its resolved type, or null for a built-in, structural or unknown
+	// type. Distinguishing a found null prevents cursor fallback from taking
+	// the type of an adjacent name. At type names this is definition's target.
+	def typeDefinitionAtOffset(path: string, offset: int) -> (bool, AnalysisDeclaration) {
+		var file = fileOf(path);
+		if (file == null) return (false, null);
+		var declaration = file.siteAt(declarations, offset), begin = -1;
+		if (declaration >= 0) begin = declarations[declaration].range.beginOffset;
+		else {
+			var use = file.findOffset(offset);
+			if (use >= 0) {
+				begin = file.ranges[4 * use + 2];
+				declaration = file.target(use);
+			}
+			else {
+				var builtin = file.findBuiltin(offset);
+				if (builtin >= 0) begin = file.builtins[5 * builtin + 2];
+			}
+		}
+		if (begin < 0) return (false, null);
+		var target = if(file.typeTargets != null, file.typeTargets.find(begin), -1);
+		if (target < 0) target = if(declaration >= 0, declarations[declaration].typeTarget);
+		return (true, if(target > 0, declarations[target - 1]));
+	}
 	// The references of {decl}, one of {declarations}: the uses that
 	// definitionAtOffset resolves to it, or to another declaration with the
 	// same name token, such as a data type's single case or a class
@@ -459,12 +484,22 @@ class AnalysisSnapshotFiles {
 // builtin use's index.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
 		firstSite: int, siteCount: int) {
+	def siteAt(declarations: Array<AnalysisDeclaration>, offset: int) -> int {
+		var low = firstSite, high = low + siteCount;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (declarations[mid].range.endOffset <= offset) low = mid + 1;
+			else high = mid;
+		}
+		return if(low < firstSite + siteCount && declarations[low].range.beginOffset <= offset, low, -1);
+	}
 	def target(i: int) -> int {
 		return targets[i] & int.max;
 	}
 	def isWrite(i: int) -> bool {
 		return targets[i] < 0;
 	}
+	var typeTargets: AnalysisSnapshotTypeTargets;
 	def var callCount: int;
 	def var calls: Array<byte> = [];
 

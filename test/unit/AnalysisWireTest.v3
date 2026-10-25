@@ -8,6 +8,8 @@ def X = [
 	T("AnalysisWire:analyze_frame_size", test_analyze_frame_size),
 	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
 	T("AnalysisWire:occurrence_write_bit", test_occurrence_write_bit),
+	T("AnalysisWire:type_targets", test_type_targets),
+	T("AnalysisWire:type_targets_selected_files", test_type_targets_selected_files),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
 	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
@@ -525,7 +527,7 @@ def OCCURRENCE = "\x01\x01\x08\x01";
 def NO_SIGNATURES = "\x00\x00";
 // A file's empty lists of use-site types and builtin uses, and its empty
 // list of calls.
-def NO_DISPLAY = "\x00\x00\x00";
+def NO_DISPLAY = "\x00\x00\x00\x00";
 // A result with {diagnostics} as its diagnostic count and, if {occurrences}
 // is not null, those bytes as its occurrence section.
 def result(diagnostics: int, occurrences: DataWriter) -> Array<byte> {
@@ -543,7 +545,7 @@ def declaration(kind: int, path: int) -> DataWriter {
 	var w = DataWriter.new();
 	w.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
 	w.put_sleb32(1).putb(kind).put_sleb32(0).put_sleb32(path);
-	return w.puta(DECLARATION_RANGE).put_sleb32(1);
+	return w.puta(DECLARATION_RANGE).put_sleb32(1).put_sleb32(0);
 }
 def DECLARATION_RANGE = "\x01\x01\x01\x02\x04\x05";
 // The request of the hand-built results, whose path indexes are 0 for
@@ -617,12 +619,12 @@ def test_invalid_display_indexes(t: Tester) {
 	assertMalformed(t, file(declarations(1, 0, 3), 0).puta(NO_DISPLAY), "signature index");
 	// A null table entry cannot be a name.
 	var nulls = DataWriter.new().put_sleb32(1).put_sleb32(-1);
-	nulls.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
+	nulls.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
 	assertMalformed(t, file(nulls, 0).puta(NO_DISPLAY), "null name");
 	// A use-site type is an occurrence index, as a difference from the
 	// previous one, and a string index.
 	var typed = file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0).put_sleb32(1).put_sleb32(0).put_sleb32(1);
-	r = decodedResult(result(0, typed.put_sleb32(0).put_sleb32(0)), 1, REQUEST);
+	r = decodedResult(result(0, typed.put_sleb32(0).put_sleb32(0).put_sleb32(0)), 1, REQUEST);
 	if (r == null) return t.fail("a use-site type was rejected");
 	t.assert_string("int", r.snapshot.useTypeAtOffset("p.v3", 8));
 	t.assert(r.snapshot.useTypeAtOffset("p.v3", 9) == null, "no use past the end");
@@ -630,7 +632,7 @@ def test_invalid_display_indexes(t: Tester) {
 	t.assert(o != null && Strings.equal("int", o.useType), "an occurrence's use-site type");
 	var two = file(declarations(1, 0, 0), 2).puta(OCCURRENCE).put_sleb32(0).puta("\x01\x03\x0A\x01").put_sleb32(0);
 	r = decodedResult(result(0, two.put_sleb32(2).put_sleb32(0).put_sleb32(0).put_sleb32(1).put_sleb32(1)
-		.put_sleb32(0).put_sleb32(0)), 1, REQUEST);
+		.put_sleb32(0).put_sleb32(0).put_sleb32(0)), 1, REQUEST);
 	if (r == null) return t.fail("two use-site types were rejected");
 	t.assert_string("x", r.snapshot.useTypeAtOffset("p.v3", 8));
 	t.assert_string("int", r.snapshot.useTypeAtOffset("p.v3", 10));
@@ -657,8 +659,8 @@ def test_invalid_display_indexes(t: Tester) {
 	// order without overlap.
 	var sites = DataWriter.new();
 	sites.put_sleb32(1).put_sleb32(1).putb('x');
-	sites.put_sleb32(2).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
-	sites.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0);
+	sites.put_sleb32(2).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	sites.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0).put_sleb32(0);
 	r = decodedResult(result(0, site(sites, 0, 0, 2)), 1, REQUEST);
 	if (r == null) return t.fail("declaration sites were rejected");
 	t.assert(r.snapshot.declarationAtOffset("p.v3", 4) == r.snapshot.declarations[0], "the first site");
@@ -671,7 +673,7 @@ def test_invalid_display_indexes(t: Tester) {
 	assertMalformed(t, site(sites, 1, 0, 1), "a site in another file");
 	var overlap = DataWriter.new().put_sleb32(1).put_sleb32(1).putb('x');
 	overlap.put_sleb32(2);
-	for (i < 2) overlap.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
+	for (i < 2) overlap.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
 	assertMalformed(t, site(overlap, 0, 0, 2), "overlapping sites");
 }
 // Each file is decoded once, and its site run follows the previous file's,
@@ -719,9 +721,9 @@ def siteRuns(files: Array<(int, int, int)>) -> DataWriter {
 	var w = DataWriter.new();
 	w.put_sleb32(1).put_sleb32(1).putb('x');
 	w.put_sleb32(3);
-	w.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
-	w.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0);
-	w.putb(0).put_sleb32(0).put_sleb32(1).puta(DECLARATION_RANGE).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(1).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
 	w.puta(NO_SIGNATURES).put_sleb32(files.length);
 	for (f in files) w.put_sleb32(f.0).put_sleb32(f.1).put_sleb32(f.2).put_sleb32(0).puta(NO_DISPLAY);
 	return w;
@@ -765,16 +767,19 @@ def uses(occurrences: Array<(int, int, int, int)>, builtins: Array<(int, int, in
 	for (o in occurrences) w.put_sleb32(o.0).put_sleb32(o.1).put_sleb32(o.2).put_sleb32(o.3).put_sleb32(0);
 	w.put_sleb32(0).put_sleb32(builtins.length);
 	for (b in builtins) w.put_sleb32(b.0).put_sleb32(b.1).put_sleb32(b.2).put_sleb32(b.3).put_sleb32(1);
-	return w.put_sleb32(0);
+	return w.put_sleb32(0).put_sleb32(0);
 }
 // A string table with "x" and "int", and {count}
 // declarations at p.v3:1:1-1:2, bytes 4 to 5, whose name and signature have
 // string indexes {name} and {signature}: an index plus one, or zero.
 def declarations(count: int, name: int, signature: int) -> DataWriter {
+	return declarationsWithType(count, name, signature, 0);
+}
+def declarationsWithType(count: int, name: int, signature: int, target: int) -> DataWriter {
 	var w = DataWriter.new();
 	w.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
 	w.put_sleb32(count);
-	for (i < count) w.putb(0).put_sleb32(name).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(signature);
+	for (i < count) w.putb(0).put_sleb32(name).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(signature).put_sleb32(target);
 	return w;
 }
 // A copy of {w} followed by a file table of one file, path index {path},
@@ -788,7 +793,7 @@ def site(w: DataWriter, path: int, first: int, count: int) -> DataWriter {
 // 23, whose type has string index {typeIndex}.
 def builtin(typeIndex: int) -> DataWriter {
 	var w = file(declarations(1, 0, 0), 0).put_sleb32(0).put_sleb32(1).puta("\x02\x01\x14\x03");
-	return w.put_sleb32(typeIndex).put_sleb32(0);
+	return w.put_sleb32(typeIndex).put_sleb32(0).put_sleb32(0);
 }
 def assertMalformed(t: Tester, occurrences: DataWriter, message: string) {
 	t.assert(AnalysisResultDecode.Malformed.?(AnalysisWire.decodeResult(result(0, occurrences), 1, REQUEST)), message);
@@ -801,7 +806,7 @@ def test_result_index_string_budget(t: Tester) {
 	for (i < text.length) text[i] = 'x';
 	// The name is in the string table; the path is the request's.
 	var index = DataWriter.new().put_sleb32(1).put_sleb32(text.length).puta(text);
-	index.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
+	index.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
 	file(index, 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY);
 	var decoded = decodedResult(result(0, index), 1, [text]);
 	if (decoded == null) return t.fail("index strings within the allocation budget were rejected");
@@ -815,7 +820,7 @@ def test_result_allocation_budget(t: Tester) {
 	var declarations = DataWriter.new();
 	declarations.put_sleb32(1).put_sleb32(1).putb('x').put_sleb32(200000);
 	for (i < 200000) {
-		declarations.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
+		declarations.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
 	}
 	declarations.put_sleb32(0);
 	assertTooLarge(t, result(0, declarations), "compact declarations exceed allocation budget");
@@ -824,7 +829,7 @@ def test_result_allocation_budget(t: Tester) {
 	assertTooLarge(t, result(0, files), "compact file table exceeds allocation budget");
 	var occurrences = DataWriter.new();
 	occurrences.put_sleb32(1).put_sleb32(1).putb('x');
-	occurrences.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0);
+	occurrences.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
 	occurrences.put_sleb32(2);
 	for (f < 2) {
 		occurrences.put_sleb32(f).put_sleb32(0).put_sleb32(0).put_sleb32(500000);
@@ -1024,7 +1029,7 @@ def ONE_SIGNATURE = "\x02\x09f(a: int)\x06a: int\x01\x02\x02\x01\x03";
 def withCalls(signatures: string, count: int, encoded: string) -> DataWriter {
 	var w = declarations(1, 0, 0).puta(signatures);
 	w.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1).puta(OCCURRENCE).put_sleb32(0);
-	return w.put_sleb32(0).put_sleb32(0).put_sleb32(count).puta(encoded);
+	return w.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(count).puta(encoded);
 }
 // A call is unsigned LEB128 numbers: its opening parenthesis, as a
 // difference; its argument count times eight, plus 1 if its callee's use
@@ -1101,8 +1106,8 @@ def test_invalid_calls(t: Tester) {
 	// zero, and the second file has no use to be a callee.
 	var two = declarations(1, 0, 0).puta(NO_SIGNATURES).put_sleb32(2);
 	two.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1).puta(OCCURRENCE).put_sleb32(0);
-	two.put_sleb32(0).put_sleb32(0).put_sleb32(1).puta("\x09\x01\x00");
-	two.put_sleb32(1).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1);
+	two.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1).puta("\x09\x01\x00");
+	two.put_sleb32(1).put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1);
 	assertMalformed(t, DataWriter.new().puta(two.copy()).puta("\x09\x01\x00"), "a callee in another file");
 	r = decodedResult(result(0, two.puta("\x03\x00\x00")), 1, REQUEST);
 	var second = if(r != null, r.snapshot.callAt("q.v3", 4));
@@ -1197,7 +1202,7 @@ def test_shared_signatures(t: Tester) {
 	var calls = DataWriter.new();
 	for (i < 5000) calls.putb(3).putb(0).putb(1);
 	var payload = result(0, withCalls(w.extract(), 5000, calls.extract()));
-	t.asserti(115069, payload.length);
+	t.asserti(115071, payload.length);
 	var r = decodedResult(payload, 1, REQUEST);
 	if (r == null) return t.fail("the calls were rejected");
 	var got = r.snapshot.calls("p.v3");
@@ -1229,7 +1234,7 @@ def test_call_allocation(t: Tester) {
 	for (n in [13, 14]) {
 		var w = file(declaration(0, 0), most);
 		for (i < most) w.put_sleb32(1).put_sleb32(1).put_sleb32(i).put_sleb32(1).put_sleb32(0);
-		w.put_sleb32(0).put_sleb32(0).put_sleb32(1).putb(0).putb(byte.view(8 * n)).putb(0);
+		w.put_sleb32(0).put_sleb32(0).put_sleb32(0).put_sleb32(1).putb(0).putb(byte.view(8 * n)).putb(0);
 		for (i < n) w.putb(4);
 		if (n == 13) t.assert(decodedResult(result(0, w), 1, REQUEST) != null, "a call within the budget");
 		else assertTooLarge(t, result(0, w), "a call beyond the budget");
@@ -1792,4 +1797,58 @@ def test_occurrence_write_bit(t: Tester) {
 	for (target in [-2, int.min]) {
 		assertMalformed(t, file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(target).puta(NO_DISPLAY), "invalid write target");
 	}
+}
+
+// A located type is two compressed integers and one checkpoint, not an
+// object or string per occurrence. Invalid offsets and targets are rejected.
+def test_type_targets(t: Tester) {
+	var empty = decodedResult(result(0, file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY)), 1, REQUEST);
+	var good = decodedResult(result(0, typeTargets(1, "\x08\x01")), 1, REQUEST);
+	if (empty == null || good == null) return t.fail("valid type-target table rejected");
+	t.assertl(64L + 8 + 64 + 2, good.snapshot.resultAllocation - empty.snapshot.resultAllocation);
+	t.assertl(good.snapshot.resultAllocation - empty.snapshot.resultAllocation,
+		good.snapshot.retainedBytes - empty.snapshot.retainedBytes);
+	t.assert(good.snapshot.typeDefinitionAtOffset("p.v3", 8).1 == good.snapshot.declarations[0], "target is a declaration ID");
+	// A default has the same checked code space as an override. It is
+	// stored in the existing declaration record without another array.
+	var defaulted = decodedResult(result(0, file(declarationsWithType(1, 0, 0, 1), 1)
+		.puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY)), 1, REQUEST);
+	if (defaulted == null) return t.fail("valid default type target rejected");
+	t.assert(defaulted.snapshot.typeDefinitionAtOffset("p.v3", 8).1 == defaulted.snapshot.declarations[0], "shared default");
+	t.assertl(empty.snapshot.resultAllocation, defaulted.snapshot.resultAllocation);
+	for (code in [-1, 2, int.max]) assertMalformed(t, file(declarationsWithType(1, 0, 0, code), 1)
+		.puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY), "invalid default type target");
+	for (bad in [(1, "\x08\x02"), (1, "\x08\x7F"), (1, "\x09\x00"), (1, "\x7F\x00"),
+			(2, "\x08\x00\x00\x00"), (-1, ""), (int.max, "")]) {
+		assertMalformed(t, typeTargets(bad.0, bad.1), "bad type-target table");
+	}
+	for (data in ["\x08\x00\x00\x00", "\x0A\x00\x7F\x00", "\x08\x00\xFF\xFF\xFF\xFF\x07\x00"]) {
+		var w = file(declarations(1, 0, 0), 2).puta(OCCURRENCE).put_sleb32(0)
+			.puta("\x01\x03\x0A\x01").put_sleb32(0).put_sleb32(0).put_sleb32(0)
+			.put_sleb32(2).puta(data).put_sleb32(0);
+		assertMalformed(t, w, "unordered or overflowing type-target offsets");
+	}
+}
+def typeTargets(count: int, data: string) -> DataWriter {
+	return file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0)
+		.put_sleb32(0).put_sleb32(0).put_sleb32(count).puta(data).put_sleb32(0);
+}
+
+// A prior collection must not leak its otherwise unused type declarations
+// into an encoding that selects a different file from the same analysis.
+def test_type_targets_selected_files(t: Tester) {
+	var a = AeneasAdapter.analyzeProgram([
+		AnalysisSource.new("a.v3", "class A { } def a: A;"),
+		AnalysisSource.new("b.v3", "class B { } def b: B;")], [], false);
+	t.assert(a.verified, "independent files verify");
+	a.occurrences("a.v3");
+	// Let encoding collect b's sites lazily, so the numeric index also has
+	// to be sized after every selected file has finished collecting.
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, [("b.v3", [])]), 0L);
+	var r = decodedResult(payloadOf(frame), 1, ["b.v3"]);
+	if (r == null) return t.fail("selected file did not decode");
+	t.asserti(2, r.snapshot.declarations.length);
+	var found = r.snapshot.typeDefinitionAtOffset("b.v3", 16);
+	t.assert(found.0 && found.1 != null, "selected declaration keeps its type");
+	if (found.1 != null) t.assert_string("B", found.1.name);
 }

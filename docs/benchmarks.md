@@ -339,6 +339,51 @@ The rejected source/test patch has SHA-256
 The paired JSON retains binary hashes, source hashes, individual samples, all
 probe records, complete process stderr, host state, and the exact command.
 
+## Type-definition navigation
+
+Measured on 2026-10-25 against main `a2a522c`, on the Intel Core i7-14700KF reference host with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in equal-length `build/base-r1` and `build/next-r1` directories, with `BENCH=1 all bench-metadata` and identical generated BuildInfo text. The baseline sources were extracted for its build, then the optimized sources were restored byte for byte. Source hashes in both build manifests were checked against their inputs.
+
+The comparison held the shared benchmark lock after a read-only process check found no other benchmark. The client and its child processes ran on P-core hardware thread 12. All three pinned projects used six alternating process blocks, two warmups, and five measured operations per block, with every semantic check passing and no samples removed:
+
+```sh
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-lsp.py \
+  --exe build/base-r1/virgil-lsp --exe build/next-r1/virgil-lsp \
+  --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12 \
+  --output comparison-final.json
+```
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+
+| Measurement | Main | With type-definition targets |
+| --- | ---: | ---: |
+| Small fresh analysis | 0.462 (0.442–0.501) | 0.462 (0.445–0.495) |
+| Small reused analysis | 0.144 (0.135–0.158) | 0.144 (0.135–0.154) |
+| Util fresh analysis | 15.760 (15.231–16.502) | 15.758 (15.103–16.118) |
+| Util reused analysis | 13.622 (13.314–14.201) | 13.430 (13.216–13.838) |
+| Aeneas fresh analysis, end to end | 343.992 (338.285–357.976) | 334.337 (323.617–346.791) |
+| Aeneas fresh occurrence collection | 112.397 (111.054–120.147) | 115.498 (111.709–119.710) |
+| Aeneas fresh result encoding | 70.811 (70.002–76.785) | 59.775 (57.283–63.471) |
+| Aeneas fresh result decoding | 16.234 (15.740–17.248) | 17.105 (16.540–17.899) |
+| Aeneas reused analysis, end to end | 308.001 (293.099–326.309) | 296.570 (285.764–321.383) |
+| Aeneas reused occurrence collection | 98.831 (93.954–102.124) | 100.615 (97.296–102.747) |
+| Aeneas reused result encoding | 69.574 (66.114–73.392) | 57.111 (54.758–59.180) |
+| Aeneas reused result decoding | 14.349 (13.923–16.134) | 15.012 (14.519–16.995) |
+
+Aeneas fresh and reused analysis medians are lower by 9.655 ms (2.81%) and 11.431 ms (3.71%), respectively, with overlapping end-to-end intervals. Small and util medians are unchanged within noise or lower. This comparison establishes no measurable end-to-end latency cost. Collection still adds 3.101 ms fresh and 1.784 ms reused at the median, and decoding adds 0.871 and 0.663 ms; their intervals overlap. Result encoding saves 11.036 and 12.463 ms, with disjoint intervals. Nominal targets are memoized across files, distinct targets are registered during collection, defaults share declaration indexing, and ordered stream merging removes override sorting. Numeric declaration, string, and path IDs and prepared sparse bytes are reused between sizing and writing. Further collection savings could share resolved-type lookup with display interning; a smaller target encoding could reduce the remaining decoding work.
+
+Every measured worker transaction collected zero times in both candidates, excluding the explicit final collection. Aeneas fresh worker allocation rises from 189,226,344 to 193,162,328 bytes (2.08%); reused allocation medians rise from 189,072,920 to 193,008,904. The worker-only target registry and constructor cache, numeric translation arrays, and prepared byte buffers account for the temporary growth. These buffers do not enter the retained snapshot.
+
+Successful full-snapshot wire sizes are identical to the reviewed type-definition implementation. The following charges come from six independent size-probe runs per project and build, using the same relative source paths and no editor document provenance. Every size and charge is constant across those runs, so its median, p10, and p90 are the listed value. Wire lengths below are from the benchmark's worker probes and are also constant across all measured samples.
+
+| Project | Wire bytes, main → targets | Decoded allocation, main → targets | Retained charge, main → targets |
+| --- | ---: | ---: | ---: |
+| Small | 596 → 614 | 5,212 → 5,353 | 6,572 → 6,713 |
+| Util | 168,738 → 172,674 | 751,779 → 756,219 | 757,784 → 762,224 |
+| Aeneas | 3,936,046 → 4,054,897 | 13,250,205 → 13,311,167 | 13,285,835 → 13,346,797 |
+
+The wire sends a default source-type target per declaration and sparse exceptions, including explicit nulls. Aeneas wire growth remains 118,851 bytes (3.02%), and retained charge grows by 60,962 bytes (0.46%) for the compressed overrides and their checkpoints. The default integer remains within the existing conservative 128-byte declaration/range charge: the x86-64 declaration and range each occupy 40 bytes, plus an 8-byte array slot. Both Aeneas charges stay below the unchanged 80% budget guard. The frame and decoded-allocation limits are unchanged; no compiler types or rendered type strings are added to the snapshot.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at

@@ -51,6 +51,7 @@ TIMEOUT = 20
 CAPABILITIES = {
     "completionProvider": {"triggerCharacters": ["."]},
     "definitionProvider": True,
+    "typeDefinitionProvider": True,
     "documentHighlightProvider": True,
     "documentSymbolProvider": True,
     "hoverProvider": True,

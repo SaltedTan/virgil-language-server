@@ -156,6 +156,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var bracket = decl.name.length > 0 && decl.name[0] == '[' && r.endOffset - r.beginOffset == 1;
 		if (!bracket && !r.isTokenSpan()) return;
 		siteList.put(decl);
+		declarationSource(decl);
 	}
 	private def siteVar(v: VarDecl) {
 		// Verification appends synthetic capture parameters to lambda params.
@@ -337,7 +338,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			if (x.left == null && c != null && c.decl.isSynthetic && c.isDefaultCase()) {
 				typeRefs(x.nested);
 				var o = record(x.name, make(AnalysisDeclKind.CLASS, c.receiver), null, false);
-				if (o != null) o.useType = display.superclassUseType(o.declaration, tref);
+				if (o != null) {
+					o.useType = display.superclassUseType(o.declaration, tref);
+					o.sourceType = sourceCode(o.declaration);
+				}
 				return;
 			}
 		}
@@ -436,12 +440,13 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			// bypass ordinary name resolution in the verifier.
 			if (ve.expr != null || ve.varbind.ok()) continue;
 			if (pat.variantCase != null) {
-				record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase), null, false);
+				var o = record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase), null, false);
+				if (o != null) o.sourceType = sourceCode(o.declaration);
 			} else if (pat.val != null && EnumType.?(matchType)) {
 				// Enum patterns retain only their resolved case value; look up
 				// the declaration in the verified scrutinee's enum.
 				var member = EnumType.!(matchType).lookupCase(ve.ident.name.image);
-				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member), null, false);
+				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member), matchType, false);
 			}
 		}
 		stmt(c.stmt);
@@ -477,8 +482,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			var member = et.enumDecl.memberMap[e.ident.name.image];
 			if (VstField.?(member)) decl = make(AnalysisDeclKind.FIELD, member);
 		}
-		if (decl != null) record(e.ident.name, decl, e.exactType, e == writeTarget);
-		else builtin(e.ident.name, e.varbind, e.exactType);
+		if (decl != null) {
+			var o = record(e.ident.name, decl, e.exactType, e == writeTarget);
+			if (o != null && VarBinding.Type.?(e.varbind)) o.sourceType = sourceCode(decl);
+		} else builtin(e.ident.name, e.varbind, e.exactType);
 	}
 	// Every use is recorded here, with the text of its type {t} if that
 	// differs from its declaration's. A use must be a token span (see
@@ -495,6 +502,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		var o: AnalysisOccurrence = if(write, AnalysisWriteOccurrence.new(range, decl), AnalysisOccurrence.new(range, decl));
 		if (t != null) o.useType = display.useType(decl, t);
+		var d = AnalysisWorkerDeclaration.!(decl);
+		if (isTypeName(d.kind) && (ClassType.?(t) || EnumType.?(t) || TypeParamType.?(t))) o.sourceType = sourceCode(d);
+		else o.sourceType = if(t == d.ownType, declarationSource(decl),
+			if(t == null && decl.kind == AnalysisDeclKind.LAYOUT, sourceCode(decl), resolvedSourceType(t)));
 		result.put(o);
 		last(token, range.beginOffset, decl);
 		return o;
@@ -512,7 +523,9 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (text == null) return;
 		var range = sources.range(token);
 		if (range.isTokenSpan()) {
-			builtinUses.put(AnalysisBuiltinUse.new(range, text));
+			var u = AnalysisBuiltinUse.new(range, text);
+			u.sourceType = resolvedSourceType(t);
+			builtinUses.put(u);
 			last(token, range.beginOffset, null);
 		} else {
 			skipped++;
@@ -522,6 +535,19 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def visitString(e: StringExpr, env: void) { }
 	def visitApp(e: AppExpr, env: void) {
 		expr(e.func);
+		// Parentheses preserve a callee's name. Do not follow applications:
+		// in factory()(), factory's result is the inner function value.
+		var callee = e.func;
+		while (TupleExpr.?(callee)) {
+			var list = TupleExpr.!(callee).exprs.list;
+			if (list == null || list.tail != null) break;
+			callee = list.head;
+		}
+		if (VarExpr.?(callee) && lastToken == VarExpr.!(callee).ident.name) {
+			var target = resolvedSourceType(e.exactType);
+			if (lastDeclaration != null) result[result.length - 1].sourceType = target;
+			else builtinUses[builtinUses.length - 1].sourceType = target;
+		}
 		var close = call(e);
 		depth++;
 		expr(e.args);
@@ -905,6 +931,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var src = e.exprs.src;
 		if (decl == null || src == null) return;
 		var o = record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null, e == writeTarget);
+		if (o != null) o.sourceType = resolvedSourceType(e.exactType);
 		match (b) {
 			CallObjectMethod(receiver, member, typeArgs) => {
 				if (o != null) o.useType = display.methodUseType(decl, receiver, e.expr.exactType, member);
@@ -1020,6 +1047,35 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			CallObjectMethod(receiver, member, typeArgs) => return make(AnalysisDeclKind.METHOD, member);
 			_ => return null;
 		}
+	}
+	private def isTypeName(kind: AnalysisDeclKind) -> bool {
+		return kind == AnalysisDeclKind.CLASS || kind == AnalysisDeclKind.ENUM
+			|| kind == AnalysisDeclKind.TYPE_PARAM || kind == AnalysisDeclKind.LAYOUT;
+	}
+	// No recursive descent into structural types: Array<Foo> is not Foo.
+	// Follow solved inference variables only, never names or display text.
+	private def resolvedSourceType(t: Type) -> int {
+		for (i = 0; TypeVarType.?(t) && i < 1024; i++) {
+			var next = TypeVarType.!(t).vtype;
+			if (next == t) return 0;
+			t = next;
+		}
+		if (!(RefType.?(t) || ClassType.?(t) || EnumType.?(t) || TypeParamType.?(t))) return 0;
+		var i = display.nominalTypeIndex(t.typeCon), cached = display.nominalCode(i);
+		if (cached >= 0) return cached;
+		var target = sourceCode(if(RefType.?(t), make(AnalysisDeclKind.LAYOUT, RefType.!(t).layoutDecl), typeDeclaration(t)));
+		display.rememberNominal(target);
+		return target;
+	}
+	private def declarationSource(decl: AnalysisDeclaration) -> int {
+		if (decl.sourceType < 0) {
+			var d = AnalysisWorkerDeclaration.!(decl);
+			d.sourceType = if(isTypeName(d.kind), sourceCode(d), resolvedSourceType(d.ownType));
+		}
+		return decl.sourceType;
+	}
+	private def sourceCode(target: AnalysisDeclaration) -> int {
+		return display.sourceCode(target);
 	}
 	private def typeDeclaration(t: Type) -> AnalysisDeclaration {
 		// Verification errors can leave a Type binding with no resolved type.

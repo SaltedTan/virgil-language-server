@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- [Go to Type Definition](docs/architecture.md#type-definition) follows compiler-resolved value and call-result types, including generics, type parameters, and the `Ref<L>` layout exception. Built-in, structural, and unresolved types have no location; VS Code, Neovim, and LazyVim navigation is covered by editor tests ([#258](https://github.com/SaltedTan/virgil-language-server/issues/258)).
+
 - A [clean install test](docs/releasing.md#clean-install-test) follows the marked README commands for VS Code, plain Neovim, and LazyVim in a fresh Linux container, using each release or weekly run's archive and VSIX with producer-recorded checksums. It checks diagnostics, definition, and hover with the shipped library and an explicit root ([#250](https://github.com/SaltedTan/virgil-language-server/issues/250)).
 - A weekly [benchmark comparison](docs/benchmarks.md#scheduled-comparison) on Linux and macOS reports interleaved build timings and GC counts, uploads the JSON, and warns about large changes without failing on timing. The macOS job also renders a reference-baseline table, and [benchmarks](docs/benchmarks.md#macos-reference-baseline) records the first one, from the hosted Apple Silicon runner under Rosetta 2 ([#251](https://github.com/SaltedTan/virgil-language-server/issues/251)).
 - Document highlights (`textDocument/documentHighlight`) show a declaration and its uses in the current document, with the same lookup, freshness, and waiting rules as references. See [Document highlights](docs/architecture.md#document-highlights) ([#229](https://github.com/SaltedTan/virgil-language-server/issues/229)).

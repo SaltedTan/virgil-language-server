@@ -71,6 +71,15 @@ enum AnalysisDeclKind {
 // docs/architecture.md#display-text.
 class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisRange) {
 	var signature: string;
+	// Snapshot storage default: resolved type declaration ID plus one, or
+	// zero. Occurrence-specific overrides live beside the file index. The
+	// existing 128-byte declaration/range budget includes this integer.
+	// On worker declarations it instead identifies this declaration in the
+	// display table, before encoding translates the collector's codes.
+	var typeTarget: int;
+	// Worker-only resolved type code at the declaration site. The display
+	// assigns codes; snapshots retain only the default above.
+	var sourceType = -1;
 	def render(buf: StringBuilder) -> StringBuilder {
 		buf.puts(kind.name).putc(' ').puts(name).puts(" @ ");
 		return range.render(buf);
@@ -86,6 +95,8 @@ class AnalysisOccurrence(range: AnalysisRange, declaration: AnalysisDeclaration)
 	// growing the transient occurrence object. Snapshots pack it in an int.
 	def isWrite() -> bool { return AnalysisWriteOccurrence.?(this); }
 	var useType: string;
+	// Worker display declaration ID plus one; zero means no source type.
+	var sourceType: int;
 	def toString() -> string {
 		var buf = StringBuilder.new();
 		range.render(buf).puts(" -> ");
@@ -102,6 +113,7 @@ class AnalysisWriteOccurrence extends AnalysisOccurrence {
 // declaration, such as ".length" or "int.max", and the text of that type.
 // {range} is a token span. It is not an occurrence: it has no definition.
 class AnalysisBuiltinUse(range: AnalysisRange, useType: string) {
+	var sourceType: int;
 	def toString() -> string {
 		var buf = StringBuilder.new();
 		return range.render(buf).puts(": ").puts(useType).toString();
@@ -212,6 +224,14 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.sites;
 	}
+	// Resolves a collector's source-type code, shared with declaration sites,
+	// occurrences, and builtin uses. Inlay hints can reuse it with display data.
+	def typeDeclarationCount() -> int { return display.declarationCount(); }
+	def typeDeclaration(code: int) -> AnalysisDeclaration {
+		return if(code > 0, display.declarationAt(code - 1));
+	}
+	def sourceTargetCount() -> int { return display.sourceTargetCount(); }
+	def sourceTargetAt(index: int) -> AnalysisDeclaration { return display.sourceTargetAt(index); }
 	// The calls in {path}, in the order of their opening parentheses; see
 	// docs/architecture.md#call-sites. Collects the file if needed. Each call
 	// returns new objects; the encoder reads {callRecords} instead.

@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 11;
+	def PROTOCOL_VERSION = 12;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -155,7 +155,8 @@ component AnalysisWire {
 	// every declaration is in one of them. A declaration is its kind, its
 	// name's string index, its path index, its range (four compiler
 	// coordinates and two byte offsets), and its signature's string index plus
-	// one, or zero. Each file's declaration sites (see
+	// one, or zero, then its default source-type target (declaration ID plus
+	// one, or zero for null). Each file's declaration sites (see
 	// ProgramAnalysis.declarationSites) come first in the declarations, in
 	// files order, so a file sends its path index, then their first index and
 	// count. Then come its occurrences in source order, each its begin line,
@@ -163,7 +164,9 @@ component AnalysisWire {
 	// for a write); the occurrences whose use-site type differs from their
 	// declaration's, each as the difference from the previous one's occurrence index and the
 	// type's string index; its builtin uses, each a range as an
-	// occurrence's and a string index; and its calls (see encodeCalls). The
+	// occurrence's and a string index; its sparse type targets (byte offset
+	// delta and target code, with an absolute offset every 32 records);
+	// and its calls (see encodeCalls). The
 	// call signatures come between the declarations and the files: the
 	// signature text, strings that the string table lacks, then each
 	// signature as its label, the byte in the label where its first parameter
@@ -324,31 +327,67 @@ component AnalysisWire {
 			var f = files[i];
 			sites[i] = analysis.declarationSites(f.0);
 			builtins[i] = analysis.builtinUses(f.0);
+		}
+		var typeEncoding = AnalysisTypeTargetEncoding.new(analysis.typeDeclarationCount(), decls, files.length);
+		for (i < files.length) {
 			firstSite[i] = decls.length();
-			for (d in sites[i]) decls.add(d);
+			for (d in sites[i]) typeEncoding.add(d);
 		}
 		// The collector makes each declaration once, but a caller can make one
 		// per use; send each once.
-		for (f in files) {
-			for (o in f.1) {
-				if (o.useType != null) strings.add(o.useType);
-				if (decls.find(o.declaration) < 0) decls.add(o.declaration);
+		for (i < files.length) {
+			for (d in sites[i]) typeEncoding.choose(typeEncoding.declaration(d), d.sourceType);
+			var text = DataWriter.new(), ordinal = 0, previous = 0;
+			for (o in files[i].1) {
+				var useType = if(o.useType != null, strings.add(o.useType), -1);
+				var index = typeEncoding.add(o.declaration);
+				if (!o.range.isTokenSpan()) continue;
+				typeEncoding.choose(index, o.sourceType);
+				if (useType >= 0) {
+					text.put_sleb32(ordinal - previous).put_sleb32(useType);
+					previous = ordinal;
+				}
+				ordinal++;
 			}
+			typeEncoding.typedUses[i] = text.alias();
 		}
-		if (scope != null) for (d in scope.declarations) if (decls.find(d) < 0) decls.add(d);
-		if (call != null && call.target != null && decls.find(call.target) < 0) decls.add(call.target);
+		if (scope != null) for (d in scope.declarations) typeEncoding.add(d);
+		if (call != null && call.target != null) typeEncoding.add(call.target);
 		if (members != null) {
-			for (d in members.declarations) if (d != null && decls.find(d) < 0) decls.add(d);
+			for (d in members.declarations) if (d != null) typeEncoding.add(d);
 			for (i < members.names.length) {
 				if (members.declarations[i] == null) strings.add(members.names[i]);
 				if (members.details[i] != null) strings.add(members.details[i]);
 			}
 		}
-		for (b in builtins) for (u in b) strings.add(u.useType);
+		for (i < files.length) {
+			var encoded = DataWriter.new();
+			for (u in builtins[i]) {
+				var useType = strings.add(u.useType);
+				if (!u.range.isTokenSpan()) continue;
+				typeEncoding.requireTarget(u.sourceType);
+				putSpan(encoded, u.range);
+				encoded.put_sleb32(useType);
+			}
+			typeEncoding.builtinUses[i] = encoded.alias();
+		}
+		// Collection registered distinct targets. Indexing marked those the
+		// selected files need, including explicit nondefault uses; ignore
+		// targets registered by earlier collections of other files.
+		for (i < analysis.sourceTargetCount()) {
+			var d = analysis.sourceTargetAt(i);
+			if (typeEncoding.needs(d)) typeEncoding.add(d);
+		}
+		typeEncoding.translateDefaults();
+		for (i < files.length) typeEncoding.prepareFile(i, sites[i], files[i].1, builtins[i]);
+		// Both wire passes reuse the numeric string and path IDs as well as
+		// declaration IDs; none needs to hash the same declaration again.
+		var declarationIds = Array<int>.new(3 * decls.length());
 		for (i < decls.length()) {
 			var d = decls[i];
-			strings.add(d.name);
-			if (d.signature != null) strings.add(d.signature);
+			declarationIds[3 * i] = strings.add(d.name);
+			declarationIds[3 * i + 1] = if(d.signature != null, 1 + strings.add(d.signature));
+			declarationIds[3 * i + 2] = paths[d.range.path] - 1;
 		}
 		// Each signature that a sent call uses, which the display makes once,
 		// the most used first, so that most calls name theirs in one byte;
@@ -374,12 +413,13 @@ component AnalysisWire {
 			for (i < decls.length()) {
 				var d = decls[i];
 				w.putb(d.kind.tag);
-				w.put_sleb32(strings.add(d.name));
+				w.put_sleb32(declarationIds[3 * i]);
 				// Every declaration is in one of the request's files; -1 would be
 				// rejected.
-				w.put_sleb32(paths[d.range.path] - 1);
+				w.put_sleb32(declarationIds[3 * i + 2]);
 				putRange(w, d.range);
-				w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
+				w.put_sleb32(declarationIds[3 * i + 1]);
+				w.put_sleb32(typeEncoding.defaults[i]);
 			}
 			w.put_sleb32(text.length());
 			for (i < text.length()) putString(w, text[i]);
@@ -392,39 +432,19 @@ component AnalysisWire {
 			w.put_sleb32(files.length);
 			var check = AnalysisCallCheck.new(uses.length);
 			for (i < files.length) {
-				var f = files[i], count = 0, typed = 0;
+				var f = files[i], counts = typeEncoding.counts[i];
 				w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
-				for (o in f.1) {
-					if (!o.range.isTokenSpan()) continue;
-					count++;
-					if (o.useType != null) typed++;
-				}
-				w.put_sleb32(count);
+				w.put_sleb32(counts.0);
 				for (o in f.1) {
 					var r = o.range;
 					if (!r.isTokenSpan()) continue;
 					putSpan(w, r);
-					var target = decls.find(o.declaration);
+					var target = typeEncoding.declaration(o.declaration);
 					w.put_sleb32(if(o.isWrite(), ~target, target));
 				}
-				w.put_sleb32(typed);
-				var index = 0, previous = 0;
-				for (o in f.1) {
-					if (!o.range.isTokenSpan()) continue;
-					if (o.useType != null) {
-						w.put_sleb32(index - previous).put_sleb32(strings.add(o.useType));
-						previous = index;
-					}
-					index++;
-				}
-				count = 0;
-				for (u in builtins[i]) if (u.range.isTokenSpan()) count++;
-				w.put_sleb32(count);
-				for (u in builtins[i]) {
-					if (!u.range.isTokenSpan()) continue;
-					putSpan(w, u.range);
-					w.put_sleb32(strings.add(u.useType));
-				}
+				w.put_sleb32(counts.1).putr(typeEncoding.typedUses[i]);
+				w.put_sleb32(counts.2).putr(typeEncoding.builtinUses[i]);
+				w.put_sleb32(typeEncoding.overrideCounts[i]).putr(typeEncoding.overrides[i]);
 				w.put_sleb32(calls[i]);
 				encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
 			}
@@ -541,14 +561,16 @@ component AnalysisWire {
 			// Each string is charged as an index string, and its slot.
 			strings = Array<string>.new(r.readCount(1, 8));
 			for (i < strings.length) strings[i] = r.readString(1);
-			// Kind, name, path index, six range ints, and signature take at
-			// least ten bytes. The record charge covers the declaration, its
-			// range, and the array slot; its strings are in the string table.
-			declarations = Array<AnalysisDeclaration>.new(r.readCount(10, 128));
+			// Kind, name, path index, six range ints, signature, and default
+			// type target take at least eleven bytes. The conservative 128-byte
+			// charge covers the declaration (including that int), its range,
+			// and the array slot; strings are in the string table.
+			declarations = Array<AnalysisDeclaration>.new(r.readCount(11, 128));
 			for (i < declarations.length) {
 				var kind = r.readKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
 				var d = AnalysisDeclaration.new(kind, name, r.readRange(path));
 				d.signature = r.readOptionalString(strings);
+				d.typeTarget = r.readOptionalTarget(declarations.length);
 				declarations[i] = d;
 			}
 			signatures = r.readSignatures(strings);
@@ -563,7 +585,7 @@ component AnalysisWire {
 			// runs come in order, so that each declaration is checked as a
 			// site at most once.
 			var siteEnd = 0;
-			for (n = r.readCount(6, 256); n > 0 && r.ok(); n--) {
+			for (n = r.readCount(8, 256); n > 0 && r.ok(); n--) {
 				var fileIndex = r.readInt();
 				if (!files.isNew(fileIndex)) {
 					r.fail("invalid or repeated file index");
@@ -600,6 +622,7 @@ component AnalysisWire {
 				// finds at most one of them.
 				r.checkDisjoint(ranges, builtins);
 				var file = AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites);
+				file.typeTargets = r.readTypeTargets(file, declarations);
 				r.readCalls(file, signatures);
 				files.add(fileIndex, file);
 			}
@@ -891,6 +914,15 @@ class AnalysisWireReader {
 		}
 		return index | if(write, int.min);
 	}
+	// A source type's declaration ID plus one, or zero for no location.
+	def readOptionalTarget(declarations: int) -> int {
+		var i = r.read_sleb32();
+		if (i < 0 || i > declarations) {
+			r.fail("invalid type declaration index");
+			return 0;
+		}
+		return i;
+	}
 	def readTarget(declarations: int) -> int {
 		var i = r.read_sleb32();
 		if (u32.view(i) >= u32.view(declarations)) {
@@ -978,6 +1010,50 @@ class AnalysisWireReader {
 			else if (b + builtins[k + 3] <= o) k += 5;
 			else r.fail("builtin use overlaps an occurrence");
 		}
+	}
+	// A sparse type-target map. Every key must begin a recorded use or
+	// declaration name, strictly in source order. Bounds apply even to a
+	// no-parse snapshot; no index can escape the declaration table.
+	def readTypeTargets(file: AnalysisSnapshotFile, declarations: Array<AnalysisDeclaration>) -> AnalysisSnapshotTypeTargets {
+		var count = r.read_sleb32(), start = r.pos;
+		if (count < 0 || count > r.available() / 2) {
+			r.fail("invalid type target count");
+			return null;
+		}
+		if (count == 0) return null;
+		if (count > file.targets.length + file.builtinCount() + file.siteCount) {
+			r.fail("too many type targets");
+			return null;
+		}
+		var blocks = (count + 31) / 32;
+		if (!reserve(64 + 8L * blocks)) return null;
+		var checkpoints = Array<int>.new(2 * blocks), previous = -1;
+		var occurrence = 0, builtin = 0, site = file.firstSite;
+		for (i = 0; i < count && r.ok; i++) {
+			var delta = r.read_sleb32(), offset = if(i % 32 == 0, long.view(delta), long.view(previous) + delta);
+			if (delta < 0 || offset <= previous || offset > int.max) {
+				r.fail("invalid type target offset");
+				break;
+			}
+			var at = int.view(offset);
+			// Keys are strictly increasing, and all three name streams were
+			// validated above. Equality requires a name's beginning, never an
+			// interior byte or a gap; advancing preserves the same checks.
+			while (occurrence < file.targets.length && file.ranges[4 * occurrence + 2] < at) occurrence++;
+			while (builtin < file.builtinCount() && file.builtins[5 * builtin + 2] < at) builtin++;
+			while (site < file.firstSite + file.siteCount && declarations[site].range.beginOffset < at) site++;
+			var found = (occurrence < file.targets.length && file.ranges[4 * occurrence + 2] == at)
+				|| (builtin < file.builtinCount() && file.builtins[5 * builtin + 2] == at)
+				|| (site < file.firstSite + file.siteCount && declarations[site].range.beginOffset == at);
+			if (!found) r.fail("type target has no recorded name");
+			if (i % 32 == 0) {
+				checkpoints[2 * (i / 32)] = at;
+				checkpoints[2 * (i / 32) + 1] = r.pos - start;
+			}
+			readOptionalTarget(declarations.length);
+			previous = at;
+		}
+		return if(count > 0, AnalysisSnapshotTypeTargets.new(copyFrom(start, 64), checkpoints));
 	}
 	// Reads the signature text and the signatures, which the snapshot keeps
 	// in their encoding. A string reference is a string table index or, past

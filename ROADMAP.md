@@ -49,6 +49,7 @@ A user can install the server following the [build and executable placement guid
 - parser and type-checker diagnostics for unsaved buffers;
 - document symbols;
 - go-to-definition for local variables, members, methods, and named types;
+- go-to-type-definition from resolved value types, including generic instantiations and type parameters;
 - hover text containing declaration signatures and inferred types;
 - reliable startup, shutdown, logging, and recovery from malformed requests;
 - a project configuration that describes the source files Aeneas must analyze;
@@ -242,6 +243,7 @@ Deliverables:
 - Symbol identities for local variables, fields, methods, compounds, enum cases, layouts, and packings. *(present; declarations in the [compiler adapter](docs/architecture.md#compiler-adapter))*
 - Occurrence index extending the [compiler adapter's current coverage](docs/architecture.md#compiler-adapter) to applications and named type references. *(present; [compiler adapter](docs/architecture.md#compiler-adapter))*
 - `textDocument/definition`. *(present; [Definition](docs/architecture.md#definition))*
+- `textDocument/typeDefinition` from resolved types, including the `Ref<L>` layout exception. *(present; [Type definition](docs/architecture.md#type-definition))*
 - `textDocument/hover` using the [snapshot display data](docs/architecture.md#display-text). *(present; [Hover](docs/architecture.md#hover))*
 - Workspace/document-symbol polishing *(document symbols present, with [variant cases and signature details](docs/architecture.md#document-symbols); [`workspace/symbol`](docs/architecture.md#workspace-symbols) present, [#122](https://github.com/SaltedTan/virgil-language-server/issues/122))*.
 - End-to-end editor tests and a documented manual test matrix. *(present; [headless Neovim test](editors/nvim/README.md#headless-smoke-test), [Extension Host test](clients/vscode/README.md#extension-host-test), and [manual test matrix](docs/manual-testing.md))*

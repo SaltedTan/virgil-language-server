@@ -1,0 +1,159 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// All lookups run through the worker wire as well as the compiler collector.
+def T = UnitTests.register;
+def X = [
+	T("TypeDefinition:resolved_types", resolved_types),
+	T("TypeDefinition:unresolved_types", unresolved_types),
+	T("TypeDefinition:callee_forms", callee_forms),
+	T("TypeDefinition:library_types", library_types),
+	T("TypeDefinition:compact_checkpoints", compact_checkpoints),
+	()
+];
+def MAIN = "test/fixtures/analysis/type-definition/main.v3";
+def SHAPES = "test/fixtures/analysis/type-definition/shapes.v3";
+def indexOf(text: string, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def snapshot(t: Tester, sources: Array<AnalysisSource>, verified: bool) -> AnalysisSnapshot {
+	var a = AeneasAdapter.analyzeProgram(sources, ["-lang:fun-exprs"], false);
+	if (verified) {
+		for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
+		t.assertz(true, a.verified);
+	}
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(sources.length);
+	var paths = Array<string>.new(sources.length);
+	for (i < sources.length) {
+		paths[i] = sources[i].path;
+		files[i] = (paths[i], a.occurrences(paths[i]));
+	}
+	var encoded = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, files), 0L);
+	var decoded = AnalysisWire.decodeResult(Ranges.dup(encoded[WorkerFraming.HEADER_BYTES ...]), 1, paths);
+	match (decoded) {
+		Decoded(result) => return result.snapshot;
+		_ => t.fail("type-target result failed to decode");
+	}
+	return null;
+}
+def expect(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>, use: string, skip: int,
+		targetFile: int, declaration: string, skipDecl: int) {
+	var offset = indexOf(sources[0].input, use) + skip;
+	t.assert(offset >= skip, "use text exists");
+	var found = s.typeDefinitionAtOffset(sources[0].path, offset), d = found.1;
+	t.assert(found.0, Strings.format1("recorded name: %s", use));
+	if (targetFile < 0) { t.assert(d == null, Strings.format1("no source type: %s", use)); return; }
+	if (d == null) return t.fail1("missing type target: %s", use);
+	if (!Strings.equal(sources[targetFile].path, d.range.path)) return t.fail2("wrong target file for %s: %s", use, d.range.path);
+	var want = indexOf(sources[targetFile].input, declaration) + skipDecl;
+	if (want != d.range.beginOffset) return t.fail3("wrong target for %s: expected offset %d, got %d", use, want, d.range.beginOffset);
+	t.asserti(d.range.beginOffset + d.name.length, d.range.endOffset);
+}
+def resolved_types(t: Tester) {
+	var sources = [AnalysisSource.new(MAIN, System.fileLoad(MAIN)), AnalysisSource.new(SHAPES, System.fileLoad(SHAPES))];
+	var s = snapshot(t, sources, true);
+	if (s == null) return;
+	// Declaration sites, inferred locals, fields, globals, parameters, and
+	// the result of a call all retain their actual nominal type.
+	for (name in ["global =", "item =", "result =", "index =", "generic =", "closed ="])
+		expect(t, s, sources, name, 0, 1, "class Foo", 6);
+	expect(t, s, sources, "run(param: Foo", 4, 1, "class Foo", 6);
+	for (name in ["inferred =", "explicit:", "applied =", "makeBox();", "inferred, explicit"])
+		expect(t, s, sources, name, 0, 1, "class Box", 6);
+	expect(t, s, sources, "inferred.item", 9, 1, "class Foo", 6);
+	expect(t, s, sources, "inferred.get", 9, 1, "class Foo", 6);
+	expect(t, s, sources, "identity(param)", 0, 1, "class Foo", 6);
+	expect(t, s, sources, "inferred[0]", 8, 1, "class Foo", 6);
+	expect(t, s, sources, "fn();", 0, 1, "class Box", 6);
+	expect(t, s, sources, "closure(1)", 0, 1, "class Foo", 6);
+	expect(t, s, sources, "ref:", 0, 1, "layout Layout", 7);
+	expect(t, s, sources, "ref, circle", 0, 1, "layout Layout", 7);
+	expect(t, s, sources, "circle =", 0, 1, "case Circle", 5);
+	expect(t, s, sources, "Shape.Circle(param)", 6, 1, "case Circle", 5);
+	expect(t, s, sources, "single =", 0, 1, "type Single", 5);
+	expect(t, s, sources, "var red =", 4, 1, "enum Color", 5);
+	expect(t, s, sources, "Color.Red", 6, 1, "enum Color", 5);
+	expect(t, s, sources, "shape: Shape", 0, 1, "type Shape", 5);
+	expect(t, s, sources, "local = param", 0, 0, "generic<T>", 8);
+	expect(t, s, sources, "return local", 7, 0, "generic<T>", 8);
+	expect(t, s, sources, "shadow<Foo>(param", 12, 0, "shadow<Foo>", 7);
+	expect(t, s, sources, "return param; }", 7, 0, "shadow<Foo>", 7);
+	expect(t, s, sources, "void(inferred);", 5, 1, "class Other", 6);
+	// At type names, use exactly definition's target, including a nested
+	// type argument and a type parameter that shadows a global class.
+	expect(t, s, sources, "explicit: Box<Foo>", 10, 1, "class Box", 6);
+	expect(t, s, sources, "explicit: Box<Foo>", 14, 1, "class Foo", 6);
+	expect(t, s, sources, "param: T", 7, 0, "generic<T>", 8);
+	expect(t, s, sources, "param: Foo) -> Foo", 7, 0, "shadow<Foo>", 7);
+	// Enclosing class parameters, and type names at their own declarations.
+	var reversed = [sources[1], sources[0]];
+	expect(t, s, reversed, "item: T", 0, 0, "Box<T>", 4);
+	expect(t, s, reversed, "return item;", 7, 0, "Box<T>", 4);
+	expect(t, s, reversed, "Box<T>", 4, 0, "Box<T>", 4);
+	expect(t, s, reversed, "class Foo", 6, 0, "class Foo", 6);
+	expect(t, s, reversed, "case Circle", 5, 0, "case Circle", 5);
+	expect(t, s, reversed, "enum Color", 5, 0, "enum Color", 5);
+	// Every structural type stays null, even when it contains Foo.
+	for (name in ["constructor =", "caseFunction =", "fn =", "closure:", "integer =", "octet:", "boolean =", "text =", "array:", "range =", "tuple =",
+			"fn, closure", "closure, applied", "integer, octet", "octet, boolean", "boolean, text", "text, array", "array, range", "range, tuple", "tuple);"])
+		expect(t, s, sources, name, 0, -1, "", 0);
+	expect(t, s, sources, "fn = makeBox", 5, -1, "", 0);
+	expect(t, s, sources, "Foo.new;", 4, -1, "", 0);
+	expect(t, s, sources, "Shape.Circle;", 6, -1, "", 0);
+	expect(t, s, sources, "Circle(value) =>", 0, 1, "case Circle", 5);
+	expect(t, s, sources, "Red =>", 0, 1, "enum Color", 5);
+}
+def unresolved_types(t: Tester) {
+	var sources = [AnalysisSource.new("unknown.v3", "component C { def f(p: Missing) { var x = p; void(x); } }")];
+	var s = snapshot(t, sources, false);
+	if (s != null) {
+		expect(t, s, sources, "p: Missing", 0, -1, "", 0);
+		expect(t, s, sources, "x = p", 0, -1, "", 0);
+		expect(t, s, sources, "void(x)", 5, -1, "", 0);
+	}
+	// The value of a void-returning call also has no source type.
+	sources = [AnalysisSource.new("void.v3", "component C { def f() { } def g() { f(); } }")];
+	s = snapshot(t, sources, true);
+	if (s != null) expect(t, s, sources, "f();", 0, -1, "", 0);
+}
+def library_types(t: Tester) {
+	var path = "vendor/virgil/lib/util/Edge.v3";
+	var sources = [AnalysisSource.new("library.v3", "component C { def f(p: Edge<int>) { var local = p; void(local); } }"),
+		AnalysisSource.new(path, System.fileLoad(path))];
+	var s = snapshot(t, sources, true);
+	if (s != null) expect(t, s, sources, "void(local)", 5, 1, "class Edge", 6);
+}
+def compact_checkpoints(t: Tester) {
+	var buf = StringBuilder.new().puts("class Foo { } class Other { } component C { def id<T>(p: T) -> T { return p; } def f(p: Foo, q: Other) { id(p);\n");
+	// The shared callee defaults to Foo, so each later call needs an
+	// override, including null for an int result. Cross several checkpoints.
+	for (i < 100) buf.put2("var x%d = id(%s);\n", i, if(i % 7 == 0, "1", "q"));
+	buf.puts("} }");
+	var sources = [AnalysisSource.new("checkpoints.v3", buf.toString())], s = snapshot(t, sources, true);
+	if (s == null) return;
+	for (i < 100) {
+		var prefix = Strings.format1("x%d = ", i), use = Strings.format2("%sid(%s)", prefix, if(i % 7 == 0, "1", "q"));
+		for (skip in [0, prefix.length]) expect(t, s, sources, use, skip, if(i % 7 == 0, -1, 0), "class Other", 6);
+	}
+	t.assert(!s.typeDefinitionAtOffset(sources[0].path, 0).0, "keyword is not an occurrence");
+}
+
+// Calls use their result type only at the name of their own callee. A call
+// on another call's function result does not change the inner callee's type.
+def callee_forms(t: Tester) {
+	var path = "test/fixtures/analysis/type-definition/callees.v3";
+	var sources = [AnalysisSource.new(path, System.fileLoad(path))];
+	var s = snapshot(t, sources, true);
+	if (s == null) return;
+	for (use in [("direct = make()", 9), ("(make)()", 1), ("(((make)))()", 3), ("fn();", 0), ("((fn))()", 2),
+			("box.get();", 4), ("((box.get))()", 6), ("generic = id<Foo>(p)", 10), ("((id<Foo>))(p)", 2),
+			("box.id<Foo>(p);", 4), ("((box.id<Foo>))(p)", 6), ("ctor = Foo.new()", 11), ("((Foo.new))()", 6)])
+		expect(t, s, sources, use.0, use.1, 0, "class Foo", 6);
+	expect(t, s, sources, "(Ref<L>.of)(r)", 8, 0, "layout L", 7);
+	for (use in [("factory()();", 0), ("factory()))()", 0), ("box.get;", 4), ("(make);", 1), ("(fn);", 1)])
+		expect(t, s, sources, use.0, use.1, -1, "", 0);
+	for (use in ["chained =", "chainParen ="]) expect(t, s, sources, use, 0, 0, "class Foo", 6);
+}
