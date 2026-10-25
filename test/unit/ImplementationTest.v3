@@ -312,7 +312,7 @@ def reverse_index_charge(t: Tester) {
 	s.implementations(d);
 	var built = s.retainedBytes;
 	t.assert(built > before, "the reverse index is charged");
-	t.assert(built - before <= 128L + 8L * (s.declarations.length + 2), "two ints a declaration at most");
+	t.assert(built - before <= 128L + 4L * s.declarations.length, "an int a declaration at most");
 	s.implementations(select(t, s, sources, 0, "class Polygon", 6));
 	t.assert(s.retainedBytes == built, "the reverse index is built once");
 }

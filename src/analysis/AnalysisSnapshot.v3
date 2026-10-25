@@ -59,9 +59,8 @@ class AnalysisSnapshot {
 	// docs/architecture.md#implementation.
 	private var parents: Array<int>;
 	// The reverse of {parents}, which the first implementations query builds
-	// and charges: the declarations whose parent is declaration i are
-	// {children[childStart[i + 1] ... childStart[i + 2]]}, in index order.
-	private var childStart: Array<int>;
+	// and charges: the declarations that have a parent, in order of parent
+	// and then of index, so that each declaration's children are a run.
 	private var children: Array<int>;
 
 	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) {
@@ -429,8 +428,8 @@ class AnalysisSnapshot {
 		if (children == null) indexChildren();
 		var found = Vector<int>.new();
 		for (k = -1; k < found.length; k++) {
-			var p = if(k < 0, d, found[k]);
-			for (j = childStart[p + 1]; j < childStart[p + 2]; j++) {
+			var code = if(k < 0, d, found[k]) + 1;
+			for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) {
 				if (children[j] != d) found.put(children[j]);
 			}
 		}
@@ -457,23 +456,28 @@ class AnalysisSnapshot {
 		var c = AnalysisTables.compareBytes(x.path, y.path);
 		return c < 0 || (c == 0 && x.beginOffset < y.beginOffset);
 	}
-	// Builds the reverse of {parents} and adds its two arrays, at most two
-	// ints for each declaration, to the snapshot's retained bytes. Each
-	// declaration's children are counted at its index plus one, summed so
-	// that each count ends its run, and filled in reverse, which moves each
-	// run's end back to its start.
+	// Builds the reverse of {parents}, one int for each declaration that has
+	// a parent, and adds it to the snapshot's retained bytes.
 	private def indexChildren() {
-		var n = declarations.length, start = Array<int>.new(n + 2);
-		for (p in parents) if (p > 0) start[p]++;
-		for (i = 1; i < start.length; i++) start[i] += start[i - 1];
-		var list = Array<int>.new(start[n + 1]);
-		for (i = n - 1; i >= 0; i--) {
-			var p = parents[i];
-			if (p > 0) list[--start[p]] = i;
+		var count = 0;
+		for (p in parents) if (p > 0) count++;
+		var list = Array<int>.new(count), k = 0;
+		for (i < parents.length) if (parents[i] > 0) list[k++] = i;
+		children = AnalysisTables.sort(list, childBefore);
+		retainedBytes += 128L + 4L * count;
+	}
+	private def childBefore(a: int, b: int) -> bool {
+		return parents[a] < parents[b] || (parents[a] == parents[b] && a < b);
+	}
+	// The first of {children} whose parent code is {code} or more.
+	private def firstChild(code: int) -> int {
+		var low = 0, high = children.length;
+		while (low < high) {
+			var middle = (low + high) / 2;
+			if (parents[children[middle]] < code) low = middle + 1;
+			else high = middle;
 		}
-		retainedBytes += 128L + 4L * (start.length + list.length);
-		childStart = start;
-		children = list;
+		return low;
 	}
 }
 
