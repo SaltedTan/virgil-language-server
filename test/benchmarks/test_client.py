@@ -57,6 +57,15 @@ class ValidationTest(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 self.block.definition(result)
 
+    def test_completion_rejects_fast_keyword_fallback_and_wrong_detail(self):
+        item = {"label": self.project["completion_label"], "kind": 6,
+                "detail": self.project["hover_prefix"]}
+        self.block.validate_completion({"items": [item]})
+        for result in (None, {"items": []}, {"items": [{**item, "kind": 14}]},
+                       {"items": [{**item, "detail": "wrong"}]}):
+            with self.assertRaises(AssertionError):
+                self.block.validate_completion(result)
+
     def test_rename_requires_all_edits_and_current_version(self):
         good = {"documentChanges": [{"textDocument": {"uri": self.block.uri, "version": 1},
                                     "edits": [{"newText": self.project["rename_to"], "range": s["range"]}

@@ -145,6 +145,24 @@ advancing generation. Warmups and operations follow the ordinary block settings.
 This scenario times repeated error analyses without a restore between them;
 `semantic_diagnostic` continues to time the original publication workload.
 
+With `--typing-burst`, each block also types the last four letters of the
+project's pinned query token, one edit and completion every 20 ms, cancelling
+the preceding completion before each edit. The final cursor is after the full
+token. The run first restores a current project, then uses unsaved overlays only.
+An appended unresolved name makes the project's semantic publication observable:
+an empty parser publication cannot satisfy the diagnostic check. Every request
+must reply once; earlier replies may finish before cancellation, and the last
+reply must contain the expected semantic item and detail.
+
+The `typing_burst` sample's `latency_ms` runs from the final completion's send to
+its reply. `diagnostic_latency_ms` runs from that same send to publication of the
+exact semantic diagnostic at the final version. `worker_replacements` counts
+informational reclaims, and `worker_starts` counts completed spawn-to-handshake
+probes. The sample retains every emitted probe, including incomplete cancelled
+transactions; `--require-probes` requires the final useful query and automatic
+analysis to finish. These metrics describe a fixed burst followed by a pause,
+not continuous typing or a general cancellation latency budget.
+
 ## Phases, allocation, and output
 
 `BENCH=1` sets `BenchProbe.enabled` and `RiGc.stats` with one `-redef-field` option.
