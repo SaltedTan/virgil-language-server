@@ -1,0 +1,12 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+class Foo { }
+class Other { }
+class Box<T>(item: T) {
+    def get() -> T { return item; }
+    def [i: int] -> T { return item; }
+}
+type Shape { case Circle(value: Foo); case Dot; }
+type Single(value: Foo) { }
+enum Color { Red, Blue }
+layout Layout { +0 value: u8; =1; }

@@ -1,0 +1,69 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Sparse overrides of a declaration's default source-type target, keyed by
+// a recorded name's byte offset. Codes are declaration IDs plus one, or zero
+// for an explicit null; absence (-1) uses the declaration's default.
+// The wire's delta-coded pairs are retained directly. Every 32nd offset is
+// absolute; checkpoints hold that offset and the byte position of its target.
+// A lookup searches the checkpoints, then reads at most 32 small records.
+// Neither a compiler object nor display text is retained. Other consumers,
+// including inlay hints, can reuse the targets with the occurrence spans.
+class AnalysisSnapshotTypeTargets(data: Array<byte>, checkpoints: Array<int>) {
+	def find(offset: int) -> int {
+		var low = 0, high = checkpoints.length / 2;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (checkpoints[2 * mid] <= offset) low = mid + 1;
+			else high = mid;
+		}
+		if (low == 0) return -1;
+		var at = checkpoints[2 * (low - 1)];
+		var r = DataReader.new(data).at(checkpoints[2 * (low - 1) + 1]);
+		for (i = 0; i < 32 && r.ok && !r.done(); i++) {
+			var target = r.read_sleb32();
+			if (at == offset) return target;
+			if (at > offset || i == 31 || r.done()) break;
+			at += r.read_sleb32();
+		}
+		return -1;
+	}
+}
+
+// Shares one resolved type target per declaration; only uses that differ
+// need an offset record. The choice of default changes storage, never the
+// answer: every recorded name, including one with no type location, is
+// compared with it. Compiler bindings supplied all the targets beforehand.
+class AnalysisTypeTargetEncoding(indices: Array<int>, declarations: AnalysisIndexMap<AnalysisDeclaration>,
+		sites: Array<Array<AnalysisDeclaration>>, files: Array<(string, Array<AnalysisOccurrence>)>,
+		builtins: Array<Array<AnalysisBuiltinUse>>) {
+	def defaults = Array<int>.new(declarations.length());
+	def overrides = Array<Array<(int, int)>>.new(files.length);
+	new() {
+		for (f < files.length) {
+			for (d in sites[f]) choose(declaration(d), target(d.sourceType));
+			for (o in files[f].1) if (o.range.isTokenSpan()) choose(declaration(o.declaration), target(o.sourceType));
+		}
+		for (f < files.length) {
+			var changes = Vector<(int, int)>.new();
+			for (d in sites[f]) changed(changes, d.range.beginOffset, declaration(d), d.sourceType);
+			for (o in files[f].1) if (o.range.isTokenSpan()) changed(changes, o.range.beginOffset, declaration(o.declaration), o.sourceType);
+			for (b in builtins[f]) if (b.range.isTokenSpan()) changed(changes, b.range.beginOffset, -1, b.sourceType);
+			overrides[f] = AnalysisTables.sort(changes.extract(), fun (a: (int, int), b: (int, int)) => a.0 < b.0);
+		}
+	}
+	private def declaration(d: AnalysisDeclaration) -> int {
+		return if(d.typeTarget > 0, indices[d.typeTarget] - 1, declarations.find(d));
+	}
+	private def target(code: int) -> int {
+		return if(code > 0, indices[code]);
+	}
+	private def choose(i: int, target: int) {
+		if (target == 0) return;
+		if (defaults[i] == 0) defaults[i] = target;
+	}
+	private def changed(changes: Vector<(int, int)>, offset: int, declaration: int, sourceType: int) {
+		var code = target(sourceType), own = if(declaration >= 0, defaults[declaration]);
+		if (code != own) changes.put((offset, code));
+	}
+}

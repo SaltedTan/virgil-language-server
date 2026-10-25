@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 11, self.hello
+        assert self.hello["protocol"] == 12, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -148,6 +148,7 @@ class Worker:
                 # A signature's string index plus one, or zero for none.
                 signature = reader.integer()
                 declarations[-1]["signature"] = strings[signature - 1] if signature else None
+                declarations[-1]["typeTarget"] = reader.integer()
             # Call signatures: their own text, then each a label, the offset
             # of its first parameter, and parameters, each a string table
             # index or, past the table, a text index.
@@ -182,6 +183,14 @@ class Worker:
                     builtins.append(dict(path=path, range=[line, column, line, column + length],
                                          offsets=[offset, offset + length],
                                          useType=strings[reader.integer()]))
+                # Sparse resolved-type targets: offset delta (absolute every
+                # 32 entries) and declaration index.
+                type_offset = -1
+                for index in range(reader.integer()):
+                    delta, target = reader.integer(), reader.integer()
+                    offset = delta if index % 32 == 0 else type_offset + delta
+                    assert offset > type_offset and 0 <= target <= len(declarations)
+                    type_offset = offset
                 # Calls, in unsigned LEB128; see AnalysisWire.encodeCall.
                 open_ = 0
                 for _ in range(reader.integer()):

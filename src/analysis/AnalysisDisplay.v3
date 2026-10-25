@@ -71,9 +71,14 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		if (index < declarationList.length) return declarationList[index];
 		var d = AnalysisWorkerDeclaration.new(kind, token.image, sources.range(token),
 			signature(kind, token, decl), decl, if(decl == null, t, ownType(decl)));
+		d.typeTarget = index + 1;
 		declarationList.put(d);
 		return d;
 	}
+	// Stable worker-local code used by source-type records. The wire encoder
+	// translates it to its own declaration table, without another type walk.
+	def declarationAt(index: int) -> AnalysisDeclaration { return declarationList[index]; }
+	def declarationCount() -> int { return declarationList.length; }
 	// The text of the type of a use of {decl}, or null if it is the
 	// declaration's own type or is unknown. Most uses have exactly their
 	// declaration's type, which needs no text.

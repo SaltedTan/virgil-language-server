@@ -1,0 +1,39 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+component Main {
+    def global = Foo.new();
+    def makeBox() -> Box<Foo> { return Box<Foo>.new(global); }
+    def identity<T>(value: T) -> T { return value; }
+    def generic<T>(param: T) -> T { var local = param; return local; }
+    def shadow<Foo>(param: Foo) -> Foo { return param; }
+    def run(param: Foo, shape: Shape, color: Color, r: Range<byte>) {
+        var inferred = makeBox();
+        var explicit: Box<Foo> = inferred;
+        var item = inferred.item;
+        var result = inferred.get();
+        var index = inferred[0];
+        var generic = identity(param);
+        var ref: Ref<Layout> = Ref<Layout>.of(r);
+        var circle = Shape.Circle(param);
+        var single = Single(param);
+        var red = Color.Red;
+        var constructor = Foo.new;
+        var caseFunction = Shape.Circle;
+        var fn = makeBox;
+        var closure: int -> Foo = fun (x: int) => param;
+        var applied = fn();
+        var closed = closure(1);
+        var integer = 1;
+        var octet: byte = 1;
+        var boolean = true;
+        var text = "hello";
+        var array: Array<Foo> = [param];
+        var range = array[0 ... 1];
+        var tuple = (param, inferred);
+        if (boolean) { var inferred = Other.new(); void(inferred); }
+        void(inferred, explicit, item, result, index, generic, ref, circle, single, red);
+        void(fn, closure, applied, closed, integer, octet, boolean, text, array, range, tuple);
+        match (shape) { Circle(value) => void(value); Dot => ; }
+        match (color) { Red => ; Blue => ; }
+    }
+}
