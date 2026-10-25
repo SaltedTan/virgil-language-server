@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A [troubleshooting guide](docs/troubleshooting.md), organized by symptom, explains the messages that show why the server didn't start or a file gets no diagnostics or navigation in VS Code, Neovim, and LazyVim, and how to fix each cause. A [privacy statement](PRIVACY.md) says what the server and the editor integrations read, write, and start: they write no files of their own, collect no telemetry, and make no network connections ([#275](https://github.com/SaltedTan/virgil-language-server/issues/275)).
 - Platform-specific VS Code packages for Linux x64 and macOS bundle the tested server, worker, and pinned Virgil library. An explicit `virgil.server.path` overrides the bundle; the universal VSIX retains the external-server fallback. Apple Silicon uses the Intel server under Rosetta 2 ([installation](clients/vscode/README.md#installing-from-a-vsix), [#267](https://github.com/SaltedTan/virgil-language-server/issues/267)).
 - [Go to Type Definition](docs/architecture.md#type-definition) follows compiler-resolved value and call-result types, including generics, type parameters, and the `Ref<L>` layout exception. Built-in, structural, and unresolved types have no location; VS Code, Neovim, and LazyVim navigation is covered by editor tests ([#258](https://github.com/SaltedTan/virgil-language-server/issues/258)).
 
