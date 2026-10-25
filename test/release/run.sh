@@ -15,7 +15,6 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 CHECK=$ROOT/scripts/check-release.sh
 CHECK_VSIX=$ROOT/scripts/check-vsix.py
-python3 "$ROOT/test/release/test_vsix_payload.py"
 NOTES=$ROOT/scripts/release-notes.py
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -830,6 +829,7 @@ assets '"v1.2.3-alpha.4"'
 links "a repository link at the release's tag" 0 \
     '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
 
+expect_run "VSIX payload integrity and provenance" 0 - - python3 "$ROOT/test/release/test_vsix_payload.py"
 expect_run "bundled library integrity and reproducibility" 0 - - python3 "$ROOT/test/release/test_library.py"
 if [ "${1:-}" = --archive ]; then
     expect_run "archive installation (moved, spaces, symlink, read-only library)" 0 \

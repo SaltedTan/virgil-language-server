@@ -7,8 +7,12 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shlex
 import stat
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -109,6 +113,25 @@ class PayloadTests(unittest.TestCase):
             t.addfile(link)
         with self.assertRaises(SystemExit):
             self.check(entries, 'linux-x64', archive)
+
+    def test_payload_failure_fails_release_runner(self):
+        shim = self.root / 'python3'
+        shim.write_text(
+            '#!/bin/sh\n'
+            f'if [ "$1" = {shlex.quote(str(Path(__file__).resolve()))} ]; then\n'
+            '  echo "injected payload failure" >&2\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {shlex.quote(sys.executable)} "$@"\n')
+        shim.chmod(0o755)
+        result = subprocess.run(
+            ['bash', str(ROOT / 'test/release/run.sh')],
+            env={**os.environ, 'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('FAIL: VSIX payload integrity and provenance', result.stdout)
+        self.assertIn('injected payload failure', result.stdout)
+        self.assertRegex(result.stdout, r'release scripts: \d+ passed, 1 failed\n$')
 
 
 if __name__ == '__main__':

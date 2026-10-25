@@ -772,6 +772,9 @@ test('launch samples at client exit and preserves deadlines across reports and h
     { serverExit: 6000, reportAt: 7000, result: 'INFRA' },
     { linger: true, reportAt: 1500, result: 'PASS' },
     { linger: true, ignoresHost: true, reportAt: 1500, result: 'FAIL' },
+    { bundled: true, serverExit: 0, reportAt: 1500, result: 'PASS' },
+    { bundled: true, serverExit: Infinity, reportAt: 1500, result: 'FAIL' },
+    { bundled: true, linger: true, ignoresHost: true, reportAt: 1500, result: 'FAIL' },
   ]) {
     let now = 0;
     let next = 1;
@@ -807,6 +810,8 @@ test('launch samples at client exit and preserves deadlines across reports and h
     const sampleTimes = [];
     const notes = [];
     const failures = [];
+    const cleanupSignals = [];
+    const extensionPath = '/remote/server/extensions/virgil-language-server.virgil-lsp-vscode-0.1.3-linux-x64';
     let stoppedAt;
     let reportStarted;
     const runner = load('run.cjs', {
@@ -828,6 +833,19 @@ test('launch samples at client exit and preserves deadlines across reports and h
           const hostRuns = scenario.linger && stoppedAt === undefined;
           const serverRuns = scenario.linger ? scenario.ignoresHost || stoppedAt === undefined : now < scenario.serverExit;
           if (options.signal) stoppedAt = now;
+          if (scenario.bundled) {
+            const table = new Map([
+              [11, { start: '400', exe: '/remote/server/node' }],
+              ...(hostRuns ? [[10, { start: '500', exe: '/remote/server/node' }]] : []),
+              ...(serverRuns ? [
+                [20, { ppid: 10, start: '600', exe: `${extensionPath}/server/virgil-lsp` }],
+                [21, { ppid: 20, start: '610', exe: `${extensionPath}/server/virgil-lsp-worker` }],
+              ] : []),
+            ]);
+            const { listing, signals } = remoteProcesses(table, options, { now: () => now });
+            cleanupSignals.push(...signals);
+            return { stdout: JSON.stringify(listing) };
+          }
           return { stdout: JSON.stringify({
             found: [
               ...(hostRuns ? [{ pid: 10, start: '500', exe: '/remote/server/node' }] : []),
@@ -847,6 +865,7 @@ test('launch samples at client exit and preserves deadlines across reports and h
     const layout = {
       results: '/results', data: '/data', project: '/project', tests: '/tests', fixture: '/fixture',
       machineSettings: '/settings/machine.json', server: '/remote', agent: '/remote/server', serverNode: '/remote/server/node',
+      extensionPath,
     };
     const result = runner.launch(run, 'late', 'single-file', { executable: '/code', layout, vsix: { version: '1' } })
       .then((record) => ({ record }), (error) => ({ error }));
@@ -868,6 +887,13 @@ test('launch samples at client exit and preserves deadlines across reports and h
     if (scenario.linger) {
       assert.equal(stoppedAt, 5000);
       assert.equal(completed.record.remoteExtensionHost.stoppedWith, 'SIGTERM');
+    }
+    if (scenario.bundled) {
+      assert.equal(completed.record.vscodeServerProcesses, 1);
+      assert.deepEqual(Array.from(completed.record.leftRunning, (p) => p.exe), scenario.result === 'FAIL'
+        ? [`${extensionPath}/server/virgil-lsp`, `${extensionPath}/server/virgil-lsp-worker`] : []);
+      assert.deepEqual(cleanupSignals.filter(([pid]) => pid !== 10), scenario.result === 'FAIL'
+        ? [[20, 'SIGKILL'], [21, 'SIGKILL']] : []);
     }
     assert.equal(timers.size, 0);
   }
@@ -1008,6 +1034,22 @@ function remoteListing(options) {
   assert.equal(listing.status, 0, listing.stderr);
   return JSON.parse(listing.stdout);
 }
+
+test('bundled servers are cleanup targets while VS Code infrastructure stays exempt', () => {
+  const agent = '/remote/server/.vscode-server';
+  const extensionPath = `${agent}/extensions/virgil-language-server.virgil-lsp-vscode-0.1.3-linux-x64`;
+  const processes = new Map([
+    [10, { start: '500', exe: `${agent}/bin/c/node` }],
+    [20, { start: '600', exe: `${extensionPath}/server/virgil-lsp` }],
+    [21, { start: '610', exe: `${extensionPath}/server/virgil-lsp-worker` }],
+  ]);
+  const options = { root: '/remote', agent, extensionPath, kill: ['10@500', '20@600', '21@610'] };
+  for (const pidfd of [false, true]) {
+    const { signals } = remoteProcesses(processes, options, { pidfd });
+    assert.deepEqual(signals, pidfd ? [['pidfd', 'SIGKILL', [[20, '600'], [21, '610']]]]
+      : [[20, 'SIGKILL'], [21, 'SIGKILL']]);
+  }
+});
 
 test('the leak check signals a remote extension host only by its PID, start time, and executable', () => {
   const agent = '/remote/server/.vscode-server';

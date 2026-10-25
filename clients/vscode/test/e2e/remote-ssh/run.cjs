@@ -616,6 +616,11 @@ function suiteLines() {
   };
 }
 
+function isVSCodeServer(exe, agent, extensionPath) {
+  return (exe ?? '').startsWith(`${agent}/`)
+    && !(extensionPath !== undefined && exe.startsWith(`${extensionPath}/server/`));
+}
+
 // A Node.js program for the target's VS Code Server, whose argument is JSON:
 // it prints, as JSON, the run's processes (see runOwned), other than itself
 // and zombies, with their parents' PIDs and their start times, and
@@ -645,10 +650,11 @@ function suiteLines() {
 const REMOTE_PROCESSES = `
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
-const { root, agent, kill, host, signal } = JSON.parse(process.argv[1]);
+const { root, agent, extensionPath, kill, host, signal } = JSON.parse(process.argv[1]);
 ${isZombie}
 ${processFiles}
 ${runOwned}
+${isVSCodeServer}
 const found = [];
 const killed = [];
 const unidentified = [];
@@ -732,7 +738,7 @@ for (const entry of table) {
   const exe = entry.files.exe ?? identity?.exe;
   const start = entry.start;
   if (host && entry.pid === host.pid && start === host.start && exe === host.exe) hostRuns = true;
-  if (kill.includes(entry.pid + '@' + start) && !(exe ?? '').startsWith(agent + '/')) killed.push([entry.pid, start]);
+  if (kill.includes(entry.pid + '@' + start) && !isVSCodeServer(exe, agent, extensionPath)) killed.push([entry.pid, start]);
   found.push(exe === undefined ? { pid: entry.pid, ppid: entry.ppid, start } : { pid: entry.pid, ppid: entry.ppid, start, exe });
 }
 if (hostRuns && signal) signaledAt = send(signal, [[host.pid, host.start]]);
@@ -745,7 +751,7 @@ console.log(JSON.stringify({ found, host: hostRuns, signaledAt, unidentified, sa
 // processes that could not be identified. Sends signal to host, then kills
 // the processes in kill, subject to REMOTE_PROCESSES's identity checks.
 async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
-  const options = { root: run.target.root, agent: layout.agent, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
+  const options = { root: run.target.root, agent: layout.agent, extensionPath: layout.extensionPath, kill: kill.map((p) => `${p.pid}@${p.start}`), host, signal };
   const result = await run.remote(`${sh(layout.serverNode)} -e ${sh(REMOTE_PROCESSES)} ${sh(JSON.stringify(options))}`, { allowFailure: true });
   let listing;
   try {
@@ -753,7 +759,7 @@ async function remoteProcesses(run, layout, { kill = [], host, signal } = {}) {
   } catch {
     throw infra(`could not list the processes on ${run.target.alias}: ${result.stderr.trim()}`);
   }
-  const server = (p) => (p.exe ?? '').startsWith(`${layout.agent}/`);
+  const server = (p) => isVSCodeServer(p.exe, layout.agent, layout.extensionPath);
   return {
     found: listing.found, left: listing.found.filter((p) => !server(p)), vscodeServer: listing.found.filter(server).length,
     host: listing.host, signaledAt: listing.signaledAt, unidentified: listing.unidentified ?? [], sampledAt: listing.sampledAt,
