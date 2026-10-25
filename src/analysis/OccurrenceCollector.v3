@@ -16,7 +16,6 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// argument spans of the call being recorded.
 	private def callRecords = DataWriter.new();
 	private def argSpans = Vector<int>.new();
-	def var hintCount: int;
 	// The last call's opening parenthesis, and whether every call so far
 	// opened after the one before it.
 	private var lastOpen = -1;
@@ -323,7 +322,6 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			var label = display.hintText(v.vtype);
 			if (label >= 0 && d.range.beginOffset >= 0) {
 				AnalysisWorkerDeclaration.!(d).hintLabel = label;
-				hintCount++;
 			}
 		}
 		typeRef(v.tref);
@@ -716,7 +714,6 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				var label = labels[i / 2];
 				if (label >= 0 && redundantArgument(argument.head, label)) label = -1;
 				putU(w, label + 1);
-				if (label >= 0) hintCount++;
 			}
 			end = argSpans[i + 1];
 		}

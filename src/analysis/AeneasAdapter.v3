@@ -224,12 +224,6 @@ class ProgramAnalysis {
 		file.occurrences();
 		return file.sites;
 	}
-	def hintCount(path: string) -> int {
-		var file = files[path];
-		if (file == null) return 0;
-		file.occurrences();
-		return file.hintCount;
-	}
 	def hintStringCount() -> int { return display.hintStringCount(); }
 	def hintString(i: int) -> string { return display.hintString(i); }
 	// Resolves a collector's source-type code, shared with declaration sites,
@@ -409,7 +403,6 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 	def var located: int;
 	def var builtins: Array<AnalysisBuiltinUse>;
 	def var sites: Array<AnalysisDeclaration>;
-	def var hintCount: int;
 	def var calls: Range<byte>;
 	def var callCount: int;
 
@@ -421,7 +414,6 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 			located = collector.located;
 			builtins = collector.builtins;
 			sites = collector.sites;
-			hintCount = collector.hintCount;
 			calls = collector.calls;
 			callCount = collector.callCount;
 		}

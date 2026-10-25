@@ -176,6 +176,47 @@ def cross_file(exe, root):
         s.close()
 
 
+def target_lines(exe, root):
+    path, library = root / 'Main.v3', root / 'Library.v3'
+    text = 'component Main { def run() { var a = Library.make(1); var b = Library.make(2); } }\n'
+    lib = 'class Box {}\ncomponent Library { def make(count: int) -> Box { return Box.new(); } }\n'
+    initial = '/*\r*/ ' + lib
+    path.write_text(text)
+    library.write_bytes(initial.encode())
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'lines', 'sources': ['Main.v3', 'Library.v3']}]}))
+    s = HintsSession(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'capabilities': {'workspace': {'inlayHint': {'refreshSupport': True}}}}))
+        open_file(s, path, text)
+        open_file(s, library, initial)
+        first = query(s, path)
+        assert len(first) == 4, first
+        previous = location(library, initial.replace('\r', '\n'), 'Box')
+        for h in first[::2]:
+            assert h['label'][0]['location'] == previous, h
+        prefixes = ['/*\r\r*/ ', '/* \r*/ ', '/*\r\n*/ ', '/*\n\n*/ ', '/* \n*/ ']
+        assert len(prefixes[0]) == len(prefixes[1])
+        assert len(prefixes[3]) == len(prefixes[4])
+        for version, prefix in enumerate(prefixes, 2):
+            changed = prefix + lib
+            expected_link = location(library, changed.replace('\r\n', '\n').replace('\r', '\n'), 'Box')
+            before = len(s.refreshes)
+            change(s, library, changed, version)
+            hints = query(s, path)
+            assert len(hints) == 4, hints
+            assert hints[1::2] == first[1::2], hints
+            for h, original in zip(hints[::2], first[::2]):
+                assert h['position'] == original['position'], h
+                assert h['label'] == [{'value': ': Box', 'location': expected_link}], h
+            assert len(s.refreshes) == before + int(previous != expected_link), s.transcript
+            previous = expected_link
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def fallback(exe, root):
     path, library = root / 'Main.v3', root / 'Library.v3'
     text = ('component Main {\n'
@@ -319,6 +360,7 @@ def main():
                                       (False, True, True), (True, False, True), (False, False, True)]:
             run(exe, Path(work), types, names, support)
         cross_file(exe, Path(work))
+        target_lines(exe, Path(work))
         fallback(exe, Path(work))
         refresh_scopes(exe, Path(work))
     print('protocol inlay hints: UTF-16 labels/links, ranges, settings, freshness, worker replacement, refresh passed')

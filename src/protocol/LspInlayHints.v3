@@ -183,42 +183,26 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		var i = -1;
 		for (j < snapshot.paths.length) if (Strings.equal(snapshot.paths[j], d.range.path)) { i = j; break; }
 		if (i < 0 || i >= snapshot.documentVersions.length || d.range.beginOffset < 0) return 0;
+		var span = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
+		if (span.0 < 0) return 0;
 		var cache = targets[d.range.path];
 		if (cache == null) {
 			cache = ctx.hintTargets[d.range.path];
-			if (cache == null || cache.source != snapshot.documentVersions[i].hash || cache.identity != snapshot.documentVersions[i].identity || cache.substituted || snapshot.documentVersions[i].substitution != null)
-				cache = LspHintTargetFingerprint.new(snapshot.documentVersions[i].hash, snapshot.documentVersions[i].identity, snapshot.documentVersions[i].substitution != null);
+			if (cache == null || cache.source != snapshot.documentVersions[i].hash || cache.identity != snapshot.documentVersions[i].identity)
+				cache = LspHintTargetFingerprint.new(snapshot.documentVersions[i].hash, snapshot.documentVersions[i].identity);
 			targets.add(d.range.path, cache);
 		}
-		var index = cache.offsets.add(d.range.beginOffset);
+		var index = cache.offsets.add(span.0);
 		if (index < cache.hashes.length) return cache.hashes[index];
 		var text = analyzedText(snapshot, i, texts, checked), hash = 0ul;
-		var span = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
-		if (text != null && span.0 >= 0 && span.1 <= text.length) {
+		if (text != null && span.1 <= text.length) {
 			hash = hashString(hashString(0xcbf29ce484222325ul, d.range.path), d.name);
-			if (snapshot.documentVersions[i].substitution == null) {
-				hash = hashInt(hashInt(hash, d.range.beginLine), utf16Column(text, span.0));
-				hash = hashInt(hashInt(hash, d.range.endLine), utf16Column(text, span.1));
-			} else {
-				var scan = LspHintPositionCursor.new(text);
-				scan.advance(span.0);
-				hash = hashInt(hashInt(hash, scan.line + 1), scan.character);
-				scan.advance(span.1);
-				hash = hashInt(hashInt(hash, scan.line + 1), scan.character);
-			}
+			var begin = cache.position(text, span.0), end = cache.position(text, span.1);
+			hash = hashInt(hashInt(hash, begin.line), begin.character);
+			hash = hashInt(hashInt(hash, end.line), end.character);
 		}
 		cache.hashes.put(hash);
 		return hash;
-	}
-	private def utf16Column(text: Array<byte>, offset: int) -> int {
-		var begin = offset, count = 0;
-		while (begin > 0 && text[begin - 1] != '\n' && text[begin - 1] != '\r') begin--;
-		while (begin < offset) {
-			var length = PositionUtf8.sequenceLength(text, begin);
-			begin += length;
-			count += if(length == 4, 2, 1);
-		}
-		return count;
 	}
 	private def hashString(hash: u64, text: string) -> u64 {
 		hash = hashInt(hash, text.length);
@@ -278,7 +262,35 @@ class LspHintPositionCursor(text: Array<byte>) {
 // Targets in unchanged source keep their converted coordinates, keyed by the
 // declaration's unique name offset. Only files still referenced survive the
 // next comparison; neither source bytes nor declarations are retained.
-class LspHintTargetFingerprint(source: u64, identity: DocumentVersionIdentity, substituted: bool) {
+class LspHintTargetFingerprint(source: u64, identity: DocumentVersionIdentity) {
 	def offsets = AnalysisIndexMap<int>.new(AnalysisTables.hashInt, fun (a: int, b: int) => a == b);
 	def hashes = Vector<u64>.new();
+	private var lineStarts: Array<int>;
+	def position(text: Array<byte>, offset: int) -> LspPosition {
+		if (lineStarts == null) {
+			var starts = Vector<int>.new();
+			starts.put(0);
+			for (i < text.length) {
+				if (text[i] == '\r') {
+					if (i + 1 < text.length && text[i + 1] == '\n') i++;
+					starts.put(i + 1);
+				} else if (text[i] == '\n') starts.put(i + 1);
+			}
+			lineStarts = starts.extract();
+		}
+		var lo = 0, hi = lineStarts.length;
+		while (lo + 1 < hi) {
+			var mid = lo + (hi - lo) / 2;
+			if (lineStarts[mid] <= offset) lo = mid;
+			else hi = mid;
+		}
+		var begin = lineStarts[lo], character = 0;
+		while (begin < offset && text[begin] != '\r' && text[begin] != '\n') {
+			var length = PositionUtf8.sequenceLength(text, begin);
+			if (begin + length > offset) break;
+			begin += length;
+			character += if(length == 4, 2, 1);
+		}
+		return LspPosition.new(lo, character);
+	}
 }

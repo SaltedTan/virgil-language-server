@@ -136,6 +136,12 @@ def refresh_positions(t: Tester) {
 			t.asserti(p.line, scan.line);
 			t.asserti(p.character, scan.character);
 		}
+		var target = LspHintTargetFingerprint.new(0ul, null);
+		for (i = text.length; i >= 0; i--) {
+			var p = map.offsetToPosition(i), actual = target.position(text, i);
+			t.asserti(p.line, actual.line);
+			t.asserti(p.character, actual.character);
+		}
 	}
 }
 
