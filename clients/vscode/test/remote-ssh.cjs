@@ -819,7 +819,7 @@ test('launch samples at client exit and preserves deadlines across reports and h
     });
     const run = {
       target: { alias: 'host', root: '/remote' }, work: '/work', evidence: '/evidence', settings: {},
-      manifest: { launches: [] }, signal: new AbortController().signal,
+      manifest: { launches: [] }, values: { out: '/out' }, signal: new AbortController().signal,
       checkpoint() {}, fail: (message) => failures.push(message), note: (message) => notes.push(message),
       remote: async (command) => {
         if (command.startsWith("'/remote/server/node' -e ")) {
@@ -836,7 +836,7 @@ test('launch samples at client exit and preserves deadlines across reports and h
             host: hostRuns, sampledAt: now, signaledAt: options.signal ? now : undefined,
           }) };
         }
-        if (command === "cat '/results/late.json'") {
+        if (command.includes("cat '/results/late.json'")) {
           reportStarted = now;
           await new Promise((resolve) => add(resolve, scenario.reportAt - now));
           return { code: 0, stdout: JSON.stringify({ outcome: 'pass', pid: 10, start: '500', folders: null, seconds: 1 }) };
@@ -931,7 +931,7 @@ test('launch settings and every launch-log operation classify filesystem failure
     }, {}, { setInterval, clearInterval });
     const run = {
       target: { alias: 'host' }, work: '/work', evidence: '/evidence', settings: {},
-      manifest: { launches: [] }, signal: new AbortController().signal,
+      manifest: { launches: [] }, values: { out: '/out' }, signal: new AbortController().signal,
       remote: async () => ({}), checkpoint() {},
     };
     const layout = { results: '/results', data: '/data', project: '/project', tests: '/tests' };
