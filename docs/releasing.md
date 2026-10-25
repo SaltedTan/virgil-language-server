@@ -207,7 +207,7 @@ xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-darw
 
 The editors start `virgil-lsp --stdio`:
 
-- **VS Code:** install the [extension](#vs-code-extension) from the release's VSIX. It uses an explicit `virgil.server.path`, otherwise the bundled server if the VSIX was built for the workspace host's platform, otherwise `virgil-lsp` on the extension host's `PATH` ([server selection](../clients/vscode/README.md#settings)). With Remote-SSH or Remote-WSL, the extension runs on the remote side, so install the VSIX for that host, and set any `virgil.server.path` in the remote settings.
+- **VS Code:** install the [extension](#vs-code-extension) from the release's VSIX. It uses an explicit `virgil.server.path`, otherwise the bundled server if the VSIX target matches the workspace host's platform and architecture, otherwise `virgil-lsp` on the extension host's `PATH` when the VSIX has no bundle ([server selection](../clients/vscode/README.md#settings)). A mismatched bundle fails startup. With Remote-SSH or Remote-WSL, the extension runs on the remote side, so install the VSIX for that host, and set any `virgil.server.path` in the remote settings.
 - **Neovim and LazyVim:** the configurations run `virgil-lsp` from `PATH`, or the absolute path you give in `cmd` ([Neovim setup](../editors/nvim/README.md)). Plain Neovim loads the downloaded configuration from its `plugin/` directory at startup; its init files are untouched.
 
 ### VS Code extension
@@ -236,4 +236,4 @@ git -C ~/src/virgil checkout <virgil revision>
 export VIRGIL_LOC=~/src/virgil    # or set virgil.virgilRoot in VS Code
 ```
 
-With Remote-SSH or WSL, install the whole archive on the remote machine or in the WSL distribution. Any optional checkout and client root must also be on that machine.
+With Remote-SSH or WSL, any optional checkout and client root must be on the remote machine or in the WSL distribution.
