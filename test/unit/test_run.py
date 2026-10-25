@@ -156,6 +156,53 @@ class RunTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assert_restored()
 
+    def test_parallel_groups_keep_stdout_and_stderr_together(self):
+        self.stand_in(
+            alpha="echo '##stderr Alpha' >&2; " + meeting("Alpha", "Beta", "##>2 unit tests\\n", "one two"),
+            beta="echo '##stderr Beta' >&2; " + meeting("Beta", "Alpha", "##>1 unit tests\\n", "one"),
+        )
+        result = subprocess.run(self.command(jobs=2), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, timeout=60, check=False)
+        self.assertEqual(0, result.returncode, result.stdout)
+        lines = [line for line in result.stdout.splitlines() if line.startswith("##")]
+        alpha = ["##>2 unit tests", "##+Alpha:one", "##-ok", "##+Alpha:two", "##-ok", "##stderr Alpha"]
+        beta = ["##>1 unit tests", "##+Beta:one", "##-ok", "##stderr Beta"]
+        self.assertIn(lines, [alpha + beta, beta + alpha])
+        self.assert_restored()
+
+    def test_preparation_failures_reap_every_launched_child(self):
+        runner = runpy.run_path(str(self.run_py))
+        popen = subprocess.Popen
+        for failure in ("exit", "launch"):
+            with self.subTest(failure=failure):
+                children = []
+
+                def launch(command, **kwargs):
+                    if failure == "launch" and len(children) == 2:
+                        raise OSError(errno.EAGAIN, "cannot launch preparer")
+                    code = ("raise SystemExit(1)" if failure == "exit" and not children else
+                            "from pathlib import Path; import sys; Path(sys.argv[1], 'ready').touch()")
+                    child = popen([sys.executable, "-c", code, command[-1]], **kwargs)
+                    children.append(child)
+                    return child
+
+                try:
+                    with patch.object(subprocess, "Popen", side_effect=launch):
+                        with self.assertRaisesRegex(SystemExit, "preparing the slots' fixtures failed"):
+                            runner["slots"](str(self.build), str(self.executable), 4)
+                    self.assertEqual(3 if failure == "exit" else 2, len(children))
+                    for index, child in enumerate(children, 1):
+                        self.assertIsNotNone(child.returncode)
+                        with self.assertRaises(ChildProcessError):
+                            os.waitpid(child.pid, os.WNOHANG)
+                        if failure != "exit" or index != 1:
+                            self.assertTrue((self.build / "unit-slots" / str(index) / "ready").exists())
+                finally:
+                    for child in children:
+                        child.kill()
+                        child.wait()
+                    shutil.rmtree(self.build / "unit-slots")
+
     def test_failing_test_fails_the_run(self):
         self.stand_in(beta="printf '##>1 unit tests\\n##+Beta:one\\n##-fail (boom)\\n'; exit 1")
         result = self.run_unit_tests()

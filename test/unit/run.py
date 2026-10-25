@@ -30,6 +30,7 @@ directories that must be unreadable are restricted in every slot for the whole
 run and restored however it ends, as `prepare.py BUILD --run` does. Afterwards
 it lists the slowest tests.
 """
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import re
@@ -152,9 +153,17 @@ def slots(build, unit_tests, jobs):
                     link(Path(unit_tests).parent / name, slot / name)
             directories.append(slot)
             executables.append(str(slot / Path(unit_tests).name))
-        preparing = [subprocess.Popen([sys.executable, str(PREPARE), str(slot)], start_new_session=True,
-                                      stdout=subprocess.DEVNULL) for slot in directories]
-        if any(process.wait() != 0 for process in preparing):
+        preparing = []
+        launch_failed = False
+        try:
+            for slot in directories:
+                preparing.append(subprocess.Popen([sys.executable, str(PREPARE), str(slot)],
+                                                  start_new_session=True, stdout=subprocess.DEVNULL))
+        except OSError:
+            launch_failed = True
+        finally:
+            statuses = [process.wait() for process in preparing]
+        if launch_failed or any(statuses):
             sys.exit("error: preparing the slots' fixtures failed")
     return executables
 
@@ -203,34 +212,38 @@ class Slots:
 
     def run(self, executable, group):
         """Runs {group}, copying its output, and times each test."""
-        process = subprocess.Popen([executable, f"{group.name}:*"], stdout=subprocess.PIPE)
-        self.children.add(process)
-        output, test, started = bytearray(), None, 0.0
-        for line in process.stdout:
-            if self.live:
-                self.write(line)
-            else:
-                output += line
-            now = time.monotonic()
-            header = HEADER.fullmatch(line.rstrip(b"\n"))
-            if header is not None:
-                group.count = int(header.group(1))
-            elif line.startswith(b"##+"):
-                test, started = line[3:].decode(errors="replace").rstrip("\n"), now
-            elif line.startswith(b"##-") and test is not None:
-                group.durations.append((now - started, test))
-                if line.startswith(b"##-fail"):
-                    group.failed.append(test)
-                test = None
-        process.stdout.close()
-        group.status = process.wait()
-        with self.lock:
-            self.children.processes.remove(process)
-        self.write(output)
+        with (nullcontext() if self.live else tempfile.TemporaryFile()) as error:
+            process = subprocess.Popen([executable, f"{group.name}:*"], stdout=subprocess.PIPE, stderr=error)
+            self.children.add(process)
+            output, test, started = bytearray(), None, 0.0
+            for line in process.stdout:
+                if self.live:
+                    self.write(line)
+                else:
+                    output += line
+                now = time.monotonic()
+                header = HEADER.fullmatch(line.rstrip(b"\n"))
+                if header is not None:
+                    group.count = int(header.group(1))
+                elif line.startswith(b"##+"):
+                    test, started = line[3:].decode(errors="replace").rstrip("\n"), now
+                elif line.startswith(b"##-") and test is not None:
+                    group.durations.append((now - started, test))
+                    if line.startswith(b"##-fail"):
+                        group.failed.append(test)
+                    test = None
+            process.stdout.close()
+            group.status = process.wait()
+            with self.lock:
+                self.children.processes.remove(process)
+            self.write(output, error)
 
-    def write(self, output):
+    def write(self, output, error=None):
         with self.lock:
             sys.stdout.buffer.write(output)
+            if error is not None:
+                error.seek(0)
+                shutil.copyfileobj(error, sys.stdout.buffer)
             sys.stdout.buffer.flush()
 
 
