@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Performance benchmarks now include cancelled completion typing bursts, measuring the last useful reply, semantic diagnostics after the burst, worker replacements, and startup cost. The paired experiment rejected immediate worker reclaim because it delayed diagnostics ([measurements](docs/benchmarks.md#reclaiming-obsolete-jobs), [#262](https://github.com/SaltedTan/virgil-language-server/issues/262)).
 - Document highlights distinguish assigned uses (Write) from other uses (Read), with declaration names always Text. Compound assignments, increments, and decrements are Write; field receivers, array variables, and indexes remain Read. The LazyVim test checks navigation between highlights with `]]` and `[[` ([#249](https://github.com/SaltedTan/virgil-language-server/issues/249)).
 - Large-project analysis uses less temporary memory for both successful and diagnostic-bearing results, without increasing retained analysis memory. Repeated successful analyses also avoid a garbage collection ([performance benchmarks](docs/benchmarks.md#reference-baseline), [#240](https://github.com/SaltedTan/virgil-language-server/issues/240)).
 - The [LazyVim test](test/e2e/lazyvim/README.md#ci) now runs in CI on Linux for every pull request as an advisory check, and weekly on Linux and macOS. The weekly workflow also runs the [Extension Host test](clients/vscode/README.md#extension-host-test) on an installed VSIX on macOS.

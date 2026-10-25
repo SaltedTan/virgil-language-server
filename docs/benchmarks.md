@@ -264,6 +264,77 @@ The first run had one slower Aeneas collection block in the changed build, widen
 
 Every measured worker transaction collected zero times in both candidates, excluding the explicit final collection. Successful full-snapshot result lengths were identical: 596 bytes for small, 168,738 for util, and 3,936,046 for Aeneas. CLI analyses of the same relative source paths charged identical decoded result allocations: 5,212, 751,779, and 13,250,205 bytes respectively. Temporary worker allocation increased only by the collector's one target pointer per file: 16, 248, and 1,640 bytes respectively, under 0.001% for Aeneas. A fieldless occurrence subtype carries the write flag without enlarging each temporary occurrence, and the snapshot packs it in its existing target integer.
 
+## Reclaiming obsolete jobs
+
+The [#262](https://github.com/SaltedTan/virgil-language-server/issues/262)
+experiment did **not** justify changing the scheduler. The measured policy
+reclaimed a withdrawn temporary completion, repaired signature-help query, or
+rename preflight as soon as another job or a due context could start. Automatic
+analyses were never reclaimed; retained snapshots and the job/context turn order
+were preserved. Stale queries kept their existing once-only rerun or fallback.
+
+The initial Aeneas baseline, measured before scheduler edits, used CPU 4, one
+process block, two warmups, and five measured operations. Its last burst reply
+took 200.370 ms median, semantic diagnostics took 502.718 ms after the final
+request, idle completion took 123.317 ms, and spawn-to-handshake took 5.416 ms.
+Those numbers motivated testing immediate reclaim without an age threshold.
+
+The paired comparison used main `0d33c02` and the uncommitted experimental policy
+on 2026-10-25, with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5`,
+the Intel Core i7-14700KF reference host, and the default 384 MiB worker heap.
+Both were built in this checkout with `BENCH=1 all bench-metadata`, in
+equal-length `build/base` and `build/next` directories. Generated BuildInfo
+strings had equal lengths, including their `-dirty` suffixes. Metadata hashes
+were checked for all 275 inputs in each build; only `AnalysisSupervisor`,
+`LspSemanticDiagnostics`, `LspQueryRequests`, and `LspRename` differed among
+production sources. The run held the shared benchmark lock, waited for the other
+agent's benchmark to finish, and pinned the client and both child processes to
+P-core hardware thread 4 (use the same lock path in every worktree):
+
+```sh
+flock /path/to/shared/bench.lock taskset -c 4 \
+  python3 scripts/bench-lsp.py \
+  --exe build/base/virgil-lsp --exe build/next/virgil-lsp \
+  --project aeneas --typing-burst --require-probes \
+  --blocks 3 --operations 5 --warmups 2 --cpu 4 \
+  --output build/bench-results/reclaim-jobs.json
+```
+
+Build order alternated by block. Every semantic answer and final versioned
+semantic publication passed. No outliers were removed. Times below are
+**median (p10–p90), milliseconds**, over 15 measured operations per build:
+
+| Metric | Main | Immediate reclaim |
+| --- | ---: | ---: |
+| Burst last useful reply | 216.046 (202.106–218.075) | 201.761 (198.648–215.046) |
+| Burst semantic diagnostics | 503.129 (496.935–541.989) | 610.867 (574.525–617.389) |
+| Idle completion miss | 132.332 (130.900–147.818) | 132.056 (131.266–144.566) |
+| Fresh analysis | 340.400 (327.521–345.502) | 338.866 (326.565–342.668) |
+| Reused analysis | 295.483 (282.707–307.953) | 298.314 (281.502–323.855) |
+| Rename preflight | 333.828 (318.265–341.627) | 337.261 (320.595–339.092) |
+| Ordinary semantic diagnostic | 516.582 (503.038–537.576) | 522.325 (505.113–535.230) |
+
+The last reply's median improved by 6.6%, but its p10–p90 intervals overlap.
+Diagnostics after the burst regressed by **21.4%** (107.738 ms), with disjoint
+intervals. The measured bursts reclaimed 45 workers, three per burst, and
+completed 36 replacement handshakes; some workers were reclaimed during startup.
+Replacement spawn-to-handshake took 8.029 (7.137–9.616) ms, over those 36 starts,
+versus fresh-start 5.321 (5.262–5.487) ms on main. Full restart cost includes
+cold worker state and scheduling delay beyond the handshake. Measuring that
+handshake alone understated the cost to useful completion and publication.
+
+The issue requires faster last replies **and diagnostics no later**. This policy
+failed that requirement, so the implementation and its race tests were discarded;
+only the scenario and measurements are committed. Cancellation still answers at
+once and discards a running temporary result when it finishes. There is no new
+restart trigger or elapsed-time threshold. A future policy needs new evidence
+covering full replacement cost and diagnostic publication before it can ship.
+
+The rejected source/test patch has SHA-256
+`935d94154798d32f0a7f78b15fc0c67efe7a51e4dca841cd1605d1424aa790c7`.
+The paired JSON retains binary hashes, source hashes, individual samples, all
+probe records, complete process stderr, host state, and the exact command.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
