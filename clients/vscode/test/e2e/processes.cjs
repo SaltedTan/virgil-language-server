@@ -25,8 +25,7 @@ const KEEPER_KILL_WAIT_MS = 30000;
 function processInfo(pid) {
   if (process.platform === 'darwin') {
     const info = darwinInfos([Number(pid)])?.[0];
-    if (info === false) return undefined;
-    if (info != null) return info;
+    if (darwinNative) return info === false ? undefined : info ?? null;
   }
   if (process.platform !== 'linux') return psTable(['-p', String(pid)]).find((p) => p.pid === Number(pid));
   try {
@@ -183,9 +182,17 @@ function processTable() {
   if (process.platform !== 'linux') {
     const listed = psTable(['-A']);
     const native = process.platform === 'darwin' ? darwinInfos(listed.map((p) => p.pid)) : undefined;
+    if (darwinNative) {
+      const unavailable = native === undefined || native.includes(null);
+      return {
+        processes: unavailable ? [] : native.filter((p) => p !== false),
+        complete: !unavailable && !native.includes(false),
+        unavailable,
+      };
+    }
     return {
-      processes: listed.flatMap((p, i) => native?.[i] === false ? [] : [native?.[i] ?? p]),
-      complete: !native?.includes(false),
+      processes: listed,
+      complete: true,
     };
   }
   let complete = true;
@@ -214,8 +221,7 @@ function psTable(selection) {
 // Unlike KERN_PROC_ALL (ps), XNU's PROC_PGRP_ONLY copies the group's PIDs
 // under proc_list_lock, without a later lookup that can silently drop a
 // reaped helper. See bsd/kern/proc_info.c's proc_listpids. A full buffer may
-// be truncated, so grow it until there is spare room. Failure uses the timed
-// confirmation in look(), including where Python or libproc is unavailable.
+// be truncated, so grow it until there is spare room.
 const DARWIN_GROUP_PIDS = `
 import ctypes, json, sys
 try:
@@ -244,9 +250,7 @@ function darwinGroupPids(group) {
   try {
     const pids = JSON.parse(helper.stdout);
     if (helper.status === 0 && Array.isArray(pids) && pids.every((pid) => Number.isInteger(pid) && pid > 0)) return pids;
-  } catch {
-    // The timed confirmation also covers a failed helper.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -255,9 +259,6 @@ function darwinGroupPids(group) {
 // MAXCOMLEN = 16, and uint64_t aligns to 8 on both arm64 and x86-64 Darwin:
 // sizeof = 136, start_tvsec at 120, start_tvusec at 128. Do not use c_long or
 // a timeval, whose ABI could differ with the Python interpreter's architecture.
-// Each result is a complete native record, false for ESRCH, or null to fall
-// back to ps if the call is unavailable or denied. Prefixing native times
-// keeps a later fallback from accepting a weaker, second-resolution match.
 const DARWIN_PROCESS_INFO = `
 import ctypes, errno, json, sys
 class BsdInfo(ctypes.Structure):
@@ -297,7 +298,10 @@ except (AttributeError, OSError):
     print('null')
 `;
 
+let darwinNative;
+
 function darwinInfos(pids) {
+  if (darwinNative === false) return undefined;
   if (pids.length === 0) return [];
   const helper = spawnSync('python3', ['-I', '-c', DARWIN_PROCESS_INFO, JSON.stringify(pids)], { encoding: 'utf8' });
   try {
@@ -305,10 +309,12 @@ function darwinInfos(pids) {
     if (helper.status === 0 && Array.isArray(infos) && infos.length === pids.length
       && infos.every((p, i) => p === null || p === false || (p.pid === pids[i]
         && Number.isInteger(p.ppid) && Number.isInteger(p.group) && /^[IRSTZ]$/.test(p.state)
-        && /^darwin:\d+\.\d{6}$/.test(p.start)))) return infos;
-  } catch {
-    // Missing Python, an unavailable libproc, or a failed helper uses ps.
-  }
+        && /^darwin:\d+\.\d{6}$/.test(p.start)))) {
+      darwinNative ??= !infos.includes(null);
+      return infos;
+    }
+  } catch {}
+  darwinNative ??= false;
   return undefined;
 }
 
@@ -473,14 +479,14 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // The zombies that the last look found in the group, each by PID and start
   // time (see look).
   let zombies = new Map();
-  // The first apparently empty macOS scan, if native group listing fails.
+  // The first apparently empty macOS scan.
   let emptySince;
   // The signals that the runner has asked the keeper for, in order, and that
   // the keeper hasn't said it sent, each with the timer for its answer.
   const requested = [];
   // Whether the keeper has failed to answer a request in time.
   let unresponsive = false;
-  let lost = leader == null;
+  let lost = leader === undefined || (leader === null && !darwinNative);
   let killed = false;
   let reported = false;
   let keeperGone = false;
@@ -492,6 +498,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // keeper's PID within its start second, could pass for it.
   const led = () => {
     const info = processInfo(number);
+    if (darwinNative && (info === null || leader === null)) return null;
     return leader != null && info != null && info.start === leader.start && info.ppid === leader.ppid;
   };
   const report = (result) => {
@@ -520,14 +527,24 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // is live, and the runner remembers and signals it as any other.
   const look = () => {
     if (lost) return undefined;
-    const { processes, complete } = processTable();
+    const { processes, complete, unavailable } = processTable();
+    if (unavailable) return { processes: [], empty: false, unavailable: true };
+    const native = process.platform === 'darwin' && darwinNative;
+    const pids = native ? darwinGroupPids(number) : undefined;
+    if (native && pids === undefined) return { processes: [], empty: false, unavailable: true };
     const members = processes.filter((p) => p.group === number && p.pid !== number);
     const found = members.filter((p) => !zombie(p));
+    let inaccessible = false;
     const held = ([pid, start]) => {
       const info = processInfo(pid);
+      if (native && info === null) inaccessible = true;
       return info?.start === start && info.group === number;
     };
-    if (!led() && ![...seen].some(held)) {
+    const leading = led();
+    if (native && leading === null) return { processes: [], empty: false, unavailable: true };
+    const holding = !leading && [...seen].some(held);
+    if (inaccessible) return { processes: [], empty: false, unavailable: true };
+    if (!leading && !holding) {
       lost = true;
       return undefined;
     }
@@ -536,8 +553,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
     // native group listing or timed confirmation below decides completeness.
     let empty = (complete || process.platform === 'darwin') && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
     if (process.platform === 'darwin') {
-      const pids = darwinGroupPids(number);
-      if (pids !== undefined) {
+      if (native) {
         emptySince = undefined;
         // A child missed by ps, or a member that is now live, prevents release.
         empty &&= pids.every((pid) => pid === number || members.some((p) => p.pid === pid && zombie(p)));
@@ -674,7 +690,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
     // its input ended without a release, as when the runner goes. Returns
     // whether Node.js has reaped the keeper.
     detach: () => {
-      const gone = keeperGone || !led();
+      const gone = keeperGone || led() === false;
       reported = true;
       for (const { timer } of requested.splice(0)) clearTimeout(timer);
       for (const stream of keeper.stdio) stream?.destroy();

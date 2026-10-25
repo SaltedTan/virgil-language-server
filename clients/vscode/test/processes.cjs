@@ -125,6 +125,16 @@ function fakePs(table, looking = () => {}) {
   };
 }
 
+function fakeDarwinInfo(table) {
+  return (pids) => ({ status: 0, stdout: JSON.stringify(pids.map((pid) => {
+    const p = table.get(pid);
+    return p === undefined ? false : {
+      pid, ppid: p.ppid ?? 1, group: p.group ?? 0, state: p.state ?? 'S',
+      start: p.nativeStart ?? `darwin:1792746781.${String(pid).padStart(6, '0')}`,
+    };
+  })) });
+}
+
 test('signals to processes go through a pidfd where Python and the kernel have them, and otherwise follow a check', () => {
   const table = () => new Map([[10, { start: '500' }], [11, { start: '510', state: 'Z' }], [12, { start: '999' }]]);
   const targets = [{ pid: 10, start: '500' }, { pid: 11, start: '510' }, { pid: 12, start: '520' }, { pid: 13, start: '530' }];
@@ -249,11 +259,206 @@ test('macOS records and checks microsecond identities, and never mixes native an
   assert.deepEqual(fake.signalProcesses([recorded], 'SIGKILL'), ['other']);
   // Loss of native support cannot downgrade a recorded exact identity.
   native = null;
-  assert.deepEqual(fake.signalProcesses([recorded], 'SIGKILL'), ['other']);
-  const approximate = fake.processInfo(10);
+  assert.deepEqual(fake.signalProcesses([recorded], 'SIGKILL'), ['gone']);
+  assert.equal(fake.processInfo(10), null);
+  assert.equal(fake.processTable().unavailable, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(fake.processTable().processes)), []);
   native = [{ ...recorded }];
-  assert.deepEqual(fake.signalProcesses([approximate], 'SIGKILL'), ['other']);
-  assert.deepEqual(kills, [[10, 'SIGTERM']]);
+  assert.deepEqual(fake.signalProcesses([recorded], 'SIGKILL'), ['sent']);
+  assert.deepEqual(kills, [[10, 'SIGTERM'], [10, 'SIGKILL']]);
+});
+
+test('macOS keeps ps identities and timed confirmation when the first native probe fails', () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+  const clock = fakeClock();
+  const setup = fakeGroup(table);
+  let available = false;
+  let probes = 0;
+  const fake = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table), globals: clock.globals,
+    darwinInfo: (pids) => {
+      probes++;
+      return available ? fakeDarwinInfo(table)(pids) : { status: 0, stdout: 'null' };
+    },
+    darwinPids: () => assert.fail('ps mode must use timed confirmation'),
+  });
+  const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+  available = true;
+  assert.equal(fake.processInfo(51).start, start);
+  assert.equal(fake.processTable().processes.find((p) => p.pid === 51).start, start);
+  assert.deepEqual(fake.signalProcesses([{ pid: 51, start }], 'SIGTERM'), ['sent']);
+  assert.deepEqual(setup.signals, [[51, 'SIGTERM']]);
+  table.delete(51);
+  assert.equal(group.look().empty, false);
+  clock.advance(49);
+  assert.equal(group.look().empty, false);
+  clock.advance(1);
+  assert.equal(group.look().empty, true);
+  assert.equal(probes, 1);
+  group.detach();
+});
+
+test('macOS retries transient native failures during the first look without losing ownership', () => {
+  const failures = [
+    { error: Object.assign(new Error('spawn failed'), { code: 'ENOENT' }) },
+    { status: 1, stdout: '' },
+    { status: 0, stdout: 'null' },
+    { status: 0, stdout: '-1' },
+    { status: 0, stdout: '[' },
+    { status: 0, stdout: '[]' },
+    { status: 0, stdout: '[null,null]' },
+  ];
+  for (const site of ['batch', 'keeper', 'group']) {
+    for (const failure of failures) {
+      const start = 'Thu Oct 23 17:13:01 2026';
+      const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+      const setup = fakeGroup(table);
+      const clock = fakeClock();
+      let failing = false;
+      const fake = fakeProcesses(table, {
+        ...setup, platform: 'darwin', ps: fakePs(table), globals: clock.globals,
+        darwinInfo: (pids) => failing && ((site === 'batch' && pids.length > 1) || (site === 'keeper' && pids.length === 1 && pids[0] === 50))
+          ? failure : fakeDarwinInfo(table)(pids),
+        darwinPids: () => failing && site === 'group' ? null : [...table.keys()],
+      });
+      const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+      failing = true;
+      for (let i = 0; i < 2; i++) {
+        const result = group.look();
+        assert.equal(result?.empty, false, site);
+        assert.equal(result.processes.length, 0, site);
+        clock.advance(100);
+      }
+      failing = false;
+      assert.equal(group.look().processes[0].start, 'darwin:1792746781.000051', site);
+      table.delete(51);
+      assert.equal(group.look().empty, true, site);
+      assert.deepEqual(setup.signals, []);
+      group.detach();
+    }
+  }
+});
+
+test('macOS failed native looks never replace remembered identities or remember partial scans', () => {
+  for (const site of ['batch', 'partial', 'keeper', 'group']) {
+    const start = 'Thu Oct 23 17:13:01 2026';
+    const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+    const setup = fakeGroup(table);
+    let failing = false;
+    let offline = false;
+    const fake = fakeProcesses(table, {
+      ...setup, platform: 'darwin', ps: fakePs(table),
+      darwinInfo: (pids) => {
+        if (offline || (failing && ((site === 'batch' && pids.length > 1) || (site === 'keeper' && pids.length === 1 && pids[0] === 50)))) {
+          return { status: 0, stdout: 'null' };
+        }
+        const info = fakeDarwinInfo(table)(pids);
+        if (failing && site === 'partial' && pids.length > 1) {
+          const records = JSON.parse(info.stdout);
+          records[1] = null;
+          info.stdout = JSON.stringify(records);
+        }
+        return info;
+      },
+      darwinPids: () => failing && site === 'group' ? null : [...table.keys()],
+    });
+    const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+    assert.equal(group.look().processes[0].start, 'darwin:1792746781.000051');
+    table.set(52, { start, group: 50 });
+    failing = true;
+    assert.equal(group.look().empty, false, site);
+    table.get(51).nativeStart = 'darwin:1792746781.000052';
+    table.delete(50);
+    setup.keeper.reap('SIGKILL');
+    offline = true;
+    group.signal('SIGTERM');
+    assert.deepEqual(setup.signals, [], site);
+    offline = false;
+    failing = false;
+    assert.equal(group.look(), undefined, site);
+    group.signal('SIGKILL');
+    assert.deepEqual(setup.signals, [], site);
+    assert.equal(table.has(51), true);
+    assert.equal(table.has(52), true);
+    group.detach();
+  }
+});
+
+test('macOS preserves ownership when a remembered native member cannot be read', () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }], [99, { start, group: 99 }]]);
+  const setup = fakeGroup(table);
+  let failing = false;
+  const fake = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table),
+    darwinInfo: (pids) => failing && pids.length === 1 && pids[0] === 51
+      ? { status: 0, stdout: '[null]' } : fakeDarwinInfo(table)(pids),
+    darwinPids: () => [...table].filter(([, p]) => p.group === 50).map(([pid]) => pid),
+  });
+  const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+  assert.equal(group.look().processes.length, 1);
+  table.delete(50);
+  setup.keeper.reap('SIGKILL');
+  failing = true;
+  assert.equal(group.look()?.empty, false);
+  group.signal('SIGTERM');
+  assert.deepEqual(setup.signals, []);
+  failing = false;
+  assert.equal(group.look().processes[0].start, 'darwin:1792746781.000051');
+  group.signal('SIGTERM');
+  assert.deepEqual(setup.signals, [[51, 'SIGTERM']]);
+  group.detach();
+});
+
+test('macOS detach does not report an unconfirmed native keeper as gone', () => {
+  const table = new Map([[50, { start: 'Thu Oct 23 17:13:01 2026', group: 50 }]]);
+  const setup = fakeGroup(table);
+  let failing = false;
+  const fake = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table),
+    darwinInfo: (pids) => failing ? { status: 0, stdout: 'null' } : fakeDarwinInfo(table)(pids),
+  });
+  const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+  failing = true;
+  assert.equal(group.detach(), false);
+});
+
+test('the Extension Host retries an inconclusive native look before checking for servers left running', async () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }],
+    [52, { start, group: 50, on: () => table.delete(52) }]]);
+  const setup = fakeGroup(table);
+  const clock = fakeClock();
+  let failing = false;
+  const owned = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table), globals: clock.globals,
+    darwinInfo: (pids) => failing ? { status: 0, stdout: 'null' } : fakeDarwinInfo(table)(pids),
+    darwinPids: () => [...table.keys()],
+  });
+  const runner = load('run.cjs', {
+    '@vscode/test-electron': {}, './processes.cjs': owned,
+    'node:child_process': { spawnSync: () => ({ status: 0, stdout: table.has(52) ? '52 50 /build/virgil-lsp\n' : '' }) },
+  }, { pid: 1, platform: 'darwin' }, clock.globals);
+  let result;
+  const controller = new AbortController();
+  runner.runGroup('code', [], { env: {}, stdin: 'ignore', signal: controller.signal, servers: ['/build/virgil-lsp'] })
+    .then((value) => { result = value; });
+  setup.keeper.command(51);
+  table.delete(51);
+  failing = true;
+  setup.keeper.exit(0, null);
+  assert.equal(setup.keeper.released, undefined);
+  failing = false;
+  clock.advance(100);
+  await new Promise((resolve) => setImmediate(resolve));
+  clock.advance(5000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(setup.signals, [['keeper', 'SIGTERM']]);
+  clock.advance(50);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.stopped, 'left virgil-lsp (pid 52) running 5 seconds after VS Code exited');
+  assert.equal(setup.keeper.released, 'release\n');
 });
 
 test('the macOS ctypes helper reads fixed-width fields and handles missing, denied, and short records', { skip: pythonSkip }, () => {
@@ -285,20 +490,24 @@ ctypes.CDLL = lambda *args, **kwargs: types.SimpleNamespace(proc_pidinfo=info)
   ]);
 });
 
-test('the macOS group helper counts PIDs, retries a full buffer, and reports failure for timed confirmation', { skip: pythonSkip }, () => {
-  for (const mode of ['grow', 'empty', 'EPERM', 'ENOMEM', 'negative']) {
+test('the macOS group helper counts PIDs, retries a full buffer, and reports failure', { skip: pythonSkip }, () => {
+  for (const mode of ['grow', 'empty', 'EPERM', 'ENOMEM', 'negative', 'grow-empty', 'grow-EPERM', 'grow-ENOMEM', 'grow-negative']) {
     const setup = `
 import ctypes, errno, types
 ctypes.set_errno(errno.EPERM)
 def listing(group, buf, size):
     assert group == 50 and size == ctypes.sizeof(buf)
     assert ctypes.get_errno() == 0
-    if '${mode}' == 'empty':
+    if '${mode}'.startswith('grow-') and len(buf) == 256:
+        ctypes.set_errno(errno.EPERM)
+        return 256
+    mode = '${mode}'.split('-')[-1]
+    if mode == 'empty':
         return 0
-    if '${mode}' in ('EPERM', 'ENOMEM'):
-        ctypes.set_errno(getattr(errno, '${mode}'))
+    if mode in ('EPERM', 'ENOMEM'):
+        ctypes.set_errno(getattr(errno, mode))
         return 0
-    if '${mode}' == 'negative':
+    if mode == 'negative':
         return -1
     if len(buf) == 256:
         ctypes.set_errno(errno.EPERM)
@@ -313,7 +522,7 @@ ctypes.CDLL = library
 `;
     const helper = spawnSync('python3', ['-I', '-c', setup + processes.DARWIN_GROUP_PIDS, '50'], { encoding: 'utf8' });
     assert.equal(helper.status, 0, helper.stderr);
-    assert.deepEqual(JSON.parse(helper.stdout), mode === 'grow' ? [50, 53] : mode === 'empty' ? [] : null);
+    assert.deepEqual(JSON.parse(helper.stdout), mode === 'grow' ? [50, 53] : mode.endsWith('empty') ? [] : null);
   }
 });
 
@@ -1009,11 +1218,11 @@ test('a group whose keeper Node.js has reaped is never signaled by its number, e
 // remote-ssh/run.cjs: fake processes, by default from a fake /proc, or from
 // ps with platform 'darwin', and a fake clock and group (see fakeGroup), whose
 // keeper is PID 50.
-function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [], file = 'run.cjs', proc, ps = fakePs(table), darwinPids } = {}) {
+function localRunGroup(table, { platform = 'linux', pidfd = false, servers = [], file = 'run.cjs', proc, ps = fakePs(table), darwinPids, darwinInfo } = {}) {
   const { keeper, kill, deliver, signals } = fakeGroup(table);
   const clock = fakeClock();
   const runner = load(file, {
-    [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fakeProcesses(table, { keeper, kill, deliver, pidfd, signals, platform, ps, proc, darwinPids, globals: clock.globals }),
+    [file === 'run.cjs' ? './processes.cjs' : '../processes.cjs']: fakeProcesses(table, { keeper, kill, deliver, pidfd, signals, platform, ps, proc, darwinPids, darwinInfo, globals: clock.globals }),
     'node:child_process': { spawnSync: () => ({ status: 0, stdout: [...table].map(([pid, p]) => `${pid} ${p.group} ${p.args ?? 'x'}\n`).join('') }) },
   }, { pid: 1, kill, platform }, clock.globals);
   const controller = new AbortController();
@@ -1132,7 +1341,8 @@ for (const file of ['run.cjs', 'remote-ssh/run.cjs']) {
           table.set(53, { start, group: 50 });
         }
       });
-      const run = localRunGroup(table, { file, platform: 'darwin', ps, darwinPids: native ? () => [...table.keys()] : undefined });
+      const run = localRunGroup(table, { file, platform: 'darwin', ps,
+        darwinPids: native ? () => [...table.keys()] : undefined, darwinInfo: native ? fakeDarwinInfo(table) : undefined });
       run.keeper.command(51);
       table.delete(51);
       table.set(52, { start, group: 50 });
