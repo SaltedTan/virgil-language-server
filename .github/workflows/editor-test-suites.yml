@@ -197,7 +197,6 @@ jobs:
           name: vsix-linux-x64
           path: ${{ runner.temp }}/vsix
       - name: Check that the VSIX is the packaged one
-        # The test's manifest records the SHA-256 of the VSIX and the archive.
         run: |
           cd "$RUNNER_TEMP/vsix"
           sha256sum --check --strict linux-x64.sha256

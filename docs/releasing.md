@@ -167,7 +167,7 @@ Both print `OK` for a good download. Check the VSIX the same way, with its own l
 
 ## Installing
 
-Install the server where it runs, which is the machine that holds the files ([Where the server runs](compatibility.md#where-the-server-runs)):
+For VS Code, install the [platform VSIX](#vs-code-extension); it includes the server and library, so no separate archive installation is needed. The archive instructions below apply to Neovim, LazyVim, and external-server installations. Install the server where it runs, which is the machine that holds the files ([Where the server runs](compatibility.md#where-the-server-runs)):
 
 | Setup | Archive | Install on |
 | --- | --- | --- |
@@ -207,7 +207,7 @@ xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-darw
 
 The editors start `virgil-lsp --stdio`:
 
-- **VS Code:** install the [extension](#vs-code-extension) from the release's VSIX. It uses an explicit `virgil.server.path`, otherwise the matching bundled server, otherwise `virgil-lsp` on the extension host's `PATH`. With Remote-SSH or Remote-WSL, the extension runs on the remote side, so set it in the remote settings ([client settings](../clients/vscode/README.md#settings)).
+- **VS Code:** install the [extension](#vs-code-extension) from the release's VSIX. Its [server selection and external overrides](../clients/vscode/README.md#settings) run on the workspace host, including the remote side with Remote-SSH or Remote-WSL.
 - **Neovim and LazyVim:** the configurations run `virgil-lsp` from `PATH`, or the absolute path you give in `cmd` ([Neovim setup](../editors/nvim/README.md)). Plain Neovim loads the downloaded configuration from its `plugin/` directory at startup; its init files are untouched.
 
 ### VS Code extension

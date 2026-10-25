@@ -256,7 +256,7 @@ function selectedServer() {
     vscode.extensions.getExtension('virgil-language-server.virgil-lsp-vscode').extensionPath, 'server', 'virgil-lsp');
 }
 
-function checkBundledSelection(extension) {
+async function checkBundledSelection(extension) {
   if (process.env.VIRGIL_E2E_BUNDLED !== '1') return;
   assert.ok(fs.existsSync(path.join(extension.extensionPath, 'server-target.json')), 'installed VSIX has no bundle');
   assert.equal(setting('virgil.server.path'), '', 'bundled startup must have no server override');
@@ -264,7 +264,8 @@ function checkBundledSelection(extension) {
   for (const entry of (process.env.PATH || '').split(path.delimiter)) {
     assert.ok(!fs.existsSync(path.join(entry, 'virgil-lsp')), 'external server on PATH: ' + entry);
   }
-  assert.ok(channelLog().includes('(bundled for '), 'no bundled server selection in output channel');
+  // VS Code flushes the output channel asynchronously, after diagnostics may arrive.
+  await waitFor('bundled server selection in the output channel', () => channelLog().includes('(bundled for '));
 }
 
 async function singleFile(extension) {
@@ -274,7 +275,7 @@ async function singleFile(extension) {
   await waitFor('activation by a .v3 document', () => extension.isActive);
   await expectParserDiagnostic(bad);
   const server = selectedServer();
-  checkBundledSelection(extension);
+  await checkBundledSelection(extension);
   // The channel writes its log file asynchronously.
   await waitFor('the server to start from virgil.server.path', () => channelLog().includes(`Starting ${server} --stdio`));
   console.log('PASS: VS Code activation on a .v3 file and parser diagnostics');
@@ -286,7 +287,7 @@ async function workspace(extension) {
   await waitFor('activation by the workspace project file', () => extension.isActive);
   assert.deepEqual(vscode.workspace.textDocuments.filter((d) => d.languageId === 'virgil'), []);
   await waitFor('the server to start', () => channelLog().includes('Started virgil-lsp '));
-  checkBundledSelection(extension);
+  await checkBundledSelection(extension);
   const configuredRoot = setting('virgil.virgilRoot');
   const root = configuredRoot || path.join(path.dirname(selectedServer()), 'virgil');
   if (configuredRoot) assert.ok(channelLog().includes(`Virgil root: ${root} (from virgil.virgilRoot)`),

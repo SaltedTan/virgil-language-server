@@ -300,7 +300,7 @@ Deliverables:
 - GitHub release automation. *(present; [release runbook](docs/releasing.md))*
 - A clear support matrix: Linux x86-64 (also used by SSH remotes) and Apple Silicon macOS, with WSL 2 best effort since 2026-10-20, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
 - VS Code extension setting for an external server path during development. *(present; [client settings](clients/vscode/README.md#settings))*
-- Later, platform-specific VSIX packages or verified binary download/install logic.
+- Platform-specific VSIX packages. *(present; [packaging](clients/vscode/README.md#packaging))*
 - Marketplace README, changelog, privacy statement, and troubleshooting guide.
 - `nvim-lspconfig` pull request after the executable has a stable command, release URL, root markers, and documentation.
 - Mason registry submission only after its admission requirements are met, most likely through `nvim-lspconfig` approval.
@@ -356,8 +356,6 @@ The final project should provide a LazyVim-specific copy-paste file, a minimal `
 ### Visual Studio Code
 
 The thin TypeScript client is present, with [prerelease VSIX packaging](clients/vscode/README.md#packaging). Its implemented behavior, setup, settings, and manual checklist live in the [client README](clients/vscode/README.md). See the [Extension Host test](clients/vscode/README.md#extension-host-test) for its checks and requirements.
-
-Use an external server path for early development. Once releases are stable, either publish platform-specific VSIX packages containing the matching binary or download a versioned release artifact after explicit verification. VS Code supports platform-targeted extension packages, which is appropriate for a native server.
 
 Do not couple the core server release to the VS Code extension version. Record a compatibility range so either can receive fixes independently.
 
