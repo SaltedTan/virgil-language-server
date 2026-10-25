@@ -14,9 +14,9 @@ and time, once it finishes; with one at a time it streams as it is written.
 Every suite runs, even after one fails. Each runs in a session of its own,
 with no input. SIGTERM, SIGHUP, and SIGINT are forwarded to each running
 suite's process group and stop new suites from starting. A second signal or
-ten seconds without an exit kills the remaining groups. Suites own cleanup
-of processes they move into separate sessions. Afterwards it lists each
-suite's time, slowest first.
+ten seconds after the first signal kills the remaining groups. Suites own
+cleanup of processes they move into separate sessions. Afterwards it lists
+each suite's time, slowest first.
 """
 import os
 import signal
