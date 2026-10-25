@@ -29,7 +29,7 @@ component LspDocumentHighlights {
 				}
 				var highlight = Strings.newMap<JsonValue>();
 				highlight["range"] = at.range(at.map, begin, end);
-				highlight["kind"] = JsonValue.Int(1); // DocumentHighlightKind.Text
+				highlight["kind"] = JsonValue.Int(at.snapshot.highlightKind(at.path(), begin));
 				highlights.put(JsonValue.JObject(highlight));
 			}
 		}

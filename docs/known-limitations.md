@@ -23,7 +23,7 @@ Without a `.virgil-lsp.json` that selects it, a document stays in [single-file m
 
 ## Document highlights
 
-Document highlights use the Text kind for declarations and uses alike; they do not distinguish reads from writes. A request with more than 10,000 highlights in its document fails instead of returning a partial list ([Document highlights](architecture.md#document-highlights)).
+Document highlights use one kind per occurrence, so a compound assignment or increment is Write even though it also reads the value. A request with more than 10,000 highlights in its document fails instead of returning a partial list ([Document highlights](architecture.md#document-highlights)).
 
 ## Member completion
 

@@ -221,6 +221,31 @@ fresh CLI parse/verify statistics and retains its regression tests. Its CLI outp
 path and statistics differ from this full-snapshot protocol workload; it cannot
 replace end-to-end measurements.
 
+### Document highlight kinds
+
+Measured on 2026-10-25 with the [Read/Write highlight change](architecture.md#document-highlights) at source revision `efced29`, against `741a7d3`, on the same i7-14700KF host and pinned Virgil compiler as the reference baseline below. Both candidates were built together in this physical checkout, in equal-length `build/base01` and `build/next01` directories, with `BENCH=1 all bench-metadata`. Their generated BuildInfo text was identical, including its `-dirty` suffix; the metadata's source hashes were checked against each revision. Both used the default 384 MiB worker heap. The comparison used all three pinned projects, CPU 12, six alternating process blocks, two warmups, and five measured operations per block, with no outliers removed:
+
+```sh
+python3 scripts/bench-lsp.py \
+  --exe build/base01/virgil-lsp --exe build/next01/virgil-lsp \
+  --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12 \
+  --output build/bench-results/highlight-kinds.json
+```
+
+Each timing is **median (p10–p90), in milliseconds**, over 30 measured operations per candidate:
+
+| Metric | Baseline | Highlight kinds |
+| --- | ---: | ---: |
+| Small reused occurrence collection | 0.012 (0.011–0.014) | 0.012 (0.011–0.014) |
+| Util reused occurrence collection | 3.761 (3.649–3.941) | 3.746 (3.667–3.867) |
+| Aeneas fresh occurrence collection | 110.649 (108.066–115.753) | 111.319 (109.749–114.871) |
+| Aeneas reused occurrence collection | 93.155 (92.399–93.962) | 94.398 (92.253–104.992) |
+| Aeneas reused analysis, end to end | 289.328 (281.400–313.503) | 303.973 (281.750–325.329) |
+
+The first run had one slower Aeneas collection block in the changed build, widening its reused-collection spread. A second six-block comparison, run after the editor tests finished with the same command plus `--project aeneas`, gave fresh collection 110.823 (106.475–113.909) ms before and 110.161 (106.861–111.179) ms after; reused collection was 93.440 (92.180–98.105) ms before and 92.615 (91.867–96.954) ms after. Reused end-to-end analysis was 309.673 (284.387–335.440) ms before and 305.324 (282.250–332.505) ms after. The slower first-run median did not repeat; the overlapping spreads and varying block medians do not establish a collection or end-to-end latency regression. All samples remain in the results.
+
+Every measured worker transaction collected zero times in both candidates, excluding the explicit final collection. Successful full-snapshot result lengths were identical: 596 bytes for small, 168,738 for util, and 3,936,046 for Aeneas. CLI analyses of the same relative source paths charged identical decoded result allocations: 5,212, 751,779, and 13,250,205 bytes respectively. Temporary worker allocation increased only by the collector's one target pointer per file: 16, 248, and 1,640 bytes respectively, under 0.001% for Aeneas. A fieldless occurrence subtype carries the write flag without enlarging each temporary occurrence, and the snapshot packs it in its existing target integer.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at

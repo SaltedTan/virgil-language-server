@@ -114,7 +114,7 @@ async function workspaceSymbols(query) {
   return (result ?? []).map((symbol) => [symbol.name, symbol.kind, symbol.location.uri.fsPath, ...range(symbol.location)]);
 }
 
-// Exact Text highlights at a document position.
+// Exact ranges and highlight kinds at a document position.
 async function documentHighlights(editor, line, character) {
   const result = await vscode.commands.executeCommand(
     'vscode.executeDocumentHighlights', editor.document.uri, new vscode.Position(line, character),
@@ -335,7 +335,17 @@ async function workspace(extension) {
 
   // vscode.document-highlight.response: only this document's StringBuilder use.
   assert.deepEqual(await documentHighlights(words, use, column), [
-    [use, column, use, column + 'StringBuilder'.length, vscode.DocumentHighlightKind.Text],
+    [use, column, use, column + 'StringBuilder'.length, vscode.DocumentHighlightKind.Read],
+  ]);
+  const highlightsDocument = await vscode.workspace.openTextDocument(
+    path.join(path.dirname(words.document.uri.fsPath), 'Highlights.v3'),
+  );
+  assert.deepEqual(await documentHighlights({ document: highlightsDocument }, 5, 2), [
+    [4, 6, 4, 11, vscode.DocumentHighlightKind.Text],
+    [5, 2, 5, 7, vscode.DocumentHighlightKind.Write],
+    [5, 10, 5, 15, vscode.DocumentHighlightKind.Read],
+    [6, 2, 6, 7, vscode.DocumentHighlightKind.Write],
+    [7, 9, 7, 14, vscode.DocumentHighlightKind.Read],
   ]);
   console.log('PASS: vscode.document-highlight.response');
 

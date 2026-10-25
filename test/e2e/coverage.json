@@ -597,7 +597,7 @@
       "when": null,
       "required": true,
       "source": "test/e2e/nvim/check.lua",
-      "description": "Document highlights of StringBuilder are exactly its use in words/Words.v3, with kind Text and no other file's ranges."
+      "description": "Document highlights of StringBuilder are exactly its use in words/Words.v3, with kind Read and no other file's ranges; Highlights.v3 also checks exact Text declaration, Write assignment and increment, and Read use kinds."
     },
     {
       "id": "nvim.rename.apply-undo",
@@ -888,6 +888,16 @@
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
       "description": "In Insert mode, <C-k> from a closed window sends a request answered with def puts and shows it in a window."
+    },
+    {
+      "id": "lazyvim.document-highlight.navigation",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "On count in Highlights.v3, snacks words holds exactly five highlight ranges; pressing ]] moves to the next use and [[ returns to the previous use."
     },
     {
       "id": "lazyvim.keymaps.save",
@@ -1327,7 +1337,7 @@
       "when": null,
       "required": true,
       "source": "clients/vscode/test/e2e/suite.cjs",
-      "description": "Document highlights of StringBuilder are exactly its use in words/Words.v3, with kind Text and no other file's ranges."
+      "description": "Document highlights of StringBuilder are exactly its use in words/Words.v3, with kind Read and no other file's ranges; Highlights.v3 also checks exact Text declaration, Write assignment and increment, and Read use kinds."
     },
     {
       "id": "vscode.rename.refusal",
@@ -2226,9 +2236,9 @@
       {
         "setup": "lazyvim-linux",
         "feature": "document-highlight",
-        "level": null,
-        "checks": [],
-        "notCovered": ["lazyvim.document-highlight-navigation"]
+        "level": "ui-state",
+        "checks": ["lazyvim.document-highlight.navigation"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-linux",
@@ -2310,9 +2320,9 @@
       {
         "setup": "lazyvim-macos",
         "feature": "document-highlight",
-        "level": null,
-        "checks": [],
-        "notCovered": ["lazyvim.document-highlight-navigation"]
+        "level": "ui-state",
+        "checks": ["lazyvim.document-highlight.navigation"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-macos",
@@ -2661,12 +2671,6 @@
       "id": "nvim.document-highlight-rendering",
       "kind": "visual",
       "what": "the rendered document highlights",
-      "planned": null
-    },
-    {
-      "id": "lazyvim.document-highlight-navigation",
-      "kind": "behavior",
-      "what": "document highlights and navigation with ]] and [[",
       "planned": null
     }
   ],

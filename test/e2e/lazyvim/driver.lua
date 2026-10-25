@@ -485,6 +485,39 @@ local function main_checks()
     return string.format("%d locations in %d library files and Words.v3", #references, vim.tbl_count(library_files))
   end)
 
+  -- lazyvim.document-highlight.navigation: the plugin's own extmarks and
+  -- mapped keys, after natural CursorMoved handling and its debounce timer.
+  step("document highlights: next and previous use (LazyVim ]] and [[)", function()
+    vim.cmd.edit(vim.fs.joinpath(root, "words", "Highlights.v3"))
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for("Highlights.v3 attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    assert(Snacks.words.is_enabled(), "snacks words is not enabled")
+    for _, mapping in ipairs({ { "]]", "Next Reference" }, { "[[", "Prev Reference" } }) do
+      wait_for("LazyVim's " .. mapping[1] .. " mapping", function()
+        local map = vim.fn.maparg(mapping[1], "n", false, true)
+        return map.buffer == 1 and map.desc == mapping[2]
+      end)
+    end
+    local positions = { { 5, 6 }, { 6, 2 }, { 6, 10 }, { 7, 2 }, { 8, 9 } }
+    -- Move onto the first write, between the declaration and the RHS read.
+    vim.api.nvim_win_set_cursor(0, positions[2])
+    wait_for("snacks words' exact count highlights", function()
+      local words, current = Snacks.words.get()
+      local starts = vim.tbl_map(function(word) return word.from end, words)
+      return current == 2 and vim.deep_equal(starts, positions)
+    end, 15000)
+    vim.api.nvim_input("]]")
+    wait_for("]] to the next use", function()
+      return vim.deep_equal(vim.api.nvim_win_get_cursor(0), positions[3])
+    end)
+    vim.api.nvim_input("[[")
+    wait_for("[[ to the previous use", function()
+      return vim.deep_equal(vim.api.nvim_win_get_cursor(0), positions[2])
+    end)
+    return "five snacks word highlights; ]] moved 6:3 to 6:11, [[ returned to 6:3"
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Rename through LazyVim's <leader>cr, which it maps for a server with
   -- rename. Neovim asks prepareRename first; while the project has a type
   -- error the server refuses, and Neovim shows its reason with vim.notify,

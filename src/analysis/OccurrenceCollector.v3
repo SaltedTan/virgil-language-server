@@ -39,6 +39,8 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private var captures: List<(ParamDecl, VarBinding.Local)>;
 	private var thisParam: ParamDecl;
 	private var thisClass: VstClass;
+	// Only this expression is written, never its receiver or index arguments.
+	private var writeTarget: Expr;
 	// The token of the last use recorded, and its byte offset and declaration
 	// (null for a builtin use), so that a call finds its callee's.
 	private var lastToken: Token;
@@ -187,8 +189,8 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// it looked up by that name, or else the type it resolved the name to.
 	private def memoryType(mt: MemoryTypeRef) {
 		if (mt == null || mt.tname == null) return;
-		if (mt.mtlayout != null) record(mt.tname.name, make(AnalysisDeclKind.LAYOUT, mt.mtlayout.layoutDecl), null);
-		else record(mt.tname.name, typeDeclaration(mt.mttype), mt.mttype);
+		if (mt.mtlayout != null) record(mt.tname.name, make(AnalysisDeclKind.LAYOUT, mt.mtlayout.layoutDecl), null, false);
+		else record(mt.tname.name, typeDeclaration(mt.mttype), mt.mttype, false);
 	}
 	// A packing and its parameters are its own declarations; see packingExpr.
 	private def visitPacking(decl: VstPacking) {
@@ -211,7 +213,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			App(p, args) => {
 				var target = packings.named(p.ident.name.image);
 				if (target == null) return;
-				record(p.ident.name, make(AnalysisDeclKind.PACKING, target), null);
+				record(p.ident.name, make(AnalysisDeclKind.PACKING, target), null, false);
 				var arity = if(target.pparams != null, target.pparams.length());
 				if (args != null && args.length() == arity) packingExprs(decl, args);
 			}
@@ -220,7 +222,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				for (l = if(decl.pparams != null, decl.pparams.list); l != null; l = l.tail) {
 					if (Strings.equal(l.head.token.image, name.image)) param = l.head;
 				}
-				record(name, make(AnalysisDeclKind.PARAMETER, param), null);
+				record(name, make(AnalysisDeclKind.PARAMETER, param), null, false);
 			}
 			_ => ;
 		}
@@ -334,7 +336,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			var x = NamedTypeRef.!(tref), c = ClassType.!(tref.binding).classDecl.variantCase;
 			if (x.left == null && c != null && c.decl.isSynthetic && c.isDefaultCase()) {
 				typeRefs(x.nested);
-				var o = record(x.name, make(AnalysisDeclKind.CLASS, c.receiver), null);
+				var o = record(x.name, make(AnalysisDeclKind.CLASS, c.receiver), null, false);
 				if (o != null) o.useType = display.superclassUseType(o.declaration, tref);
 				return;
 			}
@@ -354,7 +356,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 				typeRef(x.left);
 				if (RefType.?(x.binding)) layoutArgument(RefType.!(x.binding), x.nested);
 				else typeRefs(x.nested);
-				record(x.name, typeDeclaration(x.binding), x.binding);
+				record(x.name, typeDeclaration(x.binding), x.binding, false);
 			}
 			x: FuncTypeRef => {
 				typeRef(x.paramType);
@@ -371,7 +373,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		if (NamedTypeRef.?(arg) && decl != null) {
 			var x = NamedTypeRef.!(arg);
 			if (x.left == null && x.nested == null && Strings.equal(x.name.image, decl.token.image)) {
-				record(x.name, make(AnalysisDeclKind.LAYOUT, decl), null);
+				record(x.name, make(AnalysisDeclKind.LAYOUT, decl), null, false);
 				return;
 			}
 		}
@@ -434,12 +436,12 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			// bypass ordinary name resolution in the verifier.
 			if (ve.expr != null || ve.varbind.ok()) continue;
 			if (pat.variantCase != null) {
-				record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase), null);
+				record(ve.ident.name, make(AnalysisDeclKind.VARIANT_CASE, pat.variantCase), null, false);
 			} else if (pat.val != null && EnumType.?(matchType)) {
 				// Enum patterns retain only their resolved case value; look up
 				// the declaration in the verified scrutinee's enum.
 				var member = EnumType.!(matchType).lookupCase(ve.ident.name.image);
-				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member), null);
+				record(ve.ident.name, make(AnalysisDeclKind.ENUM_CASE, member), null, false);
 			}
 		}
 		stmt(c.stmt);
@@ -454,7 +456,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	def visitParamExpr(e: ParamExpr, env: void) { }
 	def visitAutoExpr(e: AutoExpr, env: void) {
-		expr(e.expr);
+		assigned(e.expr);
 	}
 	def visitArray(e: ArrayExpr, env: void) {
 		exprs(e.exprs);
@@ -475,7 +477,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			var member = et.enumDecl.memberMap[e.ident.name.image];
 			if (VstField.?(member)) decl = make(AnalysisDeclKind.FIELD, member);
 		}
-		if (decl != null) record(e.ident.name, decl, e.exactType);
+		if (decl != null) record(e.ident.name, decl, e.exactType, e == writeTarget);
 		else builtin(e.ident.name, e.varbind, e.exactType);
 	}
 	// Every use is recorded here, with the text of its type {t} if that
@@ -484,14 +486,14 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// manufactured where the source doesn't spell it would not be, and is
 	// skipped, since neither its compiler span nor its byte span would locate it.
 	// Returns the occurrence, or null if nothing was recorded.
-	private def record(token: Token, decl: AnalysisDeclaration, t: Type) -> AnalysisOccurrence {
+	private def record(token: Token, decl: AnalysisDeclaration, t: Type, write: bool) -> AnalysisOccurrence {
 		if (decl == null || token.beginLine <= 0 || !Strings.equal(token.fileName, fileName)) return null;
 		var range = sources.range(token);
 		if (!range.isTokenSpan()) {
 			skipped++;
 			return null;
 		}
-		var o = AnalysisOccurrence.new(range, decl);
+		var o: AnalysisOccurrence = if(write, AnalysisWriteOccurrence.new(range, decl), AnalysisOccurrence.new(range, decl));
 		if (t != null) o.useType = display.useType(decl, t);
 		result.put(o);
 		last(token, range.beginOffset, decl);
@@ -902,7 +904,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		}
 		var src = e.exprs.src;
 		if (decl == null || src == null) return;
-		var o = record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null);
+		var o = record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null, e == writeTarget);
 		match (b) {
 			CallObjectMethod(receiver, member, typeArgs) => {
 				if (o != null) o.useType = display.methodUseType(decl, receiver, e.expr.exactType, member);
@@ -925,8 +927,16 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		expr(e.expr);
 	}
 	def visitAssign(e: AssignExpr, env: void) {
-		expr(e.target);
+		assigned(e.target);
 		expr(e.expr);
+	}
+	// AssignExpr covers = and compound operators; AutoExpr covers both
+	// prefix and postfix ++/--. Nested assignments restore the outer target.
+	private def assigned(target: Expr) {
+		var outer = writeTarget;
+		writeTarget = target;
+		expr(target);
+		writeTarget = outer;
 	}
 	def visitBinOp(e: BinOpExpr, env: void) {
 		expr(e.left);

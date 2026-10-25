@@ -244,16 +244,24 @@ class AnalysisSnapshot {
 		var use = if(cursor.calleeEndsAtParen(), file.useEndingAt(open), if(cursor.calleeDelta > 0, file.useAt(open - cursor.calleeDelta), -1));
 		if (use >= 0) {
 			callee = file.useBegin(use);
-			if (use < file.targets.length) target = declarations[file.targets[use]];
+			if (use < file.targets.length) target = declarations[file.target(use)];
 		}
 		var s = if(cursor.signature > 0, reader[cursor.signature - 1]);
 		return AnalysisCall.new(open, cursor.close, args, callee, target, s);
 	}
 	private def occurrence(path: string, file: AnalysisSnapshotFile, i: int) -> AnalysisOccurrence {
-		var o = AnalysisOccurrence.new(file.range(path, i), declarations[file.targets[i]]);
+		var range = file.range(path, i), decl = declarations[file.target(i)];
+		var o: AnalysisOccurrence = if(file.isWrite(i), AnalysisWriteOccurrence.new(range, decl), AnalysisOccurrence.new(range, decl));
 		var t = file.useType(i);
 		if (t >= 0) o.useType = strings[t];
 		return o;
+	}
+	// LSP kinds: declarations are Text (1), assigned uses Write (3), and
+	// other recorded uses Read (2). The caller supplies a recorded name span.
+	def highlightKind(path: string, offset: int) -> int {
+		if (declarationAtOffset(path, offset) != null) return 1;
+		var file = fileOf(path), i = if(file != null, file.findOffset(offset), -1);
+		return if(i >= 0 && file.isWrite(i), 3, 2);
 	}
 	// The declaration that the indexed use at compiler coordinates
 	// ({line}, {column}) in {path} resolves to, or null if there is none.
@@ -261,7 +269,7 @@ class AnalysisSnapshot {
 		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.find(line, column);
-		return if(i >= 0, declarations[file.targets[i]]);
+		return if(i >= 0, declarations[file.target(i)]);
 	}
 	// The declaration that the indexed use containing UTF-8 byte offset
 	// {offset} in {path} resolves to, or null if there is none.
@@ -269,7 +277,7 @@ class AnalysisSnapshot {
 		var file = fileOf(path);
 		if (file == null) return null;
 		var i = file.findOffset(offset);
-		return if(i >= 0, declarations[file.targets[i]]);
+		return if(i >= 0, declarations[file.target(i)]);
 	}
 	// The references of {decl}, one of {declarations}: the uses that
 	// definitionAtOffset resolves to it, or to another declaration with the
@@ -291,13 +299,13 @@ class AnalysisSnapshot {
 			var name = own && withName, count = 0;
 			var targets: Array<int> = if(file != null, file.targets, []);
 			for (i < targets.length) {
-				if (among(ids, targets[i]) && !(own && file.spans(i, r.beginOffset, r.endOffset))) count++;
+				if (among(ids, file.target(i)) && !(own && file.spans(i, r.beginOffset, r.endOffset))) count++;
 			}
 			if (name) count++;
 			if (count == 0) continue;
 			var spans = Array<int>.new(2 * count), n = 0;
 			for (i < targets.length) {
-				if (!among(ids, targets[i]) || (own && file.spans(i, r.beginOffset, r.endOffset))) continue;
+				if (!among(ids, file.target(i)) || (own && file.spans(i, r.beginOffset, r.endOffset))) continue;
 				var begin = file.ranges[4 * i + 2], end = begin + file.ranges[4 * i + 3];
 				if (name && r.beginOffset < begin) {
 					spans[n++] = r.beginOffset;
@@ -435,7 +443,8 @@ class AnalysisSnapshotFiles {
 
 // The index of one file, without an object per use: {ranges} holds the begin
 // line, begin column, begin offset, and byte length of occurrence i at 4 * i,
-// and {targets} holds its index in the snapshot's declarations. An
+// and {targets} holds its declaration index in the low 31 bits and its
+// assignment flag in the sign bit. This adds no retained allocation. An
 // occurrence is a token span (see AnalysisRange.isTokenSpan): it ends on its
 // begin line, and its length is also its compiler column span. Occurrences
 // are in source order and do not overlap. {typed} holds pairs of an
@@ -450,6 +459,12 @@ class AnalysisSnapshotFiles {
 // builtin use's index.
 class AnalysisSnapshotFile(ranges: Array<int>, targets: Array<int>, typed: Array<int>, builtins: Array<int>,
 		firstSite: int, siteCount: int) {
+	def target(i: int) -> int {
+		return targets[i] & int.max;
+	}
+	def isWrite(i: int) -> bool {
+		return targets[i] < 0;
+	}
 	def var callCount: int;
 	def var calls: Array<byte> = [];
 

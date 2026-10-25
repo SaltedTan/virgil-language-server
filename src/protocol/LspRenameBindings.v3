@@ -115,7 +115,7 @@ component LspRenameBindings {
 			var a = s.fileIndex(path), b = e.fileIndex(path);
 			if (a == null) continue;
 			for (i < a.targets.length) {
-				var t = a.targets[i], u = b.targets[i];
+				var t = a.target(i), u = b.target(i);
 				if (map[t] == u) continue;
 				// A declaration that only uses name is matched at its first use.
 				var x = s.declarations[t];

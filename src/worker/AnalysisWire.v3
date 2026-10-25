@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 10;
+	def PROTOCOL_VERSION = 11;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -159,9 +159,9 @@ component AnalysisWire {
 	// ProgramAnalysis.declarationSites) come first in the declarations, in
 	// files order, so a file sends its path index, then their first index and
 	// count. Then come its occurrences in source order, each its begin line,
-	// begin column, begin offset, length, and declaration index; the
-	// occurrences whose use-site type differs from their declaration's, each
-	// as the difference from the previous one's occurrence index and the
+	// begin column, begin offset, length, and declaration index (complemented
+	// for a write); the occurrences whose use-site type differs from their
+	// declaration's, each as the difference from the previous one's occurrence index and the
 	// type's string index; its builtin uses, each a range as an
 	// occurrence's and a string index; and its calls (see encodeCalls). The
 	// call signatures come between the declarations and the files: the
@@ -404,7 +404,8 @@ component AnalysisWire {
 					var r = o.range;
 					if (!r.isTokenSpan()) continue;
 					putSpan(w, r);
-					w.put_sleb32(decls.find(o.declaration));
+					var target = decls.find(o.declaration);
+					w.put_sleb32(if(o.isWrite(), ~target, target));
 				}
 				w.put_sleb32(typed);
 				var index = 0, previous = 0;
@@ -573,12 +574,12 @@ component AnalysisWire {
 				if (!r.checkSites(declarations, path, siteEnd, first, sites)) break;
 				siteEnd = first + sites;
 				// Each occurrence is four ints of its range and a declaration
-				// index, stored as five int array elements.
+				// index with its write bit, stored as five int array elements.
 				var count = r.readCount(5, 20);
 				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count), end = 0;
 				for (i = 0; i < count && r.ok(); i++) {
 					end = r.readSpan(ranges, 4 * i, end);
-					targets[i] = r.readTarget(declarations.length);
+					targets[i] = r.readOccurrenceTarget(declarations.length);
 				}
 				// Occurrence index and type string index pairs.
 				var typed = Array<int>.new(2 * r.readCount(2, 8)), index = 0;
@@ -877,6 +878,18 @@ class AnalysisWireReader {
 			return null;
 		}
 		return table[i];
+	}
+	// A write is the complement of its declaration index on the wire. The
+	// snapshot packs the flag in the sign bit of the existing target int:
+	// the allocation bound limits declaration indexes well below 2^31.
+	def readOccurrenceTarget(declarations: int) -> int {
+		var packed = r.read_sleb32(), write = packed < 0;
+		var index = if(write, ~packed, packed);
+		if (u32.view(index) >= u32.view(declarations)) {
+			r.fail("invalid declaration index");
+			return 0;
+		}
+		return index | if(write, int.min);
 	}
 	def readTarget(declarations: int) -> int {
 		var i = r.read_sleb32();

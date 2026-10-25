@@ -223,11 +223,24 @@ local function check()
   }, 10000, words_buf)
   assert(response and not response.err, "document highlights failed: " .. vim.inspect(err or response.err))
   assert(vim.deep_equal(response.result, {
-    { kind = 1, range = {
+    { kind = 2, range = {
       start = { line = use_line, character = start - 1 },
       ["end"] = { line = use_line, character = start - 1 + #"StringBuilder" },
     } },
   }), "unexpected document highlights: " .. vim.inspect(response.result))
+  local highlight_uri = vim.uri_from_fname(vim.fs.joinpath(root, "words", "Highlights.v3"))
+  response, err = client:request_sync("textDocument/documentHighlight", {
+    textDocument = { uri = highlight_uri }, position = { line = 5, character = 2 },
+  }, 10000, words_buf)
+  assert(response and not response.err, "highlight kinds failed: " .. vim.inspect(err or response.err))
+  local want = {}
+  for _, spot in ipairs({ { 4, 6, 1 }, { 5, 2, 3 }, { 5, 10, 2 }, { 6, 2, 3 }, { 7, 9, 2 } }) do
+    want[#want + 1] = { kind = spot[3], range = {
+      start = { line = spot[1], character = spot[2] },
+      ["end"] = { line = spot[1], character = spot[2] + #"count" },
+    } }
+  end
+  assert(vim.deep_equal(response.result, want), "unexpected highlight kinds: " .. vim.inspect(response.result))
   print("PASS: nvim.document-highlight.response")
 
   -- Rename needs a program that verifies, so an unsaved edit fixes the type

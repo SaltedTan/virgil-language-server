@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 10, self.hello
+        assert self.hello["protocol"] == 11, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -164,9 +164,13 @@ class Worker:
                 for _ in range(reader.integer()):
                     # Begin line, column, and offset, and the length of both spans.
                     line, column, offset, length = [reader.integer() for _ in range(4)]
+                    target = reader.integer()
+                    write = target < 0
+                    target = ~target if write else target
+                    assert 0 <= target < len(declarations), target
                     uses.append(dict(path=path, range=[line, column, line, column + length],
                                      offsets=[offset, offset + length],
-                                     declaration=declarations[reader.integer()], useType=None))
+                                     declaration=declarations[target], write=write, useType=None))
                 # Use-site types: occurrence index deltas and string indexes.
                 index = 0
                 for _ in range(reader.integer()):

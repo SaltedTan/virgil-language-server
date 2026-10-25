@@ -11,6 +11,8 @@
 // that highlights take part in the shared snapshot rules.
 def T = UnitTests.register;
 def X = [
+	T("LspDocumentHighlights:assignment_kinds", test_assignment_kinds),
+	T("LspDocumentHighlights:assignment_kinds_more", test_assignment_kinds_more),
 	T("LspDocumentHighlights:locals_and_captures", test_locals_and_captures),
 	T("LspDocumentHighlights:members_and_generics", test_members_and_generics),
 	T("LspDocumentHighlights:components_and_classes", test_components_and_classes),
@@ -192,7 +194,9 @@ class HighlightsTestSession {
 	}
 }
 // A highlight in {file}, on {line} from UTF-16 character {begin} to {end}.
-class HighlightSpot(file: string, var line: int, begin: int, end: int) { }
+class HighlightSpot(file: string, var line: int, begin: int, end: int) {
+	var kind = 2;
+}
 // The LSP position of byte {skip} past the first {needle} in ASCII lines of {text}.
 def at(text: string, needle: string, skip: int) -> (int, int) {
 	var line = 0, start = 0;
@@ -210,6 +214,17 @@ def S(needle: string, skip: int, length: int) -> HighlightSpot {
 	var p = at(SOURCE, needle, skip);
 	return HighlightSpot.new(if(p.0 >= 0, "Refs.v3"), p.0, p.1, p.1 + length);
 }
+// Declaration and write spots; ordinary S spots are reads.
+def D(needle: string, skip: int, length: int) -> HighlightSpot {
+	var spot = S(needle, skip, length);
+	spot.kind = 1;
+	return spot;
+}
+def W(needle: string, skip: int, length: int) -> HighlightSpot {
+	var spot = S(needle, skip, length);
+	spot.kind = 3;
+	return spot;
+}
 def member(v: JsonValue, key: string) -> JsonValue {
 	return if(JsonValue.JObject.?(v), JsonValue.JObject.!(v).v[key]);
 }
@@ -221,20 +236,19 @@ def stringAt(v: JsonValue, key: string) -> string {
 	var m = member(v, key);
 	return if(JsonValue.String.?(m), JsonValue.String.!(m).v, "<none>");
 }
-// Checks exact Text highlights in source order, including their UTF-16 ranges.
+// Checks exact kinds and highlights in source order, including their UTF-16 ranges.
 def expectHighlightSpots(t: Tester, s: HighlightsTestSession, result: JsonValue, spots: Array<HighlightSpot>, what: string) {
 	t.assert(JsonValue.JArray.?(result), Strings.format1("highlights for %s", what));
 	if (!JsonValue.JArray.?(result)) return;
 	var want = StringBuilder.new().puts(what), got = StringBuilder.new().puts(what);
 	for (spot in spots) {
 		t.assert(spot.file != null, "fixture text found");
-		want.put2("; %d:%d", spot.line, spot.begin).put2("-%d:%d", spot.line, spot.end);
+		want.put1("; kind %d", spot.kind).put2(" %d:%d", spot.line, spot.begin).put2("-%d:%d", spot.line, spot.end);
 	}
 	for (highlight in JsonValue.JArray.!(result).v) {
-		t.asserti(1, intAt(highlight, "kind"));
 		t.assert(!JsonValue.JObject.!(highlight).v.has("uri"), "no URI in a highlight");
 		var range = member(highlight, "range"), start = member(range, "start"), stop = member(range, "end");
-		got.put2("; %d:%d", intAt(start, "line"), intAt(start, "character"))
+		got.put1("; kind %d", intAt(highlight, "kind")).put2(" %d:%d", intAt(start, "line"), intAt(start, "character"))
 			.put2("-%d:%d", intAt(stop, "line"), intAt(stop, "character"));
 	}
 	t.assert_string(want.toString(), got.toString());
@@ -253,24 +267,115 @@ def session(t: Tester) -> HighlightsTestSession {
 	s.settle();
 	return s;
 }
+// Exercise collector flags, worker round trips, and the final LSP kinds.
+// Assignment receivers and index operands stay reads, even in compound or
+// nested targets. Calls in the same body exercise uses untouched by writes.
+def test_assignment_kinds(t: Tester) {
+	var text = "component Kinds {\n  var field: int;\n  var initialized = 1;\n  def body(p: int, a: Array<int>, b: Box) -> int {\n    var x: int;\n    x = p;\n    x += 1; x -= 1; x *= 2; x /= 2; x %= 3;\n    x &= 3; x |= 4; x ^= 5; x <<= 1; x >>= 1;\n    x++; x--; ++x; --x;\n    p = x;\n    a[x] = p; a[x] += p; a[x]++;\n    b.field = x; b.field += x; b.field++;\n    field = p; initialized += x;\n    var bound = p;\n    return identity(x) + bound + initialized;\n  }\n  def identity(value: int) -> int { return value; }\n}\nclass Box { var field: int; }\n";
+	var s = HighlightsTestSession.new(t, text);
+	s.open("Refs.v3", 1, text);
+	s.settle();
+	t.assert(s.context().snapshot.verified, "the assignment fixture verifies");
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], false);
+	t.assert(analysis.verified, "the collector fixture verifies");
+	// All uses of each name, including its declaration, in source order.
+	var expected: Array<(string, Array<int>)> = [
+		("x", [1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2]),
+		("p", [1, 2, 3, 2, 2, 2, 2]),
+		("a", [1, 2, 2, 2]),
+		("b", [1, 2, 2, 2]),
+		("initialized", [1, 3, 2]),
+		("bound", [1, 2]),
+		("identity", [2, 1]),
+		("value", [1, 2])
+	];
+	expectKinds(t, s, analysis, text, expected);
+	// Two different fields share the spelling; only the receiver's field
+	// joins the Box declaration, and its receiver remains a read above.
+	var field = at(text, "b.field =", 2), result = s.answer(t, "Refs.v3", field.0, field.1);
+	var entries = JsonValue.JArray.!(result).v;
+	t.asserti(4, entries.length);
+	for (i < entries.length) t.asserti(if(i == 3, 1, 3), intAt(entries[i], "kind"));
+	field = at(text, "var field", 4);
+	entries = JsonValue.JArray.!(s.answer(t, "Refs.v3", field.0, field.1)).v;
+	t.asserti(2, entries.length);
+	t.asserti(1, intAt(entries[0], "kind"));
+	t.asserti(3, intAt(entries[1], "kind"));
+	s.server.close();
+}
+// Forms beyond the first fixture: an unsigned shift assignment, an
+// increment used as a value, writes through chained and indexed receivers,
+// and a field written in a constructor.
+def test_assignment_kinds_more(t: Tester) {
+	var text = "component More {\n  def body(x: int, d: Outer, cells: Array<Cell>, k: int) -> int {\n    var y: int;\n    x >>>= 1;\n    y = x++;\n    d.inner.leaf = y;\n    cells[k].slot = y;\n    return x + y;\n  }\n}\nclass Outer { var inner: Inner; }\nclass Inner { var leaf: int; }\nclass Cell { var slot: int; }\nclass Made {\n  var made: int;\n  new(v: int) { made = v; }\n}\n";
+	var s = HighlightsTestSession.new(t, text);
+	s.open("Refs.v3", 1, text);
+	s.settle();
+	t.assert(s.context().snapshot.verified, "the fixture verifies");
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("Refs.v3", text)], [], false);
+	t.assert(analysis.verified, "the collector fixture verifies");
+	expectKinds(t, s, analysis, text, [
+		("x", [1, 3, 3, 2]),
+		("y", [1, 3, 2, 2, 2]),
+		("d", [1, 2]),
+		("inner", [2, 1]),
+		("leaf", [3, 1]),
+		("cells", [1, 2]),
+		("k", [1, 2]),
+		("slot", [3, 1]),
+		("made", [1, 3]),
+		("v", [1, 2])
+	]);
+	s.server.close();
+}
+// Checks each name's highlights, from its first occurrence, against its
+// expected kinds in source order (1 Text, 2 Read, 3 Write), and the
+// collector's write flag on each use.
+def expectKinds(t: Tester, s: HighlightsTestSession, analysis: ProgramAnalysis, text: string, expected: Array<(string, Array<int>)>) {
+	for (entry in expected) {
+		var name = entry.0, kinds = entry.1, spots = Vector<HighlightSpot>.new();
+		var line = 0, column = 0;
+		for (i = 0; i < text.length;) {
+			var c = text[i];
+			if (Char.isIdentStart(c)) {
+				var begin = i, start = column;
+				while (i < text.length && Char.isIdentMiddle(text[i])) { i++; column++; }
+				if (!Strings.equal(Arrays.range(text, begin, i), name)) continue;
+				var spot = HighlightSpot.new("Refs.v3", line, start, column), n = spots.length;
+				spot.kind = if(n < kinds.length, kinds[n], -1);
+				spots.put(spot);
+				var use: AnalysisOccurrence;
+				for (o in analysis.occurrences("Refs.v3")) if (o.range.beginOffset == begin) use = o;
+				if (spot.kind != 1) t.assert(use != null && use.isWrite() == (spot.kind == 3), Strings.format3("collector flag for %s at %d:%d", name, line, start));
+			} else {
+				i++;
+				column++;
+				if (c == '\n') { line++; column = 0; }
+			}
+		}
+		t.asserti(kinds.length, spots.length);
+		var first = spots[0];
+		expectHighlightSpots(t, s, s.answer(t, "Refs.v3", first.line, first.begin), spots.extract(), name);
+	}
+}
 def test_locals_and_captures(t: Tester) {
 	var s = session(t);
 	// An outer local, and one of the same name that shadows it in a block.
-	var outer = S("var x = value", 4, 1), inner = S("var x = 2", 4, 1);
+	var outer = D("var x = value", 4, 1), inner = D("var x = 2", 4, 1);
 	expectHighlights(t, s, "if (x > 0)", 4, [outer, S("if (x > 0)", 4, 1), S("return x;", 7, 1)]);
 	expectHighlights(t, s, "return x + Refs", 7, [inner, S("return x + Refs", 7, 1)]);
 	// A parameter that shadows a field, and the field.
-	var parameter = S("shadow(value", 7, 5), field = S("def value", 4, 5);
+	var parameter = D("shadow(value", 7, 5), field = D("def value", 4, 5);
 	expectHighlights(t, s, "var x = value", 8, [parameter, S("var x = value", 8, 5)]);
 	expectHighlights(t, s, "Refs.value", 5, [field, S("Refs.value", 5, 5)]);
 	// A local captured by a lambda and by a nested lambda, and a lambda's
 	// parameter that the nested lambda captures.
-	var step = S("var step", 4, 4);
+	var step = D("var step", 4, 4);
 	expectHighlights(t, s, "a + step", 4, [step, S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)]);
-	var b = S("fun (b: int)", 5, 1);
+	var b = D("fun (b: int)", 5, 1);
 	expectHighlights(t, s, "b + c", 0, [b, S("b + c", 0, 1)]);
 	// A match pattern's binding.
-	var radius = S("Circle(radius)", 7, 6);
+	var radius = D("Circle(radius)", 7, 6);
 	expectHighlights(t, s, "+= radius", 3, [radius, S("+= radius", 3, 6)]);
 	s.server.close();
 }
@@ -278,19 +383,19 @@ def test_locals_and_captures(t: Tester) {
 // two instantiations, a generic method, and same-named type parameters.
 def test_members_and_generics(t: Tester) {
 	var s = session(t);
-	var rect = S("def area() -> int { return 1", 4, 4), square = S("def area() -> int { return 2", 4, 4);
+	var rect = D("def area() -> int { return 1", 4, 4), square = D("def area() -> int { return 2", 4, 4);
 	expectHighlights(t, s, "r.area()", 2, [S("r.area()", 2, 4), rect]);
 	expectHighlights(t, s, "q.area()", 2, [S("q.area()", 2, 4), square]);
-	var get = S("def get()", 4, 3);
+	var get = D("def get()", 4, 3);
 	expectHighlights(t, s, "new(1).get", 7, [S("new(1).get", 7, 3), S("new(b).get", 7, 3), get]);
-	var cell = S("class Cell", 6, 4);
+	var cell = D("class Cell", 6, 4);
 	expectHighlights(t, s, "Cell<Box>", 0, [S("Cell<int>", 0, 4), S("Cell<Box>", 0, 4), cell]);
-	var id = S("def id<T>", 4, 2);
+	var id = D("def id<T>", 4, 2);
 	expectHighlights(t, s, "id<Box>", 0, [S("id(1)", 0, 2), S("id<Box>", 0, 2), id]);
-	var methodT = S("def id<T>", 7, 1), classT = S("class Cell<T>", 11, 1);
+	var methodT = D("def id<T>", 7, 1), classT = D("class Cell<T>", 11, 1);
 	expectHighlights(t, s, "(p: T) -> T", 4, [methodT, S("(p: T) -> T", 4, 1), S("(p: T) -> T", 10, 1)]);
 	expectHighlights(t, s, "def get() -> T", 13, [classT, S("(item: T)", 7, 1), S("def get() -> T", 13, 1)]);
-	var item = S("(item: T)", 1, 4);
+	var item = D("(item: T)", 1, 4);
 	expectHighlights(t, s, "return item", 7, [item, S("return item", 7, 4)]);
 	s.server.close();
 }
@@ -299,17 +404,17 @@ def test_members_and_generics(t: Tester) {
 // its own.
 def test_components_and_classes(t: Tester) {
 	var s = session(t);
-	var refs = S("component Refs", 10, 4);
+	var refs = D("component Refs", 10, 4);
 	expectHighlights(t, s, "Refs.value", 0, [refs, S("Refs.value", 0, 4)]);
-	var node = S("class Node", 6, 4), nodes = [S("Node.new()", 0, 4), node, S("self() -> Node", 10, 4)];
+	var node = D("class Node", 6, 4), nodes = [S("Node.new()", 0, 4), node, S("self() -> Node", 10, 4)];
 	expectHighlights(t, s, "class Node", 6, nodes);
 	expectHighlights(t, s, "return this", 7, nodes);
 	expectHighlights(t, s, "Node.new()", 5, nodes);
-	var box = S("class Box", 6, 3);
+	var box = D("class Box", 6, 3);
 	expectHighlights(t, s, "b: Box", 3, [S("b: Box", 3, 3), S("Cell<Box>", 5, 3), S("id<Box>", 3, 3), S("Box.new(2)", 0, 3), box]);
-	var constructor = S("new(size)", 0, 3);
+	var constructor = D("new(size)", 0, 3);
 	expectHighlights(t, s, "Box.new(2)", 4, [S("Box.new(2)", 4, 3), constructor]);
-	var size = S("var size", 4, 4);
+	var size = D("var size", 4, 4);
 	expectHighlights(t, s, "get().size", 6, [S("get().size", 6, 4), S("(b).size", 4, 4), size]);
 	s.server.close();
 }
@@ -318,19 +423,19 @@ def test_components_and_classes(t: Tester) {
 // its references.
 def test_cases(t: Tester) {
 	var s = session(t);
-	var red = S("{ RED", 2, 3), green = S("RED, GREEN", 5, 5), color = S("enum Color", 5, 5);
+	var red = D("{ RED", 2, 3), green = D("RED, GREEN", 5, 5), color = D("enum Color", 5, 5);
 	expectHighlights(t, s, "Color.RED", 6, [S("Color.RED", 6, 3), S("RED =>", 0, 3), red]);
 	expectHighlights(t, s, "GREEN =>", 0, [S("GREEN =>", 0, 5), green]);
 	expectHighlights(t, s, "c: Color", 3, [S("c: Color", 3, 5), S("Color.RED", 0, 5), color]);
-	var circle = S("case Circle", 5, 6), dot = S("case Dot", 5, 3), shape = S("type Shape", 5, 5);
+	var circle = D("case Circle", 5, 6), dot = D("case Dot", 5, 3), shape = D("type Shape", 5, 5);
 	expectHighlights(t, s, "Shape.Circle(3)", 6, [S("Shape.Circle(3)", 6, 6), S("Circle(radius)", 0, 6), circle]);
 	expectHighlights(t, s, "Dot =>", 0, [S("Dot =>", 0, 3), dot]);
 	expectHighlights(t, s, "s: Shape", 3, [S("s: Shape", 3, 5), S("Shape.Circle(3)", 0, 5), shape]);
-	var row = S("type Row", 5, 3), rows = [S("w: Row", 3, 3), S("Row(1, 2)", 0, 3), row];
+	var row = D("type Row", 5, 3), rows = [S("w: Row", 3, 3), S("Row(1, 2)", 0, 3), row];
 	expectHighlights(t, s, "type Row", 5, rows);
 	expectHighlights(t, s, "w: Row", 3, rows);
 	expectHighlights(t, s, "Row(1, 2)", 0, rows);
-	var m = S("Row(m", 4, 1);
+	var m = D("Row(m", 4, 1);
 	expectHighlights(t, s, "row.m", 4, [S("row.m", 4, 1), m]);
 	s.server.close();
 }
@@ -338,8 +443,8 @@ def test_cases(t: Tester) {
 // named call spells the method's whole name.
 def test_index_operators(t: Tester) {
 	var s = session(t);
-	var read = S("def [i: int] -> int", 4, 1), write = S("def [i: int] = v", 4, 1);
-	var reads = [S("g[0]", 1, 1), S("g.[](4)", 2, 2), read], writes = [S("g[1]", 1, 1), S("g[2] += 3", 1, 1), write];
+	var read = D("def [i: int] -> int", 4, 1), write = D("def [i: int] = v", 4, 1);
+	var reads = [S("g[0]", 1, 1), S("g.[](4)", 2, 2), read], writes = [W("g[1]", 1, 1), W("g[2] += 3", 1, 1), write];
 	expectHighlights(t, s, "g[0]", 1, reads);
 	expectHighlights(t, s, "g.[](4)", 2, reads);
 	expectHighlights(t, s, "def [i: int] -> int", 4, reads);
@@ -353,13 +458,13 @@ def test_index_operators(t: Tester) {
 // parameters in #concat and as arguments.
 def test_layouts_and_packings(t: Tester) {
 	var s = session(t);
-	var tag = S("layout Tag", 7, 3), pair = S("layout Pair", 7, 4);
+	var tag = D("layout Tag", 7, 3), pair = D("layout Pair", 7, 4);
 	expectHighlights(t, s, "head: Tag", 6, [tag, S("head: Tag", 6, 3), S("Tag[2]", 0, 3), S("-> Ref<Tag>", 7, 3), S("ref<Tag>", 4, 3)]);
 	expectHighlights(t, s, "Ref<Pair>.of", 4, [pair, S("Ref<Pair> =", 4, 4), S("Ref<Pair>.of", 4, 4)]);
-	var head = S("+0 head", 3, 4), method = S("def head", 4, 4);
+	var head = D("+0 head", 3, 4), method = D("def head", 4, 4);
 	expectHighlights(t, s, "p.head", 2, [head, S("p.head", 2, 4)]);
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", method.line, method.begin), [method], "a method named as a layout field");
-	var low = S("packing Low", 8, 3), x = S("Wide(x", 5, 1), a = S("Low(a", 4, 1);
+	var low = D("packing Low", 8, 3), x = D("Wide(x", 5, 1), a = D("Low(a", 4, 1);
 	expectHighlights(t, s, "Low(x,", 0, [low, S("Low(x,", 0, 3)]);
 	expectHighlights(t, s, "Low(x,", 4, [x, S("Low(x,", 4, 1)]);
 	expectHighlights(t, s, "b, a)", 3, [a, S("b, a)", 3, 1)]);
@@ -369,10 +474,10 @@ def test_layouts_and_packings(t: Tester) {
 // request selects it, and a declaration that nothing uses has only its name.
 def test_include_declaration(t: Tester) {
 	var s = session(t);
-	var made = S("var made", 4, 4);
+	var made = D("var made", 4, 4);
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", made.line, made.begin), [made], "an unused local");
 	// Just past an identifier, before ; and before a space.
-	var outer = S("var x = value", 4, 1), uses = [S("if (x > 0)", 4, 1), S("return x;", 7, 1)];
+	var outer = D("var x = value", 4, 1), uses = [S("if (x > 0)", 4, 1), S("return x;", 7, 1)];
 	var p = at(SOURCE, "return x;", 8);
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", p.0, p.1), [outer, uses[0], uses[1]], "just past a use");
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", outer.line, outer.end), [outer, uses[0], uses[1]], "just past a declaration's name");
@@ -399,6 +504,7 @@ def test_cross_file(t: Tester) {
 	var s = session(t);
 	var declaration = HighlightSpot.new("Decl.v3", 2, 5, 10), use = S("Decl.thing", 5, 5);
 	var twice = [HighlightSpot.new("Decl.v3", TWICE_LINE, TWICE_FIRST, TWICE_FIRST + 5), HighlightSpot.new("Decl.v3", TWICE_LINE, TWICE_SECOND, TWICE_SECOND + 5)];
+	declaration.kind = 1;
 	var all = [declaration, twice[0], twice[1], use];
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin), [use], "only the requested file");
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin), [use], "the other file excluded");
@@ -424,7 +530,7 @@ def test_file_changed_on_disk(t: Tester) {
 	var twice = [HighlightSpot.new("Decl.v3", TWICE_LINE, TWICE_FIRST, TWICE_FIRST + 5), HighlightSpot.new("Decl.v3", TWICE_LINE, TWICE_SECOND, TWICE_SECOND + 5)];
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", use.line, use.begin), [use], "the file restored");
 	// An open file's analyzed text is its overlay, whatever is on disk.
-	var step = S("var step", 4, 4);
+	var step = D("var step", 4, 4);
 	s.write(t, "Refs.v3", "");
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", step.line, step.begin), [step, S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "an open file");
 	s.server.close();
@@ -438,8 +544,9 @@ def test_semantic_errors(t: Tester) {
 	t.assert(s.context().snapshot.parsed && !s.context().snapshot.verified, "the program parsed and has errors");
 	var p = at(text, "step + missing", 0), q = at(text, "f(step: int)", 2);
 	var mine = [HighlightSpot.new("Refs.v3", q.0, q.1, q.1 + 4), HighlightSpot.new("Refs.v3", p.0, p.1, p.1 + 4)];
+	mine[0].kind = 1;
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", p.0, p.1), mine, "a parameter beside an unresolved name");
-	var step = S("var step", 4, 4);
+	var step = D("var step", 4, 4);
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", step.line, step.begin), [step, S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "another declaration of the same name");
 	p = at(text, "missing", 0);
 	expectNull(t, s.answer(t, "Refs.v3", p.0, p.1), "the unresolved name");
@@ -462,7 +569,7 @@ def test_stale_waits_for_analysis(t: Tester) {
 	t.assertz(true, s.supervisor.busy());
 	s.settle();
 	t.assert(s.context().snapshot.generation > generation, "a new analysis completed");
-	var spots = [S("var step", 4, 4), S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)];
+	var spots = [D("var step", 4, 4), S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)];
 	for (spot in spots) spot.line++;
 	expectHighlightSpots(t, s, s.result(t, first), spots, "from the first request");
 	expectHighlightSpots(t, s, s.result(t, second), spots, "from the second request");
@@ -475,7 +582,7 @@ def test_stale_waits_for_analysis(t: Tester) {
 }
 def test_stale_without_analysis(t: Tester) {
 	var s = session(t);
-	var step = S("var step", 4, 4);
+	var step = D("var step", 4, 4);
 	expectHighlightSpots(t, s, s.answer(t, "Refs.v3", step.line, step.begin), [step, S("a + step", 4, 4), S("b + c + step", 8, 4), S("f(step)", 2, 4)], "a current snapshot");
 	// An edit that schedules no analysis leaves the snapshot stale.
 	t.assert(s.store.change(s.uri("Refs.v3"), 2, Strings.format1("%s\n", SOURCE)) == null, "edit");
@@ -490,7 +597,7 @@ def test_stale_without_analysis(t: Tester) {
 	s.server.close();
 }
 def test_missing_snapshot(t: Tester) {
-	var s = session(t), step = S("var step", 4, 4);
+	var s = session(t), step = D("var step", 4, 4);
 	s.context().snapshot = null;
 	expectNull(t, s.answer(t, "Refs.v3", step.line, step.begin), "no snapshot and no pending analysis");
 	s.server.close();
@@ -522,14 +629,14 @@ def test_reply_bound(t: Tester) {
 	});
 	var dispatcher = JsonRpcDispatcher.new();
 	requests.registerPrepared(dispatcher, "textDocument/documentHighlight", "document highlights", LspDocumentHighlights.REQUIRES, threeHighlights);
-	var cases = [S("class Node", 6, 4), S("var step", 4, 4), S("return this", 7, 4)];
+	var cases = [D("class Node", 6, 4), D("var step", 4, 4), S("return this", 7, 4)];
 	for (p in cases) {
 		var payload = Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/documentHighlight\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":%d,\"character\":%d}}}", s.uri("Refs.v3"), p.line, p.begin);
 		t.assert(dispatcher.handle(payload) == null, "replies use the sink");
 	}
 	t.asserti(3, replies.length);
 	if (replies.length == 3) {
-		var node = S("class Node", 6, 4), nodes = [S("Node.new()", 0, 4), node, S("self() -> Node", 10, 4)];
+		var node = D("class Node", 6, 4), nodes = [S("Node.new()", 0, 4), node, S("self() -> Node", 10, 4)];
 		expectHighlightSpots(t, s, replies[0]["result"], nodes, "exactly the bound");
 		t.asserti(LspErrorCode.REQUEST_FAILED, intAt(replies[1]["error"], "code"));
 		t.assert_string("the declaration step has more than 3 document highlights", stringAt(replies[1]["error"], "message"));
