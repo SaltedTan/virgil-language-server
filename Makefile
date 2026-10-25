@@ -43,6 +43,8 @@ BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 # The command run-unit-tests wraps. A plain = lets a command-line override work,
 # and test_cleanup.py uses that to exercise the wrapper without the real tests.
 UNIT_TESTS  = $(BUILD)/unit-tests
+# How many unit-test groups run at once; empty means one for each CPU, up to 8.
+UNIT_JOBS  ?=
 
 .PHONY: all test test-protocol-shapes test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
@@ -100,12 +102,12 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 # The unit tests need two fixture directories to be unreadable. test/unit/run.py
 # applies that for the test processes only and restores it however they end, so
 # the build directory stays removable. Without ARGS, it runs each group of tests
-# in a process of its own and lists the slowest tests. set -f keeps ARGS
-# patterns away from the shell's pathname expansion while word splitting still
-# separates several of them. Pass a glob with ARGS, e.g.
+# in a process of its own, UNIT_JOBS at once, and lists the slowest tests. set -f
+# keeps ARGS patterns away from the shell's pathname expansion while word
+# splitting still separates several of them. Pass a glob with ARGS, e.g.
 # `make test-unit ARGS='ProjectExpansion:*'`, to run the matches in one process.
 run-unit-tests:
-	set -f; python3 test/unit/run.py $(BUILD) $(UNIT_TESTS) $(ARGS)
+	set -f; python3 test/unit/run.py $(if $(UNIT_JOBS),--jobs=$(UNIT_JOBS)) $(BUILD) $(UNIT_TESTS) $(ARGS)
 
 test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
