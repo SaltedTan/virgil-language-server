@@ -178,7 +178,8 @@ def main(jobs, commands):
           f"{jobs} at once, {elapsed:.1f} s")
     for suite in failed:
         print(f"FAIL: {suite.command}")
-    return int(bool(failed))
+    # A signal during the report is recorded too, and still decides the status.
+    return 128 + suites.signum if suites.signum else int(bool(failed))
 
 
 if __name__ == "__main__":
