@@ -340,6 +340,137 @@ test('macOS retries transient native failures during the first look without losi
   }
 });
 
+test('macOS recovers a failed initial native keeper lookup and completes normally', async () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[1, { start, group: 1 }], [50, { start, group: 50 }], [51, { start, group: 50 }]]);
+  const setup = fakeGroup(table);
+  let firstKeeper = true;
+  const fake = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table),
+    darwinInfo: (pids) => {
+      if (pids.length === 1 && pids[0] === 50 && firstKeeper) {
+        firstKeeper = false;
+        return { status: 0, stdout: 'null' };
+      }
+      return fakeDarwinInfo(table)(pids);
+    },
+    darwinPids: () => [...table].filter(([, p]) => p.group === 50).map(([pid]) => pid),
+  });
+  assert.equal(fake.processInfo(1).start, 'darwin:1792746781.000001');
+  let exited;
+  const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: (result) => { exited = result; } });
+  table.get(50).ppid = 99;
+  assert.equal(group.look()?.unavailable, true);
+  table.get(50).ppid = 1;
+  table.get(50).group = 99;
+  assert.equal(group.look()?.unavailable, true);
+  table.get(50).group = 50;
+  assert.equal(group.look().processes[0].pid, 51);
+  table.delete(51);
+  setup.keeper.exit(0, null);
+  assert.equal(group.look().empty, true);
+  assert.deepEqual([exited.code, exited.signal], [0, null]);
+  assert.equal(await group.release(), true);
+  assert.deepEqual(setup.signals, []);
+});
+
+test('macOS release watchdog recovers a missing initial native keeper identity', async () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[1, { start, group: 1 }], [50, { start, group: 50 }]]);
+  const setup = fakeGroup(table);
+  const clock = fakeClock();
+  let firstKeeper = true;
+  const fake = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table), globals: clock.globals,
+    darwinInfo: (pids) => {
+      if (pids.length === 1 && pids[0] === 50 && firstKeeper) {
+        firstKeeper = false;
+        return { status: 0, stdout: 'null' };
+      }
+      return fakeDarwinInfo(table)(pids);
+    },
+  });
+  fake.processInfo(1);
+  const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+  setup.keeper.stopped = true;
+  const released = group.release();
+  clock.advance(1000);
+  assert.deepEqual(setup.signals, [[50, 'SIGKILL']]);
+  assert.equal(await released, true);
+  assert.equal(table.has(50), false);
+});
+
+test('macOS ends ownership when an unrecorded keeper exits before recovery', async () => {
+  for (const replacement of [false, true]) {
+    const start = 'Thu Oct 23 17:13:01 2026';
+    const table = new Map([[1, { start, group: 1 }], [50, { start, group: 50 }]]);
+    const setup = fakeGroup(table);
+    let available = false;
+    const fake = fakeProcesses(table, {
+      ...setup, platform: 'darwin', ps: fakePs(table),
+      darwinInfo: (pids) => !available && pids.length === 1 && pids[0] === 50
+        ? { status: 0, stdout: 'null' } : fakeDarwinInfo(table)(pids),
+      darwinPids: () => [...table].filter(([, p]) => p.group === 50).map(([pid]) => pid),
+    });
+    fake.processInfo(1);
+    const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+    assert.equal(group.look()?.unavailable, true);
+    setup.keeper.exit(0, null);
+    table.delete(50);
+    setup.keeper.reap();
+    available = true;
+    if (replacement) table.set(50, { start, group: 50, nativeStart: 'darwin:1792746781.999999' });
+    assert.equal(group.look(), undefined);
+    group.signal('SIGKILL');
+    assert.deepEqual(setup.signals, []);
+    assert.equal(table.has(50), replacement);
+    assert.equal(await group.release(), true);
+    assert.equal(group.detach(), true);
+  }
+});
+
+test('macOS observes an omitted child in scans initiated inside the process group', () => {
+  for (const trigger of ['spawn', 'signal']) {
+    const start = 'Thu Oct 23 17:13:01 2026';
+    const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
+    const setup = fakeGroup(table);
+    const clock = fakeClock();
+    let omitted = false;
+    let observed;
+    const fake = fakeProcesses(table, {
+      ...setup, platform: 'darwin', globals: clock.globals,
+      ps: (args) => {
+        if (args[0] === '-A' && !omitted) {
+          omitted = true;
+          return fakePs(new Map([[50, table.get(50)]]))(args);
+        }
+        return fakePs(table)(args);
+      },
+      darwinInfo: fakeDarwinInfo(table), darwinPids: () => [...table.keys()],
+    });
+    const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+    const look = group.look;
+    group.look = () => {
+      const was = omitted;
+      const result = look();
+      if (!was && omitted) observed = result;
+      return result;
+    };
+    if (trigger === 'spawn') setup.keeper.command(51);
+    else {
+      setup.keeper.stopped = true;
+      group.signal('SIGTERM');
+      clock.advance(1000);
+    }
+    assert.equal(omitted, true, trigger);
+    assert.equal(observed?.empty, false, trigger);
+    assert.equal(observed.processes.length, 0, trigger);
+    assert.equal(group.look().processes[0].pid, 51);
+    assert.equal(table.has(51), true);
+    group.detach();
+  }
+});
+
 test('macOS failed native looks never replace remembered identities or remember partial scans', () => {
   for (const site of ['batch', 'partial', 'keeper', 'group']) {
     const start = 'Thu Oct 23 17:13:01 2026';

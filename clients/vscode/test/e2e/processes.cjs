@@ -472,7 +472,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   const number = keeper.pid;
   // The keeper's parent and start time. Node.js can't have reaped it before
   // this turn of the event loop ends.
-  const leader = number === undefined ? undefined : processInfo(number);
+  let leader = number === undefined ? undefined : processInfo(number);
   // The processes that the runner has seen in the group, other than the
   // keeper, each by PID and start time.
   const seen = new Map();
@@ -497,8 +497,13 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // also need this parent check: only another child of the runner, given the
   // keeper's PID within its start second, could pass for it.
   const led = () => {
+    if (darwinNative && leader === null && keeperGone) return false;
     const info = processInfo(number);
-    if (darwinNative && (info === null || leader === null)) return null;
+    if (darwinNative && leader === null) {
+      if (info == null || info.ppid !== process.pid || info.group !== number) return null;
+      leader = info;
+    }
+    if (darwinNative && info === null) return null;
     return leader != null && info != null && info.start === leader.start && info.ppid === leader.ppid;
   };
   const report = (result) => {
@@ -527,6 +532,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // is live, and the runner remembers and signals it as any other.
   const look = () => {
     if (lost) return undefined;
+    if (darwinNative && leader === null && led() === null) return { processes: [], empty: false, unavailable: true };
     const { processes, complete, unavailable } = processTable();
     if (unavailable) return { processes: [], empty: false, unavailable: true };
     const native = process.platform === 'darwin' && darwinNative;
@@ -573,7 +579,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   // it is now, and, with alsoKeeper, last to the keeper, if it hasn't been
   // reaped (see signalProcesses).
   const signalSeen = (name, alsoKeeper = false) => {
-    look();
+    group.look();
     const targets = [...seen].map(([pid, start]) => ({ pid, start }));
     if (alsoKeeper && led()) targets.push({ pid: number, start: leader.start });
     signalProcesses(targets, name);
@@ -607,7 +613,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
       } catch {
         continue;
       }
-      if (message.spawn !== undefined) look();
+      if (message.spawn !== undefined) group.look();
       else if (message.signaled !== undefined) clearTimeout(requested.shift()?.timer);
       else if (message.exit !== undefined) report({ code: message.exit[0], signal: message.exit[1] });
       else if (message.error !== undefined) report({ error: Object.assign(new Error(message.error.message), message.error) });
