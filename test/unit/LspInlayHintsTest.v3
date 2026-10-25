@@ -1,0 +1,57 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def X = [
+	UnitTests.register("LspInlayHints:target_identity_once", target_identity_once),
+	()
+];
+def MAIN = "test/fixtures/analysis/inlay-hints/cross-file/Main.v3";
+def LIBRARY = "test/fixtures/analysis/inlay-hints/cross-file/Library.v3";
+
+// Counts identity checks of closed files: only matchesDocument asks for a
+// disk stamp during a refresh comparison.
+class CountingDiskStampStore extends DocumentStore {
+	var stamp = DocumentVersionIdentity.new();
+	var checks: int;
+	new() super(null, DocumentLimits.MAX_BYTES) { }
+	def diskStamp(uri: string) -> DocumentVersionIdentity { checks++; return stamp; }
+}
+
+// Three hints link to one closed target. Each comparison checks its identity
+// once, and a later comparison checks it again instead of reusing the result.
+def target_identity_once(t: Tester) {
+	var main = ProjectTestFiles.repository(MAIN), library = ProjectTestFiles.repository(LIBRARY);
+	var paths = [main, library], keys = [ProjectFiles.uri(main), ProjectFiles.uri(library)];
+	var store = CountingDiskStampStore.new(), text = System.fileLoad(main);
+	t.assert(store.open(keys[0], "virgil", 1, text) == null, "main opens");
+	var a = AeneasAdapter.analyzeProgram([AnalysisSource.new(main, text), AnalysisSource.new(library, System.fileLoad(library))], [], false);
+	if (!a.verified) return t.fail("fixture verifies");
+	var data = Ranges.dup(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0,
+		[(main, a.occurrences(main)), (library, a.occurrences(library))]), 0L)[4 ...]);
+	var snapshot: AnalysisSnapshot;
+	match (AnalysisWire.decodeResult(data, 1, paths)) {
+		Decoded(r) => snapshot = r.snapshot;
+		_ => return t.fail("hints failed to decode");
+	}
+	snapshot.recordDocumentVersions(LspAnalysisCapture.capture(store, keys, true).0.versions);
+	var links = 0, c = snapshot.fileIndex(main).hintCursor();
+	while (c.next()) if (c.local > 0 && snapshot.hintTarget(snapshot.fileIndex(main), c.local, c.begin) > 0) links++;
+	t.asserti(3, links);
+
+	var sent = [0], ctx = ProjectContext.new(null, null);
+	var hints = LspInlayHints.new(fun (b: Array<byte>) { sent[0]++; }, JsonRpcPendingRequests.new(), store, WorkspaceProjects.new(store));
+	hints.refreshSupport = true;
+	store.checks = 0;
+	hints.analyzedOwners(ctx, snapshot, [ctx, ctx]);
+	t.asserti(1, store.checks);
+	var cache = ctx.hintTargets[library];
+	t.assert(cache != null && cache.hashes.length == 1, "the target's coordinates are converted once");
+	t.asserti(0, sent[0]);
+
+	// The target changed on disk: its links drop, which needs a refresh.
+	store.checks = 0;
+	store.stamp = DocumentVersionIdentity.new();
+	hints.analyzedOwners(ctx, snapshot, [ctx, ctx]);
+	t.asserti(1, store.checks);
+	t.asserti(1, sent[0]);
+}

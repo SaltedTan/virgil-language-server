@@ -131,6 +131,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 			docs: Array<DocumentOverlay>, owners: Array<ProjectContext>) {
 		var targets = OrderedStringMap<LspHintTargetFingerprint>.new();
 		var texts = Array<Array<byte>>.new(snapshot.paths.length), checked = Array<bool>.new(snapshot.paths.length);
+		var identities = Array<byte>.new(snapshot.paths.length);
 		for (d < docs.length) {
 			if (owners != null && owners[d] != ctx) continue;
 			var doc = docs[d], uri = doc.uri, i = snapshot.documentIndex(uri);
@@ -149,7 +150,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 					hash = hashString(hash, snapshot.hintString(c.label));
 					if (isType) {
 						var code = snapshot.hintTarget(file, c.local, c.begin);
-						var value = if(code > 0, targetFingerprint(ctx, snapshot, snapshot.declarations[code - 1], texts, checked, targets));
+						var value = if(code > 0, targetFingerprint(ctx, snapshot, snapshot.declarations[code - 1], texts, checked, identities, targets));
 						hash = hashInt(hashInt(hash, int.view(value)), int.view(value >> 32));
 					}
 				}
@@ -178,12 +179,15 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		return texts[i];
 	}
 	private def targetFingerprint(ctx: ProjectContext, snapshot: AnalysisSnapshot, d: AnalysisDeclaration,
-			texts: Array<Array<byte>>, checked: Array<bool>,
+			texts: Array<Array<byte>>, checked: Array<bool>, identities: Array<byte>,
 			targets: OrderedStringMap<LspHintTargetFingerprint>) -> u64 {
 		var i = -1;
 		for (j < snapshot.paths.length) if (Strings.equal(snapshot.paths[j], d.range.path)) { i = j; break; }
 		if (i < 0 || i >= snapshot.documentVersions.length || d.range.beginOffset < 0) return 0;
-		if (!snapshot.documentVersions[i].matchesDocument(store)) return 0;
+		// Documents can't change during one synchronous comparison, so check each
+		// target file once in it (1 current, 2 not). Results never outlive it.
+		if (identities[i] == 0) identities[i] = if(snapshot.documentVersions[i].matchesDocument(store), 1, 2);
+		if (identities[i] != 1) return 0;
 		var span = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
 		if (span.0 < 0) return 0;
 		var cache = targets[d.range.path];
