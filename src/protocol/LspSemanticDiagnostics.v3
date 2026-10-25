@@ -116,6 +116,11 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 		}
 		return timeout;
 	}
+	// Brings every waiting context {ms} closer to due, as if that much more
+	// time had passed, for tests that would otherwise sleep out the debounce.
+	def advance(ms: int) {
+		for (i < waiting.length) waiting[i].due -= ms;
+	}
 	// Called after every poll. Completes the supervisor's analysis for its
 	// submitter, then starts the next one.
 	def onPoll() {

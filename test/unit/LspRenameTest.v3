@@ -241,12 +241,15 @@ class RenameTestSession {
 		if (changes != null) params["contentChanges"] = JsonValue.JArray(changes);
 		server.handle(JsonRpcMessage.Notification(method, JsonRpcParams.ByName(params)).encode());
 	}
-	// Polls until no analysis or preflight runs or waits.
+	// Polls until no analysis or preflight runs or waits. While none runs,
+	// nothing can happen until a context is due, so it advances the debounce
+	// interval instead of sleeping; the order analyses start in is unchanged.
 	def settle() {
-		var fds = Array<int>.new(4);
+		var fds = Array<int>.new(4), scheduler = server.rename.scheduler;
 		while (server.analyzing()) {
-			var count = supervisor.pollFds(fds, 0);
-			HostOs.poll(fds, count, server.pollTimeout());
+			var count = supervisor.pollFds(fds, 0), due = scheduler.pollTimeout();
+			if (count == 0 && due > 0) scheduler.advance(due);
+			else HostOs.poll(fds, count, server.pollTimeout());
 			server.onPoll();
 		}
 	}
