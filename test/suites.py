@@ -80,23 +80,17 @@ class Suites:
             for process in self.processes:
                 send(process, signal.SIGKILL if self.force else self.signum)
 
-    def next(self):
-        with self.lock:
-            if self.signum or not self.waiting:
-                return None
-            suite = self.waiting.pop(0)
-            self.ran.append(suite)
-            return suite
-
     def thread(self):
-        while (suite := self.next()) is not None:
-            self.run(suite)
+        while self.run():
+            pass
 
-    def run(self, suite):
+    def run(self):
         try:
             with self.lock:
-                if self.signum:
-                    return
+                if self.signum or not self.waiting:
+                    return False
+                suite = self.waiting.pop(0)
+                self.ran.append(suite)
                 output = None if self.live else tempfile.TemporaryFile()
                 started = time.monotonic()
                 process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
@@ -106,7 +100,7 @@ class Suites:
         except OSError as error:
             suite.status = 127
             self.write(suite, f"cannot run it: {error}\n".encode())
-            return
+            return True
         suite.status = process.wait()
         suite.seconds = time.monotonic() - started
         with self.lock:
@@ -118,6 +112,7 @@ class Suites:
             output.seek(0)
             self.write(suite, output.read())
             output.close()
+        return True
 
     def write(self, suite, output):
         result = "passed" if suite.status == 0 else f"FAILED (exit status {suite.status})"

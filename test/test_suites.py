@@ -130,7 +130,8 @@ def stop(signum, frame):
 
 for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
     signal.signal(signum, stop)
-(directory / "ready").write_text(str(child.pid))
+(directory / "ready.tmp").write_text(str(child.pid))
+(directory / "ready.tmp").replace(directory / "ready")
 signal.pause()
 ''')
         for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
@@ -161,7 +162,7 @@ signal.pause()
 
     def test_second_signal_kills_an_ignoring_suite(self):
         ready = self.directory / "ready"
-        suite = f"trap '' TERM HUP INT; echo $$ > {ready}; exec sleep 60"
+        suite = f"trap '' TERM HUP INT; echo $$ > {ready}.tmp; mv {ready}.tmp {ready}; exec sleep 60"
         runner = subprocess.Popen(self.command(suite), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
         try:
