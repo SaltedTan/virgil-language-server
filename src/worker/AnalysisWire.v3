@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 13;
+	def PROTOCOL_VERSION = 14;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -156,7 +156,10 @@ component AnalysisWire {
 	// name's string index, its path index, its range (four compiler
 	// coordinates and two byte offsets), and its signature's string index plus
 	// one, or zero, then its default source-type target (declaration ID plus
-	// one, or zero for null). Each file's declaration sites (see
+	// one, or zero for null), then its parent: a class's or a variant case's
+	// base, or the method that a method overrides, as its declaration ID plus
+	// one, or zero for none (see ProgramAnalysis.parentLinks). Each file's
+	// declaration sites (see
 	// ProgramAnalysis.declarationSites) come first in the declarations, in
 	// files order, so a file sends its path index, then their first index and
 	// count. Then come its occurrences in source order, each its begin line,
@@ -363,6 +366,19 @@ component AnalysisWire {
 				if (members.details[i] != null) strings.add(members.details[i]);
 			}
 		}
+		// Each site's parent, as pairs of the site's declaration index and the
+		// parent's plus one, in the order of the sites and so of their
+		// indexes. Only the selected files' sites have parents, which their
+		// sites include when every file of the program is selected, as the
+		// worker selects them; a parent that is not indexed is not sent.
+		var links = Vector<int>.new();
+		for (i < files.length) {
+			var pairs = analysis.parentLinks(files[i].0);
+			for (k = 0; k < pairs.length; k += 2) {
+				var parent = typeEncoding.declaration(analysis.typeDeclaration(pairs[k + 1]));
+				if (parent >= 0) links.put(firstSite[i] + pairs[k]).put(parent + 1);
+			}
+		}
 		for (i < files.length) {
 			var encoded = DataWriter.new();
 			for (u in builtins[i]) {
@@ -426,6 +442,7 @@ component AnalysisWire {
 			w.put_sleb32(strings.length());
 			for (i < strings.length()) putString(w, strings[i]);
 			w.put_sleb32(decls.length());
+			var link = 0;
 			for (i < decls.length()) {
 				var d = decls[i];
 				w.putb(d.kind.tag);
@@ -436,6 +453,9 @@ component AnalysisWire {
 				putRange(w, d.range);
 				w.put_sleb32(declarationIds[3 * i + 1]);
 				w.put_sleb32(typeEncoding.defaults[i]);
+				var parent = if(link < links.length && links[link] == i, links[link + 1]);
+				if (parent > 0) link += 2;
+				w.put_sleb32(parent);
 			}
 			w.put_sleb32(text.length());
 			for (i < text.length()) putString(w, text[i]);
@@ -587,6 +607,7 @@ component AnalysisWire {
 		var hasOccurrences = (flags & OCCURRENCES) != 0;
 		var declarations: Array<AnalysisDeclaration> = [];
 		var strings: Array<string> = [], files: AnalysisSnapshotFiles, signatures: AnalysisSnapshotSignatures;
+		var parents: Array<int>;
 		if (hasOccurrences) {
 			// A path is an index into the request's distinct paths, which the
 			// server sent, so the result has no path table and no path is
@@ -595,18 +616,25 @@ component AnalysisWire {
 			// Each string is charged as an index string, and its slot.
 			strings = Array<string>.new(r.readCount(1, 8));
 			for (i < strings.length) strings[i] = r.readString(1);
-			// Kind, name, path index, six range ints, signature, and default
-			// type target take at least eleven bytes. The conservative 128-byte
-			// charge covers the declaration (including that int), its range,
-			// and the array slot; strings are in the string table.
-			declarations = Array<AnalysisDeclaration>.new(r.readCount(11, 128));
+			// Kind, name, path index, six range ints, signature, default type
+			// target, and parent take at least twelve bytes. The conservative
+			// 128-byte charge covers the declaration (including the type target
+			// int), its range, the array slot, and its parent in an int array;
+			// strings are in the string table.
+			declarations = Array<AnalysisDeclaration>.new(r.readCount(12, 128));
 			for (i < declarations.length) {
 				var kind = r.readKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
 				var d = AnalysisDeclaration.new(kind, name, r.readRange(path));
 				d.signature = r.readOptionalString(strings);
 				d.typeTarget = r.readOptionalTarget(declarations.length);
+				var parent = r.readParent(i, declarations.length);
+				if (parent > 0) {
+					if (parents == null) parents = Array<int>.new(declarations.length);
+					parents[i] = parent;
+				}
 				declarations[i] = d;
 			}
+			if (parents != null) r.checkParents(declarations, parents);
 			signatures = r.readSignatures(strings);
 		}
 		var snapshot = AnalysisSnapshot.new(generation, paths, (flags & PARSED) != 0,
@@ -615,6 +643,7 @@ component AnalysisWire {
 			snapshot.setStrings(strings);
 			snapshot.setSignatures(signatures);
 			snapshot.setFiles(files);
+			snapshot.setParents(parents);
 			// Each file is one of the request's, at most once, and the site
 			// runs come in order, so that each declaration is checked as a
 			// site at most once.
@@ -963,6 +992,35 @@ class AnalysisWireReader {
 			return 0;
 		}
 		return i;
+	}
+	// Declaration {i}'s parent: another declaration's index plus one, or
+	// zero for none. checkParents then checks both declarations' kinds.
+	def readParent(i: int, declarations: int) -> int {
+		var p = r.read_sleb32();
+		if (p < 0 || p > declarations || p == i + 1) {
+			r.fail("invalid parent declaration index");
+			return 0;
+		}
+		return p;
+	}
+	// Checks that only a class, a variant case, or a method has a parent,
+	// and that the parent is of a kind that can be one: a class's is a class
+	// or a variant case, a case's a class, and a method's a method. The
+	// parents may form cycles, as an inheritance cycle that verification
+	// reports does.
+	def checkParents(declarations: Array<AnalysisDeclaration>, parents: Array<int>) {
+		for (i = 0; i < parents.length && r.ok; i++) {
+			var p = parents[i];
+			if (p == 0) continue;
+			var parent = declarations[p - 1].kind, valid = false;
+			match (declarations[i].kind) {
+				CLASS => valid = parent == AnalysisDeclKind.CLASS || parent == AnalysisDeclKind.VARIANT_CASE;
+				VARIANT_CASE => valid = parent == AnalysisDeclKind.CLASS;
+				METHOD => valid = parent == AnalysisDeclKind.METHOD;
+				_ => ;
+			}
+			if (!valid) r.fail("invalid parent kind");
+		}
 	}
 	def readTarget(declarations: int) -> int {
 		var i = r.read_sleb32();

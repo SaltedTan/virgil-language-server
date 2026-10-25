@@ -1,0 +1,66 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+// Non-ASCII text before the targets: é𝄞 (two and four UTF-8 bytes).
+/* é𝄞 */ class Shape {
+	def area() -> int { return 0; }
+	def name() -> string { return "shape"; }
+	def scale(k: int) -> int { return k; }
+	private def secret() -> int { return 0; }
+	def [i: int] -> int { return i; }
+}
+/* é𝄞 */ class Polygon extends Shape {
+	def area() -> int { return 1; }
+	private def secret() -> int { return 1; }
+}
+/* é𝄞 */ class Square extends Polygon {
+	def area() -> int { return 2; }
+	def name() -> string { return "square"; }
+	def [i: int] -> int { return 2 * i; }
+}
+class Circle extends Shape {
+	def scale(k: int) -> int { return 2 * k; }
+}
+class Rect {
+	def area() -> int { return 3; }
+}
+class Box<T> {
+	def get() -> T;
+}
+class Crate<T>(item: T) extends Box<T> {
+	def get() -> T { return item; }
+}
+class IntBox extends Box<int> {
+	new() { }
+	def get() -> int { return 1; }
+}
+type Tree {
+	case Leaf {
+		def size() -> int { return 1; }
+	}
+	case Node(left: Tree, right: Tree) {
+		def size() -> int { return left.size() + right.size(); }
+	}
+	def size() -> int { return 0; }
+	def depth() -> int { return 0; }
+}
+type Pair(a: int, b: int) { }
+enum Color { RED, GREEN }
+layout Bits {
+	+0 low: u8;
+	=1;
+}
+packing Nibbles(a: 4, b: 4): 8 = #concat(a, b);
+component Shapes {
+	var count: int;
+	def total<E>(s: Shape, q: Square, c: Crate<E>, t: Tree) -> int {
+		var local = s.area() + q.area() + q.scale(1) + q[0] + t.size() + t.depth();
+		var made = Square.new();
+		c.get();
+		match (t) {
+			Leaf => local++;
+			Node(left, right) => local--;
+		}
+		return local + count + Color.RED.tag + "abc".length;
+	}
+}
+def topLevel() -> int { return 1; }

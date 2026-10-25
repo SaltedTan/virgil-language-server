@@ -1,0 +1,12 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+// Another file's subclasses. A private method of another file's class is
+// not overridden: verification starts a new override family here.
+/* é𝄞 */ class Hexagon extends Polygon {
+	def area() -> int { return 6; }
+	private def secret() -> int { return 6; }
+	def describe() -> string { return this.name(); }
+}
+class Plain {
+	def area() -> int { return 7; }
+}

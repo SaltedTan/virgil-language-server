@@ -65,6 +65,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	def var sites: Array<AnalysisDeclaration>;
 	def var calls: Range<byte>;
 	def var callCount: int;
+	// After collect: for each of {sites} that has a parent (see parentOf),
+	// its index there and the parent's code (AnalysisDisplay.declarationAt),
+	// in the order of {sites}. Only sites with a parent take any space.
+	def var parents: Array<int>;
 
 	def collect(file: VstFile) -> Array<AnalysisOccurrence> {
 		fileName = file.fileName;
@@ -133,17 +137,98 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// any that overlap. A token names two declarations only where
 	// verification shares it, as a variant with parameters shares its name
 	// with its single case; the walk finds the declaration a reader means first.
+	// Records the parents of the sites it keeps, in their order (see parents).
 	private def sortSites(list: Array<AnalysisDeclaration>) -> Array<AnalysisDeclaration> {
 		list = AnalysisTables.sort(list, siteBefore);
-		var count = 0, end = 0;
+		var count = 0, end = 0, links: Vector<int>;
 		for (i < list.length) {
 			var r = list[i].range;
 			if (count > 0 && r.beginOffset < end) continue;
+			var parent = parentOf(list[i]);
+			if (parent != null) {
+				if (links == null) links = Vector<int>.new();
+				links.put(count).put(parent.typeTarget);
+			}
 			list[count++] = list[i];
 			end = r.endOffset;
 		}
+		parents = if(links != null, links.extract(), NO_PARENTS);
 		return if(count == list.length, list, Arrays.range(list, 0, count));
 	}
+	// The declaration that verification makes {d}'s parent, or null: a
+	// class's base, a variant case's variant (see base), or the method that
+	// a method overrides (see overridden). A data type's single case is the
+	// type itself, and a class that extends itself has no parent.
+	private def parentOf(d: AnalysisDeclaration) -> AnalysisDeclaration {
+		var parent: AnalysisDeclaration;
+		match (d.kind) {
+			CLASS => {
+				var syntax = AnalysisWorkerDeclaration.!(d).syntax;
+				if (VstClass.?(syntax)) parent = base(VstClass.!(syntax));
+			}
+			VARIANT_CASE => {
+				var syntax = AnalysisWorkerDeclaration.!(d).syntax;
+				if (!VstCaseMember.?(syntax)) return null;
+				var c = VstCaseMember.!(syntax);
+				if (c.decl != null && c.decl != c.receiver) parent = base(c.decl);
+			}
+			METHOD => {
+				var syntax = AnalysisWorkerDeclaration.!(d).syntax;
+				var m = if(VstMethod.?(syntax), overridden(VstMethod.!(syntax)));
+				if (m != null) parent = make(AnalysisDeclKind.METHOD, m);
+			}
+			_ => ;
+		}
+		return if(parent != d, parent);
+	}
+	// The source declaration of the class that verification resolved {c}'s
+	// superclass to and recorded {c} as a subclass of, or null: it records
+	// none for a superclass that does not resolve or is not a class. A
+	// variant that extends another extends its default case, but the
+	// variant records it, as the source names it (see superclass). A case's
+	// class is synthetic, and the case declares it.
+	private def base(c: VstClass) -> AnalysisDeclaration {
+		var t = if(c.superclass != null, c.superclass.binding);
+		if (!ClassType.?(t)) return null;
+		var s = ClassType.!(t).classDecl, v = if(s != null, s.variantCase);
+		if (v != null && s.isSynthetic && v.isDefaultCase() && VstClass.?(v.receiver)) {
+			s = VstClass.!(v.receiver);
+			v = s.variantCase;
+		}
+		if (s == null) return null;
+		for (l = s.subclasses; l != null; l = l.tail) {
+			if (l.head != c) continue;
+			if (s.isSynthetic && v != null) return make(AnalysisDeclKind.VARIANT_CASE, v);
+			return make(AnalysisDeclKind.CLASS, s);
+		}
+		return null;
+	}
+	// The method that {m} overrides, or null: the nearest member of its name
+	// among its class's superclasses, which verification found as {m}'s
+	// super member (VstCompoundVerifier.lookupSuperMember) when it gave {m}
+	// that method's override family, its root. Where verification found
+	// none, or a field, or another file's private method, {m} roots its own
+	// family. Constructors, the methods of components, and methods that
+	// verification did not reach have none.
+	private def overridden(m: VstMethod) -> VstMethod {
+		if (m.root == null || m.root == m || !VstClass.?(m.receiver)) return null;
+		var c = VstClass.!(m.receiver), name = m.token.image;
+		// Verification's search ended at that member, so this one, which
+		// follows the same superclasses, does too. The bound only guards a
+		// hierarchy that verification did not search.
+		for (i < MAX_SUPERCLASSES) {
+			var t = if(c.superclass != null, c.superclass.binding);
+			if (!ClassType.?(t)) return null;
+			c = ClassType.!(t).classDecl;
+			if (c == null) return null;
+			var member = if(c.memberMap != null, c.memberMap[name]);
+			if (member == null) continue;
+			if (member == m || !VstMethod.?(member) || VstMethod.!(member).root != m.root) return null;
+			return VstMethod.!(member);
+		}
+		return null;
+	}
+	private def MAX_SUPERCLASSES = 1 << 20;
 	private def siteBefore(a: AnalysisDeclaration, b: AnalysisDeclaration) -> bool {
 		return a.range.beginOffset < b.range.beginOffset;
 	}
@@ -1148,6 +1233,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		return display.declaration(kind, token, null, t);
 	}
 }
+
+// The parents of a file whose sites have none, shared (see
+// OccurrenceCollector.parents).
+def NO_PARENTS: Array<int> = [];
 
 // The ends of last arguments that OccurrenceCollector.endOf found before the
 // walk reached their calls, each with its call, which reads it rather than

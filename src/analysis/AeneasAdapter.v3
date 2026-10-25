@@ -226,6 +226,18 @@ class ProgramAnalysis {
 	}
 	def hintStringCount() -> int { return display.hintStringCount(); }
 	def hintString(i: int) -> string { return display.hintString(i); }
+	// The parents of the declarations named in {path}: for each that has
+	// one, its index in {declarationSites} and its parent's code, which
+	// {typeDeclaration} resolves, in the order of the sites. A class's or a
+	// variant case's parent is its base, and a method's the method it
+	// overrides; see docs/architecture.md#implementation. Collects the file
+	// if needed.
+	def parentLinks(path: string) -> Array<int> {
+		var file = files[path];
+		if (file == null) return [];
+		file.occurrences();
+		return file.parents;
+	}
 	// Resolves a collector's source-type code, shared with declaration sites,
 	// occurrences, and builtin uses. Inlay hints can reuse it with display data.
 	def typeDeclarationCount() -> int { return display.declarationCount(); }
@@ -403,6 +415,7 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 	def var located: int;
 	def var builtins: Array<AnalysisBuiltinUse>;
 	def var sites: Array<AnalysisDeclaration>;
+	def var parents: Array<int>;
 	def var calls: Range<byte>;
 	def var callCount: int;
 
@@ -414,6 +427,7 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 			located = collector.located;
 			builtins = collector.builtins;
 			sites = collector.sites;
+			parents = collector.parents;
 			calls = collector.calls;
 			callCount = collector.callCount;
 		}

@@ -1,0 +1,318 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Implementations from the class and override hierarchy. Every program runs
+// through the compiler, the collector, and the worker wire, and each query
+// selects a declaration as references do: a use's target, or else the
+// declaration whose name is at the offset. The fixtures put non-ASCII text
+// before their targets, so byte offsets differ from characters.
+def T = UnitTests.register;
+def X = [
+	T("Implementation:classes", classes),
+	T("Implementation:methods", methods),
+	T("Implementation:private_members", private_members),
+	T("Implementation:generic_bases", generic_bases),
+	T("Implementation:variants", variants),
+	T("Implementation:open_variants", open_variants),
+	T("Implementation:other_kinds", other_kinds),
+	T("Implementation:unresolved_superclass", unresolved_superclass),
+	T("Implementation:inheritance_cycles", inheritance_cycles),
+	T("Implementation:library_classes", library_classes),
+	T("Implementation:selected_files", selected_files),
+	T("Implementation:reverse_index_charge", reverse_index_charge),
+	()
+];
+def SHAPES = "test/fixtures/analysis/implementation/shapes.v3";
+def MORE = "test/fixtures/analysis/implementation/more.v3";
+def indexOf(text: Array<byte>, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def analyze(t: Tester, sources: Array<AnalysisSource>, options: Array<string>, verified: bool) -> ProgramAnalysis {
+	var a = AeneasAdapter.analyzeProgram(sources, options, false);
+	if (verified) {
+		for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
+		t.assertz(true, a.verified);
+	}
+	return a;
+}
+// The snapshot of {a} with the occurrences of the files {selected}, or of
+// all of {sources} if it is null, decoded for a request of all {sources}.
+def decode(t: Tester, a: ProgramAnalysis, sources: Array<AnalysisSource>, selected: Array<string>) -> AnalysisSnapshot {
+	var paths = Array<string>.new(sources.length);
+	for (i < sources.length) paths[i] = sources[i].path;
+	if (selected == null) selected = paths;
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(selected.length);
+	for (i < selected.length) files[i] = (selected[i], a.occurrences(selected[i]));
+	var encoded = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, files), 0L);
+	match (AnalysisWire.decodeResult(Ranges.dup(encoded[WorkerFraming.HEADER_BYTES ...]), 1, paths)) {
+		Decoded(result) => return result.snapshot;
+		_ => t.fail("implementation result failed to decode");
+	}
+	return null;
+}
+def snapshot(t: Tester, sources: Array<AnalysisSource>, options: Array<string>, verified: bool) -> AnalysisSnapshot {
+	return decode(t, analyze(t, sources, options, verified), sources, null);
+}
+def fixtures(t: Tester) -> (Array<AnalysisSource>, AnalysisSnapshot) {
+	var sources = [AnalysisSource.new(SHAPES, System.fileLoad(SHAPES)), AnalysisSource.new(MORE, System.fileLoad(MORE))];
+	return (sources, snapshot(t, sources, [], true));
+}
+// The declaration that a query at {use} plus {skip} in source {from}
+// selects, as references select one.
+def select(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>, from: int, use: string, skip: int) -> AnalysisDeclaration {
+	var path = sources[from].path, offset = indexOf(sources[from].input, use);
+	if (offset < 0) {
+		t.fail1("missing text: %s", use);
+		return null;
+	}
+	offset += skip;
+	var d = s.definitionAtOffset(path, offset);
+	return if(d != null, d, s.declarationAtOffset(path, offset));
+}
+// Checks that a query at {use} plus {skip} in source {from} selects a
+// declaration of {kind} whose implementations are {want}, in order: for
+// each, its source, the text that its name is in, and the name's offset in
+// that text.
+def expect(t: Tester, s: AnalysisSnapshot, sources: Array<AnalysisSource>, from: int, use: string, skip: int,
+		kind: AnalysisDeclKind, want: Array<(int, string, int)>) {
+	var d = select(t, s, sources, from, use, skip);
+	if (d == null) return t.fail1("no declaration at %s", use);
+	if (d.kind != kind) return t.fail3("%s selects a %s, not a %s", use, d.kind.name, kind.name);
+	var got = s.implementations(d);
+	if (got.length != want.length) return t.fail3("%s has %d implementations, not %d", use, got.length, want.length);
+	for (i < want.length) {
+		var w = want[i], g = got[i].range, at = indexOf(sources[w.0].input, w.1);
+		if (at < 0) return t.fail1("missing text: %s", w.1);
+		if (!Strings.equal(sources[w.0].path, g.path) || at + w.2 != g.beginOffset) {
+			return t.fail3("implementation %d of %s is at %s", i, use, Strings.format2("%s:%d", g.path, g.beginOffset));
+		}
+		t.asserti(g.beginOffset + if(got[i].name[0] == '[', 1, got[i].name.length), g.endOffset);
+	}
+}
+
+// Classes give the classes that extend them, directly or transitively, in
+// byte order of path and then by offset, and never themselves. A use names
+// its class, as definition goes to it: a superclass reference, "this", and
+// a default ".new".
+def classes(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	var hexagon = (1, "class Hexagon", 6), polygon = (0, "class Polygon", 6), square = (0, "class Square", 6), circle = (0, "class Circle", 6);
+	expect(t, s, sources, 0, "class Shape", 6, AnalysisDeclKind.CLASS, [hexagon, polygon, square, circle]);
+	expect(t, s, sources, 0, "class Polygon", 6, AnalysisDeclKind.CLASS, [hexagon, square]);
+	expect(t, s, sources, 1, "extends Polygon", 8, AnalysisDeclKind.CLASS, [hexagon, square]);
+	expect(t, s, sources, 0, "s: Shape", 3, AnalysisDeclKind.CLASS, [hexagon, polygon, square, circle]);
+	for (use in [(0, "class Square", 6), (0, "q: Square", 3), (0, "Square.new()", 0), (0, "Square.new()", 7), (0, "class Circle", 6),
+			(1, "class Hexagon", 6), (1, "this.name", 0), (0, "class Rect", 6)]) {
+		expect(t, s, sources, use.0, use.1, use.2, AnalysisDeclKind.CLASS, []);
+	}
+}
+// Methods give the methods that override them, directly or transitively,
+// through the nearest overridden method at each level: never only the root
+// of the family. A method inherited without an override, called through a
+// subclass, is the base method. Same-named methods of unrelated classes are
+// not linked.
+def methods(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	var hexagon = (1, "def area() -> int { return 6", 4), polygon = (0, "def area() -> int { return 1", 4);
+	var square = (0, "def area() -> int { return 2", 4);
+	expect(t, s, sources, 0, "def area() -> int { return 0", 4, AnalysisDeclKind.METHOD, [hexagon, polygon, square]);
+	expect(t, s, sources, 0, "s.area()", 2, AnalysisDeclKind.METHOD, [hexagon, polygon, square]);
+	expect(t, s, sources, 0, "def area() -> int { return 1", 4, AnalysisDeclKind.METHOD, [hexagon, square]);
+	for (use in [(0, "def area() -> int { return 2", 4), (0, "q.area()", 2), (1, "def area() -> int { return 6", 4),
+			(0, "def area() -> int { return 3", 4), (1, "def area() -> int { return 7", 4)]) {
+		expect(t, s, sources, use.0, use.1, use.2, AnalysisDeclKind.METHOD, []);
+	}
+	// Polygon does not override name, so Square's overrides Shape's.
+	var name = (0, "def name() -> string { return \"square", 4);
+	expect(t, s, sources, 0, "def name() -> string { return \"shape", 4, AnalysisDeclKind.METHOD, [name]);
+	expect(t, s, sources, 1, "this.name", 5, AnalysisDeclKind.METHOD, [name]);
+	// Square inherits scale from Shape; the call goes to Shape's.
+	var scale = (0, "def scale(k: int) -> int { return 2 * k", 4);
+	expect(t, s, sources, 0, "q.scale", 2, AnalysisDeclKind.METHOD, [scale]);
+	expect(t, s, sources, 0, "def scale(k: int) -> int { return k", 4, AnalysisDeclKind.METHOD, [scale]);
+	// An index method's name is its opening bracket.
+	expect(t, s, sources, 0, "def [i: int] -> int { return i", 4, AnalysisDeclKind.METHOD, [(0, "def [i: int] -> int { return 2", 4)]);
+	expect(t, s, sources, 0, "q[0]", 1, AnalysisDeclKind.METHOD, []);
+}
+// A private method is overridden only in its own file: verification does
+// not find another file's private method as a super member.
+def private_members(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	expect(t, s, sources, 0, "private def secret() -> int { return 0", 12, AnalysisDeclKind.METHOD,
+		[(0, "private def secret() -> int { return 1", 12)]);
+	expect(t, s, sources, 0, "private def secret() -> int { return 1", 12, AnalysisDeclKind.METHOD, []);
+	expect(t, s, sources, 1, "private def secret", 12, AnalysisDeclKind.METHOD, []);
+}
+// A generic base is its class, whatever the type arguments.
+def generic_bases(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	expect(t, s, sources, 0, "class Box", 6, AnalysisDeclKind.CLASS, [(0, "class Crate", 6), (0, "class IntBox", 6)]);
+	expect(t, s, sources, 0, "def get() -> T;", 4, AnalysisDeclKind.METHOD,
+		[(0, "def get() -> T { return item", 4), (0, "def get() -> int", 4)]);
+	expect(t, s, sources, 0, "c.get()", 2, AnalysisDeclKind.METHOD, []);
+	expect(t, s, sources, 0, "c: Crate", 3, AnalysisDeclKind.CLASS, []);
+}
+// A variant gives its cases, and its methods the case methods that override
+// them. A case, a data type, and a pattern's case give none.
+def variants(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	expect(t, s, sources, 0, "type Tree", 5, AnalysisDeclKind.CLASS, [(0, "case Leaf", 5), (0, "case Node", 5)]);
+	expect(t, s, sources, 0, "t: Tree", 3, AnalysisDeclKind.CLASS, [(0, "case Leaf", 5), (0, "case Node", 5)]);
+	var sizes = [(0, "def size() -> int { return 1", 4), (0, "def size() -> int { return left", 4)];
+	expect(t, s, sources, 0, "def size() -> int { return 0", 4, AnalysisDeclKind.METHOD, sizes);
+	expect(t, s, sources, 0, "t.size()", 2, AnalysisDeclKind.METHOD, sizes);
+	expect(t, s, sources, 0, "left.size()", 5, AnalysisDeclKind.METHOD, sizes);
+	expect(t, s, sources, 0, "def depth", 4, AnalysisDeclKind.METHOD, []);
+	expect(t, s, sources, 0, "def size() -> int { return 1", 4, AnalysisDeclKind.METHOD, []);
+	expect(t, s, sources, 0, "case Leaf", 5, AnalysisDeclKind.VARIANT_CASE, []);
+	expect(t, s, sources, 0, "Leaf =>", 0, AnalysisDeclKind.VARIANT_CASE, []);
+	expect(t, s, sources, 0, "type Pair", 5, AnalysisDeclKind.CLASS, []);
+}
+// With -lang:open-types, a variant that extends another extends its default
+// case, but the source names the variant, which counts it as its own. The
+// default case's methods override the variant's, and its subtypes' case
+// methods override the default case's.
+def open_variants(t: Tester) {
+	var text = "type V {\n\tcase A;\n\tcase _ {\n\t\tdef f() -> int { return 1; }\n\t}\n\tdef f() -> int { return 0; }\n}\ntype W extends V {\n\tcase B {\n\t\tdef f() -> int { return 2; }\n\t}\n}\n";
+	var sources = [AnalysisSource.new("open.v3", text)], s = snapshot(t, sources, ["-lang:open-types"], true);
+	if (s == null) return;
+	var b = (0, "case B", 5);
+	expect(t, s, sources, 0, "type V", 5, AnalysisDeclKind.CLASS, [(0, "case A", 5), (0, "case _", 5), (0, "type W", 5), b]);
+	expect(t, s, sources, 0, "extends V", 8, AnalysisDeclKind.CLASS, [(0, "case A", 5), (0, "case _", 5), (0, "type W", 5), b]);
+	expect(t, s, sources, 0, "type W", 5, AnalysisDeclKind.CLASS, [b]);
+	var two = (0, "def f() -> int { return 2", 4);
+	expect(t, s, sources, 0, "def f() -> int { return 0", 4, AnalysisDeclKind.METHOD, [(0, "def f() -> int { return 1", 4), two]);
+	expect(t, s, sources, 0, "def f() -> int { return 1", 4, AnalysisDeclKind.METHOD, [two]);
+	expect(t, s, sources, 0, "case _", 5, AnalysisDeclKind.VARIANT_CASE, []);
+}
+// Components, enums, and every other kind of declaration give none, at
+// declarations and uses alike: methods of components and files,
+// constructors, fields, locals, parameters, type parameters, enum cases,
+// layouts and their fields, and packings and their parameters.
+def other_kinds(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	var none: Array<(int, string, int)> = [];
+	var uses = [
+		("component Shapes", 10, AnalysisDeclKind.COMPONENT),
+		("def total", 4, AnalysisDeclKind.METHOD),
+		("def topLevel", 4, AnalysisDeclKind.METHOD),
+		("new() { }", 0, AnalysisDeclKind.CONSTRUCTOR),
+		("var count", 4, AnalysisDeclKind.FIELD),
+		("+ count", 2, AnalysisDeclKind.FIELD),
+		("Crate<T>(item", 9, AnalysisDeclKind.FIELD),
+		("var local", 4, AnalysisDeclKind.LOCAL),
+		("return local", 7, AnalysisDeclKind.LOCAL),
+		("s: Shape", 0, AnalysisDeclKind.PARAMETER),
+		("total<E>", 6, AnalysisDeclKind.TYPE_PARAM),
+		("c: Crate<E>", 9, AnalysisDeclKind.TYPE_PARAM),
+		("enum Color", 5, AnalysisDeclKind.ENUM),
+		("RED, GREEN", 0, AnalysisDeclKind.ENUM_CASE),
+		("Color.RED.tag", 6, AnalysisDeclKind.ENUM_CASE),
+		("layout Bits", 7, AnalysisDeclKind.LAYOUT),
+		("+0 low", 3, AnalysisDeclKind.LAYOUT_FIELD),
+		("packing Nibbles", 8, AnalysisDeclKind.PACKING),
+		("#concat(a", 8, AnalysisDeclKind.PARAMETER)
+	];
+	for (u in uses) expect(t, s, sources, 0, u.0, u.1, u.2, none);
+	// A builtin use selects no declaration.
+	t.assert(select(t, s, sources, 0, "\"abc\".length", 6) == null, "a builtin use");
+}
+// A class whose superclass does not resolve, or is not a class, has no
+// base, and verification reports the error; its own subclasses and their
+// overrides still count.
+def unresolved_superclass(t: Tester) {
+	var text = "class U extends Missing {\n\tdef m() { }\n}\nclass Sub extends U {\n\tdef m() { }\n}\ntype N { }\nclass X extends N {\n\tdef m() { }\n}\n";
+	var sources = [AnalysisSource.new("unresolved.v3", text)], a = analyze(t, sources, [], false);
+	expectError(t, a, "UnresolvedType");
+	expectError(t, a, "InheritanceError");
+	var s = decode(t, a, sources, null);
+	if (s == null) return;
+	expect(t, s, sources, 0, "class U", 6, AnalysisDeclKind.CLASS, [(0, "class Sub", 6)]);
+	expect(t, s, sources, 0, "def m", 4, AnalysisDeclKind.METHOD, [(0, "def m() { }\n}\ntype", 4)]);
+	expect(t, s, sources, 0, "type N", 5, AnalysisDeclKind.CLASS, []);
+	expect(t, s, sources, 0, "class Sub", 6, AnalysisDeclKind.CLASS, []);
+}
+def expectError(t: Tester, a: ProgramAnalysis, kind: string) {
+	for (d in a.diagnostics) if (Strings.equal(d.kind, kind)) return;
+	t.fail1("no %s reported", kind);
+}
+// Verification reports inheritance cycles, and the snapshot can hold them:
+// each class of a cycle gives the others, never itself, and the search ends.
+// A class that extends itself has no base.
+def inheritance_cycles(t: Tester) {
+	var text = "class P extends Q {\n\tdef m() { }\n}\nclass Q extends R {\n\tdef m() { }\n}\nclass R extends P {\n\tdef m() { }\n}\nclass S extends S {\n\tdef m() { }\n}\nclass Tail extends P { }\n";
+	var sources = [AnalysisSource.new("cycle.v3", text)], a = analyze(t, sources, [], false);
+	expectError(t, a, "InheritanceError");
+	var s = decode(t, a, sources, null);
+	if (s == null) return;
+	var p = (0, "class P", 6), q = (0, "class Q", 6), r = (0, "class R", 6), tail = (0, "class Tail", 6);
+	expect(t, s, sources, 0, "class P", 6, AnalysisDeclKind.CLASS, [q, r, tail]);
+	expect(t, s, sources, 0, "class Q", 6, AnalysisDeclKind.CLASS, [p, r, tail]);
+	expect(t, s, sources, 0, "extends P", 8, AnalysisDeclKind.CLASS, [q, r, tail]);
+	expect(t, s, sources, 0, "class S", 6, AnalysisDeclKind.CLASS, []);
+	expect(t, s, sources, 0, "class Tail", 6, AnalysisDeclKind.CLASS, []);
+	for (use in ["def m() { }\n}\nclass Q", "def m() { }\n}\nclass S", "def m() { }\n}\nclass Tail"]) {
+		var d = select(t, s, sources, 0, use, 4);
+		if (d != null) s.implementations(d);
+	}
+}
+// A library's classes in the program count as the program's own. The
+// program is every file of lib/util and one of its own, whose class extends
+// the library's Map.
+def library_classes(t: Tester) {
+	var text = "class Mine<K, V> extends Map<K, V> {\n\tdef [key: K] -> V { var v: V; return v; }\n\tdef [key: K] = val: V { }\n}\ncomponent C {\n\tdef f(m: HashMap<int, int>) -> int { return m[0]; }\n}\n";
+	var dir = "vendor/virgil/lib/util", listing = ProjectFiles.list(dir, 4096);
+	if (listing.names == null) return t.fail("lib/util is not listed");
+	var list = Vector<AnalysisSource>.new().put(AnalysisSource.new("library.v3", text)), map = -1;
+	for (name in listing.names) {
+		if (!Strings.endsWith(name, ".v3")) continue;
+		var path = ProjectFiles.join(dir, name);
+		if (Strings.equal(name, "Map.v3")) map = list.length;
+		list.put(AnalysisSource.new(path, System.fileLoad(path)));
+	}
+	if (map < 0) return t.fail("lib/util has Map.v3");
+	var sources = list.extract(), s = snapshot(t, sources, [], true);
+	if (s == null) return;
+	expect(t, s, sources, map, "class Map", 6, AnalysisDeclKind.CLASS,
+		[(0, "class Mine", 6), (map, "class PartialMap", 6), (map, "class HashMap", 6), (map, "class LazyMap", 6)]);
+	expect(t, s, sources, map, "class PartialMap", 6, AnalysisDeclKind.CLASS, [(map, "class HashMap", 6), (map, "class LazyMap", 6)]);
+	expect(t, s, sources, map, "def [key: K] -> V;", 4, AnalysisDeclKind.METHOD,
+		[(0, "def [key: K] -> V", 4), (map, "def [key: K] -> V {\n\t\tvar", 4), (map, "def [key: K] -> V {\n\t\tif", 4)]);
+	expect(t, s, sources, 0, "m[0]", 1, AnalysisDeclKind.METHOD, []);
+}
+// Only the selected files' sites have parents, independently of earlier
+// collections of other files, and a parent is a declaration already sent.
+def selected_files(t: Tester) {
+	var sources = [AnalysisSource.new("a.v3", "class A {\n\tdef m() { }\n}\nclass B extends A {\n\tdef m() { }\n}\n"),
+		AnalysisSource.new("b.v3", "class C {\n\tdef m() { }\n}\nclass D extends C {\n\tdef m() { }\n}\n")];
+	var a = analyze(t, sources, [], true);
+	a.occurrences("a.v3");
+	var s = decode(t, a, [sources[1]], ["b.v3"]);
+	if (s == null) return;
+	var b = [sources[1]];
+	t.asserti(4, s.declarations.length);
+	expect(t, s, b, 0, "class C", 6, AnalysisDeclKind.CLASS, [(0, "class D", 6)]);
+	expect(t, s, b, 0, "def m", 4, AnalysisDeclKind.METHOD, [(0, "D extends C {\n\tdef m", 19)]);
+}
+// The first query builds the reverse index and charges it to the snapshot's
+// retained bytes; later queries reuse it.
+def reverse_index_charge(t: Tester) {
+	var f = fixtures(t), sources = f.0, s = f.1;
+	if (s == null) return;
+	var before = s.retainedBytes, d = select(t, s, sources, 0, "class Shape", 6);
+	s.implementations(d);
+	var built = s.retainedBytes;
+	t.assert(built > before, "the reverse index is charged");
+	t.assert(built - before <= 128L + 8L * (s.declarations.length + 2), "two ints a declaration at most");
+	s.implementations(select(t, s, sources, 0, "class Polygon", 6));
+	t.assert(s.retainedBytes == built, "the reverse index is built once");
+}

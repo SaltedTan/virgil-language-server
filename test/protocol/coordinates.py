@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 13, self.hello
+        assert self.hello["protocol"] == 14, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -149,6 +149,8 @@ class Worker:
                 signature = reader.integer()
                 declarations[-1]["signature"] = strings[signature - 1] if signature else None
                 declarations[-1]["typeTarget"] = reader.integer()
+                # A base or overridden method's index plus one, or zero.
+                declarations[-1]["parent"] = reader.integer()
             # Call signatures: their own text, then each a label, the offset
             # of its first parameter, and parameters, each a string table
             # index or, past the table, a text index.
