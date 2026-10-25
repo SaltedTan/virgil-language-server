@@ -139,6 +139,26 @@ local function check()
     and location.range["end"].line == class_line and location.range["end"].character == 19,
     "unexpected definition: " .. vim.inspect(location))
 
+  -- The puts call returns StringBuilder; the local line has built-in int.
+  local type_column = vim.api.nvim_buf_get_lines(words_buf, use_line, use_line + 1, true)[1]:find(".puts(", 1, true)
+  response, err = client:request_sync("textDocument/typeDefinition", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = type_column },
+  }, 10000, words_buf)
+  assert(response and not response.err and vim.deep_equal(response.result, location),
+    "unexpected type definition: " .. vim.inspect(err or response))
+  response, err = client:request_sync("textDocument/typeDefinition", {
+    textDocument = { uri = words_uri }, position = { line = use_line, character = 6 },
+  }, 10000, words_buf)
+  assert(response and not response.err and (response.result == nil or response.result == vim.NIL),
+    "built-in int must have no type definition: " .. vim.inspect(err or response))
+  vim.api.nvim_win_set_cursor(0, { use_line + 1, type_column })
+  vim.lsp.buf.type_definition()
+  wait_for("type_definition to jump to StringBuilder", function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    return vim.api.nvim_buf_get_name(0) == library and cursor[1] == class_line + 1 and cursor[2] == 6
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Hover over the same use shows the class's signature in a Virgil code block.
   response, err = client:request_sync("textDocument/hover", {
     textDocument = { uri = words_uri }, position = { line = use_line, character = start - 1 },
@@ -396,7 +416,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, hover, signature help, references, document highlights, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, hover, signature help, references, document highlights, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

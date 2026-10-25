@@ -84,6 +84,15 @@ async function definitions(editor, line, character) {
   return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
 }
 
+// Go to Type Definition resolves a call's result, independently of its
+// method definition, and returns no location for built-in value types.
+async function typeDefinitions(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeTypeDefinitionProvider', editor.document.uri, new vscode.Position(line, character),
+  );
+  return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
+}
+
 // The text of each hover at line:character, and the range of each that has one.
 async function hovers(editor, line, character) {
   const result = await vscode.commands.executeCommand(
@@ -302,6 +311,11 @@ async function workspace(extension) {
   assert.deepEqual(await definitions(words, use, column), [
     [library, declaration, 6, declaration, 19],
   ]);
+  const typeCall = words.document.lineAt(use).text.indexOf('.puts(') + 1;
+  assert.deepEqual(await typeDefinitions(words, use, typeCall), [
+    [library, declaration, 6, declaration, 19],
+  ]);
+  assert.deepEqual(await typeDefinitions(words, use, words.document.lineAt(use).text.indexOf('line:')), []);
   // Hover over the same use shows the class's signature in a Virgil code block.
   assert.deepEqual(await hovers(words, use, column), [
     [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
@@ -528,7 +542,7 @@ async function workspace(extension) {
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
+    + 'Virgil root, definition, type definition, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
     + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
 
   // The scenarios that restart the server, or could disturb it, come last.

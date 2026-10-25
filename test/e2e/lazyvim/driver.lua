@@ -404,6 +404,37 @@ local function main_checks()
     return string.format("jumped to %d:%d", cursor[1], cursor[2] + 1)
   end)
 
+  local type_column = line_text:find(".puts(", 1, true)
+  step("type definition (request)", function()
+    local location = request(client, "textDocument/typeDefinition", {
+      textDocument = { uri = words_uri }, position = { line = use_line, character = type_column },
+    }, words_buf)
+    assert(location and location.uri and vim.uri_to_fname(location.uri) == library
+      and location.range.start.line == class_line and location.range.start.character == 6
+      and location.range["end"].line == class_line and location.range["end"].character == 19,
+      "unexpected type definition: " .. vim.inspect(location))
+    local builtin = request(client, "textDocument/typeDefinition", {
+      textDocument = { uri = words_uri }, position = { line = use_line, character = 6 },
+    }, words_buf)
+    assert(builtin == nil or builtin == vim.NIL, "built-in int must have no type location: " .. vim.inspect(builtin))
+    return string.format("puts result -> lib/util/StringBuilder.v3:%d:7; int -> null", class_line + 1)
+  end)
+
+  step("type definition (LazyVim gy)", function()
+    wait_for("LazyVim's gy mapping", function()
+      local map = vim.fn.maparg("gy", "n", false, true)
+      return map.buffer == 1 and map.desc and map.desc:find("Definition", 1, true)
+    end)
+    vim.api.nvim_win_set_cursor(0, { use_line + 1, type_column })
+    vim.api.nvim_input("gy")
+    wait_for("gy to open StringBuilder.v3", function()
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      return vim.api.nvim_buf_get_name(0) == library and cursor[1] == class_line + 1 and cursor[2] == 6
+    end)
+    vim.api.nvim_set_current_buf(words_buf)
+    return string.format("jumped to %d:7", class_line + 1)
+  end)
+
   step("hover (request)", function()
     local hover = request(client, "textDocument/hover", { textDocument = { uri = words_uri }, position = position }, words_buf)
     assert(hover and hover.contents and hover.contents.kind == "markdown"

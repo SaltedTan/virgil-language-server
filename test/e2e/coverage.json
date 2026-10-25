@@ -91,6 +91,11 @@
       "matrix": true
     },
     {
+      "id": "type-definition",
+      "label": "Type definition",
+      "matrix": true
+    },
+    {
       "id": "hover",
       "label": "Hover",
       "matrix": true
@@ -1758,6 +1763,56 @@
       "required": true,
       "source": "clients/vscode/test/e2e/remote-ssh/run.cjs",
       "description": "The teardown stops every process of the run and confirms that none is left and the SSH server's port is closed."
+    },
+    {
+      "id": "vscode.type-definition.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Type definition on the puts call returns the exact class StringBuilder name in lib/util/StringBuilder.v3; the built-in int local returns no location."
+    },
+    {
+      "id": "nvim.type-definition.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Type definition on the puts call returns the exact class StringBuilder name in lib/util/StringBuilder.v3; the built-in int local returns no location."
+    },
+    {
+      "id": "nvim.type-definition.jump",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "vim.lsp.buf.type_definition() jumps from the puts call to the exact line and column of class StringBuilder, then returns to Words.v3."
+    },
+    {
+      "id": "lazyvim.type-definition.response",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Type definition on the puts call returns the exact class StringBuilder name in lib/util/StringBuilder.v3; the built-in int local returns no location."
+    },
+    {
+      "id": "lazyvim.type-definition.jump",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's gy jumps from the puts call to the exact line and column of class StringBuilder, then returns to Words.v3."
     }
   ],
   "retired": [],
@@ -1787,6 +1842,13 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "type-definition",
+        "level": "api",
+        "checks": ["vscode.type-definition.response"],
+        "notCovered": ["vscode.type-definition-editor"]
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "hover",
         "level": "api",
         "checks": ["vscode.hover.response"],
@@ -1871,6 +1933,13 @@
       },
       {
         "setup": "vscode-macos",
+        "feature": "type-definition",
+        "level": "api",
+        "checks": ["vscode.type-definition.response"],
+        "notCovered": ["vscode.type-definition-editor"]
+      },
+      {
+        "setup": "vscode-macos",
         "feature": "hover",
         "level": "api",
         "checks": ["vscode.hover.response"],
@@ -1952,6 +2021,13 @@
         "level": "api",
         "checks": ["vscode.definition.response"],
         "notCovered": ["vscode.definition-editor"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "type-definition",
+        "level": "api",
+        "checks": ["vscode.type-definition.response"],
+        "notCovered": ["vscode.type-definition-editor"]
       },
       {
         "setup": "ssh-linux-client",
@@ -2036,6 +2112,13 @@
         "level": "api",
         "checks": ["nvim.definition.response"],
         "notCovered": ["nvim.definition-jump"]
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "type-definition",
+        "level": "api-ui-state",
+        "checks": ["nvim.type-definition.response", "nvim.type-definition.jump"],
+        "notCovered": []
       },
       {
         "setup": "nvim-linux",
@@ -2120,6 +2203,13 @@
         "level": "api",
         "checks": ["nvim.definition.response"],
         "notCovered": ["nvim.definition-jump"]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "type-definition",
+        "level": "api-ui-state",
+        "checks": ["nvim.type-definition.response", "nvim.type-definition.jump"],
+        "notCovered": []
       },
       {
         "setup": "nvim-macos",
@@ -2203,6 +2293,13 @@
         "feature": "definition",
         "level": "api-ui-state",
         "checks": ["lazyvim.definition.response", "lazyvim.definition.gd"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "type-definition",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.type-definition.response", "lazyvim.type-definition.jump"],
         "notCovered": []
       },
       {
@@ -2287,6 +2384,13 @@
         "feature": "definition",
         "level": "api-ui-state",
         "checks": ["lazyvim.definition.response", "lazyvim.definition.gd"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "type-definition",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.type-definition.response", "lazyvim.type-definition.jump"],
         "notCovered": []
       },
       {
@@ -2671,6 +2775,12 @@
       "id": "nvim.document-highlight-rendering",
       "kind": "visual",
       "what": "the rendered document highlights",
+      "planned": null
+    },
+    {
+      "id": "vscode.type-definition-editor",
+      "kind": "visual",
+      "what": "the editor that Go to Type Definition opens",
       "planned": null
     }
   ],
