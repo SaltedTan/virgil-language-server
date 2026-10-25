@@ -21,6 +21,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "test/protocol"))
 from worker import Session
+from inlay_hints import HintsSession
 
 spec = importlib.util.spec_from_file_location("corpus", ROOT / "scripts/bench-corpus.py")
 corpus = importlib.util.module_from_spec(spec)
@@ -282,9 +283,10 @@ class Block:
 
     def session(self):
         self.analysis_generation = 0
-        self.s = Session(self.exe, *self.options)
+        self.s = (HintsSession if self.args.inlay_refresh else Session)(self.exe, *self.options)
         self.request("initialize", {"initializationOptions": {"virgilRoot": str(ROOT / "vendor/virgil")},
-                     "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": True}},
+                     "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": True},
+                                     "inlayHint": {"refreshSupport": self.args.inlay_refresh}},
                                       "textDocument": {"hover": {"contentFormat": ["plaintext"]}}}})
         notify(self.s, "initialized", {})
         open_document(self.s, ROOT / self.p["query"]["path"], self.text)
@@ -406,6 +408,7 @@ def main():
     parser.add_argument("--output", default="-", help="JSON file, or - for stdout")
     parser.add_argument("--smoke", action="store_true", help="small fixture, one block/operation, no warmups")
     parser.add_argument("--require-probes", action="store_true", help="fail unless all phase/GC metrics are present")
+    parser.add_argument("--inlay-refresh", action="store_true", help="advertise and acknowledge inlay-hint refresh requests")
     parser.add_argument("--error-result", action="store_true",
                         help="also repeat Aeneas analyses with an unresolved name and 900 extra functions (#240)")
     parser.add_argument("--typing-burst", action="store_true",
@@ -423,7 +426,8 @@ def main():
               "git_status": corpus.git_revision(ROOT, "status", "--short"), "host": host_info(affinity),
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
               "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups,
-                                "error_result": args.error_result, "typing_burst": args.typing_burst},
+                                "error_result": args.error_result, "typing_burst": args.typing_burst,
+                                "inlay_refresh": args.inlay_refresh},
               "builds": [binary_info(p, args.smoke) for p in executables], "blocks": []}
     try:
         for block in range(args.blocks):
