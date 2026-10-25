@@ -87,10 +87,12 @@ async function run() {
     assert.equal(extension.packageJSON.version, config.extensionVersion);
     assert.equal(extension.extensionKind, vscode.ExtensionKind.Workspace);
     result.logs = hostLogs(config.serverLogs);
+    if (config.bundled) process.env.VIRGIL_E2E_BUNDLED = '1';
+    else delete process.env.VIRGIL_E2E_BUNDLED;
     process.env.VIRGIL_E2E_PROJECT = config.project;
     process.env.VIRGIL_E2E_LOGS = result.logs;
     process.env.VIRGIL_E2E_EXTENSIONS_DIR = path.dirname(config.extensionPath);
-    // The suite checks that the Virgil root comes from the setting.
+    // Keep the host environment from overriding the library selected by the test mode.
     delete process.env.VIRGIL_LOC;
     write();
     await require('./suite.cjs').run();

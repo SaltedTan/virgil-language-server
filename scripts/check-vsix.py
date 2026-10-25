@@ -4,7 +4,7 @@
 #
 # Smoke-check a VSIX from `npm run package` in clients/vscode before the release
 # workflow tests and attaches it. The VSIX must be a zip file named
-# <name>-<version>.vsix whose entries are canonical relative paths in
+# <name>-<version>[-<target>].vsix whose entries are canonical relative paths in
 # extension/, apart from the two files that vsce writes beside it, and its
 # extension/package.json must have the name, publisher, and version of the
 # extension directory's package.json. It must hold the extension's main file
@@ -16,8 +16,13 @@
 # from its innermost node_modules directory up, the lockfile doesn't list as a
 # production package, such as @vscode/vsce-sign, a development dependency. See
 # docs/releasing.md.
-# Usage: check-vsix.py <vsix> [<extension-directory>]
+# Usage: check-vsix.py <vsix> [<extension-directory>] [--target TARGET --archive ARCHIVE]
 # The extension directory defaults to clients/vscode.
+import argparse
+import importlib.util
+import stat
+import tarfile
+import xml.etree.ElementTree as ET
 import functools
 import json
 import os
@@ -328,11 +333,55 @@ def required(entry):
     return not any(entry.get(k) for k in ("optional", "devOptional", "os", "cpu", "link"))
 
 
+def check_payload(vsix, target, archive):
+    """Check target metadata and the complete archive-derived runtime payload."""
+    with zipfile.ZipFile(vsix) as z:
+        try:
+            xml = ET.fromstring(z.read("extension.vsixmanifest"))
+            identity = xml.find("{*}Metadata/{*}Identity")
+            actual = identity.attrib.get("TargetPlatform")
+            wanted = None if target == "universal" else target
+            if actual != wanted:
+                fail("VSIX target is %r, expected %r" % (actual, wanted))
+            properties = {p.attrib.get("Id"): p.attrib.get("Value")
+                          for p in xml.findall("{*}Metadata/{*}Properties/{*}Property")}
+            if properties.get("Microsoft.VisualStudio.Code.PreRelease") != "true":
+                fail("VSIX is not marked as a prerelease")
+            bundled = {n for n in z.namelist() if n.startswith("extension/server/") and not n.endswith("/")}
+            marker = "extension/server-target.json"
+            if target == "universal":
+                if bundled or marker in z.namelist():
+                    fail("universal VSIX contains a bundled server")
+                return
+            if json.loads(z.read(marker)) != {"target": target}:
+                fail("bundled server target differs from VSIX target")
+            spec = importlib.util.spec_from_file_location("payload", os.path.join(ROOT, "scripts/vsix-payload.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            expected = module.payload(archive, target)
+            if bundled != {"extension/server/" + n for n in expected}:
+                fail("bundled files differ from the archive's runtime payload")
+            for name, (data, mode) in expected.items():
+                member = "extension/server/" + name
+                if z.read(member) != data:
+                    fail("bundled bytes differ from tested archive: " + name)
+                actual_mode = z.getinfo(member).external_attr >> 16
+                if not stat.S_ISREG(actual_mode) or actual_mode & 0o777 != mode:
+                    fail("bundled permissions differ from tested archive: " + name)
+        except (KeyError, ValueError, AttributeError, ET.ParseError, OSError, tarfile.TarError) as e:
+            fail("invalid bundled payload or target metadata: %s" % e)
+
+
 def main():
-    if len(sys.argv) not in (2, 3):
-        sys.exit("usage: check-vsix.py <vsix> [<extension-directory>]")
-    vsix = sys.argv[1]
-    source = sys.argv[2] if len(sys.argv) == 3 else os.path.join(ROOT, "clients", "vscode")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("vsix")
+    parser.add_argument("source", nargs="?", default=os.path.join(ROOT, "clients", "vscode"))
+    parser.add_argument("--target", choices=["universal", "linux-x64", "darwin-arm64", "darwin-x64"], default="universal")
+    parser.add_argument("--archive")
+    args = parser.parse_args()
+    if (args.target == "universal") != (args.archive is None):
+        parser.error("platform checks require --archive; universal must omit it")
+    vsix, source = args.vsix, args.source
     package_json = os.path.join(source, "package.json")
     expected = load_json(package_json)
     if not isinstance(expected, dict) or not all(
@@ -360,7 +409,8 @@ def main():
         if manifest.get(key) != expected[key]:
             problems.append("%s is %r, but %s/package.json has %r"
                             % (key, manifest.get(key), source, expected[key]))
-    want = "%s-%s.vsix" % (expected["name"], expected["version"])
+    want = "%s-%s%s.vsix" % (expected["name"], expected["version"],
+                                   "" if args.target == "universal" else "-" + args.target)
     if name != want:
         problems.append("the file is %s, not %s" % (name, want))
 
@@ -396,6 +446,7 @@ def main():
         for p in problems:
             print("check-vsix.py: error: %s: %s" % (name, p), file=sys.stderr)
         sys.exit(1)
+    check_payload(vsix, args.target, args.archive)
     print("%s: %s.%s %s, %d files" % (name, expected["publisher"], expected["name"],
                                       expected["version"], len(entries)))
 

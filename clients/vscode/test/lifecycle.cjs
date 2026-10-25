@@ -23,7 +23,7 @@ const ErrorAction = { Continue: 1, Shutdown: 2 };
 const CloseAction = { DoNotRestart: 1, Restart: 2 };
 
 // `documents` are open in the editor, so each client opens them as it starts.
-function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [] } = {}) {
+function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [], target, missing, platform = process.platform, arch = process.arch } = {}) {
   const openDocuments = [...new Set([...documents, ...diffEditors.flatMap(({ original, modified }) => [original, modified])])];
   const clients = [];
   const commands = new Map();
@@ -31,6 +31,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
   // Failures the language client reports, each with an error notification.
   const errors = [];
   const outputWarnings = [];
+  const messages = [];
   const pendingTimers = new Set();
   const tabListeners = new Set();
   const editorListeners = new Set();
@@ -48,6 +49,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
   class LanguageClient {
     constructor(id, name, serverOptions, clientOptions) {
       this.options = clientOptions;
+      this.serverOptions = serverOptions;
       this.id = clients.length;
       this.$state = 'initial';
       this.pendingOpenNotifications = new Map();
@@ -158,7 +160,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       return this.start();
     }
   }
-  const channel = { info() {}, warn(message) { outputWarnings.push(message); }, error() {}, show() {} };
+  const channel = { info(message) { messages.push(message); }, warn(message) { outputWarnings.push(message); }, error(message) { messages.push(message); }, show() {} };
   const vscode = {
     window: {
       createOutputChannel: () => channel,
@@ -183,7 +185,7 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../out/extension.js'), 'utf8'), {
     module, exports: module.exports,
-    process: Object.assign(Object.create(process), { env }),
+    process: Object.create(process, Object.getOwnPropertyDescriptors({ env, platform, arch })),
     require(name) {
       if (name === 'node:timers') return {
         setTimeout(callback, delay) {
@@ -202,16 +204,20 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
       if (name === 'vscode') return vscode;
       if (name === 'vscode-languageclient/node') return { ErrorAction, ErrorCodes, ResponseError, LanguageClient, State, TransportKind: { stdio: 0 } };
       if (name === 'node:fs/promises') return {
+        readFile: async () => {
+          if (target === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+          return JSON.stringify({ target });
+        },
         realpath: async (file) => file,
-        stat: async () => ({ isFile: () => true }),
+        stat: async (file) => ({ isFile: () => file !== missing }),
         access: async () => {},
       };
       return require(name);
     },
   });
   return {
-    extension: module.exports, clients, events, errors, values, warnings, watchers, outputWarnings, pendingTimers,
-    activate: () => module.exports.activate({ subscriptions: [] }),
+    extension: module.exports, clients, events, errors, values, warnings, watchers, outputWarnings, pendingTimers, messages,
+    activate: () => module.exports.activate({ subscriptions: [], extensionPath: '/extension' }),
     restart: () => commands.get('virgil.server.restart')(),
     // Changes the given setting, or every setting.
     configure: (setting) => configurationChanged({
@@ -620,3 +626,45 @@ test('project files and sources are watched for each client, and released with i
   await host.extension.deactivate();
   assert.ok(host.watchers.every((w) => w.disposed));
 });
+
+for (const [name, settings, target, command, reason] of [
+  ['explicit override', {}, 'darwin-arm64', '/server/virgil-lsp', 'explicit virgil.server.path'],
+  ['bundle before PATH', { 'virgil.server.path': '' }, 'linux-x64', '/extension/server/virgil-lsp', 'bundled for linux-x64'],
+  ['universal fallback', { 'virgil.server.path': '' }, undefined, '/bin/virgil-lsp', 'no bundle and no explicit'],
+  ['explicit PATH command', { 'virgil.server.path': 'virgil-lsp' }, 'linux-x64', '/bin/virgil-lsp', 'explicit virgil.server.path'],
+]) {
+  test(`server selection: ${name}`, async () => {
+    const host = extensionHost({ settings, target, platform: 'linux', arch: 'x64', env: { PATH: '/bin' } });
+    await host.activate();
+    assert.equal(host.clients[0].serverOptions.command, command);
+    assert.ok(host.messages.some((m) => m.includes(reason)), host.messages.join('\n'));
+    await host.extension.deactivate();
+  });
+}
+
+test('a mismatched workspace host refuses the bundle instead of falling back to PATH', async () => {
+  const host = extensionHost({ settings: { 'virgil.server.path': '' }, target: 'darwin-arm64',
+    platform: 'linux', arch: 'x64', env: { PATH: '/bin' } });
+  await host.activate();
+  assert.equal(host.clients.length, 0);
+  assert.ok(host.messages.some((m) => m.includes('workspace extension host is linux-x64')));
+});
+
+test('Apple Silicon bundle explains its Rosetta requirement', async () => {
+  const host = extensionHost({ settings: { 'virgil.server.path': '' }, target: 'darwin-arm64',
+    platform: 'darwin', arch: 'arm64' });
+  await host.activate();
+  assert.equal(host.clients[0].serverOptions.command, '/extension/server/virgil-lsp');
+  assert.ok(host.messages.some((m) => m.includes('requires Rosetta 2')));
+  await host.extension.deactivate();
+});
+
+for (const name of ['virgil-lsp', 'virgil-lsp-worker']) {
+  test(`a broken bundle (${name}) does not fall back to PATH`, async () => {
+    const host = extensionHost({ settings: { 'virgil.server.path': '' }, target: 'linux-x64',
+      platform: 'linux', arch: 'x64', env: { PATH: '/bin' }, missing: `/extension/server/${name}` });
+    await host.activate();
+    assert.equal(host.clients.length, 0);
+    assert.ok(host.messages.some((m) => m.includes('The server did not start:') && m.includes(name)));
+  });
+}

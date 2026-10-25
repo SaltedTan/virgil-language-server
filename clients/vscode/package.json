@@ -1,8 +1,8 @@
 {
   "name": "virgil-lsp-vscode",
   "displayName": "Virgil Language Server",
-  "description": "Virgil language support from the virgil-lsp language server, which is installed separately.",
-  "version": "0.1.2",
+  "description": "Virgil language support with a bundled language server on Linux x64 and macOS.",
+  "version": "0.1.3",
   "private": true,
   "publisher": "virgil-language-server",
   "preview": true,
@@ -63,9 +63,9 @@
       "properties": {
         "virgil.server.path": {
           "type": "string",
-          "default": "virgil-lsp",
+          "default": "",
           "scope": "machine",
-          "markdownDescription": "The `virgil-lsp` executable: a command name looked up on `PATH`, or an absolute path. `virgil-lsp-worker` must be in the same directory as the executable it resolves to. With Remote-SSH or Remote-WSL, set this in the remote settings."
+          "markdownDescription": "An external `virgil-lsp` executable: a command name looked up on `PATH`, or an absolute path. When empty, use the bundled server, or `virgil-lsp` on `PATH` if this VSIX has no bundle. `virgil-lsp-worker` must be in the same directory as the executable it resolves to. With Remote-SSH or Remote-WSL, set this in the remote settings."
         },
         "virgil.virgilRoot": {
           "type": "string",

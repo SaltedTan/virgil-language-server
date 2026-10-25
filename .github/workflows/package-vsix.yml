@@ -1,0 +1,85 @@
+# Copyright 2026 The Virgil Language Server Authors.
+# SPDX-License-Identifier: Apache-2.0
+name: Package VSIX files
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  package:
+    name: Package and check (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            archive: x86-64-linux
+          - target: darwin-arm64
+            archive: x86-64-darwin
+          - target: darwin-x64
+            archive: x86-64-darwin
+          - target: universal
+            archive: x86-64-linux
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCHIVE: virgil-lsp-${{ inputs.version }}-${{ matrix.archive }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-${{ matrix.archive }}
+          path: ${{ runner.temp }}/archive
+      - name: Install client dependencies
+        working-directory: clients/vscode
+        run: npm ci
+      - name: Package and verify bytes, target, permissions, and notices
+        run: |
+          args=()
+          if [ "$TARGET" != universal ]; then
+            args+=(--archive "$RUNNER_TEMP/archive/$ARCHIVE.tar.gz")
+          fi
+          scripts/package-vsix.py "$TARGET" "${args[@]}" --out "$RUNNER_TEMP/vsix"
+          cd "$RUNNER_TEMP/vsix"
+          sha256sum -- *.vsix > vsix.sha256
+      - name: Installed platform VSIX with no external server
+        if: matrix.target == 'linux-x64'
+        working-directory: clients/vscode
+        run: xvfb-run -a npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode-logs"
+      - name: Universal VSIX with the external archive server
+        if: matrix.target == 'universal'
+        working-directory: clients/vscode
+        run: |
+          mkdir "$RUNNER_TEMP/server"
+          tar -xzf "$RUNNER_TEMP/archive/$ARCHIVE.tar.gz" -C "$RUNNER_TEMP/server"
+          xvfb-run -a npm run test:e2e -- --vsix "$RUNNER_TEMP"/vsix/*.vsix --logs "$RUNNER_TEMP/vscode-logs" \
+            "$RUNNER_TEMP/server/$ARCHIVE/virgil-lsp"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: vsix-${{ matrix.target }}-logs-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vscode-logs
+          if-no-files-found: ${{ job.status == 'failure' && 'warn' || 'ignore' }}
+          retention-days: 30
+      - name: Verify the tested file is unchanged
+        run: |
+          cd "$RUNNER_TEMP/vsix"
+          sha256sum --check --strict vsix.sha256
+          mv vsix.sha256 "$TARGET.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix-${{ matrix.target }}
+          path: ${{ runner.temp }}/vsix/
+          if-no-files-found: error

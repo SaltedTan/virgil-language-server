@@ -78,49 +78,24 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  vsix:
-    name: Package the VS Code extension
+  version:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
-      file: ${{ steps.package.outputs.file }}
-      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
-      - name: Install dependencies from the lockfile
-        working-directory: clients/vscode
-        run: npm ci
-      - name: Record the server's version, which names the archives
-        id: version
+      - id: version
         run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
-      - name: Package the VSIX
-        id: package
-        working-directory: clients/vscode
-        run: |
-          npm run package
-          file=virgil-lsp-vscode-$(node -p 'require("./package.json").version').vsix
-          sha256=$(sha256sum "$file" | cut -d ' ' -f 1)
-          echo "$sha256  $file"
-          echo "file=$file" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: vsix
-          path: clients/vscode/${{ steps.package.outputs.file }}
-          if-no-files-found: error
-          retention-days: 3
+
+  vsix:
+    needs: [build, version]
+    uses: ./.github/workflows/package-vsix.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   editor-tests:
     name: Editor tests
-    needs: [build, vsix]
+    needs: [build, vsix, version]
     uses: ./.github/workflows/editor-test-suites.yml
     with:
-      version: ${{ needs.vsix.outputs.version }}
-      vsix-file: ${{ needs.vsix.outputs.file }}
-      vsix-sha256: ${{ needs.vsix.outputs.sha256 }}
+      version: ${{ needs.version.outputs.version }}

@@ -121,7 +121,7 @@ vsix() {
 import sys, zipfile
 path, package, files = sys.argv[1], sys.argv[2], sys.argv[3:]
 with zipfile.ZipFile(path, "w") as z:
-    z.writestr("extension.vsixmanifest", "<PackageManifest/>")
+    z.writestr("extension.vsixmanifest", '<PackageManifest><Metadata><Identity/><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/></Properties></Metadata></PackageManifest>')
     if package.startswith("@"):
         with open(package[1:], "rb") as f:
             z.writestr("extension/package.json", f.read())
@@ -502,7 +502,9 @@ assets() {
             > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.manifest.json"
         : > "$ASSETS/virgil-lsp-1.2.3-alpha.4-$target.tar.gz"
     done
-    vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" "$package" "${files[@]}"
+    for target in "" -linux-x64 -darwin-arm64 -darwin-x64; do
+        vsix "$ASSETS/virgil-lsp-vscode-7.8.9$target.vsix" "$package" "${files[@]}"
+    done
 }
 # notes <name> <expected-exit> <stdout-pattern|-> <stderr-pattern|-|"">
 notes() {
@@ -514,18 +516,22 @@ notes "lists the archives" 0 '^[|] `virgil-lsp-1\.2\.3-alpha\.4-x86-64-darwin\.t
 notes "says that WSL 2 is best effort" 0 \
     '^[|] `virgil-lsp-1\.2\.3-alpha\.4-x86-64-linux\.tar\.gz` [|] Linux x86-64; WSL 2 on a best-effort basis [|]$' ""
 notes "lists the VSIX with the version that it records" 0 \
-    '^`virgil-lsp-vscode-7\.8\.9\.vsix` is version 7\.8\.9 of the VS Code extension \(`virgil-language-server\.virgil-lsp-vscode`\), a preview\. Its versions' ""
+    '.*`virgil-lsp-vscode-7\.8\.9\.vsix` are version 7\.8\.9 of the VS Code extension \(`virgil-language-server\.virgil-lsp-vscode`\), a preview\. Its versions' ""
 vsix "$ASSETS/virgil-lsp-vscode-7.8.9.vsix" \
     '{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server", "version": "7.8.9"}'
+for target in -linux-x64 -darwin-arm64 -darwin-x64; do
+    vsix "$ASSETS/virgil-lsp-vscode-7.8.9$target.vsix" \
+        '{"name": "virgil-lsp-vscode", "publisher": "virgil-language-server", "version": "7.8.9"}'
+done
 notes "lists a VSIX that isn't a preview without saying it is" 0 \
     '\(`virgil-language-server\.virgil-lsp-vscode`\)\. Its versions' ""
 assets
 notes "links the revisions" 0 "^- Server: \[\`$revision\`\]" ""
-rm "$ASSETS/virgil-lsp-vscode-7.8.9.vsix"
-notes "no VSIX" 1 - "expected one VS Code extension \(\*\.vsix\) in .*, found 0$"
+rm "$ASSETS/"*.vsix
+notes "no VSIX" 1 - "expected four VS Code extensions \(\*\.vsix\) in .*, found 0$"
 assets
 vsix "$ASSETS/virgil-lsp-vscode-7.8.10.vsix" "${package/7.8.9/7.8.10}" "${files[@]}"
-notes "two VSIX files" 1 - "expected one VS Code extension .*, found 2$"
+notes "an extra VSIX file" 1 - "expected four VS Code extensions .*, found 5$"
 assets
 echo "not a zip file" > "$ASSETS/virgil-lsp-vscode-7.8.9.vsix"
 notes "VSIX that isn't a zip file" 1 - "virgil-lsp-vscode-7\.8\.9\.vsix is not a zip file"
@@ -823,6 +829,7 @@ assets '"v1.2.3-alpha.4"'
 links "a repository link at the release's tag" 0 \
     '^- \[A\]\(https://example\.test/o/r/blob/v1\.2\.3-alpha\.4/docs/a\.md\)$' "" '- [A](docs/a.md)'
 
+expect_run "VSIX payload integrity and provenance" 0 - - python3 "$ROOT/test/release/test_vsix_payload.py"
 expect_run "bundled library integrity and reproducibility" 0 - - python3 "$ROOT/test/release/test_library.py"
 if [ "${1:-}" = --archive ]; then
     expect_run "archive installation (moved, spaces, symlink, read-only library)" 0 \

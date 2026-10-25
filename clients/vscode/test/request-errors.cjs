@@ -58,7 +58,7 @@ async function clientForTest(t) {
     window: { ...vscode.window, createOutputChannel: () => channel },
     commands: { registerCommand: () => ({ dispose() {} }) },
     workspace: {
-      getConfiguration: () => ({ get: (key, fallback) => key === 'server.path' ? '/server/virgil-lsp' : fallback }),
+      getConfiguration: () => ({ get: (key, fallback) => key === 'virgil.server.path' ? '/server/virgil-lsp' : fallback }),
       onDidChangeConfiguration: () => ({ dispose() {} }),
       createFileSystemWatcher: () => ({ dispose() {} }),
     },
