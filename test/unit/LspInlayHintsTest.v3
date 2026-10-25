@@ -9,12 +9,12 @@ def MAIN = "test/fixtures/analysis/inlay-hints/cross-file/Main.v3";
 def LIBRARY = "test/fixtures/analysis/inlay-hints/cross-file/Library.v3";
 
 // Counts identity checks of closed files: only matchesDocument asks for a
-// disk stamp during a refresh comparison.
+// canonical disk stamp during a refresh comparison.
 class CountingDiskStampStore extends DocumentStore {
 	var stamp = DocumentVersionIdentity.new();
 	var checks: int;
 	new() super(null, DocumentLimits.MAX_BYTES) { }
-	def diskStamp(uri: string) -> DocumentVersionIdentity { checks++; return stamp; }
+	def canonicalDiskStamp(key: string) -> DocumentVersionIdentity { checks++; return stamp; }
 }
 
 // Three hints link to one closed target. Each comparison checks its identity
