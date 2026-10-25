@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The VS Code [Extension Host](clients/vscode/README.md#extension-host-test) and [Remote-SSH](clients/vscode/README.md#remote-ssh-test) test runners now record and check macOS process start times to the microsecond through libproc, so a PID reused within the original process's start second no longer passes the check. Where Python or the call is unavailable, the documented `ps` fallback still has one-second resolution ([#208](https://github.com/SaltedTan/virgil-language-server/issues/208)).
+
 - The VS Code [Extension Host](clients/vscode/README.md#extension-host-test) and [Remote-SSH](clients/vscode/README.md#remote-ssh-test) test runners now check macOS group membership through libproc before releasing a keeper, so a helper that forks and is reaped during a `ps` listing cannot hide its surviving child. Where Python or libproc is unavailable, they confirm an empty scan at least 50 milliseconds later ([#206](https://github.com/SaltedTan/virgil-language-server/issues/206)).
 
 - An interrupt during the VS Code [Extension Host test](clients/vscode/README.md#extension-host-test)'s first download now also stops the `tar` that extracts it, including when the signal reaches only the runner's PID. The runner exits with the signal's status after stopping the download ([#209](https://github.com/SaltedTan/virgil-language-server/issues/209)).

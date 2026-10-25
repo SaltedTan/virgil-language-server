@@ -228,7 +228,7 @@ function fakeKeeper(pid) {
 function fakeProcesses(processes, { keeper, kill, pidfd = false, signals = [], deliver = () => {}, platform = 'linux', ps, darwinPids, globals, proc = fakeProc(processes) } = {}) {
   const spawnSync = (command, args) => {
     if (command === 'ps') return ps(args);
-    if (platform === 'darwin' && darwinPids !== undefined) return { status: 0, stdout: JSON.stringify(darwinPids(Number(args.at(-1)))) };
+    if (platform === 'darwin' && darwinPids !== undefined && args[2] === require('../e2e/processes.cjs').DARWIN_GROUP_PIDS) return { status: 0, stdout: JSON.stringify(darwinPids(Number(args.at(-1)))) };
     if (!pidfd) return { error: Object.assign(new Error(`spawnSync ${command} ENOENT`), { code: 'ENOENT' }) };
     const [name, targets] = JSON.parse(args.at(-1));
     signals.push(['pidfd', name, targets]);

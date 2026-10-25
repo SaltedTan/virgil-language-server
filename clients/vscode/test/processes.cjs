@@ -82,8 +82,9 @@ if helper == 0:
 os.waitpid(helper, 0)
 with open(directory + '/child') as file:
     child = json.load(file)
-with open(directory + '/ready', 'w') as file:
+with open(directory + '/ready.tmp', 'w') as file:
     json.dump([os.getpid(), child], file)
+os.rename(directory + '/ready.tmp', directory + '/ready')
 `, directory], { env: process.env, stdin: 'ignore', timeout: 60000, signal: controller.signal }).then((value) => { result = value; });
     try {
       assert.ok(await until(() => observed, 10000), file);
@@ -208,7 +209,7 @@ for (const code of ['EIO', undefined]) {
   });
 }
 
-test('without /proc, processes and their start times come from ps, and signals follow a check', () => {
+test('when macOS libproc is unavailable, ps start times retain the one-second fallback limit', () => {
   const start = 'Thu Oct 23 17:13:01 2026';
   const table = new Map([[10, { start, group: 10 }], [11, { start, group: 10, state: 'Z+' }], [12, { start: 'Thu Oct 23 17:14:02 2026', group: 12 }]]);
   const kills = [];
@@ -227,6 +228,130 @@ test('without /proc, processes and their start times come from ps, and signals f
   table.set(10, { start, group: 99 });
   fake.signalProcesses([{ pid: 10, start }], 'SIGKILL');
   assert.deepEqual(kills, [[10, 'SIGTERM'], [10, 'SIGKILL']]);
+});
+
+test('macOS records and checks microsecond identities, and never mixes native and ps precision', () => {
+  const table = new Map([[10, { start: 'Thu Oct 23 17:13:01 2026', group: 10 }], [11, { start: 'Thu Oct 23 17:13:01 2026' }]]);
+  let native = [{ pid: 10, ppid: 1, group: 10, state: 'S', start: 'darwin:1792746781.123456' }, false];
+  const kills = [];
+  const fake = load('processes.cjs', {
+    'node:child_process': { spawnSync: (command, args) => command === 'ps' ? fakePs(table)(args)
+      : { status: 0, stdout: JSON.stringify(native === null ? null : JSON.parse(args.at(-1)).map((pid) => native[pid - 10])) } },
+  }, { platform: 'darwin', kill: (...args) => kills.push(args) });
+  const recorded = fake.processInfo(10);
+  assert.equal(recorded.start, 'darwin:1792746781.123456');
+  assert.equal(fake.processInfo(11), undefined);
+  assert.equal(fake.processTable().complete, false, 'a native ESRCH makes a scan inconclusive');
+  assert.deepEqual(JSON.parse(JSON.stringify(fake.processTable().processes)), [native[0]]);
+  assert.deepEqual(fake.signalProcesses([recorded], 'SIGTERM'), ['sent']);
+  // A replacement with the same PID and start second cannot pass the check.
+  native[0].start = 'darwin:1792746781.123457';
+  assert.deepEqual(fake.signalProcesses([recorded], 'SIGKILL'), ['other']);
+  // Loss of native support cannot downgrade a recorded exact identity.
+  native = null;
+  assert.deepEqual(fake.signalProcesses([recorded], 'SIGKILL'), ['other']);
+  const approximate = fake.processInfo(10);
+  native = [{ ...recorded }];
+  assert.deepEqual(fake.signalProcesses([approximate], 'SIGKILL'), ['other']);
+  assert.deepEqual(kills, [[10, 'SIGTERM']]);
+});
+
+test('the macOS ctypes helper reads fixed-width fields and handles missing, denied, and short records', { skip: pythonSkip }, () => {
+  const setup = `
+import ctypes, errno, types
+def info(pid, flavor, arg, address, size):
+    assert flavor == 3 and arg == 0 and size == 136
+    if pid == 11:
+        ctypes.set_errno(errno.ESRCH)
+        return 0
+    if pid == 12:
+        ctypes.set_errno(errno.EPERM)
+        return 0
+    if pid == 13:
+        return 120
+    buf = address._obj
+    buf.pbi_pid, buf.pbi_ppid, buf.pbi_pgid = pid, 8, 9
+    buf.pbi_status = 4 if pid == 14 else 5
+    buf.pbi_start_tvsec, buf.pbi_start_tvusec = 1792746781, 123456
+    return size
+ctypes.CDLL = lambda *args, **kwargs: types.SimpleNamespace(proc_pidinfo=info)
+`;
+  const helper = spawnSync('python3', ['-I', '-c', setup + processes.DARWIN_PROCESS_INFO, '[10,11,12,13,14]'], { encoding: 'utf8' });
+  assert.equal(helper.status, 0, helper.stderr);
+  assert.deepEqual(JSON.parse(helper.stdout), [
+    { pid: 10, ppid: 8, group: 9, state: 'Z', start: 'darwin:1792746781.123456' },
+    false, null, null,
+    { pid: 14, ppid: 8, group: 9, state: 'T', start: 'darwin:1792746781.123456' },
+  ]);
+});
+
+test('the macOS group helper counts PIDs, retries a full buffer, and reports failure for timed confirmation', { skip: pythonSkip }, () => {
+  for (const mode of ['grow', 'empty', 'denied']) {
+    const setup = `
+import ctypes, types
+def listing(group, buf, size):
+    assert group == 50 and size == ctypes.sizeof(buf)
+    if '${mode}' == 'empty':
+        return 0
+    if '${mode}' == 'denied':
+        return -1
+    if len(buf) == 256:
+        return 256
+    assert len(buf) == 512
+    buf[0], buf[1] = 50, 53
+    return 2
+ctypes.CDLL = lambda *args, **kwargs: types.SimpleNamespace(proc_listpgrppids=listing)
+`;
+    const helper = spawnSync('python3', ['-I', '-c', setup + processes.DARWIN_GROUP_PIDS, '50'], { encoding: 'utf8' });
+    assert.equal(helper.status, 0, helper.stderr);
+    assert.deepEqual(JSON.parse(helper.stdout), mode === 'grow' ? [50, 53] : mode === 'empty' ? [] : null);
+  }
+});
+
+test('macOS live processes have distinct sub-second identities in records and signal checks', { skip: macSkip }, async () => {
+  // Both Darwin ABIs must agree with the ctypes layout, independently of the
+  // runner's Python architecture or whether the server runs under Rosetta.
+  const directory = fs.mkdtempSync(path.join(__dirname, '.processes-'));
+  try {
+    const source = path.join(directory, 'layout.c');
+    fs.writeFileSync(source, `#include <sys/proc_info.h>
+#include <stddef.h>
+_Static_assert(sizeof(struct proc_bsdinfo) == 136, "sizeof");
+_Static_assert(offsetof(struct proc_bsdinfo, pbi_pid) == 12, "pid");
+_Static_assert(offsetof(struct proc_bsdinfo, pbi_ppid) == 16, "ppid");
+_Static_assert(offsetof(struct proc_bsdinfo, pbi_pgid) == 100, "pgid");
+_Static_assert(offsetof(struct proc_bsdinfo, pbi_start_tvsec) == 120, "seconds");
+_Static_assert(offsetof(struct proc_bsdinfo, pbi_start_tvusec) == 128, "microseconds");
+`);
+    const compiled = spawnSync('cc', ['-arch', 'arm64', '-arch', 'x86_64', '-c', source, '-o', path.join(directory, 'layout.o')], { encoding: 'utf8' });
+    assert.equal(compiled.status, 0, compiled.stderr);
+    let matched = false;
+    for (let attempt = 0; attempt < 10 && !matched; attempt++) {
+      const first = await ownProcess('sleep', ['30']);
+      let second;
+      try {
+        second = await ownProcess('sleep', ['30']);
+        assert.match(first.start, /^darwin:\d+\.\d{6}$/);
+        assert.match(second.start, /^darwin:\d+\.\d{6}$/);
+        if (first.start.split('.')[0] !== second.start.split('.')[0]) continue;
+        assert.notEqual(first.start, second.start);
+        const listed = processes.processTable().processes.find((p) => p.pid === first.child.pid);
+        assert.equal(listed?.start, first.start);
+        assert.deepEqual(processes.signalProcesses([{ pid: first.child.pid, start: second.start }], 'SIGTERM'), ['other']);
+        assert.equal(first.child.signalCode, null);
+        assert.deepEqual(processes.signalProcesses([{ pid: first.child.pid, start: first.start }], 'SIGTERM'), ['sent']);
+        assert.equal(await first.exited, 'SIGTERM');
+        matched = true;
+      } finally {
+        first.child.kill('SIGKILL');
+        second?.child.kill('SIGKILL');
+        await Promise.all([first.exited, second?.exited]);
+      }
+    }
+    assert.equal(matched, true, 'no two live processes started in the same second');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('a process whose main thread has exited while its other threads run gets signals after a check, unlike a zombie', () => {

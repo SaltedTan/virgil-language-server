@@ -19,9 +19,15 @@ const KEEPER_KILL_WAIT_MS = 30000;
 // A process's state, parent, process group, and start time, and on Linux its
 // number of threads; undefined if it has gone, null if inaccessible. On Linux
 // they are the third, fourth, fifth, 22nd, and 20th fields of /proc/<pid>/stat,
-// and the start time is in clock ticks after boot; elsewhere ps gives them,
-// and the start time only to the second.
+// and the start time is in clock ticks after boot. macOS uses libproc's
+// microsecond start time where Python and the call are available; the fallback
+// and other platforms use ps, with start times only to the second.
 function processInfo(pid) {
+  if (process.platform === 'darwin') {
+    const info = darwinInfos([Number(pid)])?.[0];
+    if (info === false) return undefined;
+    if (info != null) return info;
+  }
   if (process.platform !== 'linux') return psTable(['-p', String(pid)]).find((p) => p.pid === Number(pid));
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -174,7 +180,14 @@ function runOwned({ pid, start, ppid, files, roots, marker, known = [], parent, 
 // and leaves out one that has been reaped in between, so a process that starts
 // another and is reaped during the listing hides both.
 function processTable() {
-  if (process.platform !== 'linux') return { processes: psTable(['-A']), complete: true };
+  if (process.platform !== 'linux') {
+    const listed = psTable(['-A']);
+    const native = process.platform === 'darwin' ? darwinInfos(listed.map((p) => p.pid)) : undefined;
+    return {
+      processes: listed.flatMap((p, i) => native?.[i] === false ? [] : [native?.[i] ?? p]),
+      complete: !native?.includes(false),
+    };
+  }
   let complete = true;
   const processes = fs.readdirSync('/proc').flatMap((name) => {
     if (!/^[0-9]+$/.test(name)) return [];
@@ -232,6 +245,68 @@ function darwinGroupPids(group) {
     if (helper.status === 0 && Array.isArray(pids) && pids.every((pid) => Number.isInteger(pid) && pid > 0)) return pids;
   } catch {
     // The timed confirmation also covers a failed helper.
+  }
+  return undefined;
+}
+
+// Apple's bsd/sys/proc_info.h: PROC_PIDTBSDINFO = 3, proc_bsdinfo.
+// All integer fields have fixed widths (including uid_t/gid_t = uint32_t),
+// MAXCOMLEN = 16, and uint64_t aligns to 8 on both arm64 and x86-64 Darwin:
+// sizeof = 136, start_tvsec at 120, start_tvusec at 128. Do not use c_long or
+// a timeval, whose ABI could differ with the Python interpreter's architecture.
+// Each result is a complete native record, false for ESRCH, or null to fall
+// back to ps if the call is unavailable or denied. Prefixing native times
+// keeps a later fallback from accepting a weaker, second-resolution match.
+const DARWIN_PROCESS_INFO = `
+import ctypes, errno, json, sys
+class BsdInfo(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint32) for name in (
+        'pbi_flags', 'pbi_status', 'pbi_xstatus', 'pbi_pid', 'pbi_ppid',
+        'pbi_uid', 'pbi_gid', 'pbi_ruid', 'pbi_rgid', 'pbi_svuid',
+        'pbi_svgid', 'rfu_1')] + [
+        ('pbi_comm', ctypes.c_char * 16), ('pbi_name', ctypes.c_char * 32)
+    ] + [(name, ctypes.c_uint32) for name in (
+        'pbi_nfiles', 'pbi_pgid', 'pbi_pjobc', 'e_tdev', 'e_tpgid')
+    ] + [('pbi_nice', ctypes.c_int32), ('pbi_start_tvsec', ctypes.c_uint64),
+         ('pbi_start_tvusec', ctypes.c_uint64)]
+def main():
+    if (ctypes.sizeof(BsdInfo), BsdInfo.pbi_start_tvsec.offset, BsdInfo.pbi_start_tvusec.offset) != (136, 120, 128):
+        return None
+    lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    info = lib.proc_pidinfo
+    info.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    info.restype = ctypes.c_int
+    results = []
+    for pid in json.loads(sys.argv[1]):
+        buf = BsdInfo()
+        ctypes.set_errno(0)
+        size = info(pid, 3, 0, ctypes.byref(buf), ctypes.sizeof(buf))
+        if size != ctypes.sizeof(buf):
+            results.append(False if size <= 0 and ctypes.get_errno() == errno.ESRCH else None)
+        elif buf.pbi_pid != pid or buf.pbi_start_tvusec >= 1000000:
+            results.append(None)
+        else:
+            results.append(dict(pid=pid, ppid=buf.pbi_ppid, group=buf.pbi_pgid,
+                state={1:'I', 2:'R', 3:'S', 4:'T', 5:'Z'}.get(buf.pbi_status, 'I'),
+                start='darwin:%d.%06d' % (buf.pbi_start_tvsec, buf.pbi_start_tvusec)))
+    return results
+try:
+    print(json.dumps(main()))
+except (AttributeError, OSError):
+    print('null')
+`;
+
+function darwinInfos(pids) {
+  if (pids.length === 0) return [];
+  const helper = spawnSync('python3', ['-I', '-c', DARWIN_PROCESS_INFO, JSON.stringify(pids)], { encoding: 'utf8' });
+  try {
+    const infos = JSON.parse(helper.stdout);
+    if (helper.status === 0 && Array.isArray(infos) && infos.length === pids.length
+      && infos.every((p, i) => p === null || p === false || (p.pid === pids[i]
+        && Number.isInteger(p.ppid) && Number.isInteger(p.group) && /^[IRSTZ]$/.test(p.state)
+        && /^darwin:\d+\.\d{6}$/.test(p.start)))) return infos;
+  } catch {
+    // Missing Python, an unavailable libproc, or a failed helper uses ps.
   }
   return undefined;
 }
@@ -345,10 +420,10 @@ function checkedSignal({ pid, start }, name) {
 // PIDFD_SIGNAL) the signal goes through one. Where they aren't, or a pidfd
 // couldn't be opened for a process or couldn't signal it, it follows a check
 // a few system calls before it, so a process that exits between them, and
-// whose PID another process is given at once, could still get it. ps gives
-// start times only to the second, so off Linux, a process that is given the
-// PID of one that has exited within the same second as that one started gets
-// it too.
+// whose PID another process is given at once, could still get it. Where
+// macOS's libproc is unavailable, or on other non-Linux platforms, ps gives
+// start times only to the second: a replacement that reuses a PID within the
+// original process's start second also passes that check.
 function signalProcesses(processes, name) {
   if (processes.length === 0) return [];
   const results = pidfds === undefined || pidfds === true ? pidfdSignal(name, processes.map((p) => [p.pid, p.start])) : undefined;
@@ -411,10 +486,9 @@ function startGroup(command, args, { env, stdio, onExit }) {
   let reportsEnded = keeper.stdout === null;
   let releaseDone;
   // Whether the keeper hasn't been reaped: its PID still has its parent, the
-  // runner, and its start time. ps gives start times only to the second, so
-  // off Linux another process would pass for the keeper only if it were
-  // another child of the runner, given the keeper's PID within the second in
-  // which the keeper started.
+  // runner, and its start time. The ps fallback's second-resolution times
+  // also need this parent check: only another child of the runner, given the
+  // keeper's PID within its start second, could pass for it.
   const led = () => {
     const info = processInfo(number);
     return leader != null && info != null && info.start === leader.start && info.ppid === leader.ppid;
@@ -457,7 +531,9 @@ function startGroup(command, args, { env, stdio, onExit }) {
       return undefined;
     }
     for (const p of found) seen.set(p.pid, p.start);
-    let empty = complete && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
+    // ps itself normally exits before the native info reads. On macOS the
+    // native group listing or timed confirmation below decides completeness.
+    let empty = (complete || process.platform === 'darwin') && members.every((p) => zombie(p) && zombies.get(p.pid) === p.start);
     if (process.platform === 'darwin') {
       const pids = darwinGroupPids(number);
       if (pids !== undefined) {
@@ -609,4 +685,4 @@ function startGroup(command, args, { env, stdio, onExit }) {
   return group;
 }
 
-module.exports = { DARWIN_GROUP_PIDS, KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, runOwned, signalProcesses, startGroup, zombie };
+module.exports = { DARWIN_GROUP_PIDS, DARWIN_PROCESS_INFO, KEEPER_KILL_WAIT_MS, PIDFD_SIGNAL, SETTLED, isZombie, pidfdSupport, processFiles, processInfo, processTable, runOwned, signalProcesses, startGroup, zombie };
