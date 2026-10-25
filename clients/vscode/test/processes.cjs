@@ -1293,8 +1293,10 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   // The keeper doesn't answer the SIGTERM within its second; SIGKILL five
   // seconds after SIGTERM, and 30 seconds after that, the runner gives up.
   await pause(1200);
-  clock.advance(5100);
-  clock.advance(30000);
+  // Each poll reads real processes. Model delayed turns at the deadlines,
+  // rather than replaying 700 ps scans while the real sleep can expire.
+  clock.advance(5100, { coalesce: true });
+  clock.advance(30001, { coalesce: true });
   console.log(JSON.stringify(await running));
 })();
 `;

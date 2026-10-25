@@ -124,14 +124,17 @@ function fakeClock() {
       Date: { now: () => now },
       setTimeout: (fn, ms) => add(fn, ms), setInterval: (fn, ms) => add(fn, ms, ms), clearTimeout: clear, clearInterval: clear,
     },
-    advance: (ms) => {
+    // Coalescing models a delayed event-loop turn: overdue callbacks run at
+    // the new time, with each interval called once, rather than replaying
+    // every missed tick. Useful when callbacks inspect real processes.
+    advance: (ms, { coalesce = false } = {}) => {
       const end = now + ms;
       for (;;) {
         const [id, timer] = [...timers].filter(([, t]) => t.at <= end).sort(([, a], [, b]) => a.at - b.at)[0] ?? [];
         if (timer === undefined) break;
-        now = timer.at;
+        now = coalesce ? end : timer.at;
         if (timer.every === undefined) timers.delete(id);
-        else timer.at += timer.every;
+        else timer.at = now + timer.every;
         timer.fn();
       }
       now = end;
