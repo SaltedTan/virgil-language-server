@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Inlay hints through real workers: ranges, settings, freshness, refresh."""
 import json
+import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 from worker import Session
+from fingerprints import worker_pid
 from type_definition import position, location, open_file, change
 
 TEXT = ('class Box { }\ncomponent Hints {\n'
@@ -173,6 +176,57 @@ def cross_file(exe, root):
         assert len(s.refreshes) == before, s.transcript
         s.shutdown()
     finally:
+        s.close()
+
+
+def target_recovery(exe, root):
+    path, library = root / 'Main.v3', root / 'Library.v3'
+    text = 'component Main { def run() { var a = Library.make(1); var b = Library.make(2); } }\n'
+    lib = 'class Box {}\ncomponent Library { def make(count: int) -> Box { return Box.new(); } }\n'
+    path.write_text(text)
+    library.write_text(lib)
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'recovery', 'sources': ['Main.v3', 'Library.v3']}]}))
+    s = HintsSession(exe)
+    paused = None
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'capabilities': {'workspace': {'inlayHint': {'refreshSupport': True}}}}))
+        open_file(s, path, text)
+        first = query(s, path)
+        assert len(first) == 4, first
+        for h in first[::2]:
+            assert h['label'][0]['location'] == location(library, lib, 'Box'), h
+        captured = lib + '// unchanged link coordinates\n'
+        library.write_text(captured)
+        paused = worker_pid(s)
+        os.kill(paused, signal.SIGSTOP)
+        analysis = s.send('virgil-lsp/analyze', {'uri': path.as_uri()})
+        s.result(s.send('virgil-lsp/snapshot'))
+        library.unlink()
+        before = len(s.refreshes)
+        os.kill(paused, signal.SIGCONT)
+        paused = None
+        s.result(analysis)
+        missing = query(s, path)
+        assert len(missing) == 4, missing
+        assert missing[1::2] == first[1::2], missing
+        for h in missing[::2]:
+            assert h['label'] == [{'value': ': Box'}], h
+        assert len(s.refreshes) == before + 1, s.transcript
+        library.write_text(captured)
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': library.as_uri(), 'type': 2}]}, request=False)
+        assert query(s, path) == first
+        assert len(s.refreshes) == before + 2, s.transcript
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': library.as_uri(), 'type': 2}]}, request=False)
+        assert query(s, path) == first
+        assert len(s.refreshes) == before + 2, s.transcript
+        s.shutdown()
+    finally:
+        if paused is not None:
+            os.kill(paused, signal.SIGCONT)
         s.close()
 
 
@@ -360,6 +414,7 @@ def main():
                                       (False, True, True), (True, False, True), (False, False, True)]:
             run(exe, Path(work), types, names, support)
         cross_file(exe, Path(work))
+        target_recovery(exe, Path(work))
         target_lines(exe, Path(work))
         fallback(exe, Path(work))
         refresh_scopes(exe, Path(work))

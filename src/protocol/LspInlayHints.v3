@@ -183,6 +183,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		var i = -1;
 		for (j < snapshot.paths.length) if (Strings.equal(snapshot.paths[j], d.range.path)) { i = j; break; }
 		if (i < 0 || i >= snapshot.documentVersions.length || d.range.beginOffset < 0) return 0;
+		if (!snapshot.documentVersions[i].matchesDocument(store)) return 0;
 		var span = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
 		if (span.0 < 0) return 0;
 		var cache = targets[d.range.path];
@@ -192,15 +193,17 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 				cache = LspHintTargetFingerprint.new(snapshot.documentVersions[i].hash, snapshot.documentVersions[i].identity);
 			targets.add(d.range.path, cache);
 		}
-		var index = cache.offsets.add(span.0);
-		if (index < cache.hashes.length) return cache.hashes[index];
-		var text = analyzedText(snapshot, i, texts, checked), hash = 0ul;
-		if (text != null && span.1 <= text.length) {
-			hash = hashString(hashString(0xcbf29ce484222325ul, d.range.path), d.name);
-			var begin = cache.position(text, span.0), end = cache.position(text, span.1);
-			hash = hashInt(hashInt(hash, begin.line), begin.character);
-			hash = hashInt(hashInt(hash, end.line), end.character);
-		}
+		// Equal analyzed identities have identical bytes, so successful coordinates stay valid.
+		// Unavailable text is comparison-local; caching it would prevent recovery.
+		var index = cache.offsets.find(span.0);
+		if (index >= 0) return cache.hashes[index];
+		var text = analyzedText(snapshot, i, texts, checked);
+		if (text == null || span.1 > text.length) return 0;
+		var hash = hashString(hashString(0xcbf29ce484222325ul, d.range.path), d.name);
+		var begin = cache.position(text, span.0), end = cache.position(text, span.1);
+		hash = hashInt(hashInt(hash, begin.line), begin.character);
+		hash = hashInt(hashInt(hash, end.line), end.character);
+		cache.offsets.add(span.0);
 		cache.hashes.put(hash);
 		return hash;
 	}
