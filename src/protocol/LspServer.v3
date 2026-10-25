@@ -139,7 +139,7 @@ class LspServer {
 		semanticDiagnostics.development = developmentAnalysis;
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;
-		semanticDiagnostics.hintsAnalyzed = inlayHints.analyzed;
+		semanticDiagnostics.hintsAnalyzed = inlayHints.analyzedOwners;
 		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
 		rename.scheduler = semanticDiagnostics;
 		completion.scheduler = semanticDiagnostics;

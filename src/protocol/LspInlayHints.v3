@@ -96,6 +96,18 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		}
 		refresh();
 	}
+	// Automatic diagnostics already resolved every snapshot file's owner.
+	// Reuse that selection instead of repeating configuration reads and scans.
+	def analyzedOwners(ctx: ProjectContext, snapshot: AnalysisSnapshot, owners: Array<ProjectContext>) {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		var docs = Vector<DocumentOverlay>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var i = snapshot.documentIndex(uri);
+			if (i >= 0 && owners[i] == ctx) docs.put(doc);
+		});
+		compare(ctx, snapshot, docs.extract(), null);
+		refresh();
+	}
 	def analyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
 		if (!refreshSupport || (!types && !parameterNames)) return;
 		var open = openDocuments();
@@ -112,7 +124,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		var targets = OrderedStringMap<LspHintTargetFingerprint>.new();
 		var texts = Array<Array<byte>>.new(snapshot.paths.length), checked = Array<bool>.new(snapshot.paths.length);
 		for (d < docs.length) {
-			if (owners[d] != ctx) continue;
+			if (owners != null && owners[d] != ctx) continue;
 			var doc = docs[d], uri = doc.uri, i = snapshot.documentIndex(uri);
 			if (i < 0) continue;
 			var path = snapshot.paths[i], version = snapshot.documentVersions[i], file = snapshot.fileIndex(path);
