@@ -13,6 +13,8 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 - sends `shutdown` and then `exit` when it is deactivated, for example when the window closes;
 - runs on the workspace side (`extensionKind: ["workspace"]`), so that with Remote-SSH and Remote-WSL the server starts on the remote machine, next to the files ([ADR-0003](../../docs/decisions/0003-supported-platforms.md)).
 
+If the server doesn't start, or a file gets no diagnostics or navigation, see [Troubleshooting](../../docs/troubleshooting.md). The [privacy statement](../../PRIVACY.md) says what the extension and the server read, write, and start; neither collects telemetry or makes network connections.
+
 ## Installing from a VSIX
 
 Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl` and `sha256sum` for the Linux commands below. The editor and server versions must work with the extension's version, as listed in [compatibility](../../docs/compatibility.md#editors). Choose `linux-x64`, `darwin-arm64`, or `darwin-x64` for the workspace host. Both macOS packages carry an Intel server; Apple Silicon requires Rosetta 2 (`softwareupdate --install-rosetta --agree-to-license`). The executables are unsigned and not notarized; see [macOS installation](../../docs/releasing.md#installing).
@@ -113,7 +115,7 @@ Before it starts the server, the extension checks that:
 - The selected server is an executable file, and a bundled server matches the workspace host. The output channel records the selection and why it was chosen.
 - `virgil-lsp-worker` is executable in the same directory as `virgil-lsp`. Symlinks are followed, because the server looks for the worker beside its own resolved path. A wrapper script therefore needs the worker beside it too.
 
-If a check fails, or the server doesn't start, the extension writes the reason to the "Virgil Language Server" output channel and shows an error notification with a **Show Output** button. Fix the problem, then run **Virgil: Restart Language Server**.
+If a check fails, or the server doesn't start, the extension writes the reason to the "Virgil Language Server" output channel and shows an error notification with a **Show Output** button. Fix the problem, then run **Virgil: Restart Language Server**. [Troubleshooting](../../docs/troubleshooting.md#the-server-doesnt-start) explains each message.
 
 ## Syntax highlighting
 
