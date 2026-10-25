@@ -1211,12 +1211,13 @@ class AnalysisWireReader {
 		// The open delta, head, and signature take a byte each.
 		var count = readCount(3, 0), start = r.pos;
 		var cursor = AnalysisCallCursor.new(r, count), closes = Array<int>.new(16), depth = 0;
+		var uses = AnalysisCallUseCursor.new(file);
 		while (cursor.next()) {
 			var open = cursor.open;
 			if (cursor.calleeEndsAtParen()) {
-				if (file.useEndingAt(open) < 0) r.fail("invalid callee");
+				if (!uses.matches(open, true)) r.fail("invalid callee");
 			} else if (cursor.calleeDelta > 0) {
-				if (file.useAt(open - cursor.calleeDelta) < 0) r.fail("invalid callee");
+				if (!uses.matches(open - cursor.calleeDelta, false)) r.fail("invalid callee");
 			}
 			if (cursor.signature > signatures.count()) r.fail("invalid signature index");
 			for (i = 0; i < cursor.argCount && r.ok; i++) {
@@ -1435,5 +1436,26 @@ class AnalysisCallCheck(signatures: int) {
 		closes.put(c.close);
 		previous = c.open;
 		return true;
+	}
+}
+
+// Calls are ordered by opening parenthesis. Their direct callees normally
+// advance through the already validated, disjoint use arrays too. Walk those
+// arrays once; an unusual backward callee uses the original binary lookup.
+class AnalysisCallUseCursor(file: AnalysisSnapshotFile) {
+	private var occurrence: int;
+	private var builtin: int;
+	private var previous = -1;
+	def matches(offset: int, ending: bool) -> bool {
+		var point = if(ending, offset - 1, offset);
+		if (point < previous) return if(ending, file.useEndingAt(offset), file.useAt(offset)) >= 0;
+		previous = point;
+		while (occurrence < file.targets.length && file.occurrenceEnd(occurrence) <= point) occurrence++;
+		if (occurrence < file.targets.length && file.occurrenceBegin(occurrence) <= point)
+			return if(ending, file.occurrenceEnd(occurrence), file.occurrenceBegin(occurrence)) == offset;
+		var b = file.builtins;
+		while (builtin < b.length && b[builtin + 2] + b[builtin + 3] <= point) builtin += 5;
+		return builtin < b.length && b[builtin + 2] <= point &&
+			if(ending, b[builtin + 2] + b[builtin + 3], b[builtin + 2]) == offset;
 	}
 }
