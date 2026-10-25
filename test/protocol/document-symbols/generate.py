@@ -109,9 +109,11 @@ inputs = [
     notify("exit", {}),
 ]
 outputs = [
-    reply(1, dict(capabilities=dict(completionProvider=dict(triggerCharacters=["."]), definitionProvider=True, documentSymbolProvider=True, hoverProvider=True, referencesProvider=True, renameProvider=True,
+    reply(1, dict(capabilities=dict(completionProvider=dict(triggerCharacters=["."]), definitionProvider=True, documentHighlightProvider=True, documentSymbolProvider=True,
+                                   hoverProvider=True, implementationProvider=True, referencesProvider=True, renameProvider=True,
                                    signatureHelpProvider=dict(retriggerCharacters=[")"], triggerCharacters=["(", ","]),
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
+                                   typeDefinitionProvider=True,
                                    workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True)),
                                    workspaceSymbolProvider=True),
                   serverInfo=dict(name="virgil-lsp", version="@VERSION@"))),

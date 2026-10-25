@@ -21,6 +21,9 @@ import time
 
 
 class Session:
+    # The notifications a session accepts from the server.
+    NOTIFICATIONS = ("textDocument/publishDiagnostics",)
+
     def __init__(self, exe, *options):
         self.err = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(
@@ -67,7 +70,7 @@ class Session:
                         assert key not in self.answered, ("duplicate response", msg)
                         self.answered.add(key)
                     elif "id" not in msg:
-                        assert msg["method"] == "textDocument/publishDiagnostics", msg
+                        assert msg["method"] in self.NOTIFICATIONS, msg
                     return msg
             remaining = deadline - time.monotonic()
             assert remaining > 0, "timed out waiting for a protocol reply"
@@ -92,7 +95,7 @@ class Session:
 
     def initialize(self):
         result = self.result(self.send("initialize", {}))
-        assert set(result["capabilities"]) == {"textDocumentSync", "completionProvider", "definitionProvider", "typeDefinitionProvider", "inlayHintProvider", "documentHighlightProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "workspace", "workspaceSymbolProvider"}
+        assert set(result["capabilities"]) == {"textDocumentSync", "completionProvider", "definitionProvider", "typeDefinitionProvider", "inlayHintProvider", "documentHighlightProvider", "documentSymbolProvider", "hoverProvider", "implementationProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "workspace", "workspaceSymbolProvider"}
 
     def snapshot(self, expected, timeout=3):
         assert self.result(self.send("virgil-lsp/snapshot"), timeout) == expected

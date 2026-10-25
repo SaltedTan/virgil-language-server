@@ -56,6 +56,7 @@ CAPABILITIES = {
     "documentHighlightProvider": True,
     "documentSymbolProvider": True,
     "hoverProvider": True,
+    "implementationProvider": True,
     "referencesProvider": True,
     "renameProvider": {"prepareProvider": True},
     "signatureHelpProvider": {"retriggerCharacters": [")"], "triggerCharacters": ["(", ","]},
