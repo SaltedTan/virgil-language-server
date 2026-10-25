@@ -89,6 +89,10 @@ def total(build, unit_tests, children):
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS can report EPERM for an exited process group.
+                if process.poll() is None:
+                    raise
             process.wait()
             children.processes.remove(process)
             process.stdout.close()

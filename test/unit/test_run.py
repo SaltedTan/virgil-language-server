@@ -7,6 +7,7 @@ Each test copies run.py and prepare.py into a temporary tree whose test/unit
 registers two groups, Alpha (two tests) and Beta (one), so the runner scans
 those instead of the real sources.
 """
+import errno
 import os
 from pathlib import Path
 import runpy
@@ -233,7 +234,7 @@ class RunTest(unittest.TestCase):
         handlers = {signum: signal.getsignal(signum)
                     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
         try:
-            for boundary in ("group-launch", "probe-launch", "probe-reap", "restrict-launch"):
+            for boundary in ("group-launch", "probe-launch", "probe-reap", "probe-exited", "restrict-launch"):
                 for signum in handlers:
                     with self.subTest(boundary=boundary, signal=signum):
                         self.stand_in()
@@ -249,6 +250,10 @@ class RunTest(unittest.TestCase):
                             return child
 
                         def kill_group(pid, sig):
+                            if boundary == "probe-exited":
+                                children[0].wait(timeout=10)
+                                # macOS can report EPERM for an exited process group.
+                                raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
                             killpg(pid, sig)
                             if boundary == "probe-reap":
                                 os.kill(os.getpid(), signum)
