@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
+const { fromShutdown } = require('./shutdown.cjs');
 
 const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
 const CHANNEL_LOG = 'Virgil Language Server.log';
@@ -920,21 +921,12 @@ function openedBeforeExit(received, uri) {
     && message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri === uri);
 }
 
-// The methods that a server received from shutdown on, without the didOpen
-// notifications before the last one. The client sends a didOpen for each open
-// document once it is running, and one whose check that the client is running
-// passed just before a stop began can still follow shutdown, on the
-// connection, which stays open until exit.
-function fromShutdown(received) {
-  const rest = received.slice(received.indexOf('shutdown'));
-  return [...rest.slice(0, -1).filter((method) => method !== 'textDocument/didOpen'), ...rest.slice(-1)];
-}
-
 // Throws unless the held start with PID held received initialize first, then
 // initialized, so the recovery had finished, and the didOpen for the open
 // bad.v3, then shutdown and exit last, and then exited with status 0. The
 // didOpen may come on either side of shutdown, because a slow write can follow
-// it, but it must reach the server before exit.
+// it, but it must reach the server before exit. Cancellations may also follow
+// shutdown (see shutdown.cjs).
 function expectStoppedAfterRecovery(directory, held) {
   const input = fs.readFileSync(path.join(directory, `input-${held}`));
   const received = messages(input);

@@ -32,6 +32,7 @@ const { pathToFileURL } = require('node:url');
 const { parseArgs } = require('node:util');
 const { resolveCliPathFromVSCodeExecutablePath } = require('@vscode/test-electron');
 const { KEEPER_KILL_WAIT_MS, startGroup } = require('./processes.cjs');
+const { fromShutdown } = require('./shutdown.cjs');
 
 // Keep the tested version in docs/compatibility.md in step.
 const VSCODE_VERSION = '1.142.0';
@@ -124,9 +125,6 @@ async function main() {
       // Where the server offers no completion items, as in a comment, VS Code
       // would offer the document's words instead.
       'editor.wordBasedSuggestions': 'off',
-      // Automatic hint requests and cancellations race lifecycle assertions.
-      // The suite tests hints explicitly with executeInlayHintProvider.
-      'editor.inlayHints.enabled': 'off',
     };
     console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
@@ -626,13 +624,6 @@ function openedBeforeExit(input, uri) {
   const exit = input.findLastIndex((message) => message.method === 'exit');
   return input.some((message, index) => index < exit
     && message.method === 'textDocument/didOpen' && message.params?.textDocument?.uri === uri);
-}
-
-// The methods that a server received from shutdown on, without the didOpen
-// notifications before the last one, as fromShutdown in suite.cjs.
-function fromShutdown(received) {
-  const rest = received.slice(received.indexOf('shutdown'));
-  return [...rest.slice(0, -1).filter((method) => method !== 'textDocument/didOpen'), ...rest.slice(-1)];
 }
 
 // The Remote-SSH test, remote-ssh/run.cjs, uses the same VS Code version and
