@@ -3,12 +3,13 @@
 
 // Range requests share definition's selection, waiting, cancellation, and
 // target freshness. Settings are fixed at initialization, like virgilRoot.
-class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, store: DocumentStore) {
+class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, store: DocumentStore, projects: WorkspaceProjects) {
 	var types = true;
 	var parameterNames = true;
 	var refreshSupport: bool;
 	private var refreshing: bool;
 	private var dirty: bool;
+	private var positions = OrderedStringMap<LspHintPositionFingerprint>.new();
 
 	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
 		requests.registerRange(dispatcher, "textDocument/inlayHint", "inlay hints", prepare, empty);
@@ -59,18 +60,61 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		}
 		return (true, JsonRpcReply.Result(JsonValue.JArray(result.extract())));
 	}
-	// Only open documents can have hints on screen. Each file keeps its own
-	// published fingerprint; opening/closing a file alone needs no refresh.
-	// Source stamps invalidate position caches, never the displayed result.
+	// Baselines belong to open documents, not replaceable project contexts.
+	// Resolve owners together, so each governing configuration is read once.
+	private def openDocuments() -> (Array<DocumentOverlay>, Array<ProjectContext>) {
+		var docs = Vector<DocumentOverlay>.new(), paths = Vector<string>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var path = DocumentUri.filePath(uri);
+			if (path != null) { docs.put(doc); paths.put(path); }
+		});
+		return (docs.extract(), projects.owners(paths.extract()));
+	}
+	def documentClosed(uri: string) { positions.remove(uri); }
+	// Membership can disappear without any analysis completing. A newly
+	// active context may already have a current snapshot; compare that too.
+	def scopesChanged() {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		var open = openDocuments(), seen = Vector<ProjectContext>.new();
+		for (i < open.0.length) {
+			var ctx = open.1[i];
+			if (ctx == null) {
+				var seed = 0xcbf29ce484222325ul;
+				remember(open.0[i].uri, LspHintPositionFingerprint.new(null, seed, seed,
+					hashInt(hashInt(seed, int.view(seed)), int.view(seed >> 32))));
+				continue;
+			}
+			var visited = false;
+			for (j < seen.length) if (seen[j] == ctx) visited = true;
+			if (visited) continue;
+			seen.put(ctx);
+			var snapshot = ctx.snapshot;
+			if (snapshot == null || !snapshot.matchesProject() || !LspAnalysisCapture.matchesSources(snapshot.documentVersions, ctx.sources)) continue;
+			var current = true;
+			for (v in snapshot.documentVersions) current = current && v.matchesDocument(store);
+			if (current) compare(ctx, snapshot, open.0, open.1);
+		}
+		refresh();
+	}
 	def analyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
 		if (!refreshSupport || (!types && !parameterNames)) return;
-		var positions = OrderedStringMap<LspHintPositionFingerprint>.new();
+		var open = openDocuments();
+		compare(ctx, snapshot, open.0, open.1);
+		refresh();
+	}
+	private def remember(uri: string, next: LspHintPositionFingerprint) {
+		var previous = positions[uri];
+		if (previous != null && previous.result != next.result) dirty = true;
+		positions[uri] = next;
+	}
+	private def compare(ctx: ProjectContext, snapshot: AnalysisSnapshot,
+			docs: Array<DocumentOverlay>, owners: Array<ProjectContext>) {
 		var targets = OrderedStringMap<LspHintTargetFingerprint>.new();
 		var texts = Array<Array<byte>>.new(snapshot.paths.length), checked = Array<bool>.new(snapshot.paths.length);
-		var changed = Array<bool>.new(1);
-		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
-			var i = snapshot.documentIndex(uri);
-			if (i < 0) return;
+		for (d < docs.length) {
+			if (owners[d] != ctx) continue;
+			var doc = docs[d], uri = doc.uri, i = snapshot.documentIndex(uri);
+			if (i < 0) continue;
 			var path = snapshot.paths[i], version = snapshot.documentVersions[i], file = snapshot.fileIndex(path);
 			var hash = 0xcbf29ce484222325ul, offsets = hash;
 			if (file != null) {
@@ -90,7 +134,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 					}
 				}
 			}
-			var previous = ctx.hintPositions[path], coordinates = 0xcbf29ce484222325ul;
+			var previous = positions[uri], coordinates = 0xcbf29ce484222325ul;
 			if (previous != null && previous.identity == version.identity && previous.offsets == offsets)
 				coordinates = previous.positions;
 			else if (file != null) {
@@ -104,12 +148,9 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 				}
 			}
 			hash = hashInt(hashInt(hash, int.view(coordinates)), int.view(coordinates >> 32));
-			if (previous != null && previous.result != hash) changed[0] = true;
-			positions.add(path, LspHintPositionFingerprint.new(version.identity, offsets, coordinates, hash));
-		});
-		ctx.hintPositions = positions;
+			remember(uri, LspHintPositionFingerprint.new(version.identity, offsets, coordinates, hash));
+		}
 		ctx.hintTargets = targets;
-		if (changed[0]) { dirty = true; refresh(); }
 	}
 	private def analyzedText(snapshot: AnalysisSnapshot, i: int, texts: Array<Array<byte>>, checked: Array<bool>) -> Array<byte> {
 		if (!checked[i]) { checked[i] = true; var effective = LspAnalysisCapture.analyzedText(store, snapshot, i);
@@ -175,7 +216,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		refreshing = true;
 		send(pending.sendBy("workspace/inlayHint/refresh", JsonRpcParams.Absent, System.ticksMs() + 10000, refreshed));
 	}
-	def close() { refreshSupport = false; dirty = false; }
+	def close() { refreshSupport = false; dirty = false; positions = OrderedStringMap<LspHintPositionFingerprint>.new(); }
 	private def refreshed(reply: JsonRpcReply) { refreshing = false; refresh(); }
 	private def jsonPosition(p: LspPosition) -> JsonValue {
 		var value = Strings.newMap<JsonValue>();

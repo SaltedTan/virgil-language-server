@@ -220,6 +220,98 @@ def fallback(exe, root):
         s.close()
 
 
+def refresh_scopes(exe, root):
+    path, lib_a, lib_b = (root / name for name in ('Main.v3', 'LibA.v3', 'LibB.v3'))
+    config = root / '.virgil-lsp.json'
+    main = 'component Main { def run() { var x = Library.make(1); } }\n'
+    a = 'class A {} component Library { def make(count:int) -> A { return A.new(); } }\n'
+    b = 'class B {} component Library { def make(amount:int) -> B { return B.new(); } }\n'
+    for file, text in [(path, main), (lib_a, a), (lib_b, b)]:
+        file.write_text(text)
+
+    def configuration(projects):
+        return json.dumps({'version': 1, 'projects': [
+            {'name': name, 'sources': sources} for name, sources in projects]})
+
+    def initialize():
+        s = HintsSession(exe)
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'capabilities': {'workspace': {'inlayHint': {'refreshSupport': True}}}}))
+        open_file(s, path, main)
+        return s
+
+    def expect(s, library, text, type_name, parameter):
+        hints = query(s, path)
+        assert len(hints) == 2, hints
+        assert hints[0]['label'] == [{'value': ': ' + type_name,
+                                      'location': location(library, text, type_name)}], hints
+        assert hints[1]['label'] == parameter + ':', hints
+        return hints
+
+    config.write_text(configuration([('p', ['Main.v3', 'LibA.v3'])]))
+    s = initialize()
+    try:
+        first = expect(s, lib_a, a, 'A', 'count')
+        open_file(s, config, config.read_text())
+        assert query(s, path) == first
+        before = len(s.refreshes)
+        replacement = configuration([('p', ['Main.v3', 'LibB.v3'])])
+        change(s, config, replacement, 2)
+        second = expect(s, lib_b, b, 'B', 'amount')
+        assert len(s.refreshes) == before + 1, s.transcript
+        # A new revision with identical hints must preserve the same baseline.
+        change(s, config, replacement + '\n', 3)
+        assert query(s, path) == second
+        assert len(s.refreshes) == before + 1, s.transcript
+        # No context will analyze Main after this edit, but displayed hints
+        # must still be removed. Repeated empty results need no refresh.
+        removed = configuration([('p', ['LibB.v3'])])
+        change(s, config, removed, 4)
+        assert query(s, path) == []
+        assert len(s.refreshes) == before + 2, s.transcript
+        change(s, config, removed + '\n', 5)
+        assert query(s, path) == []
+        assert len(s.refreshes) == before + 2, s.transcript
+        change(s, config, replacement, 6)
+        assert query(s, path) == second
+        assert len(s.refreshes) == before + 3, s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+    projects = [('a', ['Main.v3', 'LibA.v3']), ('b', ['Main.v3', 'LibB.v3'])]
+    config.write_text(configuration(projects))
+    s = initialize()
+    try:
+        first = expect(s, lib_a, a, 'A', 'count')
+        query(s, lib_b)  # Establish the inactive context's snapshot.
+        before = len(s.refreshes)
+        changed_b = b.replace('amount:', 'inactive:')
+        lib_b.write_text(changed_b)
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': lib_b.as_uri(), 'type': 2}]}, request=False)
+        query(s, lib_b)  # Wait for b's analysis, not just a's cached reply.
+        assert query(s, path) == first
+        assert len(s.refreshes) == before, s.transcript
+        changed_a = a.replace('count:', 'active:')
+        lib_a.write_text(changed_a)
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': lib_a.as_uri(), 'type': 2}]}, request=False)
+        expect(s, lib_a, changed_a, 'A', 'active')
+        assert len(s.refreshes) == before + 1, s.transcript
+        # Selecting a different active project also changes the same open
+        # document's result, even though that document itself was not edited.
+        open_file(s, config, config.read_text())
+        expect(s, lib_a, changed_a, 'A', 'active')
+        before = len(s.refreshes)
+        change(s, config, configuration(list(reversed(projects))), 2)
+        expect(s, lib_b, changed_b, 'B', 'inactive')
+        assert len(s.refreshes) == before + 1, s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix='inlay-hints-', dir=exe.parent) as work:
@@ -228,6 +320,7 @@ def main():
             run(exe, Path(work), types, names, support)
         cross_file(exe, Path(work))
         fallback(exe, Path(work))
+        refresh_scopes(exe, Path(work))
     print('protocol inlay hints: UTF-16 labels/links, ranges, settings, freshness, worker replacement, refresh passed')
 
 if __name__ == '__main__':

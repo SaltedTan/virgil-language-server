@@ -102,7 +102,7 @@ class LspServer {
 			LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare);
 		signatureHelp = LspSignatureHelp.new(documents, projects, publishNotification);
 		signatureHelp.register(dispatcher, snapshotRequests);
-		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending, documents);
+		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending, documents, projects);
 		inlayHints.register(dispatcher, snapshotRequests);
 		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);
@@ -176,6 +176,7 @@ class LspServer {
 		if (!configurationChanged) return;
 		configurationChanged = false;
 		parserDiagnostics.reparse(documents, projects);
+		inlayHints.scopesChanged();
 	}
 	private def documentOpened(doc: DocumentOverlay) {
 		documentUpdated(doc, false);
@@ -202,6 +203,7 @@ class LspServer {
 		if (reloadProjectFile(doc)) return;
 		var mapping = projects.forDocument(doc.uri);
 		parserDiagnostics.update(doc, mapping.compilerArgs());
+		if (mapping.active == null) inlayHints.scopesChanged();
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(mapping.contexts, debounce);
 	}
 	private def documentSaved(doc: DocumentOverlay) {
@@ -211,6 +213,7 @@ class LspServer {
 		}
 	}
 	private def documentClosed(doc: DocumentOverlay) {
+		inlayHints.documentClosed(doc.uri);
 		invalidateQueries();
 		if (reloadProjectFile(doc)) return;
 		parserDiagnostics.close(doc);
@@ -232,6 +235,7 @@ class LspServer {
 	// (a checkout, say) analyzes each project once.
 	private def scheduleWatched(contexts: Array<ProjectContext>) {
 		invalidateQueries();
+		inlayHints.scopesChanged();
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(contexts, true);
 	}
 	// An event that can change the sources or the project of a completion's
