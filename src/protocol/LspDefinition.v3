@@ -9,7 +9,15 @@ component LspDefinition {
 	// source range or the target's text is no longer the analyzed text.
 	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonValue) {
 		var s = at.snapshot, decl = s.definitionAtOffset(at.path(), offset);
-		if (decl == null) return (false, JsonValue.Null);
+		return location(at, decl, decl != null);
+	}
+	def typeAnswer(at: LspSnapshotPosition, offset: int) -> (bool, JsonValue) {
+		var found = at.snapshot.typeDefinitionAtOffset(at.path(), offset);
+		return location(at, found.1, found.0);
+	}
+	// Definition and type definition share target freshness and conversion.
+	private def location(at: LspSnapshotPosition, decl: AnalysisDeclaration, found: bool) -> (bool, JsonValue) {
+		if (decl == null) return (found, JsonValue.Null);
 		if (decl.range.beginOffset < 0) return (true, JsonValue.Null);
 		// The target's bytes must still be the ones the worker analyzed.
 		var target = at.target(decl.range.path), j = target.0;

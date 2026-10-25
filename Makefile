@@ -124,6 +124,7 @@ test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUIL
 	python3 test/diagnostics/run.py $(BUILD)/virgil-lsp
 	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
 	python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp
+	python3 test/protocol/type_definition.py $(BUILD)/virgil-lsp
 	python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp
 	python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp
 	python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp

@@ -93,6 +93,7 @@ class LspServer {
 		completion.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
 		snapshotRequests.register(dispatcher, "textDocument/definition", "definition", LspDefinition.answer);
+		snapshotRequests.register(dispatcher, "textDocument/typeDefinition", "type definition", LspDefinition.typeAnswer);
 		snapshotRequests.register(dispatcher, "textDocument/hover", "hover", hover.answer);
 		snapshotRequests.registerPrepared(dispatcher, "textDocument/references", "references",
 			LspReferences.REQUIRES, LspReferences.prepare);
@@ -371,6 +372,7 @@ class LspServer {
 		capabilities["completionProvider"] = JsonValue.JObject(completionOptions);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
+		capabilities["typeDefinitionProvider"] = JsonValue.Bool(true);
 		capabilities["hoverProvider"] = JsonValue.Bool(true);
 		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["referencesProvider"] = JsonValue.Bool(true);

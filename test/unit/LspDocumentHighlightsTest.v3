@@ -695,7 +695,7 @@ def test_cancel_waiting_methods(t: Tester) {
 	var s = session(t), requests = s.server.rename.requests;
 	s.change("Refs.v3", 2, Strings.format1("%s\n", SOURCE));
 	var p = at(SOURCE, "a + step", 4);
-	var methods = ["textDocument/definition", "textDocument/hover", "textDocument/references",
+	var methods = ["textDocument/definition", "textDocument/typeDefinition", "textDocument/hover", "textDocument/references",
 		"textDocument/signatureHelp", "textDocument/prepareRename"];
 	var ids = Array<int>.new(methods.length);
 	for (i < methods.length) ids[i] = s.request(methods[i], "Refs.v3", p.0, p.1);
