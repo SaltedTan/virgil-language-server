@@ -9,6 +9,7 @@ those instead of the real sources.
 """
 import os
 from pathlib import Path
+import runpy
 import shutil
 import signal
 import stat
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 DIR = Path(__file__).resolve().parent
 PREPARE = DIR.parent / "fixtures" / "projects" / "prepare.py"
@@ -217,6 +219,50 @@ class RunTest(unittest.TestCase):
                         if process.poll() is None:
                             process.kill()
                         process.communicate(timeout=10)
+
+    def test_signals_at_launch_and_probe_reaping_leave_no_children(self):
+        runner = runpy.run_path(str(self.run_py))
+        popen, killpg = subprocess.Popen, os.killpg
+        handlers = {signum: signal.getsignal(signum)
+                    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+        try:
+            for boundary in ("group-launch", "probe-launch", "probe-reap"):
+                for signum in handlers:
+                    with self.subTest(boundary=boundary, signal=signum):
+                        self.stand_in()
+                        children = []
+
+                        def launch(command, **kwargs):
+                            child = popen(command, **kwargs)
+                            target = "Alpha:*" if boundary == "group-launch" else "*"
+                            if command[-1] == target:
+                                children.append(child)
+                                if boundary != "probe-reap":
+                                    os.kill(os.getpid(), signum)
+                            return child
+
+                        def kill_group(pid, sig):
+                            killpg(pid, sig)
+                            if boundary == "probe-reap":
+                                os.kill(os.getpid(), signum)
+
+                        try:
+                            with patch.object(subprocess, "Popen", side_effect=launch), \
+                                    patch.object(os, "killpg", side_effect=kill_group):
+                                with self.assertRaises((SystemExit, KeyboardInterrupt)):
+                                    runner["main"](str(self.build), str(self.executable), [])
+                            self.assertEqual(1, len(children))
+                            with self.assertRaises(ChildProcessError):
+                                os.waitpid(children[0].pid, os.WNOHANG)
+                            self.assert_restored()
+                        finally:
+                            for child in children:
+                                child.kill()
+                                child.wait()
+                                child.stdout.close()
+        finally:
+            for signum, handler in handlers.items():
+                signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

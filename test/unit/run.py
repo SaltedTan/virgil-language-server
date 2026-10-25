@@ -60,18 +60,25 @@ def total(build, unit_tests):
         except OSError:
             # Covers executables that cannot be hard-linked into BUILD, e.g. across filesystems.
             shutil.copy2(unit_tests, link)
-        process = subprocess.Popen([link, "*"], cwd=scratch, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   start_new_session=True)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK,
+                                              {signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
         try:
-            line = process.stdout.readline()
-        finally:
+            process = subprocess.Popen(
+                [link, "*"], cwd=scratch, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+                preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask),
+            )
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            process.stdout.close()
+                line = process.stdout.readline()
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                process.stdout.close()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     match = HEADER.fullmatch(line.rstrip(b"\n"))
@@ -91,8 +98,16 @@ class Group:
 
 def run(unit_tests, group, processes):
     """Runs {group}, copying its output, and times each test."""
-    process = subprocess.Popen([unit_tests, f"{group.name}:*"], stdout=subprocess.PIPE)
-    processes.append(process)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK,
+                                          {signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
+    try:
+        process = subprocess.Popen(
+            [unit_tests, f"{group.name}:*"], stdout=subprocess.PIPE,
+            preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask),
+        )
+        processes.append(process)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     test, started = None, 0.0
     for line in process.stdout:
         sys.stdout.buffer.write(line)
