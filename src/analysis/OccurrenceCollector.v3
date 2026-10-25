@@ -16,6 +16,11 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// argument spans of the call being recorded.
 	private def callRecords = DataWriter.new();
 	private def argSpans = Vector<int>.new();
+	// Compact absolute spans, local declaration codes, and label IDs. The
+	// encoder orders them using one shared scratch buffer for all files.
+	private def hintData = DataWriter.new();
+	def var hints: Range<byte>;
+	def var hintCount: int;
 	// The last call's opening parenthesis, and whether every call so far
 	// opened after the one before it.
 	private var lastOpen = -1;
@@ -85,6 +90,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		builtins = AnalysisTables.sort(builtinUses.extract(), builtinBefore);
 		sites = sortSites(siteList.extract());
 		calls = sortCalls();
+		hints = hintData.alias();
 		return AnalysisTables.sort(result.extract(), before);
 	}
 	// The walk finds a file's components, classes, and other declarations in
@@ -313,6 +319,11 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	private def varDecl(v: VarDecl) {
 		if (v == null) return;
 		siteVar(v);
+		if (!ParamDecl.?(v) && v.tref == null && !v.isUnderscore()) {
+			var d = make(AnalysisDeclKind.LOCAL, v), label = display.hintText(v.vtype);
+			if (d != null && label >= 0 && d.range.beginOffset >= 0)
+				hint(d.range.beginOffset, d.range.endOffset, d.typeTarget, label);
+		}
 		typeRef(v.tref);
 		expr(v.init);
 	}
@@ -598,6 +609,34 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	// application has no call: a constructor's super(...) clause, an index
 	// operation, and an operator. See docs/architecture.md#call-sites.
 	// Returns the offset just past the call's closing parenthesis, or -1.
+	private def hint(begin: int, end: int, local: int, label: int) {
+		hintData.put_sleb32(begin).put_sleb32(end - begin).put_sleb32(local).put_sleb32(label);
+		hintCount++;
+	}
+	private def parameterHints(e: AppExpr, target: AnalysisDeclaration, b: VarBinding) {
+		var params = display.hintParams(target, b);
+		if (params == null || VarBinding.ClassMethod.?(b) || AppBinding.None.?(e.appbind) || AppBinding.Partial.?(e.appbind)) return;
+		var count = params.length(), args = e.args.exprs;
+		// Tuple expansion and partially applied calls do not have a one-to-one
+		// mapping of source arguments to named parameters.
+		if (count != args.length()) return;
+		for (a = args.list; a != null; a = a.tail) {
+			if (ParamExpr.?(a.head)) return;
+		}
+		var p = params.list, i = 0;
+		for (a = args.list; a != null; (a = a.tail, p = p.tail, i++)) {
+			var name = p.head.token.image;
+			if (name == null || Strings.equal(name, "_") || p.head.token.beginLine <= 0) continue;
+			var arg = a.head;
+			while (TupleExpr.?(arg)) {
+				var list = TupleExpr.!(arg).exprs.list;
+				if (list == null || list.tail != null) break;
+				arg = list.head;
+			}
+			if (VarExpr.?(arg) && Strings.equal(VarExpr.!(arg).ident.name.image, name)) continue;
+			hint(argSpans[2 * i], argSpans[2 * i + 1], 0, display.hintName(name));
+		}
+	}
 	private def call(e: AppExpr) -> int {
 		// The end of the last argument, if endOf found it before, which is
 		// read first so that the next call finds its own.
@@ -649,15 +688,21 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			skipped++;
 			return -1;
 		}
-		var callee = -1, target: AnalysisDeclaration, b: VarBinding;
-		if (VarExpr.?(e.func)) {
-			var v = VarExpr.!(e.func);
+		var callee = -1, target: AnalysisDeclaration, b: VarBinding, func = e.func;
+		while (TupleExpr.?(func)) {
+			var parts = TupleExpr.!(func).exprs.list;
+			if (parts == null || parts.tail != null) break;
+			func = parts.head;
+		}
+		if (VarExpr.?(func)) {
+			var v = VarExpr.!(func);
 			b = v.varbind;
 			if (lastToken == v.ident.name && lastOffset < open) {
 				callee = lastOffset;
 				target = lastDeclaration;
 			}
 		}
+		parameterHints(e, target, b);
 		var signature = display.callSignature(target, b, e.func.exactType);
 		var flags = if(callee >= 0, AnalysisCallFlags.CALLEE_OFFSET) | if(close - 1 > end, AnalysisCallFlags.CLOSE_GAP);
 		if (open <= lastOpen) callsInOrder = false;

@@ -183,6 +183,32 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		return text;
 	}
 
+	// Hints share the display's interned strings. Reject unknown nested types
+	// too; a partial spelling containing "?" is not an inferred type hint.
+	def hintText(t: Type) -> int {
+		var text = typeText(t);
+		if (text == null) return -1;
+		for (b in text) if (b == '?') return -1;
+		return strings.add(AnalysisHintText.bound(text));
+	}
+	def hintName(name: string) -> int { return strings.add(name); }
+	def hintString(i: int) -> string { return strings[i]; }
+
+	// Real parameter declarations only, never signature display labels.
+	def hintParams(target: AnalysisDeclaration, b: VarBinding) -> VstList<ParamDecl> {
+		if (target == null) return null;
+		match (b) {
+			ObjectMethod, ClassMethod, ComponentMethod, ClassNew, VariantCase => ;
+			_ => return null;
+		}
+		match (AnalysisWorkerDeclaration.!(target).syntax) {
+			x: VstMethod => return x.func.params;
+			x: VstClass => return if(VarBinding.ClassNew.?(b), x.params);
+			x: VstCaseMember => return if(x.decl != null, x.decl.params);
+		}
+		return null;
+	}
+
 	// The index of the signature that verification checked a call against,
 	// whose callee has binding {b} and type {t} and is a use of {target}, or
 	// -1; see

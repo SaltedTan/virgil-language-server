@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 12;
+	def PROTOCOL_VERSION = 13;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -328,7 +328,10 @@ component AnalysisWire {
 			sites[i] = analysis.declarationSites(f.0);
 			builtins[i] = analysis.builtinUses(f.0);
 		}
-		var typeEncoding = AnalysisTypeTargetEncoding.new(analysis.typeDeclarationCount(), decls, files.length);
+		var workerDeclarations = analysis.typeDeclarationCount();
+		decls.reserve(workerDeclarations);
+		var typeEncoding = AnalysisTypeTargetEncoding.new(workerDeclarations, decls, files.length);
+		typeEncoding.defaults.grow(workerDeclarations);
 		for (i < files.length) {
 			firstSite[i] = decls.length();
 			for (d in sites[i]) typeEncoding.add(d);
@@ -380,6 +383,29 @@ component AnalysisWire {
 		}
 		typeEncoding.translateDefaults();
 		for (i < files.length) typeEncoding.prepareFile(i, sites[i], files[i].1, builtins[i]);
+		// Collectors retain compact bytes. One scratch array serves every file;
+		// sort its four-int records in place, without per-hint objects or copies.
+		var hintData = Array<Range<byte>>.new(files.length), hintCounts = Array<int>.new(files.length), largest = 0;
+		for (i < files.length) { hintCounts[i] = analysis.hintCount(files[i].0); largest = Ints.max(largest, hintCounts[i]); }
+		var h = Array<int>.new(4 * largest);
+		for (i < files.length) {
+			var n = hintCounts[i], r = DataReader.new(analysis.hintRecords(files[i].0));
+			for (j = 0; j < 4 * n; j += 4) {
+				h[j] = r.read_sleb32();
+				h[j + 1] = r.read_sleb32();
+				h[j + 2] = r.read_sleb32();
+				h[j + 3] = r.read_sleb32();
+			}
+			AnalysisHintOrder.sort(h, n);
+			var encoded = DataWriter.new().grow(6 * n), previous = 0;
+			for (j = 0; j < 4 * n; j += 4) {
+				var local = if(h[j + 2] > 0, 1 + typeEncoding.declaration(analysis.typeDeclaration(h[j + 2])));
+				encoded.put_sleb32(h[j] - previous).put_sleb32(h[j + 1]);
+				encoded.put_sleb32(local).put_sleb32(strings.add(analysis.hintString(h[j + 3])));
+				previous = h[j];
+			}
+			hintData[i] = encoded.alias();
+		}
 		// Both wire passes reuse the numeric string and path IDs as well as
 		// declaration IDs; none needs to hash the same declaration again.
 		var declarationIds = Array<int>.new(3 * decls.length());
@@ -434,7 +460,7 @@ component AnalysisWire {
 			for (i < files.length) {
 				var f = files[i], counts = typeEncoding.counts[i];
 				w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
-				w.put_sleb32(counts.0);
+				w.put_sleb32(if(typeEncoding.compactCoordinates[i], -counts.0, counts.0));
 				for (o in f.1) {
 					var r = o.range;
 					if (!r.isTokenSpan()) continue;
@@ -447,6 +473,7 @@ component AnalysisWire {
 				w.put_sleb32(typeEncoding.overrideCounts[i]).putr(typeEncoding.overrides[i]);
 				w.put_sleb32(calls[i]);
 				encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
+				w.put_sleb32(hintCounts[i]).putr(hintData[i]);
 			}
 			if (call != null) encodeCall(w, call, decls, rank);
 			if (members != null) {
@@ -585,7 +612,7 @@ component AnalysisWire {
 			// runs come in order, so that each declaration is checked as a
 			// site at most once.
 			var siteEnd = 0;
-			for (n = r.readCount(8, 256); n > 0 && r.ok(); n--) {
+			for (n = r.readCount(9, 256); n > 0 && r.ok(); n--) {
 				var fileIndex = r.readInt();
 				if (!files.isNew(fileIndex)) {
 					r.fail("invalid or repeated file index");
@@ -595,12 +622,13 @@ component AnalysisWire {
 				var first = r.readInt(), sites = r.readInt();
 				if (!r.checkSites(declarations, path, siteEnd, first, sites)) break;
 				siteEnd = first + sites;
-				// Each occurrence is four ints of its range and a declaration
-				// index with its write bit, stored as five int array elements.
-				var count = r.readCount(5, 20);
-				var ranges = Array<int>.new(4 * count), targets = Array<int>.new(count), end = 0;
+				// Each occurrence retains three compact or four full-width
+				// range ints plus its declaration index and write bit.
+				var encodedCount = r.readOccurrenceCount(), compact = encodedCount < 0;
+				var count = if(compact, -encodedCount, encodedCount), stride = if(compact, 3, 4);
+				var ranges = Array<int>.new(stride * count), targets = Array<int>.new(count), end = 0;
 				for (i = 0; i < count && r.ok(); i++) {
-					end = r.readSpan(ranges, 4 * i, end);
+					end = r.readOccurrenceSpan(ranges, stride * i, end, compact);
 					targets[i] = r.readOccurrenceTarget(declarations.length);
 				}
 				// Occurrence index and type string index pairs.
@@ -620,10 +648,12 @@ component AnalysisWire {
 				}
 				// A builtin use is never an occurrence, so a lookup by offset
 				// finds at most one of them.
-				r.checkDisjoint(ranges, builtins);
 				var file = AnalysisSnapshotFile.new(ranges, targets, typed, builtins, first, sites);
+				file.compactCoordinates = compact;
+				r.checkDisjoint(file, builtins);
 				file.typeTargets = r.readTypeTargets(file, declarations);
 				r.readCalls(file, signatures);
+				r.readHints(file, declarations, strings);
 				files.add(fileIndex, file);
 			}
 			var memberQuery = kinds == AnalysisScopeKinds.MEMBERS, callQuery = kinds == AnalysisScopeKinds.CALL;
@@ -988,6 +1018,26 @@ class AnalysisWireReader {
 	// index {i}, and returns its end offset. A use is a token span that
 	// starts at or after {end}, the end of the previous use, so that uses
 	// are in byte order without overlaps, as a binary search requires.
+	// A negative count selects three stored range ints: packed 16-bit line
+	// and column, offset, length. Full coordinates retain four range ints.
+	// Both wire forms still send and validate all four numbers.
+	def readOccurrenceCount() -> int {
+		var encoded = r.read_sleb32(), n = if(encoded < 0, -long.view(encoded), long.view(encoded));
+		if (n > r.available() / 5) { r.fail("invalid occurrence count"); return 0; }
+		return if(reserve(64 + n * if(encoded < 0, 16, 20)), encoded, 0);
+	}
+	def readOccurrenceSpan(a: Array<int>, i: int, end: int, compact: bool) -> int {
+		if (!compact) return readSpan(a, i, end);
+		var line = r.read_sleb32(), column = r.read_sleb32(), offset = r.read_sleb32(), length = r.read_sleb32();
+		if (line < 1 || line > 65535 || column < 1 || column > 65535 || offset < end
+				|| length < 1 || length > int.max - offset || length > int.max - column) {
+			r.fail("invalid compact use range"); return end;
+		}
+		a[i] = (line << 16) | column;
+		a[i + 1] = offset;
+		a[i + 2] = length;
+		return offset + length;
+	}
 	def readSpan(a: Array<int>, i: int, end: int) -> int {
 		var line = r.read_sleb32(), column = r.read_sleb32(), offset = r.read_sleb32(), length = r.read_sleb32();
 		if (line < 1 || column < 1 || offset < end || length < 1 || length > int.max - offset || length > int.max - column) {
@@ -1000,13 +1050,13 @@ class AnalysisWireReader {
 		a[i + 3] = length;
 		return offset + length;
 	}
-	// Checks that no occurrence in {ranges}, four ints each, overlaps a
+	// Checks that no occurrence in {file} overlaps a
 	// builtin use in {builtins}, five ints each. Both are in byte order.
-	def checkDisjoint(ranges: Array<int>, builtins: Array<int>) {
+	def checkDisjoint(file: AnalysisSnapshotFile, builtins: Array<int>) {
 		var i = 0, k = 0;
-		while (r.ok && i < ranges.length && k < builtins.length) {
-			var o = ranges[i + 2], b = builtins[k + 2];
-			if (o + ranges[i + 3] <= b) i += 4;
+		while (r.ok && i < file.targets.length && k < builtins.length) {
+			var o = file.occurrenceBegin(i), b = builtins[k + 2];
+			if (file.occurrenceEnd(i) <= b) i++;
 			else if (b + builtins[k + 3] <= o) k += 5;
 			else r.fail("builtin use overlaps an occurrence");
 		}
@@ -1014,6 +1064,27 @@ class AnalysisWireReader {
 	// A sparse type-target map. Every key must begin a recorded use or
 	// declaration name, strictly in source order. Bounds apply even to a
 	// no-parse snapshot; no index can escape the declaration table.
+	def readHints(file: AnalysisSnapshotFile, declarations: Array<AnalysisDeclaration>, strings: Array<string>) {
+		var count = r.read_sleb32(), start = r.pos;
+		if (count < 0 || count > r.available() / 4) return fail("invalid hint count");
+		if (count == 0) return;
+		var cursor = AnalysisHintCursor.new(r, count), previous = -1;
+		while (cursor.next()) {
+			var local = cursor.local, label = cursor.label;
+			if (cursor.begin <= previous || local < 0 || local > declarations.length
+					|| label < 0 || label >= strings.length) return fail("invalid hint index");
+			if (!AnalysisHintText.valid(strings[label], local > 0)) return fail("invalid hint label");
+			if (local > 0) {
+				var i = local - 1;
+				if (i < file.firstSite || i >= file.firstSite + file.siteCount) return fail("hint local outside file");
+				var d = declarations[i];
+				if (d.kind != AnalysisDeclKind.LOCAL || d.range.beginOffset != cursor.begin || d.range.endOffset != cursor.end)
+					return fail("hint local has wrong span");
+			}
+			previous = cursor.begin;
+		}
+		file.setHints(count, copyFrom(start, 64));
+	}
 	def readTypeTargets(file: AnalysisSnapshotFile, declarations: Array<AnalysisDeclaration>) -> AnalysisSnapshotTypeTargets {
 		var count = r.read_sleb32(), start = r.pos;
 		if (count < 0 || count > r.available() / 2) {
@@ -1039,10 +1110,10 @@ class AnalysisWireReader {
 			// Keys are strictly increasing, and all three name streams were
 			// validated above. Equality requires a name's beginning, never an
 			// interior byte or a gap; advancing preserves the same checks.
-			while (occurrence < file.targets.length && file.ranges[4 * occurrence + 2] < at) occurrence++;
+			while (occurrence < file.targets.length && file.occurrenceBegin(occurrence) < at) occurrence++;
 			while (builtin < file.builtinCount() && file.builtins[5 * builtin + 2] < at) builtin++;
 			while (site < file.firstSite + file.siteCount && declarations[site].range.beginOffset < at) site++;
-			var found = (occurrence < file.targets.length && file.ranges[4 * occurrence + 2] == at)
+			var found = (occurrence < file.targets.length && file.occurrenceBegin(occurrence) == at)
 				|| (builtin < file.builtinCount() && file.builtins[5 * builtin + 2] == at)
 				|| (site < file.firstSite + file.siteCount && declarations[site].range.beginOffset == at);
 			if (!found) r.fail("type target has no recorded name");

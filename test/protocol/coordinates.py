@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 12, self.hello
+        assert self.hello["protocol"] == 13, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -162,7 +162,9 @@ class Worker:
                 path, first, sites = paths[reader.integer()], reader.integer(), reader.integer()
                 assert all(d["path"] == path for d in declarations[first:first + sites])
                 uses = []
-                for _ in range(reader.integer()):
+                # Negative counts select compact server storage; the wire
+                # still carries all four original coordinate integers.
+                for _ in range(abs(reader.integer())):
                     # Begin line, column, and offset, and the length of both spans.
                     line, column, offset, length = [reader.integer() for _ in range(4)]
                     target = reader.integer()
@@ -208,6 +210,16 @@ class Worker:
                     calls.append(dict(path=path, open=open_, close=close, args=args, callee=callee,
                                       calleeAtParen=bool(head & 1),
                                       signature=signatures[signature - 1] if signature else None))
+                hint_begin = 0
+                for _ in range(reader.integer()):
+                    delta, length, local, label = [reader.integer() for _ in range(4)]
+                    assert delta >= 0 and length > 0
+                    hint_begin += delta
+                    assert 0 <= local <= len(declarations) and 0 <= label < len(strings)
+                    if local:
+                        decl = declarations[local - 1]
+                        assert decl["path"] == path and decl["offsets"] == [hint_begin, hint_begin + length]
+
         reader.finish()
         return dict(flags=flags, parseUs=stats[0], verifyUs=stats[1], skippedUses=stats[6],
                     diagnostics=diagnostics, occurrences=occurrences, builtins=builtins, calls=calls)

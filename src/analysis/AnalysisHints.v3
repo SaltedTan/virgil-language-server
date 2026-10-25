@@ -1,0 +1,71 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Forty Unicode code points, including the elision marker. Display text is
+// valid UTF-8; continuation bytes never count as another character.
+component AnalysisHintText {
+	def bound(text: string) -> string {
+		var chars = 0, cut = 0;
+		for (i < text.length) {
+			if ((text[i] & 0xC0) == 0x80) continue;
+			if (chars == 39) cut = i;
+			if (++chars > 40) return StringBuilder.new().putr(text[0 ... cut]).puts("\xE2\x80\xA6").extract();
+		}
+		return text;
+	}
+	def valid(text: string, isType: bool) -> bool {
+		if (text == null || text.length == 0) return false;
+		var chars = 0;
+		for (b in text) {
+			if (b < 32 || b == 127 || (isType && b == '?')) return false;
+			if ((b & 0xC0) != 0x80) chars++;
+		}
+		return !isType || chars <= 40;
+	}
+}
+
+// Snapshot hint records stay in their validated wire encoding: begin delta,
+// span length, local declaration ID plus one (zero for parameter names), and
+// string-table ID. A type hint sits at the end; a parameter hint at the begin.
+class AnalysisHintCursor(r: DataReader, var remaining: int) {
+	def var begin: int;
+	def var end: int;
+	def var local: int;
+	def var label: int;
+	def next() -> bool {
+		if (remaining <= 0 || !r.ok) return false;
+		remaining--;
+		var delta = r.read_sleb32(), length = r.read_sleb32();
+		local = r.read_sleb32();
+		label = r.read_sleb32();
+		if (delta < 0 || delta > int.max - begin || length <= 0 || length > int.max - begin - delta) {
+			r.fail("invalid hint span");
+			return false;
+		}
+		begin += delta;
+		end = begin + length;
+		return r.ok;
+	}
+	def position() -> int { return if(local > 0, end, begin); }
+}
+
+// Heap sort moves four-int records together, using no allocation. The encoder
+// reuses the largest file's scratch array across all files in a result.
+component AnalysisHintOrder {
+	def sort(a: Array<int>, count: int) {
+		for (i = count / 2; i > 0; ) sift(a, --i, count);
+		for (end = count - 1; end > 0; end--) { swap(a, 0, end); sift(a, 0, end); }
+	}
+	private def sift(a: Array<int>, root: int, end: int) {
+		while (root < end / 2) {
+			var child = 2 * root + 1;
+			if (child + 1 < end && a[4 * child] < a[4 * (child + 1)]) child++;
+			if (a[4 * root] >= a[4 * child]) return;
+			swap(a, root, child);
+			root = child;
+		}
+	}
+	private def swap(a: Array<int>, x: int, y: int) {
+		for (k < 4) { var t = a[4 * x + k]; a[4 * x + k] = a[4 * y + k]; a[4 * y + k] = t; }
+	}
+}
