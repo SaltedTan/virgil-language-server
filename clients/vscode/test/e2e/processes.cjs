@@ -20,8 +20,8 @@ const KEEPER_KILL_WAIT_MS = 30000;
 // number of threads; undefined if it has gone, null if inaccessible. On Linux
 // they are the third, fourth, fifth, 22nd, and 20th fields of /proc/<pid>/stat,
 // and the start time is in clock ticks after boot. macOS uses libproc's
-// microsecond start time where Python and the call are available; the fallback
-// and other platforms use ps, with start times only to the second.
+// microsecond start time if the first native probe succeeds; otherwise it uses
+// ps for the run, as other platforms do, with start times only to the second.
 function processInfo(pid) {
   if (process.platform === 'darwin') {
     const info = darwinInfos([Number(pid)])?.[0];
@@ -433,7 +433,7 @@ function checkedSignal({ pid, start }, name) {
 // couldn't be opened for a process or couldn't signal it, it follows a check
 // a few system calls before it, so a process that exits between them, and
 // whose PID another process is given at once, could still get it. Where
-// macOS's libproc is unavailable, or on other non-Linux platforms, ps gives
+// macOS runs in ps mode, or on other non-Linux platforms, ps gives
 // start times only to the second: a replacement that reuses a PID within the
 // original process's start second also passes that check.
 function signalProcesses(processes, name) {
