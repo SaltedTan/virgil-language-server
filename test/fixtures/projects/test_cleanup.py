@@ -40,8 +40,10 @@ for path in sys.argv[1:-1]:
         sys.exit(f"{path} is accessible")
 sys.exit(status)
 """
-# The command that make's run-unit-tests recipe wraps in the test below. It
-# records the modes it sees so the assertion does not depend on output parsing.
+# The command that make's run-unit-tests recipe wraps in the test below, given
+# a pattern, so that it runs once; test/unit/test_run.py covers the run without
+# one, a process for each group. It records the modes it sees so the assertion
+# does not depend on output parsing.
 STAND_IN = """\
 import json
 import os
@@ -115,7 +117,7 @@ class FixtureCleanupTest(unittest.TestCase):
         return subprocess.run(
             [
                 "make", "--no-print-directory", "run-unit-tests",
-                f"BUILD={build}", f"UNIT_TESTS={consumer}",
+                f"BUILD={build}", f"UNIT_TESTS={consumer}", "ARGS=*",
             ],
             cwd=ROOT,
             check=False,
