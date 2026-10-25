@@ -20,6 +20,7 @@ One server, used by both LazyVim/Neovim and VS Code, providing:
 - parser and type-checker diagnostics for unsaved buffers
 - document symbols
 - go-to-definition for locals, members, methods, and named types
+- go-to-type-definition from resolved value and call-result types, including generic types and type parameters
 - hover with declaration signatures and inferred types
 - a [`.virgil-lsp.json` project file](docs/configuration.md) describing which sources form a program
 

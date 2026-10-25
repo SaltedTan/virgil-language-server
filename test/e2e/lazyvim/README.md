@@ -48,7 +48,7 @@ Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--
   - startup: a UI attached, `UIEnter` and LazyVim's `VeryLazy` fired, and noice.nvim loaded;
   - the client that LazyVim starts from the spec: its command, root, and `virgilRoot`;
   - parser diagnostics, cleared by an unsaved edit and back after undo; document symbols; and the project's semantic `TypeError` in `words/Words.v3`, which needs `lib/util` from the Virgil root;
-  - definition and hover, by request and through LazyVim's `gd` and `K`; and signature help, workspace symbols, and references by request;
+  - definition and hover, by request and through LazyVim's `gd` and `K`; type definition by request and `gy`, checking the exact `StringBuilder` class destination of a call result and no location for the `int` local; and signature help, workspace symbols, and references by request;
   - document highlights in snacks.nvim words: exactly the declaration and four uses of `count` in `words/Highlights.v3`, with `]]` moving to the next use and `[[` returning to the previous use;
   - rename through `<leader>cr`: the server's refusal while the project has a type error, as noice shows it, then a rename typed into snacks.nvim's prompt after an unsaved fix, and two undos;
   - signature help in noice's window: as `(` is typed, with `<C-k>` in Insert mode and `gK` in Normal mode, and while a call is typed with and without mini.pairs's `)`, with `b: int` highlighted after the `,`; and that LazyVim maps Insert `<C-s>` to Save File;

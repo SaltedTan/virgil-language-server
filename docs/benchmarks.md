@@ -339,6 +339,39 @@ The rejected source/test patch has SHA-256
 The paired JSON retains binary hashes, source hashes, individual samples, all
 probe records, complete process stderr, host state, and the exact command.
 
+### Type-definition navigation
+
+Measured on 2026-10-25 against `d514ae5`, with the type-target analysis at `86c7362` and protocol handler `3782744`. Both candidates were built in this physical checkout, in equal-length `build/base01` and `build/next04` directories, with `BENCH=1 all bench-metadata`, identical generated BuildInfo text, and the default 384 MiB worker heap. The baseline source tree was extracted from `d514ae5` for its build, then the implementation was restored and checked byte for byte. Source hashes in the build metadata were checked against both inputs. The comparison used all three pinned projects, CPU 12, six alternating process blocks, two warmups, and five measured operations per block, with no samples removed:
+
+```sh
+python3 scripts/bench-lsp.py --exe build/base01/virgil-lsp \
+  --exe build/next04/virgil-lsp --require-probes \
+  --blocks 6 --operations 5 --warmups 2 --cpu 12 --output comparison.json
+```
+
+Times are milliseconds, median (p10–p90).
+
+| Measurement | Before | With type-definition targets |
+| --- | ---: | ---: |
+| Small fresh analysis, end to end | 0.447 (0.428–0.465) | 0.441 (0.427–0.479) |
+| Util fresh analysis, end to end | 15.132 (15.028–15.235) | 15.630 (15.523–16.137) |
+| Aeneas fresh occurrence collection | 107.107 (105.289–109.483) | 112.374 (111.309–115.907) |
+| Aeneas reused occurrence collection | 93.185 (91.883–95.869) | 98.050 (97.707–98.878) |
+| Aeneas fresh analysis, end to end | 324.107 (321.470–340.048) | 337.843 (334.790–354.256) |
+| Aeneas reused analysis, end to end | 292.507 (281.962–310.918) | 304.368 (295.285–326.343) |
+
+Every measured worker transaction collected zero times in both candidates, excluding the explicit final collection. Aeneas fresh worker allocation rose from 189,226,344 to 191,930,864 bytes (1.43%); reused allocation medians rose from 189,072,920 to 191,777,440. Integer codes fit the padding of occurrence and builtin records; declaration codes, resolution of additional nominal targets, and temporary numeric translation and override buffers account for the growth. Aeneas reused result encoding rose from 64.848 to 71.618 ms. The measurements show about 4% end-to-end latency cost for Aeneas, so the strict no-measurable-cost criterion in [#258](https://github.com/SaltedTan/virgil-language-server/issues/258) is not met, despite preserving zero worker GCs and the existing budget guards.
+
+The wire sends a default source-type target per declaration and sparse exceptions, including explicit nulls. Successful full-snapshot result lengths grew from 596 to 614 bytes for small, 168,738 to 172,674 for util, and 3,936,046 to 4,054,897 for Aeneas (3.02%). CLI analyses of the same relative source paths gave the following conservative snapshot charges; retained bytes include the snapshot header and paths, without editor document provenance:
+
+| Project | Decoded allocation before → after | Retained charge before → after |
+| --- | ---: | ---: |
+| Small | 5,212 → 5,353 | 6,572 → 6,713 |
+| Util | 751,779 → 756,219 | 757,784 → 762,224 |
+| Aeneas | 13,250,205 → 13,311,167 | 13,285,835 → 13,346,797 |
+
+The Aeneas retained charge grows by 60,962 bytes (0.46%) for the compressed overrides and their checkpoints. The default integer remains within the existing conservative 128-byte declaration/range charge: the x86-64 declaration and range each occupy 40 bytes, plus an 8-byte array slot. Both Aeneas charges stay below the unchanged 80% budget guard. No compiler types or rendered type strings are added to the snapshot.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
