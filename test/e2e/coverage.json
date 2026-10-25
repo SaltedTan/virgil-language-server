@@ -96,6 +96,11 @@
       "matrix": true
     },
     {
+      "id": "inlay-hints",
+      "label": "Inlay hints",
+      "matrix": true
+    },
+    {
       "id": "hover",
       "label": "Hover",
       "matrix": true
@@ -1813,6 +1818,36 @@
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
       "description": "LazyVim's gy jumps from the puts call to the exact line and column of class StringBuilder, then returns to Words.v3."
+    },
+    {
+      "id": "vscode.inlay-hints.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The editor inlay-hint API returns exactly : int at UTF-16 position 4:33 and count: at 4:41, after a comment containing non-ASCII text."
+    },
+    {
+      "id": "nvim.inlay-hints.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "The editor inlay-hint API returns exactly : int at UTF-16 position 4:33 and count: at 4:41, after a comment containing non-ASCII text."
+    },
+    {
+      "id": "lazyvim.inlay-hints.response",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "The editor inlay-hint API returns exactly : int at UTF-16 position 4:33 and count: at 4:41, after a comment containing non-ASCII text."
     }
   ],
   "retired": [],
@@ -1849,6 +1884,13 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["vscode.inlay-hints.response"],
+        "notCovered": []
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "hover",
         "level": "api",
         "checks": ["vscode.hover.response"],
@@ -1940,6 +1982,13 @@
       },
       {
         "setup": "vscode-macos",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["vscode.inlay-hints.response"],
+        "notCovered": []
+      },
+      {
+        "setup": "vscode-macos",
         "feature": "hover",
         "level": "api",
         "checks": ["vscode.hover.response"],
@@ -2028,6 +2077,13 @@
         "level": "api",
         "checks": ["vscode.type-definition.response"],
         "notCovered": ["vscode.type-definition-editor"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["vscode.inlay-hints.response"],
+        "notCovered": []
       },
       {
         "setup": "ssh-linux-client",
@@ -2118,6 +2174,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["nvim.type-definition.response", "nvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["nvim.inlay-hints.response"],
         "notCovered": []
       },
       {
@@ -2209,6 +2272,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["nvim.type-definition.response", "nvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["nvim.inlay-hints.response"],
         "notCovered": []
       },
       {
@@ -2300,6 +2370,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["lazyvim.type-definition.response", "lazyvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["lazyvim.inlay-hints.response"],
         "notCovered": []
       },
       {
@@ -2391,6 +2468,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["lazyvim.type-definition.response", "lazyvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "inlay-hints",
+        "level": "api",
+        "checks": ["lazyvim.inlay-hints.response"],
         "notCovered": []
       },
       {

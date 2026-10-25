@@ -1,0 +1,6 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+component Inlay {
+  def take(count: int) -> int { return count; }
+  def run() { /* é𝄞 */ var total = take(3); }
+}

@@ -315,7 +315,7 @@ async function workspace(extension) {
 
   // Only a program that resolves StringBuilder from lib/util, through the
   // project's virgilDependencies and virgil.virgilRoot, has this single error.
-  const words = await open('words', 'Words.v3');
+  let words = await open('words', 'Words.v3');
   const semantic = await waitForDiagnostics('semantic diagnostics for words/Words.v3', words, 40000);
   assert.deepEqual(semantic.map((d) => [code(d), d.source, d.message, d.range.start.line]), [
     ['TypeError', 'aeneas', 'expected int in var initialization, got Array<byte>', 6],
@@ -336,6 +336,16 @@ async function workspace(extension) {
     [library, declaration, 6, declaration, 19],
   ]);
   assert.deepEqual(await typeDefinitions(words, use, words.document.lineAt(use).text.indexOf('line:')), []);
+  await vscode.window.showTextDocument(words.document, { preview: false });
+  const inlay = await open('words', 'Inlay.v3');
+  const hints = await vscode.commands.executeCommand('vscode.executeInlayHintProvider',
+    inlay.document.uri, new vscode.Range(0, 0, inlay.document.lineCount, 0));
+  assert.deepEqual(hints.map((h) => [h.position.line, h.position.character, h.kind,
+    typeof h.label === 'string' ? h.label : h.label.map((p) => p.value).join('')]), [
+    [4, 33, vscode.InlayHintKind.Type, ': int'],
+    [4, 41, vscode.InlayHintKind.Parameter, 'count:'],
+  ]);
+  words = await vscode.window.showTextDocument(words.document);
   // Hover over the same use shows the class's signature in a Virgil code block.
   assert.deepEqual(await hovers(words, use, column), [
     [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
@@ -562,7 +572,7 @@ async function workspace(extension) {
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, type definition, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
+    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
     + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
 
   // The scenarios that restart the server, or could disturb it, come last.
