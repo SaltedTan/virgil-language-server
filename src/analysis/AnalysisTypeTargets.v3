@@ -30,40 +30,91 @@ class AnalysisSnapshotTypeTargets(data: Array<byte>, checkpoints: Array<int>) {
 	}
 }
 
-// Shares one resolved type target per declaration; only uses that differ
-// need an offset record. The choice of default changes storage, never the
-// answer: every recorded name, including one with no type location, is
-// compared with it. Compiler bindings supplied all the targets beforehand.
-class AnalysisTypeTargetEncoding(indices: Array<int>, declarations: AnalysisIndexMap<AnalysisDeclaration>,
-		sites: Array<Array<AnalysisDeclaration>>, files: Array<(string, Array<AnalysisOccurrence>)>,
-		builtins: Array<Array<AnalysisBuiltinUse>>) {
-	def defaults = Array<int>.new(declarations.length());
-	def overrides = Array<Array<(int, int)>>.new(files.length);
-	new() {
-		for (f < files.length) {
-			for (d in sites[f]) choose(declaration(d), target(d.sourceType));
-			for (o in files[f].1) if (o.range.isTokenSpan()) choose(declaration(o.declaration), target(o.sourceType));
-		}
-		for (f < files.length) {
-			var changes = Vector<(int, int)>.new();
-			for (d in sites[f]) changed(changes, d.range.beginOffset, declaration(d), d.sourceType);
-			for (o in files[f].1) if (o.range.isTokenSpan()) changed(changes, o.range.beginOffset, declaration(o.declaration), o.sourceType);
-			for (b in builtins[f]) if (b.range.isTokenSpan()) changed(changes, b.range.beginOffset, -1, b.sourceType);
-			overrides[f] = AnalysisTables.sort(changes.extract(), fun (a: (int, int), b: (int, int)) => a.0 < b.0);
-		}
+// Numeric declaration indexing and sparse type-target preparation share the
+// encoder's existing passes. Defaults are chosen while indexing names, then
+// translated once per declaration. Merging the three source-ordered streams
+// prepares overrides and span counts together, with no per-override sort.
+class AnalysisTypeTargetEncoding(workerCount: int, declarations: AnalysisIndexMap<AnalysisDeclaration>, fileCount: int) {
+	// Positive: wire index plus one. Zero: not indexed or needed. Minus
+	// one: needed by a selected name, but not yet in the declaration table.
+	private def indices = Array<int>.new(workerCount + 1);
+	def defaults = Vector<int>.new();
+	// Prepared wire bytes are shared by sizing and writing; neither pass
+	// repeats string indexing or integer encoding for these sparse records.
+	def overrides = Array<Range<byte>>.new(fileCount);
+	def overrideCounts = Array<int>.new(fileCount);
+	def typedUses = Array<Range<byte>>.new(fileCount);
+	def builtinUses = Array<Range<byte>>.new(fileCount);
+	// Token occurrence count, typed occurrence count, and builtin count.
+	def counts = Array<(int, int, int)>.new(fileCount);
+	def add(d: AnalysisDeclaration) -> int {
+		var i = declaration(d);
+		if (i >= 0) return i;
+		i = declarations.add(d);
+		if (d.typeTarget > 0) indices[d.typeTarget] = i + 1;
+		if (i == defaults.length) defaults.put(0);
+		return i;
 	}
-	private def declaration(d: AnalysisDeclaration) -> int {
+	def declaration(d: AnalysisDeclaration) -> int {
 		return if(d.typeTarget > 0, indices[d.typeTarget] - 1, declarations.find(d));
+	}
+	def choose(i: int, sourceType: int) {
+		if (sourceType <= 0) return;
+		if (defaults[i] == 0) defaults[i] = sourceType;
+		requireTarget(sourceType);
+	}
+	def requireTarget(code: int) {
+		if (code > 0 && indices[code] == 0) indices[code] = -1;
+	}
+	def needs(d: AnalysisDeclaration) -> bool {
+		return indices[d.typeTarget] < 0;
+	}
+	def translateDefaults() {
+		for (i < defaults.length) defaults[i] = target(defaults[i]);
 	}
 	private def target(code: int) -> int {
 		return if(code > 0, indices[code]);
 	}
-	private def choose(i: int, target: int) {
-		if (target == 0) return;
-		if (defaults[i] == 0) defaults[i] = target;
-	}
-	private def changed(changes: Vector<(int, int)>, offset: int, declaration: int, sourceType: int) {
-		var code = target(sourceType), own = if(declaration >= 0, defaults[declaration]);
-		if (code != own) changes.put((offset, code));
+	def prepareFile(f: int, sites: Array<AnalysisDeclaration>, occurrences: Array<AnalysisOccurrence>, builtins: Array<AnalysisBuiltinUse>) {
+		var changes = DataWriter.new(), previousOffset = 0, changeCount = 0;
+		var si = 0, oi = 0, bi = 0, count = 0, typed = 0, builtinCount = 0;
+		while (true) {
+			while (oi < occurrences.length && !occurrences[oi].range.isTokenSpan()) oi++;
+			while (bi < builtins.length && !builtins[bi].range.isTokenSpan()) bi++;
+			if (si == sites.length && oi == occurrences.length && bi == builtins.length) break;
+			var offset = int.max, stream = 0, decl = -1, sourceType = 0;
+			if (si < sites.length) offset = sites[si].range.beginOffset;
+			if (oi < occurrences.length && occurrences[oi].range.beginOffset < offset) {
+				offset = occurrences[oi].range.beginOffset;
+				stream = 1;
+			}
+			if (bi < builtins.length && builtins[bi].range.beginOffset < offset) {
+				offset = builtins[bi].range.beginOffset;
+				stream = 2;
+			}
+			if (stream == 0) {
+				var d = sites[si++];
+				decl = declaration(d);
+				sourceType = d.sourceType;
+			} else if (stream == 1) {
+				var o = occurrences[oi++];
+				decl = declaration(o.declaration);
+				sourceType = o.sourceType;
+				count++;
+				if (o.useType != null) typed++;
+			} else {
+				sourceType = builtins[bi++].sourceType;
+				builtinCount++;
+			}
+			var code = target(sourceType), own = if(decl >= 0, defaults[decl]);
+			if (code != own) {
+				changes.put_sleb32(if(changeCount % 32 == 0, offset, offset - previousOffset)).put_sleb32(code);
+				previousOffset = offset;
+				changeCount++;
+			}
+		}
+		overrides[f] = changes.alias();
+		overrideCounts[f] = changeCount;
+		counts[f] = (count, typed, builtinCount);
 	}
 }

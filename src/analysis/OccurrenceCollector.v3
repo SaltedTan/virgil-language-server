@@ -505,7 +505,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var d = AnalysisWorkerDeclaration.!(decl);
 		if (isTypeName(d.kind) && (ClassType.?(t) || EnumType.?(t) || TypeParamType.?(t))) o.sourceType = sourceCode(d);
 		else o.sourceType = if(t == d.ownType, declarationSource(decl),
-			sourceCode(if(t == null && decl.kind == AnalysisDeclKind.LAYOUT, decl, resolvedTypeDeclaration(t))));
+			if(t == null && decl.kind == AnalysisDeclKind.LAYOUT, sourceCode(decl), resolvedSourceType(t)));
 		result.put(o);
 		last(token, range.beginOffset, decl);
 		return o;
@@ -524,7 +524,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var range = sources.range(token);
 		if (range.isTokenSpan()) {
 			var u = AnalysisBuiltinUse.new(range, text);
-			u.sourceType = sourceCode(resolvedTypeDeclaration(t));
+			u.sourceType = resolvedSourceType(t);
 			builtinUses.put(u);
 			last(token, range.beginOffset, null);
 		} else {
@@ -544,7 +544,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 			callee = list.head;
 		}
 		if (VarExpr.?(callee) && lastToken == VarExpr.!(callee).ident.name) {
-			var target = sourceCode(resolvedTypeDeclaration(e.exactType));
+			var target = resolvedSourceType(e.exactType);
 			if (lastDeclaration != null) result[result.length - 1].sourceType = target;
 			else builtinUses[builtinUses.length - 1].sourceType = target;
 		}
@@ -931,7 +931,7 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		var src = e.exprs.src;
 		if (decl == null || src == null) return;
 		var o = record(Token.new(src.fileName, "[", src.beginLine, src.beginColumn), decl, null, e == writeTarget);
-		if (o != null) o.sourceType = sourceCode(resolvedTypeDeclaration(e.exactType));
+		if (o != null) o.sourceType = resolvedSourceType(e.exactType);
 		match (b) {
 			CallObjectMethod(receiver, member, typeArgs) => {
 				if (o != null) o.useType = display.methodUseType(decl, receiver, e.expr.exactType, member);
@@ -1054,25 +1054,28 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// No recursive descent into structural types: Array<Foo> is not Foo.
 	// Follow solved inference variables only, never names or display text.
-	private def resolvedTypeDeclaration(t: Type) -> AnalysisDeclaration {
+	private def resolvedSourceType(t: Type) -> int {
 		for (i = 0; TypeVarType.?(t) && i < 1024; i++) {
 			var next = TypeVarType.!(t).vtype;
-			if (next == t) return null;
+			if (next == t) return 0;
 			t = next;
 		}
-		if (RefType.?(t)) return make(AnalysisDeclKind.LAYOUT, RefType.!(t).layoutDecl);
-		if (ClassType.?(t) || EnumType.?(t) || TypeParamType.?(t)) return typeDeclaration(t);
-		return null;
+		if (!(RefType.?(t) || ClassType.?(t) || EnumType.?(t) || TypeParamType.?(t))) return 0;
+		var i = display.nominalTypeIndex(t.typeCon), cached = display.nominalCode(i);
+		if (cached >= 0) return cached;
+		var target = sourceCode(if(RefType.?(t), make(AnalysisDeclKind.LAYOUT, RefType.!(t).layoutDecl), typeDeclaration(t)));
+		display.rememberNominal(target);
+		return target;
 	}
 	private def declarationSource(decl: AnalysisDeclaration) -> int {
 		if (decl.sourceType < 0) {
 			var d = AnalysisWorkerDeclaration.!(decl);
-			d.sourceType = sourceCode(if(isTypeName(d.kind), d, resolvedTypeDeclaration(d.ownType)));
+			d.sourceType = if(isTypeName(d.kind), sourceCode(d), resolvedSourceType(d.ownType));
 		}
 		return decl.sourceType;
 	}
 	private def sourceCode(target: AnalysisDeclaration) -> int {
-		return if(target != null, target.typeTarget);
+		return display.sourceCode(target);
 	}
 	private def typeDeclaration(t: Type) -> AnalysisDeclaration {
 		// Verification errors can leave a Type binding with no resolved type.

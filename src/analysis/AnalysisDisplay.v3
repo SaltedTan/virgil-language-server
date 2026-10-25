@@ -25,6 +25,7 @@ class AnalysisWorkerDeclaration extends AnalysisDeclaration {
 	def ownType: Type;
 	var typeText: string;
 	var rendered: bool;
+	var usedSourceType: bool;
 	// The per-worker keyed hash is constant for this declaration. Calls and
 	// the encoder index it many times, without hashing its path again.
 	def var positionHash: int;
@@ -49,6 +50,13 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	private def typeTexts = Vector<string>.new();
 	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
+	// Distinct source-type targets, registered when collection resolves one.
+	private def sourceTargets = Vector<AnalysisDeclaration>.new();
+	// A nominal target depends only on its constructor, independently of
+	// type arguments. Share the cache across files, using uid hashing and
+	// constructor identity, never Type.hash. Unsolved variables stay out.
+	private def nominalTypes = AnalysisIndexMap<TypeCon>.new(fun (t: TypeCon) => t.uid, fun (a: TypeCon, b: TypeCon) => a == b);
+	private def nominalCodes = Vector<int>.new();
 	// Call signatures by content, each once, and the index there of each
 	// call's signature by callee declaration, type, and whether the call
 	// passes the receiver, so that each is rendered once.
@@ -79,6 +87,21 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// translates it to its own declaration table, without another type walk.
 	def declarationAt(index: int) -> AnalysisDeclaration { return declarationList[index]; }
 	def declarationCount() -> int { return declarationList.length; }
+	def nominalTypeIndex(t: TypeCon) -> int { return nominalTypes.add(t); }
+	// Minus one is a miss; zero is a cached type with no source location.
+	def nominalCode(i: int) -> int { return if(i < nominalCodes.length, nominalCodes[i], -1); }
+	def rememberNominal(code: int) { nominalCodes.put(code); }
+	def sourceTargetCount() -> int { return sourceTargets.length; }
+	def sourceTargetAt(index: int) -> AnalysisDeclaration { return sourceTargets[index]; }
+	def sourceCode(target: AnalysisDeclaration) -> int {
+		if (target == null) return 0;
+		var d = AnalysisWorkerDeclaration.!(target);
+		if (!d.usedSourceType) {
+			d.usedSourceType = true;
+			sourceTargets.put(d);
+		}
+		return d.typeTarget;
+	}
 	// The text of the type of a use of {decl}, or null if it is the
 	// declaration's own type or is unknown. Most uses have exactly their
 	// declaration's type, which needs no text.

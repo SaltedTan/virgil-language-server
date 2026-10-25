@@ -230,6 +230,8 @@ class ProgramAnalysis {
 	def typeDeclaration(code: int) -> AnalysisDeclaration {
 		return if(code > 0, display.declarationAt(code - 1));
 	}
+	def sourceTargetCount() -> int { return display.sourceTargetCount(); }
+	def sourceTargetAt(index: int) -> AnalysisDeclaration { return display.sourceTargetAt(index); }
 	// The calls in {path}, in the order of their opening parentheses; see
 	// docs/architecture.md#call-sites. Collects the file if needed. Each call
 	// returns new objects; the encoder reads {callRecords} instead.

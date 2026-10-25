@@ -327,41 +327,67 @@ component AnalysisWire {
 			var f = files[i];
 			sites[i] = analysis.declarationSites(f.0);
 			builtins[i] = analysis.builtinUses(f.0);
+		}
+		var typeEncoding = AnalysisTypeTargetEncoding.new(analysis.typeDeclarationCount(), decls, files.length);
+		for (i < files.length) {
 			firstSite[i] = decls.length();
-			for (d in sites[i]) decls.add(d);
+			for (d in sites[i]) typeEncoding.add(d);
 		}
 		// The collector makes each declaration once, but a caller can make one
 		// per use; send each once.
-		for (f in files) {
-			for (o in f.1) {
-				if (o.useType != null) strings.add(o.useType);
-				if (decls.find(o.declaration) < 0) decls.add(o.declaration);
+		for (i < files.length) {
+			for (d in sites[i]) typeEncoding.choose(typeEncoding.declaration(d), d.sourceType);
+			var text = DataWriter.new(), ordinal = 0, previous = 0;
+			for (o in files[i].1) {
+				var useType = if(o.useType != null, strings.add(o.useType), -1);
+				var index = typeEncoding.add(o.declaration);
+				if (!o.range.isTokenSpan()) continue;
+				typeEncoding.choose(index, o.sourceType);
+				if (useType >= 0) {
+					text.put_sleb32(ordinal - previous).put_sleb32(useType);
+					previous = ordinal;
+				}
+				ordinal++;
 			}
+			typeEncoding.typedUses[i] = text.alias();
 		}
-		if (scope != null) for (d in scope.declarations) if (decls.find(d) < 0) decls.add(d);
-		if (call != null && call.target != null && decls.find(call.target) < 0) decls.add(call.target);
+		if (scope != null) for (d in scope.declarations) typeEncoding.add(d);
+		if (call != null && call.target != null) typeEncoding.add(call.target);
 		if (members != null) {
-			for (d in members.declarations) if (d != null && decls.find(d) < 0) decls.add(d);
+			for (d in members.declarations) if (d != null) typeEncoding.add(d);
 			for (i < members.names.length) {
 				if (members.declarations[i] == null) strings.add(members.names[i]);
 				if (members.details[i] != null) strings.add(members.details[i]);
 			}
 		}
-		// Translate stable collector codes once, then use numeric lookups in
-		// all per-name passes. Most source targets are already declarations.
-		var typeIndices = Array<int>.new(analysis.typeDeclarationCount() + 1);
-		for (i < decls.length()) if (decls[i].typeTarget > 0) typeIndices[decls[i].typeTarget] = i + 1;
-		for (f < files.length) {
-			for (d in sites[f]) addSourceType(analysis, decls, typeIndices, d.sourceType);
-			for (o in files[f].1) addSourceType(analysis, decls, typeIndices, o.sourceType);
-			for (b in builtins[f]) addSourceType(analysis, decls, typeIndices, b.sourceType);
+		for (i < files.length) {
+			var encoded = DataWriter.new();
+			for (u in builtins[i]) {
+				var useType = strings.add(u.useType);
+				if (!u.range.isTokenSpan()) continue;
+				typeEncoding.requireTarget(u.sourceType);
+				putSpan(encoded, u.range);
+				encoded.put_sleb32(useType);
+			}
+			typeEncoding.builtinUses[i] = encoded.alias();
 		}
-		var typeEncoding = AnalysisTypeTargetEncoding.new(typeIndices, decls, sites, files, builtins);
-		for (b in builtins) for (u in b) strings.add(u.useType);
+		// Collection registered distinct targets. Indexing marked those the
+		// selected files need, including explicit nondefault uses; ignore
+		// targets registered by earlier collections of other files.
+		for (i < analysis.sourceTargetCount()) {
+			var d = analysis.sourceTargetAt(i);
+			if (typeEncoding.needs(d)) typeEncoding.add(d);
+		}
+		typeEncoding.translateDefaults();
+		for (i < files.length) typeEncoding.prepareFile(i, sites[i], files[i].1, builtins[i]);
+		// Both wire passes reuse the numeric string and path IDs as well as
+		// declaration IDs; none needs to hash the same declaration again.
+		var declarationIds = Array<int>.new(3 * decls.length());
 		for (i < decls.length()) {
 			var d = decls[i];
-			strings.add(d.name);
-			if (d.signature != null) strings.add(d.signature);
+			declarationIds[3 * i] = strings.add(d.name);
+			declarationIds[3 * i + 1] = if(d.signature != null, 1 + strings.add(d.signature));
+			declarationIds[3 * i + 2] = paths[d.range.path] - 1;
 		}
 		// Each signature that a sent call uses, which the display makes once,
 		// the most used first, so that most calls name theirs in one byte;
@@ -387,12 +413,12 @@ component AnalysisWire {
 			for (i < decls.length()) {
 				var d = decls[i];
 				w.putb(d.kind.tag);
-				w.put_sleb32(strings.add(d.name));
+				w.put_sleb32(declarationIds[3 * i]);
 				// Every declaration is in one of the request's files; -1 would be
 				// rejected.
-				w.put_sleb32(paths[d.range.path] - 1);
+				w.put_sleb32(declarationIds[3 * i + 2]);
 				putRange(w, d.range);
-				w.put_sleb32(if(d.signature != null, 1 + strings.add(d.signature)));
+				w.put_sleb32(declarationIds[3 * i + 1]);
 				w.put_sleb32(typeEncoding.defaults[i]);
 			}
 			w.put_sleb32(text.length());
@@ -406,47 +432,19 @@ component AnalysisWire {
 			w.put_sleb32(files.length);
 			var check = AnalysisCallCheck.new(uses.length);
 			for (i < files.length) {
-				var f = files[i], count = 0, typed = 0;
+				var f = files[i], counts = typeEncoding.counts[i];
 				w.put_sleb32(paths[f.0] - 1).put_sleb32(firstSite[i]).put_sleb32(sites[i].length);
-				for (o in f.1) {
-					if (!o.range.isTokenSpan()) continue;
-					count++;
-					if (o.useType != null) typed++;
-				}
-				w.put_sleb32(count);
+				w.put_sleb32(counts.0);
 				for (o in f.1) {
 					var r = o.range;
 					if (!r.isTokenSpan()) continue;
 					putSpan(w, r);
-					var target = decls.find(o.declaration);
+					var target = typeEncoding.declaration(o.declaration);
 					w.put_sleb32(if(o.isWrite(), ~target, target));
 				}
-				w.put_sleb32(typed);
-				var index = 0, previous = 0;
-				for (o in f.1) {
-					if (!o.range.isTokenSpan()) continue;
-					if (o.useType != null) {
-						w.put_sleb32(index - previous).put_sleb32(strings.add(o.useType));
-						previous = index;
-					}
-					index++;
-				}
-				count = 0;
-				for (u in builtins[i]) if (u.range.isTokenSpan()) count++;
-				w.put_sleb32(count);
-				for (u in builtins[i]) {
-					if (!u.range.isTokenSpan()) continue;
-					putSpan(w, u.range);
-					w.put_sleb32(strings.add(u.useType));
-				}
-				w.put_sleb32(typeEncoding.overrides[i].length);
-				var previousOffset = 0;
-				for (k < typeEncoding.overrides[i].length) {
-					var entry = typeEncoding.overrides[i][k];
-					w.put_sleb32(if(k % 32 == 0, entry.0, entry.0 - previousOffset));
-					w.put_sleb32(entry.1);
-					previousOffset = entry.0;
-				}
+				w.put_sleb32(counts.1).putr(typeEncoding.typedUses[i]);
+				w.put_sleb32(counts.2).putr(typeEncoding.builtinUses[i]);
+				w.put_sleb32(typeEncoding.overrideCounts[i]).putr(typeEncoding.overrides[i]);
 				w.put_sleb32(calls[i]);
 				encodeCalls(w, check.start(analysis.callRecords(f.0)), check, f.1, builtins[i], rank);
 			}
@@ -524,9 +522,6 @@ component AnalysisWire {
 	// {generation} for a request with {paths}. Budget exhaustion stops decoding
 	// before allocating; it is distinct from a malformed payload. The remainder
 	// of an over-budget payload is not validated, so its worker is not reused.
-	private def addSourceType(analysis: ProgramAnalysis, declarations: AnalysisIndexMap<AnalysisDeclaration>, indices: Array<int>, code: int) {
-		if (code > 0 && indices[code] == 0) indices[code] = declarations.add(analysis.typeDeclaration(code)) + 1;
-	}
 	def decodeResult(payload: Array<byte>, generation: int, paths: Array<string>) -> AnalysisResultDecode {
 		return decodeResultWithQuery(payload, generation, paths, 0);
 	}
@@ -1033,20 +1028,23 @@ class AnalysisWireReader {
 		var blocks = (count + 31) / 32;
 		if (!reserve(64 + 8L * blocks)) return null;
 		var checkpoints = Array<int>.new(2 * blocks), previous = -1;
+		var occurrence = 0, builtin = 0, site = file.firstSite;
 		for (i = 0; i < count && r.ok; i++) {
 			var delta = r.read_sleb32(), offset = if(i % 32 == 0, long.view(delta), long.view(previous) + delta);
 			if (delta < 0 || offset <= previous || offset > int.max) {
 				r.fail("invalid type target offset");
 				break;
 			}
-			var at = int.view(offset), found = file.useAt(at) >= 0;
-			var low = file.firstSite, high = low + file.siteCount;
-			while (!found && low < high) {
-				var mid = low + (high - low) / 2, begin = declarations[mid].range.beginOffset;
-				if (begin < at) low = mid + 1;
-				else high = mid;
-			}
-			if (!found) found = low < file.firstSite + file.siteCount && declarations[low].range.beginOffset == at;
+			var at = int.view(offset);
+			// Keys are strictly increasing, and all three name streams were
+			// validated above. Equality requires a name's beginning, never an
+			// interior byte or a gap; advancing preserves the same checks.
+			while (occurrence < file.targets.length && file.ranges[4 * occurrence + 2] < at) occurrence++;
+			while (builtin < file.builtinCount() && file.builtins[5 * builtin + 2] < at) builtin++;
+			while (site < file.firstSite + file.siteCount && declarations[site].range.beginOffset < at) site++;
+			var found = (occurrence < file.targets.length && file.ranges[4 * occurrence + 2] == at)
+				|| (builtin < file.builtinCount() && file.builtins[5 * builtin + 2] == at)
+				|| (site < file.firstSite + file.siteCount && declarations[site].range.beginOffset == at);
 			if (!found) r.fail("type target has no recorded name");
 			if (i % 32 == 0) {
 				checkpoints[2 * (i / 32)] = at;

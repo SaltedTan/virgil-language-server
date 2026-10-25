@@ -9,6 +9,7 @@ def X = [
 	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
 	T("AnalysisWire:occurrence_write_bit", test_occurrence_write_bit),
 	T("AnalysisWire:type_targets", test_type_targets),
+	T("AnalysisWire:type_targets_selected_files", test_type_targets_selected_files),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
 	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
@@ -1831,4 +1832,23 @@ def test_type_targets(t: Tester) {
 def typeTargets(count: int, data: string) -> DataWriter {
 	return file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0)
 		.put_sleb32(0).put_sleb32(0).put_sleb32(count).puta(data).put_sleb32(0);
+}
+
+// A prior collection must not leak its otherwise unused type declarations
+// into an encoding that selects a different file from the same analysis.
+def test_type_targets_selected_files(t: Tester) {
+	var a = AeneasAdapter.analyzeProgram([
+		AnalysisSource.new("a.v3", "class A { } def a: A;"),
+		AnalysisSource.new("b.v3", "class B { } def b: B;")], [], false);
+	t.assert(a.verified, "independent files verify");
+	a.occurrences("a.v3");
+	// Let encoding collect b's sites lazily, so the numeric index also has
+	// to be sized after every selected file has finished collecting.
+	var frame = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, [("b.v3", [])]), 0L);
+	var r = decodedResult(payloadOf(frame), 1, ["b.v3"]);
+	if (r == null) return t.fail("selected file did not decode");
+	t.asserti(2, r.snapshot.declarations.length);
+	var found = r.snapshot.typeDefinitionAtOffset("b.v3", 16);
+	t.assert(found.0 && found.1 != null, "selected declaration keeps its type");
+	if (found.1 != null) t.assert_string("B", found.1.name);
 }
