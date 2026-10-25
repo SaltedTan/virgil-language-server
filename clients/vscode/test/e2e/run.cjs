@@ -124,6 +124,9 @@ async function main() {
       // Where the server offers no completion items, as in a comment, VS Code
       // would offer the document's words instead.
       'editor.wordBasedSuggestions': 'off',
+      // Automatic hint requests and cancellations race lifecycle assertions.
+      // The suite tests hints explicitly with executeInlayHintProvider.
+      'editor.inlayHints.enabled': 'off',
     };
     console.log(`VS Code Extension Host test: VS Code ${VSCODE_VERSION}, ${server}`
       + (vsix === undefined ? '' : `, extension installed from ${vsix}`));
