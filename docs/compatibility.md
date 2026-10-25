@@ -15,6 +15,8 @@ The scheduled `virgil-master` workflow builds and tests against current upstream
 
 The server targets a conservative subset of [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/). See [Lifecycle](architecture.md#lifecycle) for initialization behavior and [Document store](architecture.md#document-store) for synchronization capabilities.
 
+Inlay hints use LSP 3.17 `textDocument/inlayHint` and optional `workspace/inlayHint/refresh` support. The server advertises no resolve provider and sends no insertion edits ([rules and settings](architecture.md#inlay-hints)).
+
 ## Host platforms
 
 The reasons for this list are in [ADR-0003](decisions/0003-supported-platforms.md).
@@ -66,7 +68,7 @@ The extension can be installed alongside `titzer.virgil`, the Virgil author's ex
 
 | VS Code extension | Server versions |
 | --- | --- |
-| `0.1.3` (development prerelease VSIX) | Its bundled development server, or an external `0.1.0-alpha.3` or `main` server |
+| `0.1.3` (development prerelease VSIX) | Its bundled development server, or an external `0.1.0-alpha.3` or `main` server. The inlay-hint settings require a server that implements inlay hints; older servers ignore these initialization options and provide no hints. |
 | `0.1.2` (prerelease VSIX, attached to server `0.1.0-alpha.3`) | `0.1.0-alpha.3` and `main`; `0.1.0-alpha.2` and `0.1.0-alpha.1` only with a Virgil root (below) |
 | `0.1.1` (prerelease VSIX, attached to server `0.1.0-alpha.2`) | `0.1.0-alpha.3`; `0.1.0-alpha.2` and `0.1.0-alpha.1` only with a Virgil root |
 | `0.1.0` (prerelease VSIX, attached to server `0.1.0-alpha.1`) | `0.1.0-alpha.3`; `0.1.0-alpha.2` and `0.1.0-alpha.1` only with a Virgil root |

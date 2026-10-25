@@ -137,6 +137,16 @@ The server never searches `PATH`, reads `VIRGIL_LOC`, runs `v3c`, or uses the ne
 
 A repository that includes Virgil, for example as a submodule, can list the library in `dependencies` instead: `"vendor/virgil/lib/util/*.v3"`.
 
+### Inlay hints
+
+Both hint kinds are on by default. Set `initializationOptions.inlayHints.types` or `initializationOptions.inlayHints.parameterNames` to `false` to turn one off independently:
+
+```json
+{"initializationOptions":{"inlayHints":{"types":true,"parameterNames":false}}}
+```
+
+VS Code passes the settings `virgil.inlayHints.types` and `virgil.inlayHints.parameterNames` and restarts the server when either changes. Neovim uses `init_options = { inlayHints = { types = true, parameterNames = false } }`; restart its language server after a change. The editor's own inlay-hint switch applies on top. See the [hint rules](architecture.md#inlay-hints), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#inlay-hints).
+
 ### Compiler flags
 
 `compilerArgs` accepts only the pinned compiler's language options, which change how Aeneas parses and type-checks a program. The names and defaults below are generated from `CLOptions.langOpt` in the [pinned compiler](compatibility.md#virgil-revision), exposed by [`AeneasAdapter.languageOptions()`](../src/analysis/AeneasAdapter.v3):
