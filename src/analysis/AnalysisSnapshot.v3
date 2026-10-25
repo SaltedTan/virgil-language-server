@@ -406,10 +406,11 @@ class AnalysisDocumentVersion(uri: string, version: int, identity: DocumentVersi
 	var hash: u64;
 	// An overlay stays current while the same accepted identity is open. A
 	// version-only didChange keeps the record's identity, since its text is
-	// unchanged, so it does not make the analysis stale.
+	// unchanged, so it does not make the analysis stale. {uri} was captured
+	// canonical, so the lookups skip normalizing it again.
 	def matchesDocument(store: DocumentStore) -> bool {
-		var doc = store.overlay(uri);
-		if (identity == null) return doc == null && (disk == null || disk == store.diskStamp(uri));
+		var doc = store.canonicalOverlay(uri);
+		if (identity == null) return doc == null && (disk == null || disk == store.canonicalDiskStamp(uri));
 		return doc != null && doc.identity == identity;
 	}
 	// The version to report for this source: the open overlay's current

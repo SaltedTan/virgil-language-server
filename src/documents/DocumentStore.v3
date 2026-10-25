@@ -121,7 +121,11 @@ class DocumentStore {
 	// The current stamp of {uri}'s file on disk. Analyses record it for disk
 	// inputs; a later {diskChanged} for the file replaces it.
 	def diskStamp(uri: string) -> DocumentVersionIdentity {
-		var key = DocumentUri.normalize(uri);
+		return canonicalDiskStamp(DocumentUri.normalize(uri));
+	}
+	// diskStamp() of a URI that DocumentUri.normalize returned, or of null,
+	// without normalizing it again.
+	def canonicalDiskStamp(key: string) -> DocumentVersionIdentity {
 		var stamp = if(key != null, diskStamps[key]);
 		return if(stamp != null, stamp, diskEpoch);
 	}
