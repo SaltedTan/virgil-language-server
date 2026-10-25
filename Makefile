@@ -8,6 +8,8 @@ V3C    := scripts/v3c.sh
 # Offline protocol shape budget; includes mandatory semantic/lifecycle oracles.
 PROTOCOL_SHAPES_SEED  ?= 0
 PROTOCOL_SHAPES_CASES ?= 2000
+PROTOCOL_SHAPES = python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(PROTOCOL_SHAPES_SEED) \
+	--cases $(PROTOCOL_SHAPES_CASES) --artifacts $(BUILD)/protocol-shapes
 
 # Aeneas front end plus the libraries it depends on, as listed in the pinned
 # checkout's aeneas/DEPS. lib/test is excluded here and added only to tests.
@@ -45,6 +47,42 @@ BUILDINFO   = $(BUILD)/gen/BuildInfo.v3
 UNIT_TESTS  = $(BUILD)/unit-tests
 # How many unit-test groups run at once; empty means one for each CPU, up to 8.
 UNIT_JOBS  ?=
+# How many other suites `make test` runs at once; empty means one for each CPU,
+# up to 4.
+SUITE_JOBS ?=
+
+# The suites `make test` runs after the unit tests, through test/suites.py,
+# each a quoted shell command. The longest on macOS CI come first, so that the
+# short ones fill in at the end.
+SUITES = \
+	'test/cli/run.sh $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/worker.py $(BUILD)/virgil-lsp' \
+	'python3 test/e2e/clean-install/test_install.py' \
+	'$(PROTOCOL_SHAPES)' \
+	'python3 test/fixtures/projects/test_cleanup.py' \
+	'test/release/run.sh' \
+	'python3 test/e2e/test_editor_results_render.py' \
+	'$(BUILD)/type-depth-probe' \
+	'python3 test/e2e/test_coverage.py' \
+	'python3 test/e2e/test_editor_results.py' \
+	'python3 scripts/bench-tolerance.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null' \
+	'test/protocol/run.sh $(BUILD)/virgil-lsp' \
+	'python3 test/unit/test_run.py' \
+	'python3 test/test_suites.py' \
+	'python3 test/diagnostics/run.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp' \
+	'python3 test/benchmarks/test_report.py' \
+	'python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/body_fallback.py $(BUILD)/virgil-lsp' \
+	'python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null' \
+	'test/e2e/nvim/run.sh $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp' \
+	'python3 test/benchmarks/test_client.py' \
+	'python3 test/protocol/type_definition.py $(BUILD)/virgil-lsp' \
+	'python3 test/benchmarks/test_tolerance.py' \
+	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
+	'$(BUILD)/retain-probe' \
+	'python3 test/e2e/clean-install/test_readme.py'
 
 .PHONY: all test test-protocol-shapes test-unit run-unit-tests test-nvim test-lazyvim check-virgil buildinfo project-fixtures print-worker-heap clean
 
@@ -112,40 +150,15 @@ run-unit-tests:
 test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
 
-# Unit and CLI tests start the worker next to their executables.
-test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
-	$(BUILD)/retain-probe
-	$(BUILD)/type-depth-probe
+# Unit and CLI tests start the worker next to their executables. The unit tests
+# run first, since they use every CPU themselves.
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
-	python3 test/fixtures/projects/test_cleanup.py
-	python3 test/unit/test_run.py
-	python3 test/e2e/test_coverage.py
-	python3 test/e2e/clean-install/test_readme.py
-	python3 test/e2e/clean-install/test_install.py
-	python3 test/e2e/test_editor_results.py
-	python3 test/e2e/test_editor_results_render.py
-	test/cli/run.sh $(BUILD)/virgil-lsp
-	test/protocol/run.sh $(BUILD)/virgil-lsp
-	python3 test/diagnostics/run.py $(BUILD)/virgil-lsp
-	python3 test/protocol/worker.py $(BUILD)/virgil-lsp
-	python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp
-	python3 test/protocol/type_definition.py $(BUILD)/virgil-lsp
-	python3 test/protocol/fingerprints.py $(BUILD)/virgil-lsp
-	python3 test/protocol/body_fallback.py $(BUILD)/virgil-lsp
-	python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp
-	python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp
-	python3 test/benchmarks/test_client.py
-	python3 test/benchmarks/test_report.py
-	python3 test/benchmarks/test_tolerance.py
-	python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
-	python3 scripts/bench-tolerance.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null
-	test/release/run.sh
-	test/e2e/nvim/run.sh $(BUILD)/virgil-lsp
+	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
 
 # Seed and total budget are overridable for wider deterministic local runs.
 test-protocol-shapes: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker
-	python3 test/protocol/shapes.py $(BUILD)/virgil-lsp --seed $(PROTOCOL_SHAPES_SEED) --cases $(PROTOCOL_SHAPES_CASES) \
-	  --artifacts $(BUILD)/protocol-shapes
+	$(PROTOCOL_SHAPES)
 
 # Optional locally; CI sets REQUIRE_NVIM=1 so a missing/old editor fails.
 test-nvim: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker

@@ -73,8 +73,9 @@ expected values per capture and document why they differ.
 
 ## Bounded LSP 3.17 shape tests
 
-`make test` includes the offline `test-protocol-shapes` target. It needs Python
-3.9 or newer and only its standard library. Build and run the target alone:
+`make test` runs the offline shape tests, with the same command as the
+`test-protocol-shapes` target. They need Python 3.9 or newer and only its
+standard library. Build and run the target alone:
 
 ```sh
 make test-protocol-shapes
