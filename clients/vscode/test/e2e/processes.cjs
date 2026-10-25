@@ -284,7 +284,10 @@ def main():
     for pid in json.loads(sys.argv[1]):
         buf = BsdInfo()
         ctypes.set_errno(0)
-        size = info(pid, 3, 0, ctypes.byref(buf), ctypes.sizeof(buf))
+        # A nonzero argument includes zombies (proc_find_zombref in XNU).
+        # The native group list includes them too, so ESRCH would otherwise
+        # leave an unreaped zombie missing from every scan forever.
+        size = info(pid, 3, 1, ctypes.byref(buf), ctypes.sizeof(buf))
         if size != ctypes.sizeof(buf):
             results.append(False if size <= 0 and ctypes.get_errno() == errno.ESRCH else None)
         elif buf.pbi_pid != pid or buf.pbi_start_tvusec >= 1000000:

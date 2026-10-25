@@ -615,7 +615,7 @@ test('the macOS ctypes helper reads fixed-width fields and handles missing, deni
   const setup = `
 import ctypes, errno, types
 def info(pid, flavor, arg, address, size):
-    assert flavor == 3 and arg == 0 and size == 136
+    assert flavor == 3 and arg == 1 and size == 136
     if pid == 11:
         ctypes.set_errno(errno.ESRCH)
         return 0
