@@ -286,21 +286,30 @@ ctypes.CDLL = lambda *args, **kwargs: types.SimpleNamespace(proc_pidinfo=info)
 });
 
 test('the macOS group helper counts PIDs, retries a full buffer, and reports failure for timed confirmation', { skip: pythonSkip }, () => {
-  for (const mode of ['grow', 'empty', 'denied']) {
+  for (const mode of ['grow', 'empty', 'EPERM', 'ENOMEM', 'negative']) {
     const setup = `
-import ctypes, types
+import ctypes, errno, types
+ctypes.set_errno(errno.EPERM)
 def listing(group, buf, size):
     assert group == 50 and size == ctypes.sizeof(buf)
+    assert ctypes.get_errno() == 0
     if '${mode}' == 'empty':
         return 0
-    if '${mode}' == 'denied':
+    if '${mode}' in ('EPERM', 'ENOMEM'):
+        ctypes.set_errno(getattr(errno, '${mode}'))
+        return 0
+    if '${mode}' == 'negative':
         return -1
     if len(buf) == 256:
+        ctypes.set_errno(errno.EPERM)
         return 256
     assert len(buf) == 512
     buf[0], buf[1] = 50, 53
     return 2
-ctypes.CDLL = lambda *args, **kwargs: types.SimpleNamespace(proc_listpgrppids=listing)
+def library(name, *, use_errno):
+    assert use_errno is True
+    return types.SimpleNamespace(proc_listpgrppids=listing)
+ctypes.CDLL = library
 `;
     const helper = spawnSync('python3', ['-I', '-c', setup + processes.DARWIN_GROUP_PIDS, '50'], { encoding: 'utf8' });
     assert.equal(helper.status, 0, helper.stderr);
@@ -605,16 +614,16 @@ test('the keeper stops its group when the runner goes without releasing it (real
 
 test('the keeper sends its group the signals that the runner asks for (real processes)', async () => {
   // The command and its sleep ignore SIGTERM. The runner's own kill() and the
-  // pidfd helpers that it starts are recorded.
+  // Python helpers that it starts are recorded.
   const attempted = [];
   const helpers = [];
   const real = require('node:child_process');
   const fake = load('processes.cjs', {
     'node:child_process': {
       ...real,
-      spawnSync: (command, ...rest) => {
-        helpers.push(command);
-        return real.spawnSync(command, ...rest);
+      spawnSync: (command, args, options) => {
+        if (command === 'python3') helpers.push(args[2]);
+        return real.spawnSync(command, args, options);
       },
     },
   }, {
@@ -637,7 +646,9 @@ test('the keeper sends its group the signals that the runner asks for (real proc
     group.signal('SIGTERM');
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.equal(group.look().processes.length, 2);
-    assert.deepEqual(helpers.filter((command) => command === 'python3'), []);
+    assert.deepEqual(helpers.filter((helper) => helper === processes.PIDFD_SIGNAL), []);
+    assert.deepEqual(new Set(helpers), new Set(process.platform === 'darwin'
+      ? [processes.DARWIN_PROCESS_INFO, processes.DARWIN_GROUP_PIDS] : []));
     // The keeper ends with its group, before it can say that it sent SIGKILL,
     // so the runner also sends it to the processes that it saw there, which
     // have gone.

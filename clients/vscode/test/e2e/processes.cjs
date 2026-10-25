@@ -219,15 +219,16 @@ function psTable(selection) {
 const DARWIN_GROUP_PIDS = `
 import ctypes, json, sys
 try:
-    lib = ctypes.CDLL('/usr/lib/libproc.dylib')
+    lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
     listing = lib.proc_listpgrppids
     listing.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
     listing.restype = ctypes.c_int
     size = 256
     while size <= 1048576:
         buf = (ctypes.c_int * size)()
+        ctypes.set_errno(0)
         count = listing(int(sys.argv[1]), buf, ctypes.sizeof(buf))
-        if count < 0:
+        if count < 0 or (count == 0 and ctypes.get_errno() != 0):
             break
         if count < size:
             print(json.dumps(list(buf)[:count]))
