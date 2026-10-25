@@ -1,0 +1,14 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+// A class hierarchy for implementation navigation: Shape's subclasses, and
+// the methods that override its area.
+class Shape {
+	def area() -> int { return 0; }
+}
+class Polygon extends Shape {
+	def area() -> int { return 4; }
+}
+class Square extends Polygon { }
+class Circle extends Shape {
+	def area() -> int { return 3; }
+}

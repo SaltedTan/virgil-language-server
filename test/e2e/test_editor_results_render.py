@@ -373,11 +373,11 @@ class RunsTableTest(unittest.TestCase):
         self.assertEqual(["2026-10-24", "`2222222`",
                           "Neovim, Linux; `test`; Linux 24.04, x86_64; "
                           "[run 123](https://github.com/o/r/actions/runs/123), attempt 2",
-                          "`make test`", "Neovim 0.11.6", "Passed (25 of 25 observations): 25 pass"], row(events))
+                          "`make test`", "Neovim 0.11.6", "Passed (27 of 27 observations): 27 pass"], row(events))
 
     def test_the_expected_failure(self):
         cells_ = row(run_of("lazyvim", lane="lazyvim-linux"))
-        self.assertEqual("Passed (61 of 61 observations): 60 pass, 1 xfail; XFAIL: " + NOICE, cells_[5])
+        self.assertEqual("Passed (63 of 63 observations): 62 pass, 1 xfail; XFAIL: " + NOICE, cells_[5])
         self.assertEqual("LazyVim, Linux; `lazyvim-linux`; Linux 1, x86_64; development run", cells_[2])
         self.assertEqual("`2222222`, server 0.1.0-alpha.3", cells_[1])
 
@@ -386,17 +386,17 @@ class RunsTableTest(unittest.TestCase):
         index = find(events, "nvim.hover.response")
         fail(events, index)
         events[index + 1].update(status="skip", reason="r")
-        self.assertEqual("Failed (25 of 25 observations): 23 pass, 1 fail, 1 skip; failed: `nvim.hover.response`; "
+        self.assertEqual("Failed (27 of 27 observations): 25 pass, 1 fail, 1 skip; failed: `nvim.hover.response`; "
                          "exit code 1; cleanup failed; 2 issues",
                          row(rebuild(events, status="fail", exitCode=1, cleanup="failed", issues=["a", "b"]))[5])
         events = run_of("remote-ssh")[:40] + run_of("remote-ssh")[-1:]
-        self.assertEqual("Aborted (39 of 171 observations): 39 pass; signal SIGTERM; cleanup unknown",
+        self.assertEqual("Aborted (39 of 174 observations): 39 pass; signal SIGTERM; cleanup unknown",
                          row(rebuild(events, status="aborted", exitCode=None, signal="SIGTERM", cleanup="unknown"))[5])
         events = rebuild(run_of("nvim"), status="fail", exitCode=None)
-        self.assertEqual("Failed (25 of 25 observations): 25 pass; no exit code", row(events)[5])
+        self.assertEqual("Failed (27 of 27 observations): 27 pass; no exit code", row(events)[5])
         events = run_of("lazyvim")
         events[find(events, RULE["check"], RULE["profile"])].update(status="xpass", reason="shown", failureCode=None)
-        self.assertEqual("Failed (61 of 61 observations): 60 pass, 1 xpass; passed unexpectedly: "
+        self.assertEqual("Failed (63 of 63 observations): 62 pass, 1 xpass; passed unexpectedly: "
                          f"`{RULE['check']}`", row(rebuild(events, status="fail"))[5])
         # A run whose preflight failed, without its worker.
         events = run_of("nvim")
@@ -406,7 +406,7 @@ class RunsTableTest(unittest.TestCase):
         for event in events[2:-1]:
             event.update(status="skip", reason="the preflight failed")
         self.assertEqual(["`2222222`, server version unknown",
-                          "Unavailable (25 of 25 observations): 1 fail, 24 skip; failed: "
+                          "Unavailable (27 of 27 observations): 1 fail, 26 skip; failed: "
                           "`nvim.infrastructure.preflight`; exit code 2; provenance unavailable"],
                          [row(rebuild(events, status="unavailable", exitCode=2))[i] for i in (1, 5)])
         # A cap on the failed checks it names.
@@ -551,8 +551,10 @@ class SelectionTest(RenderTest):
         text = self.doc.read_text()
         self.assertIn("| Neovim, Linux | Pass (API); not covered: undoing the fix", text)
         for setup in ("Neovim, Linux", "LazyVim, Linux"):
-            self.assertEqual("Pass (API + UI state)", matrix_row(text, setup)["type-definition"])
-        self.assertIn(f"| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (API) | Pass (API + UI state) | "
+            for feature in ("type-definition", "implementation"):
+                self.assertEqual("Pass (API + UI state)", matrix_row(text, setup)[feature])
+        self.assertIn(f"| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (API + UI state) | "
+                      f"Pass (API) | Pass (API + UI state) | "
                       f"{KNOWN_LIMITATION} |", text)
 
     def test_hash_mismatch(self):
@@ -569,7 +571,7 @@ class SelectionTest(RenderTest):
     def test_invalid_stream(self):
         events = run_of("nvim")[:-1]
         selection = self.select(run_of("lazyvim", 2), events)
-        self.assertMalformed(selection, f"{selection.parent / 'stream-1.jsonl'}: invalid: line 27: incomplete: no "
+        self.assertMalformed(selection, f"{selection.parent / 'stream-1.jsonl'}: invalid: line 29: incomplete: no "
                                         "run-end")
         events = run_of("nvim")
         events[0]["coverageSha256"] = "0" * 64
@@ -965,7 +967,7 @@ class CheckTest(RenderTest):
         fail(events, find(events, "nvim.hover.response"))
         selection = self.select(rebuild(events, status="fail"))
         stream_path = selection.parent / "stream-0.jsonl"
-        summary = f"{stream_path}: valid, run failed (25 of 25 observations): 24 pass, 1 fail, 0 xfail, 0 xpass, 0 skip\n"
+        summary = f"{stream_path}: valid, run failed (27 of 27 observations): 26 pass, 1 fail, 0 xfail, 0 xpass, 0 skip\n"
         # It still renders, and says so.
         self.assertEqual((1, summary + f"{self.doc}: rendered the results of {RELEASE}\n", ""), self.render(selection))
         self.assertIn("| Fail: `nvim.hover.response` |", self.doc.read_text())

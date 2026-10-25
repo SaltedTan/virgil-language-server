@@ -94,6 +94,14 @@ async function typeDefinitions(editor, line, character) {
   return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
 }
 
+// The target of each Location that an implementation request at line:character returns.
+async function implementations(editor, line, character) {
+  const result = await vscode.commands.executeCommand(
+    'vscode.executeImplementationProvider', editor.document.uri, new vscode.Position(line, character),
+  );
+  return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
+}
+
 // The text of each hover at line:character, and the range of each that has one.
 async function hovers(editor, line, character) {
   const result = await vscode.commands.executeCommand(
@@ -393,6 +401,20 @@ async function workspace(extension) {
     [7, 9, 7, 14, vscode.DocumentHighlightKind.Read],
   ]);
   console.log('PASS: vscode.document-highlight.response');
+
+  // vscode.implementation.response: Shape's subclasses, directly and
+  // transitively, and the methods that override its area, by offset; the
+  // unextended Circle has none.
+  const shapes = path.join(path.dirname(words.document.uri.fsPath), 'Shapes.v3');
+  const shapesDocument = await vscode.workspace.openTextDocument(shapes);
+  assert.deepEqual(await implementations({ document: shapesDocument }, 4, 6), [
+    [shapes, 7, 6, 7, 13], [shapes, 10, 6, 10, 12], [shapes, 11, 6, 11, 12],
+  ]);
+  assert.deepEqual(await implementations({ document: shapesDocument }, 5, 5), [
+    [shapes, 8, 5, 8, 9], [shapes, 12, 5, 12, 9],
+  ]);
+  assert.deepEqual(await implementations({ document: shapesDocument }, 11, 6), []);
+  console.log('PASS: vscode.implementation.response');
 
   // While the type error stands, the server refuses to rename the local line,
   // with its reason, both when VS Code prepares the rename, as F2 does, and
