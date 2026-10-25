@@ -66,11 +66,21 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		var docs = Vector<DocumentOverlay>.new(), paths = Vector<string>.new();
 		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
 			var path = DocumentUri.filePath(uri);
-			if (path != null) { docs.put(doc); paths.put(path); }
+			if (path != null && !Strings.endsWith(path, "/.virgil-lsp.json")) { docs.put(doc); paths.put(path); }
 		});
 		return (docs.extract(), projects.owners(paths.extract()));
 	}
 	def documentClosed(uri: string) { positions.remove(uri); }
+	def documentUnowned(uri: string) {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		rememberEmpty(uri);
+		refresh();
+	}
+	private def rememberEmpty(uri: string) {
+		var seed = 0xcbf29ce484222325ul;
+		remember(uri, LspHintPositionFingerprint.new(null, seed, seed,
+			hashInt(hashInt(seed, int.view(seed)), int.view(seed >> 32))));
+	}
 	// Membership can disappear without any analysis completing. A newly
 	// active context may already have a current snapshot; compare that too.
 	def scopesChanged() {
@@ -79,9 +89,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		for (i < open.0.length) {
 			var ctx = open.1[i];
 			if (ctx == null) {
-				var seed = 0xcbf29ce484222325ul;
-				remember(open.0[i].uri, LspHintPositionFingerprint.new(null, seed, seed,
-					hashInt(hashInt(seed, int.view(seed)), int.view(seed >> 32))));
+				rememberEmpty(open.0[i].uri);
 				continue;
 			}
 			var visited = false;

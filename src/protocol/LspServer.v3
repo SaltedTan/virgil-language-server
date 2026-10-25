@@ -203,7 +203,7 @@ class LspServer {
 		if (reloadProjectFile(doc)) return;
 		var mapping = projects.forDocument(doc.uri);
 		parserDiagnostics.update(doc, mapping.compilerArgs());
-		if (mapping.active == null) inlayHints.scopesChanged();
+		if (mapping.active == null) inlayHints.documentUnowned(doc.uri);
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(mapping.contexts, debounce);
 	}
 	private def documentSaved(doc: DocumentOverlay) {
