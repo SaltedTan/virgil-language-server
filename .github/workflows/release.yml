@@ -105,8 +105,9 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0 # full history and tags so --version reports a described revision
+      # Only make test needs Neovim, and a pull request's dry run doesn't run it.
       - name: Install Neovim 0.11.6
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           curl --fail --location --retry 3 \
             https://github.com/neovim/neovim/releases/download/v0.11.6/nvim-linux-x86_64.tar.gz \
@@ -114,7 +115,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Install Neovim (Homebrew)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: brew install neovim
       - name: Install Rosetta 2
         if: runner.os == 'macOS'
@@ -124,8 +125,14 @@ jobs:
           uname -sm
           vendor/virgil/bin/dev/sense_host
           git -C vendor/virgil log -1 --format='%H %cs %s'
+      # A pull request's dry run only builds: CI runs make test on the same
+      # tree, with the same runner images. A tag, or a run by hand, tests here.
       - name: Build and test
+        if: github.event_name != 'pull_request'
         run: make test
+      - name: Build (pull request; CI runs make test)
+        if: github.event_name == 'pull_request'
+        run: make
       - name: Package
         env:
           REF_TYPE: ${{ github.ref_type }}
@@ -141,6 +148,7 @@ jobs:
         run: test/release/run.sh --archive "$ARCHIVE"
       - name: Check that make test tested the packaged executables
         # The build is deterministic, so the package's fresh build must match.
+        # On a pull request, the executables CI's make test tested must match.
         run: |
           mkdir "$RUNNER_TEMP/archive"
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/archive"
