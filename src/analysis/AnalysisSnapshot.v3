@@ -510,7 +510,7 @@ class AnalysisSnapshotFiles {
 // are in source order and do not overlap. {typed} holds pairs of an
 // occurrence index, in increasing order, and the string index of that
 // occurrence's use-site type. {builtins} holds five ints per builtin use: a
-// range as an occurrence's, and the string index of its type; builtin uses
+// full-width range and the string index of its type; builtin uses
 // are also token spans in source order. The file's declaration sites are
 // the snapshot's declarations {firstSite} to {firstSite + siteCount}, in
 // source order. The file's {callCount} calls are kept in their wire
