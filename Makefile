@@ -97,13 +97,15 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 	$(V3C) -heap-size=1g -output=$(BUILD) -program-name=type-depth-probe \
 	  test/analysis/TypeDepthProbe.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
-# The unit tests need two fixture directories to be unreadable. --run applies
-# that for the test process only and restores it however the process ends, so
-# the build directory stays removable. set -f keeps ARGS patterns away from the
-# shell's pathname expansion while word splitting still separates several of
-# them. Pass a glob with ARGS, e.g. `make test-unit ARGS='ProjectExpansion:*'`.
+# The unit tests need two fixture directories to be unreadable. test/unit/run.py
+# applies that for the test processes only and restores it however they end, so
+# the build directory stays removable. Without ARGS, it runs each group of tests
+# in a process of its own and lists the slowest tests. set -f keeps ARGS
+# patterns away from the shell's pathname expansion while word splitting still
+# separates several of them. Pass a glob with ARGS, e.g.
+# `make test-unit ARGS='ProjectExpansion:*'`, to run the matches in one process.
 run-unit-tests:
-	set -f; python3 test/fixtures/projects/prepare.py $(BUILD) --run $(UNIT_TESTS) $(ARGS)
+	set -f; python3 test/unit/run.py $(BUILD) $(UNIT_TESTS) $(ARGS)
 
 test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
@@ -114,6 +116,7 @@ test: test-protocol-shapes $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUIL
 	$(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/fixtures/projects/test_cleanup.py
+	python3 test/unit/test_run.py
 	python3 test/e2e/test_coverage.py
 	python3 test/e2e/clean-install/test_readme.py
 	python3 test/e2e/clean-install/test_install.py
