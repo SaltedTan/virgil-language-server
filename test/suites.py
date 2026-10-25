@@ -55,32 +55,30 @@ class Suite:
 class Suites:
     """Hands the suites to the threads in turn and owns their processes. A
     signal is recorded and forwarded to every running suite's process group,
-    and any started concurrently, rather than raising during a launch. Signal
-    handlers run on the main thread, between the other threads' list
-    operations, so the handler signals a copy of the list."""
+    rather than raising during a launch. Launch and registration share the
+    signal handler's lock, so cancellation prevents further launches."""
 
     def __init__(self, commands, live):
         self.waiting = [Suite(command) for command in commands]
         self.ran = []
         self.live = live  # stream each suite's output, with one at a time
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.signum = 0
         self.deadline = None
         self.force = False
         self.processes = []
 
     def stop(self, signum, _frame):
-        if not self.signum:
-            self.signum = signum
-            self.deadline = time.monotonic() + 10
-        else:
-            self.force = True
-            self.deadline = None
-        for process in list(self.processes):
-            self.signal(process)
-
-    def signal(self, process):
-        send(process, signal.SIGKILL if self.force else self.signum)
+        # Only workers hold this lock outside handlers; nested signals can reenter it.
+        with self.lock:
+            if not self.signum:
+                self.signum = signum
+                self.deadline = time.monotonic() + 10
+            else:
+                self.force = True
+                self.deadline = None
+            for process in self.processes:
+                send(process, signal.SIGKILL if self.force else self.signum)
 
     def next(self):
         with self.lock:
@@ -95,19 +93,20 @@ class Suites:
             self.run(suite)
 
     def run(self, suite):
-        output = None if self.live else tempfile.TemporaryFile()
-        started = time.monotonic()
         try:
-            process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
-                                       stdout=output, stderr=subprocess.STDOUT if output else None,
-                                       start_new_session=True)
+            with self.lock:
+                if self.signum:
+                    return
+                output = None if self.live else tempfile.TemporaryFile()
+                started = time.monotonic()
+                process = subprocess.Popen(["/bin/sh", "-c", suite.command], stdin=subprocess.DEVNULL,
+                                           stdout=output, stderr=subprocess.STDOUT if output else None,
+                                           start_new_session=True)
+                self.processes.append(process)
         except OSError as error:
             suite.status = 127
             self.write(suite, f"cannot run it: {error}\n".encode())
             return
-        self.processes.append(process)
-        if self.signum:
-            self.signal(process)
         suite.status = process.wait()
         suite.seconds = time.monotonic() - started
         with self.lock:
