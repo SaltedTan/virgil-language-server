@@ -1041,19 +1041,22 @@ function expectInOrder(text, lines) {
 async function actionDuringRecovery(failures, words, action) {
   const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
+  const inlayHints = setting('editor.inlayHints.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'recovery-'));
   const name = action === 'restart'
     ? 'server killed, and Virgil: Restart Language Server during the recovery'
     : 'server killed, and virgil.server.path changed during the recovery';
   await scenario(failures, `${name}: the recovery, then shutdown and exit, then one replacement`, async () => {
     // Breadcrumbs request document symbols when the recovered client's
-    // provider registers. That request waits behind the client's pending
-    // didOpens, and when the action's stop begins during that wait,
+    // provider registers, and VS Code requests inlay hints for the visible
+    // documents. Such a request waits behind the client's pending didOpens,
+    // and when the action's stop begins during that wait,
     // vscode-languageclient sends it after shutdown (#212), which this
     // scenario's strict shutdown sequence rejects. The scenario checks the
-    // recovery and stop, not UI work, so it turns the automatic request off
+    // recovery and stop, not UI work, so it turns the automatic requests off
     // instead of loosening the assertion.
     await setSetting('breadcrumbs.enabled', false);
+    await setSetting('editor.inlayHints.enabled', 'off');
     // The trace starts before the server that is killed, so that no
     // $/setTrace is on its way to it then.
     const traced = logFromHere();
@@ -1110,6 +1113,7 @@ async function actionDuringRecovery(failures, words, action) {
       await level(vscode.LogLevel.Info);
       await restoreServer(server, words);
       await setSetting('breadcrumbs.enabled', breadcrumbs);
+      await setSetting('editor.inlayHints.enabled', inlayHints);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -1365,6 +1369,7 @@ async function crashLimit(failures, bad, words) {
 async function pendingEditRestart(failures, bad, words) {
   const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
+  const inlayHints = setting('editor.inlayHints.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'pending-'));
   const { document } = bad;
   const uri = document.uri.toString();
@@ -1372,12 +1377,14 @@ async function pendingEditRestart(failures, bad, words) {
   const active = vscode.window.activeTextEditor?.document;
   await scenario(failures, 'Virgil: Restart Language Server with an unsaved edit still pending: '
     + 'the new server gets its exact text, then a later edit', async () => {
-    // Breadcrumbs request document symbols as the edit lands. Such a request
-    // flushes the pending full-text change to the old server, and if the
-    // restart's stop begins during that flush, the library sends it after
-    // shutdown (#212). The scenario checks the pending edit, not UI work, so
-    // it turns the automatic request off; the assertions stay as strict.
+    // Breadcrumbs request document symbols, and VS Code inlay hints, as the
+    // edit lands. Such a request flushes the pending full-text change to the
+    // old server, and if the restart's stop begins during that flush, the
+    // library sends it after shutdown (#212). The scenario checks the pending
+    // edit, not UI work, so it turns the automatic requests off; the
+    // assertions stay as strict.
     await setSetting('breadcrumbs.enabled', false);
+    await setSetting('editor.inlayHints.enabled', 'off');
     assert.ok(document.getText() === saved && !document.isDirty, 'bad.v3 is not as saved');
     const editor = await vscode.window.showTextDocument(document, { preview: false });
     fs.writeFileSync(path.join(directory, 'record'), '');
@@ -1425,6 +1432,7 @@ async function pendingEditRestart(failures, bad, words) {
   }, async () => {
     try {
       await setSetting('breadcrumbs.enabled', breadcrumbs);
+      await setSetting('editor.inlayHints.enabled', inlayHints);
       if (document.isDirty) {
         await vscode.window.showTextDocument(document, { preview: false });
         await vscode.commands.executeCommand('workbench.action.files.revert');
