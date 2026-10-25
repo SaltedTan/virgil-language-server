@@ -106,6 +106,14 @@ Analyses run one at a time. A worker starts on demand, before an analysis, and i
 | After a completed analysis, its UID counter reaches the limit | 2^28 | Completed |
 | After a completed analysis, its live heap (after a forced collection, excluding the result) reaches the limit | ⅛ of its heap (48 MB) | Completed |
 
+Cancellation withdraws a temporary job's consumer without adding a restart
+trigger. The [#262 typing-burst experiment](../benchmarks.md#reclaiming-obsolete-jobs)
+tested replacing obsolete temporary work whenever useful work was ready.
+Although the last reply's median improved slightly, diagnostics after the burst
+arrived later, so that policy was not adopted. The running worker still finishes
+and its withdrawn result is discarded; automatic analyses keep their contexts
+and snapshot waiters.
+
 Each worker also arms a timer (`setitimer`) for twice the time limit plus a second while it analyzes, and `SIGALRM` ends it. The server's limit normally expires first. The timer matters when the supervising process dies during an analysis: an idle orphan reads the end of its request pipe and exits, but one caught in a compiler loop would otherwise run forever.
 
 Before allocating the encoded request, the supervisor measures its aggregate size with `AnalysisWire.analyzeFrameSize`: framing, message metadata, file counts, path lengths and bytes, and source lengths and bytes. If the payload would exceed the frame limit, it returns `TOO_LARGE` without starting or replacing a worker, sending bytes, or changing the current snapshot. The existing worker can handle the next accepted request. `AnalysisSupervisor:request_too_large`, `AnalysisSupervisor:request_size_boundary`, `AnalysisSupervisor:aggregate_request_too_large`, and `AnalysisSupervisor:oversized_request_keeps_snapshot` cover this admission rule.

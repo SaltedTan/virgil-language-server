@@ -207,6 +207,68 @@ class Block:
         check(result == {"uri": self.uri, "version": self.version,
                          "diagnostics": [self.p["edits"][kind]["expected"]]}, (kind, result))
 
+    def validate_completion(self, result):
+        check(isinstance(result, dict) and any(item["label"] == self.p["completion_label"] and
+              item.get("kind") != 14 and item.get("detail") == self.p["hover_prefix"]
+              for item in result["items"]), ("semantic completion", result))
+
+    def typing_burst(self, iteration):
+        """Four edits 20 ms apart, cancelling the preceding completion each time.
+
+        Type the last four letters of the pinned token. An appended unresolved
+        name makes the final semantic publication observable (an empty parser
+        publication cannot satisfy it). Only overlays change, never corpus files.
+        """
+        self.restore()
+        offset = os.fstat(self.s.err.fileno()).st_size
+        site = self.p["query"]
+        token, begin = site["token"], site["offset"]
+        # Corpus offsets count bytes; all selected tokens are ASCII.
+        before = self.text.encode()[:begin].decode()
+        after = self.text.encode()[begin + len(token):].decode()
+        ids, sent = [], []
+        burst_start = time.perf_counter_ns()
+        for step in range(4):
+            target = burst_start + step * 20_000_000
+            time.sleep(max(0, (target - time.perf_counter_ns()) / 1e9))
+            if ids:
+                notify(self.s, "$/cancelRequest", {"id": ids[-1]})
+            length = len(token) - 3 + step
+            self.change(before + token[:length] + after + self.p["edits"]["semantic"]["append"])
+            position = {**site["range"]["start"],
+                        "character": site["range"]["start"]["character"] + length}
+            sent.append(time.perf_counter_ns())
+            ids.append(self.s.send("textDocument/completion", {**self.query, "position": position}))
+        replies, diagnostic_ms = {}, None
+        deadline = time.monotonic() + 60
+        while len(replies) < len(ids) or diagnostic_ms is None:
+            msg = self.s.receive(deadline)
+            elapsed = (time.perf_counter_ns() - sent[-1]) / 1e6
+            if "id" in msg:
+                check(msg["id"] in ids, ("unexpected burst reply", msg))
+                replies[msg["id"]] = (msg, elapsed)
+            elif (msg["params"]["uri"] == self.uri and
+                  msg["params"].get("version") == self.version and msg["params"]["diagnostics"]):
+                self.validate_diagnostic("semantic", msg["params"])
+                diagnostic_ms = elapsed
+        for id in ids[:-1]:
+            reply = replies[id][0]
+            if "error" in reply:
+                check(reply["error"]["code"] == -32800, reply)
+            else:
+                # A small corpus may finish between keystrokes.
+                self.validate_completion(reply["result"])
+        self.validate_completion(replies[ids[-1]][0].get("result"))
+        trace = logs(self.s, offset)
+        metrics = probes(trace)
+        self.row["samples"].append({"scenario": "typing_burst", "iteration": iteration,
+            "warmup": iteration < self.args.warmups, "version": self.version,
+            "server_pid": self.s.proc.pid, "latency_ms": replies[ids[-1]][1],
+            "diagnostic_latency_ms": diagnostic_ms,
+            "worker_replacements": len(re.findall(r"reclaiming analysis worker", trace)),
+            "worker_starts": sum(p["metric"] == "worker_start_us" for p in metrics),
+            "request_ids": ids, "probes": metrics})
+
     def validate_rename(self, result):
         check(isinstance(result, dict) and set(result) == {"documentChanges"}, result)
         actual = []
@@ -268,13 +330,9 @@ class Block:
                     self.snapshot()  # Unmeasured freshness precondition; never a polling loop.
                     self.measure(method, i, lambda: self.request("textDocument/" + method, {**self.query, **extra}), validate)
                 comp = {**self.query, "position": self.p["completion_positions"][i % 2]}
-                def completion(r):
-                    check(isinstance(r, dict) and any(item["label"] == self.p["completion_label"] and
-                          item.get("kind") != 14 and item.get("detail") == self.p["hover_prefix"]
-                          for item in r["items"]), ("semantic completion", r))
                 self.snapshot()
-                self.measure("completion_miss", i, lambda: self.request("textDocument/completion", comp), completion)
-                self.measure("completion_hit", i, lambda: self.request("textDocument/completion", comp), completion)
+                self.measure("completion_miss", i, lambda: self.request("textDocument/completion", comp), self.validate_completion)
+                self.measure("completion_hit", i, lambda: self.request("textDocument/completion", comp), self.validate_completion)
             for kind in ("syntax", "semantic"):
                 for i in range(count):
                     self.restore()  # A definition reply drains the restore's analysis without sleeps.
@@ -298,6 +356,9 @@ class Block:
                     self.measure("error_analysis", i,
                                  lambda: self.request("virgil-lsp/analyze", {"uris": self.uris}),
                                  lambda r: self.analysis(r, diagnostics))
+            if self.args.typing_burst:
+                for i in range(count):
+                    self.typing_burst(i)
             self.finish_session()
         except BaseException:
             if self.s:
@@ -316,6 +377,9 @@ def summaries(blocks):
                 continue
             key = (block["build"], block["project"], sample["scenario"])
             groups[key + ("latency_ms",)].append(sample["latency_ms"])
+            for metric in ("diagnostic_latency_ms", "worker_replacements", "worker_starts"):
+                if metric in sample:
+                    groups[key + (metric,)].append(sample[metric])
             # Preserve each worker transaction, even if an operation runs several.
             for probe in sample["probes"]:
                 groups[key + (probe["process"] + "." + probe["metric"],)].append(probe["value"])
@@ -344,6 +408,8 @@ def main():
     parser.add_argument("--require-probes", action="store_true", help="fail unless all phase/GC metrics are present")
     parser.add_argument("--error-result", action="store_true",
                         help="also repeat Aeneas analyses with an unresolved name and 900 extra functions (#240)")
+    parser.add_argument("--typing-burst", action="store_true",
+                        help="also type four letters 20 ms apart, cancelling obsolete completions (#262)")
     args = parser.parse_args()
     if args.smoke:
         args.blocks, args.operations, args.warmups, args.project = 1, 1, 0, ["small"]
@@ -357,7 +423,7 @@ def main():
               "git_status": corpus.git_revision(ROOT, "status", "--short"), "host": host_info(affinity),
               "corpus_sha256": corpus.sha256(corpus.MANIFEST.read_bytes()), "corpus": pinned,
               "configuration": {"blocks": args.blocks, "operations": args.operations, "warmups": args.warmups,
-                                "error_result": args.error_result},
+                                "error_result": args.error_result, "typing_burst": args.typing_burst},
               "builds": [binary_info(p, args.smoke) for p in executables], "blocks": []}
     try:
         for block in range(args.blocks):
@@ -385,7 +451,14 @@ def main():
                     for probe in sample["probes"]:
                         measured[probe["process"]].append(probe["metric"])
                     scenario = sample["scenario"]
-                    if scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis"):
+                    if scenario == "typing_burst":
+                        # Cancelled transactions need not finish or emit a full probe set.
+                        # The last useful completion and semantic publication must finish.
+                        check(measured["server"].count("roundtrip_us") >= 2,
+                              (scenario, "missing useful transactions"))
+                        check(measured["worker"].count("result_encode_us") >= 2,
+                              (scenario, "missing worker results"))
+                    elif scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis"):
                         for role, required in (("worker", worker_metrics), ("server", server_metrics)):
                             check(all(measured[role].count(metric) == 1 for metric in required),
                                   ("missing/duplicate transaction probes", block["build"], block["project"], scenario, role, measured[role]))
