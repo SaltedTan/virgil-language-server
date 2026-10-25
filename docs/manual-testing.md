@@ -33,7 +33,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
+For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
