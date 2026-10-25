@@ -205,7 +205,7 @@ function treeSha256(dir) {
 
 // One file from a zip archive, such as a VSIX: its central directory gives
 // the entry's local header, whose data is stored or deflated.
-function readZipEntry(file, name) {
+function readZipEntry(file, name, optional = false) {
   const zip = fs.readFileSync(file);
   let end = zip.length - 22;
   while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end--;
@@ -224,7 +224,7 @@ function readZipEntry(file, name) {
     }
     at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
   }
-  throw new Error(`${file} has no ${name}`);
+  if (!optional) throw new Error(`${file} has no ${name}`);
 }
 
 // Quotes a word for the POSIX shell that runs a command over SSH.
@@ -1128,7 +1128,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   return record;
 }
 
-async function test(run) {
+function readVSIX(run) {
   const { values } = run;
   const vsixManifest = JSON.parse(readZipEntry(values.vsix, 'extension/package.json'));
   const vsix = {
@@ -1137,13 +1137,28 @@ async function test(run) {
     id: `${vsixManifest.publisher}.${vsixManifest.name}`,
     version: vsixManifest.version,
     extensionKind: vsixManifest.extensionKind ?? null,
+    target: JSON.parse(readZipEntry(values.vsix, 'extension/server-target.json', true) ?? '{}').target,
   };
   if (vsix.id !== EXTENSION_ID) throw new Failure('fail', `${values.vsix} holds ${vsix.id}, not ${EXTENSION_ID}`);
-  if (values.bundled) {
-    vsix.target = JSON.parse(readZipEntry(values.vsix, 'extension/server-target.json')).target;
-    if (vsix.target !== 'linux-x64') throw new Failure('fail', 'Remote-SSH bundled test needs linux-x64');
-  }
+  if (values.bundled && vsix.target !== 'linux-x64') throw new Failure('fail', 'Remote-SSH bundled test needs linux-x64');
   run.manifest.vsix = vsix;
+  return vsix;
+}
+
+async function locateExtension(run, layout, vsix) {
+  const name = `${vsix.id}-${vsix.version}`;
+  const names = [name, ...(vsix.target === undefined ? [] : [`${name}-${vsix.target}`])];
+  const locate = `const fs = require('fs'); const path = require('path');
+    const root = ${JSON.stringify(layout.extensions)};
+    const names = ${JSON.stringify(names)};
+    const matches = fs.readdirSync(root).filter(n => names.includes(n));
+    if (matches.length !== 1) process.exit(1); console.log(path.join(root, matches[0]));`;
+  return (await run.remote(`${sh(layout.serverNode)} -e ${sh(locate)}`)).stdout.trim();
+}
+
+async function test(run) {
+  const { values } = run;
+  const vsix = readVSIX(run);
   const server = values.bundled ? undefined : await serverFiles(run);
   if (values.bundled) run.manifest.server = { bundled: true, vsixSha256: vsix.sha256 };
   if (!values.bundled) run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
@@ -1254,13 +1269,7 @@ async function test(run) {
   infrastructure('write vsix-install.log', () => fs.writeFileSync(path.join(run.evidence, 'vsix-install.log'), installation.stdout + installation.stderr));
   if (installation.code !== 0) throw new Failure('fail', `installing ${remoteVsix} on ${target.alias} exited with ${installation.code}; see vsix-install.log`);
   const listed = (await run.remote(`${sh(layout.cli)} ${flags} --list-extensions --show-versions`)).stdout.split('\n').map((line) => line.trim());
-  // VS Code versions may include the platform suffix in an installed directory.
-  const locate = `const fs = require('fs'); const path = require('path');
-    const root = ${JSON.stringify(layout.extensions)};
-    const matches = fs.readdirSync(root).filter(n => n === ${JSON.stringify(`${vsix.id}-${vsix.version}`)}
-      || n === ${JSON.stringify(`${vsix.id}-${vsix.version}-${vsix.target}`)});
-    if (matches.length !== 1) process.exit(1); console.log(path.join(root, matches[0]));`;
-  layout.extensionPath = (await run.remote(`${sh(layout.serverNode)} -e ${sh(locate)}`)).stdout.trim();
+  layout.extensionPath = await locateExtension(run, layout, vsix);
   const manifest = JSON.parse((await run.remote(`cat ${sh(path.posix.join(layout.extensionPath, 'package.json'))}`, { allowFailure: true })).stdout || '{}');
   const checks = {
     listed: listed.includes(`${vsix.id}@${vsix.version}`),
@@ -1569,4 +1578,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, settle, stopHost, options, launch, main };
+module.exports = { REMOTE_PROCESSES, downloadVSCode, runGroup, serverFiles, readVSIX, locateExtension, settle, stopHost, options, launch, main };

@@ -597,6 +597,53 @@ test('missing product executables fail before an upload, for direct and archive 
   }
 });
 
+test('VSIX targets survive external server overrides and locate the installed extension', async (t) => {
+  const root = fs.mkdtempSync(path.join(__dirname, '.remote-ssh-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { readVSIX, locateExtension } = require(path.join(dir, 'run.cjs'));
+  const manifest = { publisher: 'virgil-language-server', name: 'virgil-lsp-vscode', version: '0.1.3', extensionKind: ['workspace'] };
+  const name = `${manifest.publisher}.${manifest.name}-${manifest.version}`;
+  for (const target of [undefined, 'linux-x64', 'darwin-arm64', 'darwin-x64']) {
+    const vsixFile = path.join(root, `${target ?? 'universal'}.vsix`);
+    const entries = {
+      'extension/package.json': JSON.stringify(manifest),
+      'extension.vsixmanifest': `<PackageManifest><Metadata><Identity${target === undefined ? '' : ` TargetPlatform="${target}"`}/></Metadata></PackageManifest>`,
+      ...(target === undefined ? {} : { 'extension/server-target.json': JSON.stringify({ target }) }),
+    };
+    execFileSync('python3', ['-c',
+      'import json, sys, zipfile\nwith zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:\n'
+      + ' for name, data in json.load(sys.stdin).items(): z.writestr(name, data)', vsixFile],
+    { input: JSON.stringify(entries) });
+    for (const mode of ['server', 'archive', 'bundled']) {
+      await t.test(`${target ?? 'universal'} with ${mode}`, async () => {
+        const extensions = fs.mkdtempSync(path.join(root, 'extensions-'));
+        const run = {
+          values: { vsix: vsixFile, [mode]: mode === 'bundled' ? true : '/external/input' },
+          manifest: {},
+          remote: async (command) => ({ stdout: execFileSync('sh', ['-c', command], { encoding: 'utf8' }) }),
+        };
+        if (mode === 'bundled' && target !== 'linux-x64') {
+          assert.throws(() => readVSIX(run), (error) => error.kind === 'fail' && /bundled test needs linux-x64/.test(error.message));
+          return;
+        }
+        const vsix = readVSIX(run);
+        assert.equal(vsix.target, target);
+        assert.equal(run.manifest.vsix.target, target);
+        const layout = { extensions, serverNode: process.execPath };
+        for (const installed of [name, ...(target === undefined ? [] : [`${name}-${target}`])]) {
+          const directory = path.join(extensions, installed);
+          fs.mkdirSync(directory);
+          assert.equal(await locateExtension(run, layout, vsix), directory);
+          fs.rmdirSync(directory);
+        }
+        const invalid = path.join(extensions, `${name}-undefined`);
+        fs.mkdirSync(invalid);
+        await assert.rejects(locateExtension(run, layout, vsix));
+      });
+    }
+  }
+});
+
 test('leak checks use the client-exit or host-stop time rather than the retrieval time', async () => {
   for (const at of [0, 10000]) {
     let now = at + 3000;
