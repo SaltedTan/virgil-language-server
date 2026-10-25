@@ -284,10 +284,11 @@ class Block:
     def session(self):
         self.analysis_generation = 0
         self.s = (HintsSession if self.args.inlay_refresh else Session)(self.exe, *self.options)
-        self.request("initialize", {"initializationOptions": {"virgilRoot": str(ROOT / "vendor/virgil")},
+        initialized = self.request("initialize", {"initializationOptions": {"virgilRoot": str(ROOT / "vendor/virgil")},
                      "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": True},
                                      "inlayHint": {"refreshSupport": self.args.inlay_refresh}},
                                       "textDocument": {"hover": {"contentFormat": ["plaintext"]}}}})
+        self.has_inlay_hints = initialized['capabilities'].get('inlayHintProvider', False)
         notify(self.s, "initialized", {})
         open_document(self.s, ROOT / self.p["query"]["path"], self.text)
 
@@ -317,6 +318,16 @@ class Block:
             open_document(self.s, ROOT / self.p["base"] / ".virgil-lsp.json", json.dumps(config), "json")
             self.definition(self.request("textDocument/definition", self.query))
             self.snapshot()
+            if self.args.inlay_refresh:
+                # Explicit URI lists have no project context and cannot run
+                # the refresh comparison. Measure project-scoped transactions
+                # after the unsaved configuration has been discovered.
+                self.analysis_generation = self.snapshot()["generation"]
+                for i in range(count):
+                    self.measure("refresh_analysis", i,
+                                 lambda: self.request("virgil-lsp/analyze", {"uri": self.uri}), self.analysis)
+                if self.has_inlay_hints:
+                    check(self.s.refreshes, "refresh-capable project analysis never refreshed hints")
             for i in range(count):
                 for method, extra, validate in (
                     ("definition", {}, self.definition),
@@ -462,7 +473,7 @@ def main():
                               (scenario, "missing useful transactions"))
                         check(measured["worker"].count("result_encode_us") >= 2,
                               (scenario, "missing worker results"))
-                    elif scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis"):
+                    elif scenario in ("fresh_analysis", "reused_analysis", "completion_miss", "rename", "semantic_diagnostic", "error_analysis", "refresh_analysis"):
                         for role, required in (("worker", worker_metrics), ("server", server_metrics)):
                             check(all(measured[role].count(metric) == 1 for metric in required),
                                   ("missing/duplicate transaction probes", block["build"], block["project"], scenario, role, measured[role]))
