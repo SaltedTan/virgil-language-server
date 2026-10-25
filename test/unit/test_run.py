@@ -115,6 +115,14 @@ class RunTest(unittest.TestCase):
         self.assertIn("FAIL: Beta:one", result.stdout)
         self.assert_restored()
 
+    def test_relative_build_runs_groups(self):
+        self.stand_in()
+        result = subprocess.run([sys.executable, str(self.run_py), "build", "build/unit-tests"],
+                                cwd=self.build.parent, capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(["Alpha", "Beta"], [run[2] for run in self.logged()])
+        self.assert_restored()
+
     def test_crash_before_the_last_test_fails_the_run(self):
         self.stand_in(total=4, beta="printf '##>2 unit tests\\n##+Beta:one\\n##-ok\\n##+Beta:two\\n'; kill -KILL $$")
         result = self.run_unit_tests()
@@ -163,6 +171,52 @@ class RunTest(unittest.TestCase):
             process.stdout.close()
             process.wait()
         self.assert_restored()
+
+    def test_signals_during_cleanup_wait_for_restoration(self):
+        prepare = self.run_py.parent.parent / "fixtures" / "projects" / "prepare.py"
+        prepare.rename(prepare.with_name("real_prepare.py"))
+        prepare.write_text(
+            "import runpy, sys\n"
+            "from pathlib import Path\n"
+            "if sys.argv[2] == '--cleanup':\n"
+            "    print('cleanup-ready', flush=True)\n"
+            "    sys.stdin.readline()\n"
+            "runpy.run_path(str(Path(__file__).with_name('real_prepare.py')), run_name='__main__')\n",
+            encoding="utf-8",
+        )
+        for stopping_group in (False, True):
+            for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                with self.subTest(stopping_group=stopping_group, signal=signum):
+                    self.log.write_text("", encoding="utf-8")
+                    self.stand_in(beta="printf '##>1 unit tests\\n##+Beta:one\\n'; exec sleep 60"
+                                  if stopping_group else BETA_PASSES)
+                    process = subprocess.Popen(
+                        [sys.executable, str(self.run_py), str(self.build), str(self.executable)],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    try:
+                        for line in process.stdout:
+                            if stopping_group and line.startswith("##+Beta:one"):
+                                process.send_signal(signal.SIGTERM)
+                            if line.strip() == "cleanup-ready":
+                                break
+                        else:
+                            self.fail("runner exited before cleanup")
+                        for directory in self.restricted:
+                            self.assertEqual(0, stat.S_IMODE(directory.stat().st_mode))
+                        if stopping_group:
+                            with self.assertRaises(ProcessLookupError):
+                                os.kill(int(self.logged()[-1][3]), 0)
+                        process.send_signal(signum)
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            process.wait(timeout=0.1)
+                        output, error = process.communicate(input="\n", timeout=10)
+                        self.assertEqual(128 + signum, process.returncode, output + error)
+                        self.assert_restored()
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                        process.communicate(timeout=10)
 
 
 if __name__ == "__main__":

@@ -52,12 +52,13 @@ def total(build, unit_tests):
     the first one. A link to it runs in an empty directory and is stopped once
     the count arrives, so a test that has started finds neither the fixtures
     nor the worker, which the tests look for next to the executable."""
-    scratch = Path(tempfile.mkdtemp(prefix="unit-count-", dir=build))
+    scratch = Path(tempfile.mkdtemp(prefix="unit-count-", dir=build)).absolute()
     try:
         link = scratch / Path(unit_tests).name
         try:
             os.link(unit_tests, link)
         except OSError:
+            # Covers executables that cannot be hard-linked into BUILD, e.g. across filesystems.
             shutil.copy2(unit_tests, link)
         process = subprocess.Popen([link, "*"], cwd=scratch, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -132,10 +133,15 @@ def main(build, unit_tests, patterns):
             ran.append(group)
             run(unit_tests, group, processes)
     finally:
-        for process in processes:
-            process.kill()
-            process.wait()
-        subprocess.run([sys.executable, str(PREPARE), build, "--cleanup"], check=False)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK,
+                                              {signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
+        try:
+            for process in processes:
+                process.kill()
+                process.wait()
+            subprocess.run([sys.executable, str(PREPARE), build, "--cleanup"], check=False)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     elapsed = time.monotonic() - started
 
     errors = []
