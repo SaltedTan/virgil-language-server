@@ -327,7 +327,7 @@ class Block:
                     self.measure("refresh_analysis", i,
                                  lambda: self.request("virgil-lsp/analyze", {"uri": self.uri}), self.analysis)
                 if self.has_inlay_hints:
-                    check(self.s.refreshes, "refresh-capable project analysis never refreshed hints")
+                    check(not self.s.refreshes, "unchanged project analyses refreshed hints")
             for i in range(count):
                 for method, extra, validate in (
                     ("definition", {}, self.definition),

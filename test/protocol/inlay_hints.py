@@ -62,7 +62,7 @@ def run(exe, root, types, names, support):
         open_file(s, path, TEXT)
         want = expected(path, types, names)
         assert query(s, path) == want, s.transcript
-        assert bool(s.refreshes) == (support and (types or names)), (s.transcript, s.logs())
+        assert not s.refreshes, (s.transcript, s.logs())
         count = len(s.refreshes)
         assert 'after 1 analyses (limit 1)' in s.logs(), s.logs()
         s.result(s.analyze([loose.as_uri()]))
@@ -119,8 +119,10 @@ def cross_file(exe, root):
         assert all('location' not in h['label'][0] for h in stale[::2]), stale
         library.write_text(lib)
         assert query(s, path) == first
+        before_open = len(s.refreshes)
         open_file(s, library, lib)
         assert query(s, path) == first
+        assert len(s.refreshes) == before_open, s.transcript
         before = len(s.refreshes)
         renamed = lib.replace('count:', 'amount:')
         change(s, library, renamed, 2)
@@ -157,6 +159,62 @@ def cross_file(exe, root):
         change(s, library, '/* aa */\t' + renamed, 8)
         assert query(s, path) == sixth
         assert len(s.refreshes) == before, s.transcript
+        # Closed source files cannot have displayed hints. Changes confined to
+        # one must not refresh another open file whose hints remain identical.
+        s.send('textDocument/didClose', {'textDocument': {'uri': path.as_uri()}}, request=False)
+        query(s, library)
+        before = len(s.refreshes)
+        change(s, library, lib.replace('count:', 'closedOnly:'), 9)
+        assert query(s, library) == []
+        assert len(s.refreshes) == before, s.transcript
+        open_file(s, path, text)
+        reopened = query(s, path)
+        assert reopened[1]['label'] == 'closedOnly:'
+        assert len(s.refreshes) == before, s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+
+def fallback(exe, root):
+    path, library = root / 'Main.v3', root / 'Library.v3'
+    text = ('component Main {\n'
+            '  def before() { var before = Library.make(1); }\n'
+            '  def broken() { var inside = Library.make(2); }\n'
+            '  def after() { var after = Library.make(3); }\n}\n')
+    lib = ('component Library { def broken() { var inside = 1; }\n'
+           '  def make(count: int) -> Box { return Box.new(); } }\nclass Box {}\n')
+    path.write_text(text)
+    library.write_text(lib)
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'fallback', 'sources': ['Main.v3', 'Library.v3']}]}))
+    s = HintsSession(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'capabilities': {'workspace': {'inlayHint': {'refreshSupport': True}}}}))
+        open_file(s, path, text)
+        open_file(s, library, lib)
+        first = query(s, path)
+        assert len(first) == 6, first
+        broken = text.replace('var inside =', 'var bad = ;\n    var inside =')
+        change(s, path, broken, 2)
+        hints = query(s, path)
+        assert len(hints) == 4, hints
+        assert hints[:2] == first[:2], hints
+        assert hints[2]['position'] == position(broken, 'after =', 5), hints
+        assert hints[3]['position'] == position(broken, '3);'), hints
+        assert query(s, path, position(broken, 'bad =')) == hints[2:]
+        assert query(s, path, position(broken, 'bad ='), position(broken, 'inside =')) == []
+        # Definition's target mapping also applies when the linked file is degraded.
+        broken_lib = lib.replace('var inside =', 'var bad = ;\n    var inside =')
+        change(s, library, broken_lib, 2)
+        linked = query(s, path)
+        for h in linked[::2]:
+            assert h['label'][0]['location'] == {'uri': library.as_uri(), 'range': {'start': position(broken_lib, 'class Box', 6), 'end': position(broken_lib, 'class Box', 9)}}, h
+        before = len(s.refreshes)
+        change(s, library, broken_lib, 3)
+        assert query(s, path) == linked
+        assert len(s.refreshes) == before, s.transcript
         s.shutdown()
     finally:
         s.close()
@@ -169,6 +227,7 @@ def main():
                                       (False, True, True), (True, False, True), (False, False, True)]:
             run(exe, Path(work), types, names, support)
         cross_file(exe, Path(work))
+        fallback(exe, Path(work))
     print('protocol inlay hints: UTF-16 labels/links, ranges, settings, freshness, worker replacement, refresh passed')
 
 if __name__ == '__main__':

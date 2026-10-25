@@ -33,7 +33,9 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		if (file != null) {
 			var c = file.hintCursor();
 			while (c.next()) {
-				var isType = c.local > 0, position = c.position();
+				var isType = c.local > 0, span = at.snapshot.currentRange(at.index, c.begin, c.end);
+				if (span.0 < 0) continue;
+				var position = if(isType, span.1, span.0);
 				if (position < begin || position >= end || c.end > at.text.length || (isType && !types) || (!isType && !parameterNames)) continue;
 				var h = Strings.newMap<JsonValue>();
 				h["position"] = jsonPosition(at.map.offsetToPosition(position));
@@ -57,90 +59,92 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		}
 		return (true, JsonRpcReply.Result(JsonValue.JArray(result.extract())));
 	}
-	// Keep only a fingerprint of published hints on the context. Comparing to
-	// ctx.snapshot is wrong: a discarded, stale result can already replace
-	// it, without ever telling the client that hints changed.
+	// Only open documents can have hints on screen. Each file keeps its own
+	// published fingerprint; opening/closing a file alone needs no refresh.
+	// Source stamps invalidate position caches, never the displayed result.
 	def analyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
 		if (!refreshSupport || (!types && !parameterNames)) return;
-		var hash = 0xcbf29ce484222325ul, any = false;
 		var positions = OrderedStringMap<LspHintPositionFingerprint>.new();
-		var targets = OrderedStringMap<LspHintTargetFingerprint>.new(), sourceIndices = OrderedStringMap<int>.new();
-		for (i < snapshot.paths.length) sourceIndices.add(snapshot.paths[i], i + 1);
-		var targetHashes = Array<u64>.new(snapshot.declarations.length), targetKnown = Array<bool>.new(snapshot.declarations.length);
-		var texts = Array<Array<byte>>.new(snapshot.paths.length), textChecked = Array<bool>.new(snapshot.paths.length);
-		for (i < snapshot.documentVersions.length) {
-			var version = snapshot.documentVersions[i], path = snapshot.paths[i], file = snapshot.fileIndex(path);
-			if (file == null) continue;
-			var c = file.hintCursor(), offsets = 0xcbf29ce484222325ul, found = false;
-			while (c.next()) {
-				var isType = c.local > 0;
-				if ((isType && !types) || (!isType && !parameterNames)) continue;
-				if (!found) hash = hashString(hash, path);
-				found = any = true;
-				offsets = hashInt(offsets, c.position());
-				hash = hashInt(hash, if(isType, 1, 2));
-				hash = hashString(hash, snapshot.hintString(c.label));
-				if (isType) {
-					var code = snapshot.hintTarget(file, c.local, c.begin);
-					if (code > 0) {
-						if (!targetKnown[code - 1]) {
-							targetHashes[code - 1] = targetFingerprint(ctx, snapshot, snapshot.declarations[code - 1], texts, textChecked, sourceIndices, targets);
-							targetKnown[code - 1] = true;
-						}
-						var value = targetHashes[code - 1];
+		var targets = OrderedStringMap<LspHintTargetFingerprint>.new();
+		var texts = Array<Array<byte>>.new(snapshot.paths.length), checked = Array<bool>.new(snapshot.paths.length);
+		var changed = Array<bool>.new(1);
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var i = snapshot.documentIndex(uri);
+			if (i < 0) return;
+			var path = snapshot.paths[i], version = snapshot.documentVersions[i], file = snapshot.fileIndex(path);
+			var hash = 0xcbf29ce484222325ul, offsets = hash;
+			if (file != null) {
+				var c = file.hintCursor();
+				while (c.next()) {
+					var isType = c.local > 0;
+					if ((isType && !types) || (!isType && !parameterNames)) continue;
+					var span = snapshot.currentRange(i, c.begin, c.end);
+					if (span.0 < 0) continue;
+					offsets = hashInt(offsets, if(isType, span.1, span.0));
+					hash = hashInt(hash, if(isType, 1, 2));
+					hash = hashString(hash, snapshot.hintString(c.label));
+					if (isType) {
+						var code = snapshot.hintTarget(file, c.local, c.begin);
+						var value = if(code > 0, targetFingerprint(ctx, snapshot, snapshot.declarations[code - 1], texts, checked, targets));
 						hash = hashInt(hashInt(hash, int.view(value)), int.view(value >> 32));
 					}
 				}
 			}
-			if (!found) continue;
-			var previous = ctx.hintPositions[path];
-			if (previous == null || previous.source != version.hash || previous.identity != version.identity || previous.offsets != offsets) {
-				var text = analyzedText(snapshot, i, texts, textChecked);
-				if (text == null) return;
-				var map = LspHintPositionCursor.new(text), value = 0xcbf29ce484222325ul;
-				c = file.hintCursor();
+			var previous = ctx.hintPositions[path], coordinates = 0xcbf29ce484222325ul;
+			if (previous != null && previous.identity == version.identity && previous.offsets == offsets)
+				coordinates = previous.positions;
+			else if (file != null) {
+				var map = LspHintPositionCursor.new(doc.text), c = file.hintCursor();
 				while (c.next()) {
 					if ((c.local > 0 && !types) || (c.local == 0 && !parameterNames)) continue;
-					map.advance(c.position());
-					value = hashInt(hashInt(value, map.line), map.character);
+					var span = snapshot.currentRange(i, c.begin, c.end);
+					if (span.0 < 0) continue;
+					map.advance(if(c.local > 0, span.1, span.0));
+					coordinates = hashInt(hashInt(coordinates, map.line), map.character);
 				}
-				previous = LspHintPositionFingerprint.new(version.hash, version.identity, offsets, value);
 			}
-			positions.add(path, previous);
-			hash = hashInt(hashInt(hash, int.view(previous.positions)), int.view(previous.positions >> 32));
-		}
+			hash = hashInt(hashInt(hash, int.view(coordinates)), int.view(coordinates >> 32));
+			if (previous != null && previous.result != hash) changed[0] = true;
+			positions.add(path, LspHintPositionFingerprint.new(version.identity, offsets, coordinates, hash));
+		});
 		ctx.hintPositions = positions;
 		ctx.hintTargets = targets;
-		var changed = if(ctx.hasHintFingerprint, ctx.hintFingerprint != hash, any);
-		ctx.hasHintFingerprint = true;
-		ctx.hintFingerprint = hash;
-		if (changed) { dirty = true; refresh(); }
+		if (changed[0]) { dirty = true; refresh(); }
 	}
 	private def analyzedText(snapshot: AnalysisSnapshot, i: int, texts: Array<Array<byte>>, checked: Array<bool>) -> Array<byte> {
-		if (!checked[i]) { checked[i] = true; texts[i] = LspAnalysisCapture.analyzedText(store, snapshot, i); }
+		if (!checked[i]) { checked[i] = true; var effective = LspAnalysisCapture.analyzedText(store, snapshot, i);
+			if (effective != null) texts[i] = LspAnalysisCapture.currentText(store, snapshot, i, effective); }
 		return texts[i];
 	}
 	private def targetFingerprint(ctx: ProjectContext, snapshot: AnalysisSnapshot, d: AnalysisDeclaration,
-			texts: Array<Array<byte>>, checked: Array<bool>, sources: OrderedStringMap<int>,
+			texts: Array<Array<byte>>, checked: Array<bool>,
 			targets: OrderedStringMap<LspHintTargetFingerprint>) -> u64 {
-		var i = sources[d.range.path] - 1;
+		var i = -1;
+		for (j < snapshot.paths.length) if (Strings.equal(snapshot.paths[j], d.range.path)) { i = j; break; }
 		if (i < 0 || i >= snapshot.documentVersions.length || d.range.beginOffset < 0) return 0;
 		var cache = targets[d.range.path];
 		if (cache == null) {
 			cache = ctx.hintTargets[d.range.path];
-			if (cache == null || cache.source != snapshot.documentVersions[i].hash || cache.identity != snapshot.documentVersions[i].identity)
-				cache = LspHintTargetFingerprint.new(snapshot.documentVersions[i].hash, snapshot.documentVersions[i].identity);
+			if (cache == null || cache.source != snapshot.documentVersions[i].hash || cache.identity != snapshot.documentVersions[i].identity || cache.substituted || snapshot.documentVersions[i].substitution != null)
+				cache = LspHintTargetFingerprint.new(snapshot.documentVersions[i].hash, snapshot.documentVersions[i].identity, snapshot.documentVersions[i].substitution != null);
 			targets.add(d.range.path, cache);
 		}
 		var index = cache.offsets.add(d.range.beginOffset);
 		if (index < cache.hashes.length) return cache.hashes[index];
 		var text = analyzedText(snapshot, i, texts, checked), hash = 0ul;
-		if (text != null && d.range.endOffset <= text.length) {
+		var span = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
+		if (text != null && span.0 >= 0 && span.1 <= text.length) {
 			hash = hashString(hashString(0xcbf29ce484222325ul, d.range.path), d.name);
-			// Valid token ranges already carry line numbers. Convert only their
-			// line prefixes, once per target; no target PositionMap is built.
-			hash = hashInt(hashInt(hash, d.range.beginLine), utf16Column(text, d.range.beginOffset));
-			hash = hashInt(hashInt(hash, d.range.endLine), utf16Column(text, d.range.endOffset));
+			if (snapshot.documentVersions[i].substitution == null) {
+				hash = hashInt(hashInt(hash, d.range.beginLine), utf16Column(text, span.0));
+				hash = hashInt(hashInt(hash, d.range.endLine), utf16Column(text, span.1));
+			} else {
+				var scan = LspHintPositionCursor.new(text);
+				scan.advance(span.0);
+				hash = hashInt(hashInt(hash, scan.line + 1), scan.character);
+				scan.advance(span.1);
+				hash = hashInt(hashInt(hash, scan.line + 1), scan.character);
+			}
 		}
 		cache.hashes.put(hash);
 		return hash;
@@ -189,7 +193,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 
 // Source stamps decide when to recompute UTF-16 positions; only the resulting
 // positions enter the published fingerprint. No source text or maps survive.
-class LspHintPositionFingerprint(source: u64, identity: DocumentVersionIdentity, offsets: u64, positions: u64) { }
+class LspHintPositionFingerprint(identity: DocumentVersionIdentity, offsets: u64, positions: u64, result: u64) { }
 
 // Hint offsets increase. Scan only the intervening bytes, without dense
 // per-byte maps or one position object per hint during refresh comparison.
@@ -213,7 +217,7 @@ class LspHintPositionCursor(text: Array<byte>) {
 // Targets in unchanged source keep their converted coordinates, keyed by the
 // declaration's unique name offset. Only files still referenced survive the
 // next comparison; neither source bytes nor declarations are retained.
-class LspHintTargetFingerprint(source: u64, identity: DocumentVersionIdentity) {
+class LspHintTargetFingerprint(source: u64, identity: DocumentVersionIdentity, substituted: bool) {
 	def offsets = AnalysisIndexMap<int>.new(AnalysisTables.hashInt, fun (a: int, b: int) => a == b);
 	def hashes = Vector<u64>.new();
 }

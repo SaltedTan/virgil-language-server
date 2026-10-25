@@ -48,7 +48,7 @@ class LspDefinitionLocations(at: LspSnapshotPosition) {
 			if (!checked[j]) {
 				checked[j] = true;
 				var text = at.analyzedText(j);
-				if (text != null) maps[j] = if(j == at.index, at.map, PositionMap.new(text, PositionEncoding.UTF16));
+				if (text != null) maps[j] = at.positionMap(j, text);
 			}
 			if (maps[j] != null) result = at.location(j, maps[j], d.range.beginOffset, d.range.endOffset);
 		}
