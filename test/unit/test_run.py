@@ -156,6 +156,44 @@ class RunTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assert_restored()
 
+    def test_slot_executables_and_workers_have_distinct_inodes(self):
+        self.stand_in()
+        worker = self.build / "virgil-lsp-worker"
+        worker.write_text("worker", encoding="utf-8")
+        worker.chmod(0o755)
+        runner = runpy.run_path(str(self.run_py))
+        try:
+            executables = runner["slots"](str(self.build), str(self.executable), 3)
+            for name in (self.executable.name, worker.name):
+                files = [Path(executable).parent / name for executable in executables]
+                for index, copy in enumerate(files[1:], 1):
+                    self.assertEqual(files[0].read_bytes(), copy.read_bytes())
+                    self.assertEqual(stat.S_IMODE(files[0].stat().st_mode), stat.S_IMODE(copy.stat().st_mode))
+                    for other in files[:index]:
+                        self.assertFalse(os.path.samefile(copy, other), (copy, other))
+        finally:
+            runner["remove_slots"](str(self.build))
+            worker.unlink()
+        self.assertFalse((self.build / "unit-slots").exists())
+
+    def test_count_probe_uses_a_distinct_executable_inode(self):
+        self.stand_in()
+        runner = runpy.run_path(str(self.run_py))
+        children = runner["Children"]()
+        popen = subprocess.Popen
+        probes = []
+
+        def launch(command, **kwargs):
+            probes.append(Path(command[0]))
+            self.assertFalse(os.path.samefile(self.executable, command[0]))
+            return popen(command, **kwargs)
+
+        with patch.object(subprocess, "Popen", side_effect=launch):
+            self.assertEqual(3, runner["total"](str(self.build), str(self.executable), children))
+        self.assertEqual(1, len(probes))
+        self.assertFalse(probes[0].parent.exists())
+        self.assertEqual([], children.processes)
+
     def test_parallel_groups_keep_stdout_and_stderr_together(self):
         self.stand_in(
             alpha="echo '##stderr Alpha' >&2; " + meeting("Alpha", "Beta", "##>2 unit tests\\n", "one two"),
@@ -408,6 +446,60 @@ class RunTest(unittest.TestCase):
                                 child.wait()
                                 if child.stdout is not None:
                                     child.stdout.close()
+        finally:
+            for signum, handler in handlers.items():
+                signal.signal(signum, handler)
+
+    def test_signal_status_survives_preparation_and_restriction_failures(self):
+        prepare = self.run_py.parent.parent / "fixtures" / "projects" / "prepare.py"
+        prepare.rename(prepare.with_name("real_prepare.py"))
+        self.stand_in()
+        for boundary in ("preparation", "restriction"):
+            for signum in (0, signal.SIGTERM):
+                with self.subTest(boundary=boundary, signal=signum):
+                    condition = ("len(sys.argv) == 2 and Path(sys.argv[1]).parent.name == 'unit-slots'"
+                                 if boundary == "preparation" else
+                                 "len(sys.argv) > 2 and sys.argv[2] == '--restrict'")
+                    prepare.write_text(
+                        "import os, runpy, sys\n"
+                        "from pathlib import Path\n"
+                        f"if {condition}:\n"
+                        f"    if {int(signum)}: os.kill(os.getppid(), {int(signum)})\n"
+                        "    sys.exit(1)\n"
+                        "runpy.run_path(str(Path(__file__).with_name('real_prepare.py')), run_name='__main__')\n",
+                        encoding="utf-8",
+                    )
+                    result = self.run_unit_tests(jobs=2)
+                    self.assertEqual(128 + signum if signum else 1, result.returncode,
+                                     result.stdout + result.stderr)
+                    if not signum:
+                        message = ("preparing the slots' fixtures failed" if boundary == "preparation" else
+                                   "restricting the fixtures failed")
+                        self.assertIn(message, result.stderr)
+                    self.assertEqual([], self.logged())
+                    self.assert_restored()
+
+    def test_signals_during_reporting_override_the_result(self):
+        runner = runpy.run_path(str(self.run_py))
+        handlers = {signum: signal.getsignal(signum)
+                    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+        self.stand_in()
+        try:
+            for boundary in ("\nslowest", "unit tests:"):
+                for signum in handlers:
+                    with self.subTest(boundary=boundary, signal=signum):
+                        printed = []
+
+                        def report(*args, **kwargs):
+                            printed.append(args[0])
+                            if args[0].startswith(boundary):
+                                os.kill(os.getpid(), signum)
+
+                        with patch("builtins.print", side_effect=report):
+                            status = runner["main"](1, str(self.build), str(self.executable), [])
+                        self.assertEqual(128 + signum, status)
+                        self.assertTrue(any(line.startswith("unit tests: 3 passed") for line in printed))
+                        self.assert_restored()
         finally:
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)

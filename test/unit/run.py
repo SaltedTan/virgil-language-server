@@ -17,7 +17,7 @@ Up to N groups (default: one for each CPU this process may use, at most
 DEFAULT_JOBS) run at once,
 each in a slot directory of its own, because tests edit and remove files in
 the fixtures next to the executable. The first slot is BUILD itself; each
-other is BUILD/unit-slots/<n>, with links to the executable and the worker next
+other is BUILD/unit-slots/<n>, with copies of the executable and the worker next
 to it and fixtures of its own from prepare.py, and is removed afterwards. With
 more than one slot, each group's output is printed whole once the group
 finishes.
@@ -84,23 +84,15 @@ def groups():
     return found
 
 
-def link(source, target):
-    try:
-        os.link(source, target)
-    except OSError:
-        # Covers executables that cannot be hard-linked into BUILD, e.g. across filesystems.
-        shutil.copy2(source, target)
-
-
 def total(build, unit_tests, children):
     """The executable's count of all its tests, which it prints before running
-    the first one. A link to it runs in an empty directory and is stopped once
+    the first one. A copy of it runs in an empty directory and is stopped once
     the count arrives, so a test that has started finds neither the fixtures
     nor the worker, which the tests look for next to the executable."""
     scratch = Path(tempfile.mkdtemp(prefix="unit-count-", dir=build)).absolute()
     try:
         copy = scratch / Path(unit_tests).name
-        link(unit_tests, copy)
+        shutil.copy2(unit_tests, copy)
         process = subprocess.Popen(
             [copy, "*"], cwd=scratch, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
@@ -138,7 +130,7 @@ def prepare(directory, *mode):
 
 
 def slots(build, unit_tests, jobs):
-    """The executables of {jobs} slots: BUILD's own, and links in new
+    """The executables of {jobs} slots: BUILD's own, and copies in new
     BUILD/unit-slots/<n> directories that get fixtures of their own."""
     executables = [unit_tests]
     if jobs > 1:
@@ -150,7 +142,7 @@ def slots(build, unit_tests, jobs):
             slot.mkdir()
             for name in [Path(unit_tests).name, WORKER]:
                 if (Path(unit_tests).parent / name).exists():
-                    link(Path(unit_tests).parent / name, slot / name)
+                    shutil.copy2(Path(unit_tests).parent / name, slot / name)
             directories.append(slot)
             executables.append(str(slot / Path(unit_tests).name))
         preparing = []
@@ -260,10 +252,20 @@ def main(jobs, build, unit_tests, patterns):
     children = Children()
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, children.stop)
+    try:
+        status = run(jobs, build, unit_tests, children)
+    except BaseException:
+        if not children.signum:
+            raise
+        status = 1
+    return 128 + children.signum if children.signum else status
+
+
+def run(jobs, build, unit_tests, children):
     unit_tests = os.path.abspath(unit_tests)
     expected = total(build, unit_tests, children)
     if children.signum:
-        return 128 + children.signum
+        return 0
     names = groups()
     jobs = max(1, min(jobs or min(cpus(), DEFAULT_JOBS), len(names)))
     runner = Slots(names, children, jobs == 1)
@@ -293,7 +295,7 @@ def main(jobs, build, unit_tests, patterns):
         prepare(build, "--cleanup")
         remove_slots(build)
     if children.signum:
-        return 128 + children.signum
+        return 0
     elapsed = time.monotonic() - started
 
     errors = []
