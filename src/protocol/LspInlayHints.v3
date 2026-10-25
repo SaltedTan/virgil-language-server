@@ -1,0 +1,128 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Range requests share definition's selection, waiting, cancellation, and
+// target freshness. Settings are fixed at initialization, like virgilRoot.
+class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests) {
+	var types = true;
+	var parameterNames = true;
+	var refreshSupport: bool;
+	private var refreshing: bool;
+	private var dirty: bool;
+
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		requests.registerRange(dispatcher, "textDocument/inlayHint", "inlay hints", prepare, empty);
+	}
+	def configure(options: HashMap<string, JsonValue>, capability: HashMap<string, JsonValue>) {
+		var hints = object(options, "inlayHints");
+		types = hints == null || hints["types"] != JsonValue.Bool(false);
+		parameterNames = hints == null || hints["parameterNames"] != JsonValue.Bool(false);
+		refreshSupport = capability != null && capability["refreshSupport"] == JsonValue.Bool(true);
+	}
+	private def empty(reason: string) -> JsonRpcReply { return JsonRpcReply.Result(JsonValue.JArray([])); }
+	private def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		var range = object(params, "range"), start = object(range, "start"), end = object(range, "end");
+		var sl = integer(start, "line"), sc = integer(start, "character");
+		var el = integer(end, "line"), ec = integer(end, "character");
+		if (sl < 0 || sc < 0 || el < sl || ec < 0 || (el == sl && ec < sc)) return null;
+		return answer(el, ec, _, _);
+	}
+	private def answer(line: int, character: int, at: LspSnapshotPosition, begin: int) -> (bool, JsonRpcReply) {
+		var end = at.map.positionToOffset(line, character), result = Vector<JsonValue>.new();
+		var file = at.snapshot.fileIndex(at.path());
+		if (file != null) {
+			var c = file.hintCursor();
+			while (c.next()) {
+				var isType = c.local > 0, position = c.position();
+				if (position < begin || position >= end || c.end > at.text.length || (isType && !types) || (!isType && !parameterNames)) continue;
+				var h = Strings.newMap<JsonValue>();
+				h["position"] = jsonPosition(at.map.offsetToPosition(position));
+				h["kind"] = JsonValue.Int(if(isType, 1, 2));
+				var text = at.snapshot.hintString(c.label);
+				if (isType) {
+					var label = Strings.newMap<JsonValue>();
+					label["value"] = JsonValue.String(StringBuilder.new().puts(": ").puts(text).extract());
+					var target = at.snapshot.typeDefinitionAtOffset(at.path(), c.begin).1;
+					if (target != null) {
+						var location = LspDefinition.location(at, target, true).1;
+						if (location != JsonValue.Null) label["location"] = location;
+					}
+					h["label"] = JsonValue.JArray([JsonValue.JObject(label)]);
+				} else {
+					h["label"] = JsonValue.String(StringBuilder.new().puts(text).puts(":").extract());
+					h["paddingRight"] = JsonValue.Bool(true);
+				}
+				result.put(JsonValue.JObject(h));
+			}
+		}
+		return (true, JsonRpcReply.Result(JsonValue.JArray(result.extract())));
+	}
+	// Keep only a fingerprint of published hints on the context. Comparing to
+	// ctx.snapshot is wrong: a discarded, stale result can already replace
+	// it, without ever telling the client that hints changed.
+	def analyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
+		if (!refreshSupport || (!types && !parameterNames)) return;
+		var hash = 0xcbf29ce484222325ul, any = false;
+		for (path in snapshot.paths) {
+			var file = snapshot.fileIndex(path);
+			if (file == null) continue;
+			var c = file.hintCursor();
+			while (c.next()) {
+				var isType = c.local > 0;
+				if ((isType && !types) || (!isType && !parameterNames)) continue;
+				any = true;
+				hash = hashString(hash, path);
+				hash = hashInt(hash, c.position());
+				hash = hashInt(hash, if(isType, 1, 2));
+				hash = hashString(hash, snapshot.hintString(c.label));
+				if (isType) {
+					var target = snapshot.typeDefinitionAtOffset(path, c.begin).1;
+					if (target != null) {
+						hash = hashString(hash, target.range.path);
+						hash = hashInt(hashInt(hash, target.range.beginOffset), target.range.endOffset);
+					}
+				}
+			}
+		}
+		// Source stamps also cover UTF-16 changes before otherwise identical
+		// byte offsets, and changes before a linked declaration's name.
+		if (any) for (v in snapshot.documentVersions) {
+			hash = hashInt(hash, v.version);
+			hash = hashInt(hashInt(hash, int.view(v.hash)), int.view(v.hash >> 32));
+		}
+		var changed = if(ctx.hasHintFingerprint, ctx.hintFingerprint != hash, any);
+		ctx.hasHintFingerprint = true;
+		ctx.hintFingerprint = hash;
+		if (changed) { dirty = true; refresh(); }
+	}
+	private def hashString(hash: u64, text: string) -> u64 {
+		hash = hashInt(hash, text.length);
+		for (b in text) hash = (hash ^ b) * 0x100000001b3ul;
+		return hash;
+	}
+	private def hashInt(hash: u64, value: int) -> u64 {
+		for (i < 4) { hash = (hash ^ byte.view(value)) * 0x100000001b3ul; value = value >> 8; }
+		return hash;
+	}
+
+	private def refresh() {
+		if (!refreshSupport || refreshing || !dirty) return;
+		dirty = false;
+		refreshing = true;
+		send(pending.sendBy("workspace/inlayHint/refresh", JsonRpcParams.Absent, System.ticksMs() + 10000, refreshed));
+	}
+	def close() { refreshSupport = false; dirty = false; }
+	private def refreshed(reply: JsonRpcReply) { refreshing = false; refresh(); }
+	private def jsonPosition(p: LspPosition) -> JsonValue {
+		var value = Strings.newMap<JsonValue>();
+		value["line"] = JsonValue.Int(p.line);
+		value["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(value);
+	}
+	private def object(o: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		return if(o != null && o.has(key) && JsonValue.JObject.?(o[key]), JsonValue.JObject.!(o[key]).v);
+	}
+	private def integer(o: HashMap<string, JsonValue>, key: string) -> int {
+		return if(o != null && o.has(key) && JsonValue.Int.?(o[key]), JsonValue.Int.!(o[key]).v, -1);
+	}
+}

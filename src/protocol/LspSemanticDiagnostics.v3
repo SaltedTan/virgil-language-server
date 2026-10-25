@@ -37,6 +37,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	var warn: string -> void;
 	var info: string -> void;
 	var development: LspDevelopmentAnalysis;
+	var hintsAnalyzed: (ProjectContext, AnalysisSnapshot) -> void;
 	private var running: LspSemanticRun;
 	private var waiting = Vector<LspSemanticWait>.new();
 	// The jobs waiting for the supervisor, first come first, and the one it
@@ -329,6 +330,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			lists.semantic(run.keys[i], ctx, inputs.versions, if(found[i] != null, found[i].extract(), []));
 		}
 		lists.clearOwned(ctx, keep);
+		if (hintsAnalyzed != null) hintsAnalyzed(ctx, snapshot);
 	}
 	private def discard(ctx: ProjectContext, snapshot: AnalysisSnapshot, why: string) {
 		log(info, Strings.format3("discarded analysis %d of project %s: %s", snapshot.generation, ctx.definition.name, why));

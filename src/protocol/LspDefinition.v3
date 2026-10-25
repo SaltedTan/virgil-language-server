@@ -16,7 +16,7 @@ component LspDefinition {
 		return location(at, found.1, found.0);
 	}
 	// Definition and type definition share target freshness and conversion.
-	private def location(at: LspSnapshotPosition, decl: AnalysisDeclaration, found: bool) -> (bool, JsonValue) {
+	def location(at: LspSnapshotPosition, decl: AnalysisDeclaration, found: bool) -> (bool, JsonValue) {
 		if (decl == null) return (found, JsonValue.Null);
 		if (decl.range.beginOffset < 0) return (true, JsonValue.Null);
 		// The target's bytes must still be the ones the worker analyzed.

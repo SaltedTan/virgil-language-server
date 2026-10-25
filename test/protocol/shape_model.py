@@ -15,7 +15,7 @@ TEXT = "component C { def x = 1; }\n"
 REQUESTS = (
     "initialize", "shutdown", "textDocument/completion",
     "textDocument/definition", "textDocument/typeDefinition", "textDocument/documentHighlight", "textDocument/documentSymbol",
-    "textDocument/hover",
+    "textDocument/hover", "textDocument/inlayHint",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
     "textDocument/signatureHelp", "workspace/symbol",
 )
@@ -254,6 +254,11 @@ def session_validity(method, params):
             return False, "version must increase beyond the open version 1"
     if method in ("textDocument/completion", "textDocument/signatureHelp") and "context" in params:
         return False, "trigger context support was not negotiated"
+    if method == "textDocument/inlayHint":
+        span = params.get("range", {})
+        start, end = span.get("start", {}), span.get("end", {})
+        if all(k in start and k in end for k in ("line", "character")) and (start["line"], start["character"]) > (end["line"], end["character"]):
+            return False, "range end precedes start"
     if method == "virgil-lsp/analyze":
         return False, "analysis requires nonempty local-file URIs; generated URIs are untitled"
     if method == "textDocument/rename":

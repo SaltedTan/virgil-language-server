@@ -79,6 +79,7 @@ SUITES = \
 	'python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_client.py' \
 	'python3 test/protocol/type_definition.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/inlay_hints.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'$(BUILD)/retain-probe' \

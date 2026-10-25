@@ -52,6 +52,7 @@ CAPABILITIES = {
     "completionProvider": {"triggerCharacters": ["."]},
     "definitionProvider": True,
     "typeDefinitionProvider": True,
+    "inlayHintProvider": True,
     "documentHighlightProvider": True,
     "documentSymbolProvider": True,
     "hoverProvider": True,

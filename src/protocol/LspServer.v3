@@ -57,6 +57,7 @@ class LspServer {
 	// rename requests, answered from snapshots.
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
+	private var inlayHints: LspInlayHints;
 	private var prepareRename: LspPrepareRename;
 	// Signature help from snapshots, and from call queries where the document
 	// does not parse; tests read its count of analyses.
@@ -101,6 +102,8 @@ class LspServer {
 			LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare);
 		signatureHelp = LspSignatureHelp.new(documents, projects, publishNotification);
 		signatureHelp.register(dispatcher, snapshotRequests);
+		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending);
+		inlayHints.register(dispatcher, snapshotRequests);
 		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
@@ -130,11 +133,13 @@ class LspServer {
 	def withAnalysis(supervisor: AnalysisSupervisor) -> this {
 		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification).withProjects(projects);
 		developmentAnalysis.register(dispatcher);
+		developmentAnalysis.hintsAnalyzed = inlayHints.analyzed;
 		semanticDiagnostics = LspSemanticDiagnostics.new(documents, projects, supervisor, diagnosticLists, publishNotification);
 		semanticDiagnostics.parser = developmentAnalysis.parser = parserDiagnostics;
 		semanticDiagnostics.development = developmentAnalysis;
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;
+		semanticDiagnostics.hintsAnalyzed = inlayHints.analyzed;
 		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
 		rename.scheduler = semanticDiagnostics;
 		completion.scheduler = semanticDiagnostics;
@@ -335,6 +340,8 @@ class LspServer {
 		}
 		var params = JsonRpcParams.ByName.!(request.params).v;
 		projects.initialize(params);
+		inlayHints.configure(member(params, "initializationOptions"),
+			member(member(member(params, "capabilities"), "workspace"), "inlayHint"));
 		var watched = member(member(member(params, "capabilities"), "workspace"), "didChangeWatchedFiles");
 		workspaceEvents.dynamicWatchers = watched != null && watched["dynamicRegistration"] == JsonValue.Bool(true);
 		var textDocument = member(member(params, "capabilities"), "textDocument");
@@ -374,6 +381,7 @@ class LspServer {
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["typeDefinitionProvider"] = JsonValue.Bool(true);
+		capabilities["inlayHintProvider"] = JsonValue.Bool(true);
 		capabilities["hoverProvider"] = JsonValue.Bool(true);
 		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["referencesProvider"] = JsonValue.Bool(true);
@@ -446,6 +454,7 @@ class LspServer {
 	// Cancels incoming analysis, the requests waiting for it, and outstanding
 	// server-to-client requests.
 	private def failPending(msg: string) {
+		inlayHints.close();
 		if (semanticDiagnostics != null) semanticDiagnostics.close();
 		if (developmentAnalysis != null) developmentAnalysis.close(msg);
 		snapshotRequests.close(msg);
