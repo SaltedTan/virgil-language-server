@@ -150,6 +150,11 @@ class RunTest(unittest.TestCase):
         self.assert_restored()
 
     def test_termination_stops_the_group_and_restores(self):
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=signum):
+                self.check_termination(signum)
+
+    def check_termination(self, signum):
         self.stand_in(beta="printf '##>1 unit tests\\n##+Beta:one\\n'; exec sleep 60")
         process = subprocess.Popen([sys.executable, str(self.run_py), str(self.build), str(self.executable)],
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -157,8 +162,8 @@ class RunTest(unittest.TestCase):
             for line in process.stdout:
                 if line.startswith("##+Beta:one"):
                     break
-            process.send_signal(signal.SIGTERM)
-            self.assertEqual(128 + signal.SIGTERM, process.wait(timeout=10))
+            process.send_signal(signum)
+            self.assertEqual(128 + signum, process.wait(timeout=10))
             # The runner has reaped the group's process, not left it running.
             sleeper = int(self.logged()[-1][3])
             try:
@@ -195,6 +200,7 @@ class RunTest(unittest.TestCase):
                     process = subprocess.Popen(
                         [sys.executable, str(self.run_py), str(self.build), str(self.executable)],
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        start_new_session=True,
                     )
                     try:
                         for line in process.stdout:
@@ -209,11 +215,12 @@ class RunTest(unittest.TestCase):
                         if stopping_group:
                             with self.assertRaises(ProcessLookupError):
                                 os.kill(int(self.logged()[-1][3]), 0)
-                        process.send_signal(signum)
+                        os.killpg(process.pid, signum)
                         with self.assertRaises(subprocess.TimeoutExpired):
                             process.wait(timeout=0.1)
                         output, error = process.communicate(input="\n", timeout=10)
-                        self.assertEqual(128 + signum, process.returncode, output + error)
+                        first_signal = signal.SIGTERM if stopping_group else signum
+                        self.assertEqual(128 + first_signal, process.returncode, output + error)
                         self.assert_restored()
                     finally:
                         if process.poll() is None:
@@ -226,7 +233,7 @@ class RunTest(unittest.TestCase):
         handlers = {signum: signal.getsignal(signum)
                     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
         try:
-            for boundary in ("group-launch", "probe-launch", "probe-reap"):
+            for boundary in ("group-launch", "probe-launch", "probe-reap", "restrict-launch"):
                 for signum in handlers:
                     with self.subTest(boundary=boundary, signal=signum):
                         self.stand_in()
@@ -234,7 +241,7 @@ class RunTest(unittest.TestCase):
 
                         def launch(command, **kwargs):
                             child = popen(command, **kwargs)
-                            target = "Alpha:*" if boundary == "group-launch" else "*"
+                            target = {"group-launch": "Alpha:*", "restrict-launch": "--restrict"}.get(boundary, "*")
                             if command[-1] == target:
                                 children.append(child)
                                 if boundary != "probe-reap":
@@ -249,8 +256,8 @@ class RunTest(unittest.TestCase):
                         try:
                             with patch.object(subprocess, "Popen", side_effect=launch), \
                                     patch.object(os, "killpg", side_effect=kill_group):
-                                with self.assertRaises((SystemExit, KeyboardInterrupt)):
-                                    runner["main"](str(self.build), str(self.executable), [])
+                                status = runner["main"](str(self.build), str(self.executable), [])
+                            self.assertEqual(128 + signum, status)
                             self.assertEqual(1, len(children))
                             with self.assertRaises(ChildProcessError):
                                 os.waitpid(children[0].pid, os.WNOHANG)
@@ -259,7 +266,8 @@ class RunTest(unittest.TestCase):
                             for child in children:
                                 child.kill()
                                 child.wait()
-                                child.stdout.close()
+                                if child.stdout is not None:
+                                    child.stdout.close()
         finally:
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
