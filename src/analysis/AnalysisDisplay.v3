@@ -244,7 +244,6 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	}
 	def hintStringCount() -> int { return strings.length(); }
 
-	def hintName(name: string) -> int { return strings.add(name); }
 	def hintString(i: int) -> string { return strings[i]; }
 
 	// Real parameter declarations only, never signature display labels.

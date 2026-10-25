@@ -199,7 +199,7 @@ class LspInlayHints(send: Array<byte> -> void, pending: JsonRpcPendingRequests, 
 		if (index >= 0) return cache.hashes[index];
 		var text = analyzedText(snapshot, i, texts, checked);
 		if (text == null || span.1 > text.length) return 0;
-		var hash = hashString(hashString(0xcbf29ce484222325ul, d.range.path), d.name);
+		var hash = hashString(0xcbf29ce484222325ul, d.range.path);
 		var begin = cache.position(text, span.0), end = cache.position(text, span.1);
 		hash = hashInt(hashInt(hash, begin.line), begin.character);
 		hash = hashInt(hashInt(hash, end.line), end.character);

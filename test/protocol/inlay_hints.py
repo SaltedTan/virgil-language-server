@@ -179,6 +179,48 @@ def cross_file(exe, root):
         s.close()
 
 
+def elided_target_name(exe, root):
+    path, library = root / 'Main.v3', root / 'Library.v3'
+    text = 'component Main { def run() { var a = Library.make(1); var b = Library.make(2); } }\n'
+    name = 'A' * 40 + 'X'
+    lib = f'class {name} {{}}\ncomponent Library {{ def make(count: int) -> {name} {{ return {name}.new(); }} }}\n'
+    path.write_text(text)
+    library.write_text(lib)
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'elided', 'sources': ['Main.v3', 'Library.v3']}]}))
+    s = HintsSession(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri(),
+            'capabilities': {'workspace': {'inlayHint': {'refreshSupport': True}}}}))
+        open_file(s, path, text)
+        first = query(s, path)
+        assert len(first) == 4, first
+        target = location(library, lib, name)
+        for h in first[::2]:
+            assert h['label'] == [{'value': ': ' + name[:39] + '…', 'location': target}], h
+        before = len(s.refreshes)
+        hidden = name[:-1] + 'Y'
+        library.write_text(lib.replace(name, hidden))
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': library.as_uri(), 'type': 2}]}, request=False)
+        assert query(s, path) == first
+        assert len(s.refreshes) == before, s.transcript
+        visible = 'B' + hidden[1:]
+        library.write_text(lib.replace(name, visible))
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': library.as_uri(), 'type': 2}]}, request=False)
+        second = query(s, path)
+        assert len(second) == 4, second
+        assert second[1::2] == first[1::2], second
+        for old, new in zip(first[::2], second[::2]):
+            assert new == {**old, 'label': [
+                {'value': ': ' + visible[:39] + '…', 'location': target}]}, new
+        assert len(s.refreshes) == before + 1, s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def target_recovery(exe, root):
     path, library = root / 'Main.v3', root / 'Library.v3'
     text = 'component Main { def run() { var a = Library.make(1); var b = Library.make(2); } }\n'
@@ -414,6 +456,7 @@ def main():
                                       (False, True, True), (True, False, True), (False, False, True)]:
             run(exe, Path(work), types, names, support)
         cross_file(exe, Path(work))
+        elided_target_name(exe, Path(work))
         target_recovery(exe, Path(work))
         target_lines(exe, Path(work))
         fallback(exe, Path(work))

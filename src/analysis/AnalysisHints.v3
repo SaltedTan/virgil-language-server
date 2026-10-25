@@ -48,7 +48,6 @@ class AnalysisHintCursor(r: DataReader, var remaining: int) {
 		end = begin + length;
 		return r.ok;
 	}
-	def position() -> int { return if(local > 0, end, begin); }
 }
 
 // Local hints alone have their own spans. Parameter labels travel with the
@@ -88,7 +87,6 @@ class AnalysisFileHintCursor(locals: AnalysisHintCursor, calls: AnalysisCallCurs
 	def var end: int;
 	def var local: int;
 	def var label: int;
-	def position() -> int { return if(local > 0, end, begin); }
 	def next() -> bool {
 		if (!started) { started = true; hasLocal = locals.next(); hasCall = calls.next(); }
 		while (hasCall) {
