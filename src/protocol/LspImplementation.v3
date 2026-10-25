@@ -13,14 +13,16 @@ component LspImplementation {
 	// use or the declaration name containing {offset} selects, as references
 	// select a declaration (AnalysisSnapshot.implementations), in byte order
 	// of path and then by offset; an empty list for another name, including
-	// a builtin use. The locations in a file whose bytes are no longer the
+	// a builtin use or a builtin type's name. The locations in a file whose bytes are no longer the
 	// ones analyzed, or inside a substituted body, are left out. More than
 	// {limit} locations, or more than {maxBytes} of their encoded JSON, get
 	// RequestFailed, as references do.
 	def answer(at: LspSnapshotPosition, offset: int, limit: int, maxBytes: int) -> (bool, JsonRpcReply) {
 		var s = at.snapshot, decl = LspReferences.declaration(at, offset);
 		if (decl == null) {
-			if (s.builtinUseAtOffset(at.path(), offset) == null) return (false, JsonRpcReply.Result(JsonValue.Null));
+			if (s.builtinUseAtOffset(at.path(), offset) == null && !builtinTypeName(at.text, offset, at.options)) {
+				return (false, JsonRpcReply.Result(JsonValue.Null));
+			}
 			return (true, JsonRpcReply.Result(JsonValue.JArray([])));
 		}
 		var locations = Vector<JsonValue>.new(), bytes = 0;
@@ -51,5 +53,47 @@ component LspImplementation {
 			locations.put(at.location(j, map, r.beginOffset, r.endOffset));
 		}
 		return (true, JsonRpcReply.Result(JsonValue.JArray(locations.extract())));
+	}
+	// Whether {offset} is in the name of a builtin type where a type can
+	// start, such as "int" in "var n: int" or in "Array<int>". The occurrence
+	// index records no use there, since the type has no source declaration,
+	// so the name is checked against the builtin types that completion offers
+	// with the project's compiler options {options} (AeneasAdapter.builtinTypes),
+	// and its place in {text} with completion's scanner. A source type or type
+	// parameter of that name that verification resolved would be an
+	// occurrence instead.
+	def builtinTypeName(text: Array<byte>, offset: int, options: Array<string>) -> bool {
+		if (offset < 0 || offset >= text.length || !nameByte(text[offset])) return false;
+		var begin = offset, end = offset + 1;
+		while (begin > 0 && nameByte(text[begin - 1])) begin--;
+		while (end < text.length && nameByte(text[end])) end++;
+		if (!builtinType(AeneasAdapter.builtinTypes(options), text, begin, end)) return false;
+		var context = LspCursorScanner.new(text).scan(begin);
+		return context.place == LspCursorPlace.CODE && (context.syntax & LspCursorSyntax.TYPE) != 0;
+	}
+	// Whether {names}, in byte order (AnalysisTables.compareBytes), holds the
+	// bytes of {text} from {begin} to {end}, found by binary search.
+	private def builtinType(names: Array<string>, text: Array<byte>, begin: int, end: int) -> bool {
+		var low = 0, high = names.length;
+		while (low < high) {
+			var mid = (low + high) / 2, c = compareName(names[mid], text, begin, end);
+			if (c == 0) return true;
+			if (c < 0) low = mid + 1;
+			else high = mid;
+		}
+		return false;
+	}
+	// As AnalysisTables.compareBytes, for {name} and {text}'s bytes from
+	// {begin} to {end}.
+	private def compareName(name: string, text: Array<byte>, begin: int, end: int) -> int {
+		var length = end - begin, n = Ints.min(name.length, length);
+		for (i < n) {
+			var b = text[begin + i];
+			if (name[i] != b) return if(name[i] < b, -1, 1);
+		}
+		return name.length - length;
+	}
+	private def nameByte(b: byte) -> bool {
+		return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_';
 	}
 }

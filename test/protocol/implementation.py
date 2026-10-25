@@ -23,6 +23,19 @@ B = ('component C {\n'
      '/* é𝄞\t */ class Circle extends Shape {\n'
      '\tdef area() -> int { return 2; }\n'
      '}\n')
+# Builtin types where a type starts, and builtins used as values.
+C = ('component D {\n'
+     '\tvar a: Array<int>;\n'
+     '\tvar u: u32;\n'
+     '\tvar q: Missing;\n'
+     '\tdef m() -> int {\n'
+     '\t\tvar b = Array<bool>.new(1);\n'
+     '\t\treturn int.max + a.length + b.length;\n'
+     '\t}\n'
+     '}\n')
+# Builtin types that only read-only arrays add, in a project that sets them,
+# where the program verifies.
+R = 'component R { var a: array<int>; var r: range<int>; }\n'
 
 
 def at(text, offset):
@@ -67,11 +80,11 @@ class Session(worker.Session):
 
 
 def run(exe, root):
-    a, b, extra, loose = (root / name for name in ('A.v3', 'B.v3', 'Extra.v3', 'Loose.v3'))
-    for path, text in ((a, A), (b, B), (extra, 'class Extra { }\n'), (loose, B)):
+    a, b, c, extra, loose = (root / name for name in ('A.v3', 'B.v3', 'C.v3', 'Extra.v3', 'Loose.v3'))
+    for path, text in ((a, A), (b, B), (c, C), (extra, 'class Extra { }\n'), (loose, B)):
         path.write_text(text)
     (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
-        {'name': 'shapes', 'sources': ['A.v3', 'B.v3']}]}))
+        {'name': 'shapes', 'sources': ['A.v3', 'B.v3', 'C.v3']}]}))
     # Retire every completed worker. A second, unrelated analysis launches
     # and replaces another worker while the context keeps its first snapshot.
     s = Session(exe, '--worker-max-analyses=1')
@@ -97,6 +110,14 @@ def run(exe, root):
         assert query(s, b, B, 'q.area()', 2) == []
         for needle, skip in (('var count', 4), ('s: Shape', 0), ('component C', 10), ('.length', 1)):
             assert query(s, b, B, needle, skip) == [], needle
+        # Builtin types in annotations, type arguments, and a result type,
+        # including just past a name, and builtins used as values, in a
+        # closed file; an unresolved type name selects nothing.
+        assert query(s, b, B, 'count: int', 7) == []
+        for needle, skip in (('Array<int>;', 0), ('Array<int>;', 6), ('Array<int>;', 9), ('u32', 1), ('-> int', 3),
+                             ('Array<bool>', 0), ('Array<bool>', 6), ('int.max', 0), ('int.max', 4)):
+            assert query(s, c, C, needle, skip) == [], needle
+        assert query(s, c, C, 'Missing', 2) is None
         # Nothing selected: a comment.
         assert query(s, b, B, 'é𝄞\t */ class Circle', 1) is None
         # A stale snapshot with an analysis pending waits for the new one.
@@ -143,11 +164,37 @@ def run(exe, root):
         s.close()
 
 
+# The builtin types are those of the project's language options, as
+# completion's are: read-only arrays add array and range.
+def run_options(exe, root):
+    r = root / 'R.v3'
+    r.write_text(R)
+    (root / '.virgil-lsp.json').write_text(json.dumps({'version': 1, 'projects': [
+        {'name': 'read-only', 'sources': ['R.v3'], 'compilerArgs': ['-lang:read-only-arrays']}]}))
+    s = Session(exe)
+    try:
+        s.result(s.send('initialize', {'rootUri': root.as_uri()}))
+        open_file(s, r, R)
+        for needle, skip in (('array<', 0), ('range<', 2), ('array<int>', 7), ('range<int>', 6)):
+            assert query(s, r, R, needle, skip) == [], needle
+        # Nothing selected: whitespace.
+        assert query(s, r, R, '; }', 1) is None
+        s.shutdown()
+    except BaseException:
+        print(json.dumps(s.transcript, indent=2), file=sys.stderr)
+        print(s.logs(), file=sys.stderr)
+        raise
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix='implementation-', dir=exe.parent) as work:
         run(exe, Path(work))
-    print('protocol implementation: UTF-16, stale edits, fallback, parse errors, no project, worker replacement passed')
+    with tempfile.TemporaryDirectory(prefix='implementation-', dir=exe.parent) as work:
+        run_options(exe, Path(work))
+    print('protocol implementation: UTF-16, builtin types, language options, stale edits, fallback, parse errors, no project, worker replacement passed')
 
 
 if __name__ == '__main__':

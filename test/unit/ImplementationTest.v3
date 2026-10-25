@@ -20,6 +20,8 @@ def X = [
 	T("Implementation:library_classes", library_classes),
 	T("Implementation:selected_files", selected_files),
 	T("Implementation:reverse_index_charge", reverse_index_charge),
+	T("Implementation:builtin_type_names", builtin_type_names),
+	T("Implementation:builtin_type_name_options", builtin_type_name_options),
 	()
 ];
 def SHAPES = "test/fixtures/analysis/implementation/shapes.v3";
@@ -315,4 +317,38 @@ def reverse_index_charge(t: Tester) {
 	t.assert(built - before <= 128L + 4L * s.declarations.length, "an int a declaration at most");
 	s.implementations(select(t, s, sources, 0, "class Polygon", 6));
 	t.assert(s.retainedBytes == built, "the reverse index is built once");
+}
+// The name of a builtin type where a type can start, including a type
+// argument in an expression, is a builtin, which the occurrence index does
+// not record; the name nowhere else is one. A builtin type that starts an
+// expression, such as int in int.max, is a builtin use in the index instead.
+def builtin_type_names(t: Tester) {
+	var text = "component C {\n\tvar n: int;\n\tvar a: Array<int>;\n\tvar k: u32;\n\tvar q: Missing;\n\tdef f(x: byte, g: int -> bool) -> (bool, string) {\n\t\t// int\n\t\tvar s = \"int\";\n\t\tvar b = Array<int>.new(2);\n\t\tvar m = int.max;\n\t\treturn (x == 0, s);\n\t}\n\tdef h<T>(t: T) -> void { }\n}\n";
+	for (spot in [("n: int", 3), ("Array<int>;", 0), ("Array<int>;", 6), ("u32", 0), ("u32", 2), ("x: byte", 3),
+			("g: int", 3), ("-> bool", 3), ("(bool, string)", 1), ("(bool, string)", 7), ("-> void", 3), ("Array<int>.new", 6)]) {
+		var at = indexOf(text, spot.0) + spot.1;
+		if (!LspImplementation.builtinTypeName(text, at, [])) t.fail(Strings.format2("no builtin type at %s +%d", spot.0, spot.1));
+	}
+	for (spot in [("// int", 3), ("\"int\"", 1), ("Missing", 0), ("var n", 4), ("component C", 10), ("(x == 0", 1),
+			("h<T>(t: T)", 2), ("h<T>(t: T)", 8)]) {
+		var at = indexOf(text, spot.0) + spot.1;
+		if (LspImplementation.builtinTypeName(text, at, [])) t.fail(Strings.format2("a builtin type at %s +%d", spot.0, spot.1));
+	}
+}
+// The builtin type names are those of the project's language options, as
+// completion's are: read-only arrays add array and range.
+def builtin_type_name_options(t: Tester) {
+	var text = "component C { var a: array<int>; var r: range<int>; }";
+	var readOnly = ["-lang:read-only-arrays"], none: Array<string> = [];
+	for (spot in [("array<", 0), ("range<", 0)]) {
+		var at = indexOf(text, spot.0) + spot.1;
+		if (!LspImplementation.builtinTypeName(text, at, readOnly)) t.fail1("no builtin type at %s with read-only arrays", spot.0);
+		if (LspImplementation.builtinTypeName(text, at, none)) t.fail1("a builtin type at %s without options", spot.0);
+	}
+	for (spot in ["array<int>", "range<int>"]) {
+		var at = indexOf(text, spot) + 6;
+		for (options in [readOnly, none]) {
+			if (!LspImplementation.builtinTypeName(text, at, options)) t.fail1("no builtin type at the int of %s", spot);
+		}
+	}
 }
