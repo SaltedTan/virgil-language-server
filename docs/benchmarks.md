@@ -52,6 +52,7 @@ the checkout differs from a matching gitlink (the advisory Virgil-master
 workflow), or there is no Git metadata, they print one notice and skip vendor
 corpus projects while checking the small fixture. Strict benchmarks always
 require matching pins and hashes.
+Outside the [typing-burst scenario](#cancelled-completion-typing-burst),
 `--require-probes` requires one complete phase transaction for each
 analysis, completion miss, rename preflight, and semantic publication, and no
 worker transaction for a cache hit, current navigation, or syntax publication.
@@ -120,8 +121,9 @@ restore's analysis. There is no sleep or snapshot-polling timing barrier. Empty
 clearing notifications and diagnostics from other versions never finish a timed
 publication. The count retirement limit is raised for each block to keep reused
 analyses in one worker; process command lines record the override. Retirement,
-queued/canceled requests, members, and broader cursor distributions need separate
-benchmarks.
+members, and broader cursor distributions need separate benchmarks. The
+[typing-burst scenario](#cancelled-completion-typing-burst) covers a fixed burst
+of cancelled completions.
 
 ### Error-result regression
 
@@ -144,6 +146,8 @@ analysis must return exactly that diagnostic, current source versions, and an
 advancing generation. Warmups and operations follow the ordinary block settings.
 This scenario times repeated error analyses without a restore between them;
 `semantic_diagnostic` continues to time the original publication workload.
+
+### Cancelled completion typing burst
 
 With `--typing-burst`, each block also types the last four letters of the
 project's pinned query token, one edit and completion every 20 ms, cancelling
