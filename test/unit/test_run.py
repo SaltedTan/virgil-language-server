@@ -170,6 +170,26 @@ class RunTest(unittest.TestCase):
         self.assertIn(lines, [alpha + beta, beta + alpha])
         self.assert_restored()
 
+    def test_stale_fixture_symlink_does_not_restore_outside_slots(self):
+        outside = self.build.parent / "outside-fixtures"
+        restricted = [outside / relative for relative in RESTRICTED]
+        for directory in restricted:
+            directory.mkdir(parents=True)
+            directory.chmod(0)
+        stale = self.build / "unit-slots" / "stale"
+        stale.mkdir(parents=True)
+        (stale / "project-fixtures").symlink_to(outside, target_is_directory=True)
+        self.stand_in()
+        try:
+            result = self.run_unit_tests(jobs=2)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            for directory in restricted:
+                self.assertEqual(0, stat.S_IMODE(directory.stat().st_mode), directory)
+            self.assert_restored()
+        finally:
+            for directory in restricted:
+                directory.chmod(0o700)
+
     def test_preparation_failures_reap_every_launched_child(self):
         runner = runpy.run_path(str(self.run_py))
         popen = subprocess.Popen

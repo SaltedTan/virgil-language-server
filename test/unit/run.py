@@ -174,7 +174,8 @@ def remove_slots(build):
     if parent.is_symlink() or not parent.is_dir():
         return
     for slot in parent.iterdir():
-        if slot.is_dir() and not slot.is_symlink() and (slot / "project-fixtures").is_dir():
+        fixtures = slot / "project-fixtures"
+        if slot.is_dir() and not slot.is_symlink() and fixtures.is_dir() and not fixtures.is_symlink():
             prepare(slot, "--cleanup")
     shutil.rmtree(parent)
 
