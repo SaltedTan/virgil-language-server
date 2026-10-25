@@ -55,7 +55,7 @@ The workflow runs for every pushed tag that starts with `v`; [Dry runs](#dry-run
 
 Only the publish job can write to the repository (`contents: write`); the others can only read. It uses the job's `GITHUB_TOKEN`, with no protected environment configured. Publishing starts only after the build, extension, editor test, and checksum jobs succeed, so a VSIX that fails to package, fails its checks, or fails the Extension Host test stops the release as a failed archive does, and so does an editor test that fails on either host.
 
-Unlike the server's executables, a VSIX isn't reproducible: its zip entries record when it was packaged, so two packages of the same commit differ, as the ones that CI's `vscode-client` and `vscode-extension-host` jobs package do. The release workflow therefore tests and attaches each original file, rather than comparing a fresh package with a tested one.
+Unlike the server's executables, a VSIX isn't reproducible: its zip entries record when it was packaged, so two packages of the same commit differ. The release workflow therefore tests and attaches each original file, rather than comparing a fresh package with a tested one.
 
 ## Clean install test
 
