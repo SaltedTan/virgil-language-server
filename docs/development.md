@@ -21,6 +21,8 @@ make clean
 
 `make test` runs the unit tests first, then the other suites through `test/suites.py`, as many at once as the process may use CPUs, up to 4, or `SUITE_JOBS`, as in `make test SUITE_JOBS=1`. The Makefile's `SUITES` list holds them, longest first. With more than one at once, each suite's output is printed whole once it finishes, after a line with its result and time; with `SUITE_JOBS=1` it streams as before. Every suite runs even after one fails, and the run ends with each suite's time, slowest first, and the failed ones.
 
+On SIGTERM, SIGHUP, or SIGINT, the suite runner stops starting suites and forwards that signal to every running suite's process group so it can clean up. A second signal or a 10-second grace period sends SIGKILL to groups still running. The runner reaps its children and exits with 128 plus the first signal. Suites are responsible for cleaning up any processes they move into separate sessions.
+
 `make test` and `make test-unit` leave the build directory removable with a plain `rm -rf` or `git worktree remove`, even after a failing test or an interrupt, with no `make clean` or `chmod` first. Two fixture directories are unreadable only while the unit tests run; the [project fixtures](../test/fixtures/projects/README.md) describe how.
 
 Each executable is a single Aeneas invocation (see `Makefile` and [architecture.md](architecture.md#build-model)); follow the [README's executable placement guidance](../README.md#building). `scripts/v3c.sh` selects the host target and the pinned `bin/stable` compiler, and `scripts/v3c.sh -print-target` and `-print-compiler` print the target and the Aeneas binary it would use. It accepts these overrides:

@@ -8,6 +8,7 @@ directory, and reads its stdout and stderr as one stream, as a CI log does.
 """
 import os
 from pathlib import Path
+import shlex
 import signal
 import subprocess
 import sys
@@ -100,7 +101,7 @@ class SuitesTest(unittest.TestCase):
                     time.sleep(0.05)
                 self.assertEqual(2, len(list(pids.glob("*.ready"))), "both suites started")
                 runner.send_signal(signum)
-                self.assertEqual(128 + signum, runner.wait(timeout=10))
+                self.assertEqual(128 + signum, runner.wait(timeout=20))
                 self.assertFalse((pids / "late").exists(), "no suite starts after the signal")
                 processes = [int(path.read_text()) for path in pids.glob("*.child")]
                 processes += [int(path.read_text()) for path in pids.glob("*.shell")]
@@ -109,6 +110,75 @@ class SuitesTest(unittest.TestCase):
                 while time.monotonic() < deadline and any(alive(pid) for pid in processes):
                     time.sleep(0.05)
                 self.assertEqual([], [pid for pid in processes if alive(pid)])
+
+    def test_signals_allow_suites_to_clean_up_their_own_sessions(self):
+        script = self.directory / "suite.py"
+        script.write_text('''import signal
+import subprocess
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                         start_new_session=True)
+
+def stop(signum, frame):
+    child.terminate()
+    child.wait()
+    (directory / "stopped").write_text(str(signum))
+    sys.exit(0)
+
+for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    signal.signal(signum, stop)
+(directory / "ready").write_text(str(child.pid))
+signal.pause()
+''')
+        for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            with self.subTest(signal=signum):
+                directory = self.directory / str(signum)
+                directory.mkdir()
+                suite = "exec " + shlex.join([sys.executable, str(script), str(directory)])
+                runner = subprocess.Popen(self.command(suite), stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL)
+                try:
+                    deadline = time.monotonic() + 10
+                    while not (directory / "ready").exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue((directory / "ready").exists(), "suite started")
+                    child = int((directory / "ready").read_text())
+                    runner.send_signal(signum)
+                    self.assertEqual(128 + signum, runner.wait(timeout=5))
+                    self.assertEqual(str(signum), (directory / "stopped").read_text())
+                    self.assertFalse(alive(child), "suite reaped its separate session")
+                finally:
+                    if runner.poll() is None:
+                        runner.send_signal(signal.SIGTERM)
+                        runner.wait(timeout=15)
+                    if (directory / "ready").exists():
+                        child = int((directory / "ready").read_text())
+                        if alive(child):
+                            os.kill(child, signal.SIGKILL)
+
+    def test_second_signal_kills_an_ignoring_suite(self):
+        ready = self.directory / "ready"
+        suite = f"trap '' TERM HUP INT; echo $$ > {ready}; exec sleep 60"
+        runner = subprocess.Popen(self.command(suite), stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(ready.exists(), "suite started")
+            runner.send_signal(signal.SIGTERM)
+            time.sleep(0.2)
+            self.assertIsNone(runner.poll(), "first signal allows cleanup")
+            runner.send_signal(signal.SIGHUP)
+            self.assertEqual(128 + signal.SIGTERM, runner.wait(timeout=5))
+            self.assertFalse(alive(int(ready.read_text())), "suite reaped after second signal")
+        finally:
+            if runner.poll() is None:
+                runner.send_signal(signal.SIGTERM)
+                runner.wait(timeout=15)
 
 
 def alive(pid):

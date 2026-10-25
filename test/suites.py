@@ -12,8 +12,11 @@ one at once, a suite's output, stdout and stderr together, goes to a
 temporary file that is printed whole, after a line with the suite's result
 and time, once it finishes; with one at a time it streams as it is written.
 Every suite runs, even after one fails. Each runs in a session of its own,
-with no input, and a signal kills every running suite's processes and starts
-no more. Afterwards it lists each suite's time, slowest first.
+with no input. SIGTERM, SIGHUP, and SIGINT are forwarded to each running
+suite's process group and stop new suites from starting. A second signal or
+ten seconds without an exit kills the remaining groups. Suites own cleanup
+of processes they move into separate sessions. Afterwards it lists each
+suite's time, slowest first.
 """
 import os
 import signal
@@ -28,18 +31,18 @@ import time
 DEFAULT_JOBS = 4
 
 
-def kill(process):
-    """Kills {process}'s group, unless it was reaped and its ID may be reused."""
-    if process.returncode is not None:
-        return
+def send(process, signum):
+    """Signals an owned process group, returning whether it still exists."""
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, signum)
     except ProcessLookupError:
-        pass
+        return False
     except PermissionError:
         # macOS can report EPERM for an exited process group.
         if process.poll() is None:
             raise
+        return False
+    return True
 
 
 class Suite:
@@ -51,10 +54,10 @@ class Suite:
 
 class Suites:
     """Hands the suites to the threads in turn and owns their processes. A
-    signal is recorded and kills every running suite's process group, and any
-    started later, rather than raising in the middle of a launch. Signal
+    signal is recorded and forwarded to every running suite's process group,
+    and any started concurrently, rather than raising during a launch. Signal
     handlers run on the main thread, between the other threads' list
-    operations, so the handler kills a copy of the list."""
+    operations, so the handler signals a copy of the list."""
 
     def __init__(self, commands, live):
         self.waiting = [Suite(command) for command in commands]
@@ -62,13 +65,22 @@ class Suites:
         self.live = live  # stream each suite's output, with one at a time
         self.lock = threading.Lock()
         self.signum = 0
+        self.deadline = None
+        self.force = False
         self.processes = []
 
     def stop(self, signum, _frame):
         if not self.signum:
             self.signum = signum
+            self.deadline = time.monotonic() + 10
+        else:
+            self.force = True
+            self.deadline = None
         for process in list(self.processes):
-            kill(process)
+            self.signal(process)
+
+    def signal(self, process):
+        send(process, signal.SIGKILL if self.force else self.signum)
 
     def next(self):
         with self.lock:
@@ -95,11 +107,12 @@ class Suites:
             return
         self.processes.append(process)
         if self.signum:
-            kill(process)
+            self.signal(process)
         suite.status = process.wait()
         suite.seconds = time.monotonic() - started
         with self.lock:
-            self.processes.remove(process)
+            if not self.signum:
+                self.processes.remove(process)
         if output is None:
             self.write(suite, b"")
         else:
@@ -139,9 +152,19 @@ def main(jobs, commands):
         for thread in threads:
             while thread.is_alive():
                 thread.join(0.1)
+                if suites.deadline is not None and time.monotonic() >= suites.deadline:
+                    suites.stop(signal.SIGKILL, None)
+        while suites.signum and not suites.force:
+            suites.processes[:] = [process for process in suites.processes if send(process, 0)]
+            if not suites.processes:
+                break
+            if suites.deadline is not None and time.monotonic() >= suites.deadline:
+                suites.stop(signal.SIGKILL, None)
+            else:
+                time.sleep(0.1)
     finally:
         for process in list(suites.processes):
-            kill(process)
+            send(process, signal.SIGKILL)
         for thread in threads:
             thread.join()
     if suites.signum:
