@@ -30,6 +30,6 @@ component Hints {
     var tuple = (1, 2);
     take(tuple);
     int.view(76);
-    (one)(6);
+    (one)(86);
   }
 }

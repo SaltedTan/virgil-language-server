@@ -383,11 +383,12 @@ component AnalysisWire {
 		}
 		typeEncoding.translateDefaults();
 		for (i < files.length) typeEncoding.prepareFile(i, sites[i], files[i].1, builtins[i]);
-		// Collectors retain compact bytes. One scratch array serves every file;
-		// sort its four-int records in place, without per-hint objects or copies.
+		// Collectors retain compact bytes. Two shared arrays order every file
+		// by offset with radix sort, without per-hint objects.
 		var hintData = Array<Range<byte>>.new(files.length), hintCounts = Array<int>.new(files.length), largest = 0;
 		for (i < files.length) { hintCounts[i] = analysis.hintCount(files[i].0); largest = Ints.max(largest, hintCounts[i]); }
-		var h = Array<int>.new(4 * largest);
+		var h = Array<int>.new(4 * largest), hintScratch = Array<int>.new(4 * largest);
+		var hintStrings = Array<int>.new(analysis.hintStringCount());
 		for (i < files.length) {
 			var n = hintCounts[i], r = DataReader.new(analysis.hintRecords(files[i].0));
 			for (j = 0; j < 4 * n; j += 4) {
@@ -396,12 +397,14 @@ component AnalysisWire {
 				h[j + 2] = r.read_sleb32();
 				h[j + 3] = r.read_sleb32();
 			}
-			AnalysisHintOrder.sort(h, n);
+			AnalysisHintOrder.sort(h, hintScratch, n);
 			var encoded = DataWriter.new().grow(6 * n), previous = 0;
 			for (j = 0; j < 4 * n; j += 4) {
 				var local = if(h[j + 2] > 0, 1 + typeEncoding.declaration(analysis.typeDeclaration(h[j + 2])));
 				encoded.put_sleb32(h[j] - previous).put_sleb32(h[j + 1]);
-				encoded.put_sleb32(local).put_sleb32(strings.add(analysis.hintString(h[j + 3])));
+				var label = h[j + 3];
+				if (hintStrings[label] == 0) hintStrings[label] = 1 + strings.add(analysis.hintString(label));
+				encoded.put_sleb32(local).put_sleb32(hintStrings[label] - 1);
 				previous = h[j];
 			}
 			hintData[i] = encoded.alias();

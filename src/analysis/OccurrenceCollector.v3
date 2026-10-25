@@ -164,12 +164,15 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 		siteList.put(decl);
 		declarationSource(decl);
 	}
-	private def siteVar(v: VarDecl) {
+	private def siteVar(v: VarDecl) -> AnalysisDeclaration {
 		// Verification appends synthetic capture parameters to lambda params.
 		// Their tokens are uses in the body, not source declarations.
-		for (l = captures; l != null; l = l.tail) if (l.head.0 == v) return;
+		for (l = captures; l != null; l = l.tail) if (l.head.0 == v) return null;
 		// "_" declares nothing a use can name.
-		if (v != null && !v.isUnderscore()) site(make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v));
+		if (v == null || v.isUnderscore()) return null;
+		var d = make(if(ParamDecl.?(v), AnalysisDeclKind.PARAMETER, AnalysisDeclKind.LOCAL), v);
+		site(d);
+		return d;
 	}
 	private def siteTypeParams(list: List<TypeParamType>) {
 		for (l = list; l != null; l = l.tail) site(declare(AnalysisDeclKind.TYPE_PARAM, l.head.token, l.head));
@@ -318,10 +321,10 @@ class OccurrenceCollector(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	private def varDecl(v: VarDecl) {
 		if (v == null) return;
-		siteVar(v);
-		if (!ParamDecl.?(v) && v.tref == null && !v.isUnderscore()) {
-			var d = make(AnalysisDeclKind.LOCAL, v), label = display.hintText(v.vtype);
-			if (d != null && label >= 0 && d.range.beginOffset >= 0)
+		var d = siteVar(v);
+		if (d != null && !ParamDecl.?(v) && v.tref == null) {
+			var label = display.hintText(v.vtype);
+			if (label >= 0 && d.range.beginOffset >= 0)
 				hint(d.range.beginOffset, d.range.endOffset, d.typeTarget, label);
 		}
 		typeRef(v.tref);

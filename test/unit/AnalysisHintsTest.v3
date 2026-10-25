@@ -53,7 +53,7 @@ def resolved(t: Tester) {
 	hint(t, s, text, "circle =", "Shape.Circle", true);
 	hint(t, s, text, "dot =", "Shape.Dot", true);
 	hint(t, s, text, "red =", "Color", true);
-	for (pair in [("4);", "count"), ("5);", "radius"), ("1, 2);", "count"), ("2);", "value"), ("Hints.field);\n    same", "value"), ("6);", "value")])
+	for (pair in [("4);", "count"), ("5);", "radius"), ("1, 2);", "count"), ("2);", "value"), ("Hints.field);\n    same", "value"), ("86);", "value")])
 		hint(t, s, text, pair.0, pair.1, false);
 	for (needle in ["count, Hints.field", "73);", "74);", "tuple);", "_, 75", "75);", "76);", "Hints.field);\n    fn"])
 		hint(t, s, text, needle, null, false);

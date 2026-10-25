@@ -49,23 +49,27 @@ class AnalysisHintCursor(r: DataReader, var remaining: int) {
 	def position() -> int { return if(local > 0, end, begin); }
 }
 
-// Heap sort moves four-int records together, using no allocation. The encoder
-// reuses the largest file's scratch array across all files in a result.
+// Stable byte-wise radix sort reuses two record arrays across all files.
+// Nonnegative source offsets need at most four passes and no comparisons.
 component AnalysisHintOrder {
-	def sort(a: Array<int>, count: int) {
-		for (i = count / 2; i > 0; ) sift(a, --i, count);
-		for (end = count - 1; end > 0; end--) { swap(a, 0, end); sift(a, 0, end); }
-	}
-	private def sift(a: Array<int>, root: int, end: int) {
-		while (root < end / 2) {
-			var child = 2 * root + 1;
-			if (child + 1 < end && a[4 * child] < a[4 * (child + 1)]) child++;
-			if (a[4 * root] >= a[4 * child]) return;
-			swap(a, root, child);
-			root = child;
+	private def bins = Array<int>.new(256);
+	def sort(a: Array<int>, scratch: Array<int>, count: int) {
+		var src = a, dst = scratch, largest = 0;
+		for (i < count) largest = Ints.max(largest, a[4 * i]);
+		for (shift = 0; shift < 32 && (u32.view(largest) >> byte.view(shift)) != 0; shift += 8) {
+			for (i < 256) bins[i] = 0;
+			for (i < count) bins[(src[4 * i] >> byte.view(shift)) & 255]++;
+			var total = 0;
+			for (i < 256) { var n = bins[i]; bins[i] = total; total += n; }
+			for (i < count) {
+				var out = 4 * bins[(src[4 * i] >> byte.view(shift)) & 255]++;
+				dst[out] = src[4 * i];
+				dst[out + 1] = src[4 * i + 1];
+				dst[out + 2] = src[4 * i + 2];
+				dst[out + 3] = src[4 * i + 3];
+			}
+			var tmp = src; src = dst; dst = tmp;
 		}
-	}
-	private def swap(a: Array<int>, x: int, y: int) {
-		for (k < 4) { var t = a[4 * x + k]; a[4 * x + k] = a[4 * y + k]; a[4 * y + k] = t; }
+		if (src != a) for (i < 4 * count) a[i] = src[i];
 	}
 }

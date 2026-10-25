@@ -48,6 +48,7 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 	// their structure; see AnalysisTypeKeyMap.
 	private def types = AnalysisTypeKeyMap<Type>.new(hashType, sameTypeHash, compareTypes);
 	private def typeTexts = Vector<string>.new();
+	private def typeHintIds = Vector<int>.new();
 	private def declarations = AnalysisIndexMap<(Token, AnalysisDeclKind)>.new(AnalysisDeclarationKeys.hash, AnalysisDeclarationKeys.equal);
 	private def declarationList = Vector<AnalysisWorkerDeclaration>.new();
 	// Distinct source-type targets, registered when collection resolves one.
@@ -174,23 +175,36 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		if (AnalysisMemberSubst.countRenders) AnalysisMemberSubst.typeRenders++;
 		t = resolve(t, 0);
 		if (unknown(t)) return null;
-		var index = types.add(t);
+		return typeTextAt(t, types.add(t));
+	}
+	private def typeTextAt(t: Type, index: int) -> string {
 		if (index < typeTexts.length) return typeTexts[index];
 		start();
 		putType(t, 0);
 		var text = strings.intern(buf);
 		typeTexts.put(text);
+		typeHintIds.put(-2);
 		return text;
 	}
 
 	// Hints share the display's interned strings. Reject unknown nested types
 	// too; a partial spelling containing "?" is not an inferred type hint.
 	def hintText(t: Type) -> int {
-		var text = typeText(t);
-		if (text == null) return -1;
-		for (b in text) if (b == '?') return -1;
-		return strings.add(AnalysisHintText.bound(text));
+		t = resolve(t, 0);
+		if (unknown(t)) return -1;
+		var index = types.add(t), text = typeTextAt(t, index);
+		if (typeHintIds[index] != -2) return typeHintIds[index];
+		var code = -1;
+		if (text != null) {
+			var valid = true;
+			for (b in text) if (b == '?') valid = false;
+			if (valid) code = strings.add(AnalysisHintText.bound(text));
+		}
+		typeHintIds[index] = code;
+		return code;
 	}
+	def hintStringCount() -> int { return strings.length(); }
+
 	def hintName(name: string) -> int { return strings.add(name); }
 	def hintString(i: int) -> string { return strings[i]; }
 
