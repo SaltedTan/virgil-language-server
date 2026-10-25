@@ -177,10 +177,12 @@ function runOwned({ pid, start, ppid, files, roots, marker, known = [], parent, 
 // Every readable process, and whether no listed PID disappeared. Off Linux, ps
 // can't tell: on macOS, the kernel lists the PIDs, then looks up each process,
 // and leaves out one that has been reaped in between, so a process that starts
-// another and is reaped during the listing hides both.
-function processTable() {
+// another and is reaped during the listing hides both. On macOS, group limits
+// native reads to the group being checked: PROC_PIDTBSDINFO requires the same
+// user, so unrelated system processes must not make that group's scan fail.
+function processTable(group) {
   if (process.platform !== 'linux') {
-    const listed = psTable(['-A']);
+    const listed = psTable(['-A']).filter((p) => group === undefined || p.group === group);
     const native = process.platform === 'darwin' ? darwinInfos(listed.map((p) => p.pid)) : undefined;
     if (darwinNative) {
       const unavailable = native === undefined || native.includes(null);
@@ -533,7 +535,7 @@ function startGroup(command, args, { env, stdio, onExit }) {
   const look = () => {
     if (lost) return undefined;
     if (darwinNative && leader === null && led() === null) return { processes: [], empty: false, unavailable: true };
-    const { processes, complete, unavailable } = processTable();
+    const { processes, complete, unavailable } = processTable(process.platform === 'darwin' ? number : undefined);
     if (unavailable) return { processes: [], empty: false, unavailable: true };
     const native = process.platform === 'darwin' && darwinNative;
     const pids = native ? darwinGroupPids(number) : undefined;

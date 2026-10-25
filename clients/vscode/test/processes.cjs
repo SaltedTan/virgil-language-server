@@ -268,6 +268,25 @@ test('macOS records and checks microsecond identities, and never mixes native an
   assert.deepEqual(kills, [[10, 'SIGTERM'], [10, 'SIGKILL']]);
 });
 
+test('macOS group scans do not read unrelated users processes', () => {
+  const start = 'Thu Oct 23 17:13:01 2026';
+  const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }], [99, { start, group: 99 }]]);
+  const setup = fakeGroup(table);
+  const fake = fakeProcesses(table, {
+    ...setup, platform: 'darwin', ps: fakePs(table),
+    darwinInfo: (pids) => {
+      assert.ok(!pids.includes(99), 'an unrelated unreadable process must not block the group');
+      return fakeDarwinInfo(table)(pids);
+    },
+    darwinPids: () => [...table].filter(([, p]) => p.group === 50).map(([pid]) => pid),
+  });
+  const group = fake.startGroup('code', [], { env: {}, stdio: ['ignore', 'ignore', 'ignore'], onExit: () => {} });
+  assert.equal(group.look().processes[0].pid, 51);
+  table.delete(51);
+  assert.equal(group.look().empty, true);
+  group.detach();
+});
+
 test('macOS keeps ps identities and timed confirmation when the first native probe fails', () => {
   const start = 'Thu Oct 23 17:13:01 2026';
   const table = new Map([[50, { start, group: 50 }], [51, { start, group: 50 }]]);
@@ -684,7 +703,8 @@ _Static_assert(offsetof(struct proc_bsdinfo, pbi_start_tvusec) == 128, "microsec
         assert.match(second.start, /^darwin:\d+\.\d{6}$/);
         if (first.start.split('.')[0] !== second.start.split('.')[0]) continue;
         assert.notEqual(first.start, second.start);
-        const listed = processes.processTable().processes.find((p) => p.pid === first.child.pid);
+        const group = processes.processInfo(first.child.pid).group;
+        const listed = processes.processTable(group).processes.find((p) => p.pid === first.child.pid);
         assert.equal(listed?.start, first.start);
         assert.deepEqual(processes.signalProcesses([{ pid: first.child.pid, start: second.start }], 'SIGTERM'), ['other']);
         assert.equal(first.child.signalCode, null);
