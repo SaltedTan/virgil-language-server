@@ -49,7 +49,7 @@ class ReadmeTests(unittest.TestCase):
             body = markdown.split(f"## {section}\n", 1)[1].split("\n## ", 1)[0]
             servers = re.findall(rf"gh release download v({version})\b", body)
             servers += re.findall(rf"virgil-lsp-({version})-x86-64-", body)
-            extensions = re.findall(rf"virgil-lsp-vscode-({version})\.vsix", body)
+            extensions = re.findall(rf"virgil-lsp-vscode-({version})(?:-linux-x64)?\.vsix", body)
             self.assertTrue(servers, f"no server examples found in {section}")
             self.assertTrue(extensions, f"no extension examples found in {section}")
             for actual in servers:

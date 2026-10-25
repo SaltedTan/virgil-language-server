@@ -7,7 +7,7 @@
 // extension is installed on that host with the VS Code Server's own CLI, and
 // the language server runs there. Usage, from clients/vscode on Linux:
 //
-//   node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH]
+//   node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH]
 //     [--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work]
 //     [--sshd PATH]
 //
@@ -96,7 +96,7 @@ function infrastructure(what, step) {
 
 class UsageError extends Error {}
 
-const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--server PATH | --archive PATH] '
+const usage = 'usage: node test/e2e/remote-ssh/run.cjs --vsix PATH [--bundled | --server PATH | --archive PATH] '
   + '[--virgil-root DIR] [--out DIR] [--repeat N] [--work-dir DIR] [--keep-work] [--sshd PATH]';
 
 function options() {
@@ -105,6 +105,7 @@ function options() {
     parsed = parseArgs({
       options: {
         vsix: { type: 'string' },
+        bundled: { type: 'boolean', default: false },
         server: { type: 'string' },
         archive: { type: 'string' },
         'virgil-root': { type: 'string' },
@@ -125,6 +126,7 @@ function options() {
   const resolve = (value) => (value === undefined ? undefined : path.resolve(cwd, value));
   const values = {
     vsix: resolve(parsed.vsix),
+    bundled: parsed.bundled,
     server: resolve(parsed.server),
     archive: resolve(parsed.archive),
     virgilRoot: resolve(parsed['virgil-root']) ?? path.join(repo, 'vendor/virgil'),
@@ -136,16 +138,19 @@ function options() {
   if (values.vsix === undefined) throw new UsageError('--vsix is required');
   if (!fs.existsSync(values.vsix)) throw new UsageError(`no VSIX at ${values.vsix}; package the extension first`);
   if (values.server !== undefined && values.archive !== undefined) throw new UsageError('give --server or --archive, not both');
-  if (values.archive === undefined) values.server ??= path.join(repo, 'build/virgil-lsp');
+  if (values.bundled && (values.server !== undefined || values.archive !== undefined || parsed['virgil-root'] !== undefined)) {
+    throw new UsageError('--bundled cannot be combined with an external server or root');
+  }
+  if (!values.bundled && values.archive === undefined) values.server ??= path.join(repo, 'build/virgil-lsp');
   if (values.archive !== undefined && !/\.tar\.gz$/.test(values.archive)) throw new UsageError(`not a .tar.gz archive: ${values.archive}`);
   if (values.archive !== undefined && !fs.existsSync(values.archive)) throw new UsageError(`no archive at ${values.archive}`);
   if (values.server !== undefined && !fs.existsSync(path.dirname(values.server))) throw new UsageError(`no directory ${path.dirname(values.server)}`);
   if (!/^[1-9][0-9]*$/.test(parsed.repeat)) throw new UsageError(`--repeat takes a positive whole number, not ${parsed.repeat}`);
   values.repeat = Number(parsed.repeat);
-  if (!fs.existsSync(path.join(values.virgilRoot, 'lib/util/StringBuilder.v3'))) {
+  if (!values.bundled && !fs.existsSync(path.join(values.virgilRoot, 'lib/util/StringBuilder.v3'))) {
     throw new UsageError(`no Virgil sources at ${values.virgilRoot}; run: git submodule update --init vendor/virgil`);
   }
-  values.virgilRoot = fs.realpathSync(values.virgilRoot);
+  if (!values.bundled) values.virgilRoot = fs.realpathSync(values.virgilRoot);
   if (!fs.existsSync(values.workDir)) throw new UsageError(`no directory ${values.workDir}`);
   values.workDir = fs.realpathSync(values.workDir);
   // Remote-SSH's installation script and the SSH configuration take these
@@ -943,6 +948,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
     extensionPath: layout.extensionPath,
     extensionVersion: vsix.version,
     project: layout.project,
+    bundled: run.values.bundled,
     // The workspace folders that VS Code must have, as the remote extension
     // host sees them: suite.cjs runs its single-file tests without any, and
     // its workspace tests otherwise.
@@ -953,7 +959,7 @@ async function launchSteps(run, record, { executable, layout, vsix }) {
   if (mode !== 'probe') {
     await run.remote(`rm -rf ${sh(layout.project)} && cp -R ${sh(layout.fixture)} ${sh(layout.project)} `
       + `&& mkdir -p ${sh(path.posix.dirname(layout.machineSettings))} && cat > ${sh(layout.machineSettings)}`, {
-      input: `${JSON.stringify({
+      input: `${JSON.stringify(run.values.bundled ? {} : {
         'virgil.server.path': path.posix.join(layout.server, 'virgil-lsp'),
         'virgil.virgilRoot': layout.virgilRoot,
       }, null, 2)}\n`,
@@ -1127,13 +1133,18 @@ async function test(run) {
     extensionKind: vsixManifest.extensionKind ?? null,
   };
   if (vsix.id !== EXTENSION_ID) throw new Failure('fail', `${values.vsix} holds ${vsix.id}, not ${EXTENSION_ID}`);
+  if (values.bundled) {
+    vsix.target = JSON.parse(readZipEntry(values.vsix, 'extension/server-target.json')).target;
+    if (vsix.target !== 'linux-x64') throw new Failure('fail', 'Remote-SSH bundled test needs linux-x64');
+  }
   run.manifest.vsix = vsix;
-  const server = await serverFiles(run);
-  run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
+  const server = values.bundled ? undefined : await serverFiles(run);
+  if (values.bundled) run.manifest.server = { bundled: true, vsixSha256: vsix.sha256 };
+  if (!values.bundled) run.manifest.virgilRoot = { path: values.virgilRoot, libTreeSha256: treeSha256(path.join(values.virgilRoot, 'lib')) };
   const suite = path.join(__dirname, '..', 'suite.cjs');
   run.manifest.tests = { suiteSha256: sha256(suite), bootstrapSha256: sha256(path.join(__dirname, 'bootstrap.cjs')) };
   console.log(`VS Code Remote-SSH test: VS Code ${VSCODE_VERSION}, Remote-SSH ${REMOTE_SSH_VERSION}, `
-    + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.archive ?? values.server}`);
+    + `${vsix.id} ${vsix.version} from ${values.vsix}, server from ${values.bundled ? 'the VSIX bundle' : values.archive ?? values.server}`);
 
   const executable = await downloadVSCode(run);
   const product = JSON.parse(fs.readFileSync(path.join(path.dirname(executable), 'resources/app/product.json'), 'utf8'));
@@ -1201,17 +1212,21 @@ async function test(run) {
 
   // The files that the tests need on the target.
   const layout = remoteLayout(target.root, product.commit, vsix);
-  await run.upload(server.dir, server.names, layout.server);
-  await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
+  if (!values.bundled) {
+    await run.upload(server.dir, server.names, layout.server);
+    await run.upload(values.virgilRoot, ['lib'], layout.virgilRoot);
+  }
   await run.upload(path.join(repo, 'test/e2e/nvim/fixture'), ['.'], layout.fixture);
   await run.upload(path.dirname(suite), ['suite.cjs'], layout.tests);
   await run.upload(__dirname, ['bootstrap.cjs'], layout.tests);
   await run.upload(path.dirname(values.vsix), [path.basename(values.vsix)], layout.inputs);
   await run.remote(`mkdir -p ${sh(path.posix.join(layout.tests, 'no-extension'))} ${sh(layout.results)}`);
-  const version = await run.remote(`${sh(path.posix.join(layout.server, 'virgil-lsp'))} --version`, { allowFailure: true });
-  run.manifest.server.version = version.code === 0 ? version.stdout.trim() : null;
-  console.log(`-- uploaded the server, the Virgil root's lib, the fixture, and the tests to ${target.root}`);
-  if (version.code !== 0) run.fail(`virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+  if (!values.bundled) {
+    const version = await run.remote(`${sh(path.posix.join(layout.server, 'virgil-lsp'))} --version`, { allowFailure: true });
+    run.manifest.server.version = version.code === 0 ? version.stdout.trim() : null;
+    console.log(`-- uploaded the server, the Virgil root's lib, the fixture, and the tests to ${target.root}`);
+    if (version.code !== 0) run.fail(`virgil-lsp --version on ${target.alias} exited with ${version.code}: ${version.stderr.trim()}`);
+  }
 
   // The first connection installs the VS Code Server that matches the
   // client's commit, which the VSIX installation needs.
@@ -1233,6 +1248,13 @@ async function test(run) {
   infrastructure('write vsix-install.log', () => fs.writeFileSync(path.join(run.evidence, 'vsix-install.log'), installation.stdout + installation.stderr));
   if (installation.code !== 0) throw new Failure('fail', `installing ${remoteVsix} on ${target.alias} exited with ${installation.code}; see vsix-install.log`);
   const listed = (await run.remote(`${sh(layout.cli)} ${flags} --list-extensions --show-versions`)).stdout.split('\n').map((line) => line.trim());
+  // VS Code versions may include the platform suffix in an installed directory.
+  const locate = `const fs = require('fs'); const path = require('path');
+    const root = ${JSON.stringify(layout.extensions)};
+    const matches = fs.readdirSync(root).filter(n => n === ${JSON.stringify(`${vsix.id}-${vsix.version}`)}
+      || n === ${JSON.stringify(`${vsix.id}-${vsix.version}-${vsix.target}`)});
+    if (matches.length !== 1) process.exit(1); console.log(path.join(root, matches[0]));`;
+  layout.extensionPath = (await run.remote(`${sh(layout.serverNode)} -e ${sh(locate)}`)).stdout.trim();
   const manifest = JSON.parse((await run.remote(`cat ${sh(path.posix.join(layout.extensionPath, 'package.json'))}`, { allowFailure: true })).stdout || '{}');
   const checks = {
     listed: listed.includes(`${vsix.id}@${vsix.version}`),

@@ -56,6 +56,11 @@ def examples(steps):
                       r"^extension_version=([0-9]+\.[0-9]+\.[0-9]+)$")
     download = value("server", "download_url", r"^download_url=(https://github\.com/SaltedTan/"
                      r"virgil-language-server/releases/download/v\$server_version)$")
+    vsix_server = value("vsix-download", "server_version", rf"^server_version=({version_pattern})$")
+    vsix_download = value("vsix-download", "download_url", r"^download_url=(https://github\.com/SaltedTan/"
+                          r"virgil-language-server/releases/download/v\$server_version)$")
+    if vsix_server != server or vsix_download != download:
+        raise ValueError("README server and VSIX download examples disagree")
     configs = {}
     roots = {}
     versions = {"server": server}
@@ -83,7 +88,9 @@ def substitute(steps, values, version, extension_version, url):
         "server_version=" + values["server_version"], "server_version=" + version).replace(
         "download_url=" + values["download_url"], "download_url=" + url)
     steps["vsix-download"] = steps["vsix-download"].replace(
-        "extension_version=" + values["extension_version"], "extension_version=" + extension_version)
+        "extension_version=" + values["extension_version"], "extension_version=" + extension_version).replace(
+        "server_version=" + values["server_version"], "server_version=" + version).replace(
+        "download_url=" + values["download_url"], "download_url=" + url)
     for step, config in values["config_urls"].items():
         steps[step] = steps[step].replace("config_url=" + config, "config_url=" + url + "/editors/nvim")
     for step, root in values["roots"].items():
@@ -134,6 +141,10 @@ def run(args):
     base_env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "TERM": "xterm-256color"}
     steps = extract(source)
     values = examples(steps)
+    match = re.fullmatch(r"virgil-lsp-vscode-([0-9]+\.[0-9]+\.[0-9]+)-linux-x64\.vsix", args.vsix)
+    if match is None:
+        raise ValueError("clean install requires a linux-x64 VSIX filename")
+    extension_version = match[1]
     public = work / "public"
     public.mkdir()
     for file in args.assets.resolve().iterdir():
@@ -151,7 +162,7 @@ def run(args):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_port}"
-    extension_version = re.fullmatch(r"virgil-lsp-vscode-(.+)\.vsix", args.vsix)[1]
+
     steps = substitute(steps, values, args.version, extension_version, url)
     scripts = work / "steps"
     scripts.mkdir()
@@ -177,7 +188,8 @@ def run(args):
                 cli = Path(code).resolve()
                 env["CLEAN_CODE_EXECUTABLE"] = str(cli.parent.parent / "code")
             script = 'set -Eeuo pipefail\ntrap \'echo "FAIL step: $step (line $LINENO)" >&2\' ERR\n'
-            script += step("server")
+            if editor != "vscode":
+                script += step("server")
             if editor == "vscode":
                 script += step("vsix-download")
                 command = (
@@ -191,6 +203,9 @@ def run(args):
                 script += step(editor)
                 command = 'nvim --headless -n -c \'lua dofile(vim.env.CLEAN_BUNDLE .. "/nvim.lua")\' "$CLEAN_PROJECT/Install.v3"'
             script += f'step={editor}-bundled-library; timeout --kill-after=10 120 {command}\n'
+            if editor == "vscode":
+                # Only the explicit-root scenario installs an external archive.
+                script += step("server")
             script += step("vscode-root" if editor == "vscode" else "nvim-root")
             script += f'step={editor}-explicit-root; timeout --kill-after=10 120 {command}\n'
             (home / "run.sh").write_text(script)
