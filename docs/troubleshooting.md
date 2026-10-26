@@ -55,7 +55,7 @@ See [macOS](releasing.md#macos) in the installation instructions.
 The server's executables are unsigned and not notarized. A web browser marks what it downloads as quarantined, and macOS may then refuse to run `virgil-lsp` or `virgil-lsp-worker` from an archive that was downloaded that way. If `virgil-lsp --version` is refused in a terminal, remove the attribute from the extracted directory, replacing the version with yours:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-darwin
+xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.4-x86-64-darwin
 ```
 
 Downloading with `curl` or `gh` instead doesn't set the attribute. Verify the download against `SHA256SUMS` first ([Verifying a download](releasing.md#verifying-a-download), [macOS](releasing.md#macos)).

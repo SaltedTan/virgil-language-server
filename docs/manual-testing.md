@@ -99,6 +99,10 @@ Report a failed check with the [bug report form](https://github.com/SaltedTan/vi
 
 Follow the [editor evidence contract](../test/e2e/RESULTS.md) for new release results, including evidence labels and coverage gaps. Record optional manual observations of matrix features or VS Code checklist steps in the [manual result format](../test/e2e/RESULTS.md#result-events), with their date, the server's source revision, the editor's version, and the person's attestation. The historical results below keep their hand-written labels.
 
+### 0.1.0-alpha.4
+
+This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.
+
 ### 0.1.0-alpha.3
 
 These runs are at `6f7b6c3`, the release preparation commit, before these results were added. Its pull request's CI checks out its merge with `main`, `ca70fd4`, which has the same tree. The branch's [dry run](releasing.md#dry-runs) checks out `6f7b6c3` itself, and the local runs use that dry run's archives and VSIX, with the repository's tests from `6f7b6c3`: the Linux archive on Linux, and the macOS archive on an Apple Silicon Mac. Four runs check the extension versions against other releases' servers ([compatibility](compatibility.md#editors)): this release's test with the `0.1.1` and `0.1.0` VSIXs that the earlier releases attached and this release's server, and this release's `0.1.2` VSIX with each earlier release's Linux server and that release's own Extension Host test, which always sets a Virgil root. One more shows the bug that this release fixes ([#175](https://github.com/SaltedTan/virgil-language-server/issues/175)): this release's test, with the `0.1.1` VSIX and the `0.1.0-alpha.2` server, fails only where it starts the server without a Virgil root. The matrix records what the runs check; the manual tests with the same archives and VSIX fill in the rest.

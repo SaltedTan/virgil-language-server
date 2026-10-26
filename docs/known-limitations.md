@@ -1,6 +1,6 @@
 # Known limitations
 
-This page lists what the v0.1 alpha doesn't do, or does only in part, for `0.1.0-alpha.3` and unreleased changes on `main`. See [editor compatibility](compatibility.md#editors) for feature availability by server version. Rename, completion, and signature help for calls still being typed came with `0.1.0-alpha.2`. `0.1.0-alpha.1` has none of them, so what this page says about them, such as [What rename refuses](#what-rename-refuses), applies from `0.1.0-alpha.2`. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
+This page lists what the v0.1 alpha doesn't do, or does only in part, for `0.1.0-alpha.4` and unreleased changes on `main`. See [editor compatibility](compatibility.md#editors) for feature availability by server version. Rename, completion, and signature help for calls still being typed came with `0.1.0-alpha.2`. `0.1.0-alpha.1` has none of them, so what this page says about them, such as [What rename refuses](#what-rename-refuses), applies from `0.1.0-alpha.2`. Type definition, inlay hints, document highlights, implementations, and the method-body fallback came with `0.1.0-alpha.4`, so what this page says about them applies from that release. Each item links to the page that owns the details. Check it before [reporting a bug](https://github.com/SaltedTan/virgil-language-server/issues/new?template=bug_report.yml).
 
 ## Features not yet implemented
 
