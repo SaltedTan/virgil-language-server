@@ -1,5 +1,5 @@
 {
-  "description": "Protocol captures on 6406edc, Virgil 7cf038fc. project:/// replaces the disposable project URI. These are safe-current-program oracles and unsafe predecessor answers; no fallback is implemented. Body-boundary-escape captured on e3dbd69, Virgil 7cf038fc. Excluded-error-limit captured on the #243 round-2 working tree over 2755676, Virgil 7cf038fc; the ordinary predecessor retains its unsafe ErrorLimit notice.",
+  "description": "Protocol captures on 6406edc, Virgil 7cf038fc. project:/// replaces the disposable project URI. These are safe-current-program oracles and unsafe predecessor answers; no fallback is implemented. Body-boundary-escape captured on e3dbd69, Virgil 7cf038fc. Excluded-error-limit captured on the #243 round-2 working tree over 2755676, Virgil 7cf038fc; the ordinary predecessor retains its unsafe ErrorLimit notice. The five repair-* controls (#293) were captured on the current-text repair working tree over 803012c, Virgil 7cf038fc; each oracle changes target's signature, so its predecessor answers are unsafe.",
   "cases": {
     "deleted-declaration": {
       "oracle": {
@@ -817,6 +817,937 @@
               "source": "virgil-lsp"
             }
           },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "repair-needs-brace": {
+      "oracle": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 4
+            },
+            "start": {
+              "character": 8,
+              "line": 4
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> bool"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 4
+              },
+              "start": {
+                "character": 8,
+                "line": 4
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got bool",
+              "range": {
+                "end": {
+                  "character": 50,
+                  "line": 0
+                },
+                "start": {
+                  "character": 40,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "repair-in-header": {
+      "oracle": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target(limit: int) -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "call requires 1 argument and found 0",
+              "range": {
+                "end": {
+                  "character": 49,
+                  "line": 0
+                },
+                "start": {
+                  "character": 49,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "repair-in-field-initializer": {
+      "oracle": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 5
+            },
+            "start": {
+              "character": 8,
+              "line": 5
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> bool"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 5
+              },
+              "start": {
+                "character": 8,
+                "line": 5
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got bool",
+              "range": {
+                "end": {
+                  "character": 50,
+                  "line": 0
+                },
+                "start": {
+                  "character": 40,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "repair-in-two-bodies": {
+      "oracle": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> bool"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got bool",
+              "range": {
+                "end": {
+                  "character": 50,
+                  "line": 0
+                },
+                "start": {
+                  "character": 40,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      }
+    },
+    "repair-call-arity": {
+      "oracle": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target(a: int, b: bool) -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 33,
+                "line": 1
+              },
+              "start": {
+                "character": 27,
+                "line": 1
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
+          {
+            "uri": "project:///B.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "call requires 2 arguments and found 0",
+              "range": {
+                "end": {
+                  "character": 49,
+                  "line": 0
+                },
+                "start": {
+                  "character": 49,
+                  "line": 0
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          },
+          {
+            "uri": "project:///Observer.v3",
+            "diagnostic": {
+              "code": "TypeError",
+              "message": "expected int in return statement, got Array<byte>",
+              "range": {
+                "end": {
+                  "character": 44,
+                  "line": 3
+                },
+                "start": {
+                  "character": 27,
+                  "line": 3
+                }
+              },
+              "severity": 1,
+              "source": "aeneas"
+            }
+          }
+        ]
+      },
+      "predecessor": {
+        "0:definition": {
+          "range": {
+            "end": {
+              "character": 14,
+              "line": 3
+            },
+            "start": {
+              "character": 8,
+              "line": 3
+            }
+          },
+          "uri": "project:///A.v3"
+        },
+        "0:hover": {
+          "contents": {
+            "kind": "plaintext",
+            "value": "def target() -> int"
+          },
+          "range": {
+            "end": {
+              "character": 48,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        },
+        "0:references": [
+          {
+            "range": {
+              "end": {
+                "character": 33,
+                "line": 1
+              },
+              "start": {
+                "character": 27,
+                "line": 1
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 3
+              },
+              "start": {
+                "character": 8,
+                "line": 3
+              }
+            },
+            "uri": "project:///A.v3"
+          },
+          {
+            "range": {
+              "end": {
+                "character": 48,
+                "line": 0
+              },
+              "start": {
+                "character": 42,
+                "line": 0
+              }
+            },
+            "uri": "project:///B.v3"
+          }
+        ],
+        "diagnostics": [
           {
             "uri": "project:///Observer.v3",
             "diagnostic": {

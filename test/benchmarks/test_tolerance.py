@@ -23,7 +23,9 @@ CONTROLS = json.loads(Path(__file__).with_name("tolerance-negative-oracles.json"
 class Scoring(unittest.TestCase):
     def test_negative_controls_reject_predecessor_answers(self):
         self.assertEqual(set(CONTROLS), {"deleted-declaration", "changed-signature", "shadowing-local",
-                                        "body-boundary-escape", "excluded-error-limit"})
+                                        "body-boundary-escape", "excluded-error-limit",
+                                        "repair-needs-brace", "repair-in-header", "repair-in-field-initializer",
+                                        "repair-in-two-bodies", "repair-call-arity"})
         for name, case in CONTROLS.items():
             with self.subTest(case=name):
                 results = [tolerance.score(key.split(":")[-1], old, case["oracle"][key], True)
