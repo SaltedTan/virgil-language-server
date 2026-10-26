@@ -1923,6 +1923,20 @@
       "description": "LazyVim's gao on CallPicker.run lists exactly sumSquares at words/Calls.v3:7:6 and cube at :8:6 in the snacks picker; filtering for sumSquares and pressing Enter jumps to its declaration and closes the picker."
     },
     {
+      "id": "lazyvim.diagnostics.semicolon-fix",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "On the published parser error in semicolon.v3, LazyVim's <leader>ca lists exactly Insert missing \";\" in the snacks vim.ui.select picker. Enter inserts the semicolon before the trailing comment and clears diagnostics; undo restores the original text and parser error."
+    },
+    {
       "id": "vscode.folding-ranges.response",
       "suites": [
         "vscode",
@@ -2799,8 +2813,8 @@
       {
         "setup": "lazyvim-linux",
         "feature": "diagnostics",
-        "level": "api",
-        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored"],
+        "level": "api-ui-state",
+        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored", "lazyvim.diagnostics.semicolon-fix"],
         "notCovered": ["lazyvim.diagnostics-display"]
       },
       {
@@ -2936,8 +2950,8 @@
       {
         "setup": "lazyvim-macos",
         "feature": "diagnostics",
-        "level": "api",
-        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored"],
+        "level": "api-ui-state",
+        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored", "lazyvim.diagnostics.semicolon-fix"],
         "notCovered": ["lazyvim.diagnostics-display"]
       },
       {

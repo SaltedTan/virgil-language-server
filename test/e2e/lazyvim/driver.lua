@@ -687,6 +687,47 @@ local function main_checks()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
+  step("diagnostics: semicolon quick fix (LazyVim <leader>ca)", function()
+    vim.cmd.edit(vim.fs.joinpath(root, "semicolon.v3"))
+    local buf = vim.api.nvim_get_current_buf()
+    local target = vim.uri_from_bufnr(buf)
+    local original = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    wait_for("semicolon fixture attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    local diagnostic = wait_for('the published ";" expected error', function()
+      local last = latest(target)
+      return last and #last.diagnostics == 1 and last.diagnostics[1].message == '";" expected'
+        and #vim.diagnostic.get(buf) == 1 and last.diagnostics[1]
+    end)
+    local leader = vim.g.mapleader or "\\"
+    wait_for("LazyVim's <leader>ca mapping", function()
+      local map = vim.fn.maparg(leader .. "ca", "n", false, true)
+      return map.buffer == 1 and map.desc == "Code Action"
+    end)
+    vim.api.nvim_win_set_cursor(0, { diagnostic.range.start.line + 1, diagnostic.range.start.character })
+    type_keys({ leader, "c", "a" })
+    through_picker("select", function(picker)
+      local items = picker:items()
+      assert(#items == 1 and items[1].item.action.title == 'Insert missing ";"'
+        and items[1].text == '1 Insert missing ";"',
+        "unexpected code actions: " .. vim.inspect(items))
+      type_keys({ "<CR>" })
+      wait_for("the semicolon inserted before the comment", function()
+        return vim.api.nvim_buf_get_lines(buf, 2, 3, true)[1] == "\t\treturn 1; // insert before this comment"
+      end)
+    end)
+    wait_for("cleared semicolon diagnostic", function()
+      return #latest(target).diagnostics == 0 and #vim.diagnostic.get(buf) == 0
+    end)
+    vim.api.nvim_input("u")
+    wait_for("undo restored the line and parser error", function()
+      return vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), original)
+        and #latest(target).diagnostics == 1 and latest(target).diagnostics[1].message == '";" expected'
+        and #vim.diagnostic.get(buf) == 1
+    end)
+    return 'Insert missing ";" inserted ; before the trailing comment; diagnostics cleared, then returned on undo'
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Rename through LazyVim's <leader>cr, which it maps for a server with
   -- rename. Neovim asks prepareRename first; while the project has a type
   -- error the server refuses, and Neovim shows its reason with vim.notify,
