@@ -102,7 +102,8 @@ async function implementations(editor, line, character) {
   return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
 }
 
-// Each type hierarchy item's name, kind, detail, file, range, and name range.
+// Each type or call hierarchy item's name, kind, detail, file, range, and name
+// range.
 function hierarchyItems(items) {
   return (items ?? []).map((item) => [
     item.name, item.kind, item.detail, item.uri.fsPath, range(item),
@@ -453,6 +454,31 @@ async function workspace(extension) {
     ['Circle', vscode.SymbolKind.Class, 'class Circle extends Shape', shapes, [11, 0, 13, 1], [11, 6, 11, 12]],
   ]);
   console.log('PASS: vscode.type-hierarchy.response');
+
+  // vscode.call-hierarchy.response: square's item, as Show Call Hierarchy
+  // prepares it from a call, its two callers, one of which calls it twice,
+  // and the calls out of that caller, through the items the server gave.
+  const calls = path.join(path.dirname(words.document.uri.fsPath), 'Calls.v3');
+  const callsDocument = await vscode.workspace.openTextDocument(calls);
+  const [square, ...more] = await vscode.commands.executeCommand(
+    'vscode.prepareCallHierarchy', callsDocument.uri, new vscode.Position(7, 35),
+  );
+  assert.deepEqual(more, []);
+  const squareItem = ['square', vscode.SymbolKind.Method, 'def square(x: int) -> int', calls, [5, 1, 5, 44], [5, 5, 5, 11]];
+  assert.deepEqual(hierarchyItems([square]), [squareItem]);
+  const incoming = await vscode.commands.executeCommand('vscode.provideIncomingCalls', square);
+  const ranges = (call) => call.fromRanges.map((r) => [r.start.line, r.start.character, r.end.line, r.end.character]);
+  assert.deepEqual(incoming.map((call) => [...hierarchyItems([call.from]), ranges(call)]), [
+    [['sumSquares', vscode.SymbolKind.Method, 'def sumSquares(a: int, b: int) -> int', calls, [6, 1, 6, 72], [6, 5, 6, 15]],
+      [[6, 48, 6, 54], [6, 60, 6, 66]]],
+    [['cube', vscode.SymbolKind.Method, 'def cube(x: int) -> int', calls, [7, 1, 7, 50], [7, 5, 7, 9]], [[7, 34, 7, 40]]],
+  ]);
+  const outgoing = await vscode.commands.executeCommand('vscode.provideOutgoingCalls', incoming[0].from);
+  assert.deepEqual(outgoing.map((call) => [...hierarchyItems([call.to]), ranges(call)]), [
+    [squareItem, [[6, 48, 6, 54], [6, 60, 6, 66]]],
+  ]);
+  assert.deepEqual(await vscode.commands.executeCommand('vscode.provideOutgoingCalls', square), []);
+  console.log('PASS: vscode.call-hierarchy.response');
 
   // While the type error stands, the server refuses to rename the local line,
   // with its reason, both when VS Code prepares the rename, as F2 does, and

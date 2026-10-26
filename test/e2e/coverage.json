@@ -111,6 +111,11 @@
       "matrix": true
     },
     {
+      "id": "call-hierarchy",
+      "label": "Call hierarchy",
+      "matrix": true
+    },
+    {
       "id": "inlay-hints",
       "label": "Inlay hints",
       "matrix": true
@@ -1944,6 +1949,36 @@
       "description": "vim.lsp.buf.typehierarchy(\"subtypes\") on Polygon fills the quickfix list with one entry, Square with its detail at the exact line and column of its declaration in words/Shapes.v3, then closes it and returns to Words.v3."
     },
     {
+      "id": "vscode.call-hierarchy.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "vscode.prepareCallHierarchy on a call of square in words/Calls.v3 returns its exact item, with its declaration's range, name range, kind, and detail; vscode.provideIncomingCalls gives sumSquares, with its two calls' ranges, and cube, and vscode.provideOutgoingCalls gives square alone for sumSquares, with the same ranges, and nothing for square."
+    },
+    {
+      "id": "nvim.call-hierarchy.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "prepareCallHierarchy on a call of square in words/Calls.v3 returns its exact item, with its declaration's range, name range, kind, detail, and data; incomingCalls gives sumSquares, with its two calls' ranges, and cube, and outgoingCalls gives square alone for sumSquares, with the same ranges, and nothing for square."
+    },
+    {
+      "id": "nvim.call-hierarchy.quickfix",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "vim.lsp.buf.incoming_calls() on square fills the quickfix list with its three calls, two from sumSquares and one from cube, each at the exact line and column of its callee's name in words/Calls.v3, then closes it and returns to Words.v3."
+    },
+    {
       "id": "vscode.inlay-hints.response",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -2030,6 +2065,13 @@
         "notCovered": [
           "vscode.folded-text"
         ]
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "call-hierarchy",
+        "level": "api",
+        "checks": ["vscode.call-hierarchy.response"],
+        "notCovered": ["vscode.call-hierarchy-view"]
       },
       {
         "setup": "vscode-linux",
@@ -2153,6 +2195,13 @@
         "notCovered": [
           "vscode.folded-text"
         ]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "call-hierarchy",
+        "level": "api",
+        "checks": ["vscode.call-hierarchy.response"],
+        "notCovered": ["vscode.call-hierarchy-view"]
       },
       {
         "setup": "vscode-macos",
@@ -2275,6 +2324,13 @@
       },
       {
         "setup": "ssh-linux-client",
+        "feature": "call-hierarchy",
+        "level": "api",
+        "checks": ["vscode.call-hierarchy.response"],
+        "notCovered": ["vscode.call-hierarchy-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -2398,6 +2454,13 @@
       },
       {
         "setup": "nvim-linux",
+        "feature": "call-hierarchy",
+        "level": "api-ui-state",
+        "checks": ["nvim.call-hierarchy.response", "nvim.call-hierarchy.quickfix"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-linux",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["nvim.inlay-hints.response"],
@@ -2521,6 +2584,13 @@
       },
       {
         "setup": "nvim-macos",
+        "feature": "call-hierarchy",
+        "level": "api-ui-state",
+        "checks": ["nvim.call-hierarchy.response", "nvim.call-hierarchy.quickfix"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-macos",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["nvim.inlay-hints.response"],
@@ -2642,6 +2712,13 @@
       },
       {
         "setup": "lazyvim-linux",
+        "feature": "call-hierarchy",
+        "level": null,
+        "checks": [],
+        "notCovered": ["lazyvim.call-hierarchy"]
+      },
+      {
+        "setup": "lazyvim-linux",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["lazyvim.inlay-hints.response"],
@@ -2760,6 +2837,13 @@
         "notCovered": [
           "lazyvim.folding-ranges"
         ]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "call-hierarchy",
+        "level": null,
+        "checks": [],
+        "notCovered": ["lazyvim.call-hierarchy"]
       },
       {
         "setup": "lazyvim-macos",
@@ -3192,6 +3276,18 @@
       "id": "lazyvim.folding-ranges",
       "kind": "behavior",
       "what": "folding ranges in LazyVim",
+      "planned": null
+    },
+    {
+      "id": "vscode.call-hierarchy-view",
+      "kind": "visual",
+      "what": "the Call Hierarchy view that Show Call Hierarchy opens",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.call-hierarchy",
+      "kind": "behavior",
+      "what": "the incoming and outgoing calls that LazyVim's gai and gao list in the snacks picker",
       "planned": null
     }
   ],
