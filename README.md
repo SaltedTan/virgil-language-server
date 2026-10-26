@@ -14,6 +14,8 @@ With `main`, syntax-based [folding ranges](docs/architecture.md#folding-ranges) 
 
 Virgil has a self-hosted compiler. Running `v3c` on save gives diagnostics for saved files only. It can't provide go-to-definition or hover, which need the compiler's bound syntax tree. This project uses Aeneas's front end so editors can get the compiler's real semantics instead of a reimplementation; see the [process model](docs/decisions/0004-analysis-worker-process.md).
 
+Unreleased `main` also provides the [missing-semicolon quick fix](docs/architecture.md#code-actions) through versioned code actions in VS Code and Neovim.
+
 ## v0.1 scope
 
 One server, used by both LazyVim/Neovim and VS Code, providing:

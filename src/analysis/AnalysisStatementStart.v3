@@ -1,0 +1,194 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// What a "{" opens, judged from the tokens before it.
+enum AnalysisBraceKind {
+	LAMBDA,		// a fun expression's body, part of the expression around it
+	BOUNDARY,	// a block statement, declaration body, or member list
+	UNKNOWN		// anything else, which the walk refuses
+}
+
+// The start of the statement that a ";" inserted at a parse's repair point
+// would end, found from the tokens the parser consumed before its first error.
+// See docs/architecture.md#code-actions.
+//
+// The walk goes back from the insertion point and skips each balanced (...),
+// [...], and {...} group. A {...} group ends the walk at its "}" only if its
+// "{" opens a block statement, a declaration's body, or a member list; a lambda
+// body is part of the current expression, and anything else is refused. A ";"
+// ends the walk unless it is a lambda's empty body, and so does an unmatched
+// "{". The statement starts at the next token, or the file's first token, and
+// must be a token that can start one. An unmatched "(" or "[" means the
+// insertion point is inside a group; only a for header's "(" is a boundary.
+// Literals and comments are never bracket tokens.
+//
+// The start's line doesn't show a swallow within one line. Only two tokens can
+// begin a statement and also continue the expression before them: an `if`,
+// read as an if expression, as in `return if (c) {}`, and a prefix "++" or
+// "--", read as a postfix one, as in `x = y ++z`. {alternative} is where such
+// a statement could begin: the "++" or "--" just before the insertion point,
+// if code follows it on its line, or else the last `if` that the walk meets
+// outside the groups it skips, after the statement's first token. A swallowed
+// `if` is the last one: the statement that swallowed it ends in `return`, the
+// only statement end that takes a value, so before the `if` come only control
+// headers, and after it only suffixes and operators. If a ";" before that
+// token also proves, the caller can't tell which ";" is missing.
+class AnalysisStatementStart(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>) {
+	// After {find}, the offset of the token where a ";" could also end the
+	// statement, or -1.
+	var alternative = -1;
+	// The start offset of the statement that a ";" at {end} would end, or -1.
+	// {error} is the offset of the parser's first error.
+	def find(end: int, error: int) -> int {
+		var last = tokens.length;
+		while (last > 0 && tokens[last - 1].end > end) last--;
+		var i = last, boundary = -1, conditional = -1;
+		while (i > 0) {
+			var c = single(--i);
+			if (c == ')' || c == ']') {
+				i = opener(i);
+				if (i < 0) return -1;
+			} else if (c == '}') {
+				var j = opener(i);
+				if (j < 0) return -1;
+				var kind = brace(j);
+				if (kind == AnalysisBraceKind.UNKNOWN) return -1;
+				if (kind == AnalysisBraceKind.BOUNDARY) {
+					boundary = i;
+					break;
+				}
+				i = j;
+			} else if (c == '{') {
+				boundary = i;
+				break;
+			} else if (c == '(' || c == '[') {
+				if (c != '(' || !keyword(i - 1, "for")) return -1;
+				boundary = i;
+				break;
+			} else if (c == ';' && !emptyLambda(i)) {
+				boundary = i;
+				break;
+			} else if (conditional < 0 && keyword(i, "if")) {
+				conditional = i;
+			}
+		}
+		var start = boundary + 1;
+		if (start >= last || !canStart(tokens[start])) return -1;
+		var t = tokens[last - 1];
+		if (last - 1 > start && step(t) && !lineBreak(t.end, error)) alternative = t.begin;
+		else if (conditional > start) alternative = tokens[conditional].begin;
+		return tokens[start].begin;
+	}
+	// Whether the token is "++" or "--".
+	private def step(t: SymbolSyntaxToken) -> bool {
+		var c = input[t.begin];
+		return t.end - t.begin == 2 && (c == '+' || c == '-') && input[t.begin + 1] == c;
+	}
+	// Whether a line ends between {from} and {to}.
+	private def lineBreak(from: int, to: int) -> bool {
+		for (k = from; k < to && k < input.length; k++) {
+			if (input[k] == '\n' || input[k] == '\r') return true;
+		}
+		return false;
+	}
+	// Classify the "{" at {j}. A block statement's "{" follows a statement
+	// boundary, "else", a match arm's "=>", or the parenthesized header of
+	// if, while, for, or match. Otherwise the nearest keyword before it
+	// decides: "fun" for a lambda, or a declaration keyword for a method or
+	// constructor body or a member list. Lambda and declaration headers hold
+	// only names, types, parameter lists, and hints, never these keywords.
+	private def brace(j: int) -> AnalysisBraceKind {
+		if (j == 0) return AnalysisBraceKind.UNKNOWN;
+		var c = single(j - 1);
+		if (c == ';' || c == '{' || c == '}' || arrow(j - 1) || keyword(j - 1, "else")) return AnalysisBraceKind.BOUNDARY;
+		if (c == ')') {
+			var k = opener(j - 1);
+			if (k < 0) return AnalysisBraceKind.UNKNOWN;
+			if (keyword(k - 1, "if") || keyword(k - 1, "while") || keyword(k - 1, "for") || keyword(k - 1, "match")) {
+				return AnalysisBraceKind.BOUNDARY;
+			}
+		}
+		for (k = j - 1; k >= 0; k--) {
+			c = single(k);
+			if (c == ')' || c == ']') {
+				k = opener(k);
+				if (k < 0) return AnalysisBraceKind.UNKNOWN;
+			} else if (c == ';' || c == '{' || c == '}' || c == '(' || c == '[' || arrow(k)) {
+				return AnalysisBraceKind.UNKNOWN;
+			} else if (keyword(k, "fun")) {
+				return AnalysisBraceKind.LAMBDA;
+			} else if (keyword(k, "def") || keyword(k, "new") || keyword(k, "class") || keyword(k, "component")
+					|| keyword(k, "enum") || keyword(k, "type") || keyword(k, "case") || keyword(k, "layout")) {
+				return AnalysisBraceKind.BOUNDARY;
+			} else if (keyword(k, "if") || keyword(k, "while") || keyword(k, "for") || keyword(k, "match")
+					|| keyword(k, "else") || keyword(k, "return")) {
+				return AnalysisBraceKind.UNKNOWN;
+			}
+		}
+		return AnalysisBraceKind.UNKNOWN;
+	}
+	// Whether the ";" at {i} is a lambda's empty body, as in `fun(x: int);`.
+	// A lambda's body is "=>" and an expression, a ";", or a block, so a "fun"
+	// reached before any of those, outside groups, owns this ";".
+	private def emptyLambda(i: int) -> bool {
+		for (k = i - 1; k >= 0; k--) {
+			var c = single(k);
+			if (c == ')' || c == ']') {
+				k = opener(k);
+				if (k < 0) return true;
+			} else if (c == ';' || c == '{' || c == '}' || c == '(' || c == '[' || arrow(k)) {
+				return false;
+			} else if (keyword(k, "fun")) {
+				return true;
+			}
+		}
+		return false;
+	}
+	// The index of the opener matching the closer at {i}, or -1. The tokens
+	// before the parser's first error are balanced.
+	private def opener(i: int) -> int {
+		var depth = 0, close = single(i);
+		for (j = i; j >= 0; j--) {
+			var c = single(j);
+			if (c == ')' || c == ']' || c == '}') {
+				depth++;
+			} else if (c == '(' || c == '[' || c == '{') {
+				if (--depth == 0) {
+					var ok = (c == '(' && close == ')') || (c == '[' && close == ']') || (c == '{' && close == '}');
+					return if(ok, j, -1);
+				}
+			}
+		}
+		return -1;
+	}
+	// Whether the token can begin a statement, a declaration, or a match arm:
+	// a name or keyword, "_", a literal, "(", "[", or a prefix "!", "~", "++",
+	// or "--". A layout field's "+" is not one of them.
+	private def canStart(t: SymbolSyntaxToken) -> bool {
+		var c = input[t.begin], n = t.end - t.begin;
+		if (Char.isIdentStart(c) || Char.isDecimal(c) || c == '_' || c == '\'' || c == '\"') return true;
+		if (n == 1) return c == '(' || c == '[' || c == '!' || c == '~';
+		var d = input[t.begin + 1];
+		if (n == 2 && (c == '+' || c == '-') && d == c) return true;
+		return c == '-' && Char.isDecimal(d);
+	}
+	// The token's byte if it is one byte long, or 0.
+	private def single(i: int) -> byte {
+		if (i < 0) return 0;
+		var t = tokens[i];
+		return if(t.end - t.begin == 1, input[t.begin]);
+	}
+	private def arrow(i: int) -> bool {
+		var t = tokens[i];
+		return t.end - t.begin == 2 && input[t.begin] == '=' && input[t.begin + 1] == '>';
+	}
+	// Whether the token at {i} is the keyword {kw}. After ".", a keyword
+	// spelling is a member name, as in `C.new`.
+	private def keyword(i: int, kw: string) -> bool {
+		if (i < 0) return false;
+		var t = tokens[i];
+		if (t.end - t.begin != kw.length) return false;
+		for (n < kw.length) if (input[t.begin + n] != kw[n]) return false;
+		return single(i - 1) != '.';
+	}
+}

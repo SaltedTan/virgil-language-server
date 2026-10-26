@@ -328,7 +328,7 @@ Exit criteria:
 | P1       | completion            | scope/type context plus partial parser | Incomplete syntax, ranking, latency           |
 | P2       | semantic tokens       | verified occurrence kinds              | Delta encoding and overlap policy             |
 | P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
-| P2       | code actions          | classified diagnostics                 | Safe, mechanically provable edits             |
+| P2       | code actions          | classified diagnostics                 | Missing-semicolon fix present; [rules](docs/architecture.md#code-actions). Safe, mechanically provable edits for other diagnostics remain later work. |
 | Deferred | formatting            | a future canonical formatter           | Language-wide style and comment preservation  |
 
 ## Editor integration plan

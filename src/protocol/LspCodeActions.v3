@@ -1,0 +1,286 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/codeAction: one quick fix, which inserts the ";" that the
+// parser says is expected. See docs/architecture.md#code-actions.
+//
+// The action is recomputed from the current overlay. Its parse must find
+// one of the three exact semicolon messages as its first error, in the
+// request's range. With client
+// diagnostics, one must match that error's current range, message, and source,
+// and is attached as the client sent it; without them, the server's own
+// diagnostic is attached. The ";" goes at FileParseResult.repairAt, the end of
+// the token before the error, only if the statement it ends starts on that
+// line, and is proved by one reparse. A second reparse refuses it if a ";"
+// where an `if`, "++", or "--" could begin a statement earlier on that line
+// proves too. The edit carries
+// the open document's version, so a client without versioned documentChanges
+// gets nothing. There is no command, no fix-all, and no save action.
+class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
+	def TITLE = "Insert missing \";\"";
+	def KIND = "quickfix";
+	// The parser reports a missing ";" for expression and return statements as
+	// `";" expected`, and for local and field declarations, where it could also
+	// be a missing comma, as one of these two declaration messages. The proof
+	// reparse decides whether a ";" is really the fix.
+	def MESSAGES = ["\";\" expected", "',' or ';' expected", "',' or ';' expected after field declaration"];
+
+	// The client accepts WorkspaceEdit.documentChanges. Without them the fix
+	// cannot name the version it edits, so no action is offered.
+	var documentChanges: bool;
+	// The client declares textDocument.codeAction.codeActionLiteralSupport, so
+	// initialize advertises codeActionProvider. Without it the handler still
+	// answers, with [], rather than making the method unknown.
+	var literalSupport: bool;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onRequest("textDocument/codeAction", codeAction);
+	}
+	private def empty() -> JsonRpcReply {
+		return JsonRpcReply.Result(JsonValue.JArray([]));
+	}
+	private def invalid(message: string) -> JsonRpcReply {
+		return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, message));
+	}
+	private def codeAction(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		if (params == null) return invalid("codeAction params must be an object");
+		var doc = objectMember(params, "textDocument");
+		var uri = if(doc != null && JsonValue.String.?(doc["uri"]), DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v));
+		if (uri == null) return invalid("codeAction params require a valid textDocument.uri");
+		var range = parseRange(objectMember(params, "range"));
+		if (range == null) return invalid("codeAction params require a valid range");
+		var only: Array<string>;
+		var clientDiagnostics: Array<JsonValue>;
+		var hasDiagnostics = false;
+		if (params.has("context")) {
+			var context = params["context"];
+			if (!JsonValue.JObject.?(context)) return invalid("codeAction context must be an object");
+			var ctx = JsonValue.JObject.!(context).v;
+			if (ctx.has("only")) {
+				if (!JsonValue.JArray.?(ctx["only"])) return invalid("codeAction context.only must be an array of kinds");
+				var kinds = Vector<string>.new();
+				for (kind in JsonValue.JArray.!(ctx["only"]).v) {
+					if (!JsonValue.String.?(kind)) return invalid("codeAction context.only must be an array of kinds");
+					kinds.put(JsonValue.String.!(kind).v);
+				}
+				only = kinds.extract();
+			}
+			if (ctx.has("diagnostics")) {
+				if (!JsonValue.JArray.?(ctx["diagnostics"])) return invalid("codeAction context.diagnostics must be an array");
+				clientDiagnostics = JsonValue.JArray.!(ctx["diagnostics"]).v;
+				for (value in clientDiagnostics) {
+					if (!JsonValue.JObject.?(value)) return invalid("codeAction diagnostics must be objects with a range and message");
+					var d = JsonValue.JObject.!(value).v;
+					if (parseRange(objectMember(d, "range")) == null || !JsonValue.String.?(d["message"]) ||
+						(d.has("source") && !JsonValue.String.?(d["source"]))) {
+						return invalid("codeAction diagnostics require a range, message, and optional string source");
+					}
+				}
+				hasDiagnostics = true;
+			}
+		}
+		if (!literalSupport || !documentChanges) return empty();
+		if (only != null && !acceptsOnly(only)) return empty();
+		var overlay = store.overlay(uri);
+		if (overlay == null) return empty();
+		// Cursor movement asks often. Without a ";" diagnostic from this server
+		// in the request, there is nothing to check and no parse to make.
+		if (hasDiagnostics && !hasSemicolonDiagnostic(clientDiagnostics)) return empty();
+		var options = projects.forDocument(overlay.uri).compilerArgs();
+		var path = DocumentUri.filePath(overlay.uri);
+		var parsed = AeneasAdapter.parseStatement(if(path != null, path, overlay.uri), overlay.text, options);
+		if (parsed.diagnostics.length == 0 || !missingSemicolon(parsed.diagnostics[0].message)) return empty();
+		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
+		if (!intersects(range, map, parsed.diagnostics[0].beginOffset, parsed.diagnostics[0].endOffset)) return empty();
+		// The parse is the server's current one; the error's range and message
+		// are now this server's own, so a stale client diagnostic matches none.
+		var attached = if(hasDiagnostics, matching(clientDiagnostics, map, parsed), serverDiagnostic(parsed, map));
+		if (attached == JsonValue.Null) return empty();
+		return action(overlay, map, parsed, attached);
+	}
+	// The reply that inserts ";" at the parser's repair point, if one reparse
+	// shows the fix works and none shows that a ";" earlier on its line does too.
+	private def action(overlay: DocumentOverlay, map: PositionMap, parsed: FileParseResult,
+			diagnostic: JsonValue) -> JsonRpcReply {
+		var anchor = parsed.repairAt;
+		if (anchor < 0 || anchor > overlay.text.length || anchor > parsed.diagnostics[0].beginOffset) return empty();
+		// All three eligible parser paths report at the current cursor. The
+		// adapter's consumed-token rollback is for errors reported on an
+		// earlier token; keep its anchor unchanged, never scan forward to the
+		// cursor through whitespace or comments. The scanner rejects anchors
+		// inside comments, strings, and character literals.
+		var place = LspCursorScanner.new(overlay.text).scan(anchor).place;
+		if (place != LspCursorPlace.CODE && place != LspCursorPlace.NUMBER) return empty();
+		// The statement that the ";" would end must start on the anchor's line.
+		// A parse can read a later line into an unterminated statement, as
+		// `return` reads a following `if (c)` as a conditional expression, and
+		// then a ";" that parses still ends the wrong statement.
+		var start = parsed.statementStart;
+		if (start < 0 || start > anchor) return empty();
+		for (i = start; i < anchor; i++) {
+			if (overlay.text[i] == '\n' || overlay.text[i] == '\r') return empty();
+		}
+		if (!proves(overlay, anchor, parsed.diagnostics[0].beginOffset)) return empty();
+		// Within one line, the parser may have read the next statement's `if`,
+		// or its prefix "++" or "--", into this one. If a ";" before that token
+		// proves too, either ";" could be the missing one, so neither is offered.
+		var other = parsed.alternativeAt;
+		if (other >= 0 && proves(overlay, other, parsed.diagnostics[0].beginOffset)) return empty();
+		var at = map.offsetToPosition(anchor), point = position(at);
+		var edit = Strings.newMap<JsonValue>();
+		edit["range"] = rangeValue(point, point);
+		edit["newText"] = JsonValue.String(";");
+		var document = Strings.newMap<JsonValue>();
+		document["uri"] = JsonValue.String(overlay.uri);
+		document["version"] = JsonValue.Int(overlay.version);
+		var change = Strings.newMap<JsonValue>();
+		change["textDocument"] = JsonValue.JObject(document);
+		change["edits"] = JsonValue.JArray([JsonValue.JObject(edit)]);
+		var workspace = Strings.newMap<JsonValue>();
+		workspace["documentChanges"] = JsonValue.JArray([JsonValue.JObject(change)]);
+		var result = Strings.newMap<JsonValue>();
+		result["title"] = JsonValue.String(TITLE);
+		result["kind"] = JsonValue.String(KIND);
+		result["diagnostics"] = JsonValue.JArray([diagnostic]);
+		result["edit"] = JsonValue.JObject(workspace);
+		// Preferred when the ";" ends its line: only whitespace or a comment
+		// follows it there.
+		if (endsLine(overlay.text, anchor)) result["isPreferred"] = JsonValue.Bool(true);
+		return JsonRpcReply.Result(JsonValue.JArray([JsonValue.JObject(result)]));
+	}
+	// Whether inserting ";" at {anchor} and parsing once proves the fix: the
+	// text parses, or its first error is strictly later than the original
+	// error, shifted by the inserted byte.
+	private def proves(overlay: DocumentOverlay, anchor: int, originalBegin: int) -> bool {
+		var text = StringBuilder.new().putk(overlay.text, 0, anchor).putc(';')
+			.putk(overlay.text, anchor, overlay.text.length).extract();
+		var path = DocumentUri.filePath(overlay.uri);
+		var result = AeneasAdapter.parseFile(if(path != null, path, overlay.uri), text,
+			projects.forDocument(overlay.uri).compilerArgs());
+		if (result.diagnostics.length == 0) return true;
+		var begin = result.diagnostics[0].beginOffset;
+		var shifted = originalBegin + 1;
+		return begin > shifted;
+	}
+	// Whether only whitespace or comments follow {anchor} on its line. Code after
+	// closed block comment on the same line makes the fix not preferred.
+	private def endsLine(text: Array<byte>, anchor: int) -> bool {
+		var i = anchor, n = text.length;
+		while (i < n) {
+			var c = text[i];
+			if (c == '\n' || c == '\r') return true;
+			if (c <= ' ') {
+				i++;
+			} else if (c == '/' && i + 1 < n && text[i + 1] == '/') {
+				return true;
+			} else if (c == '/' && i + 1 < n && text[i + 1] == '*') {
+				var j = i + 2, closed = false;
+				while (j < n) {
+					if (text[j] == '*' && j + 1 < n && text[j + 1] == '/') {
+						closed = true;
+						j += 2;
+						break;
+					}
+					if (text[j] == '\n' || text[j] == '\r') return true;
+					j++;
+				}
+				if (!closed) return true;
+				i = j;
+			} else {
+				return false;
+			}
+		}
+		return true;
+	}
+	// The client diagnostic that matches the recomputed first error's range,
+	// message, and source, or null. It is returned as the client sent it.
+	private def matching(diagnostics: Array<JsonValue>, map: PositionMap, parsed: FileParseResult) -> JsonValue {
+		var server = serverDiagnostic(parsed, map);
+		if (server == JsonValue.Null) return JsonValue.Null;
+		for (value in diagnostics) {
+			if (!JsonValue.JObject.?(value)) continue;
+			var d = JsonValue.JObject.!(value).v;
+			if (!sameError(d, server)) continue;
+			if (sameRange(d, parsed, map)) return value;
+		}
+		return JsonValue.Null;
+	}
+	private def serverDiagnostic(parsed: FileParseResult, map: PositionMap) -> JsonValue {
+		return LspDiagnostics.compiler(map, parsed.diagnostics[0]).value;
+	}
+	// A client diagnostic with this server's message and source. Its range is
+	// checked separately against the current overlay.
+	private def sameError(d: HashMap<string, JsonValue>, server: JsonValue) -> bool {
+		var s = JsonValue.JObject.!(server).v;
+		return sameString(d, s, "message") && sameString(d, s, "source");
+	}
+	private def sameString(a: HashMap<string, JsonValue>, b: HashMap<string, JsonValue>, key: string) -> bool {
+		if (!JsonValue.String.?(a[key]) || !JsonValue.String.?(b[key])) return false;
+		return Strings.equal(JsonValue.String.!(a[key]).v, JsonValue.String.!(b[key]).v);
+	}
+	private def sameRange(d: HashMap<string, JsonValue>, parsed: FileParseResult, map: PositionMap) -> bool {
+		var r = parseRange(objectMember(d, "range"));
+		if (r == null) return false;
+		var begin = map.offsetToPosition(parsed.diagnostics[0].beginOffset), end = map.offsetToPosition(parsed.diagnostics[0].endOffset);
+		return r[0] == begin.line && r[1] == begin.character && r[2] == end.line && r[3] == end.character;
+	}
+	private def hasSemicolonDiagnostic(diagnostics: Array<JsonValue>) -> bool {
+		for (value in diagnostics) {
+			if (!JsonValue.JObject.?(value)) continue;
+			var d = JsonValue.JObject.!(value).v;
+			if (!JsonValue.String.?(d["message"]) || !JsonValue.String.?(d["source"])) continue;
+			if (missingSemicolon(JsonValue.String.!(d["message"]).v)
+					&& Strings.equal(JsonValue.String.!(d["source"]).v, "aeneas")) return true;
+		}
+		return false;
+	}
+	private def missingSemicolon(message: string) -> bool {
+		if (message == null) return false;
+		for (m in MESSAGES) if (Strings.equal(m, message)) return true;
+		return false;
+	}
+	// Whether {range}, as four ints, intersects the error (including point ranges).
+	private def intersects(range: Array<int>, map: PositionMap, begin: int, end: int) -> bool {
+		var start = map.offsetToPosition(begin), finish = map.offsetToPosition(end);
+		return beforeOrAt(range[0], range[1], finish.line, finish.character)
+			&& beforeOrAt(start.line, start.character, range[2], range[3]);
+	}
+	private def beforeOrAt(line: int, character: int, otherLine: int, otherCharacter: int) -> bool {
+		return line < otherLine || (line == otherLine && character <= otherCharacter);
+	}
+	// Quick fix kinds a request accepts. Its kinds are prefixes in LSP's
+	// dotted hierarchy, so "" (all) and "quickfix" accept this kind, while
+	// "quickfix.foo" does not.
+	private def acceptsOnly(kinds: Array<string>) -> bool {
+		for (kind in kinds) if (kind.length == 0 || Strings.equal(kind, KIND)) return true;
+		return false;
+	}
+	// A Range as four ints: start line and character, end line and character.
+	private def parseRange(obj: HashMap<string, JsonValue>) -> Array<int> {
+		var start = objectMember(obj, "start"), end = objectMember(obj, "end");
+		var sl = integer(start, "line"), sc = integer(start, "character");
+		var el = integer(end, "line"), ec = integer(end, "character");
+		if (sl < 0 || sc < 0 || el < sl || ec < 0 || (el == sl && ec < sc)) return null;
+		return [sl, sc, el, ec];
+	}
+	private def integer(obj: HashMap<string, JsonValue>, key: string) -> int {
+		return if(obj != null && obj.has(key) && JsonValue.Int.?(obj[key]), JsonValue.Int.!(obj[key]).v, -1);
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+	private def rangeValue(start: JsonValue, end: JsonValue) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["start"] = start;
+		obj["end"] = end;
+		return JsonValue.JObject(obj);
+	}
+}

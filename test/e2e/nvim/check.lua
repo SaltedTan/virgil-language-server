@@ -74,6 +74,38 @@ local function check()
     "unexpected parser diagnostic position: " .. vim.inspect(diagnostic.range))
   assert(#symbols() == 0, "broken source should have no document symbols")
 
+  -- nvim.diagnostics.semicolon-fix: exact versioned edit from the published error.
+  assert(vim.deep_equal(client.server_capabilities.codeActionProvider, { codeActionKinds = { "quickfix" } }))
+  vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(client.config.root_dir, "semicolon.v3")))
+  local semicolon_buf = vim.api.nvim_get_current_buf()
+  local semicolon_uri = vim.uri_from_bufnr(semicolon_buf)
+  wait_for("semicolon diagnostic", function()
+    local last = latest(semicolon_uri)
+    return last and #last.diagnostics == 1
+  end)
+  local semicolon_publication = latest(semicolon_uri)
+  local semicolon_diagnostic = semicolon_publication.diagnostics[1]
+  assert(semicolon_diagnostic.message == '\";\" expected', vim.inspect(semicolon_diagnostic))
+  local fixes, fix_err = client:request_sync("textDocument/codeAction", {
+    textDocument = { uri = semicolon_uri }, range = semicolon_diagnostic.range,
+    context = { diagnostics = { semicolon_diagnostic }, only = { "quickfix" } },
+  }, 10000, semicolon_buf)
+  local point = { line = 2, character = 10 }
+  assert(fixes and not fixes.err and vim.deep_equal(fixes.result, { {
+    title = 'Insert missing ";"', kind = "quickfix", isPreferred = true,
+    diagnostics = { semicolon_diagnostic }, edit = { documentChanges = { {
+      textDocument = { uri = semicolon_uri, version = semicolon_publication.version },
+      edits = { { range = { start = point, ["end"] = point }, newText = ";" } },
+    } } },
+  } }), "unexpected semicolon fix: " .. vim.inspect(fix_err or fixes))
+  vim.lsp.util.apply_workspace_edit(fixes.result[1].edit, client.offset_encoding)
+  wait_for("cleared semicolon diagnostic", function()
+    return #latest(semicolon_uri).diagnostics == 0
+  end)
+  assert(vim.api.nvim_buf_get_lines(semicolon_buf, 2, 3, true)[1] == "\t\treturn 1; // insert before this comment")
+  print("PASS: nvim.diagnostics.semicolon-fix")
+  vim.api.nvim_set_current_buf(bufnr)
+
   -- An unsaved buffer edit must drive didChange, clear diagnostics, and update
   -- the outline. No direct RPC didOpen/didChange calls bypass the editor client.
   local before_edit = #publications

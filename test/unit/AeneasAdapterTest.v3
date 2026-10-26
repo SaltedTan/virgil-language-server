@@ -5,6 +5,7 @@ def T = UnitTests.register;
 def X = [
 	T("AeneasAdapter:parse_clean", test_parse_clean),
 	T("AeneasAdapter:parse_error_location", test_parse_error_location),
+	T("AeneasAdapter:parse_missing_semicolon_messages", test_parse_missing_semicolon_messages),
 	T("AeneasAdapter:parse_tab_columns", test_parse_tab_columns),
 	T("AeneasAdapter:parse_byte_offsets", test_parse_byte_offsets),
 	T("AeneasAdapter:parse_rep_hint_eof", test_parse_rep_hint_eof),
@@ -54,6 +55,26 @@ def test_parse_error_location(t: Tester) {
 	var d = r.diagnostics[0];
 	t.assert(Strings.equal("bad.v3", d.path), "diagnostic path");
 	t.asserti(2, d.beginLine);
+}
+
+// Missing semicolons do not all produce the same parser message. Keep the
+// declaration messages explicit when deciding which diagnostics a quick fix
+// may handle; inserting at repairAt repairs all three examples.
+def test_parse_missing_semicolon_messages(t: Tester) {
+	var prefixes = ["component C { def f() -> int { return 1",
+		"component C { def f() { var x = 1", "component C { var x = 1"];
+	var suffixes = ["\n} }", "\n} }", "\n}"];
+	var messages = ["\";\" expected", "',' or ';' expected", "',' or ';' expected after field declaration"];
+	for (i < prefixes.length) {
+		var text = StringBuilder.new().puts(prefixes[i]).puts(suffixes[i]).extract();
+		var parsed = AeneasAdapter.parseFile("semicolon.v3", text, []);
+		t.asserti(1, parsed.diagnostics.length);
+		if (parsed.diagnostics.length == 0) continue;
+		t.assert_string(messages[i], parsed.diagnostics[0].message);
+		t.asserti(prefixes[i].length, parsed.repairAt);
+		var fixed = StringBuilder.new().puts(prefixes[i]).putc(';').puts(suffixes[i]).extract();
+		t.asserti(0, AeneasAdapter.parseFile("semicolon.v3", fixed, []).diagnostics.length);
+	}
 }
 
 // Aeneas reports tab-expanded display columns, which the position mapper must

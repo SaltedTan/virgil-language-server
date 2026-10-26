@@ -1,0 +1,277 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspCodeActions:sites", test_sites),
+	T("LspCodeActions:proof", test_proof),
+	T("LspCodeActions:statement_line", test_statement_line),
+	T("LspCodeActions:context", test_context),
+	T("LspCodeActions:capabilities", test_capabilities),
+	T("LspCodeActions:params_lifecycle", test_params_lifecycle),
+	T("LspCodeActions:language_options", test_language_options),
+	T("LspCodeActions:canonical_utf16", test_canonical_utf16),
+	()
+];
+def URI = "untitled:semicolon.v3";
+def CAPS = "{\"workspace\":{\"workspaceEdit\":{\"documentChanges\":true}},\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"quickfix\"]}}}}}";
+def SOURCE = "component C { def f() { return 1\n} }";
+def json(text: string) -> JsonValue { return JsonRpcJsonParser.new(text).parseDocument(); }
+def render(v: JsonValue) -> string { return JsonRpcJson.render(StringBuilder.new(), v).extract(); }
+def request(s: LspServer, method: string, params: JsonValue) -> HashMap<string, JsonValue> {
+	var p = if(JsonValue.JObject.?(params), JsonRpcParams.ByName(JsonValue.JObject.!(params).v), JsonRpcParams.ByPosition([]));
+	return JsonValue.JObject.!(json(s.handle(JsonRpcMessage.Request(JsonRpcId.Int(9), method, p).encode()))).v;
+}
+def running(caps: string) -> LspServer {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	request(s, "initialize", json(Strings.format1("{\"capabilities\":%s}", caps)));
+	return s;
+}
+def params(context: string) -> JsonValue {
+	return json(Strings.format1("{\"textDocument\":{\"uri\":\"untitled:semicolon.v3\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":100,\"character\":0}}%s}",
+		if(context != null, Strings.format1(",\"context\":%s", context), "")));
+}
+def actions(s: LspServer, p: JsonValue) -> JsonValue { return request(s, "textDocument/codeAction", p)["result"]; }
+def diagnostic(text: string) -> JsonValue {
+	var parsed = AeneasAdapter.parseFile(URI, text, []);
+	return LspDiagnostics.compiler(PositionMap.new(text, PositionEncoding.UTF16), parsed.diagnostics[0]).value;
+}
+def withDiagnostic(d: JsonValue) -> JsonValue {
+	return params(Strings.format1("{\"diagnostics\":[%s]}", render(d)));
+}
+def empty(t: Tester, s: LspServer, p: JsonValue) { t.assert_string("[]", render(actions(s, p))); }
+// The marker pins the insertion independently of repairAt. Compare the entire
+// action, then apply exactly that edit and check the shifted original error.
+def site(t: Tester, marked: string, preferred: bool) {
+	var anchor = 0;
+	while (anchor < marked.length && marked[anchor] != '|') anchor++;
+	var text = StringBuilder.new().putk(marked, 0, anchor).putk(marked, anchor + 1, marked.length).extract();
+	var s = running(CAPS);
+	s.documents.open(URI, "virgil", 7, text);
+	var d = diagnostic(text), p = PositionMap.new(text, PositionEncoding.UTF16).offsetToPosition(anchor);
+	var point = StringBuilder.new().put2("{\"line\":%d,\"character\":%d}", p.line, p.character).extract();
+	var expected = StringBuilder.new().puts("[{\"title\":\"Insert missing \\\";\\\"\",\"kind\":\"quickfix\",\"diagnostics\":[")
+		.puts(render(d)).puts("],\"edit\":{\"documentChanges\":[{\"textDocument\":{\"uri\":\"untitled:semicolon.v3\",\"version\":7},\"edits\":[{\"range\":{\"start\":")
+		.puts(point).puts(",\"end\":").puts(point).puts("},\"newText\":\";\"}]}]}")
+		.puts(if(preferred, ",\"isPreferred\":true", "")).puts("}]").extract();
+	t.assert_string(render(json(expected)), render(actions(s, params(null))));
+	// Preserve arbitrary client diagnostic fields verbatim.
+	JsonValue.JObject.!(d).v["data"] = JsonValue.String("client payload");
+	var result = actions(s, withDiagnostic(d));
+	var expectedValue = json(expected);
+	JsonValue.JObject.!(JsonValue.JArray.!(expectedValue).v[0]).v["diagnostics"] = JsonValue.JArray([d]);
+	t.assert_string(render(expectedValue), render(result));
+	var a = JsonValue.JArray.!(result).v;
+	if (a.length == 0) return;
+	var fixed = StringBuilder.new().putk(text, 0, anchor).putc(';').putk(text, anchor, text.length).extract();
+	var before = AeneasAdapter.parseFile(URI, text, []), after = AeneasAdapter.parseFile(URI, fixed, []);
+	t.assert(after.diagnostics.length == 0 || after.diagnostics[0].beginOffset > before.diagnostics[0].beginOffset + 1,
+		"edit removes the original error");
+}
+def test_sites(t: Tester) {
+	site(t, "component C { def f() { a()|\nb(); } }", true);
+	site(t, "component C { def f() {\n\tp(fun() { a(); })|\n} }", true);
+	site(t, "component C { def f() {\n\tp([fun() {}])|\n} }", true);
+	site(t, "component C { def f() { return 1| // trailing\n} }", true);
+	site(t, "component C { def f() { return 1| /* trailing */\n} }", true);
+	site(t, "component C { def f() { return 1| /* trailing\n comment */ } }", true);
+	site(t, "component C { def f() { return 1| } }", false);
+	site(t, "component C { def f() { return \"text\"|\n} }", true);
+	site(t, "component C { def f() { return 'x'|\n} }", true);
+	site(t, "var x = 1|", true);
+	site(t, "component C { var x = 1|\n}", true);
+	site(t, "component C { def f() { var x = 1|\n} }", true);
+	site(t, "component C { def f() { return 1|\n} }", true);
+	site(t, "component C { def f() { var x = a| b; } }", false);
+	site(t, "component C { var x: int; def f(b: bool) { match (b) {\n\ttrue => x = 1|\n\tfalse => x = 2;\n} } }", true);
+	site(t, "component C { var x: int; def f(c: bool) {\n\tif (c) x = 1|\n\tx = 2;\n} }", true);
+	site(t, "component C { def f() {\n\tfor (i = 0| i < 3; i++) {}\n} }", false);
+	site(t, "component C { /*\r\n*/\tdef f() { /*\xC3\xA9\xF0\x9D\x84\x9E*/ return 1|\t// comment\r\n} }", true);
+	// A later error is permitted: proof requires progress, not a clean file.
+	site(t, "component C { def f() { a()|\nb()\n} }", true);
+}
+def test_proof(t: Tester) {
+	for (text in ["component C { def f() { var x = a ) } }", "component C { def f() { a(1; } }",
+		"component C { var = 1; }", "component C { def f() { return \"unfinished\n} }",
+		"component C { def f() { return 'x\n} }", "component C { def f() { return 1 /* unfinished", "component C {\r\n def f() { return 1\r\n} }"] ) {
+		var s = running(CAPS);
+		s.documents.open(URI, "virgil", 1, text);
+		empty(t, s, params(null));
+	}
+}
+// The parser may read a later line into a statement whose ";" is missing. A
+// ";" at its end would parse, but the statement doesn't start on that line, so
+// no action is offered. A lambda's braces don't end the statement; a block
+// statement's do. Within one line, a ";" that a swallowed `if`, "++", or "--"
+// could follow proves too, so no action is offered there either.
+def test_statement_line(t: Tester) {
+	for (text in [
+		"component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n",
+		"component C { def f() {\n\tif (true) return\n\tif (p(fun() {})) {}\n} }",
+		"component C { def f() {\n\tif (true) return\n\tf = fun() {} + 1\n} }",
+		"component C { def f() {\n\tif (true) return\n\tif (p([fun() {}])) {}\n} }",
+		"component C { def f() {\n\tif (true) return\n\tif (p(fun() { a(); })) {}\n} }",
+		"component C { def f() {\n\treturn\n\ta()\n} }",
+		"component C { var x: int; def f() {\n\treturn\n\tx = 1\n} }",
+		"component C { def f() { a(1,\n\t2)\n\tb(); } }",
+		"component C { def f() { if (true)\n\ta()\n\tb(); } }",
+		"component C { var x: int; def f(b: bool) { match (b) {\n\ttrue =>\n\t\tx = 1\n\tfalse => x = 2;\n} } }",
+		// A lambda body that spans lines hides the return's line.
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t} + 1\n\th();\n} }",
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t} + 1\n\th();\n} }",
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t}(1)\n\th();\n} }",
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t}.x\n\th();\n} }",
+		// A lambda's empty body is a ";" inside the expression.
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun(); (1)\n\th();\n} }",
+		// On one line, a statement's `if (c)` read as an if expression, and a
+		// prefix "++" or "--" read as a postfix one. A ";" before either proves.
+		"component C { def f(c: bool) {\n\tif (c) return if (c) {}\n} }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d) ++x; } }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d) --x; } }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d).x ++x; } }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d)[0] --x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>()) ++x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>()) --x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>()).x ++x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>())[0] --x; } }",
+		"component C { def f(c: bool, d: bool) { return if(p(c, d)) ++x; } }",
+		"component C { def f(c: bool, d: bool) { if(c) return if(d) f(if(c, 1, 2)); } }",
+		// Earlier control headers' `if`s: the swallowed `if` is the last one.
+		"component C { def f(c: bool, d: bool) { if (c) if (d) return if (c) {} } }",
+		"component C { def f(c: bool, d: bool) { while (c) if (d) return if (c) {} } }",
+		"component C { var x: int; var y: int; def f() { x = y ++x; } }",
+		"component C { var x: int; var y: int; def f() { x = y --x; } }"] ) {
+		var parsed = AeneasAdapter.parseFile(URI, text, []);
+		t.assert_string("\";\" expected", parsed.diagnostics[0].message);
+		// Without the rule, the proof would accept this ";".
+		var fixed = StringBuilder.new().putk(text, 0, parsed.repairAt).putc(';')
+			.putk(text, parsed.repairAt, text.length).extract();
+		var after = AeneasAdapter.parseFile(URI, fixed, []);
+		t.assert(after.diagnostics.length == 0 || after.diagnostics[0].beginOffset > parsed.diagnostics[0].beginOffset + 1,
+			"the reparse alone accepts the insertion");
+		var s = running(CAPS);
+		s.documents.open(URI, "virgil", 1, text);
+		empty(t, s, params(null));
+		empty(t, s, withDiagnostic(diagnostic(text)));
+	}
+	// A block statement's "}" ends a statement, so the next statement's ";"
+	// is still offered after each kind of block, and after a method body.
+	def body = "component C { var x: int; def f(c: bool) {\n%s\n} }";
+	for (block in ["\tif (c) {\n\t\tf(c);\n\t}", "\twhile (c) {\n\t}", "\tfor (i < 3) {\n\t}",
+		"\tmatch (c) {\n\t\ttrue => x = 2;\n\t\tfalse => {}\n\t}", "\tif (c) {\n\t} else {\n\t}",
+		"\t{\n\t\tf(c);\n\t}", "\tdef g() {\n\t}", "\tf(fun() {\n\t\tf(c);\n\t});"]) {
+		site(t, Strings.format1(body, Strings.format1("%s\n\tx = 1|", block)), true);
+	}
+	site(t, Strings.format1(body, "\tmatch (c) {\n\t\ttrue => {\n\t\t}\n\t\tfalse => x = 1|\n\t}"), true);
+	site(t, Strings.format1(body, "\tif (c) {\n\t} else x = 1|"), true);
+	site(t, Strings.format1(body, "\tif (c) if (c) x = 1|"), true);
+	site(t, Strings.format1(body, "\twhile (c) if (c) x = 1|"), true);
+	site(t, Strings.format1(body, "\tfor (i < 3) if (c) x = 1|"), true);
+	site(t, Strings.format1(body, "\treturn if(c, 1)|"), true);
+	site(t, Strings.format1(body, "\treturn if(c, 1, 2)|"), true);
+	// An `if` that a ";" before can't make a statement, or inside a group or a
+	// lambda body, leaves the fix; so does a "++" that ends its line.
+	site(t, Strings.format1(body, "\tx = if(c, 1, 2)|\n\tx = 1;"), true);
+	site(t, Strings.format1(body, "\tf(if(c, 1, 2))|\n\tx = 1;"), true);
+	site(t, Strings.format1(body, "\tp(fun() { if(c) x = 1; })|"), true);
+	site(t, Strings.format1(body, "\tmatch (c) {\n\t\ttrue => if(c) x = 1|\n\t\tfalse => x = 2;\n\t}"), true);
+	site(t, Strings.format1(body, "\tif (c) return if(c).x| {}"), false);
+	site(t, Strings.format1(body, "\tif (c) return if(c)[0]| {}"), false);
+	site(t, Strings.format1(body, "\treturn p(if(c))| {}"), false);
+	site(t, Strings.format1(body, "\tx++|\n\tx = 1;"), true);
+	site(t, "component C {\n\tdef f() {\n\t}\n\tvar x = 1|\n}", true);
+	site(t, "component C { def f() {\n\tfor (\n\t\ti = 0| i < 3; i++) {}\n} }", false);
+}
+def test_context(t: Tester) {
+	var s = running(CAPS);
+	s.documents.open(URI, "virgil", 1, SOURCE);
+	for (ctx in ["{\"diagnostics\":[]}", "{\"only\":[\"refactor\"]}", "{\"only\":[\"quickfix.other\"]}", "{\"only\":[]}"]) empty(t, s, params(ctx));
+	var semantic = diagnostic(SOURCE);
+	JsonValue.JObject.!(semantic).v["message"] = JsonValue.String("unknown name");
+	JsonValue.JObject.!(semantic).v["code"] = JsonValue.String("UnresolvedIdentifier");
+	empty(t, s, withDiagnostic(semantic));
+	var other = diagnostic(SOURCE);
+	JsonValue.JObject.!(other).v["source"] = JsonValue.String("other");
+	empty(t, s, withDiagnostic(other));
+	for (ctx in ["{}", "{\"only\":[\"quickfix\"]}", "{\"only\":[\"\"]}"]) {
+		t.asserti(1, JsonValue.JArray.!(actions(s, params(ctx))).v.length);
+	}
+	var stale = diagnostic(SOURCE);
+	JsonValue.JObject.!(stale).v["message"] = JsonValue.String("',' or ';' expected");
+	empty(t, s, withDiagnostic(stale));
+	stale = diagnostic(Strings.format1("\n%s", SOURCE));
+	empty(t, s, withDiagnostic(stale));
+	var p = JsonValue.JObject.!(params(null)).v;
+	p["range"] = json("{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}}");
+	empty(t, s, JsonValue.JObject(p));
+	var old = diagnostic(SOURCE);
+	s.documents.change(URI, 2, "component C { def f() { return 1;\n} }");
+	empty(t, s, withDiagnostic(old));
+	s.documents.close(URI);
+	empty(t, s, params(null));
+}
+def test_capabilities(t: Tester) {
+	for (caps in [CAPS, "{}", "{\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{}}}}"] ) {
+		var s = LspServer.new(DocumentLimits.MAX_BYTES);
+		var initialized = request(s, "initialize", json(Strings.format1("{\"capabilities\":%s}", caps)));
+		var providers = JsonValue.JObject.!(JsonValue.JObject.!(initialized["result"]).v["capabilities"]).v;
+		var literal = !Strings.equal(caps, "{}");
+		t.assertz(literal, providers.has("codeActionProvider"));
+		if (literal) t.assert_string("{\"codeActionKinds\":[\"quickfix\"]}", render(providers["codeActionProvider"]));
+		s.documents.open(URI, "virgil", 1, SOURCE);
+		if (!Strings.equal(caps, CAPS)) empty(t, s, params(null));
+	}
+}
+def errorCode(t: Tester, r: HashMap<string, JsonValue>, code: int) {
+	t.asserti(code, JsonValue.Int.!(JsonValue.JObject.!(r["error"]).v["code"]).v);
+}
+def test_params_lifecycle(t: Tester) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	errorCode(t, request(s, "textDocument/codeAction", params(null)), -32002);
+	request(s, "initialize", json(Strings.format1("{\"capabilities\":%s}", CAPS)));
+	for (bad in ["[]", "{}", "{\"textDocument\":{\"uri\":5}}", "{\"textDocument\":{\"uri\":\"untitled:semicolon.v3\"},\"range\":{}}"] ) {
+		errorCode(t, request(s, "textDocument/codeAction", json(bad)), -32602);
+	}
+	for (bad in ["null", "{\"only\":5}", "{\"only\":[5]}", "{\"diagnostics\":{}}", "{\"diagnostics\":[null]}", "{\"diagnostics\":[{}]}"] ) {
+		errorCode(t, request(s, "textDocument/codeAction", params(bad)), -32602);
+	}
+	var p = JsonValue.JObject.!(params(null)).v;
+	for (bad in ["{\"start\":{\"line\":-1,\"character\":0},\"end\":{\"line\":1,\"character\":0}}",
+		"{\"start\":{\"line\":1,\"character\":2},\"end\":{\"line\":1,\"character\":1}}"] ) {
+		p["range"] = json(bad);
+		errorCode(t, request(s, "textDocument/codeAction", JsonValue.JObject(p)), -32602);
+	}
+	request(s, "shutdown", json("{}"));
+	errorCode(t, request(s, "textDocument/codeAction", params(null)), -32600);
+}
+def test_language_options(t: Tester) {
+	var root = ProjectTestFiles.repository("test/fixtures/projects/compiler-flags");
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	request(s, "initialize", json(StringBuilder.new().puts("{\"rootUri\":")
+		.puts(render(JsonValue.String(ProjectFiles.uri(root)))).puts(",\"capabilities\":").puts(CAPS).putc('}').extract()));
+	var text = "class Kind describes Shape {} class Shape descriptor Kind {} component C { var x = 1\n}";
+	for (name in ["descriptors/Described.v3", "defaults/Main.v3"]) {
+		var uri = ProjectFiles.uri(ProjectFiles.join(root, name));
+		s.documents.open(uri, "virgil", 1, text);
+		var p = JsonValue.JObject.!(params(null)).v;
+		JsonValue.JObject.!(p["textDocument"]).v["uri"] = JsonValue.String(uri);
+		var result = actions(s, JsonValue.JObject(p));
+		t.asserti(if(Strings.equal(name, "descriptors/Described.v3"), 1, 0), JsonValue.JArray.!(result).v.length);
+	}
+}
+
+// Pin protocol coordinates independently of PositionMap, and file URI identity.
+def test_canonical_utf16(t: Tester) {
+	var s = running(CAPS);
+	var text = "/*é𝄞*/ var x = 1\n";
+	s.documents.open("file:///semicolon%2Ev3", "virgil", 4, text);
+	var p = JsonValue.JObject.!(params(null)).v;
+	JsonValue.JObject.!(p["textDocument"]).v["uri"] = JsonValue.String("file:///a/../semicolon.v3");
+	var result = JsonValue.JArray.!(actions(s, JsonValue.JObject(p))).v;
+	t.asserti(1, result.length);
+	if (result.length == 0) return;
+	var edit = JsonValue.JObject.!(JsonValue.JObject.!(result[0]).v["edit"]).v;
+	var change = JsonValue.JObject.!(JsonValue.JArray.!(edit["documentChanges"]).v[0]).v;
+	t.assert_string("{\"uri\":\"file:///semicolon.v3\",\"version\":4}", render(change["textDocument"]));
+	t.assert_string(render(json("[{\"range\":{\"start\":{\"line\":0,\"character\":17},\"end\":{\"line\":0,\"character\":17}},\"newText\":\";\"}]")), render(change["edits"]));
+}

@@ -20,7 +20,7 @@ REQUESTS = (
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
     "textDocument/signatureHelp", "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes",
     "typeHierarchy/subtypes", "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls",
-    "callHierarchy/outgoingCalls", "workspace/symbol",
+    "callHierarchy/outgoingCalls", "workspace/symbol", "textDocument/codeAction",
 )
 NOTIFICATIONS = (
     "initialized", "exit", "textDocument/didOpen", "textDocument/didChange",
@@ -257,11 +257,17 @@ def session_validity(method, params):
             return False, "version must increase beyond the open version 1"
     if method in ("textDocument/completion", "textDocument/signatureHelp") and "context" in params:
         return False, "trigger context support was not negotiated"
-    if method == "textDocument/inlayHint":
+    if method in ("textDocument/inlayHint", "textDocument/codeAction"):
         span = params.get("range", {})
         start, end = span.get("start", {}), span.get("end", {})
         if all(k in start and k in end for k in ("line", "character")) and (start["line"], start["character"]) > (end["line"], end["character"]):
             return False, "range end precedes start"
+    if method == "textDocument/codeAction":
+        for diagnostic in params.get("context", {}).get("diagnostics", []):
+            span = diagnostic.get("range", {})
+            start, end = span.get("start", {}), span.get("end", {})
+            if all(k in start and k in end for k in ("line", "character")) and (start["line"], start["character"]) > (end["line"], end["character"]):
+                return False, "diagnostic range end precedes start"
     if method == "virgil-lsp/analyze":
         return False, "analysis requires nonempty local-file URIs; generated URIs are untitled"
     if method == "textDocument/rename":

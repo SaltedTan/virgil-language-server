@@ -24,7 +24,7 @@ flowchart TD
 | `src/os/<target>/` | System calls the Virgil `System` component lacks (pipes, process creation, polling), one file per target | Present for `x86-64-linux` and `x86-64-darwin` |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes, and syntax folding ranges. | Adapter and server-owned snapshots present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document synchronization, feature handlers, watched-file and workspace-folder events, parser and semantic diagnostic publication, analysis scheduling | See [JSON-RPC messages](#json-rpc-messages) for handlers and their implementation status |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document synchronization, feature handlers including semicolon code actions (`LspCodeActions.v3`), watched-file and workspace-folder events, parser and semantic diagnostic publication, analysis scheduling | See [JSON-RPC messages](#json-rpc-messages) for handlers and their implementation status |
 | `src/documents/` | URI normalization, versioned in-memory overlays with injected disk fallback, `PositionMap` | Present |
 | `src/workspace/` | Project-file parsing, bounded glob expansion, workspace discovery, active contexts, diagnostic ownership, and configuration revisions | Present |
 
@@ -244,6 +244,175 @@ See [Stdio transport](#stdio-transport) for the notification sink and write-fail
 - Non-`file:` URIs remain exact opaque keys: scheme case, escapes, queries, fragments, and dot segments are untouched. Empty/null URIs are rejected. Native Windows drive and UNC paths are not supported (WSL uses Linux file URIs). A drive-shaped URI such as `file:///c%3A/x.v3` maps to the POSIX path `/c:/x.v3`, without conversion to a native drive path.
 
 For example, `file:///tmp/%61%20b.v3` and `file:/tmp/a b.v3` share the key `file:///tmp/a%20b.v3` and disk path `/tmp/a b.v3`. `untitled:a%20b` and `untitled:a b` remain distinct.
+
+## Code actions
+
+`LspCodeActions` handles `textDocument/codeAction` synchronously from an open
+document's current overlay. The only action is **Insert missing ";"**, with
+`kind: "quickfix"`. It needs no worker, semantic analysis, or waiting. Closed
+and unknown documents return `[]`; malformed params get `InvalidParams`, and
+the ordinary [lifecycle](#lifecycle) gates apply.
+
+The handler first checks the client's capabilities and `context.only`. A kind
+of `quickfix` or its ancestor (the empty kind) accepts the fix; `refactor`, a
+child such as `quickfix.other`, and an empty `only` array do not. If
+`context.diagnostics` is present, even as an empty array, the request costs no
+parse unless a diagnostic has `source: "aeneas"` and exactly one of these
+messages:
+
+- `";" expected`, for statements, returns, and other required-semicolon sites;
+- `',' or ';' expected`, for local declarations;
+- `',' or ';' expected after field declaration`, for fields.
+
+Otherwise it parses the current text with `AeneasAdapter.parseStatement`, the same
+driver and active project's [language options](configuration.md#compiler-flags)
+as [parser diagnostics](#parser-diagnostics). Only the first error is eligible,
+with one of those exact messages and a range intersecting the requested range.
+When client diagnostics are supplied, one must match that error's current
+UTF-16 range, message, and source. That diagnostic is attached unchanged,
+including any client data; with no `context.diagnostics` member, the action
+attaches the recomputed syntax diagnostic. Stale or semantic diagnostics
+cannot select an action without that current syntax match.
+
+The insertion is at `FileParseResult.repairAt`, the preceding token's end,
+before any following whitespace or comment. The adapter can roll back one
+token for an error reported at an already consumed token
+([current-text repair](#current-text-repair)); the three eligible parser paths
+report at the current cursor, so that existing anchor needs no adjustment.
+The [cursor scanner](#completion) rejects an anchor inside a comment, string,
+or character literal.
+
+The statement that the `;` would end must start on the anchor's line. A parse
+alone can't show which statement the `;` ends: in `if (true) return` followed
+by `if (false) {}` on the next line, the parser reads `return if (false)` as a
+conditional expression, so a `;` after `if (false)` parses but ends the wrong
+statement, and the intended `;` after `return` is on the line before. The
+first parse, through `AeneasAdapter.parseStatement`, records the tokens that
+the parser consumed (`SymbolSyntaxIndex`), with no extra parse, and
+`AnalysisStatementStart` walks them backward from the anchor to a statement
+boundary:
+
+- A `)`, `]`, or `}` is skipped together with everything back to its matching
+  opener. A `{` that follows a `;`, `{`, or `}`, `else`, a match arm's `=>`,
+  or the parenthesized header of `if`, `while`, `for`, or `match` opens a
+  block statement. Otherwise the nearest keyword before the `{` decides:
+  `fun` makes the group a lambda body, and `def`, `new`, `class`,
+  `component`, `enum`, `type`, `case`, or `layout` makes it a method or
+  constructor body or a member list. The `}` of a block statement or a
+  declaration is the boundary. A lambda body is part of the current
+  expression, and the walk continues before it. Any other `{` gets no action.
+- A `;` is the boundary unless it is a lambda's empty body, as in
+  `fun(x: int);`: a `fun` reached from the `;` before any `;`, `{`, `}`, `=>`,
+  or unmatched opener owns it.
+- An unmatched `{` is the boundary: it opens the enclosing block, body, or
+  member list. An unmatched `(` or `[` means that the anchor is inside a group,
+  and there is no action, except for the parenthesis that opens a `for` header.
+
+The statement starts at the first token after the boundary, or at the file's
+first token. That token must be on the anchor's line, and it must be able to
+begin a statement, a declaration, or a match arm: a name or keyword, `_`, a
+literal, `(`, `[`, or a prefix `!`, `~`, `++`, or `--`. Strings, character
+literals, and comments are never boundary or bracket tokens.
+
+This is sound for a statement that the parser read past its intended `;`.
+Everything the parser read after that point continues the statement's
+expression or declaration, with suffixes, operators, and nested groups. At the
+walk's level, such a continuation holds no `;`, `{`, or `}` except a lambda's,
+which the walk skips, because a block statement or a declaration can't appear
+in an expression. The boundary is therefore before the intended `;`, the start
+is on that `;`'s line or earlier, and an anchor on a later line gets no action.
+Only a swallow within one line escapes the line rule. It needs a token that
+can both begin a statement and continue the expression before it, and since
+other statement keywords can't be names, there are two: an `if`, which the
+parser reads as an `if` expression, as in `if (c) return if (d) {}`, and a
+prefix `++` or `--`, which it reads as a postfix one, as in `x = y ++z`. In
+both, a `;` before that token parses too, so an ambiguity test refuses the
+fix. The walk picks one candidate: the `++` or `--` just before the anchor,
+if code follows it on the anchor's line, or else the last `if` that the walk
+met outside the groups it skipped, after the statement's first token. An `if`
+inside a call's arguments or a lambda body doesn't count. The last `if` is the
+swallowed one, because the swallowing statement ends in `return`, the only
+statement end that takes a value: before the swallowed `if` come only control
+headers, as in `if (c) if (d) return`, and after it only suffixes and
+operators. The text with a `;` before the candidate gets the same proof as the
+fix, and if it passes too, there is no action. An `if` expression's
+alternative fails, because an `if` statement's condition can't hold the
+expression's commas, and so does the alternative for an `if` in statement
+position, such as `while (c) if (d) x = 1`, whose `;` is still missing. A `++`
+or `--` that ends its line is taken as postfix.
+
+A forgotten `;` at the end of a one-line statement, such as a call, assignment,
+`return`, local, field, one-line `match` arm, `if (c) x = 1`, or a statement
+after a block, method, or lambda argument that ends on an earlier line, still
+gets the fix, as does a `for` header's first or second `;`. A statement that
+spans lines gets none, even where the fix would be right, such as a call whose
+arguments continue on the next line, an `if (c)` or `match` arm whose body
+starts on the next line, an assignment of a lambda whose body spans lines, or
+an expression continued by a leading `-` on the next line; a parse can't tell
+those from a line that the statement swallowed. Layout fields, which start with
+`+`, and a layout's `=size` get none, because neither token can start a
+statement.
+
+The rule was measured against an oracle on real code. Each of the 39,750 `;`
+tokens outside parentheses and brackets in the pinned Aeneas sources and
+`lib/util` (198 files) was removed in turn, and a server over stdio was asked
+for actions on the whole file. In 38,068 cases the action inserted exactly the
+removed `;`, and in none did it insert one anywhere else. 622 removals with a
+semicolon error got no action. Most were statements that span lines, some were
+a bare `return` whose next line the parser read as its value, and 23 were
+layout lines. The other 1,060 removals gave a different first error, such as a
+`return;` before `}`, where `}` can't start the return's value. The counts
+include the ambiguity test, and none of 124 hand-written same-line and
+multi-line swallows and fixes gets a wrong action.
+
+There is one proposed fix and no search. The edited text
+is parsed once, with the same options. The action is offered only if the file
+parses or its first error starts strictly after the original error's byte
+offset plus the inserted byte. A later unrelated error may remain. Where the
+walk found a candidate for the ambiguity test, that text is parsed once more
+under the same rule.
+
+The `WorkspaceEdit` contains one `documentChanges` entry, a `TextDocumentEdit`
+for the canonical URI and current document version, with one zero-width `;`
+insertion. `isPreferred: true` appears only when whitespace or comments occupy
+the rest of that line; code after a block comment on the same line prevents
+it. There is no command, fix-all action, or action on save.
+
+Initialize advertises `codeActionProvider: {codeActionKinds: ["quickfix"]}`
+only when the client declares
+`textDocument.codeAction.codeActionLiteralSupport`. Without literal support
+the provider is absent, and a valid request still returns `[]`. A client
+without `workspace.workspaceEdit.documentChanges: true` also gets `[]`, so
+an edit always carries the version the client must check. A request parses
+at most three times, within the [1 MiB open-document bound](#document-store); no
+code-action answer is cached.
+
+[LspCodeActionsTest](../test/unit/LspCodeActionsTest.v3) checks exact actions,
+applying each edit and requiring progress past the original error: statements,
+locals, fields, returns, strings and character literals, comments, a closing
+brace, EOF, mid-line edits, one-line `match` arms and `if` bodies, a `for`
+header, later errors, tabs, UTF-16 and canonical URIs, project options, stale
+contexts, excluded kinds, capabilities, malformed params, and lifecycle gates.
+It also checks that statements whose start is on an earlier line get no
+action even though the reparse would accept the `;`: a `return` that swallows
+a following `if`, expression statement, or assignment, including through a
+lambda in the `if` condition and a lambda body that spans lines followed by
+`+ 1`, `(1)`, or `.x`, a lambda's empty body, a call whose arguments span two
+lines, and an `if (c)` or `match` arm whose body is on the next line. On one
+line, a `return` that swallows an `if`, including after earlier control
+headers and with a generic call or a nested `if` expression, and a prefix `++`
+or `--` read as a postfix one get none either, while an `if` expression, an
+`if` inside a call or a lambda body or after a match arm's `=>`, and a `++`
+that ends its line keep their fix. After an `if`, `while`, `for`,
+`match`, `else`, match arm, bare, local method, and lambda-argument block,
+and after a method body, the next statement still gets its fix. CRLF inside comments is covered; a bare CR is
+already a parser error and gets no semicolon fix. The [stdio test](../test/protocol/code_actions.py)
+checks advertisement, versioned edits, stale diagnostics, changes, the
+swallowed `if` after `return`, a lambda body that spans lines after `return`,
+and invalid params. The VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test)
+and [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) request
+the exact action on `semicolon.v3`, apply its edit, and check that the diagnostic
+clears; [editor coverage](../test/e2e/coverage.json) records both checks.
 
 ## Document symbols
 
@@ -1223,6 +1392,7 @@ The JSON-RPC 2.0 message model in `src/protocol/` works on the JSON payload of o
 | `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 | `LspWorkspaceEvents.v3` | Handles `workspace/didChangeWatchedFiles` and `workspace/didChangeWorkspaceFolders`, and registers the file watchers ([changes on disk](configuration.md#changes-on-disk)). |
 | `LspFoldingRanges.v3` | Reads the current open overlay, requests syntax folds from the analysis adapter, converts byte offsets to UTF-16, and honors the client's folding capabilities and reply bounds. |
+| `LspCodeActions.v3` | The [code actions](#code-actions) handler: current syntax matching, one semicolon insertion, and its reparse proof. |
 | `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, converts byte ranges with `PositionMap`, maps declaration kinds to symbol kinds (`LspSymbolKind`) and to the kinds each client supports (`LspClientKinds`), and adds [details](#document-symbols) from a snapshot of that overlay. |
 | `LspSnapshotRequests.v3` | Owns the shared [snapshot selection, freshness, and waiting rules](#definition), and [cancellation](#cancellation), for requests at a position, at a range's start, or at a [type](#type-hierarchy) or [call hierarchy](#call-hierarchy) item's data. It also carries the failure reply that [prepare rename](#prepare-rename) needs instead of `null`, and gives a [rename](#rename)'s answer to the handler that runs its preflight. |
 | `LspDefinition.v3` | The [definition](#definition) and [type-definition](#type-definition) location answers. |
@@ -1338,7 +1508,7 @@ Parser and semantic diagnostic publications, automatic-analysis warnings, deferr
 | Shutting down | Every request gets `InvalidRequest`, including `shutdown` and `initialize`. | `exit` is handled. Others are dropped. | — |
 | Exited | Nothing is read. | Nothing is read. | — |
 
-Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply. Client capability handling is described under [Server requests](#server-requests), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Hover](#hover), [Signature help](#signature-help), and [Rename](#rename). Workspace roots and `initializationOptions.virgilRoot` follow [Configuration](configuration.md). The result advertises the capabilities described under [Document store](#document-store), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Definition](#definition), [Type definition](#type-definition), [Hover](#hover), [References](#references), [Document highlights](#document-highlights), [Implementation](#implementation), [Type hierarchy](#type-hierarchy), [Call hierarchy](#call-hierarchy), [Rename](#rename), [Signature help](#signature-help), [Completion](#completion), and [Workspace symbols](#workspace-symbols), which [LspServer](../src/protocol/LspServer.v3) registers, and `workspace.workspaceFolders` with `changeNotifications: true` ([Configuration](configuration.md#workspace-folders-and-active-projects)), and contains `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
+Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply. Client capability handling is described under [Server requests](#server-requests), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Hover](#hover), [Signature help](#signature-help), [Code actions](#code-actions), and [Rename](#rename). Workspace roots and `initializationOptions.virgilRoot` follow [Configuration](configuration.md). The result advertises the capabilities described under [Document store](#document-store), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Definition](#definition), [Type definition](#type-definition), [Hover](#hover), [References](#references), [Document highlights](#document-highlights), [Implementation](#implementation), [Type hierarchy](#type-hierarchy), [Call hierarchy](#call-hierarchy), [Rename](#rename), [Signature help](#signature-help), [Completion](#completion), [Code actions](#code-actions), and [Workspace symbols](#workspace-symbols), which [LspServer](../src/protocol/LspServer.v3) registers, and `workspace.workspaceFolders` with `changeNotifications: true` ([Configuration](configuration.md#workspace-folders-and-active-projects)), and contains `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
 
 `exit` ends the session in any state. So does the end of the input, which is how a client process that disappears looks to the server. Either way, outstanding server requests are failed, and the process exits:
 
