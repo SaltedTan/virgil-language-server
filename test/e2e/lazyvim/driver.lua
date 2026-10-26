@@ -728,6 +728,20 @@ local function main_checks()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
+  step("folding ranges (LazyVim defaults)", function()
+    vim.cmd.edit(vim.fs.joinpath(root, "folding.v3"))
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for("folding fixture attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    info("Virgil folds: foldmethod=%s; foldexpr=%s; foldingRangeProvider=%s",
+      vim.wo.foldmethod, vim.wo.foldexpr, vim.inspect(client.server_capabilities.foldingRangeProvider))
+    wait_for("LazyVim's LSP fold expression", function()
+      return vim.wo.foldmethod == "expr" and vim.wo.foldexpr == "v:lua.vim.lsp.foldexpr()"
+    end)
+    wait_for("fold level 3 inside the method's if block", function() return vim.fn.foldlevel(7) == 3 end)
+    return "foldmethod=expr; foldexpr=v:lua.vim.lsp.foldexpr(); foldlevel(7)=3"
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Rename through LazyVim's <leader>cr, which it maps for a server with
   -- rename. Neovim asks prepareRename first; while the project has a type
   -- error the server refuses, and Neovim shows its reason with vim.notify,

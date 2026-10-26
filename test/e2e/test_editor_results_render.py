@@ -561,7 +561,7 @@ class SelectionTest(RenderTest):
         self.assertEqual("Pass (API + UI state)", matrix_row(text, "Neovim, Linux")["type-hierarchy"])
         self.assertEqual("Pass (API + UI state)", matrix_row(text, "Neovim, Linux")["call-hierarchy"])
         self.assertIn(f"| LazyVim, Linux | Pass (API + UI state) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (API + UI state) | "
-                      f"Not covered | Not covered | Not covered | Pass (UI state) | Pass (API) | Pass (API + UI state) | "
+                      f"Pass (UI state) | Not covered | Not covered | Pass (UI state) | Pass (API) | Pass (API + UI state) | "
                       f"{KNOWN_LIMITATION} |", text)
 
     def test_hash_mismatch(self):
@@ -959,11 +959,11 @@ class CheckTest(RenderTest):
                          self.render(selection, "--check"))
         # A one-byte change inside a block is drift; outside them, it isn't.
         rendered = self.doc.read_text()
-        self.doc.write_text(rendered.replace("| LazyVim, Linux | Pass (API) |", "| LazyVim, Linux | Pass (APi) |"))
+        self.doc.write_text(rendered.replace("| LazyVim, Linux | Pass (API + UI state) |", "| LazyVim, Linux | Pass (APi + UI state) |"))
         status, out, _ = self.render(selection, "--check")
         self.assertEqual(1, status)
-        self.assertIn("\n-| LazyVim, Linux | Pass (APi) |", out)
-        self.assertIn("\n+| LazyVim, Linux | Pass (API) |", out)
+        self.assertIn("\n-| LazyVim, Linux | Pass (APi + UI state) |", out)
+        self.assertIn("\n+| LazyVim, Linux | Pass (API + UI state) |", out)
         self.doc.write_text(rendered.replace("More prose", "Mere prose"))
         self.assertEqual(0, self.render(selection, "--check")[0])
         self.assertEqual(0, self.render(selection, "--write")[0])

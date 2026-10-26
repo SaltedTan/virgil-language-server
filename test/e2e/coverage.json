@@ -1937,6 +1937,20 @@
       "description": "On the published parser error in semicolon.v3, LazyVim's <leader>ca lists exactly Insert missing \";\" in the snacks vim.ui.select picker. Enter inserts the semicolon before the trailing comment and clears diagnostics; undo restores the original text and parser error."
     },
     {
+      "id": "lazyvim.folding-ranges.defaults",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "With foldingRangeProvider supported, the pinned LazyVim defaults set foldmethod=expr and foldexpr=v:lua.vim.lsp.foldexpr() on folding.v3, without overriding editor settings; foldlevel(7) is exactly 3 inside the method and its if block."
+    },
+    {
       "id": "vscode.folding-ranges.response",
       "suites": [
         "vscode",
@@ -2855,11 +2869,9 @@
       {
         "setup": "lazyvim-linux",
         "feature": "folding-ranges",
-        "level": null,
-        "checks": [],
-        "notCovered": [
-          "lazyvim.folding-ranges"
-        ]
+        "level": "ui-state",
+        "checks": ["lazyvim.folding-ranges.defaults"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-linux",
@@ -2992,11 +3004,9 @@
       {
         "setup": "lazyvim-macos",
         "feature": "folding-ranges",
-        "level": null,
-        "checks": [],
-        "notCovered": [
-          "lazyvim.folding-ranges"
-        ]
+        "level": "ui-state",
+        "checks": ["lazyvim.folding-ranges.defaults"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-macos",
@@ -3439,12 +3449,6 @@
       "id": "nvim.folded-text",
       "kind": "visual",
       "what": "the text displayed after folding a block in Neovim",
-      "planned": null
-    },
-    {
-      "id": "lazyvim.folding-ranges",
-      "kind": "behavior",
-      "what": "folding ranges in LazyVim",
       "planned": null
     },
     {
