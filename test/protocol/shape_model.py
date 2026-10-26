@@ -19,7 +19,8 @@ REQUESTS = (
     "textDocument/hover", "textDocument/implementation", "textDocument/inlayHint",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
     "textDocument/signatureHelp", "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes",
-    "typeHierarchy/subtypes", "workspace/symbol",
+    "typeHierarchy/subtypes", "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls",
+    "callHierarchy/outgoingCalls", "workspace/symbol",
 )
 NOTIFICATIONS = (
     "initialized", "exit", "textDocument/didOpen", "textDocument/didChange",
@@ -267,6 +268,8 @@ def session_validity(method, params):
         return False, "versioned workspace edits were not negotiated"
     if method in ("typeHierarchy/supertypes", "typeHierarchy/subtypes"):
         return False, "an item's data must be the server's own, from prepareTypeHierarchy"
+    if method in ("callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"):
+        return False, "an item's data must be the server's own, from prepareCallHierarchy"
     doc = params.get("textDocument", {})
     if "uri" in doc and not doc["uri"]:
         return False, "empty document URI"

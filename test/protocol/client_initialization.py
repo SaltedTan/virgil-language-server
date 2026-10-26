@@ -49,6 +49,7 @@ FIRST_ID = 1000
 TIMEOUT = 20
 
 CAPABILITIES = {
+    "callHierarchyProvider": True,
     "completionProvider": {"triggerCharacters": ["."]},
     "definitionProvider": True,
     "typeDefinitionProvider": True,

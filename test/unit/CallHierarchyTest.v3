@@ -1,0 +1,605 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Call hierarchy items and calls from the snapshot's call records, one level
+// at a time. Every program runs through the compiler, the collector, and the
+// worker wire, and its snapshot records the overlays it analyzed, so that
+// items in other files pass the analyzed-text checks that a request makes.
+// Incoming and outgoing calls resolve an item's data as a request does: its
+// position, converted through the current text, and then its name and kind.
+// The sources put non-ASCII text before their declarations, so byte offsets
+// differ from UTF-16 positions.
+def T = UnitTests.register;
+def X = [
+	T("CallHierarchy:prepare", prepare),
+	T("CallHierarchy:direct_calls", direct_calls),
+	T("CallHierarchy:outgoing_calls", outgoing_calls),
+	T("CallHierarchy:constructions", constructions),
+	T("CallHierarchy:recursion", recursion),
+	T("CallHierarchy:field_initializers", field_initializers),
+	T("CallHierarchy:virtual_calls", virtual_calls),
+	T("CallHierarchy:library_callees", library_callees),
+	T("CallHierarchy:semantic_errors", semantic_errors),
+	T("CallHierarchy:client_kinds", client_kinds),
+	T("CallHierarchy:unrelated_edit", unrelated_edit),
+	T("CallHierarchy:moved_or_replaced", moved_or_replaced),
+	T("CallHierarchy:excluded_bodies", excluded_bodies),
+	T("CallHierarchy:malformed_data", malformed_data),
+	T("CallHierarchy:reply_bounds", reply_bounds),
+	()
+];
+def NOTE = "/* é𝄞\t */ ";
+def indexFrom(text: Array<byte>, needle: string, from: int) -> int {
+	for (i = from; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def indexOf(text: Array<byte>, needle: string) -> int {
+	return indexFrom(text, needle, 0);
+}
+// An expected item: its source, its name, the text that its declaration's
+// range begins with, the offset of its name in that text, the text that the
+// range ends with, the SymbolKind sent, its detail, and its data's kind.
+class CallItemWant(file: int, name: string, begin: string, skip: int, end: string, kind: int, detail: string, dataKind: string) { }
+def METHOD = 6;
+def FIELD = 8;
+def CONSTRUCTOR = 9;
+def method(file: int, name: string, begin: string, skip: int, end: string, detail: string) -> CallItemWant {
+	return CallItemWant.new(file, name, begin, skip, end, METHOD, detail, "method");
+}
+def field(file: int, name: string, begin: string, skip: int, end: string, detail: string) -> CallItemWant {
+	return CallItemWant.new(file, name, begin, skip, end, FIELD, detail, "field");
+}
+// An expected call: the item at its other end, and where each of its callee
+// names begins, as text and the offset of the name in it.
+class CallWant(item: CallItemWant, ranges: Array<(string, int)>) { }
+def call(item: CallItemWant, ranges: Array<(string, int)>) -> CallWant {
+	return CallWant.new(item, ranges);
+}
+
+// A program of overlays, analyzed as a project analysis would analyze them.
+class CallProgram {
+	def t: Tester;
+	def names: Array<string>;
+	def texts: Array<Array<byte>>;
+	def options: Array<string>;
+	def verified: bool;
+	def store = DocumentStore.new(null, 64 * 1024 * 1024);
+	def hierarchy = LspCallHierarchy.new();
+	var snapshot: AnalysisSnapshot;
+	var analysis: ProgramAnalysis;
+	private var version = 1;
+	new(t, names, texts, options, verified) {
+		// Clients declare every SymbolKind, as VS Code and Neovim do.
+		var kinds = Strings.newMap<JsonValue>(), all = Array<JsonValue>.new(26);
+		for (i < all.length) all[i] = JsonValue.Int(i + 1);
+		kinds["valueSet"] = JsonValue.JArray(all);
+		hierarchy.clientKinds = LspSymbolKind.symbols(kinds);
+		for (i < names.length) store.open(uri(i), "virgil", version, texts[i]);
+		analyze();
+	}
+	def path(i: int) -> string { return Arrays.concat("/call-hierarchy/", names[i]); }
+	def uri(i: int) -> string { return ProjectFiles.uri(path(i)); }
+	def change(i: int, text: string) {
+		texts[i] = text;
+		t.assert_eq(null, store.change(uri(i), ++version, text));
+		analyze();
+	}
+	private def analyze() {
+		var sources = Array<AnalysisSource>.new(names.length), paths = Array<string>.new(names.length);
+		for (i < sources.length) sources[i] = AnalysisSource.new(paths[i] = path(i), texts[i]);
+		var a = analysis = AeneasAdapter.analyzeProgram(sources, options, false);
+		if (verified) {
+			for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
+		}
+		var files = Array<(string, Array<AnalysisOccurrence>)>.new(paths.length);
+		for (i < paths.length) files[i] = (paths[i], a.occurrences(paths[i]));
+		var encoded = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, files), 0L);
+		match (AnalysisWire.decodeResult(Ranges.dup(encoded[WorkerFraming.HEADER_BYTES ...]), 1, paths)) {
+			Decoded(result) => snapshot = result.snapshot;
+			_ => return t.fail("call hierarchy result failed to decode");
+		}
+		var versions = Array<AnalysisDocumentVersion>.new(names.length);
+		for (i < versions.length) {
+			var doc = store.overlay(uri(i));
+			versions[i] = AnalysisDocumentVersion.new(doc.uri, doc.version, doc.identity);
+		}
+		snapshot.recordDocumentVersions(versions);
+	}
+	def at(i: int) -> LspSnapshotPosition {
+		return LspSnapshotPosition.new(store, snapshot, i, texts[i], PositionMap.new(texts[i], PositionEncoding.UTF16), options);
+	}
+	// The reply to prepareCallHierarchy at {needle} plus {skip} in source {i},
+	// with the byte before looked up as a request's position is.
+	def prepare(i: int, needle: string, skip: int) -> JsonRpcReply {
+		var offset = indexOf(texts[i], needle);
+		if (offset < 0) {
+			t.fail1("missing text: %s", needle);
+			return JsonRpcReply.Result(JsonValue.Null);
+		}
+		offset += skip;
+		var found = hierarchy.answer(at(i), offset);
+		if (!found.0 && offset > 0) found = hierarchy.answer(at(i), offset - 1);
+		return found.1;
+	}
+	// The one item that prepare gives at {needle} plus {skip} in source {i}.
+	def item(i: int, needle: string, skip: int) -> JsonValue {
+		var reply = prepare(i, needle, skip);
+		if (JsonRpcReply.Result.?(reply)) {
+			var v = JsonRpcReply.Result.!(reply).v;
+			if (JsonValue.JArray.?(v) && JsonValue.JArray.!(v).v.length == 1) return JsonValue.JArray.!(v).v[0];
+		}
+		t.fail1("no item at %s", needle);
+		return JsonValue.Null;
+	}
+	// The item at the other end of the first call of {reply}.
+	def first(reply: JsonRpcReply, incoming: bool) -> JsonValue {
+		if (JsonRpcReply.Result.?(reply)) {
+			var v = JsonRpcReply.Result.!(reply).v;
+			if (JsonValue.JArray.?(v) && JsonValue.JArray.!(v).v.length > 0) {
+				return JsonValue.JObject.!(JsonValue.JArray.!(v).v[0]).v[if(incoming, "from", "to")];
+			}
+		}
+		t.fail("no first call");
+		return JsonValue.Null;
+	}
+	// The reply to incomingCalls or, unless {incoming}, outgoingCalls of
+	// {item}, as a request resolves it, with lowered bounds if given;
+	// InvalidParams if its data is malformed.
+	def expand(item: JsonValue, incoming: bool) -> JsonRpcReply {
+		return expandWithin(item, incoming, LspReferences.MAX_LOCATIONS, LspReferences.MAX_REPLY_BYTES);
+	}
+	def expandWithin(item: JsonValue, incoming: bool, limit: int, maxBytes: int) -> JsonRpcReply {
+		var params = Strings.newMap<JsonValue>();
+		params["item"] = item;
+		if (hierarchy.prepareItem(params, incoming) == null) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "malformed"));
+		}
+		var data = JsonValue.JObject.!(JsonValue.JObject.!(item).v["data"]).v;
+		var kind = JsonValue.String.!(data["kind"]).v;
+		var key = LspCallHierarchyKey.new(if(Strings.equal(kind, "constructor"), AnalysisDeclKind.CONSTRUCTOR,
+			if(Strings.equal(kind, "field"), AnalysisDeclKind.FIELD, AnalysisDeclKind.METHOD)), JsonValue.String.!(data["name"]).v);
+		var i = snapshot.documentIndex(JsonValue.String.!(data["uri"]).v);
+		var position = JsonValue.JObject.!(data["position"]).v;
+		var current = PositionMap.new(texts[i], PositionEncoding.UTF16).positionToOffset(
+			JsonValue.Int.!(position["line"]).v, JsonValue.Int.!(position["character"]).v);
+		return hierarchy.calls(at(i), snapshot.effectiveOffset(i, current), key, incoming, limit, maxBytes).1;
+	}
+	// Checks that {reply} holds exactly the calls {want}, in order: for
+	// incoming calls of the item {name}, whose ranges are in each caller's
+	// file, and otherwise outgoing calls from source {file}, whose ranges
+	// name each callee.
+	def checkCalls(label: string, reply: JsonRpcReply, incoming: bool, file: int, name: string, want: Array<CallWant>) {
+		var calls: Array<JsonValue>;
+		match (reply) {
+			Result(v) => if (JsonValue.JArray.?(v)) calls = JsonValue.JArray.!(v).v;
+			Error(e) => return t.fail2("%s failed: %s", label, e.message);
+		}
+		if (calls == null) return t.fail1("%s gave no list", label);
+		if (calls.length != want.length) return t.fail3("%s gave %d calls, not %d", label, calls.length, want.length);
+		for (k < want.length) {
+			var w = want[k], obj = JsonValue.JObject.!(calls[k]).v, what = Strings.format2("%s call %d", label, k);
+			t.assert(obj.has(if(incoming, "from", "to")) && !obj.has(if(incoming, "to", "from")), Strings.format1("%s has the wrong ends", what));
+			checkItem(what, obj[if(incoming, "from", "to")], w.item);
+			var source = if(incoming, w.item.file, file), length = if(incoming, name, w.item.name).length;
+			var text = texts[source], m = PositionMap.new(text, PositionEncoding.UTF16);
+			var ranges = JsonValue.JArray.!(obj["fromRanges"]).v;
+			if (ranges.length != w.ranges.length) {
+				t.fail3("%s has %d ranges, not %d", what, ranges.length, w.ranges.length);
+				continue;
+			}
+			for (r < ranges.length) {
+				var begin = indexOf(text, w.ranges[r].0);
+				if (begin < 0) return t.fail1("missing text: %s", w.ranges[r].0);
+				begin += w.ranges[r].1;
+				expectRange(what, "fromRange", m, begin, begin + length, ranges[r]);
+			}
+		}
+	}
+	// Checks that {reply} holds exactly the items {want}, in order.
+	def checkItems(label: string, reply: JsonRpcReply, want: Array<CallItemWant>) {
+		var items: Array<JsonValue>;
+		match (reply) {
+			Result(v) => if (JsonValue.JArray.?(v)) items = JsonValue.JArray.!(v).v;
+			Error(e) => return t.fail2("%s failed: %s", label, e.message);
+		}
+		if (items == null) return t.fail1("%s gave no list", label);
+		if (items.length != want.length) return t.fail3("%s gave %d items, not %d", label, items.length, want.length);
+		for (k < want.length) checkItem(Strings.format2("%s item %d", label, k), items[k], want[k]);
+	}
+	def checkItem(what: string, item: JsonValue, w: CallItemWant) {
+		var obj = JsonValue.JObject.!(item).v, text = texts[w.file];
+		var begin = indexOf(text, w.begin);
+		if (begin < 0) return t.fail1("missing text: %s", w.begin);
+		var end = indexFrom(text, w.end, begin);
+		if (end < 0) return t.fail1("missing text: %s", w.end);
+		end += w.end.length;
+		var nameBegin = begin + w.skip, nameEnd = nameBegin + w.name.length;
+		var m = PositionMap.new(text, PositionEncoding.UTF16);
+		expectString(what, "name", w.name, obj["name"]);
+		expectInt(what, "kind", w.kind, obj["kind"]);
+		if (w.detail == null) t.assert(!obj.has("detail"), Strings.format1("%s has a detail", what));
+		else expectString(what, "detail", w.detail, obj["detail"]);
+		expectString(what, "uri", uri(w.file), obj["uri"]);
+		expectRange(what, "range", m, begin, end, obj["range"]);
+		expectRange(what, "selectionRange", m, nameBegin, nameEnd, obj["selectionRange"]);
+		var data = JsonValue.JObject.!(obj["data"]).v;
+		expectString(what, "data.uri", uri(w.file), data["uri"]);
+		expectString(what, "data.name", w.name, data["name"]);
+		expectString(what, "data.kind", w.dataKind, data["kind"]);
+		var p = JsonValue.JObject.!(data["position"]).v;
+		t.asserti(nameBegin, m.positionToOffset(JsonValue.Int.!(p["line"]).v, JsonValue.Int.!(p["character"]).v));
+	}
+	def checkNull(label: string, reply: JsonRpcReply) {
+		if (!JsonRpcReply.Result.?(reply) || !JsonValue.Null.?(JsonRpcReply.Result.!(reply).v)) t.fail1("%s is not null", label);
+	}
+	def checkInvalid(label: string, reply: JsonRpcReply) {
+		if (!JsonRpcReply.Error.?(reply) || JsonRpcReply.Error.!(reply).error.code != JsonRpcErrorCode.INVALID_PARAMS) {
+			t.fail1("%s is not invalid", label);
+		}
+	}
+	private def expectString(what: string, field: string, expected: string, got: JsonValue) {
+		if (!JsonValue.String.?(got)) return t.fail3("%s: %s is not %s", what, field, expected);
+		var v = JsonValue.String.!(got).v;
+		if (!Strings.equal(expected, v)) t.fail3("%s: %s is %s", what, field, Strings.format2("%s, not %s", v, expected));
+	}
+	private def expectInt(what: string, field: string, expected: int, got: JsonValue) {
+		if (!JsonValue.Int.?(got) || JsonValue.Int.!(got).v != expected) t.fail3("%s: %s is not %d", what, field, expected);
+	}
+	private def expectRange(what: string, field: string, m: PositionMap, begin: int, end: int, got: JsonValue) {
+		var r = JsonValue.JObject.!(got).v, s = JsonValue.JObject.!(r["start"]).v, e = JsonValue.JObject.!(r["end"]).v;
+		var b = m.positionToOffset(JsonValue.Int.!(s["line"]).v, JsonValue.Int.!(s["character"]).v);
+		var f = m.positionToOffset(JsonValue.Int.!(e["line"]).v, JsonValue.Int.!(e["character"]).v);
+		if (b != begin || f != end) {
+			t.fail(Strings.format3("%s: %s is %s", what, field, Strings.format3("%d-%d, not %s", b, f, Strings.format2("%d-%d", begin, end))));
+		}
+	}
+}
+def program(t: Tester, texts: Array<string>, options: Array<string>, verified: bool) -> CallProgram {
+	var names = Array<string>.new(texts.length), bytes = Array<Array<byte>>.new(texts.length);
+	for (i < texts.length) {
+		names[i] = Arrays.concat([byte.!('a' + i)], ".v3");
+		bytes[i] = texts[i];
+	}
+	return CallProgram.new(t, names, bytes, options, verified);
+}
+def expectError(t: Tester, a: ProgramAnalysis, kind: string) {
+	for (d in a.diagnostics) if (Strings.equal(d.kind, kind)) return;
+	t.fail1("no %s reported", kind);
+}
+
+// Classes with a virtual method and an explicit constructor, a class with a
+// default constructor, and a component with fields initialized by calls,
+// several calls from one caller, a function value, a partial application, a
+// lambda, recursion, mutual recursion, and a generic method; then a
+// file-scope function.
+def GEOMETRY = Arrays.concat(NOTE, "class Shape {\n\tdef area() -> int { return 0; }\n\tdef scaled(k: int) -> int { return k * area(); }\n}\nclass Square extends Shape {\n\tvar side: int;\n\tnew(s: int) { side = s; }\n\tdef area() -> int { return side * side; }\n}\nclass Plain { }\ncomponent Geometry {\n\tdef total = sum(1, 2);\n\tvar first = sum(3, 4), second = twice(5);\n\tdef sum(x: int, y: int) -> int { return x + y; }\n\tdef twice(x: int) -> int { return sum(x, 0) + sum(0, x); }\n\tdef apply(f: int -> int, x: int) -> int { return f(x); }\n\tdef run(s: Shape) -> int {\n\t\tvar sq = Square.new(2), plain = Plain.new();\n\t\tvar p = sum(_, 1);\n\t\tvar l = fun (x: int) => twice(x);\n\t\treturn s.area() + sq.area() + apply(twice, 3) + sum(twice(1), twice(2)) + p(4) + l(5);\n\t}\n\tdef fact(n: int) -> int { return if(n <= 1, 1, n * fact(n - 1)); }\n\tdef even(n: int) -> bool { return n == 0 || odd(n - 1); }\n\tdef odd(n: int) -> bool { return n != 0 && even(n - 1); }\n\tdef id<T>(v: T) -> T { return v; }\n\tdef generic() -> int { return id<int>(1) + id(2); }\n}\ndef topLevel() -> int { return Geometry.sum(6, 7); }\n");
+def SUM = method(0, "sum", "def sum", 4, "; }", "def sum(x: int, y: int) -> int");
+def TWICE = method(0, "twice", "def twice", 4, "; }", "def twice(x: int) -> int");
+def APPLY = method(0, "apply", "def apply", 4, "; }", "def apply(f: int -> int, x: int) -> int");
+def RUN = method(0, "run", "def run", 4, ";\n\t}", "def run(s: Shape) -> int");
+def TOTAL = field(0, "total", "def total", 4, ";", "def total: int");
+def FIRST = field(0, "first", "var first", 4, ";", "var first: int");
+def SECOND = field(0, "second", "var first", 23, ";", "var second: int");
+def TOP = method(0, "topLevel", "def topLevel", 4, "; }", "def topLevel() -> int");
+def SHAPE_AREA = method(0, "area", "def area", 4, "; }", "def area() -> int");
+def SQUARE_AREA = method(0, "area", "def area() -> int { return side", 4, "; }", "def area() -> int");
+def SQUARE_NEW = CallItemWant.new(0, "new", "new(s: int)", 0, "; }", CONSTRUCTOR, "new(s: int)", "constructor");
+
+// Prepare gives an item for a method, a component or file-scope function,
+// or a constructor, at its name or at a use; anything else gives null.
+def prepare(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	for (spot in [("def sum", 4), ("def sum", 7), ("sum(1, 2)", 0), ("Geometry.sum", 9)]) p.checkItems(spot.0, p.prepare(0, spot.0, spot.1), [SUM]);
+	// A function value is a use of the method, though not a call.
+	p.checkItems("apply(twice", p.prepare(0, "apply(twice", 6), [TWICE]);
+	p.checkItems("topLevel", p.prepare(0, "def topLevel", 4), [TOP]);
+	p.checkItems("Square.new", p.prepare(0, "Square.new", 7), [SQUARE_NEW]);
+	p.checkItems("new(s", p.prepare(0, "new(s", 0), [SQUARE_NEW]);
+	p.checkItems("generic id", p.prepare(0, "id<int>", 0), [method(0, "id", "def id", 4, "; }", "def id<T>(v: T) -> T")]);
+	// A default constructor selects its class; fields, parameters, and
+	// locals hold function values but are not functions.
+	for (spot in [("Plain.new", 7), ("class Plain", 6), ("component Geometry", 10), ("def total", 4), ("f(x)", 0),
+			("f: int", 0), ("p(4)", 0), ("l(5)", 0), ("var sq", 4), ("return 0", 2), ("{ }", 1)]) {
+		p.checkNull(spot.0, p.prepare(0, spot.0, spot.1));
+	}
+}
+// Incoming calls: each caller once, in order of offset, with the callee
+// names of its calls in source order. A partial application and a function
+// value are not calls; a call in a lambda is its enclosing method's.
+def direct_calls(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	p.checkCalls("incoming of sum", p.expand(p.item(0, "def sum", 4), true), true, 0, "sum", [
+		call(TOTAL, [("sum(1, 2)", 0)]),
+		call(FIRST, [("sum(3, 4)", 0)]),
+		call(TWICE, [("sum(x, 0)", 0), ("sum(0, x)", 0)]),
+		call(RUN, [("sum(twice(1)", 0)]),
+		call(TOP, [("Geometry.sum", 9)])]);
+	p.checkCalls("incoming of twice", p.expand(p.item(0, "def twice", 4), true), true, 0, "twice", [
+		call(SECOND, [("twice(5)", 0)]),
+		call(RUN, [("twice(x)", 0), ("twice(1)", 0), ("twice(2)", 0)])]);
+	p.checkCalls("incoming of apply", p.expand(p.item(0, "def apply", 4), true), true, 0, "apply", [call(RUN, [("apply(twice", 0)])]);
+	p.checkCalls("incoming of run", p.expand(p.item(0, "def run", 4), true), true, 0, "run", []);
+}
+// Outgoing calls: each callee once, in byte order of its file's path and
+// then by offset, with the item's calls to it in source order. Calls
+// through parameters and locals, and a default constructor's class, are
+// not edges.
+def outgoing_calls(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	p.checkCalls("outgoing of run", p.expand(p.item(0, "def run", 4), false), false, 0, null, [
+		call(SHAPE_AREA, [("s.area()", 2)]),
+		call(SQUARE_NEW, [("Square.new", 7)]),
+		call(SQUARE_AREA, [("sq.area()", 3)]),
+		call(SUM, [("sum(twice(1)", 0)]),
+		call(TWICE, [("twice(x)", 0), ("twice(1)", 0), ("twice(2)", 0)]),
+		call(APPLY, [("apply(twice", 0)])]);
+	p.checkCalls("outgoing of twice", p.expand(p.item(0, "def twice", 4), false), false, 0, null, [
+		call(SUM, [("sum(x, 0)", 0), ("sum(0, x)", 0)])]);
+	p.checkCalls("outgoing of apply", p.expand(p.item(0, "def apply", 4), false), false, 0, null, []);
+	p.checkCalls("outgoing of topLevel", p.expand(p.item(0, "def topLevel", 4), false), false, 0, null, [call(SUM, [("Geometry.sum", 9)])]);
+	p.checkCalls("outgoing of generic", p.expand(p.item(0, "def generic", 4), false), false, 0, null, [
+		call(method(0, "id", "def id", 4, "; }", "def id<T>(v: T) -> T"), [("id<int>(1)", 0), ("id(2)", 0)])]);
+	p.checkCalls("outgoing of sum", p.expand(p.item(0, "def sum", 4), false), false, 0, null, []);
+}
+// An explicit constructor is called by a construction; a class's default
+// constructor has no declaration, so its constructions are no edges.
+def constructions(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	var square = p.item(0, "new(s", 0);
+	p.checkCalls("incoming of new", p.expand(square, true), true, 0, "new", [call(RUN, [("Square.new", 7)])]);
+	p.checkCalls("outgoing of new", p.expand(square, false), false, 0, null, []);
+}
+// A recursive method calls itself, and mutually recursive ones each other.
+def recursion(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	var fact = method(0, "fact", "def fact", 4, "; }", "def fact(n: int) -> int");
+	var even = method(0, "even", "def even", 4, "; }", "def even(n: int) -> bool");
+	var odd = method(0, "odd", "def odd", 4, "; }", "def odd(n: int) -> bool");
+	p.checkCalls("outgoing of fact", p.expand(p.item(0, "def fact", 4), false), false, 0, null, [call(fact, [("fact(n - 1)", 0)])]);
+	p.checkCalls("incoming of fact", p.expand(p.item(0, "def fact", 4), true), true, 0, "fact", [call(fact, [("fact(n - 1)", 0)])]);
+	p.checkCalls("outgoing of even", p.expand(p.item(0, "def even", 4), false), false, 0, null, [call(odd, [("odd(n - 1)", 0)])]);
+	p.checkCalls("incoming of even", p.expand(p.item(0, "def even", 4), true), true, 0, "even", [call(odd, [("even(n - 1)", 0)])]);
+	p.checkCalls("outgoing of odd", p.expand(p.item(0, "def odd", 4), false), false, 0, null, [call(even, [("even(n - 1)", 0)])]);
+}
+// A field initialized by calls is their caller: its item resolves and
+// expands, with the calls of its own initializer, though nothing calls it.
+// Fields declared together each own their own initializer's calls.
+def field_initializers(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	var sum = p.expand(p.item(0, "def sum", 4), true), twice = p.expand(p.item(0, "def twice", 4), true);
+	var total = p.first(sum, true), second = p.first(twice, true);
+	p.checkCalls("outgoing of total", p.expand(total, false), false, 0, null, [call(SUM, [("sum(1, 2)", 0)])]);
+	p.checkCalls("incoming of total", p.expand(total, true), true, 0, "total", []);
+	p.checkCalls("outgoing of second", p.expand(second, false), false, 0, null, [call(TWICE, [("twice(5)", 0)])]);
+}
+// A virtual call is an edge to the method that the receiver's static type
+// binds, not to its overrides.
+def virtual_calls(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	var scaled = method(0, "scaled", "def scaled", 4, "; }", "def scaled(k: int) -> int");
+	p.checkCalls("incoming of Shape.area", p.expand(p.item(0, "def area", 4), true), true, 0, "area", [
+		call(scaled, [("* area()", 2)]), call(RUN, [("s.area()", 2)])]);
+	p.checkCalls("incoming of Square.area", p.expand(p.item(0, "sq.area()", 3), true), true, 0, "area", [call(RUN, [("sq.area()", 3)])]);
+}
+// A library's functions are items like any others: lib/util's Ints.abs,
+// which the program and lib/util's Floats call.
+def library_callees(t: Tester) {
+	var text = Arrays.concat(NOTE, "component Use {\n\tdef magnitude(x: int) -> u32 { return Ints.abs(x) + Ints.abs(-x); }\n}\n");
+	var dir = "vendor/virgil/lib/util", listing = ProjectFiles.list(dir, 4096);
+	if (listing.names == null) return t.fail("lib/util is not listed");
+	var names = Vector<string>.new().put("library.v3"), texts = Vector<Array<byte>>.new().put(text), ints = -1, floats = -1;
+	for (name in listing.names) {
+		if (!Strings.endsWith(name, ".v3")) continue;
+		if (Strings.equal(name, "Ints.v3")) ints = names.length;
+		if (Strings.equal(name, "Floats.v3")) floats = names.length;
+		names.put(Arrays.concat("util/", name));
+		texts.put(System.fileLoad(ProjectFiles.join(dir, name)));
+	}
+	if (ints < 0 || floats < 0) return t.fail("lib/util has Ints.v3 and Floats.v3");
+	var p = CallProgram.new(t, names.extract(), texts.extract(), [], true);
+	var abs = method(ints, "abs", "def abs", 4, "\n\t}", "def abs(a: int) -> u32");
+	var magnitude = method(0, "magnitude", "def magnitude", 4, "; }", "def magnitude(x: int) -> u32");
+	p.checkCalls("outgoing of magnitude", p.expand(p.item(0, "def magnitude", 4), false), false, 0, null, [
+		call(abs, [("Ints.abs(x)", 5), ("Ints.abs(-x)", 5)])]);
+	var incoming = p.expand(p.item(0, "Ints.abs(x)", 5), true);
+	p.checkItems("first caller of abs", JsonRpcReply.Result(JsonValue.JArray([p.first(incoming, true)])), [magnitude]);
+	// Every other caller is in Floats.v3, after library.v3 in byte order.
+	var calls = JsonValue.JArray.!(JsonRpcReply.Result.!(incoming).v).v, ranges = 0;
+	t.assert(calls.length > 1, "Floats calls abs");
+	for (k = 1; k < calls.length; k++) {
+		var from = JsonValue.JObject.!(JsonValue.JObject.!(calls[k]).v["from"]).v;
+		t.assert_string(p.uri(floats), JsonValue.String.!(from["uri"]).v);
+		ranges += JsonValue.JArray.!(JsonValue.JObject.!(calls[k]).v["fromRanges"]).v.length;
+	}
+	var count = 0;
+	var at = indexFrom(p.texts[floats], "Ints.abs(", 0);
+	while (at >= 0) {
+		count++;
+		at = indexFrom(p.texts[floats], "Ints.abs(", at + 1);
+	}
+	t.asserti(count, ranges);
+}
+// A program with semantic errors is answered from the calls that
+// verification resolved: an unresolved callee is no edge.
+def semantic_errors(t: Tester) {
+	var text = Arrays.concat(NOTE, "component E {\n\tdef ok() -> int { return 1; }\n\tdef bad() -> int { return missing() + ok(); }\n}\n");
+	var p = program(t, [text], [], false);
+	expectError(t, p.analysis, "UnresolvedIdentifier");
+	var ok = method(0, "ok", "def ok", 4, "; }", "def ok() -> int"), bad = method(0, "bad", "def bad", 4, "; }", "def bad() -> int");
+	p.checkCalls("outgoing of bad", p.expand(p.item(0, "def bad", 4), false), false, 0, null, [call(ok, [("ok();", 0)])]);
+	p.checkCalls("incoming of ok", p.expand(p.item(0, "def ok", 4), true), true, 0, "ok", [call(bad, [("ok();", 0)])]);
+	p.checkNull("missing", p.prepare(0, "missing", 2));
+}
+// Kinds go through the client's set, as document symbols' do: a client that
+// declares none gets every call hierarchy kind as it is, since each is an
+// LSP 3.0 kind.
+def client_kinds(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	p.hierarchy.clientKinds = LspSymbolKind.symbols(null);
+	p.checkItems("new without kinds", p.prepare(0, "new(s", 0), [SQUARE_NEW]);
+	p.checkCalls("incoming of sum without kinds", p.expand(p.item(0, "def sum", 4), true), true, 0, "sum", [
+		call(TOTAL, [("sum(1, 2)", 0)]),
+		call(FIRST, [("sum(3, 4)", 0)]),
+		call(TWICE, [("sum(x, 0)", 0), ("sum(0, x)", 0)]),
+		call(RUN, [("sum(twice(1)", 0)]),
+		call(TOP, [("Geometry.sum", 9)])]);
+}
+// An item from an earlier analysis names its declaration in a later one
+// after an edit in another file and an edit after it in its own file, and
+// its calls are the later analysis's.
+def CALLER = Arrays.concat(NOTE, "component Caller {\n\tdef use() -> int { return Geometry.sum(8, 9); }\n}\n");
+def unrelated_edit(t: Tester) {
+	var p = program(t, [GEOMETRY, CALLER], [], true);
+	var sum = p.item(0, "def sum", 4);
+	var use = method(1, "use", "def use", 4, "; }", "def use() -> int");
+	p.change(1, Arrays.concat(CALLER, "component Later {\n\tdef again() -> int { return Geometry.sum(1, 1); }\n}\n"));
+	p.change(0, Arrays.concat(GEOMETRY, "def later() -> int { return Geometry.sum(2, 2); }\n"));
+	p.checkCalls("incoming of sum after edits", p.expand(sum, true), true, 0, "sum", [
+		call(TOTAL, [("sum(1, 2)", 0)]),
+		call(FIRST, [("sum(3, 4)", 0)]),
+		call(TWICE, [("sum(x, 0)", 0), ("sum(0, x)", 0)]),
+		call(RUN, [("sum(twice(1)", 0)]),
+		call(TOP, [("Geometry.sum(6", 9)]),
+		call(method(0, "later", "def later", 4, "; }", "def later() -> int"), [("Geometry.sum(2", 9)]),
+		call(use, [("Geometry.sum(8", 9)]),
+		call(method(1, "again", "def again", 4, "; }", "def again() -> int"), [("Geometry.sum(1", 9)])]);
+	p.checkCalls("outgoing of use after edits", p.expand(p.item(1, "def use", 4), false), false, 1, null, [call(SUM, [("Geometry.sum(8", 9)])]);
+}
+// After its declaration moves within its file, is deleted, or is replaced by
+// a field of the same name where it was, an item names nothing: null,
+// never another declaration. Items prepared again find a moved declaration.
+def moved_or_replaced(t: Tester) {
+	var p = program(t, [CALLER, GEOMETRY], [], true);
+	var use = p.item(0, "def use", 4), oldUse = use;
+	// A comment before it moves use.
+	p.change(0, Arrays.concat(NOTE, "// é𝄞 moved\ncomponent Caller {\n\tdef use() -> int { return Geometry.sum(8, 9); }\n}\n"));
+	p.checkNull("outgoing of a moved use", p.expand(use, false));
+	p.checkNull("incoming of a moved use", p.expand(use, true));
+	use = p.item(0, "def use", 4);
+	p.checkCalls("outgoing of use prepared again", p.expand(use, false), false, 0, null, [
+		call(method(1, "sum", "def sum", 4, "; }", "def sum(x: int, y: int) -> int"), [("Geometry.sum(8", 9)])]);
+	// A field of the same name takes its place.
+	p.change(0, Arrays.concat(NOTE, "// é𝄞 moved\ncomponent Caller {\n\tdef use = Geometry.sum(8, 9);\n}\n"));
+	p.checkNull("outgoing of a method replaced by a field", p.expand(use, false));
+	p.change(0, Arrays.concat(NOTE, "// é𝄞 moved\ncomponent Caller { }\n"));
+	p.checkNull("incoming of a deleted use", p.expand(use, true));
+	p.checkNull("outgoing of an old item", p.expand(oldUse, false));
+}
+// Under method-body fallback, calls in an excluded body are reported in
+// neither direction, and an item whose own body is excluded has no
+// outgoing calls. Items in the substituted file have no detail.
+def excluded_bodies(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	var old = Arrays.concat(NOTE, "component A {\n\tdef broken() -> int { return a(); }\n\tdef a() -> int { return 1; }\n}\n");
+	var current = Arrays.concat(NOTE, "component A {\n\tdef broken() -> int { var x = ; return a(); }\n\tdef a() -> int { return 1; }\n}\n");
+	var other = "component B {\n\tdef b() -> int { return A.a() + A.broken(); }\n}\n";
+	s.open("A.v3", 1, old);
+	s.open("B.v3", 1, other);
+	s.settle();
+	t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, current));
+	var snapshot = s.analyze(t), hierarchy = LspCallHierarchy.new();
+	t.assert(snapshot.degraded(), "the body is substituted");
+	var i = snapshot.documentIndex(s.uri("A.v3")), j = snapshot.documentIndex(s.uri("B.v3"));
+	var a = s.text(snapshot, "A.v3"), b = s.text(snapshot, "B.v3");
+	var atA = LspSnapshotPosition.new(s.store, snapshot, i, a, PositionMap.new(current, PositionEncoding.UTF16), []);
+	var atB = LspSnapshotPosition.new(s.store, snapshot, j, b, PositionMap.new(other, PositionEncoding.UTF16), []);
+	var key = LspCallHierarchyKey.new(AnalysisDeclKind.METHOD, _);
+	var bound = LspReferences.MAX_LOCATIONS, bytes = LspReferences.MAX_REPLY_BYTES;
+	var calls = fun (at: LspSnapshotPosition, text: Array<byte>, needle: string, name: string, incoming: bool) -> Array<JsonValue> {
+		var reply = hierarchy.calls(at, indexOf(text, needle), key(name), incoming, bound, bytes).1;
+		if (!JsonRpcReply.Result.?(reply) || !JsonValue.JArray.?(JsonRpcReply.Result.!(reply).v)) {
+			t.fail1("no calls for %s", needle);
+			return [];
+		}
+		return JsonValue.JArray.!(JsonRpcReply.Result.!(reply).v).v;
+	};
+	var name = fun (call: JsonValue, end: string) -> string {
+		var item = JsonValue.JObject.!(JsonValue.JObject.!(call).v[end]).v;
+		t.assert(!item.has("detail") == Strings.equal(s.uri("A.v3"), JsonValue.String.!(item["uri"]).v), "no detail in a substituted file");
+		return JsonValue.String.!(item["name"]).v;
+	};
+	// broken's call to a is in the excluded body.
+	var toA = calls(atA, a, "a() -> int", "a", true);
+	t.asserti(1, toA.length);
+	if (toA.length == 1) t.assert_string("b", name(toA[0], "from"));
+	t.asserti(0, calls(atA, a, "broken()", "broken", false).length);
+	var toBroken = calls(atA, a, "broken()", "broken", true);
+	t.asserti(1, toBroken.length);
+	var fromB = calls(atB, b, "b()", "b", false);
+	t.asserti(2, fromB.length);
+	if (fromB.length == 2) {
+		t.assert_string("broken", name(fromB[0], "to"));
+		t.assert_string("a", name(fromB[1], "to"));
+		// broken's whole extent ends just past its excluded body, so each of
+		// its ends maps to the current text on its own.
+		var broken = JsonValue.JObject.!(JsonValue.JObject.!(fromB[0]).v["to"]).v;
+		var m = PositionMap.new(current, PositionEncoding.UTF16), begin = indexOf(current, "def broken");
+		var end = indexOf(current, "return a(); }") + 13, range = JsonValue.JObject.!(broken["range"]).v;
+		var start = JsonValue.JObject.!(range["start"]).v, finish = JsonValue.JObject.!(range["end"]).v;
+		t.asserti(begin, m.positionToOffset(JsonValue.Int.!(start["line"]).v, JsonValue.Int.!(start["character"]).v));
+		t.asserti(end, m.positionToOffset(JsonValue.Int.!(finish["line"]).v, JsonValue.Int.!(finish["character"]).v));
+	}
+	// An item's position in the excluded body names nothing.
+	var none = hierarchy.calls(atA, -1, key("broken"), true, bound, bytes);
+	t.assert(none.0 && JsonValue.Null.?(JsonRpcReply.Result.!(none.1).v), "a position in an excluded body names nothing");
+	s.server.close();
+}
+// Data without a string name or a kind of "method", "constructor", or
+// "field" is malformed. The request layer checks its uri and position.
+def malformed_data(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	var good = JsonValue.JObject.!(p.item(0, "def sum", 4)).v;
+	t.assert(JsonRpcReply.Result.?(p.expand(JsonValue.JObject(good), true)), "a good item");
+	for (change in [("name", JsonValue.Int(1)), ("kind", JsonValue.String("class")), ("kind", JsonValue.Null), ("name", JsonValue.Null)]) {
+		var item = copy(good), data = copy(JsonValue.JObject.!(good["data"]).v);
+		data[change.0] = change.1;
+		item["data"] = JsonValue.JObject(data);
+		p.checkInvalid(Strings.format1("malformed %s", change.0), p.expand(JsonValue.JObject(item), true));
+	}
+	var item = copy(good);
+	item["data"] = JsonValue.String("sum");
+	var params = Strings.newMap<JsonValue>();
+	params["item"] = JsonValue.JObject(item);
+	t.assert(p.hierarchy.prepareItem(params, false) == null, "data that is not an object");
+	params["item"] = JsonValue.Null;
+	t.assert(p.hierarchy.prepareItem(params, true) == null, "no item");
+}
+def copy(m: HashMap<string, JsonValue>) -> HashMap<string, JsonValue> {
+	var result = Strings.newMap<JsonValue>();
+	m.apply(fun (k: string, v: JsonValue) { result[k] = v; });
+	return result;
+}
+// The bounds of references, checked exactly with lowered values: a reply of
+// as many ranges as the limit, and of exactly the bytes they need, is
+// answered in full, and one less of either fails.
+def reply_bounds(t: Tester) {
+	var p = program(t, [GEOMETRY], [], true);
+	var sum = p.item(0, "def sum", 4), n = 0, bytes = 0, uri = JsonRpcJson.stringBytes(p.uri(0));
+	for (caller in [(TOTAL, 1), (FIRST, 1), (TWICE, 2), (RUN, 1), (TOP, 1)]) {
+		var w = caller.0;
+		n += caller.1;
+		bytes += 2 * uri + 2 * JsonRpcJson.stringBytes(w.name) + JsonRpcJson.stringBytes(w.detail)
+			+ p.hierarchy.CALL_BYTES + caller.1 * p.hierarchy.RANGE_BYTES;
+	}
+	var all = LspReferences.MAX_REPLY_BYTES;
+	match (p.expandWithin(sum, true, n, bytes)) {
+		Result(v) => t.asserti(5, JsonValue.JArray.!(v).v.length);
+		Error(e) => t.fail1("bounded at the limit: %s", e.message);
+	}
+	for (bound in [(n - 1, all, "the method sum has more than 5 incoming calls"),
+			(n, bytes - 1, Strings.format1("the incoming calls of the method sum need more than %d bytes", bytes - 1))]) {
+		match (p.expandWithin(sum, true, bound.0, bound.1)) {
+			Result(v) => t.fail1("not bounded: %s", bound.2);
+			Error(e) => {
+				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
+				t.assert_string(bound.2, e.message);
+			}
+		}
+	}
+	match (p.expandWithin(p.item(0, "def run", 4), false, 6, all)) {
+		Result(v) => t.fail("outgoing calls not bounded");
+		Error(e) => t.assert_string("the method run has more than 6 outgoing calls", e.message);
+	}
+}

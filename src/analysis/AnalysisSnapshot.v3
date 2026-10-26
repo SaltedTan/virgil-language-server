@@ -263,6 +263,29 @@ class AnalysisSnapshot {
 		cursor.next();
 		return call(file, cursor, AnalysisSignatureReader.new(signatures));
 	}
+	// The calls in {path} whose callee is an occurrence of a declaration that
+	// {select} accepts, by its index in {declarations}, as {calls} gives them,
+	// in the order of their opening parentheses. Reads every call's head, and
+	// the rest only of those it returns, which it allocates. See
+	// docs/architecture.md#call-hierarchy.
+	def callsWhere(path: string, select: int -> bool) -> Array<AnalysisCall> {
+		var file = fileOf(path);
+		if (file == null) return [];
+		var cursor = file.callCursor(), result = Vector<AnalysisCall>.new();
+		var reader = AnalysisSignatureReader.new(signatures);
+		while (cursor.next()) {
+			var use = calleeUse(file, cursor);
+			if (use >= 0 && use < file.targets.length && select(file.target(use))) result.put(call(file, cursor, reader));
+			else cursor.skipArgs();
+		}
+		return result.extract();
+	}
+	// The use index of the callee of the call whose head {cursor} has just
+	// read, or -1 if its callee is not a name.
+	private def calleeUse(file: AnalysisSnapshotFile, cursor: AnalysisCallCursor) -> int {
+		var open = cursor.open;
+		return if(cursor.calleeEndsAtParen(), file.useEndingAt(open), if(cursor.calleeDelta > 0, file.useAt(open - cursor.calleeDelta), -1));
+	}
 	// The call that {cursor} has just started to read, which it reads to its
 	// end, with its signature from {reader}.
 	private def call(file: AnalysisSnapshotFile, cursor: AnalysisCallCursor, reader: AnalysisSignatureReader) -> AnalysisCall {
@@ -274,7 +297,7 @@ class AnalysisSnapshot {
 		}
 		cursor.finish();
 		var callee = -1, target: AnalysisDeclaration, open = cursor.open;
-		var use = if(cursor.calleeEndsAtParen(), file.useEndingAt(open), if(cursor.calleeDelta > 0, file.useAt(open - cursor.calleeDelta), -1));
+		var use = calleeUse(file, cursor);
 		if (use >= 0) {
 			callee = file.useBegin(use);
 			if (use < file.targets.length) target = declarations[file.target(use)];

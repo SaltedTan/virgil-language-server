@@ -1,0 +1,351 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/prepareCallHierarchy, callHierarchy/incomingCalls, and
+// callHierarchy/outgoingCalls from the call records of a current snapshot,
+// one level at a time. LspSnapshotRequests selects the snapshot as for a
+// definition: for prepare, that of the request's document, and for the
+// others, that of the item's file, which its data names. See
+// docs/architecture.md#call-hierarchy.
+class LspCallHierarchy {
+	def REQUIRES = "a valid textDocument.uri and position";
+	def ITEM_REQUIRES = "an item whose data has a valid uri, position, name, and kind";
+	// The most bytes that a call's JSON adds beyond its item's strings as
+	// JsonRpcJson.stringBytes counts them, with their quotes, and its ranges:
+	// the item's object and data, with eight positions of at most 11 digits
+	// each and a two-digit kind, as for a type hierarchy item, and the
+	// call's own object, with its "from" and "fromRanges" keys, and the
+	// array's commas and a share of its brackets.
+	def CALL_BYTES = 416;
+	// The most bytes that one of a call's fromRanges adds: four positions of
+	// at most 11 digits each, their keys, and a comma. It is 106.
+	def RANGE_BYTES = 112;
+	// The client's textDocument.documentSymbol.symbolKind, as for document
+	// symbols.
+	var clientKinds = LspSymbolKind.symbols(null);
+
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		requests.registerPrepared(dispatcher, "textDocument/prepareCallHierarchy", "call hierarchy", REQUIRES, preparePosition);
+		requests.registerItem(dispatcher, "callHierarchy/incomingCalls", "incoming calls", ITEM_REQUIRES, prepareItem(_, true));
+		requests.registerItem(dispatcher, "callHierarchy/outgoingCalls", "outgoing calls", ITEM_REQUIRES, prepareItem(_, false));
+	}
+	private def preparePosition(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return answer;
+	}
+	// The answer function for an incomingCalls or, unless {incoming}, an
+	// outgoingCalls request's {params}, which keeps the item's name and kind
+	// while the request waits, or null if its data lacks them.
+	// LspSnapshotRequests checked its uri and position.
+	def prepareItem(params: HashMap<string, JsonValue>, incoming: bool) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		var item = objectMember(params, "item"), data = objectMember(item, "data");
+		var name = stringMember(data, "name"), kind = stringMember(data, "kind");
+		if (name == null || kind == null) return null;
+		var declKind: AnalysisDeclKind;
+		if (Strings.equal(kind, "method")) declKind = AnalysisDeclKind.METHOD;
+		else if (Strings.equal(kind, "constructor")) declKind = AnalysisDeclKind.CONSTRUCTOR;
+		else if (Strings.equal(kind, "field")) declKind = AnalysisDeclKind.FIELD;
+		else return null;
+		return calls(_, _, LspCallHierarchyKey.new(declKind, name), incoming,
+			LspReferences.MAX_LOCATIONS, LspReferences.MAX_REPLY_BYTES);
+	}
+	// The item of the method or constructor that the use or the declaration
+	// name containing {offset} selects, as references select a declaration,
+	// in a one-item array; null for any other declaration, including a field
+	// or a local that holds a function, or if the declaration's file is no
+	// longer the analyzed text.
+	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		var s = at.snapshot, decl = LspReferences.declaration(at, offset);
+		if (decl == null) return (false, JsonRpcReply.Result(JsonValue.Null));
+		var i = s.indexOf(decl);
+		if (i < 0 || !isCallable(decl.kind)) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var item = LspCallHierarchyItems.new(this, at).item(i);
+		return (true, JsonRpcReply.Result(if(JsonValue.Null.?(item), item, JsonValue.JArray([item]))));
+	}
+	// The incoming calls or, unless {incoming}, the outgoing calls of the
+	// declaration that {key} names in the request's file at {offset}, the
+	// item's position mapped to the analyzed text, or -1 (see {resolve});
+	// null if it names none. Calls and items in a file whose bytes are no
+	// longer the ones analyzed, or in an excluded body, are left out. More
+	// than {limit} calls, or more than {maxBytes} of their estimated JSON, get
+	// RequestFailed, as references do.
+	def calls(at: LspSnapshotPosition, offset: int, key: LspCallHierarchyKey, incoming: bool,
+			limit: int, maxBytes: int) -> (bool, JsonRpcReply) {
+		var s = at.snapshot, i = resolve(s, at.path(), offset, key);
+		if (i < 0) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var reply = LspCallHierarchyReply.new(this, at, key, incoming, limit, maxBytes), items = reply.items;
+		if (incoming) {
+			// Files in byte order of path, and callers in each by offset.
+			var order = AnalysisTables.sort(Arrays.range(s.paths, 0, s.paths.length),
+				fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
+			for (path in order) {
+				var found = s.callsWhere(path, fun (t: int) => t == i);
+				if (found.length == 0 || !items.select(path)) continue;
+				var owners = LspCallOwners.new(s, path, items.symbols), edges = Vector<(int, int)>.new();
+				for (c in found) {
+					if (partial(c, items.text)) continue;
+					var caller = owners.of(c.callee);
+					if (caller >= 0) edges.put((caller, c.callee));
+				}
+				var sorted = AnalysisTables.sort(edges.extract(), edgeBefore);
+				if (!reply.add(sorted, items.index, items.map)) return (true, reply.failure);
+			}
+		} else {
+			// The item's calls are in the request's file, which the request
+			// checked.
+			var path = at.path();
+			if (!items.select(path)) return (true, JsonRpcReply.Result(JsonValue.Null));
+			var owners = LspCallOwners.new(s, path, items.symbols), edges = Vector<(int, int)>.new();
+			for (c in s.callsWhere(path, isCallableIndex(s, _))) {
+				if (partial(c, at.text) || owners.of(c.callee) != i) continue;
+				edges.put((s.indexOf(c.target), c.callee));
+			}
+			var sorted = AnalysisTables.sort(edges.extract(), calleeBefore(s, _, _));
+			if (!reply.add(sorted, at.index, at.map)) return (true, reply.failure);
+		}
+		return (true, JsonRpcReply.Result(JsonValue.JArray(reply.result.extract())));
+	}
+	// Whether call {c} is a partial application, which has an argument "_"
+	// in {text}: it makes a function value, and calls nothing.
+	def partial(c: AnalysisCall, text: Array<byte>) -> bool {
+		for (k < c.argCount()) {
+			var b = c.args[2 * k];
+			if (c.args[2 * k + 1] == b + 1 && b < text.length && text[b] == '_') return true;
+		}
+		return false;
+	}
+	// Callers' edges in one file: by caller, whose index orders the file's
+	// declaration sites by offset, and then by the callee's offset.
+	private def edgeBefore(a: (int, int), b: (int, int)) -> bool {
+		return a.0 < b.0 || (a.0 == b.0 && a.1 < b.1);
+	}
+	// Callees' edges: by the callee's file, in byte order of path, and its
+	// offset, and then by the call's offset.
+	private def calleeBefore(s: AnalysisSnapshot, a: (int, int), b: (int, int)) -> bool {
+		if (a.0 != b.0) {
+			var x = s.declarations[a.0].range, y = s.declarations[b.0].range;
+			var c = AnalysisTables.compareBytes(x.path, y.path);
+			return c < 0 || (c == 0 && (x.beginOffset < y.beginOffset || (x.beginOffset == y.beginOffset && a.0 < b.0)));
+		}
+		return a.1 < b.1;
+	}
+	private def isCallableIndex(s: AnalysisSnapshot, t: int) -> bool {
+		var d = s.declarations[t];
+		return isCallable(d.kind) && d.range.path != null && d.range.beginOffset >= 0;
+	}
+	// The index of the declaration that {key} names among the declaration
+	// sites of {path}: the one whose name begins at {offset} and has {key}'s
+	// kind and name; -1 if there is none. As for a type hierarchy item, a
+	// declaration with the same name and kind anywhere else could be another
+	// one, so an item whose declaration moved within its file names nothing.
+	def resolve(s: AnalysisSnapshot, path: string, offset: int, key: LspCallHierarchyKey) -> int {
+		if (offset < 0) return -1;
+		var run = s.declarationSiteRun(path);
+		for (i = run.0; i < run.1; i++) {
+			var d = s.declarations[i];
+			if (d.range.beginOffset == offset && d.kind == key.kind && Strings.equal(d.name, key.name)) return i;
+		}
+		return -1;
+	}
+	// Methods, including component functions, file-scope functions, and
+	// index methods, and constructors.
+	def isCallable(kind: AnalysisDeclKind) -> bool {
+		return kind == AnalysisDeclKind.METHOD || kind == AnalysisDeclKind.CONSTRUCTOR;
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def stringMember(obj: HashMap<string, JsonValue>, key: string) -> string {
+		if (obj == null || !obj.has(key) || !JsonValue.String.?(obj[key])) return null;
+		return JsonValue.String.!(obj[key]).v;
+	}
+}
+// What an item's data names, besides its file and position: a method, a
+// constructor, or a field, by its declaration kind, and its name.
+class LspCallHierarchyKey(kind: AnalysisDeclKind, name: string) { }
+
+// The callers of the calls in one file, from its outline: the innermost
+// method or constructor whose whole extent contains a callee's offset, or a
+// field whose initializer does. The analyzed text parsed with the project's
+// options, so its outline has every declaration of the snapshot's.
+class LspCallOwners(s: AnalysisSnapshot, path: string, symbols: Array<AnalysisDocumentSymbol>) {
+	// The index of the declaration that owns {offset}, or -1 if none does,
+	// as in a class's header.
+	def of(offset: int) -> int {
+		var list = symbols, owner: AnalysisDocumentSymbol;
+		while (list != null) {
+			var inner: Array<AnalysisDocumentSymbol>;
+			for (k < list.length) {
+				var sym = list[k];
+				if (offset < sym.begin || sym.end <= offset) continue;
+				match (sym.kind) {
+					METHOD, CONSTRUCTOR => owner = sym;
+					FIELD => {
+						// Fields declared together share their statement's
+						// extent: the last name before the offset owns it.
+						owner = sym;
+						for (n = k + 1; n < list.length && list[n].begin == sym.begin && list[n].nameBegin <= offset; n++) owner = list[n];
+					}
+					_ => inner = sym.children;
+				}
+				break;
+			}
+			list = inner;
+		}
+		return if(owner != null, site(owner), -1);
+	}
+	// The declaration site with {sym}'s name, kind, and offset, or -1.
+	private def site(sym: AnalysisDocumentSymbol) -> int {
+		var run = s.declarationSiteRun(path), low = run.0, high = run.1;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (s.declarations[mid].range.beginOffset < sym.nameBegin) low = mid + 1;
+			else high = mid;
+		}
+		for (i = low; i < run.1 && s.declarations[i].range.beginOffset == sym.nameBegin; i++) {
+			var d = s.declarations[i];
+			if (d.kind == sym.kind && Strings.equal(d.name, sym.name)) return i;
+		}
+		return -1;
+	}
+}
+
+// The calls of one reply, as they are added: for incoming calls, a caller
+// and its calls to the item, and for outgoing calls, a callee and the item's
+// calls to it, each within the bounds, and the reply that a bound gives.
+class LspCallHierarchyReply(owner: LspCallHierarchy, at: LspSnapshotPosition, key: LspCallHierarchyKey, incoming: bool,
+		limit: int, maxBytes: int) {
+	def result = Vector<JsonValue>.new();
+	def items = LspCallHierarchyItems.new(owner, at);
+	var failure: JsonRpcReply;
+	private var ranges: int;
+	private var bytes: int;
+
+	// Adds the calls of {edges}, pairs of the other end's declaration index
+	// and a callee's offset, grouped by the other end, whose callees are in
+	// the snapshot's file {j}, whose current text {map} converts. False with
+	// a {failure} if a bound is exceeded.
+	def add(edges: Array<(int, int)>, j: int, map: PositionMap) -> bool {
+		var s = at.snapshot, file = s.fileIndex(s.paths[j]);
+		var direction = if(incoming, "incoming", "outgoing"), kind = items.kindOf(key.kind);
+		var k = 0;
+		while (k < edges.length) {
+			var other = edges[k].0, from = Vector<JsonValue>.new();
+			while (k < edges.length && edges[k].0 == other) {
+				var b = edges[k++].1, use = file.findOffset(b);
+				if (use < 0) continue;
+				var range = at.rangeIn(j, map, b, file.occurrenceEnd(use));
+				if (!JsonValue.Null.?(range)) from.put(range);
+			}
+			if (from.length == 0) continue;
+			var item = items.item(other);
+			if (JsonValue.Null.?(item)) continue;
+			if (ranges + from.length > limit) {
+				return fail(Strings.format3("the %s %s has more than %d", kind, key.name, limit),
+					Strings.format1(" %s calls", direction));
+			}
+			var more = items.bytes + owner.CALL_BYTES + from.length * owner.RANGE_BYTES;
+			if (bytes + more > maxBytes) {
+				return fail(Strings.format3("the %s calls of the %s %s", direction, kind, key.name),
+					Strings.format1(" need more than %d bytes", maxBytes));
+			}
+			ranges += from.length;
+			bytes += more;
+			var call = Strings.newMap<JsonValue>();
+			call[if(incoming, "from", "to")] = item;
+			call["fromRanges"] = JsonValue.JArray(from.extract());
+			result.put(JsonValue.JObject(call));
+		}
+		return true;
+	}
+	private def fail(message: string, rest: string) -> bool {
+		failure = JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED, Arrays.concat(message, rest)));
+		return false;
+	}
+}
+
+// The items of one reply. Items in order of path check each file's text,
+// build its position map, and parse its outline once.
+class LspCallHierarchyItems(owner: LspCallHierarchy, at: LspSnapshotPosition) {
+	// The estimated encoded bytes of the last item's strings: its URI and its
+	// name twice, since the data repeats them, and its detail.
+	var bytes: int;
+	// The file that {select} selected last: its index in the snapshot, or -1
+	// if its bytes are no longer the ones analyzed, and then its analyzed
+	// text, the position map of its current text, and its outline.
+	var index = -1;
+	var text: Array<byte>;
+	var map: PositionMap;
+	var symbols: Array<AnalysisDocumentSymbol>;
+	private var path: string;
+
+	// Selects the snapshot's file at {path}, unless it is selected already,
+	// and returns whether its bytes are still the ones analyzed.
+	def select(path: string) -> bool {
+		if (this.path != null && Strings.equal(this.path, path)) return index >= 0;
+		this.path = path;
+		var target = at.target(path);
+		index = target.0;
+		text = target.1;
+		if (index >= 0) {
+			map = at.positionMap(index, text);
+			// The analyzed text parsed with these options, so its outline has
+			// the declaration.
+			symbols = AeneasAdapter.documentSymbols(path, text, at.options);
+		}
+		return index >= 0;
+	}
+	// The CallHierarchyItem of declaration {i}, or JSON null if its file's
+	// bytes are no longer the ones analyzed or its name is in a substituted
+	// body.
+	def item(i: int) -> JsonValue {
+		var s = at.snapshot, d = s.declarations[i], r = d.range;
+		if (r.path == null || r.beginOffset < 0 || !select(r.path)) return JsonValue.Null;
+		var j = index;
+		var span = s.currentRange(j, r.beginOffset, r.endOffset);
+		if (span.0 < 0) return JsonValue.Null;
+		var selection = at.rangeIn(j, map, r.beginOffset, r.endOffset);
+		var extent = find(symbols, r), range = at.extentIn(j, map, extent.0, extent.1);
+		if (JsonValue.Null.?(range)) range = selection;
+		var uri = s.documentVersions[j].uri;
+		var detail = if(s.documentVersions[j].substitution == null, d.signature);
+		var start = map.offsetToPosition(span.0), position = Strings.newMap<JsonValue>();
+		position["line"] = JsonValue.Int(start.line);
+		position["character"] = JsonValue.Int(start.character);
+		var data = Strings.newMap<JsonValue>();
+		data["uri"] = JsonValue.String(uri);
+		data["position"] = JsonValue.JObject(position);
+		data["name"] = JsonValue.String(d.name);
+		data["kind"] = JsonValue.String(kindOf(d.kind));
+		var obj = Strings.newMap<JsonValue>();
+		obj["name"] = JsonValue.String(d.name);
+		obj["kind"] = JsonValue.Int(owner.clientKinds.send(LspSymbolKind.of(d.kind)));
+		if (detail != null) obj["detail"] = JsonValue.String(detail);
+		obj["uri"] = JsonValue.String(uri);
+		obj["range"] = range;
+		obj["selectionRange"] = selection;
+		obj["data"] = JsonValue.JObject(data);
+		bytes = 2 * JsonRpcJson.stringBytes(uri) + 2 * JsonRpcJson.stringBytes(d.name) + JsonRpcJson.stringBytes(detail);
+		return JsonValue.JObject(obj);
+	}
+	def kindOf(kind: AnalysisDeclKind) -> string {
+		match (kind) {
+			CONSTRUCTOR => return "constructor";
+			FIELD => return "field";
+			_ => return "method";
+		}
+	}
+	// The whole extent of the outline symbol whose name is exactly {r}'s, or
+	// {r}'s own if there is none. Fields declared together share their
+	// statement's extent, so a name is looked for among all of a symbol's
+	// siblings before inside the one that contains it.
+	private def find(list: Array<AnalysisDocumentSymbol>, r: AnalysisRange) -> (int, int) {
+		for (sym in list) {
+			if (sym.nameBegin == r.beginOffset && sym.nameEnd == r.endOffset) return (sym.begin, sym.end);
+		}
+		for (sym in list) {
+			if (sym.begin <= r.beginOffset && r.endOffset <= sym.end) return find(sym.children, r);
+		}
+		return (r.beginOffset, r.endOffset);
+	}
+}
