@@ -324,7 +324,9 @@ is on that `;`'s line or earlier, and an anchor on a later line gets no action.
 Only a swallow within one line escapes the line rule. The one that ends in a
 semicolon error is a statement's `if (c)` read as an `if` expression, as in
 `if (c) return if (d) {}`. An `if` expression needs two or three arguments,
-so an anchor right after a one-argument `if(...)` gets no action.
+so a one-argument `if(...)` anywhere in the statement's expression before the
+anchor gets no action, including before a suffix or inside a nested group.
+Leading control headers belong to the statement, not its expression.
 
 A forgotten `;` at the end of a one-line statement, such as a call, assignment,
 `return`, local, field, one-line `match` arm, `if (c) x = 1`, or a statement

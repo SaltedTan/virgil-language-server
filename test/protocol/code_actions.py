@@ -94,7 +94,8 @@ def run(exe):
                 assert action(params()) == []
                 s.send('textDocument/didOpen', {'textDocument': {
                     'uri': SWALLOWED_URI, 'version': 1, 'languageId': 'virgil', 'text': SWALLOWED}}, request=False)
-                swallowed = dict(params(), textDocument={'uri': SWALLOWED_URI})
+                swallowed = dict(params(), textDocument={'uri': SWALLOWED_URI},
+                                 range={'start': SWALLOWED_ERROR, 'end': SWALLOWED_ERROR})
                 assert action(swallowed) == []
                 published = [m['params'] for direction, m in s.transcript
                              if direction == 'recv' and m.get('method') == 'textDocument/publishDiagnostics'

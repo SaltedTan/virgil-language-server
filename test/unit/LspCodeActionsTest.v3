@@ -123,7 +123,13 @@ def test_statement_line(t: Tester) {
 		// A lambda's empty body is a ";" inside the expression.
 		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun(); (1)\n\th();\n} }",
 		// On one line, a statement's `if (c)` read as a one-argument if expression.
-		"component C { def f(c: bool) {\n\tif (c) return if (c) {}\n} }"] ) {
+		"component C { def f(c: bool) {\n\tif (c) return if (c) {}\n} }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d) ++x; } }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d) --x; } }",
+		"component C { def f(c: bool, d: bool) { if(c) return if(d).x {} } }",
+		"component C { def f(c: bool, d: bool) { if(c) return if(d)[0] {} } }",
+		"component C { def f(c: bool, d: bool) { return p(if(d)) {} } }",
+		"component C { def f(c: bool, d: bool) { return if(p(c, d)) ++x; } }"] ) {
 		var parsed = AeneasAdapter.parseFile(URI, text, []);
 		t.assert_string("\";\" expected", parsed.diagnostics[0].message);
 		// Without the rule, the proof would accept this ";".
@@ -147,6 +153,11 @@ def test_statement_line(t: Tester) {
 	}
 	site(t, Strings.format1(body, "\tmatch (c) {\n\t\ttrue => {\n\t\t}\n\t\tfalse => x = 1|\n\t}"), true);
 	site(t, Strings.format1(body, "\tif (c) {\n\t} else x = 1|"), true);
+	site(t, Strings.format1(body, "\tif (c) if (c) x = 1|"), true);
+	site(t, Strings.format1(body, "\twhile (c) if (c) x = 1|"), true);
+	site(t, Strings.format1(body, "\tfor (i < 3) if (c) x = 1|"), true);
+	site(t, Strings.format1(body, "\treturn if(c, 1)|"), true);
+	site(t, Strings.format1(body, "\treturn if(c, 1, 2)|"), true);
 	site(t, "component C {\n\tdef f() {\n\t}\n\tvar x = 1|\n}", true);
 	site(t, "component C { def f() {\n\tfor (\n\t\ti = 0| i < 3; i++) {}\n} }", false);
 }
