@@ -891,8 +891,10 @@ python3 scripts/bench-tolerance.py --exe build/bench/virgil-lsp --cpu 4 \
 ```
 
 A normal executable works too, after `make all bench-metadata`; its probe arrays
-are empty. `--suite repair|replay|negative|extra` selects a group, and `--only TEXT`
-filters state IDs. These filters appear in the recorded command. `--work-dir`
+are empty. `--suite repair|replay|negative|extra|session` selects a group, and
+`--only TEXT` filters state IDs (session IDs with `--suite session`). Editing
+sessions have a separate inventory and are included in an unfiltered run. These
+filters appear in the recorded command. `--work-dir`
 chooses the parent of disposable source copies (default `build/bench-results`);
 use scratch storage on machines with a small shared `/tmp`. Output directories
 must already exist. No fixture, vendor source, or real project file is edited.
@@ -995,10 +997,12 @@ the existing phase, allocation, and heap counters. RSS is sampled before shutdow
 These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
-`make test` runs scoring and cleanup regression checks and a twelve-state smoke
-replay (two small repair states and all ten negative controls, in both modes).
-The smoke run takes about 0.4 seconds on the reference host. The full suite
-remains opt-in. Run these checks separately with:
+`make test` runs scoring, cleanup, and session sequencing regression checks, a
+twelve-state smoke replay (two small repair states and all ten negative controls,
+in both modes), and the four-step `in-turn` editing session in both modes. The
+short session adds overlapping broken files and recovery in one server process.
+A separate before/after run took 0.39 → 0.59 seconds on the reference host; the
+full suite remains opt-in. Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
@@ -1396,3 +1400,94 @@ Server and worker SHA-256 hashes, respectively:
   `aac0ad16d2108058d508a716c7c492332866cffd9d242e285b6e34611c64be9a`.
 - After: `650c641ebaa538a09cce5f2b43a865d1c6e91f43cac8e8f918b4623d89e44d22`,
   `af89cf6e3247fd8db78990cb81fddce9b59deaa4c3d5f74419a56c4f7f5928b5`.
+
+### Editing sessions
+
+The `session` suite adds ten editing histories, separate from the 185 primary
+states and their inventory checks. Each history uses one server process per
+mode. Warm mode analyzes the initial parseable program first; cold mode starts
+with the first step's text without that warmup. Both retain the history of
+later steps. A separate oracle process replays the same opens, full-text
+changes, saves, closes, and watched disk writes with only the syntax errors
+removed. Navigation replies wait for the current analysis; snapshot inspection
+then checks freshness and the published semantic diagnostic sets. There are no
+sleeps or polling loops. Run both modes with:
+
+```sh
+make BUILD=build/bench BENCH=1 all bench-metadata
+flock /path/to/shared/bench.lock python3 scripts/bench-tolerance.py \
+  --suite session --exe build/bench/virgil-lsp --cpu 12 \
+  --work-dir /path/to/scratch --output /path/to/scratch/sessions.json
+```
+
+The histories in [`tolerance-sessions.py`](../scripts/tolerance-sessions.py) are:
+
+- `in-turn` breaks A, breaks B, fixes A, then fixes B.
+- `overlapping` breaks both files and fixes B before A.
+- `save-close-reopen` saves broken A to disk, closes it, reopens it, then fixes it.
+- `new-file` creates and opens a broken source matched by the project's glob,
+  fixes it, then fixes A; queries in the new file start when it exists.
+- `newest-parseable` restores A with a changed target signature, then breaks a
+  different body and checks that fallback uses that newest parseable version.
+- `watched-disk` closes B, writes a broken body with a watched-file notification,
+  restores it on disk, then fixes A.
+- `limit-fallback-visible` reaches 15 semantic errors outside the substituted
+  body, retaining the `ErrorLimit` notice when no error is excluded.
+- `limit-fallback-excluded` replaces an error-filled cached body and checks that
+  its hidden errors suppress the limit notice, even with visible errors left.
+- `limit-repair` changes a declaration as well as breaking a body, forcing
+  current-text repair and suppressing its sentinel's error and limit notice.
+- `cache-pressure` analyzes two copies of Aeneas in separate project contexts,
+  breaks an evicted file, then breaks a file still retained in the cache.
+
+Measured on 2026-10-27 with benchmark sources at `653e4051`, pinned Virgil
+`7cf038fc`, enabled probes, the default 384 MiB worker heap, and CPU 12 under
+the shared benchmark lock on the Intel Core i7-14700KF host. The session-only
+run took 6.61 seconds. All 72 step/mode records completed with zero wrong
+answers and zero worker replacements. The table counts individual query/feature
+answers, including legitimate empty oracle answers, rather than states retaining
+all four features. Partial sets contain only exact oracle items.
+
+| Step types | Step/mode records | Exact answers | Partial sets | Missing answers | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| In-turn, overlapping, newest parseable | 24 | 240 | 0 | 0 | 0 |
+| Save, close, reopen, restore | 10 | 80 | 0 | 20 | 0 |
+| New-file creation and fixes | 8 | 98 | 0 | 0 | 0 |
+| Watched disk changes and fixes | 10 | 80 | 0 | 20 | 0 |
+| Error-limit stress and fixes | 12 | 115 | 5 | 0 | 0 |
+| Cache pressure and broken bodies | 8 | 56 | 0 | 0 | 0 |
+
+The four closed-broken step/mode records account for all 40 missing answers:
+closed syntax errors suppress project semantics and never receive a body
+substitution. Reopening or fixing the file restores the expected answers.
+All five partial sets are diagnostics: the warm visible-error fallback keeps
+its notice, while the excluded-error fallback and every repair suppress it.
+The fixed steps again publish the oracle's limit notice. The scorer also rejects
+an injected predecessor hover in `newest-parseable/other-body-broken`: its old
+`int` result disagrees with the intended program's `bool` result.
+
+Each Aeneas context has 206 source files, including its observer. Completed
+analyses cache their own parseable inputs, including closed files; substituted
+inputs never refresh those entries. Applying the documented charge of source
+bytes plus URI bytes plus 512 bytes per entry gives 3,156,975 and 3,157,181 bytes,
+respectively, exceeding the global 4,194,304-byte cap together while each project
+fits the analysis budget. Eviction is also checked in the snapshot:
+`first/aeneas/src/arm64/Arm64AddrPatcher.v3`, analyzed earlier with a parseable
+initializer, needs the 15-byte sentinel insertion when broken after pressure.
+Its six-byte original expression would have been eligible for fallback if still
+cached. The following step still repairs that file but substitutes the one-byte
+cached initializer in `first/lib/util/StringBuilder.v3`. These insertion lengths
+in the snapshot's effective/current interval map distinguish repair from
+fallback independently of the returned answers. Both modes assert those paths.
+
+JSON keeps `sessions`, `session_oracles`, and `session_summary` separate from
+`states`, `oracles`, and the original summary. Each step records its actions,
+intended texts, query sites, answers, scores, snapshot, and probes; its parent
+records the process, stderr, resources, and worker replacements. A wrong answer
+stops the run and preserves the failing step and transcript in the failure JSON.
+
+An unfiltered run on the same probe build took 250.02 seconds for all 420
+single-edit state/mode records and the 72 session step/mode records. The 185
+primary states still retain all four features in 116 warm and 110 cold states;
+every per-feature count matches the current-text repair comparison above.
+There are zero wrong answers and zero worker replacements across the full run.
