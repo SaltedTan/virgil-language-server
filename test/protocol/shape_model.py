@@ -17,7 +17,8 @@ REQUESTS = (
     "textDocument/definition", "textDocument/typeDefinition", "textDocument/documentHighlight", "textDocument/documentSymbol",
     "textDocument/hover", "textDocument/implementation", "textDocument/inlayHint",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
-    "textDocument/signatureHelp", "workspace/symbol",
+    "textDocument/signatureHelp", "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes",
+    "typeHierarchy/subtypes", "workspace/symbol",
 )
 NOTIFICATIONS = (
     "initialized", "exit", "textDocument/didOpen", "textDocument/didChange",
@@ -263,6 +264,8 @@ def session_validity(method, params):
         return False, "analysis requires nonempty local-file URIs; generated URIs are untitled"
     if method == "textDocument/rename":
         return False, "versioned workspace edits were not negotiated"
+    if method in ("typeHierarchy/supertypes", "typeHierarchy/subtypes"):
+        return False, "an item's data must be the server's own, from prepareTypeHierarchy"
     doc = params.get("textDocument", {})
     if "uri" in doc and not doc["uri"]:
         return False, "empty document URI"

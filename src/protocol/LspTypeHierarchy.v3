@@ -1,0 +1,229 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/prepareTypeHierarchy, typeHierarchy/supertypes, and
+// typeHierarchy/subtypes from the class hierarchy of a current snapshot, one
+// level at a time. LspSnapshotRequests selects the snapshot as for a
+// definition: for prepare, that of the request's document, and for the
+// others, that of the item's file, which its data names. See
+// docs/architecture.md#type-hierarchy.
+class LspTypeHierarchy {
+	def REQUIRES = "a valid textDocument.uri and position";
+	def ITEM_REQUIRES = "an item whose data has a valid uri, position, name, and kind";
+	// The most bytes that an item's JSON adds beyond its strings as
+	// JsonRpcJson.stringBytes counts them, with their quotes: the rest of the
+	// object and its data, with eight positions of at most 11 digits each and
+	// a two-digit kind, and the array's commas and a share of its brackets.
+	// It is 380.
+	def ITEM_BYTES = 384;
+	// The client's textDocument.documentSymbol.symbolKind, as for document
+	// symbols.
+	var clientKinds = LspSymbolKind.symbols(null);
+
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		requests.registerPrepared(dispatcher, "textDocument/prepareTypeHierarchy", "type hierarchy", REQUIRES, preparePosition);
+		requests.registerItem(dispatcher, "typeHierarchy/supertypes", "supertypes", ITEM_REQUIRES, prepareItem(_, false));
+		requests.registerItem(dispatcher, "typeHierarchy/subtypes", "subtypes", ITEM_REQUIRES, prepareItem(_, true));
+	}
+	private def preparePosition(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return answer;
+	}
+	// The answer function for a supertypes or, if {down}, a subtypes request's
+	// {params}, which keeps the item's name, kind, and variant while the
+	// request waits, or null if its data lacks them. LspSnapshotRequests
+	// checked its uri and position.
+	def prepareItem(params: HashMap<string, JsonValue>, down: bool) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		var item = objectMember(params, "item"), data = objectMember(item, "data");
+		var name = stringMember(data, "name"), kind = stringMember(data, "kind"), variant: string;
+		if (name == null || kind == null) return null;
+		var declKind: AnalysisDeclKind, variantType = false;
+		if (Strings.equal(kind, "class")) {
+			declKind = AnalysisDeclKind.CLASS;
+		} else if (Strings.equal(kind, "variant")) {
+			declKind = AnalysisDeclKind.CLASS;
+			variantType = true;
+		} else if (Strings.equal(kind, "case")) {
+			declKind = AnalysisDeclKind.VARIANT_CASE;
+		} else {
+			return null;
+		}
+		if (data.has("variant")) {
+			variant = stringMember(data, "variant");
+			if (variant == null) return null;
+		}
+		return related(_, _, LspTypeHierarchyKey.new(declKind, variantType, name, variant), down,
+			LspReferences.MAX_LOCATIONS, LspReferences.MAX_REPLY_BYTES);
+	}
+	// The item of the class, variant, or variant case that the use or the
+	// declaration name containing {offset} selects, as references select a
+	// declaration, in a one-item array; null for any other declaration, or if
+	// the declaration's file is no longer the analyzed text. A data type's
+	// single case, which a construction selects, is the type, whose site
+	// shares its name token; the case has no site of its own, so no parent.
+	def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		var s = at.snapshot, decl = LspReferences.declaration(at, offset);
+		if (decl == null) return (false, JsonRpcReply.Result(JsonValue.Null));
+		if (decl.kind == AnalysisDeclKind.VARIANT_CASE && decl.range.path != null) {
+			var site = s.declarationAtOffset(decl.range.path, decl.range.beginOffset);
+			if (site != null && site.kind == AnalysisDeclKind.CLASS && site.range.beginOffset == decl.range.beginOffset) {
+				decl = site;
+			}
+		}
+		var i = s.indexOf(decl);
+		if (i < 0 || !isType(decl.kind)) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var item = LspTypeHierarchyItems.new(this, at).item(i);
+		return (true, JsonRpcReply.Result(if(JsonValue.Null.?(item), item, JsonValue.JArray([item]))));
+	}
+	// The items of the supertype or, if {down}, the subtypes of the
+	// declaration that {key} names in the request's file at {offset}, the
+	// item's position mapped to the analyzed text, or -1 (see {resolve});
+	// null if it names none. The items in a file
+	// whose bytes are no longer the ones analyzed are left out. More than
+	// {limit} items, or more than {maxBytes} of their estimated JSON, get
+	// RequestFailed, as implementations do.
+	def related(at: LspSnapshotPosition, offset: int, key: LspTypeHierarchyKey, down: bool,
+			limit: int, maxBytes: int) -> (bool, JsonRpcReply) {
+		var s = at.snapshot, i = resolve(s, at.path(), offset, key);
+		if (i < 0) return (true, JsonRpcReply.Result(JsonValue.Null));
+		var found: Array<int>;
+		if (down) {
+			found = s.subtypes(i);
+		} else {
+			var p = s.parentOf(i);
+			found = if(p >= 0 && isType(s.declarations[p].kind), [p], []);
+		}
+		var items = LspTypeHierarchyItems.new(this, at), result = Vector<JsonValue>.new(), bytes = 0;
+		for (k in found) {
+			var item = items.item(k);
+			if (JsonValue.Null.?(item)) continue;
+			if (result.length == limit) {
+				return (true, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED,
+					Strings.format3("the type %s has more than %d %s", key.name, limit, if(down, "subtypes", "supertypes")))));
+			}
+			if (bytes + items.bytes > maxBytes) {
+				return (true, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED,
+					Strings.format3("the %s of the type %s need more than %d bytes", if(down, "subtypes", "supertypes"), key.name, maxBytes))));
+			}
+			bytes += items.bytes;
+			result.put(item);
+		}
+		return (true, JsonRpcReply.Result(JsonValue.JArray(result.extract())));
+	}
+	// The index of the declaration that {key} names among the declaration
+	// sites of {path}: the one whose name begins at {offset} and has {key}'s
+	// kind and name; -1 if there is none. A declaration with the same name
+	// and kind anywhere else could be another type, such as one declared
+	// after the item's was deleted, so an item whose declaration moved
+	// within its file names nothing. A declaration that begins at the same
+	// offset with the same name and kind can't be told from the item's own,
+	// edited in place.
+	def resolve(s: AnalysisSnapshot, path: string, offset: int, key: LspTypeHierarchyKey) -> int {
+		if (offset < 0) return -1;
+		var run = s.declarationSiteRun(path);
+		for (i = run.0; i < run.1; i++) {
+			if (s.declarations[i].range.beginOffset == offset && matches(s, i, key)) return i;
+		}
+		return -1;
+	}
+	// Whether declaration {i} has {key}'s kind and name: for a class or a
+	// variant, which share a declaration kind, whether it is a variant; and
+	// for a case, the name of its variant, or no variant if {key} has none.
+	private def matches(s: AnalysisSnapshot, i: int, key: LspTypeHierarchyKey) -> bool {
+		var d = s.declarations[i];
+		if (d.kind != key.kind || !Strings.equal(d.name, key.name)) return false;
+		if (d.kind != AnalysisDeclKind.VARIANT_CASE) return isVariantType(d) == key.variantType;
+		var p = s.parentOf(i);
+		return if(p < 0, key.variant == null, key.variant != null && Strings.equal(s.declarations[p].name, key.variant));
+	}
+	// Whether {d} is a variant or a data type, whose display text begins
+	// "type", where a class's begins "class" (docs/architecture.md#display-text).
+	def isVariantType(d: AnalysisDeclaration) -> bool {
+		var sig = d.signature, prefix = "type ";
+		if (d.kind != AnalysisDeclKind.CLASS || sig == null || sig.length < prefix.length) return false;
+		for (k < prefix.length) if (sig[k] != prefix[k]) return false;
+		return true;
+	}
+	def isType(kind: AnalysisDeclKind) -> bool {
+		return kind == AnalysisDeclKind.CLASS || kind == AnalysisDeclKind.VARIANT_CASE;
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def stringMember(obj: HashMap<string, JsonValue>, key: string) -> string {
+		if (obj == null || !obj.has(key) || !JsonValue.String.?(obj[key])) return null;
+		return JsonValue.String.!(obj[key]).v;
+	}
+}
+// What an item's data names, besides its file and position: a class or a
+// variant (CLASS, with {variantType} for a variant) or a variant case
+// (VARIANT_CASE), its name, and a case's variant's name, or null.
+class LspTypeHierarchyKey(kind: AnalysisDeclKind, variantType: bool, name: string, variant: string) { }
+
+// The items of one reply. Items in order of path check each file's text,
+// build its position map, and parse its outline once.
+class LspTypeHierarchyItems(owner: LspTypeHierarchy, at: LspSnapshotPosition) {
+	// The estimated encoded bytes of the last item (LspTypeHierarchy.ITEM_BYTES).
+	var bytes: int;
+	private var path: string;
+	private var j = -1;
+	private var map: PositionMap;
+	private var symbols: Array<AnalysisDocumentSymbol>;
+
+	// The TypeHierarchyItem of declaration {i}, or JSON null if its file's
+	// bytes are no longer the ones analyzed or its name is in a substituted
+	// body.
+	def item(i: int) -> JsonValue {
+		var s = at.snapshot, d = s.declarations[i], r = d.range;
+		if (r.path == null || r.beginOffset < 0) return JsonValue.Null;
+		if (path == null || !Strings.equal(path, r.path)) {
+			path = r.path;
+			var target = at.target(path);
+			j = target.0;
+			if (j >= 0) {
+				map = at.positionMap(j, target.1);
+				// The analyzed text parsed with these options, so its outline has
+				// the declaration.
+				symbols = AeneasAdapter.documentSymbols(path, target.1, at.options);
+			}
+		}
+		if (j < 0) return JsonValue.Null;
+		var span = s.currentRange(j, r.beginOffset, r.endOffset);
+		if (span.0 < 0) return JsonValue.Null;
+		var selection = at.rangeIn(j, map, r.beginOffset, r.endOffset);
+		var extent = find(symbols, r), range = at.extentIn(j, map, extent.0, extent.1);
+		if (JsonValue.Null.?(range)) range = selection;
+		var uri = s.documentVersions[j].uri, variant: string;
+		if (d.kind == AnalysisDeclKind.VARIANT_CASE && s.parentOf(i) >= 0) variant = s.declarations[s.parentOf(i)].name;
+		var detail = if(s.documentVersions[j].substitution == null, d.signature);
+		var start = map.offsetToPosition(span.0), position = Strings.newMap<JsonValue>();
+		position["line"] = JsonValue.Int(start.line);
+		position["character"] = JsonValue.Int(start.character);
+		var data = Strings.newMap<JsonValue>();
+		data["uri"] = JsonValue.String(uri);
+		data["position"] = JsonValue.JObject(position);
+		data["name"] = JsonValue.String(d.name);
+		data["kind"] = JsonValue.String(if(d.kind == AnalysisDeclKind.VARIANT_CASE, "case", if(owner.isVariantType(d), "variant", "class")));
+		if (variant != null) data["variant"] = JsonValue.String(variant);
+		var obj = Strings.newMap<JsonValue>();
+		obj["name"] = JsonValue.String(d.name);
+		obj["kind"] = JsonValue.Int(owner.clientKinds.send(LspSymbolKind.of(d.kind)));
+		if (detail != null) obj["detail"] = JsonValue.String(detail);
+		obj["uri"] = JsonValue.String(uri);
+		obj["range"] = range;
+		obj["selectionRange"] = selection;
+		obj["data"] = JsonValue.JObject(data);
+		bytes = 2 * JsonRpcJson.stringBytes(uri) + 2 * JsonRpcJson.stringBytes(d.name) + JsonRpcJson.stringBytes(detail)
+			+ JsonRpcJson.stringBytes(variant) + owner.ITEM_BYTES;
+		return JsonValue.JObject(obj);
+	}
+	// The whole extent of the outline symbol whose name is exactly {r}'s, or
+	// {r}'s own if there is none.
+	private def find(list: Array<AnalysisDocumentSymbol>, r: AnalysisRange) -> (int, int) {
+		for (sym in list) {
+			if (sym.nameBegin == r.beginOffset && sym.nameEnd == r.endOffset) return (sym.begin, sym.end);
+			if (sym.begin <= r.beginOffset && r.endOffset <= sym.end) return find(sym.children, r);
+		}
+		return (r.beginOffset, r.endOffset);
+	}
+}

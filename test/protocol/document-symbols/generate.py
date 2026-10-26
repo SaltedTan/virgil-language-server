@@ -113,7 +113,7 @@ outputs = [
                                    hoverProvider=True, implementationProvider=True, referencesProvider=True, renameProvider=True,
                                    signatureHelpProvider=dict(retriggerCharacters=[")"], triggerCharacters=["(", ","]),
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
-                                   typeDefinitionProvider=True,
+                                   typeDefinitionProvider=True, typeHierarchyProvider=True,
                                    workspace=dict(workspaceFolders=dict(changeNotifications=True, supported=True)),
                                    workspaceSymbolProvider=True),
                   serverInfo=dict(name="virgil-lsp", version="@VERSION@"))),

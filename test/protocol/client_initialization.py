@@ -61,6 +61,7 @@ CAPABILITIES = {
     "renameProvider": {"prepareProvider": True},
     "signatureHelpProvider": {"retriggerCharacters": [")"], "triggerCharacters": ["(", ","]},
     "textDocumentSync": {"change": 1, "openClose": True, "save": {"includeText": False}},
+    "typeHierarchyProvider": True,
     "workspace": {"workspaceFolders": {"changeNotifications": True, "supported": True}},
     "workspaceSymbolProvider": True,
 }

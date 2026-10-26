@@ -1,0 +1,517 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Type hierarchy items from the class hierarchy, one level at a time. Every
+// program runs through the compiler, the collector, and the worker wire, and
+// its snapshot records the overlays it analyzed, so that items in other files
+// pass the analyzed-text checks that a request makes. Supertypes and subtypes
+// resolve an item's data as a request does: its position, converted through
+// the current text, and then its name, kind, and variant. The sources put
+// non-ASCII text before their declarations, so byte offsets differ from
+// UTF-16 positions.
+def T = UnitTests.register;
+def X = [
+	T("TypeHierarchy:deep_chain", deep_chain),
+	T("TypeHierarchy:several_subclasses", several_subclasses),
+	T("TypeHierarchy:generic_bases", generic_bases),
+	T("TypeHierarchy:variants", variants),
+	T("TypeHierarchy:open_variants", open_variants),
+	T("TypeHierarchy:library_classes", library_classes),
+	T("TypeHierarchy:unresolved_superclass", unresolved_superclass),
+	T("TypeHierarchy:inheritance_cycles", inheritance_cycles),
+	T("TypeHierarchy:other_kinds", other_kinds),
+	T("TypeHierarchy:client_kinds", client_kinds),
+	T("TypeHierarchy:unrelated_edit", unrelated_edit),
+	T("TypeHierarchy:moved_declaration", moved_declaration),
+	T("TypeHierarchy:moved_case", moved_case),
+	T("TypeHierarchy:deleted_or_replaced", deleted_or_replaced),
+	T("TypeHierarchy:malformed_data", malformed_data),
+	T("TypeHierarchy:reply_bounds", reply_bounds),
+	()
+];
+def NOTE = "/* é𝄞\t */ ";
+def indexFrom(text: Array<byte>, needle: string, from: int) -> int {
+	for (i = from; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def indexOf(text: Array<byte>, needle: string) -> int {
+	return indexFrom(text, needle, 0);
+}
+// An expected item: its source, its name, the text that its declaration's
+// range begins with, the offset of its name in that text, the text that the
+// range ends with, the SymbolKind sent, its detail, and a case's variant.
+class HierarchyWant(file: int, name: string, begin: string, skip: int, end: string, kind: int, detail: string, variant: string) { }
+def CLASS = 5;
+def CASE = 22;
+def want(file: int, name: string, begin: string, skip: int, end: string, detail: string) -> HierarchyWant {
+	return HierarchyWant.new(file, name, begin, skip, end, CLASS, detail, null);
+}
+def wantCase(file: int, name: string, begin: string, end: string, detail: string, variant: string) -> HierarchyWant {
+	return HierarchyWant.new(file, name, begin, 5, end, CASE, detail, variant);
+}
+
+// A program of overlays, analyzed as a project analysis would analyze them.
+class HierarchyProgram {
+	def t: Tester;
+	def names: Array<string>;
+	def texts: Array<Array<byte>>;
+	def options: Array<string>;
+	def verified: bool;
+	def store = DocumentStore.new(null, 64 * 1024 * 1024);
+	def hierarchy = LspTypeHierarchy.new();
+	var snapshot: AnalysisSnapshot;
+	var analysis: ProgramAnalysis;
+	private var version = 1;
+	new(t, names, texts, options, verified) {
+		// Clients declare every SymbolKind, as VS Code and Neovim do.
+		var kinds = Strings.newMap<JsonValue>(), all = Array<JsonValue>.new(26);
+		for (i < all.length) all[i] = JsonValue.Int(i + 1);
+		kinds["valueSet"] = JsonValue.JArray(all);
+		hierarchy.clientKinds = LspSymbolKind.symbols(kinds);
+		for (i < names.length) store.open(uri(i), "virgil", version, texts[i]);
+		analyze();
+	}
+	def path(i: int) -> string { return Arrays.concat("/type-hierarchy/", names[i]); }
+	def uri(i: int) -> string { return ProjectFiles.uri(path(i)); }
+	def change(i: int, text: string) {
+		texts[i] = text;
+		t.assert_eq(null, store.change(uri(i), ++version, text));
+		analyze();
+	}
+	private def analyze() {
+		var sources = Array<AnalysisSource>.new(names.length), paths = Array<string>.new(names.length);
+		for (i < sources.length) sources[i] = AnalysisSource.new(paths[i] = path(i), texts[i]);
+		var a = analysis = AeneasAdapter.analyzeProgram(sources, options, false);
+		if (verified) {
+			for (d in a.diagnostics) t.fail1("unexpected diagnostic: %s", d.toString());
+		}
+		var files = Array<(string, Array<AnalysisOccurrence>)>.new(paths.length);
+		for (i < paths.length) files[i] = (paths[i], a.occurrences(paths[i]));
+		var encoded = AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, files), 0L);
+		match (AnalysisWire.decodeResult(Ranges.dup(encoded[WorkerFraming.HEADER_BYTES ...]), 1, paths)) {
+			Decoded(result) => snapshot = result.snapshot;
+			_ => return t.fail("type hierarchy result failed to decode");
+		}
+		var versions = Array<AnalysisDocumentVersion>.new(names.length);
+		for (i < versions.length) {
+			var doc = store.overlay(uri(i));
+			versions[i] = AnalysisDocumentVersion.new(doc.uri, doc.version, doc.identity);
+		}
+		snapshot.recordDocumentVersions(versions);
+	}
+	def at(i: int) -> LspSnapshotPosition {
+		return LspSnapshotPosition.new(store, snapshot, i, texts[i], PositionMap.new(texts[i], PositionEncoding.UTF16), options);
+	}
+	// The reply to prepareTypeHierarchy at {needle} plus {skip} in source {i},
+	// with the byte before looked up as a request's position is.
+	def prepare(i: int, needle: string, skip: int) -> JsonRpcReply {
+		var offset = indexOf(texts[i], needle);
+		if (offset < 0) {
+			t.fail1("missing text: %s", needle);
+			return JsonRpcReply.Result(JsonValue.Null);
+		}
+		offset += skip;
+		var found = hierarchy.answer(at(i), offset);
+		if (!found.0 && offset > 0) found = hierarchy.answer(at(i), offset - 1);
+		return found.1;
+	}
+	// The one item that prepare gives at {needle} plus {skip} in source {i}.
+	def item(i: int, needle: string, skip: int) -> JsonValue {
+		var reply = prepare(i, needle, skip);
+		if (JsonRpcReply.Result.?(reply)) {
+			var v = JsonRpcReply.Result.!(reply).v;
+			if (JsonValue.JArray.?(v) && JsonValue.JArray.!(v).v.length == 1) return JsonValue.JArray.!(v).v[0];
+		}
+		t.fail1("no item at %s", needle);
+		return JsonValue.Null;
+	}
+	// The reply to supertypes or, if {down}, subtypes of {item}, as a request
+	// resolves it, with lowered bounds if given; InvalidParams if its data is
+	// malformed.
+	def expand(item: JsonValue, down: bool) -> JsonRpcReply {
+		return expandWithin(item, down, LspReferences.MAX_LOCATIONS, LspReferences.MAX_REPLY_BYTES);
+	}
+	def expandWithin(item: JsonValue, down: bool, limit: int, maxBytes: int) -> JsonRpcReply {
+		var params = Strings.newMap<JsonValue>();
+		params["item"] = item;
+		if (hierarchy.prepareItem(params, down) == null) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "malformed"));
+		}
+		var data = JsonValue.JObject.!(JsonValue.JObject.!(item).v["data"]).v;
+		var name = JsonValue.String.!(data["name"]).v, kind = JsonValue.String.!(data["kind"]).v;
+		var variant = if(data.has("variant"), JsonValue.String.!(data["variant"]).v);
+		var key = LspTypeHierarchyKey.new(if(Strings.equal(kind, "case"), AnalysisDeclKind.VARIANT_CASE, AnalysisDeclKind.CLASS),
+			Strings.equal(kind, "variant"), name, variant);
+		var i = snapshot.documentIndex(JsonValue.String.!(data["uri"]).v);
+		var position = JsonValue.JObject.!(data["position"]).v;
+		var current = PositionMap.new(texts[i], PositionEncoding.UTF16).positionToOffset(
+			JsonValue.Int.!(position["line"]).v, JsonValue.Int.!(position["character"]).v);
+		return hierarchy.related(at(i), snapshot.effectiveOffset(i, current), key, down, limit, maxBytes).1;
+	}
+	// Checks that {reply} holds exactly the items {want}, in order.
+	def check(label: string, reply: JsonRpcReply, want: Array<HierarchyWant>) {
+		var items: Array<JsonValue>;
+		match (reply) {
+			Result(v) => if (JsonValue.JArray.?(v)) items = JsonValue.JArray.!(v).v;
+			Error(e) => return t.fail2("%s failed: %s", label, e.message);
+		}
+		if (items == null) return t.fail1("%s gave no list", label);
+		if (items.length != want.length) return t.fail3("%s gave %d items, not %d", label, items.length, want.length);
+		for (k < want.length) {
+			var w = want[k], obj = JsonValue.JObject.!(items[k]).v, text = texts[w.file];
+			var begin = indexOf(text, w.begin);
+			if (begin < 0) return t.fail1("missing text: %s", w.begin);
+			var end = indexFrom(text, w.end, begin);
+			if (end < 0) return t.fail1("missing text: %s", w.end);
+			end += w.end.length;
+			var nameBegin = begin + w.skip, nameEnd = nameBegin + w.name.length;
+			var m = PositionMap.new(text, PositionEncoding.UTF16), what = Strings.format2("%s item %d", label, k);
+			expectString(what, "name", w.name, obj["name"]);
+			expectInt(what, "kind", w.kind, obj["kind"]);
+			if (w.detail == null) t.assert(!obj.has("detail"), Strings.format1("%s has a detail", what));
+			else expectString(what, "detail", w.detail, obj["detail"]);
+			expectString(what, "uri", uri(w.file), obj["uri"]);
+			expectRange(what, "range", m, begin, end, obj["range"]);
+			expectRange(what, "selectionRange", m, nameBegin, nameEnd, obj["selectionRange"]);
+			var data = JsonValue.JObject.!(obj["data"]).v;
+			expectString(what, "data.uri", uri(w.file), data["uri"]);
+			expectString(what, "data.name", w.name, data["name"]);
+			var dataKind = if(w.kind != CLASS, "case", if(Strings.equal(Arrays.range(w.begin, 0, 4), "type"), "variant", "class"));
+			expectString(what, "data.kind", dataKind, data["kind"]);
+			if (w.variant == null) t.assert(!data.has("variant"), Strings.format1("%s has a variant", what));
+			else expectString(what, "data.variant", w.variant, data["variant"]);
+			var p = JsonValue.JObject.!(data["position"]).v;
+			t.asserti(nameBegin, m.positionToOffset(JsonValue.Int.!(p["line"]).v, JsonValue.Int.!(p["character"]).v));
+		}
+	}
+	def checkNull(label: string, reply: JsonRpcReply) {
+		if (!JsonRpcReply.Result.?(reply) || !JsonValue.Null.?(JsonRpcReply.Result.!(reply).v)) t.fail1("%s is not null", label);
+	}
+	def checkInvalid(label: string, reply: JsonRpcReply) {
+		if (!JsonRpcReply.Error.?(reply) || JsonRpcReply.Error.!(reply).error.code != JsonRpcErrorCode.INVALID_PARAMS) {
+			t.fail1("%s is not invalid", label);
+		}
+	}
+	private def expectString(what: string, field: string, expected: string, got: JsonValue) {
+		if (!JsonValue.String.?(got)) return t.fail3("%s: %s is not %s", what, field, expected);
+		var v = JsonValue.String.!(got).v;
+		if (!Strings.equal(expected, v)) t.fail3("%s: %s is %s", what, field, Strings.format2("%s, not %s", v, expected));
+	}
+	private def expectInt(what: string, field: string, expected: int, got: JsonValue) {
+		if (!JsonValue.Int.?(got) || JsonValue.Int.!(got).v != expected) t.fail3("%s: %s is not %d", what, field, expected);
+	}
+	private def expectRange(what: string, field: string, m: PositionMap, begin: int, end: int, got: JsonValue) {
+		var r = JsonValue.JObject.!(got).v, s = JsonValue.JObject.!(r["start"]).v, e = JsonValue.JObject.!(r["end"]).v;
+		var b = m.positionToOffset(JsonValue.Int.!(s["line"]).v, JsonValue.Int.!(s["character"]).v);
+		var f = m.positionToOffset(JsonValue.Int.!(e["line"]).v, JsonValue.Int.!(e["character"]).v);
+		if (b != begin || f != end) {
+			t.fail(Strings.format3("%s: %s is %s", what, field, Strings.format3("%d-%d, not %s", b, f, Strings.format2("%d-%d", begin, end))));
+		}
+	}
+}
+def program(t: Tester, texts: Array<string>, options: Array<string>, verified: bool) -> HierarchyProgram {
+	var names = Array<string>.new(texts.length), bytes = Array<Array<byte>>.new(texts.length);
+	for (i < texts.length) {
+		names[i] = Arrays.concat([byte.!('a' + i)], ".v3");
+		bytes[i] = texts[i];
+	}
+	return HierarchyProgram.new(t, names, bytes, options, verified);
+}
+def expectError(t: Tester, a: ProgramAnalysis, kind: string) {
+	for (d in a.diagnostics) if (Strings.equal(d.kind, kind)) return;
+	t.fail1("no %s reported", kind);
+}
+
+// One level at a time along a chain: each class's supertype is its direct
+// superclass, and its subtypes only the classes that extend it directly.
+def CHAIN = Arrays.concat(NOTE, "class A { }\nclass B extends A { }\nclass C extends B {\n\tdef m() { }\n}\nclass D extends C { }\n");
+def deep_chain(t: Tester) {
+	var p = program(t, [CHAIN], [], true);
+	var a = want(0, "A", "class A", 6, "{ }", "class A"), b = want(0, "B", "class B", 6, "{ }", "class B extends A");
+	var c = want(0, "C", "class C", 6, "\n}", "class C extends B"), d = want(0, "D", "class D", 6, "{ }", "class D extends C");
+	for (w in [(a, "class A", 6), (b, "class B", 6), (c, "extends C", 8), (d, "class D", 7)]) {
+		p.check(w.1, p.prepare(0, w.1, w.2), [w.0]);
+	}
+	p.check("supertypes of A", p.expand(p.item(0, "class A", 6), false), []);
+	p.check("subtypes of A", p.expand(p.item(0, "class A", 6), true), [b]);
+	p.check("supertypes of B", p.expand(p.item(0, "class B", 6), false), [a]);
+	p.check("subtypes of B", p.expand(p.item(0, "class B", 6), true), [c]);
+	p.check("supertypes of C", p.expand(p.item(0, "class C", 6), false), [b]);
+	p.check("subtypes of C", p.expand(p.item(0, "class C", 6), true), [d]);
+	p.check("supertypes of D", p.expand(p.item(0, "class D", 6), false), [c]);
+	p.check("subtypes of D", p.expand(p.item(0, "class D", 6), true), []);
+}
+// A class's subtypes in byte order of path and then by offset, which is
+// not the order of analysis, across an open file and another.
+def SHAPES = Arrays.concat(NOTE, "class Shape { }\nclass Polygon extends Shape { }\nclass Square extends Polygon { }\nclass Circle extends Shape { }\ncomponent Use {\n\tdef f(s: Shape) -> Shape { return Circle.new(); }\n}\n");
+def MORE = Arrays.concat(NOTE, "class Hexagon extends Polygon { }\nclass Oval extends Shape { }\n");
+def several_subclasses(t: Tester) {
+	var p = HierarchyProgram.new(t, ["m.v3", "a.v3"], [SHAPES, MORE], [], true);
+	var oval = want(1, "Oval", "class Oval", 6, "{ }", "class Oval extends Shape");
+	var polygon = want(0, "Polygon", "class Polygon", 6, "{ }", "class Polygon extends Shape");
+	var circle = want(0, "Circle", "class Circle", 6, "{ }", "class Circle extends Shape");
+	var shape = want(0, "Shape", "class Shape", 6, "{ }", "class Shape");
+	p.check("subtypes of Shape", p.expand(p.item(0, "s: Shape", 3), true), [oval, polygon, circle]);
+	p.check("subtypes of Polygon", p.expand(p.item(1, "extends Polygon", 8), true),
+		[want(1, "Hexagon", "class Hexagon", 6, "{ }", "class Hexagon extends Polygon"), want(0, "Square", "class Square", 6, "{ }", "class Square extends Polygon")]);
+	p.check("supertypes of Oval", p.expand(p.item(1, "class Oval", 6), false), [shape]);
+	// A use selects its class, also as a result type, a construction, and
+	// just past its name.
+	for (use in [("-> Shape", 3), ("-> Shape", 8), ("Circle.new", 0)]) {
+		p.check(use.0, p.prepare(0, use.0, use.1), [if(use.0[0] == 'C', circle, shape)]);
+	}
+}
+// A generic base is its class, whatever the type arguments.
+def GENERIC = Arrays.concat(NOTE, "class Box<T> {\n\tdef get() -> T;\n}\nclass Crate<T>(item: T) extends Box<T> {\n\tdef get() -> T { return item; }\n}\nclass IntBox extends Box<int> {\n\tdef get() -> int { return 1; }\n}\n");
+def generic_bases(t: Tester) {
+	var p = program(t, [GENERIC], [], true);
+	var box = want(0, "Box", "class Box", 6, "\n}", "class Box<T>");
+	var crate = want(0, "Crate", "class Crate", 6, "\n}", "class Crate<T>(item: T) extends Box<T>");
+	var intBox = want(0, "IntBox", "class IntBox", 6, "\n}", "class IntBox extends Box<int>");
+	p.check("subtypes of Box", p.expand(p.item(0, "class Box", 6), true), [crate, intBox]);
+	p.check("supertypes of Crate", p.expand(p.item(0, "class Crate", 6), false), [box]);
+	p.check("supertypes of IntBox", p.expand(p.item(0, "class IntBox", 6), false), [box]);
+	p.check("Box<int>", p.prepare(0, "Box<int>", 1), [box]);
+	p.check("subtypes of IntBox", p.expand(p.item(0, "class IntBox", 6), true), []);
+}
+// A variant's subtypes are its cases, and a case's supertype its variant.
+// A data type is its own single case, so it is one type, with neither.
+def VARIANTS = Arrays.concat(NOTE, "type Tree {\n\tcase Leaf;\n\tcase Node(left: Tree, right: Tree) {\n\t\tdef size() -> int { return 2; }\n\t}\n\tdef size() -> int { return 0; }\n}\ntype Pair(a: int, b: int) { }\ncomponent Use {\n\tdef f(t: Tree) -> int {\n\t\tmatch (t) {\n\t\t\tLeaf => return Pair(1, 2).a;\n\t\t\t_ => return 0;\n\t\t}\n\t}\n}\n");
+def variants(t: Tester) {
+	var p = program(t, [VARIANTS], [], true);
+	var tree = want(0, "Tree", "type Tree", 5, "\n}", "type Tree");
+	var leaf = wantCase(0, "Leaf", "case Leaf", ";", "case Leaf", "Tree");
+	var node = wantCase(0, "Node", "case Node", "\n\t}", "case Node(left: Tree, right: Tree)", "Tree");
+	var pair = want(0, "Pair", "type Pair", 5, "{ }", "type Pair(a: int, b: int)");
+	p.check("subtypes of Tree", p.expand(p.item(0, "t: Tree", 3), true), [leaf, node]);
+	p.check("supertypes of Tree", p.expand(p.item(0, "type Tree", 5), false), []);
+	p.check("Leaf =>", p.prepare(0, "Leaf =>", 0), [leaf]);
+	p.check("supertypes of Leaf", p.expand(p.item(0, "Leaf =>", 0), false), [tree]);
+	p.check("subtypes of Node", p.expand(p.item(0, "case Node", 5), true), []);
+	p.check("supertypes of Node", p.expand(p.item(0, "case Node", 5), false), [tree]);
+	p.check("Pair(1, 2)", p.prepare(0, "Pair(1, 2)", 0), [pair]);
+	p.check("type Pair", p.prepare(0, "type Pair", 5), [pair]);
+	p.check("subtypes of Pair", p.expand(p.item(0, "Pair(1, 2)", 0), true), []);
+	p.check("supertypes of Pair", p.expand(p.item(0, "type Pair", 5), false), []);
+}
+// With -lang:open-types, a variant that extends another is one of its
+// subtypes, after its cases and its default case "case _", and the variant
+// is its supertype.
+def OPEN = Arrays.concat(NOTE, "type V {\n\tcase A;\n\tcase _ {\n\t\tdef f() -> int { return 1; }\n\t}\n\tdef f() -> int { return 0; }\n}\ntype W extends V {\n\tcase B;\n}\n");
+def open_variants(t: Tester) {
+	var p = program(t, [OPEN], ["-lang:open-types"], true);
+	var v = want(0, "V", "type V", 5, "\n}", "type V"), w = want(0, "W", "type W", 5, "\n}", "type W extends V");
+	var a = wantCase(0, "A", "case A", ";", "case A", "V"), d = wantCase(0, "_", "case _", "\n\t}", "case _", "V");
+	var b = wantCase(0, "B", "case B", ";", "case B", "W");
+	p.check("subtypes of V", p.expand(p.item(0, "type V", 5), true), [a, d, w]);
+	p.check("extends V", p.prepare(0, "extends V", 8), [v]);
+	p.check("supertypes of W", p.expand(p.item(0, "type W", 5), false), [v]);
+	p.check("subtypes of W", p.expand(p.item(0, "type W", 5), true), [b]);
+	p.check("supertypes of case _", p.expand(p.item(0, "case _", 5), false), [v]);
+	p.check("supertypes of B", p.expand(p.item(0, "case B", 5), false), [w]);
+	p.check("subtypes of case _", p.expand(p.item(0, "case _", 5), true), []);
+}
+// A library's classes in the program count as the program's own: lib/util's
+// Map, with its own subclass PartialMap and the program's class Mine.
+def library_classes(t: Tester) {
+	var text = "class Mine<K, V> extends Map<K, V> {\n\tdef [key: K] -> V { var v: V; return v; }\n\tdef [key: K] = val: V { }\n}\n";
+	var dir = "vendor/virgil/lib/util", listing = ProjectFiles.list(dir, 4096);
+	if (listing.names == null) return t.fail("lib/util is not listed");
+	var names = Vector<string>.new().put("library.v3"), texts = Vector<Array<byte>>.new().put(text), map = -1;
+	for (name in listing.names) {
+		if (!Strings.endsWith(name, ".v3")) continue;
+		if (Strings.equal(name, "Map.v3")) map = names.length;
+		names.put(Arrays.concat("util/", name));
+		texts.put(System.fileLoad(ProjectFiles.join(dir, name)));
+	}
+	if (map < 0) return t.fail("lib/util has Map.v3");
+	var p = HierarchyProgram.new(t, names.extract(), texts.extract(), [], true);
+	var mapItem = want(map, "Map", "class Map<K, V>", 6, "\n}", "class Map<K, V>");
+	var mine = want(0, "Mine", "class Mine", 6, "\n}", "class Mine<K, V> extends Map<K, V>");
+	var partial = want(map, "PartialMap", "class PartialMap", 6, "\n}", "class PartialMap<K, V> extends Map<K, V>");
+	p.check("extends Map", p.prepare(0, "extends Map", 8), [mapItem]);
+	p.check("supertypes of Mine", p.expand(p.item(0, "class Mine", 6), false), [mapItem]);
+	p.check("subtypes of Map", p.expand(p.item(0, "extends Map", 8), true), [mine, partial]);
+	p.check("supertypes of PartialMap", p.expand(p.item(map, "class PartialMap", 6), false), [mapItem]);
+}
+// A class whose superclass does not resolve, or is not a class, has no
+// supertype, and verification reports the error; its own subclasses count.
+def unresolved_superclass(t: Tester) {
+	var text = Arrays.concat(NOTE, "class U extends Missing { }\nclass Sub extends U { }\ntype N { }\nclass X extends N { }\n");
+	var p = program(t, [text], [], false);
+	expectError(t, p.analysis, "UnresolvedType");
+	expectError(t, p.analysis, "InheritanceError");
+	var u = want(0, "U", "class U", 6, "{ }", "class U extends ?");
+	p.check("supertypes of U", p.expand(p.item(0, "class U", 6), false), []);
+	p.check("subtypes of U", p.expand(p.item(0, "class U", 6), true), [want(0, "Sub", "class Sub", 6, "{ }", "class Sub extends U")]);
+	p.check("supertypes of Sub", p.expand(p.item(0, "class Sub", 6), false), [u]);
+	p.check("supertypes of X", p.expand(p.item(0, "class X", 6), false), []);
+	p.check("subtypes of N", p.expand(p.item(0, "type N", 5), true), []);
+	p.checkNull("Missing", p.prepare(0, "Missing", 2));
+}
+// The worker sends no parent of a class on an inheritance cycle, which
+// verification reports, so the classes on it have no supertypes and no
+// subtypes among each other; a class that extends one from outside keeps
+// its own. A class that extends itself has neither.
+def inheritance_cycles(t: Tester) {
+	var text = Arrays.concat(NOTE, "class P extends Q { }\nclass Q extends R { }\nclass R extends P { }\nclass S extends S { }\nclass Tail extends P { }\n");
+	var p = program(t, [text], [], false);
+	expectError(t, p.analysis, "InheritanceError");
+	var tail = want(0, "Tail", "class Tail", 6, "{ }", "class Tail extends P");
+	for (name in ["class P", "class Q", "class R", "class S"]) {
+		p.check(Arrays.concat("supertypes of ", name), p.expand(p.item(0, name, 6), false), []);
+	}
+	p.check("subtypes of P", p.expand(p.item(0, "class P", 6), true), [tail]);
+	for (name in ["class Q", "class R", "class S", "class Tail"]) {
+		p.check(Arrays.concat("subtypes of ", name), p.expand(p.item(0, name, 6), true), []);
+	}
+	p.check("supertypes of Tail", p.expand(p.item(0, "class Tail", 6), false), [want(0, "P", "class P", 6, "{ }", "class P extends Q")]);
+}
+// Anything but a class, a variant, or a variant case gives null: components,
+// enums and their cases, methods, constructors, fields, locals, parameters,
+// type parameters, layouts, packings, builtins, and positions that select
+// nothing.
+def other_kinds(t: Tester) {
+	var text = Arrays.concat(NOTE, "class K<T> {\n\tvar f: int;\n\tnew() { }\n\tdef m(x: T) -> int { var y = 1; return y + \"abc\".length; }\n}\nenum Color { RED }\nlayout Bits {\n\t+0 low: u8;\n\t=1;\n}\npacking Nibbles(a: 4, b: 4): 8 = #concat(a, b);\ncomponent C {\n\tdef g() -> Color { return Color.RED; }\n}\n");
+	var p = program(t, [text], [], true);
+	for (spot in [("component C", 10), ("enum Color", 5), ("Color.RED", 6), ("-> Color", 3), ("def m", 4), ("new()", 0), ("var f", 4),
+			("var y", 4), ("return y", 7), ("x: T", 0), ("K<T>", 2), ("x: T", 3), ("layout Bits", 7), ("+0 low", 3),
+			("packing Nibbles", 8), (".length", 1), ("f: int", 3), ("def m", 1), ("{ }", 1)]) {
+		p.checkNull(spot.0, p.prepare(0, spot.0, spot.1));
+	}
+}
+// Kinds go through the client's set, as document symbols' do: a client that
+// declares none gets a case as Constant.
+def client_kinds(t: Tester) {
+	var p = program(t, [VARIANTS], [], true);
+	p.hierarchy.clientKinds = LspSymbolKind.symbols(null);
+	var leaf = HierarchyWant.new(0, "Leaf", "case Leaf", 5, ";", 14, "case Leaf", "Tree");
+	p.check("Leaf without kinds", p.prepare(0, "case Leaf", 5), [leaf]);
+	p.check("subtypes of Tree without kinds", p.expand(p.item(0, "type Tree", 5), true),
+		[leaf, HierarchyWant.new(0, "Node", "case Node", 5, "\n\t}", 14, "case Node(left: Tree, right: Tree)", "Tree")]);
+}
+// An item from an earlier analysis names its declaration in a later one
+// after an edit elsewhere in its file and in another file.
+def unrelated_edit(t: Tester) {
+	var p = HierarchyProgram.new(t, ["m.v3", "a.v3"], [SHAPES, MORE], [], true);
+	var shape = p.item(0, "class Shape", 6), polygon = p.item(0, "class Polygon", 6);
+	p.change(1, Arrays.concat(MORE, "class Kite extends Polygon { }\n"));
+	p.change(0, Arrays.concat(SHAPES, "component Later { }\n"));
+	p.check("subtypes of Polygon after edits", p.expand(polygon, true), [
+		want(1, "Hexagon", "class Hexagon", 6, "{ }", "class Hexagon extends Polygon"),
+		want(1, "Kite", "class Kite", 6, "{ }", "class Kite extends Polygon"),
+		want(0, "Square", "class Square", 6, "{ }", "class Square extends Polygon")]);
+	p.check("supertypes of Polygon after edits", p.expand(polygon, false), [want(0, "Shape", "class Shape", 6, "{ }", "class Shape")]);
+	p.check("supertypes of Shape after edits", p.expand(shape, false), []);
+}
+// After its declaration moves within its file, an item names nothing: a
+// declaration with its name and kind elsewhere could be another type. An
+// item whose declaration's name is still where it was names it. Items
+// prepared again find the moved declarations.
+def moved_declaration(t: Tester) {
+	var p = program(t, [CHAIN], [], true);
+	var b = p.item(0, "class B", 6), c = p.item(0, "class C", 6);
+	// A comment takes B's line, and B moves after C, whose name keeps its
+	// line and column.
+	p.change(0, Arrays.concat(NOTE, "class A { }\n// é𝄞 moved\nclass C extends B {\n\tdef m() { }\n}\nclass B extends A { }\nclass D extends C { }\n"));
+	p.checkNull("subtypes of B after a move", p.expand(b, true));
+	p.checkNull("supertypes of B after a move", p.expand(b, false));
+	p.check("supertypes of C, which stayed", p.expand(c, false), [want(0, "B", "class B", 6, "{ }", "class B extends A")]);
+	var b2 = p.item(0, "class B", 6);
+	p.check("subtypes of B prepared again", p.expand(b2, true), [want(0, "C", "class C", 6, "\n}", "class C extends B")]);
+	p.check("supertypes of B prepared again", p.expand(b2, false), [want(0, "A", "class A", 6, "{ }", "class A")]);
+}
+// Two variants with same-named cases: a case's variant tells them apart.
+// After an edit that leaves Q's None where it was, its item still names
+// it; once it moves, the item names nothing.
+def moved_case(t: Tester) {
+	var text = Arrays.concat(NOTE, "type P {\n\tcase None;\n\tcase Some(v: int);\n}\ntype Q {\n\tcase None;\n}\n");
+	var p = program(t, [text], [], true);
+	var none = p.item(0, "\tcase None;\n}", 6);
+	p.change(0, Arrays.concat(text, "// after\ntype R {\n\tcase None;\n}\n"));
+	p.check("supertypes of Q's None after a later edit", p.expand(none, false), [want(0, "Q", "type Q", 5, "\n}", "type Q")]);
+	// P's None takes the place of Q's None, at the same offset.
+	p.change(0, Arrays.concat(NOTE, "type Q {\n\tcase X;\n}\n// xxxxxxxxxxxxxxxxxxx\ntype P {\n\tcase None;\n}\n"));
+	p.checkNull("supertypes of Q's None after a move", p.expand(none, false));
+}
+// An item whose declaration is gone, or is now another kind of declaration
+// with the same name, names nothing: null, never another declaration.
+def deleted_or_replaced(t: Tester) {
+	var p = HierarchyProgram.new(t, ["m.v3", "a.v3"], [SHAPES, MORE], [], true);
+	var circle = p.item(0, "class Circle", 6), hexagon = p.item(1, "class Hexagon", 6), oval = p.item(1, "class Oval", 6);
+	// The component is as long as the class it replaces, so Oval stays
+	// where it was.
+	p.change(1, Arrays.concat(NOTE, "component Hexagon {             }\nclass Oval extends Shape { }\n"));
+	p.checkNull("supertypes of a replaced Hexagon", p.expand(hexagon, false));
+	p.checkNull("subtypes of a replaced Hexagon", p.expand(hexagon, true));
+	p.check("supertypes of Oval after its file changed", p.expand(oval, false), [want(0, "Shape", "class Shape", 6, "{ }", "class Shape")]);
+	p.change(0, Arrays.concat(NOTE, "class Shape { }\nclass Polygon extends Shape { }\nclass Square extends Polygon { }\n"));
+	p.checkNull("supertypes of a deleted Circle", p.expand(circle, false));
+	p.checkNull("subtypes of a deleted Circle", p.expand(circle, true));
+	// A new class of the same name elsewhere in the file is another type.
+	var rest = "class Shape { }\nclass Polygon extends Shape { }\nclass Square extends Polygon { }\n";
+	p.change(0, Arrays.concat(NOTE, Arrays.concat(rest, "component Pad { }\nclass Circle extends Polygon { }\n")));
+	p.checkNull("supertypes of Circle declared again elsewhere", p.expand(circle, false));
+	// So is a variant of the same name where Circle's name was.
+	p.change(0, Arrays.concat(NOTE, Arrays.concat(rest, "type  Circle {\n\tcase Round;\n}\n")));
+	p.checkNull("subtypes of a variant where Circle was", p.expand(circle, true));
+	p.change(0, Arrays.concat(NOTE, rest));
+	// Another class of the same name, now in another file, is another
+	// declaration.
+	p.change(1, Arrays.concat(NOTE, "class Oval extends Shape { }\nclass Circle { }\n"));
+	p.checkNull("subtypes of Circle in another file", p.expand(circle, true));
+}
+// Data without a string name, a kind of "class", "variant", or "case", or a string
+// variant is malformed. The request layer checks its uri and position.
+def malformed_data(t: Tester) {
+	var p = program(t, [CHAIN], [], true);
+	var good = JsonValue.JObject.!(p.item(0, "class B", 6)).v;
+	t.assert(JsonRpcReply.Result.?(p.expand(JsonValue.JObject(good), true)), "a good item");
+	for (change in [("name", JsonValue.Int(1)), ("kind", JsonValue.String("enum")), ("kind", JsonValue.Null), ("variant", JsonValue.Int(2))]) {
+		var item = copy(good), data = copy(JsonValue.JObject.!(good["data"]).v);
+		data[change.0] = change.1;
+		item["data"] = JsonValue.JObject(data);
+		p.checkInvalid(Strings.format1("malformed %s", change.0), p.expand(JsonValue.JObject(item), true));
+	}
+	var item = copy(good);
+	item["data"] = JsonValue.String("B");
+	var params = Strings.newMap<JsonValue>();
+	params["item"] = JsonValue.JObject(item);
+	t.assert(p.hierarchy.prepareItem(params, false) == null, "data that is not an object");
+	params["item"] = JsonValue.Null;
+	t.assert(p.hierarchy.prepareItem(params, true) == null, "no item");
+}
+def copy(m: HashMap<string, JsonValue>) -> HashMap<string, JsonValue> {
+	var result = Strings.newMap<JsonValue>();
+	m.apply(fun (k: string, v: JsonValue) { result[k] = v; });
+	return result;
+}
+// The bounds of implementation, checked exactly with lowered values: a
+// reply of as many items as the limit, and of exactly the bytes they need,
+// is answered in full, and one less of either fails.
+def reply_bounds(t: Tester) {
+	var p = HierarchyProgram.new(t, ["m.v3", "a.v3"], [SHAPES, MORE], [], true);
+	var shape = p.item(0, "class Shape", 6), n = 3, bytes = 0;
+	for (name in ["Oval", "Polygon", "Circle"]) {
+		var file = if(Strings.equal(name, "Oval"), 1, 0);
+		bytes += 2 * JsonRpcJson.stringBytes(p.uri(file)) + 2 * JsonRpcJson.stringBytes(name)
+			+ JsonRpcJson.stringBytes(Strings.format1("class %s extends Shape", name)) + JsonRpcJson.stringBytes(null) + p.hierarchy.ITEM_BYTES;
+	}
+	var all = LspReferences.MAX_REPLY_BYTES;
+	match (p.expandWithin(shape, true, n, bytes)) {
+		Result(v) => t.asserti(n, JsonValue.JArray.!(v).v.length);
+		Error(e) => t.fail1("bounded at the limit: %s", e.message);
+	}
+	for (bound in [(n - 1, all, "the type Shape has more than 2 subtypes"),
+			(n, bytes - 1, Strings.format1("the subtypes of the type Shape need more than %d bytes", bytes - 1))]) {
+		match (p.expandWithin(shape, true, bound.0, bound.1)) {
+			Result(v) => t.fail1("not bounded: %s", bound.2);
+			Error(e) => {
+				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
+				t.assert_string(bound.2, e.message);
+			}
+		}
+	}
+}
