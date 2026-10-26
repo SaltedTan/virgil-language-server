@@ -1,0 +1,16 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+component Folds {
+  def run() {
+    if (true) {
+      return;
+    } else {
+      return;
+    }
+  }
+  /* " {
+     } */
+  // first
+  // second
+}

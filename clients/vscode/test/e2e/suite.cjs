@@ -310,6 +310,14 @@ async function workspace(extension) {
   if (configuredRoot) assert.ok(channelLog().includes(`Virgil root: ${root} (from virgil.virgilRoot)`),
     'the Virgil root was not taken from virgil.virgilRoot');
 
+  const folding = await open('folding.v3');
+  const folds = await vscode.commands.executeCommand('vscode.executeFoldingRangeProvider', folding.document.uri);
+  assert.deepEqual(folds.map((r) => [r.start, r.end, r.kind]), [
+    [0, 1, vscode.FoldingRangeKind.Comment], [3, 14, undefined], [4, 9, undefined],
+    [5, 6, undefined], [7, 8, undefined], [11, 12, vscode.FoldingRangeKind.Comment], [13, 14, vscode.FoldingRangeKind.Comment],
+  ]);
+  console.log('PASS: vscode.folding-ranges.response');
+
   const bad = await open('bad.v3');
   const original = bad.document.getText();
   await expectParserDiagnostic(bad);
