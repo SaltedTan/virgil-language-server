@@ -538,6 +538,30 @@ The renames edit 4,001, 8,001, and 10,000 tokens. At 8,001 methods the program g
 
 A paired Aeneas run against main `27c57e9`, with six alternating process blocks, two warmups, and five operations per block, held the shared lock and ran on hardware thread 12 with identical BuildInfo. `references` takes 0.804 (0.786–0.837) ms against 0.795 (0.758–0.826), `prepareRename` 16.893 (16.835–17.400) against 16.942 (16.803–17.347), and `rename` 329.368 (312.687–332.152) against 328.962 (313.642–333.996), all with overlapping intervals: single-declaration requests are unchanged.
 
+## Type hierarchy
+
+Measured on 2026-10-26 against main `06672f2`, this change's base, on the Intel Core i7-14700KF reference host with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in `build/base-th` and `build/next-th`, with `BENCH=1 all bench-metadata`: main's from its `src/` checked out over the change, and the change's from its own, both with the same uncommitted documentation edit, so that their generated BuildInfo text is identical. The comparison held the shared benchmark lock, ran on P-core hardware thread 12, and used six alternating process blocks, two warmups, and five measured operations per block for the Aeneas project, with every semantic check passing and no samples removed. The change adds only new requests, which the benchmark doesn't send, so nothing it measures should change.
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+
+| Measurement | Main | With type hierarchy |
+| --- | ---: | ---: |
+| Aeneas fresh analysis | 342.056 (333.185–359.263) | 344.228 (335.304–358.922) |
+| Aeneas reused analysis | 290.349 (281.569–307.013) | 297.439 (279.558–314.865) |
+| Aeneas definition | 0.199 (0.169–0.238) | 0.190 (0.170–0.229) |
+| Aeneas hover | 0.187 (0.152–3.507) | 0.187 (0.154–0.207) |
+| Aeneas references | 0.821 (0.790–0.861) | 0.812 (0.793–1.041) |
+| Aeneas prepareRename | 24.137 (16.828–25.869) | 24.153 (16.783–25.691) |
+| Aeneas rename | 338.251 (324.264–343.694) | 337.422 (325.652–345.780) |
+| Aeneas completion hit | 5.682 (2.664–6.250) | 5.654 (2.679–6.301) |
+| Aeneas completion miss | 119.582 (112.410–132.488) | 119.431 (115.852–132.405) |
+| Aeneas syntax diagnostic | 1.465 (0.380–1.548) | 0.949 (0.379–1.862) |
+| Aeneas semantic diagnostic | 528.799 (512.913–544.191) | 526.560 (508.127–544.301) |
+
+The fresh analysis median is 2.172 ms (0.64%) higher and the reused one 7.090 ms (2.44%) higher, and every interval overlaps, so the change has no measurable cost. The worker executables are the same size, 888,000 bytes, since the worker sends nothing new; the server's grows from 808,128 to 819,352 bytes. Every measured worker transaction collected zero times in both candidates, and the server collected in the same operations in each: once in every semantic diagnostic, in 6 of the 30 renames, and in 12 of the 30 reused analyses.
+
+With the Aeneas project, from the name of class `Type` in the open `types/Type.v3`, prepareTypeHierarchy takes 0.49 ms and subtypes 1.51 ms, the medians of 20 requests after a first one, once the project's analysis had completed, from a throwaway stdio client of the normal build, pinned to the same thread under the same lock. Subtypes lists `Type`'s 15 direct subclasses, in 11 files, each of which it reads again and checks against its captured length and hash, or finds open, and maps and parses for the declarations' extents once. prepareTypeHierarchy parses only `Type.v3`.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
