@@ -105,13 +105,15 @@ Project results add `"projectConfiguration":{"uri":"file:///absolute/.virgil-lsp
 {"generation":1,"diagnostics":[],"documentVersions":[{"uri":"file:///absolute/a.v3","version":3,"current":false},{"uri":"file:///absolute/b.v3","version":null,"current":true}]}
 ```
 
-A [method-body fallback](architecture.md#method-body-fallback) adds a
+A [method-body fallback](architecture.md#method-body-fallback) or
+[current-text repair](architecture.md#current-text-repair) adds a
 `substitution` object to each affected `documentVersions` entry. Its byte offsets
 are `begin`, `effectiveEnd`, and `currentEnd` for the changed interval, and
 `bodyBegin` and `bodyEnd` for the excluded current body. The stamp and `current`
 still describe the overlay identity compared at capture. Raw inspection
-diagnostics use effective-text compiler coordinates; published LSP diagnostics
-are filtered and mapped to current text. Project `analyze` requests use this
+diagnostics use effective-text compiler coordinates, including any repair
+sentinel's diagnostics; published LSP diagnostics are filtered and mapped to
+current text. Project `analyze` requests use this
 capture policy; explicit `uris` requests continue to analyze exact source bytes.
 
 The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-partly-present) defines `current`, including overlay invalidation and the assumptions for disk inputs, and configuration-revision invalidation. This remains deliberately stale inspection data: no semantic results are published or discarded by this request.

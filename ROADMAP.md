@@ -281,7 +281,7 @@ M5 was completed with `0.1.0-alpha.2`.
 
 Deliverables may include:
 
-- Bounded last-parseable text fallback for contained open method-body edits. *(present; [ADR-0008](docs/decisions/0008-method-body-fallback.md), status Accepted, keeps read-only semantics outside excluded bodies; cold starts and broader edits still need recovery)*
+- Bounded last-parseable text fallback and current-text repair for contained open method-body errors. *(present; [ADR-0008](docs/decisions/0008-method-body-fallback.md) and [ADR-0009](docs/decisions/0009-current-text-repair.md); [Known limitations](docs/known-limitations.md#no-error-tolerant-parsing) owns their availability and remaining gaps)*
 - Optional Aeneas `EDITOR` parser mode with synchronization at top-level, member, statement, and delimiter boundaries.
 - Synthetic missing nodes/tokens where they improve completion without hiding diagnostics.
 - Per-file parse caches and dependency invalidation.

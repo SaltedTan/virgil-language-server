@@ -112,9 +112,9 @@ The bundle holds only Virgil's `lib/`. A project that selects `rt/`, `aeneas/`, 
 
 ### A syntax error in the project
 
-Whole-program analysis needs every file of the project to parse. While a file has a syntax error, the analysis can't type-check the project, so its type errors disappear and definition, type definition, hover, references, and document highlights give nothing, even in other files. Rename is refused while the project has any error, a syntax error or a type error. Fix the syntax error that the Problems view or the diagnostics list shows, which may be in another file than the one you are looking at.
+If a syntax error prevents whole-program analysis, fix the error that the Problems view or the diagnostics list shows, which may be in another file than the one you are looking at. [No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing) explains when method-body fallback or current-text repair can preserve answers and which answers remain unavailable. Rename is refused while the project has any error, a syntax error or a type error.
 
-One exception keeps most answers while you edit a method: the [method-body fallback](architecture.md#method-body-fallback). After a file has been analyzed without a syntax error, a later syntax error strictly inside one method or constructor body leaves definition, type definition, hover, references, document highlights, and type errors working outside that body. The damaged body itself gets nothing, and references and highlight lists can be partial. Rename stays refused. It doesn't apply to an unclosed brace, an edit to a declaration's header or a field initializer, an unterminated string or comment, a file whose last parseable text the server doesn't have, as just after it starts, or a closed file ([No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing)). Completion and signature help repair the code at the cursor in their own way ([Completion](architecture.md#completion)).
+Completion and signature help repair the code at the cursor in their own way ([Completion](architecture.md#completion)).
 
 ### Waiting for an analysis
 
