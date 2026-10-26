@@ -106,9 +106,9 @@ def total(build, unit_tests, children):
             except ProcessLookupError:
                 pass
             except PermissionError:
-                # macOS can report EPERM for an exited process group.
-                if process.poll() is None:
-                    raise
+                # macOS can report EPERM while a process group exits, before
+                # its child is waitable. Stop the child directly, then reap it.
+                process.kill()
             process.wait()
             children.processes.remove(process)
             process.stdout.close()

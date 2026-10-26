@@ -8,6 +8,7 @@ temporary tree whose test/unit registers two groups, Alpha (two tests) and
 Beta (one), so the runner scans those instead of the real sources. Tests run
 one group at a time unless they say otherwise.
 """
+from contextlib import ExitStack
 import errno
 import os
 from pathlib import Path
@@ -407,7 +408,8 @@ class RunTest(unittest.TestCase):
         handlers = {signum: signal.getsignal(signum)
                     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
         try:
-            for boundary in ("group-launch", "probe-launch", "probe-reap", "probe-exited", "restrict-launch"):
+            for boundary in ("group-launch", "probe-launch", "probe-reap", "probe-exiting", "probe-exited",
+                             "restrict-launch"):
                 for signum in handlers:
                     with self.subTest(boundary=boundary, signal=signum):
                         for relative in RESTRICTED:
@@ -422,13 +424,17 @@ class RunTest(unittest.TestCase):
                             target = {"group-launch": "Alpha:*", "restrict-launch": "--restrict"}.get(boundary, "*")
                             if command[-1] == target:
                                 children.append(child)
+                                if boundary == "probe-exiting":
+                                    # The group can disappear before waitpid reports the child's exit.
+                                    patches.enter_context(patch.object(child, "poll", return_value=None))
                                 if boundary != "probe-reap":
                                     os.kill(os.getpid(), signum)
                             return child
 
                         def kill_group(pid, sig):
-                            if boundary == "probe-exited":
-                                children[0].wait(timeout=10)
+                            if boundary in ("probe-exiting", "probe-exited"):
+                                if boundary == "probe-exited":
+                                    children[0].wait(timeout=10)
                                 # macOS can report EPERM for an exited process group.
                                 raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
                             killpg(pid, sig)
@@ -436,7 +442,8 @@ class RunTest(unittest.TestCase):
                                 os.kill(os.getpid(), signum)
 
                         try:
-                            with patch.object(subprocess, "Popen", side_effect=launch), \
+                            with ExitStack() as patches, \
+                                    patch.object(subprocess, "Popen", side_effect=launch), \
                                     patch.object(os, "killpg", side_effect=kill_group):
                                 status = runner["main"](1, str(self.build), str(self.executable), [])
                             self.assertEqual(128 + signum, status)
