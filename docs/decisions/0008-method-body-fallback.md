@@ -80,7 +80,9 @@ common-prefix/suffix interval; history is not tracked.
 This is an initial M6 improvement, not completion of error tolerance. A
 recovering parser/verifier or bounded multi-site current-text repair is still
 needed for cold and broader edits. The compiler adapter's parse gate and worker
-protocol are unchanged. Tests cover boundary escapes, offset mapping, cache
+protocol are unchanged. [ADR-0009](0009-current-text-repair.md) amends this
+decision: an open file that this fallback can't substitute is analyzed from a
+bounded repair of its current text, under the same containment and answer rules. Tests cover boundary escapes, offset mapping, cache
 and snapshot bounds, filtering, freshness, and edit refusal. The benchmark
 reports exact, partial, missing, and wrong answers separately; a foreign
 location or diagnostic remains wrong.
