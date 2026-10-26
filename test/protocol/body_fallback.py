@@ -277,7 +277,9 @@ def newer_features(exe, root):
 
 
 def unavailable(exe, root, closed):
-    c = Case(exe, root, A if closed else BROKEN)
+    # Current-text repair restores a cold open of BROKEN (current_repair.py),
+    # but not of a broken header.
+    c = Case(exe, root, A if closed else A.replace('broken()', 'broken(x: )'))
     try:
         if not closed:
             c.open('A.v3')

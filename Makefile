@@ -74,6 +74,7 @@ SUITES = \
 	'python3 test/benchmarks/test_report.py' \
 	'python3 test/protocol/bundled_library.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/body_fallback.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/current_repair.py $(BUILD)/virgil-lsp' \
 	'python3 scripts/bench-lsp.py --smoke --exe $(BUILD)/virgil-lsp --output /dev/null' \
 	'test/e2e/nvim/run.sh $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/coordinates.py $(BUILD)/virgil-lsp' \

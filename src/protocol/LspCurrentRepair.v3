@@ -1,0 +1,60 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A bounded repair of an open document's current text, for a file that fails
+// to parse and that method-body fallback cannot substitute
+// (docs/architecture.md#current-text-repair, ADR-0009). Each site inserts
+// completion's repair (LspCompletionRepair) at the end of the token before
+// the parser's first error: the sentinel where a name or an operand is
+// missing, then the closers and ";" that the innermost open construct
+// lacks. There is one candidate per site, and no search. A repair never
+// inserts a brace, so it cannot end a body or change a later declaration's
+// owner; LspBodyEligibility still proves that the sites lie strictly inside
+// one method or constructor body of the repaired text.
+component LspCurrentRepair {
+	def MAX_SITES = 2;
+
+	// The repaired text and its map to {current}, or nulls and the reason.
+	// {anchor} is FileParseResult.repairAt of {current}'s own parse. Parses
+	// at most {parses} repaired texts, and never more than MAX_SITES.
+	def repair(path: string, current: Array<byte>, anchor: int, options: Array<string>,
+			parses: int) -> (Array<byte>, LspBodyFallback, string) {
+		var text = current;
+		for (n < MAX_SITES) {
+			if (n >= parses) return (null, null, "repair exceeds the parse budget");
+			text = site(text, anchor);
+			if (text == null) return (null, null, "no repair at the parser's error");
+			var parsed = AeneasAdapter.repairParse(path, text, options);
+			if (parsed.0 != null) {
+				var result = LspBodyEligibility.compare(text, current, parsed.0);
+				return (if(result.0 != null, text), result.0, result.1);
+			}
+			anchor = parsed.1;
+		}
+		return (null, null, "repaired text does not parse");
+	}
+	// {text} with one repair at {anchor}, or null if there is none: the
+	// anchor is in a comment or a literal, or nothing is missing there.
+	def site(text: Array<byte>, anchor: int) -> Array<byte> {
+		if (anchor < 0 || anchor > text.length) return null;
+		var ctx = LspCursorScanner.new(text).scan(anchor);
+		if (ctx.place != LspCursorPlace.CODE && ctx.place != LspCursorPlace.NUMBER) return null;
+		var name = missingName(ctx), c = LspCompletionRepair.completion(ctx);
+		if (!name && c.0.length == 0) return null;
+		var buf = StringBuilder.new().putk(text, 0, anchor);
+		if (name) buf.puts(LspCompletionRepair.SENTINEL);
+		buf.putk(text, anchor, c.1).puts(c.0);
+		return buf.putk(text, c.1, text.length).extract();
+	}
+	// Whether a name or an operand must start at {ctx}'s cursor: after a
+	// member access's ".", or where only an expression, a type, or a pattern
+	// can start. Where a statement can start, as after a line break that
+	// follows an operand, a ";" alone ends the statement.
+	private def missingName(ctx: LspCursorContext) -> bool {
+		if (ctx.place != LspCursorPlace.CODE || ctx.prefixStart < ctx.cursor) return false;
+		if (ctx.member()) return true;
+		var s = ctx.syntax;
+		return (s & LspCursorSyntax.STATEMENT) == 0 &&
+			(s & (LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE | LspCursorSyntax.PATTERN)) != 0;
+	}
+}
