@@ -127,42 +127,64 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 	// Compiler literal readers supply exact ends. An invalid literal stops
 	// recovery: nothing after it has a trustworthy lexical context. Operators
 	// are omitted here because their tokenization depends on parser context.
+	// The parser reads a member after '.' (skipping whitespace and comments)
+	// differently: `a.0.1` is `0`, `.`, `1`, and `a.[]=` is one `[]=` token.
 	private def recoverTokens(begin: int) {
 		var i = begin, max = input.length;
+		// The previous single-byte token, ignoring comments; 0 for any other.
+		var prev: byte;
+		if (tokens.length > 0) {
+			var t = tokens[tokens.length - 1];
+			if (t.end == t.begin + 1) prev = input[t.begin];
+		}
 		while (i < max) {
 			if (whitespace(input[i])) { i++; continue; }
 			var j = comment(i, max), c = input[i];
-			if (j == i) {
-				if (Char.isIdentStart(c) || c == '_') {
-					j = i + 1;
-					while (j < max && Char.isIdentMiddle(input[j])) j++;
-				} else if (c == '\"') {
-					var n = Strings.parseLiteral(input, i).0;
-					if (n <= 0) { recoveryStop = i; break; }
-					j = i + n;
-				} else if (c == '\'') {
-					var n = Chars.parseLiteral(input, i).0;
-					if (n <= 0) { recoveryStop = i; break; }
-					j = i + n;
-				} else if (Char.isDecimal(c)) {
-					var np = NumberParser.new(input[i ...]);
-					np.accept_width = true;
-					if (!np.parse()) { recoveryStop = i; break; }
-					j = i + np.pos;
-				} else {
-					// Single-byte separators have no lexical ambiguity.
-					if (c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == ';' || c == ',') {
-						tokens.put(AnalysisSelectionRange.new(i, i + 1));
-					} else {
-						var unknown = AnalysisSelectionRange.new(i, i + 1);
-						unknown.selectable = false;
-						tokens.put(unknown);
-					}
-					i++;
-					continue;
-				}
+			if (j > i) {
+				tokens.put(AnalysisSelectionRange.new(i, j));
+				i = j;
+				continue;
 			}
-			tokens.put(AnalysisSelectionRange.new(i, j));
+			var selectable = true;
+			if (Char.isIdentStart(c) || c == '_') {
+				j = i + 1;
+				while (j < max && Char.isIdentMiddle(input[j])) j++;
+			} else if (c == '\"') {
+				var n = Strings.parseLiteral(input, i).0;
+				if (n <= 0) { recoveryStop = i; break; }
+				j = i + n;
+			} else if (c == '\'') {
+				var n = Chars.parseLiteral(input, i).0;
+				if (n <= 0) { recoveryStop = i; break; }
+				j = i + n;
+			} else if (Char.isDecimal(c) && prev == '.') {
+				// expr.0 names a tuple member with decimal digits only.
+				j = i + 1;
+				while (j < max && Char.isDecimal(input[j])) j++;
+			} else if (Char.isDecimal(c)) {
+				var np = NumberParser.new(input[i ...]);
+				np.accept_width = true;
+				if (!np.parse()) { recoveryStop = i; break; }
+				j = i + np.pos;
+				// A '-' just before the digits begins the literal as a term
+				// (`-42`) but is an operator after an operand (`a-42`).
+				if (i > 0 && input[i - 1] == '-') selectable = false;
+			} else if (c == '[' && prev == '.') {
+				// expr.[] and expr.[]= are single member tokens, matched as
+				// the parser's optN matches them; a lone '[' is an error.
+				j = i + 1;
+				if (i + 3 < max && input[i + 1] == ']' && input[i + 2] == '=') j = i + 3;
+				else if (i + 2 < max && input[i + 1] == ']') j = i + 2;
+				else selectable = false;
+			} else {
+				j = i + 1;
+				// Other single-byte separators have no lexical ambiguity.
+				selectable = c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == ';' || c == ',';
+			}
+			var token = AnalysisSelectionRange.new(i, j);
+			token.selectable = selectable;
+			tokens.put(token);
+			prev = if(j == i + 1, c, 0);
 			i = j;
 		}
 	}

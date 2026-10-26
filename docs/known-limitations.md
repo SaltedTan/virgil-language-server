@@ -45,7 +45,7 @@ Type definition returns no location for built-in and structural types, including
 
 ## Selection ranges
 
-Selection ranges use the current open document only; closed documents have none. Chains contain tokens, bracket-group contents and delimiters, completed declarations, and the document, with no separate expression or statement ranges. A parse error removes syntax extents crossing or following the first error; lexical recovery supplies only trustworthy tokens and stops at an invalid literal, omitting operators that need parser context. Requests above 100 positions are rejected, and chains deeper than 128 levels retain their innermost 127 and the document ([Selection ranges](architecture.md#selection-ranges)).
+Selection ranges use the current open document only; closed documents have none. Chains contain tokens, bracket-group contents and delimiters, completed declarations, and the document, with no separate expression or statement ranges. A parse error removes syntax extents crossing or following the first error; lexical recovery supplies only trustworthy tokens and stops at an invalid literal, omitting operators that need parser context and any number directly after a `-`. Requests above 100 positions are rejected, and chains deeper than 128 levels retain their innermost 127 and the document ([Selection ranges](architecture.md#selection-ranges)).
 
 ## Folding ranges
 
