@@ -32,12 +32,19 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 	def run() -> int {
 		var heapBytes = long.!(CiRuntime.HEAP_END - CiRuntime.HEAP_START);
 		if (!send(AnalysisWire.encodeHello(BuildInfo.VERSION, BuildInfo.REVISION, heapBytes))) return 1;
+		// The collection after the previous send, reported against the next
+		// request; negative until there is one.
+		var gcAfterSendUs = -1L;
 		while (true) {
 			var payload = receive();
 			if (payload == null) {
 				if (reader.error != null) return fail(reader.error);
 				if (reader.midFrame()) return fail("the request pipe ended in the middle of a message");
 				return 0; // the server closed the pipe
+			}
+			if (BenchProbe.enabled && gcAfterSendUs >= 0) {
+				BenchProbe.worker(analyses + 1, "force_gc_after_send_us", gcAfterSendUs);
+				gcAfterSendUs = -1;
 			}
 			var result = handle(payload);
 			payload = null;
@@ -54,6 +61,16 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 				BenchProbe.worker(analyses, "live_after_gc_bytes", liveBytes);
 			}
 			if (!send(AnalysisWire.finishResult(result, liveBytes))) return 1;
+			// The sent result is garbage, but it stays in the semispace until
+			// a collection. Collect now, while the server decodes it, so that
+			// the next request starts from the live data and its payload rather
+			// than those plus the previous result.
+			result = null;
+			var gcAfterSendStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
+			RiGc.forceGC();
+			if (BenchProbe.enabled) {
+				gcAfterSendUs = BenchProbe.now() - gcAfterSendStart;
+			}
 		}
 		return 0;
 	}
