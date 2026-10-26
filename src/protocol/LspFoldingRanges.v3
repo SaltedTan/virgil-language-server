@@ -1,0 +1,91 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Whether a client's textDocument.foldingRange.foldingRangeKind supports the
+// "comment" kind. LSP's default set includes it, so a client without a
+// valueSet gets kinds; one that lists strings without it gets none. See
+// docs/architecture.md#folding-ranges.
+component LspFoldingKind {
+	def comment(capability: HashMap<string, JsonValue>) -> bool {
+		if (capability == null) return true;
+		var kind = object(capability, "foldingRangeKind");
+		if (kind == null || !JsonValue.JArray.?(kind["valueSet"])) return true;
+		for (v in JsonValue.JArray.!(kind["valueSet"]).v) {
+			if (JsonValue.String.?(v) && Strings.equal(JsonValue.String.!(v).v, "comment")) return true;
+		}
+		return false;
+	}
+	private def object(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (!obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+}
+
+// textDocument/foldingRange: brace blocks and comments from the same
+// single-file parse of the open document's current text that document symbols
+// use, without reading disk, running verification, or waiting for an analysis.
+// Malformed parameters get InvalidParams; a closed/unopened document gets [].
+// See docs/architecture.md#folding-ranges.
+class LspFoldingRanges(store: DocumentStore, projects: WorkspaceProjects) {
+	// The most ranges sent for one document, whatever the client prefers, so
+	// that a pathological file cannot produce an unbounded reply. More ranges
+	// keep the outermost; see FoldingRangeLimits.
+	def MAX_RANGES = 10000;
+	// True if the client's textDocument.foldingRange.lineFoldingOnly is true;
+	// such a client ignores the characters, so they are not sent.
+	var lineFoldingOnly: bool;
+	// The client's textDocument.foldingRange.rangeLimit if it is nonnegative,
+	// else -1 for no client bound.
+	var rangeLimit = -1;
+	// Whether "comment" is sent as a range's kind.
+	var commentKind = true;
+
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onRequest("textDocument/foldingRange", foldingRange);
+	}
+	// Reads the client's textDocument.foldingRange capabilities, which may be null.
+	def configure(capability: HashMap<string, JsonValue>) {
+		lineFoldingOnly = capability != null && capability["lineFoldingOnly"] == JsonValue.Bool(true);
+		rangeLimit = -1;
+		if (capability != null && JsonValue.Int.?(capability["rangeLimit"])) {
+			var n = JsonValue.Int.!(capability["rangeLimit"]).v;
+			if (n >= 0) rangeLimit = n;
+		}
+		commentKind = LspFoldingKind.comment(capability);
+	}
+	private def foldingRange(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = objectMember(params, "textDocument");
+		if (doc == null || !doc.has("uri") || !JsonValue.String.?(doc["uri"]) ||
+			JsonValue.String.!(doc["uri"]).v == null || DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v) == null) {
+			return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS, "foldingRange params require a valid textDocument.uri"));
+		}
+		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
+		if (overlay == null) return JsonRpcReply.Result(JsonValue.JArray([]));
+		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
+		var owner = projects.forDocument(overlay.uri);
+		var ranges = AeneasAdapter.foldingRanges(overlay.uri, overlay.text, owner.compilerArgs());
+		var limit = MAX_RANGES;
+		if (rangeLimit >= 0 && rangeLimit < limit) limit = rangeLimit;
+		return JsonRpcReply.Result(encode(FoldingRangeLimits.keepOutermost(ranges, limit), map));
+	}
+	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
+		return JsonValue.JObject.!(obj[key]).v;
+	}
+	private def encode(ranges: Array<AnalysisFoldingRange>, map: PositionMap) -> JsonValue {
+		var result = Vector<JsonValue>.new();
+		for (r in ranges) {
+			var obj = Strings.newMap<JsonValue>();
+			obj["startLine"] = JsonValue.Int(r.startLine);
+			obj["endLine"] = JsonValue.Int(r.endLine);
+			if (!lineFoldingOnly) {
+				obj["startCharacter"] = JsonValue.Int(map.offsetToPosition(r.startOffset).character);
+				obj["endCharacter"] = JsonValue.Int(map.offsetToPosition(r.endOffset).character);
+			}
+			if (r.kind == AnalysisFoldingKind.COMMENT && commentKind) obj["kind"] = JsonValue.String("comment");
+			result.put(JsonValue.JObject(obj));
+		}
+		return JsonValue.JArray(result.extract());
+	}
+}

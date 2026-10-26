@@ -498,17 +498,38 @@ component AeneasAdapter {
 	// driver and recovery as {parseFile}. A failed parse yields no symbols:
 	// the compiler stops early and its partial VST is not an outline.
 	def documentSymbols(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisDocumentSymbol> {
-		// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
-		// line terminators the compiler understands; never mutate the overlay.
-		var normalized = Array<byte>.new(input.length);
-		for (i < input.length) normalized[i] = if(input[i] == '\r',
-			if(i + 1 < input.length && input[i + 1] == '\n', ' ', '\n'), input[i]);
+		var normalized = normalizeLineTerminators(input);
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
 		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
 		resetLanguageOptions();
 		if (errors.numErrors > 0) return [];
 		return DocumentSymbolCollector.new(file, syntax).collect();
+	}
+	// Foldable brace blocks and comments from the current text, without
+	// verification. A failed parse keeps only what ends before its first
+	// error; an error whose position the parser could not resolve drops
+	// everything. See docs/architecture.md#folding-ranges.
+	def foldingRanges(path: string, input: Array<byte>, options: Array<string>) -> Array<AnalysisFoldingRange> {
+		var normalized = normalizeLineTerminators(input);
+		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		setLanguageOptions(options);
+		AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
+		resetLanguageOptions();
+		var cutoff = -1;
+		if (errors.numErrors > 0) {
+			if (errors.offsets.length == 0 || errors.offsets[0].0 < 0) return [];
+			cutoff = errors.offsets[0].0;
+		}
+		return DocumentFoldingCollector.new(normalized, syntax.tokens, cutoff).collect();
+	}
+	// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
+	// line terminators the compiler understands; never mutate the overlay.
+	private def normalizeLineTerminators(input: Array<byte>) -> Array<byte> {
+		var normalized = Array<byte>.new(input.length);
+		for (i < input.length) normalized[i] = if(input[i] == '\r',
+			if(i + 1 < input.length && input[i + 1] == '\n', ' ', '\n'), input[i]);
+		return normalized;
 	}
 	// The pinned compiler's language options, without their "lang:" prefix,
 	// and their defaults, in declaration order. The project file accepts

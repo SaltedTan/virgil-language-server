@@ -1,0 +1,146 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("FoldingRanges:constructs", constructs),
+	T("FoldingRanges:comments", comments),
+	T("FoldingRanges:utf16_crlf", utf16),
+	T("FoldingRanges:capabilities_limits", capabilities),
+	T("FoldingRanges:parse_failure", parse_failure),
+	T("FoldingRanges:params_lifecycle_overlay", lifecycle),
+	T("FoldingRanges:server_bound", server_bound),
+	()
+];
+def URI = "untitled:folding.v3";
+def REQUEST = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"untitled:folding.v3\"}}}";
+def running(cap: string) -> LspServer {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"textDocument\":{\"foldingRange\":%s}}}}", cap));
+	return s;
+}
+def result(s: LspServer) -> Array<JsonValue> {
+	var p = JsonRpcJsonParser.new(s.handle(REQUEST));
+	p.maxValues = int.max;
+	return JsonValue.JArray.!(JsonValue.JObject.!(p.parseDocument()).v["result"]).v;
+}
+def expect(t: Tester, s: LspServer, expected: string) {
+	var a = result(s), b = JsonValue.JArray.!(JsonRpcJsonParser.new(expected).parseDocument()).v;
+	t.asserti(b.length, a.length);
+	for (i < b.length) {
+		var got = JsonValue.JObject.!(a[i]).v, want = JsonValue.JObject.!(b[i]).v;
+		for (key in ["startLine", "endLine", "startCharacter", "endCharacter", "kind"]) {
+			t.assert(got.has(key) == want.has(key), key);
+			if (JsonValue.String.?(want[key])) t.assert_string(JsonValue.String.!(want[key]).v, JsonValue.String.!(got[key]).v);
+			else t.assert(got[key] == want[key], Strings.format2("range %d field %s", i, key));
+		}
+	}
+}
+def open(t: Tester, s: LspServer, text: string) {
+	t.assert(s.documents.open(URI, "virgil", 1, text) == null, "open");
+}
+
+def constructs(t: Tester) {
+	var text = "component C {\n  def f(x: int) {\n    if (x > 0) {\n      x++;\n    } else {\n      x--;\n    }\n    while (x > 0) {\n      x--;\n    }\n    for (i < 3) {\n      x++;\n    }\n    match (x) {\n      0 => {\n        x++;\n      }\n      _ => {\n        x--;\n      }\n    }\n    {\n      var c = '}';\n      var s = \"{ /* // }\";\n    }\n    if (true) {}\n    var fn = fun () {\n      x++;\n    };\n  }\n}\nclass K {\n  new() {\n    var x = 0;\n  }\n}\ntype V {\n  case A {\n    def g() {\n      return;\n    }\n  }\n  case B;\n}\nenum E {\n  A,\n  B\n}\nlayout L {\n  +0 word: int;\n  =4;\n}\npacking P(x: 1): 2 = 0b0x;\n";
+	t.asserti(0, AeneasAdapter.parseFile("folding.v3", text, ["-lang:fun-exprs"]).diagnostics.length);
+	var a = AeneasAdapter.foldingRanges("folding.v3", text, ["-lang:fun-exprs"]);
+	t.asserti(18, a.length);
+	t.asserti(0, a[0].startLine); t.asserti(29, a[0].endLine);
+	t.asserti(1, a[1].startLine); t.asserti(28, a[1].endLine);
+	t.asserti(2, a[2].startLine); t.asserti(3, a[2].endLine);
+	t.asserti(4, a[3].startLine); t.asserti(5, a[3].endLine);
+	t.asserti(7, a[4].startLine); t.asserti(8, a[4].endLine);
+	t.asserti(10, a[5].startLine); t.asserti(11, a[5].endLine);
+	t.asserti(13, a[6].startLine); t.asserti(19, a[6].endLine);
+	t.asserti(14, a[7].startLine); t.asserti(15, a[7].endLine);
+	t.asserti(17, a[8].startLine); t.asserti(18, a[8].endLine);
+	t.asserti(21, a[9].startLine); t.asserti(23, a[9].endLine);
+	t.asserti(26, a[10].startLine); t.asserti(27, a[10].endLine);
+	t.asserti(31, a[11].startLine); t.asserti(34, a[11].endLine);
+	t.asserti(32, a[12].startLine); t.asserti(33, a[12].endLine);
+	t.asserti(36, a[13].startLine); t.asserti(42, a[13].endLine);
+	t.asserti(37, a[14].startLine); t.asserti(40, a[14].endLine);
+	t.asserti(38, a[15].startLine); t.asserti(39, a[15].endLine);
+	t.asserti(44, a[16].startLine); t.asserti(46, a[16].endLine);
+	t.asserti(48, a[17].startLine); t.asserti(50, a[17].endLine);
+}
+def comments(t: Tester) {
+	var s = running("{\"lineFoldingOnly\":true}");
+	open(t, s, "// first { \"\n// second } '\n\ncomponent C { // trailing: not in the following run\n  // alone\n\n  // a\n  // b\n  /* \" { /* not nested\n     } ends at first */\n  def f() { var s = \"// /* { }\"; var c = '{'; }\n}\n/* final\n   comment */");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1,\"kind\":\"comment\"},{\"startLine\":3,\"endLine\":10},{\"startLine\":6,\"endLine\":7,\"kind\":\"comment\"},{\"startLine\":8,\"endLine\":9,\"kind\":\"comment\"},{\"startLine\":12,\"endLine\":13,\"kind\":\"comment\"}]");
+}
+def utf16(t: Tester) {
+	var text = "component C {\r\n\tdef f() /* é𝄞 */ {\r\n\t\tvar s = \"é𝄞\";\r\n\t}\r\n}\r\n";
+	var s = running("{\"lineFoldingOnly\":false}");
+	open(t, s, text);
+	expect(t, s, "[{\"startLine\":0,\"endLine\":3,\"startCharacter\":13,\"endCharacter\":2},{\"startLine\":1,\"endLine\":2,\"startCharacter\":20,\"endCharacter\":16}]");
+	s = running("{\"lineFoldingOnly\":false}");
+	open(t, s, "\t/* é𝄞\r\n\tend */\r\n");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1,\"startCharacter\":1,\"endCharacter\":7,\"kind\":\"comment\"}]");
+
+}
+def capabilities(t: Tester) {
+	var text = "component C {\n  def f() {\n    // a\n    // b\n    return;\n  }\n}\n// c\n// d";
+	for (cap in ["{\"lineFoldingOnly\":true,\"rangeLimit\":2}", "{\"lineFoldingOnly\":true,\"rangeLimit\":2,\"foldingRangeKind\":{\"valueSet\":[\"comment\"]}}"] ) {
+		var s = running(cap);
+		open(t, s, text);
+		expect(t, s, "[{\"startLine\":0,\"endLine\":5},{\"startLine\":7,\"endLine\":8,\"kind\":\"comment\"}]");
+	}
+	var s = running("{\"lineFoldingOnly\":true,\"foldingRangeKind\":{\"valueSet\":[]}}");
+	open(t, s, "// a\n// b");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1}]");
+	s = running("{\"rangeLimit\":0}");
+	open(t, s, text);
+	expect(t, s, "[]");
+	s = running("{\"lineFoldingOnly\":true,\"rangeLimit\":1}");
+	open(t, s, "component A {\n def x = 1;\n}\ncomponent B {\n def x = 2;\n}");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1}]");
+	// A brace pair without a fold must not inflate a comment's depth.
+	s = running("{\"lineFoldingOnly\":true,\"rangeLimit\":1}");
+	open(t, s, "component A { /* first\n last */ }\ncomponent B {\n def x = 1;\n}");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1,\"kind\":\"comment\"}]");
+}
+def parse_failure(t: Tester) {
+	var s = running("{\"lineFoldingOnly\":true}");
+	open(t, s, "// first\n// second\ncomponent C {\n  def good() {\n    return;\n  }\n  /* before\n     error */\n  def bad() {\n    var x = ;\n  }\n}\n// after\n// error");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1,\"kind\":\"comment\"},{\"startLine\":3,\"endLine\":4},{\"startLine\":6,\"endLine\":7,\"kind\":\"comment\"}]");
+	s = running("{\"lineFoldingOnly\":true}");
+	open(t, s, "component C {\n def f() {\n  return;\n }\n");
+	expect(t, s, "[{\"startLine\":1,\"endLine\":2}]");
+}
+def lifecycle(t: Tester) {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	error(t, s.handle(REQUEST), -32002);
+	s = running("{\"lineFoldingOnly\":true}");
+	expect(t, s, "[]");
+	open(t, s, "component C {\n def f() {}\n}");
+	expect(t, s, "[{\"startLine\":0,\"endLine\":1}]");
+	t.assert(s.documents.change(URI, 2, "component C {}") == null, "edit");
+	expect(t, s, "[]");
+	s.documents.close(URI);
+	expect(t, s, "[]");
+	for (p in ["null", "[]", "{}", "{\"textDocument\":null}", "{\"textDocument\":{\"uri\":1}}", "{\"textDocument\":{\"uri\":\"\"}}", "{\"textDocument\":{\"uri\":\"file://remote/a\"}}"] ) {
+		var reply = s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"textDocument/foldingRange\",\"params\":%s}", p));
+		error(t, reply, -32602);
+	}
+	s.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}");
+	error(t, s.handle(REQUEST), -32600);
+}
+def server_bound(t: Tester) {
+	var s = running("{\"lineFoldingOnly\":true}");
+	var b = StringBuilder.new();
+	for (i < 10002) b.puts("// a\n// b\n\n");
+	open(t, s, b.toString());
+	var a = result(s);
+	t.asserti(10000, a.length);
+	for (i < a.length) {
+		var r = JsonValue.JObject.!(a[i]).v;
+		t.asserti(3 * i, JsonValue.Int.!(r["startLine"]).v);
+		t.asserti(3 * i + 1, JsonValue.Int.!(r["endLine"]).v);
+	}
+}
+
+def error(t: Tester, reply: string, code: int) {
+	var obj = JsonValue.JObject.!(JsonRpcJsonParser.new(reply).parseDocument()).v;
+	t.asserti(code, JsonValue.Int.!(JsonValue.JObject.!(obj["error"]).v["code"]).v);
+}
