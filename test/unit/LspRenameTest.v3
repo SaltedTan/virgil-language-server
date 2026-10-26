@@ -21,6 +21,7 @@ def X = [
 	T("LspRename:same_named_methods", test_same_named_methods),
 	T("LspRename:members_across_subclasses", test_members_across_subclasses),
 	T("LspRename:override_family", test_override_family),
+	T("LspRename:interleaved_family", test_interleaved_family),
 	T("LspRename:variant_family", test_variant_family),
 	T("LspRename:private_family", test_private_family),
 	T("LspRename:generic_family", test_generic_family),
@@ -686,6 +687,31 @@ def test_override_family(t: Tester) {
 	s.settle();
 	roundTrip(t, s, "Paint.v3", "def draw", 4, "draw", "paint",
 		doc(s, "Paint.v3", PAINT, [("def draw", 4), ("+ draw", 2)], 4));
+	s.server.close();
+}
+// A family's names and uses interleave in one file and continue in another:
+// names before, between, and after uses, and each declaration's name, which
+// is also a use that resolves to it, once. referencesOf walks the file's uses
+// and the family's name spans together, so this checks the merge's exact
+// spans, from the first method.
+def INTERLEAVED = "class Root {\n\tdef draw() -> int { return 10; }\n\tdef before() -> int { return draw() + 1; }\n}\nclass Mid extends Root {\n\tdef draw() -> int { return draw() + 100; }\n\tdef middle() -> int { return draw() + 2; }\n}\nclass Leaf extends Mid {\n\tdef draw() -> int { return 20; }\n\tdef after() -> int { return draw() + 3; }\n}\n";
+def INTERLEAVED_USES = "class Tip extends Leaf {\n\tdef draw() -> int { return 40; }\n\tdef last() -> int { return draw() + 4; }\n}\ncomponent Interleaved {\n\tdef all(r: Root, m: Mid, l: Leaf, t: Tip) -> int { return r.draw() + m.draw() + l.draw() + t.draw(); }\n}\n";
+def interleavedSession(t: Tester) -> RenameTestSession {
+	var config = "{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"Interleaved.v3\",\"InterleavedUses.v3\"]}]}";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", config), ("Interleaved.v3", INTERLEAVED),
+		("InterleavedUses.v3", INTERLEAVED_USES)], true, null, t);
+	s.open("Interleaved.v3", 1, INTERLEAVED);
+	s.settle();
+	return s;
+}
+def test_interleaved_family(t: Tester) {
+	var s = interleavedSession(t);
+	var named = [("def draw() -> int { return 10", 4), ("return draw() + 1", 7), ("def draw() -> int { return draw", 4),
+		("return draw() + 100", 7), ("return draw() + 2", 7), ("def draw() -> int { return 20", 4), ("return draw() + 3", 7)];
+	var uses = [("def draw() -> int { return 40", 4), ("return draw() + 4", 7), ("r.draw", 2), ("m.draw", 2),
+		("l.draw", 2), ("t.draw", 2)];
+	roundTrip(t, s, "Interleaved.v3", "def draw() -> int { return 10", 4, "draw", "paint",
+		join([doc(s, "Interleaved.v3", INTERLEAVED, named, 4), doc(s, "InterleavedUses.v3", INTERLEAVED_USES, uses, 4)]));
 	s.server.close();
 }
 // A variant's method is overridden in its cases, including a default case
