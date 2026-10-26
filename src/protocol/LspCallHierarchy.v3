@@ -102,6 +102,10 @@ class LspCallHierarchy {
 			// checked and which is selected.
 			var path = at.path();
 			var owners = LspCallOwners.new(s, path, items.symbols), edges = Vector<(int, int)>.new();
+			var sub = s.documentVersions[at.index].substitution;
+			if (sub != null && owners.of(sub.mapping.bodyBegin) == i && owners.of(sub.mapping.effectiveBodyEnd - 1) == i) {
+				return (true, JsonRpcReply.Result(JsonValue.JArray([])));
+			}
 			for (c in s.callsWhere(path, isCallableIndex(s, _))) {
 				if (partial(c, at.text) || owners.of(c.callee) != i) continue;
 				edges.put((s.indexOf(c.target), c.callee));

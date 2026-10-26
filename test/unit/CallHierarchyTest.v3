@@ -28,6 +28,7 @@ def X = [
 	T("CallHierarchy:moved_or_replaced", moved_or_replaced),
 	T("CallHierarchy:swapped_members", swapped_members),
 	T("CallHierarchy:excluded_bodies", excluded_bodies),
+	T("CallHierarchy:excluded_constructor_body", excluded_constructor_body),
 	T("CallHierarchy:malformed_data", malformed_data),
 	T("CallHierarchy:reply_bounds", reply_bounds),
 	T("CallHierarchy:single_group_bounds", single_group_bounds),
@@ -614,6 +615,71 @@ def excluded_bodies(t: Tester) {
 	var none = hierarchy.calls(atA, -1, key("broken", "A"), true, bound, bytes);
 	t.assert(none.0 && JsonValue.Null.?(JsonRpcReply.Result.!(none.1).v), "a position in an excluded body names nothing");
 	s.server.close();
+}
+def excluded_constructor_body(t: Tester) {
+	var old = "def seed() -> int { return 1; }\nclass B(x: int) { }\nclass C extends B {\n\tnew() super(seed()) { var x = 1; }\n\tdef keep() { seed(); }\n}\n";
+	var current = "def seed() -> int { return 1; }\nclass B(x: int) { }\nclass C extends B {\n\tnew() super(seed()) { var x = ; }\n\tdef keep() { seed(); }\n}\n";
+	var list = fun (reply: JsonRpcReply) -> Array<JsonValue> {
+		match (reply) {
+			Result(v) => if (JsonValue.JArray.?(v)) return JsonValue.JArray.!(v).v;
+			Error(e) => t.fail1("constructor hierarchy failed: %s", e.message);
+		}
+		t.fail("constructor hierarchy returned no list");
+		return [];
+	};
+	for (repair in [false, true]) {
+		var s = AnalyzedTextSession.new(t), hierarchy = LspCallHierarchy.new();
+		s.open("B.v3", 1, "def unused = 0;\n");
+		s.open("A.v3", 1, old);
+		s.settle();
+		var snapshot = s.context().snapshot, i = snapshot.documentIndex(s.uri("A.v3"));
+		var at = LspSnapshotPosition.new(s.store, snapshot, i, s.text(snapshot, "A.v3"), PositionMap.new(old, PositionEncoding.UTF16), []);
+		var prepared = list(hierarchy.answer(at, indexOf(old, "new()")).1);
+		t.asserti(1, prepared.length);
+		if (prepared.length != 1) {
+			s.server.close();
+			continue;
+		}
+		var params = Strings.newMap<JsonValue>();
+		params["item"] = prepared[0];
+		var outgoing = hierarchy.prepareItem(params, false);
+		t.assert(outgoing != null, "the prepared constructor item is valid");
+		t.asserti(1, list(outgoing(at, indexOf(old, "new()")).1).length);
+		if (repair) s.server.projects.parseableText.removeContext(s.context());
+		t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, current));
+		snapshot = s.analyze(t);
+		i = snapshot.documentIndex(s.uri("A.v3"));
+		var sub = snapshot.documentVersions[i].substitution;
+		t.assert(snapshot.parsed && sub != null, "the constructor body is substituted");
+		if (sub == null) {
+			s.server.close();
+			continue;
+		}
+		var text = s.text(snapshot, "A.v3"), map = PositionMap.new(current, PositionEncoding.UTF16);
+		t.assert_eq(!repair, Strings.equal(old, text));
+		at = LspSnapshotPosition.new(s.store, snapshot, i, text, map, []);
+		t.asserti(0, list(outgoing(at, snapshot.effectiveOffset(i, indexOf(current, "new()"))).1).length);
+		var bound = LspReferences.MAX_LOCATIONS, bytes = LspReferences.MAX_REPLY_BYTES;
+		var toSeed = list(hierarchy.calls(at, indexOf(text, "seed()"),
+			LspCallHierarchyKey.new(AnalysisDeclKind.METHOD, "seed", ""), true, bound, bytes).1);
+		t.asserti(2, toSeed.length);
+		if (toSeed.length == 2) {
+			var call = JsonValue.JObject.!(toSeed[0]).v, caller = JsonValue.JObject.!(call["from"]).v;
+			t.assert_string("new", JsonValue.String.!(caller["name"]).v);
+			var ranges = JsonValue.JArray.!(call["fromRanges"]).v;
+			t.asserti(1, ranges.length);
+			if (ranges.length == 1) {
+				var range = JsonValue.JObject.!(ranges[0]).v;
+				var start = JsonValue.JObject.!(range["start"]).v, end = JsonValue.JObject.!(range["end"]).v;
+				var begin = indexOf(current, "super(seed())") + 6;
+				t.asserti(begin, map.positionToOffset(JsonValue.Int.!(start["line"]).v, JsonValue.Int.!(start["character"]).v));
+				t.asserti(begin + 4, map.positionToOffset(JsonValue.Int.!(end["line"]).v, JsonValue.Int.!(end["character"]).v));
+			}
+		}
+		t.asserti(1, list(hierarchy.calls(at, indexOf(text, "keep()"),
+			LspCallHierarchyKey.new(AnalysisDeclKind.METHOD, "keep", "C"), false, bound, bytes).1).length);
+		s.server.close();
+	}
 }
 // Data without a string name and container or a kind of "method",
 // "constructor", or "field" is malformed. The request layer checks its uri
