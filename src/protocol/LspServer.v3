@@ -69,6 +69,7 @@ class LspServer {
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	private def typeHierarchy = LspTypeHierarchy.new();
+	private def selectionRanges = LspSelectionRanges.new(documents, projects);
 	private def foldingRanges = LspFoldingRanges.new(documents, projects);
 	private def callHierarchy = LspCallHierarchy.new();
 	// Keywords from the open document's text, and declarations in scope from
@@ -96,6 +97,7 @@ class LspServer {
 		documentSymbols.register(dispatcher);
 		workspaceSymbols.register(dispatcher);
 		foldingRanges.register(dispatcher);
+		selectionRanges.register(dispatcher);
 		completion = LspCompletion.new(documents, projects, publishNotification);
 		completion.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
@@ -403,6 +405,7 @@ class LspServer {
 		capabilities["completionProvider"] = JsonValue.JObject(completionOptions);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["foldingRangeProvider"] = JsonValue.Bool(true);
+		capabilities["selectionRangeProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["typeDefinitionProvider"] = JsonValue.Bool(true);
 		capabilities["inlayHintProvider"] = JsonValue.Bool(true);

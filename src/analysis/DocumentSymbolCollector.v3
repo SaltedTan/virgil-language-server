@@ -45,6 +45,10 @@ class SymbolSyntaxIndex {
 }
 
 class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
+	// Selection ranges can use completed members of a partial VST. In this
+	// mode an unfinished extent is marked invalid, retaining its children.
+	var partial: bool;
+	var cutoff = int.max;
 	private def input = file.input;
 	private def tokens = syntax.tokens;
 
@@ -142,11 +146,15 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 	private def matching(i: int) -> int {
 		var open = ch(i), close = if(open == '(', ')', if(open == '[', ']', '}'));
 		for (j = i + 1; j < tokens.length; j++) {
+			if (partial && tokens[j].end > cutoff) return -1;
 			var c = ch(j);
 			if (c == close) return j;
-			if (c == '(' || c == '[' || c == '{') j = matching(j);
+			if (c == '(' || c == '[' || c == '{') {
+				j = matching(j);
+				if (j < 0) return -1;
+			}
 		}
-		return i; // only used on a successfully parsed file
+		return if(partial, -1, i); // ordinary outlines use a successfully parsed file
 	}
 	private def declarationStart(i: int) -> int {
 		// Walk backward over header tokens, including modifiers, stopping at
@@ -159,16 +167,19 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 		return i;
 	}
 	private def declarationEnd(i: int, body: bool) -> int {
+		if (i < 0) return -1;
 		for (j = i; j < tokens.length; j++) {
+			if (partial && tokens[j].end > cutoff) return -1;
 			var c = ch(j);
 			if (c == ';') return j;
 			if (c == '(' || c == '[' || c == '{') {
 				var end = matching(j);
+				if (end < 0) return -1;
 				if (c == '{' && body) return end;
 				j = end;
 			}
 		}
-		return i;
+		return if(partial, -1, i);
 	}
 	private def parameterEnd(i: int) -> int {
 		var angles = 0;
@@ -177,12 +188,19 @@ class DocumentSymbolCollector(file: VstFile, syntax: SymbolSyntaxIndex) {
 			if (angles == 0 && (c == ',' || c == ')')) return j - 1;
 			if (c == '<') angles++;
 			if (c == '>') angles--;
-			if (c == '(' || c == '[') j = matching(j);
+			if (c == '(' || c == '[') {
+				j = matching(j);
+				if (j < 0) return -1;
+			}
 		}
 		return i;
 	}
 	private def make(d: Decl, kind: AnalysisDeclKind, start: int, end: int, children: Array<AnalysisDocumentSymbol>) -> AnalysisDocumentSymbol {
-		var i = syntax.find(d.token), name = tokens[i];
+		var i = syntax.find(d.token);
+		if (partial && (i < 0 || start < 0 || end < start || tokens[end].end > cutoff)) {
+			return AnalysisDocumentSymbol.new(d.name(), kind, -1, -1, -1, -1, children);
+		}
+		var name = tokens[i];
 		return AnalysisDocumentSymbol.new(d.name(), kind, tokens[start].begin, tokens[end].end,
 			name.begin, name.end, children);
 	}

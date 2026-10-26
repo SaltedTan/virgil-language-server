@@ -16,6 +16,7 @@ REQUESTS = (
     "initialize", "shutdown", "textDocument/completion",
     "textDocument/definition", "textDocument/typeDefinition", "textDocument/documentHighlight", "textDocument/documentSymbol",
     "textDocument/foldingRange",
+    "textDocument/selectionRange",
     "textDocument/hover", "textDocument/implementation", "textDocument/inlayHint",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
     "textDocument/signatureHelp", "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes",

@@ -58,6 +58,7 @@ CAPABILITIES = {
     "documentHighlightProvider": True,
     "documentSymbolProvider": True,
     "foldingRangeProvider": True,
+    "selectionRangeProvider": True,
     "hoverProvider": True,
     "implementationProvider": True,
     "referencesProvider": True,
