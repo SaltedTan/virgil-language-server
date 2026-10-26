@@ -84,6 +84,7 @@ SUITES = \
 	'python3 test/protocol/implementation.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/type_hierarchy.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/folding_ranges.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/selection_ranges.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/call_hierarchy.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/code_actions.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \

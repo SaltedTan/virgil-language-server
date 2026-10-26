@@ -149,6 +149,20 @@ local function check()
     return vim.lsp.foldexpr(7) == "<3"
   end)
   print("PASS: nvim.folding-ranges.response")
+  local selections = client:request_sync("textDocument/selectionRange", {
+    textDocument = { uri = vim.uri_from_bufnr(folding_buf) },
+    positions = { { line = 6, character = 8 } },
+  }, 10000, folding_buf)
+  assert(selections and not selections.err and #selections.result == 1, vim.inspect(selections))
+  local chain, selection = {}, selections.result[1]
+  while selection do
+    local r = selection.range
+    chain[#chain + 1] = { r.start.line, r.start.character, r["end"].line, r["end"].character }
+    selection = selection.parent
+  end
+  local expected_selections = {{6, 6, 6, 12}, {6, 6, 6, 13}, {5, 14, 7, 5}, {5, 4, 9, 5}, {4, 12, 10, 3}, {4, 2, 10, 3}, {4, 2, 14, 11}, {3, 16, 15, 1}, {3, 0, 15, 1}, {0, 0, 16, 0}}
+  assert(vim.deep_equal(chain, expected_selections), "unexpected selections: " .. vim.inspect(chain))
+  print("PASS: nvim.selection-ranges.response")
   vim.api.nvim_set_current_buf(bufnr)
 
   -- The fixture's project uses lib/util through virgilDependencies. run.sh sets

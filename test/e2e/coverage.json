@@ -106,6 +106,11 @@
       "matrix": true
     },
     {
+      "id": "selection-ranges",
+      "label": "Selection ranges",
+      "matrix": true
+    },
+    {
       "id": "type-hierarchy",
       "label": "Type hierarchy",
       "matrix": true
@@ -1905,6 +1910,21 @@
       "description": "vscode.executeFoldingRangeProvider returns the exact component, method, if/else, block comment, and consecutive line-comment ranges in folding.v3."
     },
     {
+      "id": "vscode.selection-ranges.response",
+      "suites": [
+        "vscode",
+        "remote-ssh"
+      ],
+      "profiles": [
+        "workspace"
+      ],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "vscode.executeSelectionRangeProvider returns the exact token, trimmed contents, delimited groups, method and component declarations, and document chain for return inside the if block in folding.v3, including the word and line levels VS Code adds."
+    },
+    {
       "id": "nvim.folding-ranges.response",
       "suites": [
         "nvim"
@@ -1917,6 +1937,20 @@
       "required": true,
       "source": "test/e2e/nvim/check.lua",
       "description": "textDocument/foldingRange returns the exact component, method, if/else, block comment, and consecutive line-comment ranges in folding.v3; vim.lsp.foldexpr() gives level 3 inside the method and its if block."
+    },
+    {
+      "id": "nvim.selection-ranges.response",
+      "suites": [
+        "nvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "textDocument/selectionRange returns the exact token, trimmed contents, delimited groups, method and component declarations, and document chain for return inside the if block in folding.v3."
     },
     {
       "id": "vscode.type-hierarchy.response",
@@ -2088,6 +2122,17 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "selection-ranges",
+        "level": "api",
+        "checks": [
+          "vscode.selection-ranges.response"
+        ],
+        "notCovered": [
+          "vscode.folded-text"
+        ]
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "call-hierarchy",
         "level": "api",
         "checks": ["vscode.call-hierarchy.response"],
@@ -2211,6 +2256,17 @@
         "level": "api",
         "checks": [
           "vscode.folding-ranges.response"
+        ],
+        "notCovered": [
+          "vscode.folded-text"
+        ]
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "selection-ranges",
+        "level": "api",
+        "checks": [
+          "vscode.selection-ranges.response"
         ],
         "notCovered": [
           "vscode.folded-text"
@@ -2344,6 +2400,17 @@
       },
       {
         "setup": "ssh-linux-client",
+        "feature": "selection-ranges",
+        "level": "api",
+        "checks": [
+          "vscode.selection-ranges.response"
+        ],
+        "notCovered": [
+          "vscode.folded-text"
+        ]
+      },
+      {
+        "setup": "ssh-linux-client",
         "feature": "call-hierarchy",
         "level": "api",
         "checks": ["vscode.call-hierarchy.response"],
@@ -2474,6 +2541,17 @@
       },
       {
         "setup": "nvim-linux",
+        "feature": "selection-ranges",
+        "level": "api",
+        "checks": [
+          "nvim.selection-ranges.response"
+        ],
+        "notCovered": [
+          "nvim.folded-text"
+        ]
+      },
+      {
+        "setup": "nvim-linux",
         "feature": "call-hierarchy",
         "level": "api-ui-state",
         "checks": ["nvim.call-hierarchy.response", "nvim.call-hierarchy.quickfix"],
@@ -2597,6 +2675,17 @@
         "level": "api",
         "checks": [
           "nvim.folding-ranges.response"
+        ],
+        "notCovered": [
+          "nvim.folded-text"
+        ]
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "selection-ranges",
+        "level": "api",
+        "checks": [
+          "nvim.selection-ranges.response"
         ],
         "notCovered": [
           "nvim.folded-text"
@@ -2732,6 +2821,15 @@
       },
       {
         "setup": "lazyvim-linux",
+        "feature": "selection-ranges",
+        "level": null,
+        "checks": [],
+        "notCovered": [
+          "lazyvim.selection-ranges"
+        ]
+      },
+      {
+        "setup": "lazyvim-linux",
         "feature": "call-hierarchy",
         "level": null,
         "checks": [],
@@ -2856,6 +2954,15 @@
         "checks": [],
         "notCovered": [
           "lazyvim.folding-ranges"
+        ]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "selection-ranges",
+        "level": null,
+        "checks": [],
+        "notCovered": [
+          "lazyvim.selection-ranges"
         ]
       },
       {
@@ -3296,6 +3403,12 @@
       "id": "lazyvim.folding-ranges",
       "kind": "behavior",
       "what": "folding ranges in LazyVim",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.selection-ranges",
+      "kind": "behavior",
+      "what": "selection ranges in LazyVim",
       "planned": null
     },
     {

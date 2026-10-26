@@ -545,6 +545,21 @@ component AeneasAdapter {
 		}
 		return DocumentFoldingCollector.new(normalized, syntax.tokens, cutoff).collect();
 	}
+	// All positions share one current-text parse and one syntax index. Only
+	// token recovery after the first error uses a conservative lexer.
+	def selectionRanges(path: string, input: Array<byte>, options: Array<string>, positions: Array<int>) -> Array<Array<AnalysisSelectionRange>> {
+		var normalized = normalizeLineTerminators(input);
+		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
+		setLanguageOptions(options);
+		var file = AnalysisSingleFileParser.parse(path, normalized, errors, syntax, TypeCache.new(), null);
+		resetLanguageOptions();
+		var cutoff = -1;
+		if (errors.numErrors > 0) cutoff = if(errors.offsets.length > 0 && errors.offsets[0].0 >= 0, errors.offsets[0].0, 0);
+		var symbols = DocumentSymbolCollector.new(file, syntax);
+		symbols.partial = cutoff >= 0;
+		if (cutoff >= 0) symbols.cutoff = cutoff;
+		return DocumentSelectionCollector.new(input, syntax.tokens, cutoff, symbols.collect()).collect(positions);
+	}
 	// LSP accepts CRLF and bare CR. Preserve byte offsets while presenting
 	// line terminators the compiler understands; never mutate the overlay.
 	private def normalizeLineTerminators(input: Array<byte>) -> Array<byte> {

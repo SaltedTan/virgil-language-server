@@ -1,0 +1,192 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+class AnalysisSelectionRange(begin: int, end: int) {
+	// Recovery retains an unknown token's boundary without selecting it.
+	var selectable = true;
+}
+
+// One index for a batch of positions. Delimiters come only from complete
+// consumed spans; comments are recognized only in the gaps between them.
+// After a parse error the lexer supplies tokens, never syntax extents.
+class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSyntaxToken>, cutoff: int,
+		symbols: Array<AnalysisDocumentSymbol>) {
+	def MAX_LEVELS = 128;
+	private def tokens = Vector<AnalysisSelectionRange>.new();
+	private def extents = Vector<AnalysisSelectionRange>.new();
+	private var recoveryStop = -1;
+
+	def collect(positions: Array<int>) -> Array<Array<AnalysisSelectionRange>> {
+		var open = Vector<int>.new(), end = 0;
+		for (i < consumed.length) {
+			var t = consumed[i];
+			if (cutoff >= 0 && t.end > cutoff) break;
+			comments(end, t.begin);
+			tokens.put(AnalysisSelectionRange.new(t.begin, t.end));
+			var c = ch(i);
+			if (c == '(' || c == '[' || c == '{') open.put(i);
+			else if ((c == ')' || c == ']' || c == '}') && open.length > 0) {
+				var o = open[open.length - 1], a = ch(o);
+				if ((a == '(' && c == ')') || (a == '[' && c == ']') || (a == '{' && c == '}')) {
+					open.length--;
+					var begin = consumed[o].end, last = t.begin;
+					while (begin < last && whitespace(input[begin])) begin++;
+					while (last > begin && whitespace(input[last - 1])) last--;
+					if (begin < last) extents.put(AnalysisSelectionRange.new(begin, last));
+					extents.put(AnalysisSelectionRange.new(consumed[o].begin, t.end));
+				} else open.length = 0;
+			}
+			end = t.end;
+		}
+		if (cutoff < 0) comments(end, input.length);
+		else recoverTokens(end);
+		declarations(symbols);
+		var sorted = extents.extract();
+		sorted = Arrays.sort(sorted, 0, sorted.length, smaller);
+		var result = Array<Array<AnalysisSelectionRange>>.new(positions.length);
+		for (i < positions.length) result[i] = chain(positions[i], sorted);
+		return result;
+	}
+	private def chain(pos: int, sorted: Array<AnalysisSelectionRange>) -> Array<AnalysisSelectionRange> {
+		var result = Vector<AnalysisSelectionRange>.new();
+		var lo = 0, hi = tokens.length;
+		while (lo < hi) {
+			var mid = lo + (hi - lo) / 2;
+			if (tokens[mid].end <= pos) lo = mid + 1;
+			else hi = mid;
+		}
+		var token: AnalysisSelectionRange;
+		if (lo < tokens.length && tokens[lo].begin <= pos) token = tokens[lo];
+		else if (lo > 0 && tokens[lo - 1].end == pos) token = tokens[lo - 1];
+		if (token != null && token.selectable && (recoveryStop < 0 || pos < recoveryStop)) result.put(token);
+		if (cutoff < 0 || pos < cutoff) for (r in sorted) {
+			if (r.begin <= pos && pos <= r.end) append(result, r);
+		}
+		// Reserve the last level for the document even in extreme nesting.
+		append(result, AnalysisSelectionRange.new(0, input.length));
+		return result.extract();
+	}
+	private def append(result: Vector<AnalysisSelectionRange>, r: AnalysisSelectionRange) {
+		if (result.length > 0) {
+			var child = result[result.length - 1];
+			if (r.begin > child.begin || r.end < child.end || (r.begin == child.begin && r.end == child.end)) return;
+		}
+		if (result.length == MAX_LEVELS) result.length--;
+		result.put(r);
+	}
+	private def smaller(a: AnalysisSelectionRange, b: AnalysisSelectionRange) -> bool {
+		var x = a.end - a.begin, y = b.end - b.begin;
+		return if(x != y, x < y, a.begin < b.begin);
+	}
+	private def declarations(a: Array<AnalysisDocumentSymbol>) {
+		for (d in a) {
+			if (d.begin >= 0 && d.end >= d.begin && (cutoff < 0 || d.end <= cutoff)) {
+				extents.put(AnalysisSelectionRange.new(d.begin, d.end));
+			}
+			declarations(d.children);
+		}
+	}
+	private def ch(i: int) -> byte {
+		var t = consumed[i];
+		return if(t.end == t.begin + 1, input[t.begin], 0);
+	}
+	private def whitespace(c: byte) -> bool {
+		return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+	}
+	// Returns just after a comment, or its start if there is no comment.
+	private def comment(i: int, max: int) -> int {
+		if (input[i] != '/' || i + 1 >= max) return i;
+		if (input[i + 1] == '/') {
+			var j = i + 2;
+			while (j < max && input[j] != '\n' && input[j] != '\r') j++;
+			if (j > i && input[j - 1] == '\r') j--;
+			return j;
+		}
+		if (input[i + 1] == '*') {
+			var j = i + 2;
+			while (j + 1 < max && !(input[j] == '*' && input[j + 1] == '/')) j++;
+			return if(j + 1 < max, j + 2, max);
+		}
+		return i;
+	}
+	private def comments(begin: int, end: int) {
+		var i = begin;
+		while (i < end) {
+			var next = comment(i, end);
+			if (next > i) {
+				tokens.put(AnalysisSelectionRange.new(i, next));
+				i = next;
+			} else if (whitespace(input[i])) i++;
+			else break; // an unconsumed tail is not a whitespace/comment gap
+		}
+	}
+	// Conservative lexical recovery from the last trusted consumed boundary.
+	// Compiler literal readers supply exact ends. An invalid literal stops
+	// recovery: nothing after it has a trustworthy lexical context. Operators
+	// are omitted here because their tokenization depends on parser context.
+	// The parser reads a member after '.' (skipping whitespace and comments)
+	// differently: `a.0.1` is `0`, `.`, `1`, and `a.[]=` is one `[]=` token.
+	private def recoverTokens(begin: int) {
+		var i = begin, max = input.length;
+		// The previous single-byte token, ignoring comments; 0 for any other.
+		var prev: byte;
+		if (tokens.length > 0) {
+			var t = tokens[tokens.length - 1];
+			if (t.end == t.begin + 1) prev = input[t.begin];
+		}
+		while (i < max) {
+			if (whitespace(input[i])) { i++; continue; }
+			var j = comment(i, max), c = input[i];
+			if (j > i) {
+				tokens.put(AnalysisSelectionRange.new(i, j));
+				i = j;
+				continue;
+			}
+			var selectable = true;
+			if (Char.isIdentStart(c) || c == '_') {
+				j = i + 1;
+				while (j < max && Char.isIdentMiddle(input[j])) j++;
+			} else if (c == '\"') {
+				var n = Strings.parseLiteral(input, i).0;
+				if (n <= 0) { recoveryStop = i; break; }
+				j = i + n;
+			} else if (c == '\'') {
+				var n = Chars.parseLiteral(input, i).0;
+				if (n <= 0) { recoveryStop = i; break; }
+				j = i + n;
+			} else if (Char.isDecimal(c) && prev == '.') {
+				// expr.0 names a tuple member with decimal digits only.
+				j = i + 1;
+				while (j < max && Char.isDecimal(input[j])) j++;
+			} else if (Char.isDecimal(c)) {
+				var np = NumberParser.new(input[i ...]);
+				np.accept_width = true;
+				if (!np.parse()) { recoveryStop = i; break; }
+				j = i + np.pos;
+				// A '-' just before the digits begins the literal as a term
+				// (`-42`) but is an operator after an operand (`a-42`).
+				if (i > 0 && input[i - 1] == '-') selectable = false;
+			} else if (c == '[' && prev == '.') {
+				// expr.[] and expr.[]= are single member tokens, matched as
+				// the parser's optN matches them; a lone '[' is an error.
+				j = i + 1;
+				if (i + 3 < max && input[i + 1] == ']' && input[i + 2] == '=') j = i + 3;
+				else if (i + 2 < max && input[i + 1] == ']') j = i + 2;
+				else selectable = false;
+			} else if (c == '.') {
+				j = i + 1;
+				while (j < max && input[j] == '.') j++;
+				selectable = false;
+			} else {
+				j = i + 1;
+				// Other single-byte separators have no lexical ambiguity.
+				selectable = c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == ';' || c == ',';
+			}
+			var token = AnalysisSelectionRange.new(i, j);
+			token.selectable = selectable;
+			tokens.put(token);
+			prev = if(j == i + 1, c, 0);
+			i = j;
+		}
+	}
+}

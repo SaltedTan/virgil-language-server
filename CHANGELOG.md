@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- [Selection ranges](docs/architecture.md#selection-ranges) (`textDocument/selectionRange`) expand and shrink selections through tokens, bracket groups, declarations, and the current open document, including unsaved edits, without semantic analysis. Completed syntax before the first parse error remains available; VS Code and Neovim tests check exact chains ([#306](https://github.com/SaltedTan/virgil-language-server/issues/306)).
+
 - [Folding ranges](docs/architecture.md#folding-ranges) (`textDocument/foldingRange`) fold brace blocks and multiline comments from the open document's current parser syntax, including unsaved edits, without semantic analysis. Replies honor client capabilities and keep only completed ranges before the first parse error; VS Code and Neovim tests check exact ranges ([#297](https://github.com/SaltedTan/virgil-language-server/issues/297)).
 - A [missing-semicolon quick fix](docs/architecture.md#code-actions) inserts `;` before trailing whitespace or comments when reparsing proves that the current syntax error is gone. VS Code and Neovim can apply its versioned edit; only clients with literal code actions and `documentChanges` support receive it, and only fixes that end the line are preferred ([#299](https://github.com/SaltedTan/virgil-language-server/issues/299)).
 

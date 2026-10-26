@@ -43,6 +43,10 @@ Inlay hints require a current project analysis. Method-body fallback omits hints
 
 Type definition returns no location for built-in and structural types, including strings, arrays, ranges, tuples, and functions, or for unresolved types. It never follows their element types. `Box<Foo>` targets `Box`; the documented `Ref<L>` exception targets layout `L` ([Type definition](architecture.md#type-definition)).
 
+## Selection ranges
+
+Selection ranges use the current open document only; closed documents have none. Chains contain tokens, bracket-group contents and delimiters, completed declarations, and the document, with no separate expression or statement ranges. A parse error removes syntax extents crossing or following the first error; lexical recovery supplies only trustworthy tokens and stops at an invalid literal, omitting operators that need parser context and any number directly after a `-`. Requests above 100 positions are rejected, and chains deeper than 128 levels retain their innermost 127 and the document ([Selection ranges](architecture.md#selection-ranges)).
+
 ## Folding ranges
 
 Folding uses brace blocks and multiline comments from the open document's current syntax; closed documents have no ranges. It provides no indentation, import, or `region` marker folds. A parse error removes folds crossing or following the first error, and an error without an exact byte offset removes all folds. Replies contain at most 10,000 ranges or the client's smaller limit, keeping the outermost ranges first ([Folding ranges](architecture.md#folding-ranges)).

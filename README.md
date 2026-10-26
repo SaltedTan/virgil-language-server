@@ -10,6 +10,8 @@ A [Language Server Protocol](https://microsoft.github.io/language-server-protoco
 
 With `main`, syntax-based [folding ranges](docs/architecture.md#folding-ranges) fold brace blocks and multiline comments from the current open document, including unsaved edits.
 
+With `main`, [selection ranges](docs/architecture.md#selection-ranges) expand selections through tokens, bracket groups, declarations, and the document from the current open text.
+
 ## Why
 
 Virgil has a self-hosted compiler. Running `v3c` on save gives diagnostics for saved files only. It can't provide go-to-definition or hover, which need the compiler's bound syntax tree. This project uses Aeneas's front end so editors can get the compiler's real semantics instead of a reimplementation; see the [process model](docs/decisions/0004-analysis-worker-process.md).

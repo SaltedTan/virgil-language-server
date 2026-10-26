@@ -1,0 +1,62 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Current-overlay syntax selection; no semantic snapshot or worker wait.
+class LspSelectionRanges(store: DocumentStore, projects: WorkspaceProjects) {
+	def MAX_POSITIONS = 100;
+	def register(dispatcher: JsonRpcDispatcher) {
+		dispatcher.onRequest("textDocument/selectionRange", selectionRange);
+	}
+	private def selectionRange(request: JsonRpcMessage.Request) -> JsonRpcReply {
+		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
+		var doc = object(params, "textDocument");
+		if (doc == null || !JsonValue.String.?(doc["uri"]) ||
+			DocumentUri.normalize(JsonValue.String.!(doc["uri"]).v) == null ||
+			!JsonValue.JArray.?(params["positions"])) return invalid();
+		var positions = JsonValue.JArray.!(params["positions"]).v;
+		if (positions.length > MAX_POSITIONS) return invalid();
+		for (p in positions) {
+			if (!JsonValue.JObject.?(p)) return invalid();
+			var obj = JsonValue.JObject.!(p).v;
+			if (!JsonValue.Int.?(obj["line"]) || !JsonValue.Int.?(obj["character"]) ||
+				JsonValue.Int.!(obj["line"]).v < 0 || JsonValue.Int.!(obj["character"]).v < 0) return invalid();
+		}
+		var overlay = store.overlay(JsonValue.String.!(doc["uri"]).v);
+		if (overlay == null || positions.length == 0) return JsonRpcReply.Result(JsonValue.JArray([]));
+		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
+		var offsets = Array<int>.new(positions.length);
+		for (i < positions.length) {
+			var p = JsonValue.JObject.!(positions[i]).v;
+			offsets[i] = map.positionToOffset(JsonValue.Int.!(p["line"]).v, JsonValue.Int.!(p["character"]).v);
+		}
+		var owner = projects.forDocument(overlay.uri);
+		var chains = AeneasAdapter.selectionRanges(overlay.uri, overlay.text, owner.compilerArgs(), offsets);
+		var result = Array<JsonValue>.new(chains.length);
+		for (i < chains.length) {
+			var a = chains[i], parent: JsonValue;
+			for (j = a.length - 1; j >= 0; j--) {
+				var obj = Strings.newMap<JsonValue>(), range = Strings.newMap<JsonValue>();
+				range["start"] = position(map.offsetToPosition(a[j].begin));
+				range["end"] = position(map.offsetToPosition(a[j].end));
+				obj["range"] = JsonValue.JObject(range);
+				if (j < a.length - 1) obj["parent"] = parent;
+				parent = JsonValue.JObject(obj);
+			}
+			result[i] = parent;
+		}
+		return JsonRpcReply.Result(JsonValue.JArray(result));
+	}
+	private def invalid() -> JsonRpcReply {
+		return JsonRpcReply.Error(JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
+			"selectionRange params require a valid textDocument.uri and at most 100 nonnegative positions"));
+	}
+	private def object(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
+		return if(obj != null && JsonValue.JObject.?(obj[key]), JsonValue.JObject.!(obj[key]).v);
+	}
+	private def position(p: LspPosition) -> JsonValue {
+		var obj = Strings.newMap<JsonValue>();
+		obj["line"] = JsonValue.Int(p.line);
+		obj["character"] = JsonValue.Int(p.character);
+		return JsonValue.JObject(obj);
+	}
+}
