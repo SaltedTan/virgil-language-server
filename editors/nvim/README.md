@@ -4,6 +4,8 @@
 
 Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on PATH](../../README.md#editor-setup). LazyVim additionally requires an existing [LazyVim starter installation](https://www.lazyvim.org/installation) and its prerequisites (including Git and a C compiler for parsers). No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
+With `main`'s server, [folding ranges](../../docs/architecture.md#folding-ranges) come from brace blocks and multiline comments in the current buffer. Neovim can use them with `:setlocal foldmethod=expr foldexpr=v:lua.vim.lsp.foldexpr()`.
+
 ## LazyVim
 
 Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim installation's `lua/plugins/virgil.lua`. The commands use `$XDG_CONFIG_HOME/nvim`, or `~/.config/nvim` when it is unset or empty. Replace `config_url` with the raw source download location for the release version you installed (or an HTTP directory containing its `editors/nvim/` files). The file is downloaded beside its destination and moved into place only once the download succeeds, so a failed download leaves an earlier installation as it was:
