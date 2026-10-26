@@ -193,7 +193,7 @@ phase clocks use the existing `System.ticksUs` wall clock. Interpret phases as:
 | server `worker_start_us`, `roundtrip_us` | Process start to HELLO, and supervisor admission through result decoding. Startup overlaps request encoding, and roundtrip excludes source capture. |
 | worker `gc_count`, `allocated_bytes` | Collections and allocation from request decoding through result encoding; exclude the explicit collections before and after sending. Allocation is the pinned runtime's cumulative allocated bytes plus current-cycle allocation delta. |
 | server `gc_count`, `allocated_bytes` | Corresponding deltas from supervisor admission through result decoding; exclude capture and later LSP response rendering. |
-| worker `force_gc_after_send_us` | Collection after sending a result, which drops it; reported against the next request. |
+| worker `force_gc_after_send_us` | Collection after dropping the sent result; emitted with the next request so the probe falls within that request's sample window. Absent on a fresh worker's first request; the last collection is unreported if there is no next request. |
 | worker `force_gc_us`, `live_after_gc_bytes` | Explicit pre-send collection duration and the existing retirement-policy live-byte count, excluding the result byte-array length. It runs once per transaction, before the collection after sending. |
 | worker `heap_after_handle_bytes`, server `heap_after_decode_bytes` | Space used at those boundaries, not peak live memory. |
 | worker `result_bytes`, server `worker_heap_bytes` | Encoded RESULT frame bytes and the worker's actual reserved heap from HELLO. |
