@@ -16,12 +16,18 @@ the error at the same point, or a client without literal actions and versioned
 edits gets no action. A bare CR before the semicolon error remains the parser's
 first error, so it prevents the fix. The statement that the `;` would end
 must start on the same line as the insertion. A missing `;` after a statement
-that spans lines, such as a call whose arguments continue on the next line, or
-an `if (c)` or `match` arm whose body starts on the next line, gets no fix even
-when inserting it would be right: the parser may have read a later line into
-the statement, as when `return` without its `;` reads a following `if (c)` as
-its value, and a parse alone can't tell the two apart. There is no fix-all or
-action on save ([Code actions](architecture.md#code-actions)).
+that spans lines, such as a call whose arguments continue on the next line, an
+`if (c)` or `match` arm whose body starts on the next line, or an assignment of
+a lambda whose body spans lines, gets no fix even when inserting it would be
+right: the parser may have read a later line into the statement, as when
+`return` without its `;` reads a following `if (c)` as its value, and a parse
+alone can't tell the two apart. The server finds the statement's start by
+walking back over the parser's tokens, and it gives no fix where it can't tell
+whether a brace closes a block or a lambda. It gives none right after a
+one-argument `if (c)`, which on one line may be an `if` statement that the
+parser read as a `return` value. A layout field or a layout's size gets no fix
+either. There is no fix-all or action on save
+([Code actions](architecture.md#code-actions)).
 
 ## Semantic features need a project file
 

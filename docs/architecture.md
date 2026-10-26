@@ -288,26 +288,65 @@ by `if (false) {}` on the next line, the parser reads `return if (false)` as a
 conditional expression, so a `;` after `if (false)` parses but ends the wrong
 statement, and the intended `;` after `return` is on the line before. The
 first parse, through `AeneasAdapter.parseStatement`, records the tokens that
-the parser consumed (`SymbolSyntaxIndex`), with no extra parse. The
-adapter scans those tokens backward from the anchor, balancing parentheses
-and brackets. Only a one-byte `;`, `{`, or `}` outside those groups marks a
-statement boundary; the next token is the statement's start, or the file's
-first token if there is no boundary. An unmatched opening parenthesis or
-bracket leaves the start unknown, except for the parenthesis opening a `for`
-header. The last consumed token on any earlier line must also be a one-byte
-`;`, `{`, or `}`, if there is such a token. This rejects an earlier line ending
-in `return` even when a lambda body's braces hide the statement's real start.
-Strings, character literals, and comments are never delimiter tokens. If the
-start is unknown, no token follows the boundary before the anchor, or a line
-break lies between the start and the anchor, there is no action. A forgotten
-`;` at the end of a one-line statement, such as a call, assignment, `return`,
-local, field, one-line
-`match` arm, or `if (c) x = 1`, still gets the fix, as does a `for` header's
-first `;`. A statement that spans lines gets none, even where the fix would be
-right, such as a call whose arguments continue on the next line, an `if (c)`
-or `match` arm whose body starts on the next line, or an expression continued
-by a leading `-` on the next line; a parse can't tell those from a line that
-the statement swallowed.
+the parser consumed (`SymbolSyntaxIndex`), with no extra parse, and
+`AnalysisStatementStart` walks them backward from the anchor to a statement
+boundary:
+
+- A `)`, `]`, or `}` is skipped together with everything back to its matching
+  opener. A `{` that follows a `;`, `{`, or `}`, `else`, a match arm's `=>`,
+  or the parenthesized header of `if`, `while`, `for`, or `match` opens a
+  block statement. Otherwise the nearest keyword before the `{` decides:
+  `fun` makes the group a lambda body, and `def`, `new`, `class`,
+  `component`, `enum`, `type`, `case`, or `layout` makes it a method or
+  constructor body or a member list. The `}` of a block statement or a
+  declaration is the boundary. A lambda body is part of the current
+  expression, and the walk continues before it. Any other `{` gets no action.
+- A `;` is the boundary unless it is a lambda's empty body, as in
+  `fun(x: int);`: a `fun` reached from the `;` before any `;`, `{`, `}`, `=>`,
+  or unmatched opener owns it.
+- An unmatched `{` is the boundary: it opens the enclosing block, body, or
+  member list. An unmatched `(` or `[` means that the anchor is inside a group,
+  and there is no action, except for the parenthesis that opens a `for` header.
+
+The statement starts at the first token after the boundary, or at the file's
+first token. That token must be on the anchor's line, and it must be able to
+begin a statement, a declaration, or a match arm: a name or keyword, `_`, a
+literal, `(`, `[`, or a prefix `!`, `~`, `++`, or `--`. Strings, character
+literals, and comments are never boundary or bracket tokens.
+
+This is sound for a statement that the parser read past its intended `;`.
+Everything the parser read after that point continues the statement's
+expression or declaration, with suffixes, operators, and nested groups. At the
+walk's level, such a continuation holds no `;`, `{`, or `}` except a lambda's,
+which the walk skips, because a block statement or a declaration can't appear
+in an expression. The boundary is therefore before the intended `;`, the start
+is on that `;`'s line or earlier, and an anchor on a later line gets no action.
+Only a swallow within one line escapes the line rule. The one that ends in a
+semicolon error is a statement's `if (c)` read as an `if` expression, as in
+`if (c) return if (d) {}`. An `if` expression needs two or three arguments,
+so an anchor right after a one-argument `if(...)` gets no action.
+
+A forgotten `;` at the end of a one-line statement, such as a call, assignment,
+`return`, local, field, one-line `match` arm, `if (c) x = 1`, or a statement
+after a block, method, or lambda argument that ends on an earlier line, still
+gets the fix, as does a `for` header's first or second `;`. A statement that
+spans lines gets none, even where the fix would be right, such as a call whose
+arguments continue on the next line, an `if (c)` or `match` arm whose body
+starts on the next line, an assignment of a lambda whose body spans lines, or
+an expression continued by a leading `-` on the next line; a parse can't tell
+those from a line that the statement swallowed. Layout fields, which start with
+`+`, and a layout's `=size` get none, because neither token can start a
+statement.
+
+The rule was measured against an oracle on real code. Each of the 39,750 `;`
+tokens outside parentheses and brackets in the pinned Aeneas sources and
+`lib/util` (198 files) was removed in turn, and a server over stdio was asked
+for actions on the whole file. In 38,068 cases the action inserted exactly the
+removed `;`, and in none did it insert one anywhere else. 622 removals with a
+semicolon error got no action. Most were statements that span lines, some were
+a bare `return` whose next line the parser read as its value, and 23 were
+layout lines. The other 1,060 removals gave a different first error, such as a
+`return;` before `}`, where `}` can't start the return's value.
 
 There is one candidate and no search. The edited text
 is parsed once, with the same options. The action is offered only if the file
@@ -337,11 +376,17 @@ header, later errors, tabs, UTF-16 and canonical URIs, project options, stale
 contexts, excluded kinds, capabilities, malformed params, and lifecycle gates.
 It also checks that statements whose start is on an earlier line get no
 action even though the reparse would accept the `;`: a `return` that swallows
-a following `if`, expression statement, or assignment, a call whose arguments
-span two lines, and an `if (c)` or `match` arm whose body is on the next line. CRLF inside comments is covered; a bare CR is
+a following `if`, expression statement, or assignment, including through a
+lambda in the `if` condition and a lambda body that spans lines followed by
+`+ 1`, `(1)`, or `.x`, a lambda's empty body, a call whose arguments span two
+lines, and an `if (c)` or `match` arm whose body is on the next line; a
+one-line `return if (c) {}` gets none either. After an `if`, `while`, `for`,
+`match`, `else`, match arm, bare, local method, and lambda-argument block,
+and after a method body, the next statement still gets its fix. CRLF inside comments is covered; a bare CR is
 already a parser error and gets no semicolon fix. The [stdio test](../test/protocol/code_actions.py)
 checks advertisement, versioned edits, stale diagnostics, changes, the
-swallowed `if` after `return`, and invalid params. The VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test)
+swallowed `if` after `return`, a lambda body that spans lines after `return`,
+and invalid params. The VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test)
 and [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) request
 the exact action on `semicolon.v3`, apply its edit, and check that the diagnostic
 clears; [editor coverage](../test/e2e/coverage.json) records both checks.

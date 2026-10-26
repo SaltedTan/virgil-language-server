@@ -101,20 +101,29 @@ def test_proof(t: Tester) {
 }
 // The parser may read a later line into a statement whose ";" is missing. A
 // ";" at its end would parse, but the statement doesn't start on that line, so
-// no action is offered.
+// no action is offered. A lambda's braces don't end the statement; a block
+// statement's do.
 def test_statement_line(t: Tester) {
 	for (text in [
 		"component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n",
 		"component C { def f() {\n\tif (true) return\n\tif (p(fun() {})) {}\n} }",
 		"component C { def f() {\n\tif (true) return\n\tf = fun() {} + 1\n} }",
-		"component C { def f() {\n\tfor (\n\t\ti = 0 i < 3; i++) {}\n} }",
 		"component C { def f() {\n\tif (true) return\n\tif (p([fun() {}])) {}\n} }",
 		"component C { def f() {\n\tif (true) return\n\tif (p(fun() { a(); })) {}\n} }",
 		"component C { def f() {\n\treturn\n\ta()\n} }",
 		"component C { var x: int; def f() {\n\treturn\n\tx = 1\n} }",
 		"component C { def f() { a(1,\n\t2)\n\tb(); } }",
 		"component C { def f() { if (true)\n\ta()\n\tb(); } }",
-		"component C { var x: int; def f(b: bool) { match (b) {\n\ttrue =>\n\t\tx = 1\n\tfalse => x = 2;\n} } }"] ) {
+		"component C { var x: int; def f(b: bool) { match (b) {\n\ttrue =>\n\t\tx = 1\n\tfalse => x = 2;\n} } }",
+		// A lambda body that spans lines hides the return's line.
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t} + 1\n\th();\n} }",
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t} + 1\n\th();\n} }",
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t}(1)\n\th();\n} }",
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t}.x\n\th();\n} }",
+		// A lambda's empty body is a ";" inside the expression.
+		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun(); (1)\n\th();\n} }",
+		// On one line, a statement's `if (c)` read as a one-argument if expression.
+		"component C { def f(c: bool) {\n\tif (c) return if (c) {}\n} }"] ) {
 		var parsed = AeneasAdapter.parseFile(URI, text, []);
 		t.assert_string("\";\" expected", parsed.diagnostics[0].message);
 		// Without the rule, the proof would accept this ";".
@@ -128,6 +137,18 @@ def test_statement_line(t: Tester) {
 		empty(t, s, params(null));
 		empty(t, s, withDiagnostic(diagnostic(text)));
 	}
+	// A block statement's "}" ends a statement, so the next statement's ";"
+	// is still offered after each kind of block, and after a method body.
+	def body = "component C { var x: int; def f(c: bool) {\n%s\n} }";
+	for (block in ["\tif (c) {\n\t\tf(c);\n\t}", "\twhile (c) {\n\t}", "\tfor (i < 3) {\n\t}",
+		"\tmatch (c) {\n\t\ttrue => x = 2;\n\t\tfalse => {}\n\t}", "\tif (c) {\n\t} else {\n\t}",
+		"\t{\n\t\tf(c);\n\t}", "\tdef g() {\n\t}", "\tf(fun() {\n\t\tf(c);\n\t});"]) {
+		site(t, Strings.format1(body, Strings.format1("%s\n\tx = 1|", block)), true);
+	}
+	site(t, Strings.format1(body, "\tmatch (c) {\n\t\ttrue => {\n\t\t}\n\t\tfalse => x = 1|\n\t}"), true);
+	site(t, Strings.format1(body, "\tif (c) {\n\t} else x = 1|"), true);
+	site(t, "component C {\n\tdef f() {\n\t}\n\tvar x = 1|\n}", true);
+	site(t, "component C { def f() {\n\tfor (\n\t\ti = 0| i < 3; i++) {}\n} }", false);
 }
 def test_context(t: Tester) {
 	var s = running(CAPS);
