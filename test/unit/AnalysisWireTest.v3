@@ -11,6 +11,8 @@ def X = [
 	T("AnalysisWire:compact_coordinates", test_compact_coordinates),
 	T("AnalysisWire:type_targets", test_type_targets),
 	T("AnalysisWire:type_targets_selected_files", test_type_targets_selected_files),
+	T("AnalysisWire:parents", test_parents),
+	T("AnalysisWire:link_cycles", test_link_cycles),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
 	T("AnalysisWire:result_buffer_writes", test_result_buffer_writes),
@@ -546,7 +548,7 @@ def declaration(kind: int, path: int) -> DataWriter {
 	var w = DataWriter.new();
 	w.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
 	w.put_sleb32(1).putb(kind).put_sleb32(0).put_sleb32(path);
-	return w.puta(DECLARATION_RANGE).put_sleb32(1).put_sleb32(0);
+	return w.puta(DECLARATION_RANGE).put_sleb32(1).put_sleb32(0).put_sleb32(0);
 }
 def DECLARATION_RANGE = "\x01\x01\x01\x02\x04\x05";
 // The request of the hand-built results, whose path indexes are 0 for
@@ -620,7 +622,7 @@ def test_invalid_display_indexes(t: Tester) {
 	assertMalformed(t, file(declarations(1, 0, 3), 0).puta(NO_DISPLAY), "signature index");
 	// A null table entry cannot be a name.
 	var nulls = DataWriter.new().put_sleb32(1).put_sleb32(-1);
-	nulls.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	nulls.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	assertMalformed(t, file(nulls, 0).puta(NO_DISPLAY), "null name");
 	// A use-site type is an occurrence index, as a difference from the
 	// previous one, and a string index.
@@ -660,8 +662,8 @@ def test_invalid_display_indexes(t: Tester) {
 	// order without overlap.
 	var sites = DataWriter.new();
 	sites.put_sleb32(1).put_sleb32(1).putb('x');
-	sites.put_sleb32(2).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
-	sites.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0).put_sleb32(0);
+	sites.put_sleb32(2).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
+	sites.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	r = decodedResult(result(0, site(sites, 0, 0, 2)), 1, REQUEST);
 	if (r == null) return t.fail("declaration sites were rejected");
 	t.assert(r.snapshot.declarationAtOffset("p.v3", 4) == r.snapshot.declarations[0], "the first site");
@@ -674,7 +676,7 @@ def test_invalid_display_indexes(t: Tester) {
 	assertMalformed(t, site(sites, 1, 0, 1), "a site in another file");
 	var overlap = DataWriter.new().put_sleb32(1).put_sleb32(1).putb('x');
 	overlap.put_sleb32(2);
-	for (i < 2) overlap.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	for (i < 2) overlap.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	assertMalformed(t, site(overlap, 0, 0, 2), "overlapping sites");
 }
 // Each file is decoded once, and its site run follows the previous file's,
@@ -722,9 +724,9 @@ def siteRuns(files: Array<(int, int, int)>) -> DataWriter {
 	var w = DataWriter.new();
 	w.put_sleb32(1).put_sleb32(1).putb('x');
 	w.put_sleb32(3);
-	w.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
-	w.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0).put_sleb32(0);
-	w.putb(0).put_sleb32(0).put_sleb32(1).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(0).puta("\x01\x05\x01\x06\x08\x09").put_sleb32(0).put_sleb32(0).put_sleb32(0);
+	w.putb(0).put_sleb32(0).put_sleb32(1).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	w.puta(NO_SIGNATURES).put_sleb32(files.length);
 	for (f in files) w.put_sleb32(f.0).put_sleb32(f.1).put_sleb32(f.2).put_sleb32(0).puta(NO_DISPLAY);
 	return w;
@@ -780,7 +782,7 @@ def declarationsWithType(count: int, name: int, signature: int, target: int) -> 
 	var w = DataWriter.new();
 	w.put_sleb32(2).put_sleb32(1).putb('x').put_sleb32(3).puta("int");
 	w.put_sleb32(count);
-	for (i < count) w.putb(0).put_sleb32(name).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(signature).put_sleb32(target);
+	for (i < count) w.putb(0).put_sleb32(name).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(signature).put_sleb32(target).put_sleb32(0);
 	return w;
 }
 // A copy of {w} followed by a file table of one file, path index {path},
@@ -807,7 +809,7 @@ def test_result_index_string_budget(t: Tester) {
 	for (i < text.length) text[i] = 'x';
 	// The name is in the string table; the path is the request's.
 	var index = DataWriter.new().put_sleb32(1).put_sleb32(text.length).puta(text);
-	index.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	index.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	file(index, 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY);
 	var decoded = decodedResult(result(0, index), 1, [text]);
 	if (decoded == null) return t.fail("index strings within the allocation budget were rejected");
@@ -821,7 +823,7 @@ def test_result_allocation_budget(t: Tester) {
 	var declarations = DataWriter.new();
 	declarations.put_sleb32(1).put_sleb32(1).putb('x').put_sleb32(200000);
 	for (i < 200000) {
-		declarations.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+		declarations.putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	}
 	declarations.put_sleb32(0);
 	assertTooLarge(t, result(0, declarations), "compact declarations exceed allocation budget");
@@ -830,7 +832,7 @@ def test_result_allocation_budget(t: Tester) {
 	assertTooLarge(t, result(0, files), "compact file table exceeds allocation budget");
 	var occurrences = DataWriter.new();
 	occurrences.put_sleb32(1).put_sleb32(1).putb('x');
-	occurrences.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0);
+	occurrences.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0).puta(DECLARATION_RANGE).put_sleb32(0).put_sleb32(0).put_sleb32(0);
 	occurrences.put_sleb32(2);
 	for (f < 2) {
 		occurrences.put_sleb32(f).put_sleb32(0).put_sleb32(0).put_sleb32(500000);
@@ -1203,7 +1205,7 @@ def test_shared_signatures(t: Tester) {
 	var calls = DataWriter.new();
 	for (i < 5000) calls.putb(3).putb(0).putb(1);
 	var payload = result(0, withCalls(w.extract(), 5000, calls.extract()));
-	t.asserti(115072, payload.length);
+	t.asserti(115073, payload.length);
 	var r = decodedResult(payload, 1, REQUEST);
 	if (r == null) return t.fail("the calls were rejected");
 	var got = r.snapshot.calls("p.v3");
@@ -1830,6 +1832,74 @@ def test_type_targets(t: Tester) {
 			.put_sleb32(2).puta(data).put_sleb32(0).put_sleb32(0);
 		assertMalformed(t, w, "unordered or overflowing type-target offsets");
 	}
+}
+// Two declarations of kinds {kinds} at separate sites of p.v3, with parents
+// {parents}: each an index plus one, or zero.
+def parented(kinds: (AnalysisDeclKind, AnalysisDeclKind), parents: (int, int)) -> DataWriter {
+	return parentedAll([kinds.0, kinds.1], [parents.0, parents.1]);
+}
+// Declarations of {kinds} with {parents}, the k-th at 1:4k+1-1:4k+2, bytes
+// 4k + 4 to 4k + 5, all named "x" and sites of "p.v3".
+def parentedAll(kinds: Array<AnalysisDeclKind>, parents: Array<int>) -> DataWriter {
+	var w = DataWriter.new().put_sleb32(1).put_sleb32(1).putb('x').put_sleb32(kinds.length);
+	for (k < kinds.length) {
+		w.putb(kinds[k].tag).put_sleb32(0).put_sleb32(0);
+		w.put_sleb32(1).put_sleb32(4 * k + 1).put_sleb32(1).put_sleb32(4 * k + 2).put_sleb32(4 * k + 4).put_sleb32(4 * k + 5);
+		w.put_sleb32(0).put_sleb32(0).put_sleb32(parents[k]);
+	}
+	return site(w, 0, 0, kinds.length);
+}
+// A parent is another declaration's index plus one, in range and never the
+// declaration's own, and only a class, a variant case, or a method has one:
+// a class's is a class or a variant case, a case's a class, and a method's a
+// method. Parents form no cycle, of any length. Parents add nothing to the
+// charge.
+def test_parents(t: Tester) {
+	var c = AnalysisDeclKind.CLASS, m = AnalysisDeclKind.METHOD;
+	var plain = decodedResult(result(0, parented((c, c), (0, 0))), 1, REQUEST);
+	var linked = decodedResult(result(0, parented((c, c), (0, 1))), 1, REQUEST);
+	if (plain == null || linked == null) return t.fail("valid parents rejected");
+	t.assertl(plain.snapshot.resultAllocation, linked.snapshot.resultAllocation);
+	t.assertl(plain.snapshot.retainedBytes, linked.snapshot.retainedBytes);
+	var s = linked.snapshot, found = s.implementations(s.declarations[0]);
+	t.assert(found.length == 1 && found[0] == s.declarations[1], "a parent's implementation");
+	t.asserti(0, s.implementations(s.declarations[1]).length);
+	t.asserti(0, plain.snapshot.implementations(plain.snapshot.declarations[0]).length);
+	var chain = decodedResult(result(0, parentedAll([c, c, c, c], [0, 1, 2, 2])), 1, REQUEST);
+	if (chain == null) return t.fail("a chain and a fork were rejected");
+	s = chain.snapshot;
+	t.asserti(3, s.implementations(s.declarations[0]).length);
+	t.asserti(2, s.implementations(s.declarations[1]).length);
+	assertMalformed(t, parented((m, m), (2, 1)), "a cycle of two");
+	assertMalformed(t, parentedAll([c, c, c], [2, 3, 1]), "a cycle of three");
+	assertMalformed(t, parentedAll([c, c, c, c, c], [0, 3, 4, 5, 3]), "a cycle of three after a root and a tail");
+	assertMalformed(t, parentedAll([m, m, m], [0, 1, 3]), "a third declaration as its own parent");
+	for (parent in [-1, 3, int.max, int.min]) assertMalformed(t, parented((c, c), (0, parent)), "a parent out of range");
+	assertMalformed(t, parented((c, c), (1, 0)), "the first declaration as its own parent");
+	assertMalformed(t, parented((c, c), (0, 2)), "the second declaration as its own parent");
+	for (child in AnalysisDeclKind) {
+		for (parent in AnalysisDeclKind) {
+			var valid = (child == c && (parent == c || parent == AnalysisDeclKind.VARIANT_CASE))
+				|| (child == AnalysisDeclKind.VARIANT_CASE && parent == c) || (child == m && parent == m);
+			var decoded = AnalysisWire.decodeResult(result(0, parented((parent, child), (0, 1))), 1, REQUEST);
+			var name = Strings.format2("a %s's parent of kind %s", child.name, parent.name);
+			t.assert(if(valid, AnalysisResultDecode.Decoded.?(decoded), AnalysisResultDecode.Malformed.?(decoded)), name);
+		}
+	}
+}
+// The encoder drops the parents on each cycle of its sparse links, which
+// name only the declarations that have a parent, and keeps the rest.
+def test_link_cycles(t: Tester) {
+	// Pairs of a declaration and its parent plus one: 0 -> 1, which has no
+	// pair; a cycle of two, 2 and 4; 5 -> 2, into it; a cycle of three, 6,
+	// 7, and 8; 9 -> 0; and 10 as its own parent. The last pair is past the
+	// count.
+	var links = [0, 2, 2, 5, 4, 3, 5, 3, 6, 8, 7, 9, 8, 7, 9, 1, 10, 11, 99, 99];
+	t.assertz(true, AnalysisWire.dropLinkCycles(links, links.length - 2));
+	var parents = [2, 0, 0, 3, 0, 0, 0, 1, 0, 99];
+	for (i < parents.length) t.asserti(parents[i], links[2 * i + 1]);
+	t.assertz(false, AnalysisWire.dropLinkCycles(links, links.length - 2));
+	t.assertz(false, AnalysisWire.dropLinkCycles(Array<int>.new(0), 0));
 }
 def typeTargets(count: int, data: string) -> DataWriter {
 	return file(declarations(1, 0, 0), 1).puta(OCCURRENCE).put_sleb32(0)

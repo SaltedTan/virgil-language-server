@@ -1,0 +1,99 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// textDocument/implementation from the class and override hierarchy of a
+// current snapshot, which LspSnapshotRequests selects as for a definition.
+// See docs/architecture.md#implementation.
+component LspImplementation {
+	def REQUIRES = "a valid textDocument.uri and position";
+	def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return answer(_, _, LspReferences.MAX_LOCATIONS, LspReferences.MAX_REPLY_BYTES);
+	}
+	// The Locations of the implementations of the class or method that the
+	// use or the declaration name containing {offset} selects, as references
+	// select a declaration (AnalysisSnapshot.implementations), in byte order
+	// of path and then by offset; an empty list for another name, including
+	// a builtin use or a builtin type's name. The locations in a file whose bytes are no longer the
+	// ones analyzed, or inside a substituted body, are left out. More than
+	// {limit} locations, or more than {maxBytes} of their encoded JSON, get
+	// RequestFailed, as references do.
+	def answer(at: LspSnapshotPosition, offset: int, limit: int, maxBytes: int) -> (bool, JsonRpcReply) {
+		var s = at.snapshot, decl = LspReferences.declaration(at, offset);
+		if (decl == null) {
+			if (s.builtinUseAtOffset(at.path(), offset) == null && !builtinTypeName(at.text, offset, at.options)) {
+				return (false, JsonRpcReply.Result(JsonValue.Null));
+			}
+			return (true, JsonRpcReply.Result(JsonValue.JArray([])));
+		}
+		var locations = Vector<JsonValue>.new(), bytes = 0;
+		var path: string, j = -1, map: PositionMap, locationBytes = 0;
+		for (d in s.implementations(decl)) {
+			var r = d.range;
+			// The implementations are in order of path, so each file's text is
+			// checked and its position map built once.
+			if (path == null || !Strings.equal(path, r.path)) {
+				path = r.path;
+				var target = at.target(path);
+				j = target.0;
+				if (j >= 0) {
+					map = at.positionMap(j, target.1);
+					locationBytes = JsonRpcJson.stringBytes(s.documentVersions[j].uri) + LspReferences.LOCATION_BYTES;
+				}
+			}
+			if (j < 0 || !at.maps(j, r.beginOffset, r.endOffset)) continue;
+			if (locations.length == limit) {
+				return (true, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED,
+					Strings.format2("the declaration %s has more than %d implementations", decl.name, limit))));
+			}
+			if (bytes + locationBytes > maxBytes) {
+				return (true, JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.REQUEST_FAILED,
+					Strings.format2("the implementations of the declaration %s need more than %d bytes", decl.name, maxBytes))));
+			}
+			bytes += locationBytes;
+			locations.put(at.location(j, map, r.beginOffset, r.endOffset));
+		}
+		return (true, JsonRpcReply.Result(JsonValue.JArray(locations.extract())));
+	}
+	// Whether {offset} is in the name of a builtin type where a type can
+	// start, such as "int" in "var n: int" or in "Array<int>". The occurrence
+	// index records no use there, since the type has no source declaration,
+	// so the name is checked against the builtin types that completion offers
+	// with the project's compiler options {options} (AeneasAdapter.builtinTypes),
+	// and its place in {text} with completion's scanner. A source type or type
+	// parameter of that name that verification resolved would be an
+	// occurrence instead.
+	def builtinTypeName(text: Array<byte>, offset: int, options: Array<string>) -> bool {
+		if (offset < 0 || offset >= text.length || !nameByte(text[offset])) return false;
+		var begin = offset, end = offset + 1;
+		while (begin > 0 && nameByte(text[begin - 1])) begin--;
+		while (end < text.length && nameByte(text[end])) end++;
+		if (!builtinType(AeneasAdapter.builtinTypes(options), text, begin, end)) return false;
+		var context = LspCursorScanner.new(text).scan(begin);
+		return context.place == LspCursorPlace.CODE && (context.syntax & LspCursorSyntax.TYPE) != 0;
+	}
+	// Whether {names}, in byte order (AnalysisTables.compareBytes), holds the
+	// bytes of {text} from {begin} to {end}, found by binary search.
+	private def builtinType(names: Array<string>, text: Array<byte>, begin: int, end: int) -> bool {
+		var low = 0, high = names.length;
+		while (low < high) {
+			var mid = (low + high) / 2, c = compareName(names[mid], text, begin, end);
+			if (c == 0) return true;
+			if (c < 0) low = mid + 1;
+			else high = mid;
+		}
+		return false;
+	}
+	// As AnalysisTables.compareBytes, for {name} and {text}'s bytes from
+	// {begin} to {end}.
+	private def compareName(name: string, text: Array<byte>, begin: int, end: int) -> int {
+		var length = end - begin, n = Ints.min(name.length, length);
+		for (i < n) {
+			var b = text[begin + i];
+			if (name[i] != b) return if(name[i] < b, -1, 1);
+		}
+		return name.length - length;
+	}
+	private def nameByte(b: byte) -> bool {
+		return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_';
+	}
+}

@@ -171,7 +171,7 @@ def test_excluded_type_target(t: Tester) {
 	t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, current));
 	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
 	var j = snapshot.documentIndex(s.uri("B.v3")), text = s.text(snapshot, "B.v3");
-	var at = LspSnapshotPosition.new(s.store, snapshot, j, text, PositionMap.new(text, PositionEncoding.UTF16));
+	var at = LspSnapshotPosition.new(s.store, snapshot, j, text, PositionMap.new(text, PositionEncoding.UTF16), []);
 	var offset = -1, local = -1;
 	for (k < snapshot.declarations.length) {
 		var d = snapshot.declarations[k];

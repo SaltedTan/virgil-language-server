@@ -20,6 +20,8 @@ All three editor suites check inferred type and parameter-name inlay hints at ex
 
 All three editor suites also check that type definition on the `puts` call goes to the exact `StringBuilder` class name in the library and that the `int` local has no type location. VS Code calls `vscode.executeTypeDefinitionProvider`; plain Neovim drives `vim.lsp.buf.type_definition()`, and LazyVim drives `gy` and checks its destination.
 
+They also check that implementation in `words/Shapes.v3` returns the exact names of the subclasses of `Shape`, direct and transitive, and of the methods that override its `area`, and nothing for the unextended `Circle`. VS Code calls `vscode.executeImplementationProvider`. Plain Neovim drives `vim.lsp.buf.implementation()` and LazyVim drives `gI`, and both check the jump from `Polygon` to its one subclass, `Square`.
+
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.
 
 The editor tests don't cover:
@@ -35,7 +37,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
+For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, implementation, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
@@ -76,7 +78,7 @@ For LazyVim on Linux and macOS, run `test/e2e/lazyvim/run.sh --archive <archive>
 
 1. **Diagnostics.** Open `bad.v3`. It has one error, "invalid start of expression", at line 3, column 27. Without saving, replace line 3 with `component C { def value = 1; }`; the error disappears. Undo the edit; it comes back. Open `words/Words.v3`. After a moment, it has one error, "expected int in var initialization, got Array<byte>", on line 7.
 2. **Document symbols.** In `words/Words.v3`, `gO` (or `:lua vim.lsp.buf.document_symbol()`) lists the component `Words` and its method `join`.
-3. **Definition.** On `StringBuilder` in line 7, `CTRL-]` (`gd` in LazyVim, or `:lua vim.lsp.buf.definition()`) opens Virgil's `lib/util/StringBuilder.v3` at `class StringBuilder`, on line 19. On the `puts` call, `:lua vim.lsp.buf.type_definition()` (`gy` in LazyVim) goes to that same class; on the `int` local `line`, it has no destination.
+3. **Definition.** On `StringBuilder` in line 7, `CTRL-]` (`gd` in LazyVim, or `:lua vim.lsp.buf.definition()`) opens Virgil's `lib/util/StringBuilder.v3` at `class StringBuilder`, on line 19. On the `puts` call, `:lua vim.lsp.buf.type_definition()` (`gy` in LazyVim) goes to that same class; on the `int` local `line`, it has no destination. In `words/Shapes.v3`, `:lua vim.lsp.buf.implementation()` (`gI` in LazyVim) on `Polygon`, in line 8, goes to its one subclass, `Square`, in line 11; on `Shape`, in line 5, it lists `Polygon`, `Square`, and `Circle`.
 4. **Hover.** On the same `StringBuilder`, `K` shows `class StringBuilder`.
 5. **Signature help.** In `words/Words.v3`, put the cursor just after the `(` of `.puts(a)` in line 7 and, in Insert mode, press `CTRL-S` (Neovim 0.11's default mapping; in LazyVim, `CTRL-S` saves the file, so press `CTRL-K`), or run `:lua vim.lsp.buf.signature_help()` (`gK` in LazyVim) from Normal mode. A window shows `def puts(s: Array<byte>) -> this`, with `s: Array<byte>` highlighted. Just past the `)`, it shows nothing. Plain Neovim doesn't open the window as you type `(` or `,` without a plugin or an `LspAttach` autocommand that calls it; LazyVim's noice.nvim does ([Signature help](architecture.md#signature-help)).
 6. **References.** Return to `words/Words.v3`, since the library file that step 3 opened belongs to another server without the fixture's project. On `StringBuilder` in line 7, run `:lua vim.lsp.buf.references()`. The list includes this use, the class's name in `lib/util/StringBuilder.v3`, and its uses in the other `lib/util` files that the fixture's project includes ([References](architecture.md#references)).

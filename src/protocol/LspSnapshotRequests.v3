@@ -21,8 +21,9 @@ class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: str
 // A request's document in a current snapshot, for an answer function: file
 // {index} of {snapshot}, whose effective analyzed text is {text}. The position
 // map converts current text; ranges pass through the snapshot's mapping first.
+// {options} are the compiler options of the project the snapshot analyzed.
 class LspSnapshotPosition(store: DocumentStore, snapshot: AnalysisSnapshot, index: int,
-		text: Array<byte>, map: PositionMap) {
+		text: Array<byte>, map: PositionMap, options: Array<string>) {
 	def path() -> string {
 		return snapshot.paths[index];
 	}
@@ -382,7 +383,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		// start may itself lie in an excluded method body.
 		var offset = if(ranged, currentOffset, s.effectiveOffset(i, currentOffset));
 		if (offset < 0) return reject(failure, "the position is inside a method body excluded from the analysis");
-		var at = LspSnapshotPosition.new(store, s, i, text, map), found = lookup(at, offset);
+		var at = LspSnapshotPosition.new(store, s, i, text, map, ctx.definition.compilerArgs), found = lookup(at, offset);
 		// A cursor just past an identifier selects it. Something found at
 		// offset - 1 but not at {offset} ends exactly at {offset}, so only the
 		// identifier the cursor touches qualifies, and whatever contains

@@ -13,7 +13,7 @@ def base(count: int, site: bool) -> DataWriter {
 	w.put_sleb32(0); // diagnostics
 	w.put_sleb32(1).put_sleb32(3).puta("abc"); // string table
 	w.put_sleb32(1).putb(0).put_sleb32(0).put_sleb32(0);
-	w.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(4).put_sleb32(0).put_sleb32(3).put_sleb32(0).put_sleb32(1);
+	w.put_sleb32(1).put_sleb32(1).put_sleb32(1).put_sleb32(4).put_sleb32(0).put_sleb32(3).put_sleb32(0).put_sleb32(1).put_sleb32(0);
 	w.put_sleb32(0).put_sleb32(0); // signatures
 	w.put_sleb32(1).put_sleb32(0).put_sleb32(0).put_sleb32(if(site, 1)).put_sleb32(count);
 	for (i < count) w.put_sleb32(1).put_sleb32(10 + 4 * i).put_sleb32(10 + 4 * i).put_sleb32(3).put_sleb32(0);

@@ -15,7 +15,7 @@ TEXT = "component C { def x = 1; }\n"
 REQUESTS = (
     "initialize", "shutdown", "textDocument/completion",
     "textDocument/definition", "textDocument/typeDefinition", "textDocument/documentHighlight", "textDocument/documentSymbol",
-    "textDocument/hover", "textDocument/inlayHint",
+    "textDocument/hover", "textDocument/implementation", "textDocument/inlayHint",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
     "textDocument/signatureHelp", "workspace/symbol",
 )

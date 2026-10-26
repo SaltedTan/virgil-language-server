@@ -571,6 +571,53 @@ local function main_checks()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
+  -- Shape's subclasses, directly and transitively, and the methods that
+  -- override its area, by offset; the unextended Circle has none.
+  local shapes = vim.fs.joinpath(root, "words", "Shapes.v3")
+  local shapes_uri = vim.uri_from_fname(shapes)
+  step("implementation (request)", function()
+    local function names(spots)
+      local result = {}
+      for _, spot in ipairs(spots) do
+        result[#result + 1] = { uri = shapes_uri, range = {
+          start = { line = spot[1], character = spot[2] }, ["end"] = { line = spot[1], character = spot[3] },
+        } }
+      end
+      return result
+    end
+    for _, case in ipairs({
+      { 4, 6, names({ { 7, 6, 13 }, { 10, 6, 12 }, { 11, 6, 12 } }) },
+      { 5, 5, names({ { 8, 5, 9 }, { 12, 5, 9 } }) },
+      { 11, 6, {} },
+    }) do
+      local locations = request(client, "textDocument/implementation", {
+        textDocument = { uri = shapes_uri }, position = { line = case[1], character = case[2] },
+      }, words_buf)
+      assert(vim.deep_equal(locations, case[3]),
+        string.format("unexpected implementations at %d:%d: %s", case[1] + 1, case[2] + 1, vim.inspect(locations)))
+    end
+    return "Shape -> Polygon, Square, Circle; Shape.area -> 2 overrides; Circle -> none"
+  end)
+
+  -- Polygon's one subclass is Square, so gI jumps to it in the same file.
+  step("implementation (LazyVim gI)", function()
+    vim.cmd.edit(shapes)
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for("Shapes.v3 attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    wait_for("LazyVim's gI mapping", function()
+      local map = vim.fn.maparg("gI", "n", false, true)
+      return map.buffer == 1 and map.desc == "Goto Implementation"
+    end)
+    vim.api.nvim_win_set_cursor(0, { 8, 6 })
+    vim.api.nvim_input("gI")
+    wait_for("gI to jump to Square", function()
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      return vim.api.nvim_get_current_buf() == buf and cursor[1] == 11 and cursor[2] == 6
+    end)
+    return "jumped to 11:7"
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Rename through LazyVim's <leader>cr, which it maps for a server with
   -- rename. Neovim asks prepareRename first; while the project has a type
   -- error the server refuses, and Neovim shows its reason with vim.notify,

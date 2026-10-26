@@ -283,6 +283,51 @@ local function check()
   assert(vim.deep_equal(response.result, want), "unexpected highlight kinds: " .. vim.inspect(response.result))
   print("PASS: nvim.document-highlight.response")
 
+  -- nvim.implementation.response: Shape's subclasses, directly and
+  -- transitively, and the methods that override its area, by offset; the
+  -- unextended Circle has none.
+  local shapes = vim.fs.joinpath(root, "words", "Shapes.v3")
+  local shapes_uri = vim.uri_from_fname(shapes)
+  local function implementations(line, character)
+    response, err = client:request_sync("textDocument/implementation", {
+      textDocument = { uri = shapes_uri }, position = { line = line, character = character },
+    }, 10000, words_buf)
+    assert(response and not response.err, "implementation failed: " .. vim.inspect(err or response.err))
+    return response.result
+  end
+  local function names(spots)
+    local result = {}
+    for _, spot in ipairs(spots) do
+      result[#result + 1] = { uri = shapes_uri, range = {
+        start = { line = spot[1], character = spot[2] }, ["end"] = { line = spot[1], character = spot[3] },
+      } }
+    end
+    return result
+  end
+  local subclasses = implementations(4, 6)
+  assert(vim.deep_equal(subclasses, names({ { 7, 6, 13 }, { 10, 6, 12 }, { 11, 6, 12 } })),
+    "unexpected implementations of Shape: " .. vim.inspect(subclasses))
+  local overrides = implementations(5, 5)
+  assert(vim.deep_equal(overrides, names({ { 8, 5, 9 }, { 12, 5, 9 } })),
+    "unexpected implementations of Shape.area: " .. vim.inspect(overrides))
+  local none = implementations(11, 6)
+  assert(vim.deep_equal(none, {}), "the unextended Circle has implementations: " .. vim.inspect(none))
+  print("PASS: nvim.implementation.response")
+
+  -- nvim.implementation.jump: Polygon's one subclass is Square, so the
+  -- client jumps to it in the same file.
+  vim.cmd.edit(shapes)
+  local shapes_buf = vim.api.nvim_get_current_buf()
+  wait_for("Shapes.v3 attachment", function() return vim.lsp.buf_is_attached(shapes_buf, client.id) end)
+  vim.api.nvim_win_set_cursor(0, { 8, 6 })
+  vim.lsp.buf.implementation()
+  wait_for("implementation to jump to Square", function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    return vim.api.nvim_get_current_buf() == shapes_buf and cursor[1] == 11 and cursor[2] == 6
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+  print("PASS: nvim.implementation.jump")
+
   -- Rename needs a program that verifies, so an unsaved edit fixes the type
   -- error first. The client's own rename, with its prepareRename and the
   -- server's versioned edit, renames both uses of the local line, and one
@@ -436,7 +481,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

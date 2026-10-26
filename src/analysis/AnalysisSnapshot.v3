@@ -52,6 +52,16 @@ class AnalysisSnapshot {
 	private var strings: Array<string> = [];
 	// The result's call signatures, or null without occurrences.
 	private var signatures: AnalysisSnapshotSignatures;
+	// Each declaration's parent, as its index in {declarations} plus one, or
+	// zero, or null if none has one: a class's or a variant case's base, or
+	// the method that a method overrides. The decoder checked their kinds
+	// and that they form no cycle, and the declaration charge covers this int for each declaration. See
+	// docs/architecture.md#implementation.
+	private var parents: Array<int>;
+	// The reverse of {parents}, which the first implementations query builds
+	// and charges: the declarations that have a parent, in order of parent
+	// and then of index, so that each declaration's children are a run.
+	private var children: Array<int>;
 
 	new(generation, paths, parsed, verified, diagnostics, stats, hasOccurrences, declarations) {
 		for (path in paths) retainedBytes += 128L + if(path != null, path.length, 0);
@@ -120,6 +130,10 @@ class AnalysisSnapshot {
 	// Records the signatures that the files' calls refer to.
 	def setSignatures(s: AnalysisSnapshotSignatures) {
 		signatures = s;
+	}
+	// Records the declarations' parents, which the decoder checked, or null.
+	def setParents(p: Array<int>) {
+		parents = p;
 	}
 	// Source-declaration uses in {path}, as ProgramAnalysis.occurrences reports
 	// them. Each call returns a new array.
@@ -389,6 +403,79 @@ class AnalysisSnapshot {
 	private def among(ids: Array<int>, target: int) -> bool {
 		for (id in ids) if (id == target) return true;
 		return false;
+	}
+	// The implementations of {decl}, one of {declarations}, if it is a class
+	// or a method: the declarations whose parents lead to it, directly or
+	// through others, that have source ranges, in byte order of path and then
+	// by offset, each location once and never {decl}'s own. For a class,
+	// these are the classes that extend it and, for a variant, its cases; for
+	// a method, the methods that override it. Any other declaration has none.
+	// Each declaration has one parent, and the decoder rejects cycles, so
+	// the search reaches each declaration once, and never {decl}. The first
+	// query builds the reverse index. See
+	// docs/architecture.md#implementation.
+	def implementations(decl: AnalysisDeclaration) -> Array<AnalysisDeclaration> {
+		if (parents == null || decl == null) return [];
+		if (decl.kind != AnalysisDeclKind.CLASS && decl.kind != AnalysisDeclKind.METHOD) return [];
+		var d = -1;
+		for (i < declarations.length) {
+			if (declarations[i] == decl) {
+				d = i;
+				break;
+			}
+		}
+		if (d < 0) return [];
+		if (children == null) indexChildren();
+		var found = Vector<int>.new();
+		for (k = -1; k < found.length; k++) {
+			var code = if(k < 0, d, found[k]) + 1;
+			for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) found.put(children[j]);
+		}
+		var located = Vector<int>.new();
+		for (k < found.length) {
+			var r = declarations[found[k]].range;
+			if (r.path != null && r.beginOffset >= 0) located.put(found[k]);
+		}
+		var order = AnalysisTables.sort(located.extract(), locationBefore);
+		var result = Vector<AnalysisDeclaration>.new(), own = decl.range;
+		for (i in order) {
+			var r = declarations[i].range;
+			if (own.path != null && r.beginOffset == own.beginOffset && Strings.equal(r.path, own.path)) continue;
+			if (result.length > 0) {
+				var last = result[result.length - 1].range;
+				if (last.beginOffset == r.beginOffset && Strings.equal(last.path, r.path)) continue;
+			}
+			result.put(declarations[i]);
+		}
+		return result.extract();
+	}
+	private def locationBefore(a: int, b: int) -> bool {
+		var x = declarations[a].range, y = declarations[b].range;
+		var c = AnalysisTables.compareBytes(x.path, y.path);
+		return c < 0 || (c == 0 && x.beginOffset < y.beginOffset);
+	}
+	// Builds the reverse of {parents}, one int for each declaration that has
+	// a parent, and adds it to the snapshot's retained bytes.
+	private def indexChildren() {
+		var count = 0;
+		for (p in parents) if (p > 0) count++;
+		var list = Array<int>.new(count), k = 0;
+		for (i < parents.length) if (parents[i] > 0) list[k++] = i;
+		children = AnalysisTables.sort(list, childBefore);
+		retainedBytes += 128L + 4L * count;
+	}
+	private def childBefore(a: int, b: int) -> bool {
+		return parents[a] < parents[b] || (parents[a] == parents[b] && a < b);
+	}
+	// The first of {children} whose parent code is {code} or more.
+	private def firstChild(code: int) -> int {
+		var low = 0, high = children.length;
+		while (low < high) {
+			var middle = (low + high) / 2;
+			if (parents[children[middle]] < code) low = middle + 1;
+			else high = middle;
+		}
+		return low;
 	}
 }
 

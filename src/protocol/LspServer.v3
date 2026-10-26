@@ -100,6 +100,8 @@ class LspServer {
 			LspReferences.REQUIRES, LspReferences.prepare);
 		snapshotRequests.registerPrepared(dispatcher, "textDocument/documentHighlight", "document highlights",
 			LspDocumentHighlights.REQUIRES, LspDocumentHighlights.prepare);
+		snapshotRequests.registerPrepared(dispatcher, "textDocument/implementation", "implementation",
+			LspImplementation.REQUIRES, LspImplementation.prepare);
 		signatureHelp = LspSignatureHelp.new(documents, projects, publishNotification);
 		signatureHelp.register(dispatcher, snapshotRequests);
 		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending, documents, projects);
@@ -390,6 +392,7 @@ class LspServer {
 		capabilities["workspaceSymbolProvider"] = JsonValue.Bool(true);
 		capabilities["referencesProvider"] = JsonValue.Bool(true);
 		capabilities["documentHighlightProvider"] = JsonValue.Bool(true);
+		capabilities["implementationProvider"] = JsonValue.Bool(true);
 		// RenameOptions may only be sent to a client that declares
 		// textDocument.rename.prepareSupport; others get true, and need no
 		// prepareRename.

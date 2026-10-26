@@ -54,8 +54,8 @@ budget. Cache eviction cannot remove a retained snapshot's effective bytes.
 Its document stamp remains the current overlay identity compared at capture.
 Configuration, membership, admission, and freshness checks remain in force.
 
-Definition, type definition, hover, references, highlights, and semantic
-diagnostics suppress queries and locations in the entire substituted body, including its braces.
+Definition, type definition, implementation, hover, references, highlights,
+and semantic diagnostics suppress queries and locations in the entire substituted body, including its braces.
 Map other offsets before converting current bytes to UTF-16: offsets before
 the interval stay fixed; offsets after it shift by the length difference.
 Ranges spanning an excluded body are unmappable. Keep current-text syntax

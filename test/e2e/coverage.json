@@ -96,6 +96,11 @@
       "matrix": true
     },
     {
+      "id": "implementation",
+      "label": "Implementation",
+      "matrix": true
+    },
+    {
       "id": "inlay-hints",
       "label": "Inlay hints",
       "matrix": true
@@ -1820,6 +1825,56 @@
       "description": "LazyVim's gy jumps from the puts call to the exact line and column of class StringBuilder, then returns to Words.v3."
     },
     {
+      "id": "vscode.implementation.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Implementation on Shape in words/Shapes.v3 returns the exact names of its subclasses Polygon, Square, and Circle; on its area method, the two methods that override it; the unextended Circle returns an empty list."
+    },
+    {
+      "id": "nvim.implementation.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "Implementation on Shape in words/Shapes.v3 returns the exact names of its subclasses Polygon, Square, and Circle; on its area method, the two methods that override it; the unextended Circle returns an empty list."
+    },
+    {
+      "id": "nvim.implementation.jump",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "vim.lsp.buf.implementation() jumps from Polygon to the exact line and column of its one subclass, Square, in words/Shapes.v3, then returns to Words.v3."
+    },
+    {
+      "id": "lazyvim.implementation.response",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "Implementation on Shape in words/Shapes.v3 returns the exact names of its subclasses Polygon, Square, and Circle; on its area method, the two methods that override it; the unextended Circle returns an empty list."
+    },
+    {
+      "id": "lazyvim.implementation.jump",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's gI jumps from Polygon to the exact line and column of its one subclass, Square, in words/Shapes.v3, then returns to Words.v3."
+    },
+    {
       "id": "vscode.inlay-hints.response",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -1884,6 +1939,13 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "implementation",
+        "level": "api",
+        "checks": ["vscode.implementation.response"],
+        "notCovered": ["vscode.implementation-editor"]
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -1982,6 +2044,13 @@
       },
       {
         "setup": "vscode-macos",
+        "feature": "implementation",
+        "level": "api",
+        "checks": ["vscode.implementation.response"],
+        "notCovered": ["vscode.implementation-editor"]
+      },
+      {
+        "setup": "vscode-macos",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -2077,6 +2146,13 @@
         "level": "api",
         "checks": ["vscode.type-definition.response"],
         "notCovered": ["vscode.type-definition-editor"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "implementation",
+        "level": "api",
+        "checks": ["vscode.implementation.response"],
+        "notCovered": ["vscode.implementation-editor"]
       },
       {
         "setup": "ssh-linux-client",
@@ -2174,6 +2250,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["nvim.type-definition.response", "nvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "implementation",
+        "level": "api-ui-state",
+        "checks": ["nvim.implementation.response", "nvim.implementation.jump"],
         "notCovered": []
       },
       {
@@ -2272,6 +2355,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["nvim.type-definition.response", "nvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "implementation",
+        "level": "api-ui-state",
+        "checks": ["nvim.implementation.response", "nvim.implementation.jump"],
         "notCovered": []
       },
       {
@@ -2370,6 +2460,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["lazyvim.type-definition.response", "lazyvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "implementation",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.implementation.response", "lazyvim.implementation.jump"],
         "notCovered": []
       },
       {
@@ -2468,6 +2565,13 @@
         "feature": "type-definition",
         "level": "api-ui-state",
         "checks": ["lazyvim.type-definition.response", "lazyvim.type-definition.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "implementation",
+        "level": "api-ui-state",
+        "checks": ["lazyvim.implementation.response", "lazyvim.implementation.jump"],
         "notCovered": []
       },
       {
@@ -2865,6 +2969,12 @@
       "id": "vscode.type-definition-editor",
       "kind": "visual",
       "what": "the editor that Go to Type Definition opens",
+      "planned": null
+    },
+    {
+      "id": "vscode.implementation-editor",
+      "kind": "visual",
+      "what": "the editor or peek view that Go to Implementations opens",
       "planned": null
     }
   ],
