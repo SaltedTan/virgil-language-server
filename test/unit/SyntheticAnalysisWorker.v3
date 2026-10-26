@@ -14,6 +14,7 @@
 // that a completion fails while the project's own analyses succeed.
 component SyntheticAnalysisWorker {
 	def CRASH = "workerEndsHere";
+	def HANG = "workerStallsHere";
 	def TOO_LARGE = "resultTooLarge";
 	def SCOPE_CRASH = "scopeEndsHere";
 	def SCOPE_MALFORMED = "scopeMalformed";
@@ -33,6 +34,12 @@ component SyntheticAnalysisWorker {
 			var request = AnalysisWire.decodeAnalyze(payload);
 			if (request == null || request.sources.length == 0) return 1;
 			var mode = request.sources[0].path;
+			if (spells(request.sources, HANG)) {
+				// Match the real worker's orphan deadline, then deliberately stop
+				// answering without relying on a compiler bug to loop forever.
+				HostOs.setAlarm(2 * request.timeoutMs + 1000);
+				while (true) HostOs.poll([], 0, -1);
+			}
 			if (Strings.endsWith(mode, ".v3")) {
 				if (spells(request.sources, CRASH)) return 1;
 				if (request.scope() != null && spells(request.sources, SCOPE_CRASH)) return 1;

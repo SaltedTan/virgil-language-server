@@ -239,7 +239,7 @@ def large_hang(exe, work):
         first = s.result(s.analyze([shapes]))
         assert first == expected_snapshot(1, [shapes]), first
         source = work / "large-hang.v3"
-        source.write_text("class S extends S { def f() { me; } }\n//" + " " * (3 * 1024 * 1024))
+        source.write_text("// workerStallsHere\n//" + " " * (3 * 1024 * 1024))
         send_payload(s, large_payload("virgil-lsp/analyze", "large-hang", {"uris": [source.as_uri()]}))
         send_payload(s, large_payload("test/ping", "large-ping"))
         error(s, "large-ping", -32601)
@@ -262,7 +262,9 @@ def exercise(exe, work):
         uri = (work / "overlay space.v3").as_uri()
         (work / "overlay space.v3").write_text("def disk: i32 = false;\n")
         crash = Path("test/fixtures/analysis/worker-crash/main.v3").resolve().as_uri()
-        hang = Path("test/fixtures/analysis/worker-hang/main.v3").resolve().as_uri()
+        hang_file = work / "stall.v3"
+        hang_file.write_text("// workerStallsHere\n")
+        hang = hang_file.as_uri()
         error(s, s.analyze([uri]), -32002)
         s.initialize()
         s.snapshot(None)
@@ -353,6 +355,49 @@ def exercise(exe, work):
         s.close()
 
 
+def inheritance_cycles(exe, work):
+    # These inputs hung or crashed on 7cf038fc (crash-path rows 3-5).
+    # Row 6's generic unify0 recursion still crashes and stays documented.
+    cases = [
+        "class S extends S { def f() { me; } }",
+        "class A extends B {} class B extends A {} def f(a: A) { var x = a.y; }",
+        "class A extends V {} type V extends A { case X; } def f(a: A) { var x = a.y; }",
+        "class A extends B {} class B extends A {} def f(a: A, b: B) { var x = [a, b]; }",
+        "class A extends B { def m() -> V { return V.X; } } class B extends A { def m() -> V { return V.X; } } type V { case X; }",
+    ]
+    observer = "def target() -> int { return 42; }\ndef use() -> int { return target(); }\n"
+    for index, text in enumerate(cases):
+        root = work / ("cycle-" + str(index))
+        root.mkdir()
+        cycle, other = root / "Cycle.v3", root / "Other.v3"
+        cycle.write_text(text + "\n")
+        other.write_text(observer)
+        args = ["-lang:open-types"] if index == 2 else []
+        (root / ".virgil-lsp.json").write_text(json.dumps({"version": 1, "projects": [
+            {"name": "cycle", "sources": ["Cycle.v3", "Other.v3"], "compilerArgs": args}]}))
+        s = Session(exe)
+        try:
+            s.result(s.send("initialize", {"rootUri": root.as_uri()}))
+            s.send("textDocument/didOpen", {"textDocument": {
+                "uri": other.as_uri(), "languageId": "virgil", "version": 1, "text": observer}}, request=False)
+            query = {"textDocument": {"uri": other.as_uri()}, "position": {"line": 1, "character": 27}}
+            expected = {"uri": other.as_uri(), "range": {
+                "start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 10}}}
+            assert s.result(s.send("textDocument/definition", query)) == expected, s.transcript
+            hover = s.result(s.send("textDocument/hover", query))
+            assert hover and "target() -> int" in hover["contents"]["value"], hover
+            snapshot = s.result(s.send("virgil-lsp/analyze", {"uri": other.as_uri()}))
+            diagnostic = snapshot["diagnostics"][0]
+            assert diagnostic["kind"] == "InheritanceError", diagnostic
+            assert diagnostic["beginLine"] == 1 and diagnostic["beginColumn"] == (17 if index == 2 else 7), diagnostic
+            assert diagnostic["message"] == ("cannot extend non-class type" if index == 2 else "cyclic inheritance detected"), diagnostic
+            assert not any("failed" in message.lower() or "crashed" in message.lower() or "time limit" in message.lower()
+                           for message in s.logs().splitlines()), s.logs()
+            s.shutdown()
+        finally:
+            s.close()
+
+
 def aeneas_repeats(exe):
     # Match the CLI's Aeneas file set and default time limit: 20 full
     # parse/verify/index analyses, crossing multiple forced replacements while
@@ -422,11 +467,18 @@ def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="virgil-worker-protocol-") as directory:
         work = Path(directory).resolve()
-        exercise(exe, work)
+        # Use the unit suite's synthetic worker only for deterministic stalls.
+        # All unmarked sources still run the real compiler adapter.
+        stalled = work / "stalled"
+        stalled.mkdir()
+        shutil.copy2(exe, stalled / "virgil-lsp")
+        shutil.copy2(exe.with_name("unit-tests"), stalled / "virgil-lsp-worker")
+        exercise(stalled / "virgil-lsp", work)
+        inheritance_cycles(exe, work)
         aeneas_repeats(exe)
         startup_and_eof(exe, work)
         memory_headroom(exe, work)
-        large_hang(exe, work)
+        large_hang(stalled / "virgil-lsp", work)
     print("protocol worker: crash, hang, retained snapshots, 20 Aeneas analyses, shutdown, startup and memory headroom passed")
 
 

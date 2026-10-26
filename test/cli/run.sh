@@ -131,16 +131,27 @@ expect "analyze contains a verifier crash" 1 "" \
 check_stream stderr "$TMP/err" '!NullCheckException' && \
     check_stream stderr "$TMP/err" 'error: analysis run 1 failed: the analysis worker crashed \(exit status 255\)$'
 finish "analyze crash keeps the worker's trace and reports the failure" $(( $? == 0 ))
+# This former hang now reports ordinary diagnostics on the real worker.
+expect "analyze reports a self inheritance cycle" 1 'InheritanceError: cyclic inheritance detected' "" -- \
+    analyze "$A/worker-hang/main.v3"
+# The unit executable's synthetic worker preserves deterministic timeout and
+# orphan-alarm coverage after upstream fixed the old verifier loop.
+mkdir "$TMP/stalled"
+cp "$EXE" "$TMP/stalled/virgil-lsp"
+cp "$(dirname "$EXE")/unit-tests" "$TMP/stalled/virgil-lsp-worker"
+printf '// workerStallsHere\n' > "$TMP/stall.v3"
+EXE_REAL=$EXE
+EXE=$TMP/stalled/virgil-lsp
 SECONDS=0
-expect "analyze contains a verifier hang" 1 "" \
+expect "analyze contains a stalled worker" 1 "" \
     'analysis worker [0-9]+ exceeded the analysis time limit of 1000 ms and was killed; it ended with signal 9' -- \
-    analyze --worker-timeout-ms=1000 "$A/worker-hang/main.v3"
+    analyze --worker-timeout-ms=1000 "$TMP/stall.v3"
 [ "$SECONDS" -lt 10 ] || { fail=$((fail + 1)); echo "FAIL: the hanging analysis was not stopped at its time limit"; }
 check_stream stderr "$TMP/err" 'error: analysis run 1 failed: the analysis worker timed out \(signal 9\)$'
 finish "analyze hang reports the failure" $(( $? == 0 ))
 # A worker whose supervisor dies during a hanging analysis must still end: it
 # arms a timer for twice the time limit plus a second (4 s here).
-"$EXE" analyze --worker-timeout-ms=1500 "$A/worker-hang/main.v3" > /dev/null 2>&1 &
+"$EXE" analyze --worker-timeout-ms=1500 "$TMP/stall.v3" > /dev/null 2>&1 &
 supervisor=$!
 worker=
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -160,6 +171,8 @@ else
     echo "FAIL: an orphaned analysis worker kept running (process ${worker:-not found})"
     [ -z "$worker" ] || kill -9 "$worker" 2>/dev/null
 fi
+
+EXE=$EXE_REAL
 
 mkdir "$TMP/alone"
 cp "$EXE" "$TMP/alone/virgil-lsp"

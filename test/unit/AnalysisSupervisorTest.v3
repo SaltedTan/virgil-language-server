@@ -12,6 +12,7 @@ def X = [
 	T("AnalysisSupervisor:crash_keeps_snapshot", test_crash_keeps_snapshot),
 	T("AnalysisSupervisor:enum_case_crash", test_enum_case_crash),
 	T("AnalysisSupervisor:hang_times_out", test_hang_times_out),
+	T("AnalysisSupervisor:inheritance_cycles", test_inheritance_cycles),
 	T("AnalysisSupervisor:replaces_after_max_analyses", test_replaces_after_max_analyses),
 	T("AnalysisSupervisor:replaces_at_uid_limit", test_replaces_at_uid_limit),
 	T("AnalysisSupervisor:replaces_at_live_heap_limit", test_replaces_at_live_heap_limit),
@@ -31,7 +32,6 @@ def X = [
 def SHAPES = "test/fixtures/analysis/two-file/shapes.v3";
 def MAIN = "test/fixtures/analysis/two-file/main.v3";
 def CRASH = "test/fixtures/analysis/worker-crash/main.v3";
-def HANG = "test/fixtures/analysis/worker-hang/main.v3";
 def ALL = AnalysisWire.WANT_OCCURRENCES | AnalysisWire.WANT_STATS;
 
 // Records what a supervisor logs.
@@ -215,14 +215,14 @@ def test_enum_case_crash(t: Tester) {
 	s.close();
 }
 
-// A class that extends itself makes verification loop forever. The worker is
-// killed at the time limit, and the next analysis gets a new worker.
+// A synthetic stall keeps timeout coverage independent of compiler fixes.
+// The worker is killed at the time limit, and the next analysis gets a new one.
 def test_hang_times_out(t: Tester) {
-	var good = load(t, [SHAPES, MAIN]), hang = load(t, [HANG]);
+	var good = load(t, [SHAPES, MAIN]), hang = [AnalysisSource.new("hang.v3", SyntheticAnalysisWorker.HANG)];
 	if (good == null || hang == null) return;
 	var limits = AnalysisWorkerLimits.new();
 	limits.timeoutMs = 500;
-	var sl = newSupervisor(limits, WorkerProcesses.defaultPath()), s = sl.0;
+	var sl = newSupervisor(limits, HostOs.executablePath()), s = sl.0;
 	var first = completed(t, s.analyze(good, [], ALL));
 	var start = System.ticksMs();
 	assertFailed(t, AnalysisFailure.TIMED_OUT, s.analyze(hang, [], ALL));
@@ -416,4 +416,37 @@ def test_default_worker_path(t: Tester) {
 	if (path == null) return t.fail("the executable path is unknown");
 	t.assert(path[0] == '/', "absolute path");
 	t.assert(Strings.endsWith(path, "/virgil-lsp-worker"), path);
+}
+
+// Upstream #820: rows 3-5 must finish in one worker and retain bindings in a
+// different source. Row 6's recursive generic unification remains a crash.
+def test_inheritance_cycles(t: Tester) {
+	var good = load(t, [SHAPES, MAIN]);
+	if (good == null) return;
+	var cases = [
+		"class S extends S { def f() { me; } }",
+		"class A extends B {} class B extends A {} def f(a: A) { var x = a.y; }",
+		"class A extends V {} type V extends A { case X; } def f(a: A) { var x = a.y; }",
+		"class A extends B {} class B extends A {} def f(a: A, b: B) { var x = [a, b]; }",
+		"class A extends B { def m() -> V { return V.X; } } class B extends A { def m() -> V { return V.X; } } type V { case X; }"
+	];
+	var sl = newSupervisor(AnalysisWorkerLimits.new(), WorkerProcesses.defaultPath()), s = sl.0;
+	for (i < cases.length) {
+		var sources = [good[0], good[1], AnalysisSource.new("cycle.v3", cases[i])];
+		var options: Array<string> = if(i == 2, ["-lang:open-types"], []);
+		var snapshot = completed(t, s.analyze(sources, options, ALL));
+		if (snapshot == null) return s.close();
+		t.assertz(true, snapshot.parsed);
+		t.assertz(false, snapshot.verified);
+		if (snapshot.diagnostics.length == 0) return t.fail("expected inheritance diagnostic");
+		var d = snapshot.diagnostics[0];
+		t.assert_string("InheritanceError", d.kind);
+		t.asserti(1, d.beginLine);
+		t.asserti(if(i == 2, 17, 7), d.beginColumn);
+		t.assert_string(if(i == 2, "cannot extend non-class type", "cyclic inheritance detected"), d.message);
+		assertQueries(t, snapshot);
+	}
+	t.asserti(1, s.workersStarted);
+	t.asserti(0, sl.1.warnings.length);
+	s.close();
 }
