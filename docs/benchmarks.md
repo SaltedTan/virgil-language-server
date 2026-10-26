@@ -507,6 +507,24 @@ The following sizes come from six size-probe runs per project and build, as for 
 
 The wire sends one parent per declaration: one byte for each of Aeneas's 42,007 declarations, and up to two more for each of the 1,311 that have a parent, 44,316 bytes (1.04%) in all. The integer fits within the conservative 128-byte declaration charge, so decoded allocation and retained charge are unchanged. The first implementation query adds the reverse index, 128 bytes and 4 for each declaration that has a parent, so a queried Aeneas snapshot retains 12,823,966 bytes, within the 80% guard (13,421,772) that `OccurrenceCoverage` checks after decoding. A first version kept an offset for every declaration, 173,408 bytes for Aeneas, which exceeded that guard before main's compact occurrence coordinates and would now leave 429,770 bytes; the sparse index leaves 597,806. In one unpinned probe run, the first Aeneas query, which builds the index, took 140 µs, and each later class or method query at most 78 µs, including the 162 implementations of `Opcode` in 52 µs; 336 of the 7,675 classes and methods have implementations.
 
+## Override-family rename
+
+Measured on 2026-10-26 against main `5e28701`, this change's base, on the Intel Core i7-14700KF reference host with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in `build/base-rf` and `build/next-rf`, with `BENCH=1 all bench-metadata`: main's from its own commit, and the change's with the same commands and main's generated BuildInfo text, so that the revision string doesn't move the layout. The comparison held the shared benchmark lock, ran on P-core hardware thread 12, and used six alternating process blocks, two warmups, and five measured operations per block for the Aeneas project, with every semantic check passing and no samples removed. The benchmark's rename renames a field, so it measures what the change adds to every rename: the family search, which a field skips, the merged references, and the comparison of every method's overridden method in the preflight.
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+
+| Measurement | Main | With override families |
+| --- | ---: | ---: |
+| Aeneas fresh analysis | 322.881 (319.342–329.351) | 323.366 (319.267–330.549) |
+| Aeneas reused analysis | 282.422 (276.227–300.292) | 282.154 (275.657–301.309) |
+| Aeneas references | 0.783 (0.752–0.821) | 0.797 (0.755–0.817) |
+| Aeneas prepareRename | 16.715 (16.569–16.875) | 16.712 (16.576–17.070) |
+| Aeneas rename | 327.546 (314.733–329.479) | 328.140 (314.052–331.217) |
+
+The rename median is 0.594 ms (0.18%) higher, and every interval overlaps, so the change has no measurable cost. A first version, which matched a single declaration's name token through the same loop as a family's and searched its one or two indexes by bisection, made Aeneas references take 1.109 ms (1.081–1.143) against main's 0.793 (0.749–0.816), with disjoint intervals; matching one declaration as before restored them. Every worker transaction collected zero times in both candidates, and the server collected once in 6 of the 30 renames and in 12 of the 30 reused analyses in each, so the change keeps the reused Aeneas analysis within its worker heap margin: the worker sends nothing new, and its executable is the same size as main's.
+
+Main refuses every method that shares its name with another, which on Aeneas includes the 65 methods named `render` and the 62 named `emit`. With the change, each family renames whole. The largest family among Aeneas's 6,806 methods, found by asking for the implementations of each, is `range` from `vst/Vst.v3`, line 768, and the 17 methods that override it: renaming it takes 339.5 ms, from 337.9 to 345.5, with 48 edits in 4 files, the median of 10 requests after the first, from a throwaway stdio client pinned to the same thread, and prepareRename 19.70 ms. The largest `emit` family, from `jvm/JvmClassfile.v3`, line 54, with 15 overrides, takes 332.5 ms for 19 edits in one file, and the largest `render` family, from `ssa/Ssa.v3`, line 189, with 6 overrides, 329.3 ms for 8 edits in 5 files. As for any rename, the preflight's analysis is most of that time.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at

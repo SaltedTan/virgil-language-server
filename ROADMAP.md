@@ -271,7 +271,7 @@ Completion comes late because users invoke it while code is incomplete. It requi
 
 Exit criteria:
 
-- Rename edits exactly the occurrences bound to one declaration and refuses ambiguous/error states. *(present; the [binding preflight](docs/architecture.md#rename) and [what rename refuses](docs/known-limitations.md#what-rename-refuses))*
+- Rename edits exactly the occurrences bound to the renamed declaration, or to every method of a renamed method's override family, and refuses ambiguous/error states. *(present; the [binding and hierarchy preflight](docs/architecture.md#rename) and [what rename refuses](docs/known-limitations.md#what-rename-refuses))*
 - Completion remains useful with a missing identifier or delimiter near the cursor. *(present for a missing name and a missing `)`, `]`, `>`, or `;`, which the [repair at the cursor](docs/architecture.md#completion) supplies; a missing `}` or a syntax error away from the cursor gets keywords only, or nothing after a `.`, until M6's error tolerance, as [ADR-0006](docs/decisions/0006-incomplete-code-repair.md) decided ([known limitations](docs/known-limitations.md#no-error-tolerant-parsing)))*
 - Feature tests cover shadowing, same-named members, generics, components, classes, variants, and enum cases. *(present; unit tests such as `AnalysisScope:shadowing`, `LspCompletionScope:hidden_bindings`, `LspRename:same_named_methods` and `enums_and_variants`, `AnalysisMembers:generics`, `components`, `classes`, `variants`, and `enums`, and `LspReferences:members_and_generics`)*
 

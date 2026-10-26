@@ -355,54 +355,106 @@ class AnalysisSnapshot {
 	// Scans every file's targets without an object per use, and allocates
 	// only the result. See docs/architecture.md#references.
 	def references(decl: AnalysisDeclaration, withName: bool) -> Array<(string, Array<int>)> {
-		if (files == null || decl == null) return [];
-		var r = decl.range, ids = sharingName(decl), result = Vector<(string, Array<int>)>.new();
+		if (decl == null) return [];
+		return referencesOf([decl], withName);
+	}
+	// The references of every one of {decls}, as {references} gives them for
+	// one, merged: for each file that has any, in byte order of path, the
+	// begin and end offsets of the uses that resolve to any of them or to a
+	// declaration that shares one's name token, and of their names in the
+	// file if {withName}, in source order and once. A rename of a method's
+	// override family edits these (see overrideFamily).
+	def referencesOf(decls: Array<AnalysisDeclaration>, withName: bool) -> Array<(string, Array<int>)> {
+		if (files == null || decls.length == 0) return [];
+		var ids = sharingName(decls), result = Vector<(string, Array<int>)>.new();
+		// The names that have a source range, in the order of the files.
+		var located = Vector<AnalysisRange>.new();
+		for (d in decls) if (d.range.beginOffset >= 0 && d.range.path != null) located.put(d.range);
+		var names = AnalysisTables.sort(located.extract(), rangeBefore), next = 0;
 		for (k < files.paths.length) {
 			var path = files.pathAt(k), file = files.fileAt(k);
-			// In the declaring file, a use with the name's range is the name.
-			var own = r.beginOffset >= 0 && Strings.equal(path, r.path);
-			var name = own && withName, count = 0;
+			while (next < names.length && AnalysisTables.compareBytes(names[next].path, path) < 0) next++;
+			// In a declaring file, a use with a name's range is the name.
+			var first = next;
+			while (next < names.length && Strings.equal(names[next].path, path)) next++;
+			var count = if(withName, next - first);
 			var targets: Array<int> = if(file != null, file.targets, []);
 			for (i < targets.length) {
-				if (among(ids, file.target(i)) && !(own && file.spans(i, r.beginOffset, r.endOffset))) count++;
+				if (among(ids, file.target(i)) && !isName(file, i, names, first, next)) count++;
 			}
-			if (name) count++;
 			if (count == 0) continue;
-			var spans = Array<int>.new(2 * count), n = 0;
+			var spans = Array<int>.new(2 * count), n = 0, name = if(withName, first, next);
 			for (i < targets.length) {
-				if (!among(ids, file.target(i)) || (own && file.spans(i, r.beginOffset, r.endOffset))) continue;
+				if (!among(ids, file.target(i)) || isName(file, i, names, first, next)) continue;
 				var begin = file.occurrenceBegin(i), end = file.occurrenceEnd(i);
-				if (name && r.beginOffset < begin) {
-					spans[n++] = r.beginOffset;
-					spans[n++] = r.endOffset;
-					name = false;
+				while (name < next && names[name].beginOffset < begin) {
+					spans[n++] = names[name].beginOffset;
+					spans[n++] = names[name++].endOffset;
 				}
 				spans[n++] = begin;
 				spans[n++] = end;
 			}
-			if (name) {
-				spans[n++] = r.beginOffset;
-				spans[n++] = r.endOffset;
+			while (name < next) {
+				spans[n++] = names[name].beginOffset;
+				spans[n++] = names[name++].endOffset;
 			}
 			result.put((path, spans));
 		}
 		return result.extract();
 	}
-	// The indexes in {declarations} of {decl} and of each declaration with the
-	// same name token. Declarations differ by kind or token, so these differ
-	// only by kind.
-	private def sharingName(decl: AnalysisDeclaration) -> Array<int> {
-		var r = decl.range, ids = Vector<int>.new();
+	private def rangeBefore(x: AnalysisRange, y: AnalysisRange) -> bool {
+		var c = AnalysisTables.compareBytes(x.path, y.path);
+		return c < 0 || (c == 0 && x.beginOffset < y.beginOffset);
+	}
+	// Whether use {i} of {file} has the range of one of {names} from {first}
+	// to {end}.
+	private def isName(file: AnalysisSnapshotFile, i: int, names: Array<AnalysisRange>, first: int, end: int) -> bool {
+		for (k = first; k < end; k++) if (file.spans(i, names[k].beginOffset, names[k].endOffset)) return true;
+		return false;
+	}
+	// The indexes in {declarations}, in order, of {decls} and of each
+	// declaration with the same name token as one of them. Declarations differ
+	// by kind or token, so these differ only by kind. One declaration, as
+	// every query but a family's rename has, is matched without the inner
+	// loop, which every reference query would otherwise pay for.
+	private def sharingName(decls: Array<AnalysisDeclaration>) -> Array<int> {
+		var ids = Vector<int>.new();
+		if (decls.length == 1) {
+			var decl = decls[0], r = decl.range;
+			for (i < declarations.length) {
+				var d = declarations[i], q = d.range;
+				if (d == decl || (r.beginOffset >= 0 && q.beginOffset == r.beginOffset
+						&& q.endOffset == r.endOffset && Strings.equal(q.path, r.path))) ids.put(i);
+			}
+			return ids.extract();
+		}
 		for (i < declarations.length) {
 			var d = declarations[i], q = d.range;
-			if (d == decl || (r.beginOffset >= 0 && q.beginOffset == r.beginOffset
-					&& q.endOffset == r.endOffset && Strings.equal(q.path, r.path))) ids.put(i);
+			for (decl in decls) {
+				var r = decl.range;
+				if (d == decl || (r.beginOffset >= 0 && q.beginOffset == r.beginOffset
+						&& q.endOffset == r.endOffset && Strings.equal(q.path, r.path))) {
+					ids.put(i);
+					break;
+				}
+			}
 		}
 		return ids.extract();
 	}
+	// Whether {target} is among {ids}, which are in order: by a scan of a few,
+	// as a single declaration's are, and by binary search of a family's.
 	private def among(ids: Array<int>, target: int) -> bool {
-		for (id in ids) if (id == target) return true;
-		return false;
+		if (ids.length <= 4) {
+			for (id in ids) if (id == target) return true;
+			return false;
+		}
+		var low = 0, high = ids.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2;
+			if (ids[mid] < target) low = mid + 1;
+			else high = mid;
+		}
+		return low < ids.length && ids[low] == target;
 	}
 	// The implementations of {decl}, one of {declarations}, if it is a class
 	// or a method: the declarations whose parents lead to it, directly or
@@ -448,6 +500,47 @@ class AnalysisSnapshot {
 			result.put(declarations[i]);
 		}
 		return result.extract();
+	}
+	// The override family of {decl}, one of {declarations}, if it is a method:
+	// the method that its parents lead to, which has no parent, and every
+	// method whose parents lead to that one, {decl} among them, in order of
+	// index. Any other declaration, and a method that overrides nothing and
+	// that nothing overrides, is its own family. A rename renames a method's
+	// family together. Parents form no cycle, and the walk up is bounded
+	// anyway. The search down builds the reverse index, as {implementations}
+	// does. See docs/architecture.md#prepare-rename.
+	def overrideFamily(decl: AnalysisDeclaration) -> Array<AnalysisDeclaration> {
+		if (decl == null) return [];
+		if (parents == null || decl.kind != AnalysisDeclKind.METHOD) return [decl];
+		var root = -1;
+		for (i < declarations.length) {
+			if (declarations[i] == decl) {
+				root = i;
+				break;
+			}
+		}
+		if (root < 0) return [decl];
+		for (steps < declarations.length) {
+			var p = parents[root] - 1;
+			if (p < 0 || declarations[p].kind != AnalysisDeclKind.METHOD) break;
+			root = p;
+		}
+		if (children == null) indexChildren();
+		var found = Vector<int>.new().put(root);
+		for (k = 0; k < found.length; k++) {
+			var code = found[k] + 1;
+			for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) found.put(children[j]);
+		}
+		var order = AnalysisTables.sort(found.extract(), fun (a: int, b: int) => a < b);
+		var result = Array<AnalysisDeclaration>.new(order.length);
+		for (i < order.length) result[i] = declarations[order[i]];
+		return result;
+	}
+	// The index in {declarations} of the parent of declaration {i}, or -1 if
+	// it has none. A rename's preflight compares the methods' parents of two
+	// snapshots with it (LspRenameBindings).
+	def parentOf(i: int) -> int {
+		return if(parents != null, parents[i] - 1, -1);
 	}
 	private def locationBefore(a: int, b: int) -> bool {
 		var x = declarations[a].range, y = declarations[b].range;

@@ -1,9 +1,10 @@
 # Rename across an unsaved main.v3 and a closed shapes.v3, which the server reads again from disk:
 # prepareRename before any analysis has completed, a rename of a field that the closed file declares,
 # whose edits carry the open document's version and null for the closed file, and refusals of a new
-# name that would redeclare a local, which the preflight's analysis reports, and of a keyword.
+# name that would redeclare a local, which the preflight's analysis reports, and of a keyword, and a
+# rename of a method with the method that overrides it.
 {"write":[".virgil-lsp.json","{\"version\":1,\"projects\":[{\"name\":\"p\",\"sources\":[\"*.v3\"]}]}"]}
-{"write":["shapes.v3","// Declarations used from main.v3. Tab-indented on purpose.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\tdef square(side: int) -> Rect {\n\t\treturn Rect.new(side, side);\n\t}\n}\n"]}
+{"write":["shapes.v3","// Declarations used from main.v3. Tab-indented on purpose.\nclass Rect(width: int, height: int) {\n\tdef area() -> int {\n\t\treturn width * height;\n\t}\n}\ncomponent Shapes {\n\tdef square(side: int) -> Rect {\n\t\treturn Rect.new(side, side);\n\t}\n}\nclass Unit extends Rect {\n\tnew() super(1, 1) { }\n\tdef area() -> int {\n\t\treturn 1;\n\t}\n}\n"]}
 {"write":["main.v3","component Main { }\n"]}
 {"send":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"@TMP@","capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}},"textDocument":{"rename":{"prepareSupport":true}}}}}}
 {"recv":{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"typeDefinitionProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"implementationProvider":true,"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"retriggerCharacters":[")"],"triggerCharacters":["(",","]},"textDocumentSync":{"change":1,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true},"serverInfo":{"name":"virgil-lsp","version":"@VERSION@"}}}}
@@ -27,6 +28,10 @@
 # A keyword cannot be a name; this is refused before any analysis.
 {"send":{"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":5,"character":19},"newName":"while"}}}
 {"recv":{"jsonrpc":"2.0","id":5,"error":{"code":-32803,"message":"'while' is a reserved word in Virgil and cannot be a name"}}}
-{"send":{"jsonrpc":"2.0","id":6,"method":"shutdown"}}
-{"recv":{"jsonrpc":"2.0","id":6,"result":null}}
+# Unit.area overrides Rect.area, so renaming Rect.area from its call through a Rect renames both
+# methods, in the closed shapes.v3, and the call in main.v3.
+{"send":{"jsonrpc":"2.0","id":6,"method":"textDocument/rename","params":{"textDocument":{"uri":"@TMP@/main.v3"},"position":{"line":4,"character":23},"newName":"size"}}}
+{"recv":{"jsonrpc":"2.0","id":6,"result":{"documentChanges":[{"textDocument":{"uri":"@TMP@/main.v3","version":1},"edits":[{"range":{"start":{"line":4,"character":23},"end":{"line":4,"character":27}},"newText":"size"}]},{"textDocument":{"uri":"@TMP@/shapes.v3","version":null},"edits":[{"range":{"start":{"line":2,"character":5},"end":{"line":2,"character":9}},"newText":"size"},{"range":{"start":{"line":13,"character":5},"end":{"line":13,"character":9}},"newText":"size"}]}]}}}
+{"send":{"jsonrpc":"2.0","id":7,"method":"shutdown"}}
+{"recv":{"jsonrpc":"2.0","id":7,"result":null}}
 {"send":{"jsonrpc":"2.0","method":"exit"}}

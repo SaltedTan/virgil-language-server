@@ -222,7 +222,8 @@ rename_shared.mkdir(exist_ok=True)
 # LspSignatureRepairTest writes each test's project file and sources itself.
 (root / "signature-repair").mkdir(exist_ok=True)
 # LspRenameTest writes each test's project file and sources itself. The
-# Virgil root of rename-root holds a library that its project depends on.
+# Virgil root of rename-root holds a library that its project depends on, with
+# a class whose method a project class overrides.
 (root / "rename-edits").mkdir(exist_ok=True)
 for name in ["a", "b", "c"]:
     (root / "rename-budget" / name).mkdir(parents=True, exist_ok=True)
@@ -233,7 +234,9 @@ rename_root = root / "rename-root"
     encoding="utf-8",
 )
 (rename_root / "vroot" / "lib" / "Lib.v3").write_text(
-    "component Lib { def twice(n: int) -> int { return n + n; } }\n", encoding="utf-8"
+    "component Lib { def twice(n: int) -> int { return n + n; } }\n"
+    "class Root {\n\tdef draw() -> int { return 0; }\n}\n",
+    encoding="utf-8",
 )
 # LspPrepareRenameTest creates and removes sources here without a file event
 # first, then reports the event.
