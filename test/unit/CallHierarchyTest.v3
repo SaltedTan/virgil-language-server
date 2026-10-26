@@ -18,6 +18,7 @@ def X = [
 	T("CallHierarchy:recursion", recursion),
 	T("CallHierarchy:field_initializers", field_initializers),
 	T("CallHierarchy:virtual_calls", virtual_calls),
+	T("CallHierarchy:index_methods_and_headers", index_methods_and_headers),
 	T("CallHierarchy:library_callees", library_callees),
 	T("CallHierarchy:semantic_errors", semantic_errors),
 	T("CallHierarchy:client_kinds", client_kinds),
@@ -41,7 +42,11 @@ def indexOf(text: Array<byte>, needle: string) -> int {
 // An expected item: its source, its name, the text that its declaration's
 // range begins with, the offset of its name in that text, the text that the
 // range ends with, the SymbolKind sent, its detail, and its data's kind.
-class CallItemWant(file: int, name: string, begin: string, skip: int, end: string, kind: int, detail: string, dataKind: string) { }
+class CallItemWant(file: int, name: string, begin: string, skip: int, end: string, kind: int, detail: string, dataKind: string) {
+	// The length of its selection range, if not its name's: an index
+	// method's name occupies its opening bracket.
+	var selection = -1;
+}
 def METHOD = 6;
 def FIELD = 8;
 def CONSTRUCTOR = 9;
@@ -215,7 +220,7 @@ class CallProgram {
 		var end = indexFrom(text, w.end, begin);
 		if (end < 0) return t.fail1("missing text: %s", w.end);
 		end += w.end.length;
-		var nameBegin = begin + w.skip, nameEnd = nameBegin + w.name.length;
+		var nameBegin = begin + w.skip, nameEnd = nameBegin + if(w.selection >= 0, w.selection, w.name.length);
 		var m = PositionMap.new(text, PositionEncoding.UTF16);
 		expectString(what, "name", w.name, obj["name"]);
 		expectInt(what, "kind", w.kind, obj["kind"]);
@@ -382,6 +387,22 @@ def virtual_calls(t: Tester) {
 	p.checkCalls("incoming of Shape.area", p.expand(p.item(0, "def area", 4), true), true, 0, "area", [
 		call(scaled, [("* area()", 2)]), call(RUN, [("s.area()", 2)])]);
 	p.checkCalls("incoming of Square.area", p.expand(p.item(0, "sq.area()", 3), true), true, 0, "area", [call(RUN, [("sq.area()", 3)])]);
+}
+// An index method is an item at its bracket, which is its name's range, and
+// a named call of it, which spells the whole name, is an edge, though an
+// index operation is not. A call in a superclass's
+// arguments in a class's header has no caller.
+def index_methods_and_headers(t: Tester) {
+	var text = Arrays.concat(NOTE, "class Box {\n\tdef [i: int] -> int { return i; }\n\tdef get(i: int) -> int { return this.[](i) + this[i]; }\n}\ndef f() -> int { return 1; }\nclass A(x: int) { }\nclass B extends A(f()) {\n\tdef m() -> int { return f(); }\n}\n");
+	var p = program(t, [text], [], true);
+	var index = method(0, "[]", "def [i", 4, "; }", "def [i: int] -> int");
+	index.selection = 1;
+	var get = method(0, "get", "def get", 4, "; }", "def get(i: int) -> int");
+	p.checkItems("[i", p.prepare(0, "[i: int]", 0), [index]);
+	p.checkCalls("incoming of []", p.expand(p.item(0, "[i: int]", 0), true), true, 0, "[]", [call(get, [("[](i)", 0)])]);
+	p.checkCalls("outgoing of get", p.expand(p.item(0, "def get", 4), false), false, 0, null, [call(index, [("[](i)", 0)])]);
+	p.checkCalls("incoming of f", p.expand(p.item(0, "def f", 4), true), true, 0, "f", [
+		call(method(0, "m", "def m", 4, "; }", "def m() -> int"), [("f(); }", 0)])]);
 }
 // A library's functions are items like any others: lib/util's Ints.abs,
 // which the program and lib/util's Floats call.
