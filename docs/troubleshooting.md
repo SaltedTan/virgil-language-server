@@ -81,7 +81,7 @@ Syntax errors and the outline work in any open `.v3` file. Type errors, definiti
 
 ### The file is in no project
 
-Without a `.virgil-lsp.json` that selects it, a file stays in single-file mode: syntax errors, the outline, and keyword completion only. The first time that happens in a session, the server logs `virgil-lsp: warning: Without a project file selecting this document, semantic features are limited; using single-file mode.` A project must select the file through its `sources` or `dependencies`, and the server looks first in the nearest `.virgil-lsp.json` in the file's directory or above it. Add a project file, or add the file to a project's `sources` ([Configuration](configuration.md), [single-file mode](configuration.md#without-a-project-file)).
+Without a `.virgil-lsp.json` that selects it, a file stays in [single-file mode](configuration.md#without-a-project-file), whose available features are listed in the configuration guide. The first time that happens in a session, the server logs `virgil-lsp: warning: Without a project file selecting this document, semantic features are limited; using single-file mode.` A project must select the file through its `sources` or `dependencies`, and the server looks first in the nearest `.virgil-lsp.json` in the file's directory or above it. Add a project file, or add the file to a project's `sources` ([Configuration](configuration.md)).
 
 ### Too much open text
 
