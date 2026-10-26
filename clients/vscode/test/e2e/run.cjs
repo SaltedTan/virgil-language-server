@@ -199,10 +199,10 @@ async function launch({ executable, settings, project, vsix, servers, keep, sign
   // its provider, and VS Code requests inlay hints and lightbulb code actions
   // for the visible documents. Such a request waits behind the client's
   // pending didOpens, and a stop that begins during the wait, as the window
-  // close here is, can send it after
-  // shutdown through a race in vscode-languageclient (#212), failing the
-  // recovery's strict shutdown sequence. The launch checks the recovery and
-  // the stop, not UI work, so it turns the automatic requests off.
+  // close here is, can send it after shutdown through a race in
+  // vscode-languageclient (#212), failing the recovery's strict shutdown
+  // sequence. The launch checks the recovery and the stop, not UI work, so it
+  // turns the automatic requests off.
   const launchSettings = recovery
     ? { ...settings, 'breadcrumbs.enabled': false, 'editor.inlayHints.enabled': 'off', 'editor.lightbulb.enabled': 'off' }
     : settings;

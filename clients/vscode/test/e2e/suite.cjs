@@ -1175,10 +1175,10 @@ async function actionDuringRecovery(failures, words, action) {
     // provider registers, and VS Code requests inlay hints and lightbulb code
     // actions for the visible documents. Such a request waits behind the
     // client's pending didOpens, and when the action's stop begins during
-    // that wait, vscode-languageclient sends it after shutdown (#212), which this
-    // scenario's strict shutdown sequence rejects. The scenario checks the
-    // recovery and stop, not UI work, so it turns the automatic requests off
-    // instead of loosening the assertion.
+    // that wait, vscode-languageclient sends it after shutdown (#212), which
+    // this scenario's strict shutdown sequence rejects. The scenario checks
+    // the recovery and stop, not UI work, so it turns the automatic requests
+    // off instead of loosening the assertion.
     await setSetting('breadcrumbs.enabled', false);
     await setSetting('editor.inlayHints.enabled', 'off');
     await setSetting('editor.lightbulb.enabled', 'off');
@@ -1508,9 +1508,8 @@ async function pendingEditRestart(failures, bad, words) {
     // and lightbulb code actions, as the edit lands. Such a request flushes
     // the pending full-text change to the old server, and if the restart's
     // stop begins during that flush, the library sends it after shutdown
-    // (#212). The scenario checks the pending
-    // edit, not UI work, so it turns the automatic requests off; the
-    // assertions stay as strict.
+    // (#212). The scenario checks the pending edit, not UI work, so it turns
+    // the automatic requests off; the assertions stay as strict.
     await setSetting('breadcrumbs.enabled', false);
     await setSetting('editor.inlayHints.enabled', 'off');
     await setSetting('editor.lightbulb.enabled', 'off');
