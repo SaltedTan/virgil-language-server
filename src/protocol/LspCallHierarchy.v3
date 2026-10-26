@@ -10,16 +10,15 @@
 class LspCallHierarchy {
 	def REQUIRES = "a valid textDocument.uri and position";
 	def ITEM_REQUIRES = "an item whose data has a valid uri, position, name, kind, and container";
-	// The most bytes that a call's JSON adds beyond its item's strings as
+	// A conservative budget for a call group's JSON beyond its item's strings as
 	// JsonRpcJson.stringBytes counts them, with their quotes, and its ranges:
-	// the item's object and data, with eight positions of at most 11 digits
+	// the item's object and data, with ten coordinates of at most 11 digits
 	// each and a two-digit kind, as for a type hierarchy item, and its data's
 	// container key, and the call's own object, with its "from" and
 	// "fromRanges" keys, and the array's commas and a share of its brackets.
-	// It is 413.
 	def CALL_BYTES = 432;
-	// The most bytes that one of a call's fromRanges adds: four positions of
-	// at most 11 digits each, their keys, and a comma. It is 106.
+	// A conservative budget for one of a call's fromRanges: four positions of
+	// at most 11 digits each, their keys, and a comma.
 	def RANGE_BYTES = 112;
 	// The client's textDocument.documentSymbol.symbolKind, as for document
 	// symbols.
