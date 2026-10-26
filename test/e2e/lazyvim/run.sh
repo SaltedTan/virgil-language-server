@@ -593,6 +593,7 @@ cat "$work/parsers.txt" >> "$out/provenance.txt"
 cat "$work/parsers.txt"
 
 cp -R "$repo/test/e2e/nvim/fixture" "$work/project"
+cp "$here/fixture/words/CallPicker.v3" "$work/project/words/"
 # One run: Neovim with the observer and the driver, then its exit status,
 # which the pane also exits with. The status file appears whole, once.
 cat > "$work/pane.sh" <<'SH'

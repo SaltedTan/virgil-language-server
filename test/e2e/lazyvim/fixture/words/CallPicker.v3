@@ -1,0 +1,5 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+component CallPicker {
+	def run(a: int, b: int) -> int { return CallFixture.sumSquares(a, b) + CallFixture.cube(a); }
+}

@@ -561,7 +561,7 @@ class SelectionTest(RenderTest):
         self.assertEqual("Pass (API + UI state)", matrix_row(text, "Neovim, Linux")["type-hierarchy"])
         self.assertEqual("Pass (API + UI state)", matrix_row(text, "Neovim, Linux")["call-hierarchy"])
         self.assertIn(f"| LazyVim, Linux | Pass (API) | Pass (API) | Pass (API + UI state) | Pass (API + UI state) | Pass (API + UI state) | "
-                      f"Not covered | Not covered | Not covered | Not covered | Pass (API) | Pass (API + UI state) | "
+                      f"Not covered | Not covered | Not covered | Pass (UI state) | Pass (API) | Pass (API + UI state) | "
                       f"{KNOWN_LIMITATION} |", text)
 
     def test_hash_mismatch(self):

@@ -1895,6 +1895,34 @@
       "description": "LazyVim's gI jumps from Polygon to the exact line and column of its one subclass, Square, in words/Shapes.v3, then returns to Words.v3."
     },
     {
+      "id": "lazyvim.call-hierarchy.incoming",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's gai lists exactly sumSquares at words/Calls.v3:7:49 and :7:61 and cube at :8:35 in the snacks picker; filtering for cube and pressing Enter jumps to its call site and closes the picker."
+    },
+    {
+      "id": "lazyvim.call-hierarchy.outgoing",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's gao on CallPicker.run lists exactly sumSquares at words/Calls.v3:7:6 and cube at :8:6 in the snacks picker; filtering for sumSquares and pressing Enter jumps to its declaration and closes the picker."
+    },
+    {
       "id": "vscode.folding-ranges.response",
       "suites": [
         "vscode",
@@ -2831,9 +2859,9 @@
       {
         "setup": "lazyvim-linux",
         "feature": "call-hierarchy",
-        "level": null,
-        "checks": [],
-        "notCovered": ["lazyvim.call-hierarchy"]
+        "level": "ui-state",
+        "checks": ["lazyvim.call-hierarchy.incoming", "lazyvim.call-hierarchy.outgoing"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-linux",
@@ -2968,9 +2996,9 @@
       {
         "setup": "lazyvim-macos",
         "feature": "call-hierarchy",
-        "level": null,
-        "checks": [],
-        "notCovered": ["lazyvim.call-hierarchy"]
+        "level": "ui-state",
+        "checks": ["lazyvim.call-hierarchy.incoming", "lazyvim.call-hierarchy.outgoing"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-macos",
@@ -3415,12 +3443,6 @@
       "id": "vscode.call-hierarchy-view",
       "kind": "visual",
       "what": "the Call Hierarchy view that Show Call Hierarchy opens",
-      "planned": null
-    },
-    {
-      "id": "lazyvim.call-hierarchy",
-      "kind": "behavior",
-      "what": "the incoming and outgoing calls that LazyVim's gai and gao list in the snacks picker",
       "planned": null
     }
   ],
