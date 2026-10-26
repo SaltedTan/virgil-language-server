@@ -221,8 +221,8 @@ The [example](results-example/README.md)'s rows of LazyVim on Linux, a run of ea
 
 | Date | Commit | Where | Command | Editor | Result |
 | --- | --- | --- | --- | --- | --- |
-| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
-| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.12.6 | Passed (57 of 57 observations): 56 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
+| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (67 of 67 observations): 66 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
+| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.12.6 | Passed (67 of 67 observations): 66 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
 
 ### Manual observations
 

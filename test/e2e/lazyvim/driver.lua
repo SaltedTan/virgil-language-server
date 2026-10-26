@@ -618,6 +618,130 @@ local function main_checks()
   end)
   vim.api.nvim_set_current_buf(words_buf)
 
+  -- Read the picker's filtered items, then type a query and confirm it through
+  -- the UI. Always close it on failure so the next step can use Normal keys.
+  local function through_picker(source, check)
+    local ok, result = xpcall(function()
+      local picker = wait_for("snacks " .. source .. " picker", function()
+        local p = Snacks.picker.get({ source = source })[1]
+        return p and not p:is_active() and #p:items() > 0 and p
+      end)
+      return check(picker)
+    end, debug.traceback)
+    for _, picker in ipairs(Snacks.picker.get()) do picker:close() end
+    wait_for("picker closed and Normal mode", function()
+      return #Snacks.picker.get() == 0 and vim.api.nvim_get_mode().mode == "n"
+    end)
+    assert(ok, result)
+    return result
+  end
+
+  local calls = vim.fs.joinpath(root, "words", "Calls.v3")
+  local function call_picker(keys, source, file, cursor, expected, query, destination)
+    vim.cmd.edit(file)
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for("call fixture attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    wait_for("LazyVim's " .. keys .. " mapping", function()
+      local map = vim.fn.maparg(keys, "n", false, true)
+      return map.buffer == 1 and map.desc == (keys == "gai" and "C[a]lls Incoming" or "C[a]lls Outgoing")
+    end)
+    vim.api.nvim_win_set_cursor(0, cursor)
+    vim.api.nvim_input(keys)
+    return through_picker(source, function(picker)
+      local listed = {}
+      for _, item in ipairs(picker:items()) do
+        listed[#listed + 1] = { item.name, item.file, item.pos[1], item.pos[2] }
+      end
+      table.sort(listed, function(a, b)
+        if a[3] ~= b[3] then return a[3] < b[3] end
+        return a[4] < b[4]
+      end)
+      assert(vim.deep_equal(listed, expected), "unexpected calls in picker: " .. vim.inspect(listed))
+      type_keys(vim.split(query, ""))
+      local selected = wait_for("the filtered call " .. query, function()
+        local items = picker:items()
+        return not picker:is_active() and #items == 1 and items[1].name == query and items[1]
+      end)
+      assert(selected.file == calls and vim.deep_equal(selected.pos, destination), vim.inspect(selected))
+      type_keys({ "<CR>" })
+      wait_for("the call hierarchy jump", function()
+        return #Snacks.picker.get() == 0 and vim.api.nvim_buf_get_name(0) == calls
+          and vim.deep_equal(vim.api.nvim_win_get_cursor(0), destination)
+      end)
+      return string.format("%s; selected %s -> words/Calls.v3:%d:%d; picker closed",
+        vim.inspect(listed), query, destination[1], destination[2] + 1)
+    end)
+  end
+
+  step("call hierarchy: incoming calls (LazyVim gai)", function()
+    return call_picker("gai", "lsp_incoming_calls", calls, { 6, 5 }, {
+      { "sumSquares", calls, 7, 48 }, { "sumSquares", calls, 7, 60 }, { "cube", calls, 8, 34 },
+    }, "cube", { 8, 34 })
+  end)
+  -- Snacks auto-confirms a single callee. This LazyVim-only caller has two,
+  -- so gao shows a picker. Outgoing items jump to the callee's declaration.
+  step("call hierarchy: outgoing calls (LazyVim gao)", function()
+    return call_picker("gao", "lsp_outgoing_calls", vim.fs.joinpath(root, "words", "CallPicker.v3"), { 4, 5 }, {
+      { "sumSquares", calls, 7, 5 }, { "cube", calls, 8, 5 },
+    }, "sumSquares", { 7, 5 })
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
+  step("diagnostics: semicolon quick fix (LazyVim <leader>ca)", function()
+    vim.cmd.edit(vim.fs.joinpath(root, "semicolon.v3"))
+    local buf = vim.api.nvim_get_current_buf()
+    local target = vim.uri_from_bufnr(buf)
+    local original = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    wait_for("semicolon fixture attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    local diagnostic = wait_for('the published ";" expected error', function()
+      local last = latest(target)
+      return last and #last.diagnostics == 1 and last.diagnostics[1].message == '";" expected'
+        and #vim.diagnostic.get(buf) == 1 and last.diagnostics[1]
+    end)
+    local leader = vim.g.mapleader or "\\"
+    wait_for("LazyVim's <leader>ca mapping", function()
+      local map = vim.fn.maparg(leader .. "ca", "n", false, true)
+      return map.buffer == 1 and map.desc == "Code Action"
+    end)
+    vim.api.nvim_win_set_cursor(0, { diagnostic.range.start.line + 1, diagnostic.range.start.character })
+    type_keys({ leader, "c", "a" })
+    through_picker("select", function(picker)
+      local items = picker:items()
+      assert(#items == 1 and items[1].item.action.title == 'Insert missing ";"'
+        and items[1].text == '1 Insert missing ";"',
+        "unexpected code actions: " .. vim.inspect(items))
+      type_keys({ "<CR>" })
+      wait_for("the semicolon inserted before the comment", function()
+        return vim.api.nvim_buf_get_lines(buf, 2, 3, true)[1] == "\t\treturn 1; // insert before this comment"
+      end)
+    end)
+    wait_for("cleared semicolon diagnostic", function()
+      return #latest(target).diagnostics == 0 and #vim.diagnostic.get(buf) == 0
+    end)
+    vim.api.nvim_input("u")
+    wait_for("undo restored the line and parser error", function()
+      return vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), original)
+        and #latest(target).diagnostics == 1 and latest(target).diagnostics[1].message == '";" expected'
+        and #vim.diagnostic.get(buf) == 1
+    end)
+    return 'Insert missing ";" inserted ; before the trailing comment; diagnostics cleared, then returned on undo'
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
+  step("folding ranges (LazyVim defaults)", function()
+    vim.cmd.edit(vim.fs.joinpath(root, "folding.v3"))
+    local buf = vim.api.nvim_get_current_buf()
+    wait_for("folding fixture attachment", function() return vim.lsp.buf_is_attached(buf, client.id) end)
+    info("Virgil folds: foldmethod=%s; foldexpr=%s; foldingRangeProvider=%s",
+      vim.wo.foldmethod, vim.wo.foldexpr, vim.inspect(client.server_capabilities.foldingRangeProvider))
+    wait_for("LazyVim's LSP fold expression", function()
+      return vim.wo.foldmethod == "expr" and vim.wo.foldexpr == "v:lua.vim.lsp.foldexpr()"
+    end)
+    wait_for("fold level 3 inside the method's if block", function() return vim.fn.foldlevel(7) == 3 end)
+    return "foldmethod=expr; foldexpr=v:lua.vim.lsp.foldexpr(); foldlevel(7)=3"
+  end)
+  vim.api.nvim_set_current_buf(words_buf)
+
   -- Rename through LazyVim's <leader>cr, which it maps for a server with
   -- rename. Neovim asks prepareRename first; while the project has a type
   -- error the server refuses, and Neovim shows its reason with vim.notify,

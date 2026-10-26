@@ -1895,6 +1895,62 @@
       "description": "LazyVim's gI jumps from Polygon to the exact line and column of its one subclass, Square, in words/Shapes.v3, then returns to Words.v3."
     },
     {
+      "id": "lazyvim.call-hierarchy.incoming",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's gai lists exactly sumSquares at words/Calls.v3:7:49 and :7:61 and cube at :8:35 in the snacks picker; filtering for cube and pressing Enter jumps to its call site and closes the picker."
+    },
+    {
+      "id": "lazyvim.call-hierarchy.outgoing",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "LazyVim's gao on CallPicker.run lists exactly sumSquares at words/Calls.v3:7:6 and cube at :8:6 in the snacks picker; filtering for sumSquares and pressing Enter jumps to its declaration and closes the picker."
+    },
+    {
+      "id": "lazyvim.diagnostics.semicolon-fix",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "api-ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "On the published parser error in semicolon.v3, LazyVim's <leader>ca lists exactly Insert missing \";\" in the snacks vim.ui.select picker. Enter inserts the semicolon before the trailing comment and clears diagnostics; undo restores the original text and parser error."
+    },
+    {
+      "id": "lazyvim.folding-ranges.defaults",
+      "suites": [
+        "lazyvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "With foldingRangeProvider supported, the pinned LazyVim defaults set foldmethod=expr and foldexpr=v:lua.vim.lsp.foldexpr() on folding.v3, without overriding editor settings; foldlevel(7) is exactly 3 inside the method and its if block."
+    },
+    {
       "id": "vscode.folding-ranges.response",
       "suites": [
         "vscode",
@@ -2771,8 +2827,8 @@
       {
         "setup": "lazyvim-linux",
         "feature": "diagnostics",
-        "level": "api",
-        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored"],
+        "level": "api-ui-state",
+        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored", "lazyvim.diagnostics.semicolon-fix"],
         "notCovered": ["lazyvim.diagnostics-display"]
       },
       {
@@ -2813,11 +2869,9 @@
       {
         "setup": "lazyvim-linux",
         "feature": "folding-ranges",
-        "level": null,
-        "checks": [],
-        "notCovered": [
-          "lazyvim.folding-ranges"
-        ]
+        "level": "ui-state",
+        "checks": ["lazyvim.folding-ranges.defaults"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-linux",
@@ -2831,9 +2885,9 @@
       {
         "setup": "lazyvim-linux",
         "feature": "call-hierarchy",
-        "level": null,
-        "checks": [],
-        "notCovered": ["lazyvim.call-hierarchy"]
+        "level": "ui-state",
+        "checks": ["lazyvim.call-hierarchy.incoming", "lazyvim.call-hierarchy.outgoing"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-linux",
@@ -2908,8 +2962,8 @@
       {
         "setup": "lazyvim-macos",
         "feature": "diagnostics",
-        "level": "api",
-        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored"],
+        "level": "api-ui-state",
+        "checks": ["lazyvim.diagnostics.parser", "lazyvim.diagnostics.unsaved-cycle", "lazyvim.diagnostics.semantic", "lazyvim.diagnostics.words-restored", "lazyvim.diagnostics.semicolon-fix"],
         "notCovered": ["lazyvim.diagnostics-display"]
       },
       {
@@ -2950,11 +3004,9 @@
       {
         "setup": "lazyvim-macos",
         "feature": "folding-ranges",
-        "level": null,
-        "checks": [],
-        "notCovered": [
-          "lazyvim.folding-ranges"
-        ]
+        "level": "ui-state",
+        "checks": ["lazyvim.folding-ranges.defaults"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-macos",
@@ -2968,9 +3020,9 @@
       {
         "setup": "lazyvim-macos",
         "feature": "call-hierarchy",
-        "level": null,
-        "checks": [],
-        "notCovered": ["lazyvim.call-hierarchy"]
+        "level": "ui-state",
+        "checks": ["lazyvim.call-hierarchy.incoming", "lazyvim.call-hierarchy.outgoing"],
+        "notCovered": []
       },
       {
         "setup": "lazyvim-macos",
@@ -3400,12 +3452,6 @@
       "planned": null
     },
     {
-      "id": "lazyvim.folding-ranges",
-      "kind": "behavior",
-      "what": "folding ranges in LazyVim",
-      "planned": null
-    },
-    {
       "id": "lazyvim.selection-ranges",
       "kind": "behavior",
       "what": "selection ranges in LazyVim",
@@ -3415,12 +3461,6 @@
       "id": "vscode.call-hierarchy-view",
       "kind": "visual",
       "what": "the Call Hierarchy view that Show Call Hierarchy opens",
-      "planned": null
-    },
-    {
-      "id": "lazyvim.call-hierarchy",
-      "kind": "behavior",
-      "what": "the incoming and outgoing calls that LazyVim's gai and gao list in the snacks picker",
       "planned": null
     }
   ],
