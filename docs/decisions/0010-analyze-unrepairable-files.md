@@ -1,6 +1,6 @@
 # 0010. Analyze files that bounded repair can't fix
 
-- Status: Proposed
+- Status: Accepted, with the conditions below; amends [ADR-0009](0009-current-text-repair.md)
 - Date: 2026-10-27
 - Discussion: [#300](https://github.com/SaltedTan/virgil-language-server/issues/300)
 
@@ -178,7 +178,7 @@ fallback nor the existing repair accepts, the project gets no definition,
 hover, references, or type errors. The six continuation states keep their
 answers warm, where fallback substitutes them.
 
-## Decision (proposed)
+## Decision
 
 Phase 3a amends ADR-0009 with body quarantine, needing no upstream change and
 no exception to ADR-0002. For an open file that fails to parse and that
@@ -187,9 +187,9 @@ fallback can't substitute:
 1. When its braces balance and no lexical region is unterminated, blank the
    body that holds the parser's first error (D(v)). The method whose header the
    parser consumed gives one candidate per body; the prototype searched outward
-   from the innermost pair instead. This is proposed to replace ADR-0009's
-   insertions for whole-project analysis; completion and signature help keep
-   ADR-0006's cursor repair.
+   from the innermost pair instead. It replaces ADR-0009's insertions for
+   whole-project analysis once it is measured (below); completion and
+   signature help keep ADR-0006's cursor repair.
 2. When they are short by exactly one opener, blank the body that layout
    delimits (D(vi)), under the layout check.
 3. When they are short by exactly one closer, insert the `}` where layout ends
@@ -208,21 +208,25 @@ Phase 3b, declaration-level recovery of field initializers, damaged headers,
 and truncated files, waits until phase 3a is measured on new states, and
 prefers an upstream interface (A) to an adapter copy (B).
 
-These decisions are the maintainer's:
+The maintainer decided, on 2026-10-27:
 
-- **Upstream coordination:** whether, when, and how to propose option A's
-  interface. Phase 3a doesn't depend on it.
-- **An exception to ADR-0002:** none is proposed now; only option B would need
-  one.
-- **Brace changes:** whether the layout check is an acceptable basis for D(vi)
-  and D(iii), after ADR-0009 rejected braces. Without them, phase 3a recovers 8
-  states, not 71.
-- **Replacing ADR-0009's insertions:** whether blanking replaces them or runs
-  after them. It covered all their states here.
-- **The v1.0 gate for M6:** proposed as phase 3a shipped with no wrong answers,
-  new negative controls for the brace rules and for the error limit, and
-  held-out states the rules weren't built from, such as replays of other
-  headers and indentation styles. Phase 3b would not be needed for v1.0.
+- **Upstream coordination:** not now. Phase 3a doesn't depend on it; option A's
+  interface is reconsidered for phase 3b.
+- **An exception to ADR-0002:** none. Only option B would need one.
+- **Brace changes:** accepted, as a second step. Phase 3a ships in order: first
+  rule 1, blanking a body whose braces balance; then rules 2 and 3, the brace
+  rules under the layout check, only once negative controls (starting with
+  `swallow-field`) and held-out states the rules weren't built from show no
+  wrong answer. Without the brace rules, phase 3a recovers 8 states, not 71.
+  60 of the 62 header states replay two Aeneas lines, so the corpus alone
+  doesn't show the layout check holds on other code.
+- **Replacing ADR-0009's insertions:** blanking replaces them once the
+  benchmark shows it keeps every state they keep, with no wrong answer.
+  ADR-0009's insertions stay until then.
+- **The v1.0 gate for M6:** phase 3a shipped with no wrong answers, new negative
+  controls for the brace rules and for the error limit, and held-out states the
+  rules weren't built from, such as replays of other headers and indentation
+  styles. Phase 3b is not needed for v1.0.
 
 ## Consequences
 
