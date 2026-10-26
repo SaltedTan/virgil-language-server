@@ -24,6 +24,8 @@ class LspCallHierarchy {
 	// The client's textDocument.documentSymbol.symbolKind, as for document
 	// symbols.
 	var clientKinds = LspSymbolKind.symbols(null);
+	// The number of outlines that replies parsed, for tests.
+	var outlines: int;
 
 	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
 		requests.registerPrepared(dispatcher, "textDocument/prepareCallHierarchy", "call hierarchy", REQUIRES, preparePosition);
@@ -274,7 +276,9 @@ class LspCallHierarchyReply(owner: LspCallHierarchy, at: LspSnapshotPosition, ke
 }
 
 // The items of one reply. Items in order of path check each file's text,
-// build its position map, and parse its outline once.
+// build its position map, and parse its outline once. The request's own file
+// stays selected for the whole reply beside the last other one, so neither
+// its callees nor recursion parse it again.
 class LspCallHierarchyItems(owner: LspCallHierarchy, at: LspSnapshotPosition) {
 	// The estimated encoded bytes of the last item's strings: its URI and its
 	// name twice, since the data repeats them, its detail, and its container.
@@ -286,23 +290,36 @@ class LspCallHierarchyItems(owner: LspCallHierarchy, at: LspSnapshotPosition) {
 	var text: Array<byte>;
 	var map: PositionMap;
 	var symbols: Array<AnalysisDocumentSymbol>;
-	private var path: string;
+	// The request's file, and the last other file selected.
+	private var home: LspCallHierarchyFile;
+	private var last: LspCallHierarchyFile;
 
-	// Selects the snapshot's file at {path}, unless it is selected already,
-	// and returns whether its bytes are still the ones analyzed.
+	// Selects the snapshot's file at {path}, parsing it unless it is the
+	// request's file or the last other one, and returns whether its bytes are
+	// still the ones analyzed.
 	def select(path: string) -> bool {
-		if (this.path != null && Strings.equal(this.path, path)) return index >= 0;
-		this.path = path;
-		var target = at.target(path);
-		index = target.0;
-		text = target.1;
-		if (index >= 0) {
-			map = at.positionMap(index, text);
-			// The analyzed text parsed with these options, so its outline has
-			// the declaration.
-			symbols = AeneasAdapter.documentSymbols(path, text, at.options);
+		var file: LspCallHierarchyFile;
+		if (Strings.equal(path, at.path())) {
+			if (home == null) home = load(path);
+			file = home;
+		} else {
+			if (last == null || !Strings.equal(last.path, path)) last = load(path);
+			file = last;
 		}
+		index = file.index;
+		text = file.text;
+		map = file.map;
+		symbols = file.symbols;
 		return index >= 0;
+	}
+	private def load(path: string) -> LspCallHierarchyFile {
+		var target = at.target(path), j = target.0;
+		if (j < 0) return LspCallHierarchyFile.new(path, j, target.1, null, null);
+		owner.outlines++;
+		// The analyzed text parsed with these options, so its outline has the
+		// declaration.
+		return LspCallHierarchyFile.new(path, j, target.1, at.positionMap(j, target.1),
+			AeneasAdapter.documentSymbols(path, target.1, at.options));
 	}
 	// The container of the declaration named at {r} in the selected file.
 	def container(r: AnalysisRange) -> string {
@@ -379,3 +396,8 @@ class LspCallHierarchyItems(owner: LspCallHierarchy, at: LspSnapshotPosition) {
 	}
 }
 
+// One file of a reply: its index in the snapshot, or -1 if its bytes are no
+// longer the ones analyzed, and then its analyzed text, the position map of
+// its current text, and its outline.
+class LspCallHierarchyFile(path: string, index: int, text: Array<byte>, map: PositionMap,
+	symbols: Array<AnalysisDocumentSymbol>) { }

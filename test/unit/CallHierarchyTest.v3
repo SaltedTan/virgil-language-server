@@ -29,6 +29,7 @@ def X = [
 	T("CallHierarchy:excluded_bodies", excluded_bodies),
 	T("CallHierarchy:malformed_data", malformed_data),
 	T("CallHierarchy:reply_bounds", reply_bounds),
+	T("CallHierarchy:outlines_per_reply", outlines_per_reply),
 	()
 ];
 def NOTE = "/* é𝄞\t */ ";
@@ -660,4 +661,20 @@ def reply_bounds(t: Tester) {
 		Result(v) => t.fail("outgoing calls not bounded");
 		Error(e) => t.assert_string("the method run has more than 6 outgoing calls", e.message);
 	}
+}
+// A reply parses each file's outline once: the request's file stays selected
+// beside the last other one, so a recursive callee after a callee in another
+// file, and callers in the item's own file, don't parse it again.
+def outlines_per_reply(t: Tester) {
+	var p = program(t, ["component A {\n\tdef a() { }\n\tdef b() { a(); }\n}\n", "def z() { A.a(); z(); }\n"], [], true);
+	var z = p.item(1, "def z", 4), a = p.item(0, "def a", 4), before = p.hierarchy.outlines;
+	p.checkCalls("outgoing of z", p.expand(z, false), false, 1, null, [
+		call(method(0, "A", "a", "def a", 4, "{ }", "def a()"), [("A.a", 2)]),
+		call(method(1, "", "z", "def z", 4, "; }", "def z()"), [("z(); }", 0)])]);
+	t.asserti(2, p.hierarchy.outlines - before);
+	before = p.hierarchy.outlines;
+	p.checkCalls("incoming of a", p.expand(a, true), true, 0, "a", [
+		call(method(0, "A", "b", "def b", 4, "; }", "def b()"), [("a(); }", 0)]),
+		call(method(1, "", "z", "def z", 4, "; }", "def z()"), [("A.a", 2)])]);
+	t.asserti(2, p.hierarchy.outlines - before);
 }
