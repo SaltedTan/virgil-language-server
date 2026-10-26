@@ -616,6 +616,17 @@ annotations, never a failed timing check. Build or benchmark correctness failure
 still fail the job. Rerun a flagged comparison and inspect its blocks and GC
 behavior before calling it a regression or improvement.
 
+The Linux job's `--cpu auto` pins the server and the worker to one CPU, so work
+that the worker does while the server answers competes with that answer. Since
+[#290](https://github.com/SaltedTan/virgil-language-server/pull/290), the worker
+collects after sending each result, and `completion_hit` is measured immediately
+after `completion_miss`, whose result the worker has just sent. On one CPU,
+Aeneas `completion_hit` therefore takes about 5.8 ms rather than 2.7 ms; with the
+server and the worker on separate cores, as editors run them, it is unchanged.
+The first scheduled run flagged this against a baseline from before #290
+([#294](https://github.com/SaltedTan/virgil-language-server/issues/294)); ADR 0004
+records the measurements and why the collection stays.
+
 Download `benchmarks-ubuntu-24.04` or `benchmarks-macos-15` from the workflow run's
 artifacts (retained for 90 days). Each contains `comparison.json`, resolved
 `refs.json`, and `summary.md`; macOS also contains `baseline.md`, the newer
