@@ -318,6 +318,21 @@ async function workspace(extension) {
     [5, 6, undefined], [7, 8, undefined], [11, 12, vscode.FoldingRangeKind.Comment], [13, 14, vscode.FoldingRangeKind.Comment],
   ]);
   console.log('PASS: vscode.folding-ranges.response');
+  const selections = await vscode.commands.executeCommand('vscode.executeSelectionRangeProvider',
+    folding.document.uri, [new vscode.Position(6, 8)]);
+  assert.equal(selections.length, 1);
+  const chain = [];
+  for (let r = selections[0]; r; r = r.parent) {
+    chain.push([r.range.start.line, r.range.start.character, r.range.end.line, r.range.end.character]);
+  }
+  // VS Code adds its own word and whole-line levels to the server chain.
+  assert.deepEqual(chain, [
+    [6, 6, 6, 12], [6, 6, 6, 13], [6, 0, 6, 13],
+    [5, 14, 7, 5], [5, 4, 7, 12], [5, 4, 9, 5], [5, 0, 9, 5],
+    [4, 12, 10, 3], [4, 2, 10, 3], [4, 2, 14, 11], [4, 0, 14, 11],
+    [3, 16, 15, 1], [3, 0, 15, 1], [0, 0, 16, 0],
+  ], JSON.stringify(chain));
+  console.log('PASS: vscode.selection-ranges.response');
 
   const bad = await open('bad.v3');
   const original = bad.document.getText();
