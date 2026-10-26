@@ -110,7 +110,7 @@ inputs = [
 ]
 outputs = [
     reply(1, dict(capabilities=dict(callHierarchyProvider=True, completionProvider=dict(triggerCharacters=["."]), definitionProvider=True, documentHighlightProvider=True, documentSymbolProvider=True, foldingRangeProvider=True,
-                                   hoverProvider=True, implementationProvider=True, referencesProvider=True, renameProvider=True,
+                                   hoverProvider=True, implementationProvider=True, inlayHintProvider=True, referencesProvider=True, renameProvider=True,
                                    signatureHelpProvider=dict(retriggerCharacters=[")"], triggerCharacters=["(", ","]),
                                    textDocumentSync=dict(change=1, openClose=True, save=dict(includeText=False)),
                                    typeDefinitionProvider=True, typeHierarchyProvider=True,
