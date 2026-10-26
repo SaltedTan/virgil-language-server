@@ -264,7 +264,7 @@ messages:
 - `',' or ';' expected`, for local declarations;
 - `',' or ';' expected after field declaration`, for fields.
 
-Otherwise it parses the current text with `AeneasAdapter.parseFile`, the same
+Otherwise it parses the current text with `AeneasAdapter.parseStatement`, the same
 driver and active project's [language options](configuration.md#compiler-flags)
 as [parser diagnostics](#parser-diagnostics). Only the first error is eligible,
 with one of those exact messages and a range intersecting the requested range.
@@ -365,7 +365,7 @@ layout lines. The other 1,060 removals gave a different first error, such as a
 include the ambiguity test, and none of 124 hand-written same-line and
 multi-line swallows and fixes gets a wrong action.
 
-There is one candidate and no search. The edited text
+There is one proposed fix and no search. The edited text
 is parsed once, with the same options. The action is offered only if the file
 parses or its first error starts strictly after the original error's byte
 offset plus the inserted byte. A later unrelated error may remain. Where the
