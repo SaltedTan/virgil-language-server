@@ -96,6 +96,29 @@ local function check()
     and case.selectionRange["end"].line == 1 and case.selectionRange["end"].character == 15,
     "expected case A (kind 22) of V: " .. vim.inspect(outline[2]))
 
+  vim.cmd.edit(vim.fs.joinpath(client.config.root_dir, "folding.v3"))
+  local folding_buf = vim.api.nvim_get_current_buf()
+  wait_for("client attachment to folding.v3", function()
+    return vim.lsp.buf_is_attached(folding_buf, client.id)
+  end)
+  local folding = client:request_sync("textDocument/foldingRange", {
+    textDocument = { uri = vim.uri_from_bufnr(folding_buf) },
+  }, 10000, folding_buf)
+  assert(folding and not folding.err, vim.inspect(folding))
+  local expected_folds = {
+    { startLine = 0, endLine = 1, kind = "comment" },
+    { startLine = 3, endLine = 14 }, { startLine = 4, endLine = 9 },
+    { startLine = 5, endLine = 6 }, { startLine = 7, endLine = 8 },
+    { startLine = 11, endLine = 12, kind = "comment" },
+    { startLine = 13, endLine = 14, kind = "comment" },
+  }
+  assert(vim.deep_equal(folding.result, expected_folds), "unexpected folds: " .. vim.inspect(folding))
+  wait_for("foldexpr inside a method and its if block", function()
+    return vim.lsp.foldexpr(7) == "<3"
+  end)
+  print("PASS: nvim.folding-ranges.response")
+  vim.api.nvim_set_current_buf(bufnr)
+
   -- The fixture's project uses lib/util through virgilDependencies. run.sh sets
   -- VIRGIL_LOC to the pinned checkout, which the configuration passes on as
   -- initializationOptions.virgilRoot, so the project is valid and analyzed.

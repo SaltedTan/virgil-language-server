@@ -1,0 +1,176 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// A foldable range of one document: a brace block, or a comment. Byte offsets
+// are exclusive at the end; no compiler types escape the adapter. The protocol
+// maps the offsets through PositionMap for UTF-16 characters. {depth} is the
+// number of emitted ranges that enclose it, for the reply bounds.
+class AnalysisFoldingRange(kind: int, startLine: int, endLine: int, startOffset: int, endOffset: int) {
+	var depth: int;
+}
+component AnalysisFoldingKind {
+	// A block, which has no LSP kind.
+	def CODE = 0;
+	// A block comment or a run of line comments, the LSP "comment" kind.
+	def COMMENT = 1;
+}
+
+// Folds come only from the parser's consumed token spans and the gaps between
+// them, which hold only whitespace and comments: braces inside strings,
+// character literals, and comments are never tokens. {cutoff} is the byte
+// offset of the parser's first error, or -1 if it parsed; nothing at or after
+// it is folded. See docs/architecture.md#folding-ranges.
+class DocumentFoldingCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>, cutoff: int) {
+	// The ranges in byte order of their starts.
+	def collect() -> Array<AnalysisFoldingRange> {
+		var result = Vector<AnalysisFoldingRange>.new();
+		var open = Vector<int>.new(); // token indices of unmatched '{'
+		var max = input.length;
+		if (cutoff >= 0 && cutoff < max) max = cutoff;
+		var i = 0, ti = 0, line = 0, lineStart = 0;
+		while (i < max) {
+			while (ti < tokens.length && tokens[ti].end <= i) ti++;
+			if (ti < tokens.length && i >= tokens[ti].begin) {
+				if (i == tokens[ti].begin) brace(result, open, ti, lineStart);
+				var end = if(tokens[ti].end < max, tokens[ti].end, max);
+				while (i < end) {
+					if (input[i] == '\n') {
+						line++;
+						lineStart = i + 1;
+					}
+					i++;
+				}
+			} else if (input[i] == '\n') {
+				line++;
+				lineStart = i + 1;
+				i++;
+			} else if (input[i] == '/' && i + 1 < max && input[i + 1] == '/') {
+				var at = lineComment(result, i, gapEnd(ti, max), lineStart, line);
+				i = at.0;
+				lineStart = at.1;
+				line = at.2;
+			} else if (input[i] == '/' && i + 1 < max && input[i + 1] == '*') {
+				var at = blockComment(result, i, gapEnd(ti, max), lineStart, line);
+				i = at.0;
+				lineStart = at.1;
+				line = at.2;
+			} else {
+				i++;
+			}
+		}
+		var ranges = sorted(result), ends = Vector<int>.new();
+		// Count only folds that are actually emitted. A two-line brace pair
+		// has no fold but can still surround a multiline comment.
+		for (r in ranges) {
+			while (ends.length > 0 && ends[ends.length - 1] < r.endOffset) ends.length--;
+			r.depth = ends.length;
+			ends.put(r.endOffset);
+		}
+		return ranges;
+	}
+	// Comments may inspect only the gap before the next consumed span.
+	private def gapEnd(ti: int, max: int) -> int {
+		return if(ti < tokens.length && tokens[ti].begin < max, tokens[ti].begin, max);
+	}
+	// Pairs consumed single-byte braces. A pair starts on the line of its '{'
+	// and ends on the line before its '}', so that the '}' stays visible and
+	// `} else {` needs no overlap. A pair on one line has no range.
+	private def brace(result: Vector<AnalysisFoldingRange>, open: Vector<int>, i: int, lineStart: int) {
+		var c = ch(i);
+		if (c == '{') {
+			open.put(i);
+		} else if (c == '}' && open.length > 0) {
+			var o = open[open.length - 1];
+			open.length--;
+			var startLine = tokens[o].line - 1, endLine = tokens[i].line - 2;
+			if (endLine <= startLine) return;
+			// The end is the line terminator before this line, whose offset
+			// maps to the last character of the range's end line.
+			result.put(AnalysisFoldingRange.new(AnalysisFoldingKind.CODE, startLine, endLine,
+				tokens[o].begin + 1, lineStart - 1));
+		}
+	}
+	// Consumes the line comment at {start} and the lines after it that each
+	// hold only a line comment and whitespace. A run of two or more lines is
+	// one comment range; a trailing comment after code starts no run.
+	private def lineComment(result: Vector<AnalysisFoldingRange>, start: int, max: int,
+			lineStart: int, line: int) -> (int, int, int) {
+		var end = start + 2;
+		while (end < max && input[end] != '\n') end++;
+		if (!blank(lineStart, start)) return (end, lineStart, line);
+		var runEnd = end, runLine = line, lastStart = lineStart;
+		while (runEnd < max && input[runEnd] == '\n') {
+			var next = runEnd + 1, m = next;
+			while (m < max && (input[m] == ' ' || input[m] == '\t')) m++;
+			if (m + 1 >= max || input[m] != '/' || input[m + 1] != '/') break;
+			runEnd = m + 2;
+			while (runEnd < max && input[runEnd] != '\n') runEnd++;
+			runLine++;
+			lastStart = next;
+		}
+		if (runLine > line && (runEnd < max || max == input.length || input[max] == '\n')) {
+			result.put(AnalysisFoldingRange.new(AnalysisFoldingKind.COMMENT, line, runLine, start, runEnd));
+		}
+		return (runEnd, lastStart, runLine);
+	}
+	// Consumes the block comment at {start}, which does not nest: the first
+	// "*/" closes it, and one that is never closed runs to the end. A comment
+	// over two or more lines is one comment range.
+	private def blockComment(result: Vector<AnalysisFoldingRange>, start: int, max: int,
+			lineStart: int, line: int) -> (int, int, int) {
+		var startLine = line, i = start + 2, at = lineStart;
+		var closed = false;
+		while (i < max) {
+			if (input[i] == '\n') {
+				line++;
+				i++;
+				at = i;
+			} else if (input[i] == '*' && i + 1 < max && input[i + 1] == '/') {
+				i += 2;
+				closed = true;
+				break;
+			} else {
+				i++;
+			}
+		}
+		if (line > startLine && (closed || max == input.length)) result.put(AnalysisFoldingRange.new(AnalysisFoldingKind.COMMENT, startLine, line, start, i));
+		return (i, at, line);
+	}
+	// Whether input[start ..< end] is only spaces and tabs.
+	private def blank(start: int, end: int) -> bool {
+		for (i = start; i < end; i++) {
+			if (input[i] != ' ' && input[i] != '\t') return false;
+		}
+		return true;
+	}
+	private def ch(i: int) -> byte {
+		var t = tokens[i];
+		return if(t.end - t.begin == 1, input[t.begin], 0);
+	}
+	private def sorted(v: Vector<AnalysisFoldingRange>) -> Array<AnalysisFoldingRange> {
+		var a = v.extract();
+		return Arrays.sort(a, 0, a.length, before);
+	}
+	private def before(a: AnalysisFoldingRange, b: AnalysisFoldingRange) -> bool {
+		return a.startOffset < b.startOffset;
+	}
+}
+
+// The reply bounds that keep an outline of folds usable: at most {limit}
+// ranges, keeping the outermost ones and dropping the most deeply nested
+// first, ties by later start. The survivors stay in byte order.
+component FoldingRangeLimits {
+	def keepOutermost(ranges: Array<AnalysisFoldingRange>, limit: int) -> Array<AnalysisFoldingRange> {
+		if (ranges.length <= limit) return ranges;
+		var kept = Arrays.sort(ranges, 0, ranges.length, outermost);
+		kept = Arrays.range(kept, 0, limit);
+		return Arrays.sort(kept, 0, kept.length, first);
+	}
+	private def outermost(a: AnalysisFoldingRange, b: AnalysisFoldingRange) -> bool {
+		if (a.depth != b.depth) return a.depth < b.depth;
+		return a.startOffset < b.startOffset;
+	}
+	private def first(a: AnalysisFoldingRange, b: AnalysisFoldingRange) -> bool {
+		return a.startOffset < b.startOffset;
+	}
+}

@@ -19,6 +19,10 @@ Inlay hints require a current project analysis. Method-body fallback omits hints
 
 Type definition returns no location for built-in and structural types, including strings, arrays, ranges, tuples, and functions, or for unresolved types. It never follows their element types. `Box<Foo>` targets `Box`; the documented `Ref<L>` exception targets layout `L` ([Type definition](architecture.md#type-definition)).
 
+## Folding ranges
+
+Folding uses brace blocks and multiline comments from the open document's current syntax; closed documents have no ranges. It provides no indentation, import, or `region` marker folds. A parse error removes folds crossing or following the first error, and an error without an exact byte offset removes all folds. Replies contain at most 10,000 ranges or the client's smaller limit, keeping the outermost ranges first ([Folding ranges](architecture.md#folding-ranges)).
+
 ## No error-tolerant parsing
 
 - After a file has been analyzed without a syntax error, a later syntax error strictly inside one method or constructor body can preserve definition, type definition, inlay hints, implementations, hover, references, highlights, and type errors outside that body. The whole damaged body gets no semantic answer, and reference and highlight lists can be partial. The edit must preserve lexical state and balance braces in both texts. An unclosed brace, a header or field-initializer edit, or an interval spanning bodies cannot use this fallback. Unterminated strings, byte literals, and block comments are ineligible even when scanning recovers inside the interval ([Method-body fallback](architecture.md#method-body-fallback), [ADR-0008](decisions/0008-method-body-fallback.md)).

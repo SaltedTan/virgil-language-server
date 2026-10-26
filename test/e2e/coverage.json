@@ -101,6 +101,11 @@
       "matrix": true
     },
     {
+      "id": "folding-ranges",
+      "label": "Folding ranges",
+      "matrix": true
+    },
+    {
       "id": "type-hierarchy",
       "label": "Type hierarchy",
       "matrix": true
@@ -1880,6 +1885,35 @@
       "description": "LazyVim's gI jumps from Polygon to the exact line and column of its one subclass, Square, in words/Shapes.v3, then returns to Words.v3."
     },
     {
+      "id": "vscode.folding-ranges.response",
+      "suites": [
+        "vscode",
+        "remote-ssh"
+      ],
+      "profiles": [
+        "workspace"
+      ],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "vscode.executeFoldingRangeProvider returns the exact component, method, if/else, block comment, and consecutive line-comment ranges in folding.v3."
+    },
+    {
+      "id": "nvim.folding-ranges.response",
+      "suites": [
+        "nvim"
+      ],
+      "profiles": [
+        "main"
+      ],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "textDocument/foldingRange returns the exact component, method, if/else, block comment, and consecutive line-comment ranges in folding.v3; vim.lsp.foldexpr() gives level 3 inside the method and its if block."
+    },
+    {
       "id": "vscode.type-hierarchy.response",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -1988,6 +2022,17 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "folding-ranges",
+        "level": "api",
+        "checks": [
+          "vscode.folding-ranges.response"
+        ],
+        "notCovered": [
+          "vscode.folded-text"
+        ]
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -2100,6 +2145,17 @@
       },
       {
         "setup": "vscode-macos",
+        "feature": "folding-ranges",
+        "level": "api",
+        "checks": [
+          "vscode.folding-ranges.response"
+        ],
+        "notCovered": [
+          "vscode.folded-text"
+        ]
+      },
+      {
+        "setup": "vscode-macos",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -2209,6 +2265,13 @@
         "level": "api",
         "checks": ["vscode.type-hierarchy.response"],
         "notCovered": ["vscode.type-hierarchy-view"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "folding-ranges",
+        "level": "api",
+        "checks": ["vscode.folding-ranges.response"],
+        "notCovered": ["vscode.folded-text"]
       },
       {
         "setup": "ssh-linux-client",
@@ -2321,6 +2384,17 @@
         "level": "api-ui-state",
         "checks": ["nvim.type-hierarchy.response", "nvim.type-hierarchy.quickfix"],
         "notCovered": []
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "folding-ranges",
+        "level": "api",
+        "checks": [
+          "nvim.folding-ranges.response"
+        ],
+        "notCovered": [
+          "nvim.folded-text"
+        ]
       },
       {
         "setup": "nvim-linux",
@@ -2433,6 +2507,17 @@
         "level": "api-ui-state",
         "checks": ["nvim.type-hierarchy.response", "nvim.type-hierarchy.quickfix"],
         "notCovered": []
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "folding-ranges",
+        "level": "api",
+        "checks": [
+          "nvim.folding-ranges.response"
+        ],
+        "notCovered": [
+          "nvim.folded-text"
+        ]
       },
       {
         "setup": "nvim-macos",
@@ -2545,6 +2630,15 @@
         "level": null,
         "checks": [],
         "notCovered": ["lazyvim.type-hierarchy"]
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "folding-ranges",
+        "level": null,
+        "checks": [],
+        "notCovered": [
+          "lazyvim.folding-ranges"
+        ]
       },
       {
         "setup": "lazyvim-linux",
@@ -2657,6 +2751,15 @@
         "level": null,
         "checks": [],
         "notCovered": ["lazyvim.type-hierarchy"]
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "folding-ranges",
+        "level": null,
+        "checks": [],
+        "notCovered": [
+          "lazyvim.folding-ranges"
+        ]
       },
       {
         "setup": "lazyvim-macos",
@@ -3071,6 +3174,24 @@
       "id": "lazyvim.type-hierarchy",
       "kind": "behavior",
       "what": "type hierarchy, which LazyVim binds to no key",
+      "planned": null
+    },
+    {
+      "id": "vscode.folded-text",
+      "kind": "visual",
+      "what": "the text displayed after folding a block in VS Code",
+      "planned": null
+    },
+    {
+      "id": "nvim.folded-text",
+      "kind": "visual",
+      "what": "the text displayed after folding a block in Neovim",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.folding-ranges",
+      "kind": "behavior",
+      "what": "folding ranges in LazyVim",
       "planned": null
     }
   ],

@@ -55,6 +55,7 @@ CAPABILITIES = {
     "inlayHintProvider": True,
     "documentHighlightProvider": True,
     "documentSymbolProvider": True,
+    "foldingRangeProvider": True,
     "hoverProvider": True,
     "implementationProvider": True,
     "referencesProvider": True,

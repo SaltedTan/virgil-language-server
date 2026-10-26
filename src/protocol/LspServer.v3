@@ -67,6 +67,7 @@ class LspServer {
 	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	private def typeHierarchy = LspTypeHierarchy.new();
+	private def foldingRanges = LspFoldingRanges.new(documents, projects);
 	// Keywords from the open document's text, and declarations in scope from
 	// a completion analysis; tests read its count of analyses.
 	var completion: LspCompletion;
@@ -91,6 +92,7 @@ class LspServer {
 		documentSync.register(dispatcher);
 		documentSymbols.register(dispatcher);
 		workspaceSymbols.register(dispatcher);
+		foldingRanges.register(dispatcher);
 		completion = LspCompletion.new(documents, projects, publishNotification);
 		completion.register(dispatcher);
 		snapshotRequests = LspSnapshotRequests.new(documents, projects, publishNotification);
@@ -363,6 +365,7 @@ class LspServer {
 		documentSymbols.clientKinds = LspSymbolKind.symbols(member(documentSymbol, "symbolKind"));
 		// Type hierarchy items take their kinds as document symbols do.
 		typeHierarchy.clientKinds = documentSymbols.clientKinds;
+		foldingRanges.configure(member(textDocument, "foldingRange"));
 		var workspaceSymbol = member(member(member(params, "capabilities"), "workspace"), "symbol");
 		workspaceSymbols.clientKinds = LspSymbolKind.symbols(member(workspaceSymbol, "symbolKind"));
 		completion.clientKinds = LspSymbolKind.completions(member(member(textDocument, "completion"), "completionItemKind"));
@@ -389,6 +392,7 @@ class LspServer {
 		completionOptions["triggerCharacters"] = JsonValue.JArray([JsonValue.String(".")]);
 		capabilities["completionProvider"] = JsonValue.JObject(completionOptions);
 		capabilities["documentSymbolProvider"] = JsonValue.Bool(true);
+		capabilities["foldingRangeProvider"] = JsonValue.Bool(true);
 		capabilities["definitionProvider"] = JsonValue.Bool(true);
 		capabilities["typeDefinitionProvider"] = JsonValue.Bool(true);
 		capabilities["inlayHintProvider"] = JsonValue.Bool(true);
