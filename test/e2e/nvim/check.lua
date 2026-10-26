@@ -404,6 +404,71 @@ local function check()
   vim.api.nvim_set_current_buf(words_buf)
   print("PASS: nvim.type-hierarchy.quickfix")
 
+  -- nvim.call-hierarchy.response: square's item, prepared from a call, its
+  -- two callers, one of which calls it twice, and the calls out of that
+  -- caller, through the items the server gave.
+  local calls = vim.fs.joinpath(root, "words", "Calls.v3")
+  local calls_uri = vim.uri_from_fname(calls)
+  local function call_item(name, detail, line, last)
+    local selection = {
+      start = { line = line, character = 5 }, ["end"] = { line = line, character = 5 + #name },
+    }
+    return {
+      name = name, kind = 6, detail = detail, uri = calls_uri,
+      range = { start = { line = line, character = 1 }, ["end"] = { line = line, character = last } },
+      selectionRange = selection,
+      data = {
+        uri = calls_uri, position = selection.start, name = name, kind = "method", container = "CallFixture",
+      },
+    }
+  end
+  local function from(line, character)
+    return {
+      start = { line = line, character = character }, ["end"] = { line = line, character = character + 6 },
+    }
+  end
+  local square = call_item("square", "def square(x: int) -> int", 5, 44)
+  local sum_squares = call_item("sumSquares", "def sumSquares(a: int, b: int) -> int", 6, 72)
+  local cube = call_item("cube", "def cube(x: int) -> int", 7, 50)
+  local prepared_calls = hierarchy("textDocument/prepareCallHierarchy", {
+    textDocument = { uri = calls_uri }, position = { line = 7, character = 35 },
+  })
+  assert(vim.deep_equal(prepared_calls, { square }), "unexpected item for square: " .. vim.inspect(prepared_calls))
+  local incoming = hierarchy("callHierarchy/incomingCalls", { item = prepared_calls[1] })
+  assert(vim.deep_equal(incoming, {
+    { from = sum_squares, fromRanges = { from(6, 48), from(6, 60) } },
+    { from = cube, fromRanges = { from(7, 34) } },
+  }), "unexpected incoming calls of square: " .. vim.inspect(incoming))
+  local outgoing = hierarchy("callHierarchy/outgoingCalls", { item = incoming[1].from })
+  assert(vim.deep_equal(outgoing, { { to = square, fromRanges = { from(6, 48), from(6, 60) } } }),
+    "unexpected outgoing calls of sumSquares: " .. vim.inspect(outgoing))
+  outgoing = hierarchy("callHierarchy/outgoingCalls", { item = prepared_calls[1] })
+  assert(vim.deep_equal(outgoing, {}), "unexpected outgoing calls of square: " .. vim.inspect(outgoing))
+  print("PASS: nvim.call-hierarchy.response")
+
+  -- nvim.call-hierarchy.quickfix: the client's own command lists the three
+  -- calls of square, each at its callee's name, under its caller's name.
+  vim.cmd.edit(vim.fn.fnameescape(calls))
+  local calls_buf = vim.api.nvim_get_current_buf()
+  wait_for("Calls.v3 attachment", function() return vim.lsp.buf_is_attached(calls_buf, client.id) end)
+  vim.api.nvim_win_set_cursor(0, { 6, 5 })
+  vim.fn.setqflist({}, " ", { title = "before the call hierarchy" })
+  vim.lsp.buf.incoming_calls()
+  wait_for("the call hierarchy quickfix list", function()
+    return vim.fn.getqflist({ title = 0 }).title == "LSP call hierarchy"
+  end)
+  entries = vim.fn.getqflist()
+  local listed = {}
+  for _, entry in ipairs(entries) do
+    listed[#listed + 1] = { vim.api.nvim_buf_get_name(entry.bufnr), entry.lnum, entry.col, entry.text }
+  end
+  assert(vim.deep_equal(listed, {
+    { calls, 7, 49, "sumSquares" }, { calls, 7, 61, "sumSquares" }, { calls, 8, 35, "cube" },
+  }), "unexpected call hierarchy quickfix list: " .. vim.inspect(listed))
+  vim.cmd.cclose()
+  vim.api.nvim_set_current_buf(words_buf)
+  print("PASS: nvim.call-hierarchy.quickfix")
+
   -- Rename needs a program that verifies, so an unsaved edit fixes the type
   -- error first. The client's own rename, with its prepareRename and the
   -- server's versioned edit, renames both uses of the local line, and one
@@ -557,7 +622,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, type hierarchy, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, type and call hierarchy, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

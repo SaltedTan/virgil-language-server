@@ -20,7 +20,7 @@ class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: str
 }
 // Where a request names its document and position: textDocument and
 // position; textDocument and range.start, where the answer function gets the
-// current-text offset and maps it itself; or a type hierarchy item's data,
+// current-text offset and maps it itself; or a type or call hierarchy item's data,
 // whose uri and position may be stale, so that an offset inside an excluded
 // body reaches the answer function as -1 rather than failing the request.
 // Only a position is looked up again at the byte before.
@@ -175,7 +175,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		handler.failure = failure;
 		dispatcher.onDeferredRequest(method, handler.handle);
 	}
-	// Handles {method}, whose requests name a type hierarchy item, with the
+	// Handles {method}, whose requests name a type or call hierarchy item, with the
 	// answer function that {prepare} returns for each. The item's data.uri and
 	// data.position stand for a request's document and position.
 	def registerItem(dispatcher: JsonRpcDispatcher, method: string, label: string, requires: string,

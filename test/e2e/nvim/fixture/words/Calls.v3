@@ -1,0 +1,9 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+// Direct calls for call hierarchy: a helper that two functions call, one of
+// them twice.
+component CallFixture {
+	def square(x: int) -> int { return x * x; }
+	def sumSquares(a: int, b: int) -> int { return square(a) + square(b); }
+	def cube(x: int) -> int { return square(x) * x; }
+}

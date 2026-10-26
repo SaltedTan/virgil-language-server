@@ -21,7 +21,7 @@ mv "$nvim_config/lua/plugins/virgil.lua.part" "$nvim_config/lua/plugins/virgil.l
 
 Make sure `virgil-lsp` is on your `PATH`, or edit `cmd` to give an absolute path. Release archives include the default library; an optional `VIRGIL_LOC` overrides it ([The Virgil root](#the-virgil-root)).
 
-LazyVim's keys reach the server: `gd`, `gy` for type definition, `gI` for implementation, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more. LazyVim binds no key to type hierarchy; `:lua vim.lsp.buf.typehierarchy("subtypes")` or `"supertypes"` lists the types one level below or above the one at the cursor in the quickfix list, in LazyVim and plain Neovim alike.
+LazyVim's keys reach the server: `gd`, `gy` for type definition, `gI` for implementation, `K`, `gr`, and, for signature help, `gK` in Normal mode or `<C-k>` in Insert mode; noice.nvim also opens signature help as you type `(` or `,`. In LazyVim, `<C-s>` saves the file instead of showing signature help. For [completion](#completion), LazyVim needs nothing more. LazyVim binds no key to type hierarchy; `:lua vim.lsp.buf.typehierarchy("subtypes")` or `"supertypes"` lists the types one level below or above the one at the cursor in the quickfix list, in LazyVim and plain Neovim alike. For [call hierarchy](../../docs/architecture.md#call-hierarchy), `:lua vim.lsp.buf.incoming_calls()` and `vim.lsp.buf.outgoing_calls()` list the calls of the function at the cursor, and the calls it makes, in the quickfix list, and LazyVim's snacks picker binds them to `gai` and `gao`.
 
 LazyVim's noice.nvim drops `window/showMessage` notifications from every language server ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)), so warnings such as "Invalid project file …" don't appear, although the project file's diagnostics do. To see them, turn off noice's LSP message handler in a plugin spec, so that Neovim's own handler shows them:
 
@@ -123,7 +123,10 @@ its other uses Read), the exact subclasses and overriding methods that
 implementation returns in a class hierarchy, and the jump through
 `vim.lsp.buf.implementation()` to a class's one subclass, the exact type
 hierarchy items of a class, its supertype, and its subtypes, with their data,
-and the quickfix list that `vim.lsp.buf.typehierarchy("subtypes")` fills, a rename
+and the quickfix list that `vim.lsp.buf.typehierarchy("subtypes")` fills, the
+exact call hierarchy items and calls of a function, its two callers and the
+calls of one of them, with their data, and the quickfix list that
+`vim.lsp.buf.incoming_calls()` fills, a rename
 of a local through `vim.lsp.buf.rename()` once an unsaved edit fixes the type
 error, and its undo, keyword completion of `whi` to `while` and completion of
 `li` to the local `line` in the unsaved, unparsable buffer, each applied with
