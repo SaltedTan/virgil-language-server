@@ -151,6 +151,134 @@ class Scoring(unittest.TestCase):
         self.assertEqual(tolerance.states.corpus.position(text, len(text)), {"line": 1, "character": 0})
 
 
+class EditingSessions(unittest.TestCase):
+    def test_lifecycle_preserves_notification_order_and_reopen_versions(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            project = {"base": Path(temp)}
+            session = mock.Mock()
+            with mock.patch.object(tolerance.bench, "Session", return_value=session):
+                run = tolerance.Run(Path("server"), project, {})
+            events = tolerance.sessions
+            for action in (events.action("open", "A.v3", "old"),
+                           events.action("change", "A.v3", "broken", "fixed"),
+                           events.action("save", "A.v3", "broken", "fixed"),
+                           events.action("close", "A.v3"),
+                           events.action("open", "A.v3", "broken", "fixed"),
+                           events.action("change", "A.v3", "new")):
+                run.apply(action, intended=True)
+            calls = session.send.call_args_list
+            self.assertEqual([c.args[0] for c in calls], [
+                "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave",
+                "textDocument/didClose", "textDocument/didOpen", "textDocument/didChange"])
+            self.assertEqual(calls[1].args[1]["contentChanges"], [{"text": "fixed"}])
+            self.assertEqual(calls[4].args[1]["textDocument"]["version"], 1)
+            self.assertEqual(calls[5].args[1]["textDocument"]["version"], 2)
+            self.assertEqual((Path(temp) / "A.v3").read_text(), "fixed")
+
+    def test_closed_empty_publication_needs_no_overlay_but_stale_errors_fail(self):
+        base = Path("/project")
+        session = mock.Mock()
+        with mock.patch.object(tolerance.bench, "Session", return_value=session):
+            run = tolerance.Run(Path("server"), {"base": base}, {})
+        uri = (base / "A.v3").as_uri()
+        run.diagnostics[uri] = {"version": 2, "diagnostics": []}
+        self.assertEqual(run.watched_diagnostics(["A.v3"]), [])
+        run.diagnostics[uri]["diagnostics"] = [{"code": "TypeError"}]
+        with self.assertRaises(AssertionError):
+            run.watched_diagnostics(["A.v3"])
+
+    def test_initializer_mapping_distinguishes_repair_from_long_cached_body(self):
+        base = Path("/project")
+        snapshot = {"documentVersions": [
+            {"uri": (base / name).as_uri(), "substitution": {
+                "begin": 10, "effectiveEnd": end, "currentEnd": 10}}
+            for name, end in (("cached.v3", 11), ("repaired.v3", 25), ("old-errors.v3", 300))]}
+        self.assertEqual(tolerance.substitution_kinds(snapshot, base), {
+            "cached.v3": "fallback", "repaired.v3": "repair", "old-errors.v3": "fallback"})
+
+    def test_step_checks_require_eviction_evidence_and_full_restoration(self):
+        base = Path("/project")
+        record = {"snapshot": {"documentVersions": [
+            {"uri": (base / "A.v3").as_uri(), "substitution": {
+                "begin": 10, "effectiveEnd": 25, "currentEnd": 10}}]},
+                  "scores": {"0:hover": tolerance.score("hover", None, {"binding": "new"})}}
+        tolerance.check_session_step({"id": "evicted", "substitution": {"A.v3": "repair"}}, record, base, "warm")
+        for checks in ({"substitution": {"A.v3": "fallback"}}, {"full_semantics": True},
+                       {"no_substitutions": True}, {"absent_substitutions": ["A.v3"]}):
+            with self.subTest(checks=checks), self.assertRaises(AssertionError):
+                tolerance.check_session_step({"id": "broken", **checks}, record, base, "warm")
+
+    def test_error_limit_notice_policy_is_checked_independently_of_scoring(self):
+        base = Path("/project")
+        record = {"snapshot": {"documentVersions": [], "diagnostics": [{}] * 15},
+                  "answers": {"diagnostics": [{"diagnostic": {"code": "ErrorLimit"}}]}}
+        st = {"id": "limit", "limit_reached": True, "limit_notice": {"warm": True, "cold": False}}
+        tolerance.check_session_step(st, record, base, "warm")
+        with self.assertRaises(AssertionError):
+            tolerance.check_session_step(st, record, base, "cold")
+        record["answers"]["diagnostics"] = []
+        tolerance.check_session_step(st, record, base, "cold")
+        record["snapshot"]["diagnostics"] = [{}] * 14
+        with self.assertRaises(AssertionError):
+            tolerance.check_session_step(st, record, base, "cold")
+
+    def test_session_summaries_do_not_multiply_process_replacements(self):
+        st = {"suite": "session", "mode": "cold", "edit_kind": "reopened",
+              "scores": {"0:hover": tolerance.score("hover", "current", "current")}, "samples": []}
+        result = tolerance.session_summary([{"steps": [st, st], "worker_replacements": 1}])
+        self.assertEqual(result["worker_replacements"], 1)
+        self.assertEqual(result["features"][0]["correct"], 2)
+
+    def test_replay_uses_one_process_and_retains_failure_step(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            base = Path(temp)
+            project = {"base": base, "sources": {"A.v3": "old", "Observer.v3": "observer"}, "config": {}}
+            case = {"id": "history", "description": "test", "project": project,
+                    "initial": {"A.v3": "old"}, "queries": [{"path": "Observer.v3"}],
+                    "steps": [tolerance.sessions.step("first", tolerance.sessions.action("change", "A.v3", "broken", "fixed")),
+                              tolerance.sessions.step("second", tolerance.sessions.action("change", "A.v3", "new"))]}
+            session = mock.Mock()
+            session.proc.pid = 123
+            session.transcript = []
+            session.err = tempfile.TemporaryFile(dir=base)
+            self.addCleanup(session.err.close)
+            original = RuntimeError("second-step failure")
+
+            def answers(run, queries, paths, measure=False):
+                if run.row.get("id") == "second":
+                    raise original
+                run.row["snapshot"] = {"documentVersions": [{"uri": (base / "Observer.v3").as_uri()}]}
+                return {"0:" + f: ["bound"] for f in tolerance.FEATURES[:3]}, [{"feature": "diagnostics"}]
+
+            def start(run, overlays):
+                run.versions = {p: 1 for p in overlays}
+
+            with mock.patch.object(tolerance.bench, "Session", return_value=session) as factory, \
+                    mock.patch.object(tolerance.Run, "start", start), \
+                    mock.patch.object(tolerance.Run, "answers", answers), \
+                    mock.patch.object(tolerance.bench, "logs", return_value="session logs"):
+                with self.assertRaises(RuntimeError) as raised:
+                    tolerance.execute_session(Path("server"), case, "warm")
+            self.assertIs(raised.exception, original)
+            factory.assert_called_once_with(Path("server"))
+            self.assertEqual([st["id"] for st in original.tolerance_record["steps"]], ["first", "second"])
+            self.assertEqual(original.tolerance_record["stderr"], "session logs")
+            self.assertEqual(session.send.call_args_list[0].args[1]["contentChanges"], [{"text": "fixed"}])
+            session.close.assert_called_once_with()
+
+    def test_watched_writes_and_unknown_actions(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            session = mock.Mock()
+            with mock.patch.object(tolerance.bench, "Session", return_value=session):
+                run = tolerance.Run(Path("server"), {"base": Path(temp)}, {})
+            for event in (1, 2):
+                run.apply({**tolerance.sessions.action("write", "New.v3", str(event)), "event_type": event})
+            self.assertEqual([c.args[1]["changes"][0]["type"] for c in session.send.call_args_list], [1, 2])
+            self.assertEqual((Path(temp) / "New.v3").read_text(), "2")
+            with self.assertRaises(ValueError):
+                run.apply({"op": "typo", "path": "New.v3"})
+
+
 class Cleanup(unittest.TestCase):
     def test_interrupted_reply_preserves_written_failed_record(self):
         for phase in ("capture", "warm", "cold"):
