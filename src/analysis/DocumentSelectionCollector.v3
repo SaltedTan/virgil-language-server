@@ -49,8 +49,6 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 	}
 	private def chain(pos: int, sorted: Array<AnalysisSelectionRange>) -> Array<AnalysisSelectionRange> {
 		var result = Vector<AnalysisSelectionRange>.new();
-		// Prefer the token containing the position. Between tokens, prefer
-		// the previous token exactly at its end, otherwise the next token.
 		var lo = 0, hi = tokens.length;
 		while (lo < hi) {
 			var mid = lo + (hi - lo) / 2;
@@ -60,7 +58,6 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 		var token: AnalysisSelectionRange;
 		if (lo < tokens.length && tokens[lo].begin <= pos) token = tokens[lo];
 		else if (lo > 0 && tokens[lo - 1].end == pos) token = tokens[lo - 1];
-		else if (lo < tokens.length) token = tokens[lo];
 		if (token != null && token.selectable && (recoveryStop < 0 || pos < recoveryStop)) result.put(token);
 		if (cutoff < 0 || pos < cutoff) for (r in sorted) {
 			if (r.begin <= pos && pos <= r.end) append(result, r);
@@ -176,6 +173,10 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 				if (i + 3 < max && input[i + 1] == ']' && input[i + 2] == '=') j = i + 3;
 				else if (i + 2 < max && input[i + 1] == ']') j = i + 2;
 				else selectable = false;
+			} else if (c == '.') {
+				j = i + 1;
+				while (j < max && input[j] == '.') j++;
+				selectable = false;
 			} else {
 				j = i + 1;
 				// Other single-byte separators have no lexical ambiguity.

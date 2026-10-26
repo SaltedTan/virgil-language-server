@@ -22,7 +22,9 @@ def X = [
 	T("SelectionRanges:after_error", after_error),
 	T("SelectionRanges:document_start", document_start),
 	T("SelectionRanges:boundaries", boundaries),
+	T("SelectionRanges:whitespace", whitespace),
 	T("SelectionRanges:recovery_members", recovery_members),
+	T("SelectionRanges:recovery_ranges", recovery_ranges),
 	T("SelectionRanges:protocol", protocol),
 	T("SelectionRanges:limits", limits),
 	()
@@ -267,11 +269,10 @@ def check(t: Tester, text: string, at: int, want: Array<(int, int)>, options: Ar
 	for (i < Ints.min(want.length, a[0].length)) {
 		t.asserti(want[i].0, a[0][i].begin);
 		t.asserti(want[i].1, a[0][i].end);
+		t.assert(a[0][i].begin <= at && at <= a[0][i].end, "range contains position");
 	}
 }
 def boundaries(t: Tester) {
-	// Within x, at x's end, and in whitespace before x (after the opener
-	// with a gap) all select the specified token before growing outwards.
 	check(t, "def x = 1;", 10, [(9, 10), (0, 10)], []);
 	check(t, "def x = 1;\n", 11, [(0, 11)], []);
 	check(t, "", 0, [(0, 0)], []);
@@ -287,6 +288,14 @@ def boundaries(t: Tester) {
 	check(t, "unexpected  + next", 11, [(0, 18)], []);
 	check(t, "unexpected  + next", 13, [(0, 18)], []);
 	check(t, "unexpected  + next", 14, [(14, 18), (0, 18)], []);
+}
+def whitespace(t: Tester) {
+	check(t, "def x =  1;", 8, [(0, 11)], []);
+	check(t, "def x = (  1  );\n", 10, [(8, 15), (0, 16), (0, 17)], []);
+	check(t, "def x = (  1  );\n", 13, [(8, 15), (0, 16), (0, 17)], []);
+	check(t, "def f() {\n    return;\n}\n", 12, [(8, 23), (0, 23), (0, 24)], []);
+	check(t, "  def x = 1;", 0, [(0, 12)], []);
+	check(t, "unexpected  next", 11, [(0, 16)], []);
 }
 def recovery_members(t: Tester) {
 	// After an error, recovery reads a member after '.' as the parser does:
@@ -308,6 +317,14 @@ def recovery_members(t: Tester) {
 	check(t, "def bad = ; def n = -42;", 21, [(0, 24)], []);
 	check(t, "def bad = ; def n = a-42;", 22, [(0, 25)], []);
 	check(t, "def bad = ; def n = a - 42;", 24, [(24, 26), (0, 27)], []);
+}
+def recovery_ranges(t: Tester) {
+	for (at in [31, 32, 33, 34]) check(t, "def bad = ; def f() { xs[0 ... 0xFF]; }", at, [(31, 35), (0, 39)], []);
+	check(t, "def bad = ; def f() { xs[0 ..+ 2]; }", 31, [(31, 32), (0, 36)], []);
+	for (at in [27, 28, 29]) check(t, "def bad = ; def f() { xs[0 ..+ 2]; }", at, [(0, 36)], []);
+	check(t, "def bad = ; def f() { xs[0 ... [2]]; }", 31, [(31, 32), (0, 38)], []);
+	check(t, "def bad = ; def f() { xs[0 ... []]; }", 31, [(31, 32), (0, 37)], []);
+	check(t, "def bad = ; def f() { xs[0 ... []]; }", 32, [(32, 33), (0, 37)], []);
 }
 def running() -> LspServer {
 	var s = LspServer.new(DocumentLimits.MAX_BYTES);
@@ -339,8 +356,13 @@ def protocol(t: Tester) {
 	range = JsonValue.JObject.!(JsonValue.JObject.!(a[1]).v["range"]).v;
 	t.asserti(3, JsonValue.Int.!(JsonValue.JObject.!(range["end"]).v["line"]).v);
 	t.assert(!JsonValue.JObject.!(a[1]).v.has("parent"), "document alone at EOF");
-	s.documents.change("untitled:selection.v3", 2, "def x = 1;");
-	t.asserti(1, query(s, "[{\"line\":0,\"character\":8}]").length);
+	s.documents.change("untitled:selection.v3", 2, "def x =  1;");
+	a = query(s, "[{\"line\":0,\"character\":8}]");
+	t.asserti(1, a.length);
+	range = JsonValue.JObject.!(JsonValue.JObject.!(a[0]).v["range"]).v;
+	t.asserti(0, JsonValue.Int.!(JsonValue.JObject.!(range["start"]).v["character"]).v);
+	t.asserti(11, JsonValue.Int.!(JsonValue.JObject.!(range["end"]).v["character"]).v);
+	t.assert(!JsonValue.JObject.!(a[0]).v.has("parent"), "document alone in whitespace");
 	s.documents.close("untitled:selection.v3");
 	t.asserti(0, query(s, "[{\"line\":0,\"character\":0}]").length);
 	for (p in ["null", "[]", "{}", "{\"textDocument\":{\"uri\":\"\"},\"positions\":[]}",
