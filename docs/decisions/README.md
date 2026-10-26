@@ -12,6 +12,7 @@ Short records of durable technical decisions. Each one states the context, the d
 | [0006](0006-incomplete-code-repair.md) | Semantic context for completion in incomplete code | Accepted; amended by [0009](0009-current-text-repair.md) |
 | [0007](0007-bundled-virgil-library.md) | Bundled Virgil library and root precedence | Accepted |
 | [0008](0008-method-body-fallback.md) | Reanalyze last-parseable text for contained method-body edits | Accepted; amended by [0009](0009-current-text-repair.md) |
-| [0009](0009-current-text-repair.md) | Analyze a broken open file from a bounded repair of its current text | Accepted |
+| [0009](0009-current-text-repair.md) | Analyze a broken open file from a bounded repair of its current text | Accepted; amended by [0010](0010-analyze-unrepairable-files.md) |
+| [0010](0010-analyze-unrepairable-files.md) | Analyze files that bounded repair can't fix | Accepted; amends [0009](0009-current-text-repair.md) |
 
 To add one, copy [0000-template.md](0000-template.md) to the next number and open a pull request.
