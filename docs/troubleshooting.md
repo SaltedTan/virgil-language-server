@@ -112,7 +112,14 @@ The bundle holds only Virgil's `lib/`. A project that selects `rt/`, `aeneas/`, 
 
 ### A syntax error in the project
 
-If a syntax error prevents whole-program analysis, fix the error that the Problems view or the diagnostics list shows, which may be in another file than the one you are looking at. [No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing) explains when method-body fallback or current-text repair can preserve answers and which answers remain unavailable. Rename is refused while the project has any error, a syntax error or a type error.
+Whole-program analysis needs every file of the project to parse. While a file has a syntax error, the analysis can't type-check the project, so its type errors disappear and definition, type definition, hover, references, and document highlights give nothing, even in other files. Rename is refused while the project has any error, a syntax error or a type error. Fix the syntax error that the Problems view or the diagnostics list shows, which may be in another file than the one you are looking at.
+
+Two exceptions keep most answers while you edit a method. Both leave definition, type definition, hover, references, document highlights, and type errors working outside the method or constructor body that has the error; the damaged body itself gets nothing, references and highlight lists can be partial, and rename stays refused:
+
+- The [method-body fallback](architecture.md#method-body-fallback): after a file has been analyzed without a syntax error, a later syntax error strictly inside one body is analyzed from the file's last parseable text for that body.
+- The [current-text repair](architecture.md#current-text-repair): when the fallback can't help, as when you open a file that already has the error, or the server has no parseable text for it yet, one or two small insertions where the parser reports the error, such as a missing name, a closing `)`, `]`, or `>`, or a `;`, inside one body can make the open file parse.
+
+Neither applies to an unclosed brace, an edit to a declaration's header or a field initializer, errors in two bodies, an unterminated string or comment, or a closed file ([No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing)).
 
 Completion and signature help repair the code at the cursor in their own way ([Completion](architecture.md#completion)).
 
