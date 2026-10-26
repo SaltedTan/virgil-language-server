@@ -128,15 +128,18 @@ component LspRenameEligibility {
 				return Strings.format1("cannot rename '%s': its name token declares more than one thing", name);
 			}
 		}
-		// Snapshots carry no class hierarchy, so any other method with the name
-		// may override or be overridden. The rename's preflight cannot detect
-		// changes to dispatch; see LspRename.plan for the new-name check.
-		if (decl.kind == AnalysisDeclKind.METHOD) {
-			for (i < s.declarations.length) {
-				var d = s.declarations[i];
-				if (d != decl && d.kind == AnalysisDeclKind.METHOD && Strings.equal(d.name, name)) {
-					return Strings.format1("rename of methods that share a name with another method isn't supported yet: '%s' may override or be overridden", name);
-				}
+		// A method is renamed with its override family, every method that
+		// overriding connects it to (AnalysisSnapshot.overrideFamily), so that
+		// each still overrides the same one; the rename's preflight checks
+		// that no method starts or stops overriding one (LspRenameBindings).
+		// Every member has the name, and a method's name token declares
+		// nothing else. A method that only shares the name is not in the
+		// family and keeps it.
+		var family = s.overrideFamily(decl);
+		for (m in family) {
+			var q = m.range;
+			if (q == null || q.path == null || q.beginOffset < 0 || q.endOffset <= q.beginOffset) {
+				return "the declaration has no name in the project's sources";
 			}
 		}
 		var ctx = projects.forDocument(s.documentVersions[at.index].uri).active;
@@ -157,7 +160,12 @@ component LspRenameEligibility {
 		if (!members.has(r.path)) {
 			return Strings.format1("cannot rename '%s': it is declared in a dependency, not in the project's own sources", name);
 		}
-		var uses = s.references(decl, false);
+		for (m in family) {
+			if (!members.has(m.range.path)) {
+				return Strings.format1("cannot rename '%s': a method of its override family is declared in a dependency, not in the project's own sources", name);
+			}
+		}
+		var uses = s.referencesOf(family, false);
 		for (u in uses) {
 			if (!members.has(u.0)) {
 				return Strings.format1("cannot rename '%s': a use is in a dependency, not in the project's own sources", name);
@@ -173,6 +181,7 @@ component LspRenameEligibility {
 		// compare lexically, so a program that reaches a file under another
 		// spelling, such as a hard link, is not matched.
 		var paths = Vector<string>.new().put(r.path);
+		for (m in family) { if(!Strings.equal(m.range.path, paths[paths.length - 1])) paths.put(m.range.path); }
 		for (u in uses) { if(!Strings.equal(u.0, paths[paths.length - 1])) paths.put(u.0); }
 		// Matching is bounded: the files and the other programs' patterns can
 		// each number in the thousands.

@@ -30,19 +30,21 @@ class LspRenameRequest(owner: LspRename, id: JsonRpcId, newName: string) {
 	}
 }
 // A rename that eligibility accepted, for its preflight and reply: the
-// selection in {at}'s snapshot, the edits, each edited file's snapshot index,
-// its edits' UTF-16 ranges in the analyzed text (four ints each: start line
-// and character, end line and character), and the edited sources, until the
-// worker request holds a copy.
+// selection in {at}'s snapshot, the declarations that the edits rename (the
+// selected declaration's override family), the edits, each edited file's
+// snapshot index, its edits' UTF-16 ranges in the analyzed text (four ints
+// each: start line and character, end line and character), and the edited
+// sources, until the worker request holds a copy.
 class LspRenamePlan(at: LspSnapshotPosition, ctx: ProjectContext, selection: LspRenameSelection,
-		edits: LspRenameEdits, files: Array<int>, ranges: Array<Array<int>>) {
+		family: Array<AnalysisDeclaration>, edits: LspRenameEdits, files: Array<int>, ranges: Array<Array<int>>) {
 	var sources: Array<AnalysisSource>;
 	var snapshotBytes: long;
 }
 
 // textDocument/rename: the WorkspaceEdit that renames the declaration at a
-// position, after a preflight shows that the renamed program binds every use
-// as before, or RequestFailed with the reason it cannot. Eligibility is
+// position, with a method's override family, after a preflight shows that
+// the renamed program binds every use and overrides every method as before,
+// or RequestFailed with the reason it cannot. Eligibility is
 // prepareRename's (LspRenameEligibility.select). The preflight analyzes the
 // snapshot's exact analyzed bytes with the edits applied as an ordinary
 // ANALYZE, through the scheduler's jobs (LspAnalysisJob), and compares the
@@ -108,26 +110,21 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			return (true, fail("rename needs a client that accepts versioned edits (workspace.workspaceEdit.documentChanges), so that an edit to a changed document is refused"));
 		}
 		if (Strings.equal(r.newName, name)) return (true, JsonRpcReply.Result(workspaceEdit([])));
-		// Snapshots carry no class hierarchy, so a method given another
-		// method's name may start to override it or be overridden by it, while
-		// every use binds as before and the preflight cannot tell. Eligibility
-		// refuses a method whose current name another has; this refuses the new
-		// name likewise. A field or a method that takes the name of a member of
-		// a subclass or superclass of another kind fails to verify instead.
-		if (sel.decl.kind == AnalysisDeclKind.METHOD) {
-			for (d in s.declarations) {
-				if (d == sel.decl || d.kind != AnalysisDeclKind.METHOD || !Strings.equal(d.name, r.newName)) continue;
-				return (true, fail(Strings.format3("cannot rename '%s' to '%s': another method is named '%s', and the analysis cannot rule out an override",
-					name, r.newName, r.newName)));
-			}
-		}
+		// A method given another method's name may start or stop overriding
+		// one, while every use binds as before; the preflight refuses that by
+		// comparing the methods' parents (LspRenameBindings). A field or a
+		// method that takes the name of a member of a subclass or superclass
+		// of another kind fails to verify instead.
 		var ctx = projects.forDocument(s.documentVersions[at.index].uri).active;
 		if (ctx == null) return (true, fail("the document is not in a loaded project"));
-		// The edited tokens are the references with the declaration's name,
-		// less the uses that do not spell the name: "this" and a default
-		// ".new" resolve to their class without naming it, and keep their
-		// spelling and their binding.
-		var refs = s.references(sel.decl, true), count = 0, bytes = 32;
+		// The edited tokens are the references with their names of the
+		// declaration's override family, which for anything but a method that
+		// overrides or is overridden is the declaration alone, less the uses
+		// that do not spell the name: "this" and a default ".new" resolve to
+		// their class without naming it, and keep their spelling and their
+		// binding.
+		var family = s.overrideFamily(sel.decl);
+		var refs = s.referencesOf(family, true), count = 0, bytes = 32;
 		var sites = Vector<(string, Array<int>)>.new(), files = Vector<int>.new(), ranges = Vector<Array<int>>.new();
 		var texts = Array<Array<byte>>.new(s.paths.length), order = pathOrder(s.paths);
 		var editBytes = JsonRpcJson.stringBytes(r.newName) + EDIT_BYTES;
@@ -166,7 +163,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 			return (true, fail(Strings.format2("the edits that rename '%s' need more than %d bytes", name, maxReplyBytes)));
 		}
 		var edits = LspRenameEdits.new(name, r.newName, sites.extract());
-		var p = LspRenamePlan.new(at, ctx, sel, edits, files.extract(), ranges.extract());
+		var p = LspRenamePlan.new(at, ctx, sel, family, edits, files.extract(), ranges.extract());
 		// The snapshot's exact analyzed bytes of every source, edited, within
 		// the budget of a capture (LspAnalysisCapture.capture).
 		var captureStart = if(BenchProbe.enabled, BenchProbe.now(), 0);
@@ -235,7 +232,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	}
 	private def conclude(p: LspRenamePlan, edited: AnalysisSnapshot) -> JsonRpcReply {
 		var s = p.at.snapshot;
-		var reason = LspRenameBindings.compare(s, edited, p.selection.decl, p.edits, where(s, _, _));
+		var reason = LspRenameBindings.compare(s, edited, p.family, p.edits, where(s, _, _));
 		if (reason != null) return fail(reason);
 		checked++;
 		// The preflight took time: every source must still be what was

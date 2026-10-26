@@ -21,6 +21,7 @@ def X = [
 	T("LspPrepareRename:shared_name_tokens", test_shared_name_tokens),
 	T("LspPrepareRename:same_named_methods", test_same_named_methods),
 	T("LspPrepareRename:dependencies", test_dependencies),
+	T("LspPrepareRename:dependency_families", test_dependency_families),
 	T("LspPrepareRename:many_member_files", test_many_member_files),
 	T("LspPrepareRename:shared_programs", test_shared_programs),
 	T("LspPrepareRename:source_added_or_removed_without_event", test_source_added_or_removed_without_event),
@@ -479,22 +480,20 @@ def test_shared_name_tokens(t: Tester) {
 	expectFailure(t, s, "return Used(1)", 7, Strings.format1(shared, "Used"));
 	s.server.close();
 }
-// Two methods with the same name may override or be overridden; snapshots
-// carry no hierarchy, so either declaration refuses. Classes, components,
-// variant cases, and same-named file-scope functions in two project files.
+// A method is renamed with its override family, so a method that only shares
+// its name with others is eligible, and they keep theirs: methods of two
+// unrelated classes, of two components, of the cases of two variants, and
+// same-named file-scope functions in two project files.
 def test_same_named_methods(t: Tester) {
 	var s = renameSession(t);
-	var area = "rename of methods that share a name with another method isn't supported yet: 'area' may override or be overridden";
-	expectFailure(t, s, "def area() -> int { return 1; }", 4, area);
-	expectFailure(t, s, "def area() -> int { return 2; }", 4, area);
-	var comp = "rename of methods that share a name with another method isn't supported yet: 'comp' may override or be overridden";
-	expectFailure(t, s, "component Alpha { def comp", 22, comp);
-	expectFailure(t, s, "component Beta { def comp", 21, comp);
-	var variant = "rename of methods that share a name with another method isn't supported yet: 'variant' may override or be overridden";
-	expectFailure(t, s, "def variant", 4, variant);
-	expectFailure(t, s, "case C { def variant", 13, variant);
-	var fileShared = "rename of methods that share a name with another method isn't supported yet: 'fileShared' may override or be overridden";
-	expectFailure(t, s, "def fileShared", 4, fileShared);
+	expectPrepared(t, s, "def area() -> int { return 1; }", 4, 4, "area");
+	expectPrepared(t, s, "def area() -> int { return 2; }", 4, 4, "area");
+	expectPrepared(t, s, "r.area", 2, 4, "area");
+	expectPrepared(t, s, "component Alpha { def comp", 22, 4, "comp");
+	expectPrepared(t, s, "component Beta { def comp", 21, 4, "comp");
+	expectPrepared(t, s, "def variant", 4, 7, "variant");
+	expectPrepared(t, s, "case C { def variant", 13, 7, "variant");
+	expectPrepared(t, s, "def fileShared", 4, 10, "fileShared");
 	s.server.close();
 }
 // Rename edits only project sources, never a dependency that the project
@@ -510,6 +509,29 @@ def test_dependencies(t: Tester) {
 	var widget = at(DEP_MAIN, "class Widget", 6);
 	expectFailureAt(t, s, "Main.v3", widget.line, widget.begin,
 		"cannot rename 'Widget': a use is in a dependency, not in the project's own sources");
+	s.server.close();
+}
+// A method's override family is renamed together, so a family with a member
+// in a dependency is refused from every project member: Shape.draw overrides
+// the dependency's Base.draw, and the dependency's Remote.size overrides
+// Local.size. Tools.draw only shares a name with them, so it is eligible.
+def test_dependency_families(t: Tester) {
+	var main = "class Shape extends Base {\n\tdef draw() -> int { return 1; }\n}\n";
+	var use = "class Local {\n\tdef size() -> int { return 2; }\n}\ncomponent Tools {\n\tdef draw() -> int { return 3; }\n\tdef run(s: Shape, l: Local) -> int { return s.draw() + l.size() + draw(); }\n}\n";
+	var lib = "class Base {\n\tdef draw() -> int { return 0; }\n}\nclass Remote extends Local {\n\tdef size() -> int { return 4; }\n}\n";
+	var s = PrepareRenameTestSession.new("rename-deps", files(["Main.v3", "Use.v3", "dep/Lib.v3"], [main, use, lib]), t);
+	s.open("Main.v3", 1, main);
+	s.open("Use.v3", 1, use);
+	s.settle();
+	var family = "cannot rename '%s': a method of its override family is declared in a dependency, not in the project's own sources";
+	expectFailureIn(t, s, "Main.v3", main, "def draw", 4, Strings.format1(family, "draw"));
+	expectFailureIn(t, s, "Use.v3", use, "s.draw", 2, Strings.format1(family, "draw"));
+	expectFailureIn(t, s, "Use.v3", use, "def size", 4, Strings.format1(family, "size"));
+	expectFailureIn(t, s, "Use.v3", use, "l.size", 2, Strings.format1(family, "size"));
+	var tools = span(use, "\tdef draw", 5, 4);
+	expectPreparedAt(t, s, "Use.v3", tools.line, tools.begin, tools, "draw");
+	var call = span(use, "+ draw", 2, 4);
+	expectPreparedAt(t, s, "Use.v3", call.line, call.begin, call, "draw");
 	s.server.close();
 }
 // A program of 1,002 sources: Widget and Gadget are used in 1,000 files, and

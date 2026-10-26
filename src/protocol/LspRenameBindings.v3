@@ -63,14 +63,16 @@ class LspRenameEdits(name: string, newName: string, sites: Array<(string, Array<
 // it is named by an edited token. See docs/architecture.md#rename.
 component LspRenameBindings {
 	// The reason that {e}, the analysis of {s}'s sources with {edits} applied,
-	// differs from {s} other than by the rename of {decl}; or null if it does
-	// not. {where} names a byte offset of a file of {s} for the reason. The
-	// edited program must have no diagnostic at all; each file must have the
-	// same declaration sites, uses, and builtin uses, translated; and every
-	// use must bind to the translated declaration it bound to, which also
-	// holds for the edited uses, the uses of {decl} and of the declarations
-	// that share its name token.
-	def compare(s: AnalysisSnapshot, e: AnalysisSnapshot, decl: AnalysisDeclaration, edits: LspRenameEdits,
+	// differs from {s} other than by the rename of {family}, the selected
+	// declaration's override family; or null if it does not. {where} names a
+	// byte offset of a file of {s} for the reason. The edited program must
+	// have no diagnostic at all; each file must have the same declaration
+	// sites, uses, and builtin uses, translated; every use must bind to the
+	// translated declaration it bound to, which also holds for the edited
+	// uses, the uses of {family} and of the declarations that share their
+	// name tokens; and every method must override the translation of the
+	// method it overrode, or none in both.
+	def compare(s: AnalysisSnapshot, e: AnalysisSnapshot, family: Array<AnalysisDeclaration>, edits: LspRenameEdits,
 			where: (string, int) -> string) -> string {
 		var what = Strings.format2("renaming '%s' to '%s'", edits.name, edits.newName);
 		if (e.diagnostics.length > 0) {
@@ -109,8 +111,11 @@ component LspRenameBindings {
 			moved = spans(a.builtins, b.builtins, 5, cuts, edits);
 			if (moved >= 0) return Strings.format2("%s would change the builtin uses at %s", what, where(path, moved));
 		}
-		var renamed = -1;
-		for (i < s.declarations.length) if (s.declarations[i] == decl) renamed = i;
+		// The indexes of {family} in {s}, in order, as overrideFamily lists it.
+		var renamed = Array<int>.new(family.length), found = 0;
+		for (i < s.declarations.length) {
+			if (found < family.length && s.declarations[i] == family[found]) renamed[found++] = i;
+		}
 		for (path in s.paths) {
 			var a = s.fileIndex(path), b = e.fileIndex(path);
 			if (a == null) continue;
@@ -127,15 +132,68 @@ component LspRenameBindings {
 				if (edits.isSite(edits.cuts(path), begin)) {
 					return Strings.format2("%s would make the use at %s refer to another declaration", what, place);
 				}
-				if (renamed >= 0 && u == map[renamed]) {
+				for (k in renamed) {
+					if (u != map[k]) continue;
 					return Strings.format3("%s would make the use of another '%s' at %s refer to the renamed declaration",
 						what, edits.newName, place);
 				}
 				return Strings.format2("%s would change what the use at %s refers to", what, place);
 			}
 		}
-		if (renamed < 0 || map[renamed] < 0) return Strings.format1("%s could not be checked: the analysis of the edits lacks the declaration", what);
-		return null;
+		var lacks = Strings.format1("%s could not be checked: the analysis of the edits lacks the declaration", what);
+		if (found < family.length) return lacks;
+		for (k in renamed) if (map[k] < 0) return lacks;
+		return overrides(s, e, map, edits, what, where);
+	}
+	// The reason that a method of {e} overrides another method than the
+	// translation, through {map}, of the one it overrode in {s}, or null if
+	// each overrides the same one, or none in both. Bindings alone do not
+	// show this. A method renamed to the name of a superclass's method starts
+	// to override it, and one renamed to the name of a subclass's method
+	// starts to be overridden by it, while every use binds as before and a
+	// call through the base class runs another method; and a method renamed
+	// in a class between a method and the one it overrode comes between them.
+	// Every method of {e} should be the translation of a site of {s}; the
+	// count of their parents shows any other that has one.
+	private def overrides(s: AnalysisSnapshot, e: AnalysisSnapshot, map: Array<int>, edits: LspRenameEdits,
+			what: string, where: (string, int) -> string) -> string {
+		var linked = 0, changed = Strings.format1("%s would change which methods override which", what);
+		for (i < s.declarations.length) {
+			var x = s.declarations[i];
+			if (x.kind != AnalysisDeclKind.METHOD) continue;
+			var p = s.parentOf(i);
+			// A method that is neither a site nor used is not translated.
+			if (map[i] < 0) {
+				if (p >= 0) return changed;
+				continue;
+			}
+			var q = e.parentOf(map[i]);
+			if (q >= 0) linked++;
+			if (if(p >= 0, q >= 0 && map[p] == q, q < 0)) continue;
+			var place = at(x, where);
+			if (p < 0) {
+				return Strings.format3("%s would make the method at %s override the method at %s", what, place, edited(e, q, edits, where));
+			}
+			if (q < 0) {
+				return Strings.format3("%s would make the method at %s stop overriding the method at %s", what, place, at(s.declarations[p], where));
+			}
+			return Strings.format3("%s would make the method at %s override the method at %s instead", what, place, edited(e, q, edits, where));
+		}
+		for (j < e.declarations.length) {
+			if (e.declarations[j].kind == AnalysisDeclKind.METHOD && e.parentOf(j) >= 0) linked--;
+		}
+		return if(linked != 0, changed);
+	}
+	// The place of {d}'s name in {s}, as {where} names it.
+	private def at(d: AnalysisDeclaration, where: (string, int) -> string) -> string {
+		var r = d.range;
+		return if(r != null && r.path != null && r.beginOffset >= 0, where(r.path, r.beginOffset), "an unnamed place");
+	}
+	// The place in {s} of the name of declaration {j} of the edited analysis.
+	private def edited(e: AnalysisSnapshot, j: int, edits: LspRenameEdits, where: (string, int) -> string) -> string {
+		var r = e.declarations[j].range;
+		if (r == null || r.path == null || r.beginOffset < 0) return "an unnamed place";
+		return where(r.path, edits.unshift(edits.cuts(r.path), r.beginOffset));
 	}
 	// Whether {y} of the edited analysis is {x}, whose file has edited tokens
 	// at {cuts}.

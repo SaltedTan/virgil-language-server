@@ -20,6 +20,13 @@ def X = [
 	T("LspRename:same_name", test_same_name),
 	T("LspRename:same_named_methods", test_same_named_methods),
 	T("LspRename:members_across_subclasses", test_members_across_subclasses),
+	T("LspRename:override_family", test_override_family),
+	T("LspRename:variant_family", test_variant_family),
+	T("LspRename:private_family", test_private_family),
+	T("LspRename:generic_family", test_generic_family),
+	T("LspRename:dependency_family", test_dependency_family),
+	T("LspRename:hierarchy_changes", test_hierarchy_changes),
+	T("LspRename:inheritance_cycle", test_inheritance_cycle),
 	T("LspRename:utf16_ranges", test_utf16_ranges),
 	T("LspRename:capture_by_new_local", test_capture_by_new_local),
 	T("LspRename:capture_by_existing_local", test_capture_by_existing_local),
@@ -581,11 +588,11 @@ def test_same_name(t: Tester) {
 	t.asserti(0, s.server.rename.checked);
 	s.server.close();
 }
-// HIERARCHY's methods share no name, so each is eligible, but a method given
-// another method's name may start to override it or be overridden by it, with
-// every use bound as before: renaming Base.foo to bar would make use(c) call
-// Child.bar. The analysis has no class hierarchy, so a method is refused a
-// name that any other method has, in any class or component.
+// HIERARCHY's methods share no name. A method given another method's name may
+// start to override it or be overridden by it, with every use bound as
+// before: renaming Base.foo to bar would make use(c) call Child.bar. The
+// preflight compares the methods' parents, and refuses both. A component's
+// method, which nothing overrides, may take any method's name.
 def HIERARCHY = "class Base {\n\tvar count: int;\n\tdef foo() -> int { return 1; }\n}\nclass Child extends Base {\n\tvar size: int;\n\tdef bar() -> int { return 2; }\n}\ncomponent Util {\n\tdef helper() -> int { return 3; }\n}\ncomponent Main {\n\tdef use(b: Base) -> int { return b.foo() + b.count; }\n\tdef main() -> int { var c = Child.new(); return use(c) + c.bar() + c.size + Util.helper(); }\n}\n";
 def hierarchySession(t: Tester) -> RenameTestSession {
 	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Hierarchy.v3")), ("Hierarchy.v3", HIERARCHY)], true, null, t);
@@ -595,14 +602,17 @@ def hierarchySession(t: Tester) -> RenameTestSession {
 }
 def test_same_named_methods(t: Tester) {
 	var s = hierarchySession(t);
-	var reason = "cannot rename '%s' to '%s': another method is named '%s', and the analysis cannot rule out an override";
+	var path = s.path("Hierarchy.v3");
+	var reason = Strings.format2("would make the method at %s:7:6 override the method at %s:3:6", path, path);
 	// A base method renamed to a subclass method's name would be overridden.
-	s.refused(t, "Hierarchy.v3", "def foo", 4, "bar", Strings.format3(reason, "foo", "bar", "bar"));
+	s.refused(t, "Hierarchy.v3", "def foo", 4, "bar", Strings.format1("renaming 'foo' to 'bar' %s", reason));
 	// A subclass method renamed to a base method's name would override it.
-	s.refused(t, "Hierarchy.v3", "c.bar", 2, "foo", Strings.format3(reason, "bar", "foo", "foo"));
-	// A component's method, which nothing overrides, is refused the same way.
-	s.refused(t, "Hierarchy.v3", "def helper", 4, "foo", Strings.format3(reason, "helper", "foo", "foo"));
+	s.refused(t, "Hierarchy.v3", "c.bar", 2, "foo", Strings.format1("renaming 'bar' to 'foo' %s", reason));
 	t.asserti(0, s.server.rename.checked);
+	// A component's method, which nothing overrides, keeps no other from
+	// overriding, so it may take another method's name.
+	roundTrip(t, s, "Hierarchy.v3", "def helper", 4, "helper", "foo",
+		doc(s, "Hierarchy.v3", HIERARCHY, [("def helper", 4), ("Util.helper", 5)], 6));
 	// A name that no method has is eligible.
 	roundTrip(t, s, "Hierarchy.v3", "def foo", 4, "foo", "baz",
 		doc(s, "Hierarchy.v3", HIERARCHY, [("def foo", 4), ("b.foo", 2)], 3));
@@ -627,6 +637,180 @@ def test_members_across_subclasses(t: Tester) {
 		s.refused(t, "Hierarchy.v3", c.0, c.1, c.3, Strings.format3("renaming '%s' to '%s' would cause an error at %s", c.2, c.3,
 			Strings.format2("%s:%s", path, c.4)));
 	}
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+}
+// Renaming a method renames its override family: Shape.draw, Square.draw,
+// which overrides it, and Tile.draw, which overrides Square's, from any of
+// them, with the calls through each type in the closed Paint.v3. Canvas's,
+// Pen's, and the file-scope draw only share the name, so they keep it, and
+// each is renamed alone. Pen.erase only has the new name of a family, and
+// keeps it too.
+def FAMILY = "class Shape {\n\tdef draw() -> int { return 1; }\n}\nclass Square extends Shape {\n\tdef draw() -> int { return 2; }\n}\nclass Tile extends Square {\n\tdef draw() -> int { return 3; }\n}\nclass Canvas {\n\tdef draw() -> int { return 4; }\n}\ncomponent Pen {\n\tdef draw() -> int { return 5; }\n\tdef erase() -> int { return 6; }\n}\n";
+def PAINT = "def draw() -> int { return 7; }\ncomponent Paint {\n\tdef all(s: Shape, q: Square, t: Tile, c: Canvas) -> int {\n\t\treturn s.draw() + q.draw() + t.draw() + c.draw() + Pen.draw() + Pen.erase() + draw();\n\t}\n}\n";
+def familySession(t: Tester) -> RenameTestSession {
+	var config = "{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"Family.v3\",\"Paint.v3\"]}]}";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", config), ("Family.v3", FAMILY), ("Paint.v3", PAINT)], true, null, t);
+	s.open("Family.v3", 1, FAMILY);
+	s.settle();
+	return s;
+}
+def test_override_family(t: Tester) {
+	var s = familySession(t);
+	var family = [("def draw() -> int { return 1", 4), ("def draw() -> int { return 2", 4), ("def draw() -> int { return 3", 4)];
+	var calls = [("s.draw", 2), ("q.draw", 2), ("t.draw", 2)];
+	roundTrip(t, s, "Family.v3", "def draw() -> int { return 1", 4, "draw", "paint",
+		join([doc(s, "Family.v3", FAMILY, family, 4), doc(s, "Paint.v3", PAINT, calls, 4)]));
+	roundTrip(t, s, "Family.v3", "def draw() -> int { return 2", 4, "draw", "paint",
+		join([doc(s, "Family.v3", FAMILY, family, 4), doc(s, "Paint.v3", PAINT, calls, 4)]));
+	roundTrip(t, s, "Family.v3", "def draw() -> int { return 3", 4, "draw", "paint",
+		join([doc(s, "Family.v3", FAMILY, family, 4), doc(s, "Paint.v3", PAINT, calls, 4)]));
+	// A call through a subclass selects its own method, so it selects the
+	// family too.
+	s.open("Paint.v3", 1, PAINT);
+	s.settle();
+	roundTrip(t, s, "Paint.v3", "t.draw", 2, "draw", "paint",
+		join([doc(s, "Family.v3", FAMILY, family, 4), doc(s, "Paint.v3", PAINT, calls, 4)]));
+	s.closeDocument("Paint.v3");
+	s.settle();
+	// A new name that an unrelated method has: Pen.erase keeps its name.
+	roundTrip(t, s, "Family.v3", "def draw() -> int { return 2", 4, "draw", "erase",
+		join([doc(s, "Family.v3", FAMILY, family, 4), doc(s, "Paint.v3", PAINT, calls, 4)]));
+	// The methods that only share the name are each renamed alone, and the
+	// family keeps its name.
+	roundTrip(t, s, "Family.v3", "def draw() -> int { return 4", 4, "draw", "paint",
+		join([doc(s, "Family.v3", FAMILY, [("def draw() -> int { return 4", 4)], 4), doc(s, "Paint.v3", PAINT, [("c.draw", 2)], 4)]));
+	roundTrip(t, s, "Family.v3", "def draw() -> int { return 5", 4, "draw", "erase2",
+		join([doc(s, "Family.v3", FAMILY, [("def draw() -> int { return 5", 4)], 4), doc(s, "Paint.v3", PAINT, [("Pen.draw", 4)], 4)]));
+	s.open("Paint.v3", 1, PAINT);
+	s.settle();
+	roundTrip(t, s, "Paint.v3", "def draw", 4, "draw", "paint",
+		doc(s, "Paint.v3", PAINT, [("def draw", 4), ("+ draw", 2)], 4));
+	s.server.close();
+}
+// A variant's method is overridden in its cases, including a default case
+// "case _" with -lang:open-types, and the case methods of a variant that
+// extends it override the default case's. Each is renamed with the others,
+// with the calls through the variant, a case, and the extending variant.
+def VARIANTS = "type Animal {\n\tcase Cat {\n\t\tdef speak() -> int { return 1; }\n\t}\n\tcase Dog;\n\tcase _ {\n\t\tdef speak() -> int { return 2; }\n\t}\n\tdef speak() -> int { return 0; }\n}\ntype Pet extends Animal {\n\tcase Fish {\n\t\tdef speak() -> int { return 3; }\n\t}\n}\ncomponent Zoo {\n\tdef all(a: Animal, p: Pet) -> int { return a.speak() + Animal.Cat.speak() + p.speak() + Pet.Fish.speak(); }\n\tdef speak() -> int { return 4; }\n}\n";
+def test_variant_family(t: Tester) {
+	var config = "{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"Variants.v3\"],\"compilerArgs\":[\"-lang:open-types\"]}]}";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", config), ("Variants.v3", VARIANTS)], true, null, t);
+	s.open("Variants.v3", 1, VARIANTS);
+	s.settle();
+	var family = [("def speak() -> int { return 1", 4), ("def speak() -> int { return 2", 4), ("def speak() -> int { return 0", 4),
+		("def speak() -> int { return 3", 4), ("a.speak", 2), ("Cat.speak", 4), ("p.speak", 2), ("Fish.speak", 5)];
+	roundTrip(t, s, "Variants.v3", "def speak() -> int { return 0", 4, "speak", "talk", doc(s, "Variants.v3", VARIANTS, family, 5));
+	roundTrip(t, s, "Variants.v3", "def speak() -> int { return 2", 4, "speak", "talk", doc(s, "Variants.v3", VARIANTS, family, 5));
+	roundTrip(t, s, "Variants.v3", "Fish.speak", 5, "speak", "talk", doc(s, "Variants.v3", VARIANTS, family, 5));
+	// The component's method only shares the name.
+	roundTrip(t, s, "Variants.v3", "def speak() -> int { return 4", 4, "speak", "talk",
+		doc(s, "Variants.v3", VARIANTS, [("def speak() -> int { return 4", 4)], 5));
+	s.server.close();
+}
+// A private method is overridden only in its own file, as verification
+// finds it: Polygon.secret overrides Shape.secret, but Hexagon.secret, in
+// another file, starts its own family, and keeps its name.
+def PRIVATE_SHAPES = "class Shape {\n\tprivate def secret() -> int { return 0; }\n\tdef show() -> int { return secret(); }\n}\nclass Polygon extends Shape {\n\tprivate def secret() -> int { return 1; }\n\tdef reveal() -> int { return this.secret(); }\n}\n";
+def PRIVATE_MORE = "class Hexagon extends Polygon {\n\tprivate def secret() -> int { return 6; }\n\tdef hide() -> int { return secret(); }\n}\n";
+def test_private_family(t: Tester) {
+	var config = "{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"Private.v3\",\"More.v3\"]}]}";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", config), ("Private.v3", PRIVATE_SHAPES), ("More.v3", PRIVATE_MORE)], true, null, t);
+	s.open("Private.v3", 1, PRIVATE_SHAPES);
+	s.open("More.v3", 1, PRIVATE_MORE);
+	s.settle();
+	var family = [("def secret() -> int { return 0", 4), ("return secret", 7), ("def secret() -> int { return 1", 4), ("this.secret", 5)];
+	roundTrip(t, s, "Private.v3", "def secret() -> int { return 1", 4, "secret", "hidden", doc(s, "Private.v3", PRIVATE_SHAPES, family, 6));
+	roundTrip(t, s, "More.v3", "def secret", 4, "secret", "hidden", doc(s, "More.v3", PRIVATE_MORE, [("def secret", 4), ("return secret", 7)], 6));
+	s.server.close();
+}
+// A generic base class's method, overridden in a generic subclass and in one
+// that extends an instance of the base.
+def GENERIC = "class Box<T> {\n\tdef get() -> T;\n}\nclass Crate<T>(item: T) extends Box<T> {\n\tdef get() -> T { return item; }\n}\nclass IntBox extends Box<int> {\n\tnew() { }\n\tdef get() -> int { return 1; }\n}\ncomponent Boxes {\n\tdef open(b: Box<int>, c: Crate<int>, i: IntBox) -> int { return b.get() + c.get() + i.get(); }\n}\n";
+def test_generic_family(t: Tester) {
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Generic.v3")), ("Generic.v3", GENERIC)], true, null, t);
+	s.open("Generic.v3", 1, GENERIC);
+	s.settle();
+	var family = [("def get() -> T;", 4), ("def get() -> T {", 4), ("def get() -> int", 4), ("b.get", 2), ("c.get", 2), ("i.get", 2)];
+	roundTrip(t, s, "Generic.v3", "def get() -> int", 4, "get", "fetch", doc(s, "Generic.v3", GENERIC, family, 3));
+	roundTrip(t, s, "Generic.v3", "b.get", 2, "get", "fetch", doc(s, "Generic.v3", GENERIC, family, 3));
+	s.server.close();
+}
+// A family with a member in a dependency or in a library under the Virgil
+// root is refused from a member in the project's own sources.
+def test_dependency_family(t: Tester) {
+	var main = "class Shape extends Base {\n\tdef draw() -> int { return 1; }\n}\n";
+	var use = "component Use { def get(s: Shape) -> int { return s.draw(); } }\n";
+	var lib = "class Base {\n\tdef draw() -> int { return 0; }\n}\n";
+	var s = RenameTestSession.new("rename-deps", [("Main.v3", main), ("Use.v3", use), ("dep/Lib.v3", lib)], true, null, t);
+	s.open("Main.v3", 1, main);
+	s.open("Use.v3", 1, use);
+	s.settle();
+	var family = "cannot rename 'draw': a method of its override family is declared in a dependency, not in the project's own sources";
+	s.refused(t, "Main.v3", "def draw", 4, "paint", family);
+	s.refused(t, "Use.v3", "s.draw", 2, "paint", family);
+	s.server.close();
+	// The Virgil root's lib/Lib.v3 declares Root, whose draw Mine.draw overrides.
+	var rooted = "class Mine extends Root {\n\tdef draw() -> int { return 1; }\n}\n";
+	var r = RenameTestSession.new("rename-root", [("Main.v3", rooted)], true, null, t);
+	r.server.projects.virgilRoot = r.path("vroot");
+	r.open("Main.v3", 1, rooted);
+	r.settle();
+	r.refused(t, "Main.v3", "def draw", 4, "paint", family);
+	t.asserti(0, r.server.rename.checked);
+	r.server.close();
+}
+// The preflight refuses a new name that would make a method start or stop
+// overriding one, or override another, while every use binds as before.
+// In OVERRIDES, C.n overrides A.n across B, D.m overrides nothing, and F.m
+// overrides E.m.
+// Renaming B.m to n puts B.n between them: B.n would override A.n, and C.n
+// override B.n instead. In ACROSS, Far.m overrides Near.m across Mid, whose
+// private n is in another file, which nothing overrides: renaming Near.m's
+// family to n would leave Far.n overriding nothing.
+def OVERRIDES = "class C extends B {\n\tdef n() -> int { return 3; }\n}\nclass A {\n\tdef n() -> int { return 1; }\n}\nclass B extends A {\n\tdef m() -> int { return 2; }\n}\nclass D extends A {\n\tdef m() -> int { return 4; }\n}\nclass E {\n\tdef m() -> int { return 5; }\n\tdef k() -> int { return 6; }\n}\nclass F extends E {\n\tdef m() -> int { return 7; }\n}\ncomponent Main {\n\tdef run(a: A, b: B, c: C, d: D, e: E, f: F) -> int { return a.n() + b.m() + c.n() + d.m() + e.m() + e.k() + f.m(); }\n}\n";
+def ACROSS = "class Far extends Mid {\n\tdef m() -> int { return 3; }\n}\nclass Near {\n\tdef m() -> int { return 1; }\n}\ncomponent Main {\n\tdef run(n: Near, f: Far) -> int { return n.m() + f.m(); }\n}\n";
+def ACROSS_MID = "class Mid extends Near {\n\tprivate def n() -> int { return 2; }\n\tdef get() -> int { return n(); }\n}\n";
+def test_hierarchy_changes(t: Tester) {
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Overrides.v3")), ("Overrides.v3", OVERRIDES)], true, null, t);
+	s.open("Overrides.v3", 1, OVERRIDES);
+	s.settle();
+	var path = s.path("Overrides.v3");
+	// C.n is the first method: it would override the renamed B.m instead.
+	s.refused(t, "Overrides.v3", "def m() -> int { return 2", 4, "n",
+		Strings.format2("renaming 'm' to 'n' would make the method at %s:2:6 override the method at %s:8:6 instead", path, path));
+	// D.m would start to override A.n.
+	s.refused(t, "Overrides.v3", "def m() -> int { return 4", 4, "n",
+		Strings.format2("renaming 'm' to 'n' would make the method at %s:11:6 override the method at %s:5:6", path, path));
+	// F.m's family is E.m and F.m, so F.m cannot take the name of E.k, which
+	// F inherits, without E.m taking it too, and E's two k fail to verify.
+	s.refused(t, "Overrides.v3", "f.m", 2, "k", Strings.format1(
+		"renaming 'm' to 'k' would cause an error at %s:15:6: MemberRedefined: member \"k\" redefined", path));
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+	var config = "{\"version\":1,\"projects\":[{\"name\":\"e\",\"sources\":[\"Across.v3\",\"Mid.v3\"]}]}";
+	s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", config), ("Across.v3", ACROSS), ("Mid.v3", ACROSS_MID)], true, null, t);
+	s.open("Across.v3", 1, ACROSS);
+	s.settle();
+	path = s.path("Across.v3");
+	s.refused(t, "Across.v3", "n.m", 2, "n",
+		Strings.format2("renaming 'm' to 'n' would make the method at %s:2:6 stop overriding the method at %s:5:6", path, path));
+	t.asserti(0, s.server.rename.checked);
+	s.server.close();
+}
+// Verification reports an inheritance cycle, so rename refuses every name in
+// the program, as it refuses one with any error. (The pinned Aeneas fails
+// with an internal error on a cycle whose methods declare a return type, so
+// these declare none.)
+def test_inheritance_cycle(t: Tester) {
+	var cycle = "class P extends Q {\n\tdef m() { }\n}\nclass Q extends P {\n\tdef m() { }\n}\nclass Tail extends P {\n\tdef m() { return; }\n}\n";
+	var s = RenameTestSession.new("rename-edits", [(".virgil-lsp.json", single("Cycle.v3")), ("Cycle.v3", cycle)], true, null, t);
+	s.open("Cycle.v3", 1, cycle);
+	s.settle();
+	for (m in ["def m() { }\n}\nclass Q", "def m() { }\n}\nclass Tail", "def m() { return"]) {
+		s.refused(t, "Cycle.v3", m, 4, "n", "the project's analysis has errors; rename needs a program that verifies");
+	}
+	s.refused(t, "Cycle.v3", "class Tail", 6, "End", "the project's analysis has errors; rename needs a program that verifies");
 	t.asserti(0, s.server.rename.checked);
 	s.server.close();
 }
