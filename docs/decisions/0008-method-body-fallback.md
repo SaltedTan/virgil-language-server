@@ -58,8 +58,9 @@ Definition, type definition, implementation, hover, references, highlights,
 and semantic diagnostics suppress queries and locations in the entire substituted body, including its braces.
 Map other offsets before converting current bytes to UTF-16: offsets before
 the interval stay fixed; offsets after it shift by the length difference.
-Ranges spanning an excluded body are unmappable. Keep current-text syntax
-diagnostics. Reference and highlight lists can be partial; diagnostic sets
+Ranges spanning an excluded body are unmappable by the shared range helper;
+see [type hierarchy](../architecture.md#type-hierarchy) for declaration extents.
+Keep current-text syntax diagnostics. Reference and highlight lists can be partial; diagnostic sets
 can omit errors in the excluded body. Prepare rename, rename, and its preflight
 refuse a snapshot with any substitution. Completion and signature help retain
 their current-text cursor-repair paths and do not consume degraded semantics.
