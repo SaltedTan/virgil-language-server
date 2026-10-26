@@ -143,6 +143,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/protocol/type_definition.py` | Interactive [type-definition checks](architecture.md#type-definition) | `python3 test/protocol/type_definition.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/implementation.py` | Interactive [implementation checks](architecture.md#implementation) | `python3 test/protocol/implementation.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/type_hierarchy.py` | Interactive [type hierarchy checks](architecture.md#type-hierarchy), including items resolved after edits | `python3 test/protocol/type_hierarchy.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
+| `test/protocol/selection_ranges.py` | Interactive [selection range checks](architecture.md#selection-ranges) | `python3 test/protocol/selection_ranges.py build/virgil-lsp` |
 | `test/protocol/folding_ranges.py` | Interactive [folding range checks](architecture.md#folding-ranges) | `python3 test/protocol/folding_ranges.py build/virgil-lsp` |
 | `test/protocol/call_hierarchy.py` | Interactive [call hierarchy checks](architecture.md#call-hierarchy), including items resolved after edits and method-body fallback | `python3 test/protocol/call_hierarchy.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/code_actions.py` | Interactive [code action checks](architecture.md#code-actions) | `python3 test/protocol/code_actions.py build/virgil-lsp`; also in `make test` |

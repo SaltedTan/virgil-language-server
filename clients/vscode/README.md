@@ -8,6 +8,7 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 - starts `virgil-lsp --stdio` when a `virgil` document opens or the workspace contains a `.virgil-lsp.json` project file;
 - sends the server `virgil` documents (saved files and untitled buffers) and `.virgil-lsp.json` buffers, so that configuration diagnostics follow unsaved edits to project files;
 - provides syntax-based [folding ranges](../../docs/architecture.md#folding-ranges) for blocks and comments with `main`'s server;
+- provides [selection ranges](../../docs/architecture.md#selection-ranges) through tokens, bracket groups, declarations, and the document for **Expand Selection** and **Shrink Selection** with `main`'s server;
 - sends the [Virgil root](#settings) that project files' `virgilDependencies` are relative to;
 - watches `.virgil-lsp.json` files and `.v3` files, so that the server notices changes made outside the editor, such as a checkout ([changes on disk](../../docs/configuration.md#changes-on-disk)), and passes on workspace folders added to or removed from a multi-root workspace;
 - reports startup problems, the server's stderr, and the optional message trace in the "Virgil Language Server" output channel;
