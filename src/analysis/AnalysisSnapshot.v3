@@ -352,8 +352,8 @@ class AnalysisSnapshot {
 	// and end offsets of each, in source order and once. Navigation aliases,
 	// which resolve to a declaration without naming it, are among them: "this"
 	// and a default ".new" resolve to their class (see OccurrenceCollector).
-	// Scans every file's targets without an object per use, and allocates
-	// only the result. See docs/architecture.md#references.
+	// Scans every file's targets without an object per use.
+	// See docs/architecture.md#references.
 	def references(decl: AnalysisDeclaration, withName: bool) -> Array<(string, Array<int>)> {
 		if (decl == null) return [];
 		return referencesOf([decl], withName);
@@ -378,6 +378,9 @@ class AnalysisSnapshot {
 			var first = next;
 			while (next < names.length && Strings.equal(names[next].path, path)) next++;
 			var count = if(withName, next - first);
+			// AnalysisSnapshotFile's ordered, nonoverlapping occurrences let
+			// the name cursor advance only forward. Match the target first so
+			// unrelated uses do not pay for the merge.
 			var targets: Array<int> = if(file != null, file.targets, []), scan = first;
 			for (i < targets.length) {
 				if (!among(ids, file.target(i))) continue;
@@ -414,12 +417,11 @@ class AnalysisSnapshot {
 	}
 	// The indexes in {declarations}, in order, of {decls} and of each
 	// declaration with the same name token as one of them. Declarations differ
-	// by kind or token, so these differ only by kind. One declaration, as
-	// every query but a family's rename has, is matched without the inner
-	// loop, which every reference query would otherwise pay for. A family's
-	// name ranges are sorted once, and each declaration is looked up among
-	// them by binary search, so the pass costs the declarations times the
-	// logarithm of the family's size, rather than their product.
+	// by kind or token, so these differ only by kind. Keep the direct match
+	// for one declaration: every reference query pays for this pass. For a
+	// family with name ranges, sorting once and looking up each declaration
+	// by binary search costs O((declarations + family) log family). Members
+	// without a name range, normally none, still match by identity.
 	private def sharingName(decls: Array<AnalysisDeclaration>) -> Array<int> {
 		var ids = Vector<int>.new();
 		if (decls.length == 1) {
