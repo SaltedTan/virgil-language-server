@@ -14,8 +14,14 @@ error and proves one token-end insertion by reparsing; other parse errors and
 semantic diagnostics have no fix. A stale diagnostic, an insertion that leaves
 the error at the same point, or a client without literal actions and versioned
 edits gets no action. A bare CR before the semicolon error remains the parser's
-first error, so it prevents the fix. There is no fix-all or action on save
-([Code actions](architecture.md#code-actions)).
+first error, so it prevents the fix. The statement that the `;` would end
+must start on the same line as the insertion. A missing `;` after a statement
+that spans lines, such as a call whose arguments continue on the next line, or
+an `if (c)` or `match` arm whose body starts on the next line, gets no fix even
+when inserting it would be right: the parser may have read a later line into
+the statement, as when `return` without its `;` reads a following `if (c)` as
+its value, and a parse alone can't tell the two apart. There is no fix-all or
+action on save ([Code actions](architecture.md#code-actions)).
 
 ## Semantic features need a project file
 

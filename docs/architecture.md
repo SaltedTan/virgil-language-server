@@ -280,7 +280,29 @@ token for an error reported at an already consumed token
 ([current-text repair](#current-text-repair)); the three eligible parser paths
 report at the current cursor, so that existing anchor needs no adjustment.
 The [cursor scanner](#completion) rejects an anchor inside a comment, string,
-or character literal. There is one candidate and no search. The edited text
+or character literal.
+
+The statement that the `;` would end must start on the anchor's line. A parse
+alone can't show which statement the `;` ends: in `if (true) return` followed
+by `if (false) {}` on the next line, the parser reads `return if (false)` as a
+conditional expression, so a `;` after `if (false)` parses but ends the wrong
+statement, and the intended `;` after `return` is on the line before. The
+first parse, through `AeneasAdapter.parseStatement`, records the tokens that
+the parser consumed (`SymbolSyntaxIndex`), with no extra parse. The
+statement's start is the first token after the last `;`, `{`, or `}` token
+that ends at or before the anchor, or the file's first token. Strings,
+character literals, and comments are never such tokens. If no token follows
+that delimiter before the anchor, or a line break lies between the start and
+the anchor, there is no action. A forgotten `;` at the end of a one-line
+statement, such as a call, assignment, `return`, local, field, one-line
+`match` arm, or `if (c) x = 1`, still gets the fix, as does a `for` header's
+first `;`. A statement that spans lines gets none, even where the fix would be
+right, such as a call whose arguments continue on the next line, an `if (c)`
+or `match` arm whose body starts on the next line, or an expression continued
+by a leading `-` on the next line; a parse can't tell those from a line that
+the statement swallowed.
+
+There is one candidate and no search. The edited text
 is parsed once, with the same options. The action is offered only if the file
 parses or its first error starts strictly after the original error's byte
 offset plus the inserted byte. A later unrelated error may remain.
@@ -303,12 +325,16 @@ code-action answer is cached.
 [LspCodeActionsTest](../test/unit/LspCodeActionsTest.v3) checks exact actions,
 applying each edit and requiring progress past the original error: statements,
 locals, fields, returns, strings and character literals, comments, a closing
-brace, EOF, mid-line edits, later errors, tabs, UTF-16 and canonical URIs,
-project options, stale contexts, excluded kinds, capabilities, malformed
-params, and lifecycle gates. CRLF inside comments is covered; a bare CR is
+brace, EOF, mid-line edits, one-line `match` arms and `if` bodies, a `for`
+header, later errors, tabs, UTF-16 and canonical URIs, project options, stale
+contexts, excluded kinds, capabilities, malformed params, and lifecycle gates.
+It also checks that statements whose start is on an earlier line get no
+action even though the reparse would accept the `;`: a `return` that swallows
+a following `if`, expression statement, or assignment, a call whose arguments
+span two lines, and an `if (c)` or `match` arm whose body is on the next line. CRLF inside comments is covered; a bare CR is
 already a parser error and gets no semicolon fix. The [stdio test](../test/protocol/code_actions.py)
-checks advertisement, versioned edits, stale diagnostics, changes, and invalid
-params. The VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test)
+checks advertisement, versioned edits, stale diagnostics, changes, the
+swallowed `if` after `return`, and invalid params. The VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test)
 and [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) request
 the exact action on `semicolon.v3`, apply its edit, and check that the diagnostic
 clears; [editor coverage](../test/e2e/coverage.json) records both checks.

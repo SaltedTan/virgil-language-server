@@ -10,7 +10,8 @@
 // diagnostics, one must match that error's current range, message, and source,
 // and is attached as the client sent it; without them, the server's own
 // diagnostic is attached. The ";" goes at FileParseResult.repairAt, the end of
-// the token before the error, and is proved by one reparse. The edit carries
+// the token before the error, only if the statement it ends starts on that
+// line, and is proved by one reparse. The edit carries
 // the open document's version, so a client without versioned documentChanges
 // gets nothing. There is no command, no fix-all, and no save action.
 class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
@@ -86,7 +87,7 @@ class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 		if (hasDiagnostics && !hasSemicolonDiagnostic(clientDiagnostics)) return empty();
 		var options = projects.forDocument(overlay.uri).compilerArgs();
 		var path = DocumentUri.filePath(overlay.uri);
-		var parsed = AeneasAdapter.parseFile(if(path != null, path, overlay.uri), overlay.text, options);
+		var parsed = AeneasAdapter.parseStatement(if(path != null, path, overlay.uri), overlay.text, options);
 		if (parsed.diagnostics.length == 0 || !missingSemicolon(parsed.diagnostics[0].message)) return empty();
 		var map = PositionMap.new(overlay.text, PositionEncoding.UTF16);
 		if (!intersects(range, map, parsed.diagnostics[0].beginOffset, parsed.diagnostics[0].endOffset)) return empty();
@@ -109,6 +110,15 @@ class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 		// inside comments, strings, and character literals.
 		var place = LspCursorScanner.new(overlay.text).scan(anchor).place;
 		if (place != LspCursorPlace.CODE && place != LspCursorPlace.NUMBER) return empty();
+		// The statement that the ";" would end must start on the anchor's line.
+		// A parse can read a later line into an unterminated statement, as
+		// `return` reads a following `if (c)` as a conditional expression, and
+		// then a ";" that parses still ends the wrong statement.
+		var start = parsed.statementStart;
+		if (start < 0 || start > anchor) return empty();
+		for (i = start; i < anchor; i++) {
+			if (overlay.text[i] == '\n' || overlay.text[i] == '\r') return empty();
+		}
 		if (!proves(overlay, anchor, parsed.diagnostics[0].beginOffset)) return empty();
 		var at = map.offsetToPosition(anchor), point = position(at);
 		var edit = Strings.newMap<JsonValue>();

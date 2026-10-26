@@ -30,6 +30,9 @@ class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, decl
 	// The end of the token before the first error, or -1 if the file parsed
 	// (AnalysisParseErrors.firstTokenEnd).
 	var repairAt = -1;
+	// The start of the statement that a ";" at {repairAt} would end, as
+	// AeneasAdapter.parseStatement finds it, or -1.
+	var statementStart = -1;
 }
 
 // One source file of a program, supplied as in-memory bytes. Whole-program
@@ -463,9 +466,33 @@ component AeneasAdapter {
 	// Parse one file in isolation with language options {options} (see
 	// setLanguageOptions). Does not verify, initialize, or generate code.
 	def parseFile(path: string, input: Array<byte>, options: Array<string>) -> FileParseResult {
+		return parseWith(path, input, options, null);
+	}
+	// {parseFile}, also setting FileParseResult.statementStart from the tokens
+	// that the parser consumed: the first token after the last ";", "{", or "}"
+	// token that ends at or before {repairAt}, or the file's first token. It is
+	// -1 if that delimiter is the last token there. Strings, character
+	// literals, and comments are never delimiter tokens.
+	def parseStatement(path: string, input: Array<byte>, options: Array<string>) -> FileParseResult {
+		var syntax = SymbolSyntaxIndex.new();
+		var result = parseWith(path, input, options, syntax);
+		if (result.repairAt < 0) return result;
+		var tokens = syntax.tokens, last = tokens.length;
+		while (last > 0 && tokens[last - 1].end > result.repairAt) last--;
+		var i = last;
+		while (i > 0 && !delimiter(input, tokens[i - 1])) i--;
+		if (i < last) result.statementStart = tokens[i].begin;
+		return result;
+	}
+	private def delimiter(input: Array<byte>, t: SymbolSyntaxToken) -> bool {
+		if (t.end - t.begin != 1) return false;
+		var c = input[t.begin];
+		return c == ';' || c == '{' || c == '}';
+	}
+	private def parseWith(path: string, input: Array<byte>, options: Array<string>, syntax: SymbolSyntaxIndex) -> FileParseResult {
 		var errors = AnalysisParseErrors.new(MAX_ERRORS);
 		setLanguageOptions(options);
-		var file = AnalysisSingleFileParser.parse(path, input, errors, null, TypeCache.new(), null);
+		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
 		resetLanguageOptions();
 		var decls = file.classes.length + file.components.length + file.enums.length
 			+ file.layouts.length + file.packings.length;

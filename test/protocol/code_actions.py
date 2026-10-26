@@ -19,6 +19,14 @@ DIAGNOSTIC = {'range': {'start': ERROR, 'end': ERROR}, 'severity': 1,
               'source': 'aeneas', 'code': 'ParseError', 'message': '";" expected'}
 
 
+# The parser reads `return if (false)` as a conditional expression. A ";" after
+# `if (false)` parses but ends the wrong statement; the one after `return`
+# starts on another line, so no action is offered.
+SWALLOWED = 'component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n'
+SWALLOWED_URI = 'untitled:swallowed.v3'
+SWALLOWED_ERROR = {'line': 3, 'character': 19}
+
+
 def params(diagnostics=None):
     result = {'textDocument': {'uri': URI}, 'range': {'start': ERROR, 'end': ERROR}}
     if diagnostics is not None:
@@ -68,6 +76,16 @@ def run(exe):
                        'contentChanges': [{'text': TEXT.replace('1 //', '1; //')}]}, request=False)
                 assert action(params([client])) == []
                 assert action(params()) == []
+                s.send('textDocument/didOpen', {'textDocument': {
+                    'uri': SWALLOWED_URI, 'version': 1, 'languageId': 'virgil', 'text': SWALLOWED}}, request=False)
+                swallowed = dict(params(), textDocument={'uri': SWALLOWED_URI})
+                assert action(swallowed) == []
+                published = [m['params'] for direction, m in s.transcript
+                             if direction == 'recv' and m.get('method') == 'textDocument/publishDiagnostics'
+                             and m['params']['uri'] == SWALLOWED_URI][-1]['diagnostics']
+                assert [(d['message'], d['range']['start']) for d in published] == [
+                    ('";" expected', SWALLOWED_ERROR)], published
+                assert action(dict(swallowed, context={'diagnostics': published})) == []
             for bad in ({}, [], dict(params(), range={'start': ERROR}),
                         dict(params(), context={'only': [1]}), dict(params(), context={'diagnostics': 1})):
                 reply = s.reply(s.send('textDocument/codeAction', bad))

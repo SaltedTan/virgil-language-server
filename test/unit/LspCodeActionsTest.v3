@@ -5,6 +5,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspCodeActions:sites", test_sites),
 	T("LspCodeActions:proof", test_proof),
+	T("LspCodeActions:statement_line", test_statement_line),
 	T("LspCodeActions:context", test_context),
 	T("LspCodeActions:capabilities", test_capabilities),
 	T("LspCodeActions:params_lifecycle", test_params_lifecycle),
@@ -80,6 +81,9 @@ def test_sites(t: Tester) {
 	site(t, "component C { def f() { var x = 1|\n} }", true);
 	site(t, "component C { def f() { return 1|\n} }", true);
 	site(t, "component C { def f() { var x = a| b; } }", false);
+	site(t, "component C { var x: int; def f(b: bool) { match (b) {\n\ttrue => x = 1|\n\tfalse => x = 2;\n} } }", true);
+	site(t, "component C { var x: int; def f(c: bool) {\n\tif (c) x = 1|\n\tx = 2;\n} }", true);
+	site(t, "component C { def f() {\n\tfor (i = 0| i < 3; i++) {}\n} }", false);
 	site(t, "component C { /*\r\n*/\tdef f() { /*\xC3\xA9\xF0\x9D\x84\x9E*/ return 1|\t// comment\r\n} }", true);
 	// A later error is permitted: proof requires progress, not a clean file.
 	site(t, "component C { def f() { a()|\nb()\n} }", true);
@@ -91,6 +95,31 @@ def test_proof(t: Tester) {
 		var s = running(CAPS);
 		s.documents.open(URI, "virgil", 1, text);
 		empty(t, s, params(null));
+	}
+}
+// The parser may read a later line into a statement whose ";" is missing. A
+// ";" at its end would parse, but the statement doesn't start on that line, so
+// no action is offered.
+def test_statement_line(t: Tester) {
+	for (text in [
+		"component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n",
+		"component C { def f() {\n\treturn\n\ta()\n} }",
+		"component C { var x: int; def f() {\n\treturn\n\tx = 1\n} }",
+		"component C { def f() { a(1,\n\t2)\n\tb(); } }",
+		"component C { def f() { if (true)\n\ta()\n\tb(); } }",
+		"component C { var x: int; def f(b: bool) { match (b) {\n\ttrue =>\n\t\tx = 1\n\tfalse => x = 2;\n} } }"] ) {
+		var parsed = AeneasAdapter.parseFile(URI, text, []);
+		t.assert_string("\";\" expected", parsed.diagnostics[0].message);
+		// Without the rule, the proof would accept this ";".
+		var fixed = StringBuilder.new().putk(text, 0, parsed.repairAt).putc(';')
+			.putk(text, parsed.repairAt, text.length).extract();
+		var after = AeneasAdapter.parseFile(URI, fixed, []);
+		t.assert(after.diagnostics.length == 0 || after.diagnostics[0].beginOffset > parsed.diagnostics[0].beginOffset + 1,
+			"the reparse alone accepts the insertion");
+		var s = running(CAPS);
+		s.documents.open(URI, "virgil", 1, text);
+		empty(t, s, params(null));
+		empty(t, s, withDiagnostic(diagnostic(text)));
 	}
 }
 def test_context(t: Tester) {
