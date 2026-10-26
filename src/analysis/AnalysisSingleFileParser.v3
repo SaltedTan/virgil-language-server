@@ -8,6 +8,15 @@ class AnalysisParseErrors extends ErrorGen {
 	var parser: ParserState;
 	def offsets = Vector<(int, int)>.new();
 	def retrospective = AnalysisRetrospectiveStarts.new();
+	// The ends of the last two tokens that the parser consumed, and, at the
+	// first error, the end of the last token before the error's start, or -1.
+	// Current-text repair inserts there (LspCurrentRepair), before the
+	// whitespace and comments that the parser skipped to reach the error. An
+	// error at a consumed token, such as a keyword read as an identifier,
+	// starts before the last end.
+	var tokenEnd: int;
+	var previousEnd: int;
+	var firstTokenEnd = -1;
 	private def positions = AnalysisPositionIndex<int>.new();
 
 	def startFile() {
@@ -48,6 +57,9 @@ class AnalysisParseErrors extends ErrorGen {
 				end = offset(range.endLine, range.endColumn);
 			}
 		}
+		if (offsets.length == 0) {
+			firstTokenEnd = if(begin < 0 || begin >= tokenEnd, tokenEnd, if(begin >= previousEnd, previousEnd, -1));
+		}
 		offsets.put((begin, end));
 		errors = List.new(Error.new(range, sourceLine, error, msg), errors);
 		incErrors();
@@ -80,7 +92,8 @@ class AnalysisParseSkipper(errors: AnalysisParseErrors, syntax: SymbolSyntaxInde
 	private var tokenStart: int;
 
 	def skip(p: ParserState) {
-		var tokenEnd = p.curPos;
+		errors.previousEnd = errors.tokenEnd;
+		var tokenEnd = errors.tokenEnd = p.curPos;
 		errors.record(p);
 		if (syntax != null) syntax.finish(p);
 		Parser.skipToNextToken(p);

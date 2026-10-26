@@ -8,23 +8,39 @@
 // {LspAnalysisCapture.analyzedText}). Submitters drop {sources} once the
 // completed analysis has updated the last-parseable text cache.
 class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBytes: long) {
+	// The current text's parse, if its parser diagnostics' parse is stale,
+	// fallback's parse of the last parseable text, and current-text repair's
+	// parses of its repaired texts share this bound.
+	def PARSES_PER_FILE = 3;
 	var sources: Array<AnalysisSource>;
 	// One capture, one analysis: reuse the current overlay's existing parse
-	// outcome to decide fallback before submitting any worker request.
+	// outcome to decide fallback before submitting any worker request. A
+	// broken file that fallback cannot substitute gets current-text repair
+	// instead (LspCurrentRepair). Either way the capture parses each broken
+	// file at most PARSES_PER_FILE times.
 	def substitute(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
 			parser: LspParserDiagnostics) -> string {
-		var bytes = 32L;
+		var bytes = 32L, options = context.definition.compilerArgs;
 		for (s in sources) bytes += 16L + s.path.length + s.input.length;
 		for (i < sources.length) {
 			var doc = store.overlay(versions[i].uri);
-			if (doc == null || parser.parses(doc, context.definition.compilerArgs)) continue;
-			var effective = cache.get(context, doc.uri);
+			if (doc == null) continue;
+			var outcome = parser.outcome(doc, options);
+			if (outcome.0.clean) continue;
+			var parses = PARSES_PER_FILE - if(outcome.1, 1, 0);
+			var effective = cache.get(context, doc.uri), result: LspBodyFallback;
 			// Closed disk files can seed larger texts. Reparse a predecessor only
 			// within the same byte limit as an open document's parser diagnostics.
-			if (effective == null || effective.length > DocumentLimits.MAX_BYTES) continue;
-			var bodies = AeneasAdapter.methodBodies(sources[i].path, effective, context.definition.compilerArgs);
-			if (bodies == null) continue;
-			var result = LspBodyEligibility.compare(effective, doc.text, bodies).0;
+			if (effective != null && effective.length <= DocumentLimits.MAX_BYTES) {
+				parses--;
+				var bodies = AeneasAdapter.methodBodies(sources[i].path, effective, options);
+				if (bodies != null) result = LspBodyEligibility.compare(effective, doc.text, bodies).0;
+			}
+			if (result == null) {
+				var repaired = LspCurrentRepair.repair(sources[i].path, doc.text, outcome.0.repairAt, options, parses);
+				effective = repaired.0;
+				result = repaired.1;
+			}
 			if (result == null) continue;
 			bytes += effective.length - sources[i].input.length;
 			if (bytes > LspAnalysisCapture.MAX_SOURCE_BYTES) return "analysis sources exceed the analysis size budget";

@@ -27,7 +27,7 @@ class LspBodyFallback(begin: int, effectiveEnd: int, currentEnd: int,
 
 component LspBodyEligibility {
 	// Bodies are [opening brace, byte after closing brace), obtained from
-	// the server's parse of the last parseable text (AeneasAdapter.methodBodies).
+	// the server's parse of {effective} (AeneasAdapter.methodBodies or repairParse).
 	// A null result carries the reason; no text or history is retained here.
 	def compare(effective: Array<byte>, current: Array<byte>, bodies: Array<(int, int)>) -> (LspBodyFallback, string) {
 		var begin = 0, oldEnd = effective.length, newEnd = current.length;

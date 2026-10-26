@@ -387,7 +387,7 @@ The development `analyze` and `repair` commands and the stdio server share the s
 
 ## Analysis snapshots *(partly present)*
 
-`AnalysisSnapshot` (`src/analysis/AnalysisSnapshot.v3`) is the server-owned result of one analysis: diagnostics, the distinct declarations, each file's occurrences (in compact int arrays; see `AnalysisSnapshotFile`), and the worker's measurements. It answers `occurrences` and `definitionAt` like `ProgramAnalysis` but references no compiler object, so it outlives the worker that produced it. `definitionAtOffset(path, offset)` binary-searches the byte ranges without allocating; an offset just past a use is outside it. For [references](#references), `references(decl, withName)` scans every file's targets for a declaration's uses without an object per use, and allocates only its result and small lists of the matching declarations and their names; the snapshot keeps no reverse index of uses. For [implementation](#implementation), method [override families](#prepare-rename), and [type hierarchy](#type-hierarchy), the first query builds a reverse index of the declarations that have a parent, in order of their parents, and adds it to the snapshot's retained bytes; [Implementation](#implementation) describes it. Ordinary snapshots hold no source bytes; a [method-body fallback](#method-body-fallback) retains its substituted text. *(present)*
+`AnalysisSnapshot` (`src/analysis/AnalysisSnapshot.v3`) is the server-owned result of one analysis: diagnostics, the distinct declarations, each file's occurrences (in compact int arrays; see `AnalysisSnapshotFile`), and the worker's measurements. It answers `occurrences` and `definitionAt` like `ProgramAnalysis` but references no compiler object, so it outlives the worker that produced it. `definitionAtOffset(path, offset)` binary-searches the byte ranges without allocating; an offset just past a use is outside it. For [references](#references), `references(decl, withName)` scans every file's targets for a declaration's uses without an object per use, and allocates only its result and small lists of the matching declarations and their names; the snapshot keeps no reverse index of uses. For [implementation](#implementation), method [override families](#prepare-rename), and [type hierarchy](#type-hierarchy), the first query builds a reverse index of the declarations that have a parent, in order of their parents, and adds it to the snapshot's retained bytes; [Implementation](#implementation) describes it. Ordinary snapshots hold no source bytes; a [body substitution](#method-body-fallback) retains its effective text. *(present)*
 
 For stdio submissions, `LspAnalysisCapture` captures each source's canonical URI and overlay version or disk provenance alongside the bytes, keeps that record outside the worker protocol, and the submitter attaches it to the completed snapshot before replying or publishing. `AnalysisSnapshot.matchesDocument(store, uri)` normalizes the query URI and returns false for absent/unrecorded sources. Overlay stamps require the same accepted document identity: any accepted full-text change or close invalidates them, including close/reopen with the same version number, while a version-only change keeps the record's identity and so leaves an analysis of its unchanged text current. Rejected changes, duplicate opens, and saves leave freshness unchanged. A lightweight identity token avoids retaining overlay text. The stamp of a disk input also records the document store's disk stamp for the file, which `DocumentStore.diskChanged` replaces whenever the client reports the file created, changed, or deleted ([changes on disk](configuration.md#changes-on-disk)). A disk input is **current while no overlay exists and no change to the file has been reported since**; opening an overlay makes it stale, and closing it restores freshness unless a change was reported. This stamp-based check does not read disk bytes or compare file sizes or modification times, so unreported disk changes leave it current. The store tracks at most 8,192 reported files (`DocumentLimits.MAX_DISK_STAMPS`); a report about one more replaces every file's disk stamp, which makes every disk input stale. Freshness is per-source, not a claim that the whole program's dependencies are current. Raw worker/CLI snapshots have no document-store provenance and `matchesDocument` returns false for them. The development inspection API reports the stamps and per-source freshness; see [Development stdio requests](development.md#development-stdio-requests). [AnalysisDocumentVersionsTest](../test/unit/AnalysisDocumentVersionsTest.v3) covers changes and closes while pending, version reuse, rejected events, and the disk policy, including reported disk changes. *(present)*
 
@@ -455,7 +455,8 @@ Reference and highlight lists can be partial; retained highlights keep their
 Text, Read, and Write kinds from the effective occurrence index. Prepare rename,
 rename, and its preflight refuse every degraded snapshot; completion and signature help retain their existing current-text
 repair paths. Sources without cached parseable text and closed broken sources
-are not substituted.
+are not substituted from the cache; an open one can still be
+[repaired](#current-text-repair).
 Document symbols still parse the current overlay for their outline, but omit
 snapshot signature details for a substituted file: its declarations use cached
 text offsets, which cannot be matched against the current outline's offsets.
@@ -463,6 +464,100 @@ Unsubstituted files in the same snapshot can still supply signature details.
 [ADR-0008](decisions/0008-method-body-fallback.md) records the accepted decision;
 [body snapshot tests](../test/unit/LspBodySnapshotTest.v3) and the
 [protocol test](../test/protocol/body_fallback.py) exercise its lifetime and policy.
+
+### Current-text repair
+
+An open document that fails to parse, and that method-body fallback doesn't
+substitute because no parseable text is cached for it or its edit is
+ineligible, is analyzed from a bounded repair of its current text instead
+([#293](https://github.com/SaltedTan/virgil-language-server/issues/293)). Fallback
+runs first, so a file that it can substitute is never repaired. Closed files
+are never repaired.
+
+At capture, `LspAnalysisInputs.substitute` reads the overlay's parse outcome,
+which `LspParserDiagnostics` kept from the parse behind its syntax diagnostics.
+A failed single-file parse records where repair starts (`FileParseResult.repairAt`):
+the end of the token before the first error, before the whitespace and comments
+that the parser skipped to reach it. When the parser reports an error at a token
+that it has already consumed, such as a keyword read as an identifier, repair
+starts at the end of the token before that one. `LspCurrentRepair` inserts
+completion's repair there ([Names](#names), [ADR-0006](decisions/0006-incomplete-code-repair.md)),
+computed by `LspCompletionRepair.completion` with that point as the cursor:
+
+- the sentinel `virgilLspCursor` where a name or an operand is missing: after a
+  member access's `.`, or where only an expression, a type, or a pattern can
+  start, as after `=`, an operator, `return`, a call's `(` or `,`, an index's
+  `[`, or a `:` before a type. The sentinel is also the placeholder for a missing
+  initializer or operand, so `var x = ;` becomes `var x =virgilLspCursor ;`. It
+  isn't inserted where a statement can start, as after a line break that follows
+  an operand, nor after a name, a number, or another operand;
+- then the closing `)`, `]`, and `>` that the constructs open in the innermost
+  block lack, and a `;` where the statement ends, at the offset that completion
+  chooses for them.
+
+A point in a comment or a literal, or one where nothing is missing, such as
+before a block's `{`, gets no repair. Each site has exactly one candidate: there
+is no search and no ladder of alternatives.
+
+`AeneasAdapter.repairParse` parses the repaired text once, with the document's
+language options and the same parser guards as syntax diagnostics. If it still
+fails, a second site starts at that parse's first error, and the text is parsed
+once more. A text that still fails after two sites stays unrepaired. A parse that
+succeeds also gives the repaired text's method and constructor bodies, as
+`AeneasAdapter.methodBodies` gives them for fallback, and
+`LspBodyEligibility.compare(repaired, current, bodies)` must accept the pair, as
+it accepts fallback's: the single interval from the first inserted byte to the
+last must lie strictly inside one method or constructor body of the repaired
+text, start and end in ordinary code in both texts, and keep the brace depth it
+starts at. A repair never inserts or removes a brace, so it cannot end a body or
+change the owner of a later declaration. A missing `}`, a site in a declaration
+header or a field initializer, and sites in two bodies all stay unrepaired, and
+the file's project then has the ordinary empty semantic result, as before.
+
+The capture parses each broken file at most three times
+(`LspAnalysisInputs.PARSES_PER_FILE`). The current text's parse outcome is
+normally the one its syntax diagnostics already made; if that parse used other
+language options or another version, the capture parses the current text again,
+and that counts. Fallback's parse of the cached predecessor counts as well, and
+repair parses at most what remains, never more than two texts.
+
+A repaired file is substituted exactly as fallback substitutes cached text. Its
+`AnalysisDocumentVersion.substitution` holds the repaired bytes as the effective
+text, and the `LspBodyFallback` map, whose interval spans the inserted bytes and
+whose excluded body is the repaired text's body; the record needs no new field.
+Its bytes are reserved at capture and charged to the snapshot budget. Every rule
+in [Method-body fallback](#method-body-fallback) then applies unchanged:
+definition, type definition, implementation, type hierarchy, hover, references,
+highlights, inlay hints, and semantic diagnostics suppress queries, locations,
+and diagnostics in the entire excluded body, including its braces, so neither
+the sentinel nor an inserted closer, nor an error that they cause, such as a
+repaired call's arity, appears in any answer. Offsets before the interval stay
+and offsets after it shift by the inserted length. Prepare rename, rename, and
+the rename preflight refuse the snapshot, workspace symbols skip the file,
+completion, signature help, and document symbols keep their current-text paths,
+and the current text's syntax diagnostics are always published. The repaired
+text is never cached as parseable text. The worker gets one effective program per
+analysis, so repair adds no analysis, worker message, or wire version. The
+development snapshot inspection (`virgil-lsp/snapshot`) still lists the effective
+program's own diagnostics, including the sentinel's.
+
+**Anchor.** Repair starts at the parser's error, not at the document's last edit.
+On the [tolerance corpus](benchmarks.md#current-text-repair-comparison), the
+parser's error repairs 91 of the 97 body states that fallback recovers in warm
+sessions, and the last edit, where it is known, would repair all 97. The six
+differ where the parser reads the next line as the rest of an incomplete
+expression, so its first error is past the edit: `a.length +` followed by
+`a[s] = e;`, `buffer.` followed by an `if`, and a member access in a match case
+followed by the next case. A file opened with an error, which is what repair is
+for, has no known edit, and on every state that fallback can't substitute both
+points repaired the same states. With full document sync, knowing the edit would
+also mean comparing the old and new text of every change.
+[Current-text repair tests](../test/unit/LspCurrentRepairTest.v3) check exact
+repaired texts, mappings, the two-site cap, refusals, the parse budget,
+suppression at the body's edges, and fallback's priority; the
+[protocol test](../test/protocol/current_repair.py) covers a cold open, repair
+beside fallback in one analysis, rename refusal, and restoration.
+[ADR-0009](decisions/0009-current-text-repair.md) records the decision.
 
 ## Semantic diagnostics
 
@@ -480,7 +575,7 @@ Unsubstituted files in the same snapshot can still supply signature details.
 
 **Failures.** A worker crash, timeout, malformed or over-budget result, or startup failure, and a capture or snapshot-admission failure, leave every published list unchanged and log a warning to stderr. The first such failure also sends `window/showMessage` (`MessageType.Warning`) naming the project and the reason; later failures are only logged until an analysis completes again. The supervisor's [restart policy](decisions/0004-analysis-worker-process.md#restart-policy) provides a new worker for the next analysis, which the next open, change, save, close, or file event schedules. A failed analysis is not retried by itself.
 
-**Error limit.** `Program.ERROR` in the pinned Aeneas stops at 15 errors (`AeneasAdapter.PROGRAM_MAX_ERRORS`, checked against the compiler by `AeneasAdapter:program_error_limit`), and the adapter cannot replace it. At the limit, parsing records no more errors and parses no more files, and verification stops at the next declaration. The parser also stops at a file's first syntax error. Fifteen errors in one file therefore hide every other file's errors. When an analysis reaches the limit, an Information diagnostic (`source: "virgil-lsp"`, code `ErrorLimit`) follows the last reported error, at its range, saying that errors elsewhere may be missing. A degraded snapshot suppresses the notice if any of its errors touches an excluded fallback body, even when the last error is visible: errors from the old body can cause a limit that the current program would not reach. This can omit a real limit notice, leaving a partial diagnostic set. If no error is excluded, the notice stays at the last reported error. Aeneas rejects carriage returns (`ParseError: invalid character valued 0D`, one per CRLF line), as `v3c` does, so a single CRLF file reaches the limit; convert CRLF checkouts, which WSL users may have, to LF.
+**Error limit.** `Program.ERROR` in the pinned Aeneas stops at 15 errors (`AeneasAdapter.PROGRAM_MAX_ERRORS`, checked against the compiler by `AeneasAdapter:program_error_limit`), and the adapter cannot replace it. At the limit, parsing records no more errors and parses no more files, and verification stops at the next declaration. The parser also stops at a file's first syntax error. Fifteen errors in one file therefore hide every other file's errors. When an analysis reaches the limit, an Information diagnostic (`source: "virgil-lsp"`, code `ErrorLimit`) follows the last reported error, at its range, saying that errors elsewhere may be missing. A degraded snapshot suppresses the notice if any of its errors touches an excluded body, even when the last error is visible: errors from the cached or repaired body can cause a limit that the current program would not reach. This can omit a real limit notice, leaving a partial diagnostic set. If no error is excluded, the notice stays at the last reported error. Aeneas rejects carriage returns (`ParseError: invalid character valued 0D`, one per CRLF line), as `v3c` does, so a single CRLF file reaches the limit; convert CRLF checkouts, which WSL users may have, to LF.
 
 **Size limits.** Each automatic analysis has the development request's limits: 4 MiB of paths and source per program (the Aeneas sources and their dependencies use 72%), the [16 MiB result-decoding budget](decisions/0004-analysis-worker-process.md#consequences), and the worker heap. ADR-0004 owns the [supported program size measurements and recovery guidance](decisions/0004-analysis-worker-process.md#supported-program-size). A program that exceeds them is reported as a failure.
 
@@ -505,7 +600,7 @@ The [golden transcripts](../test/diagnostics/run.py) cover a two-file project wi
 
 **Lookup.** The position becomes a UTF-8 byte offset through `PositionMap` (UTF-16) over the queried source's checked current text (`LspAnalysisCapture.currentText`): its overlay, or for a closed file the disk file read again and checked against its captured length and hash. The method's answer looks that offset up; for a definition, `AnalysisSnapshot.definitionAtOffset` finds the use containing it. Ends are exclusive, so if the answer finds nothing there, it looks up the byte before instead and finds the use containing it: one that ends exactly at the position, so that a cursor just past an identifier, as editors place it after a word, selects it. A use containing the position always wins. In `a.b`, a position between `a` and `.` selects `a`, and one between `.` and `b` selects `b`; in `a+b`, the position before `+` selects `a`. The reply is one `Location`, not a `LocationLink`: the declaring file's canonical URI and the range of the declaration's name token, whose byte offsets ([Coordinates](#coordinates)) are converted through `PositionMap` over that file's checked current text, after any fallback mapping. If that text is no longer available, for example because a closed target changed on disk, even without a file event, the reply is `null`. Every reply, immediate or not, goes through the server's outgoing-message sink, as the development requests' do.
 
-**Limitations.** Only the uses that the [occurrence index](#compiler-adapter) records resolve; that contract owns the supported names and exclusions. Builtin types such as `int` and `Array` get `null`. With [method-body fallback](#method-body-fallback), queries outside excluded bodies use the effective analysis and map returned locations to current text; queries or targets inside those bodies get `null`. If any effective file still fails to parse, definitions remain `null`.
+**Limitations.** Only the uses that the [occurrence index](#compiler-adapter) records resolve; that contract owns the supported names and exclusions. Builtin types such as `int` and `Array` get `null`. With a [body substitution](#method-body-fallback), queries outside excluded bodies use the effective analysis and map returned locations to current text; queries or targets inside those bodies get `null`. If any effective file still fails to parse, definitions remain `null`.
 
 [LspDefinitionTest](../test/unit/LspDefinitionTest.v3) covers declaration targets, type references, type parameters, and index operators, shadowed and same-named declarations, positions just past an identifier, builtins and unresolved names, targets in open and closed files, tabs and non-ASCII text before the use and the target, a target changed on disk, stale snapshots with and without a pending analysis (waiting and running), a request before the first analysis completes and one after it failed, a document changed while its request waits, a nearer project taking the document over while it waits, a request answered when the analysis it waited for ends although later edits and requests wait for the next one, the bound on waiting requests (including a request sent from within an eviction's reply) and that they keep no document text, shutdown and the end of the input, and parameter errors. `LspSemanticDiagnosticsTest` covers an urgent context starting before another that became due first. The [definition transcript](../test/diagnostics/definition.jsonl) answers requests after an unsaved two-file edit: one sent before any analysis completed, one at once, and one after the analysis it waits for. The [ownership transcript](../test/diagnostics/definition-ownership.jsonl) answers a waiting request with `null` after a nearer project takes its document over. The [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) and the VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test) go to a definition in a closed `lib/util` file.
 
@@ -521,7 +616,7 @@ The encoder chooses one default target per declaration while indexing names and 
 
 The reader bounds the count, offsets, and target codes, advances ordered cursors through uses and declaration sites to check that every override begins an indexed name, and charges the same bytes and checkpoints against the snapshot allocation budget. The default integer fits within the existing conservative 128-byte declaration charge: on x86-64 the declaration and range each occupy 40 bytes, plus an 8-byte array slot. This keeps compiler objects and rendered types out of the snapshot. Inlay hints can reuse these source targets alongside display data without repeating type resolution.
 
-`LspDefinition.typeAnswer` shares [definition's](#definition) snapshot selection, freshness, waiting, cancellation, and UTF-16 position conversion, including checking the target's analyzed bytes. A recognized name with no source type remains `null` even beside another name. A project parse error suppresses the answer unless [method-body fallback](#method-body-fallback) applies: queries and type targets in excluded bodies return `null`, and other locations map from effective bytes to current UTF-16 positions. If any effective input still fails to parse, the answer is `null`; a current snapshot remains usable after worker replacement. The compiler/wire [unit tests](../test/unit/TypeDefinitionTest.v3) cover the type rules, and the [stdio test](../test/protocol/type_definition.py) covers edits, UTF-16, project membership, parse errors, and replacement. VS Code checks the provider; Neovim drives `vim.lsp.buf.type_definition()` and LazyVim drives `gy`, with exact library locations and a no-location value in each suite.
+`LspDefinition.typeAnswer` shares [definition's](#definition) snapshot selection, freshness, waiting, cancellation, and UTF-16 position conversion, including checking the target's analyzed bytes. A recognized name with no source type remains `null` even beside another name. A project parse error suppresses the answer unless [method-body fallback](#method-body-fallback) or [current-text repair](#current-text-repair) substitutes the file: queries and type targets in the excluded body return `null`, and other locations map from effective bytes to current UTF-16 positions. If any effective input still fails to parse, the answer is `null`; a current snapshot remains usable after worker replacement. The compiler/wire [unit tests](../test/unit/TypeDefinitionTest.v3) cover the type rules, and the [stdio test](../test/protocol/type_definition.py) covers edits, UTF-16, project membership, parse errors, and replacement. VS Code checks the provider; Neovim drives `vim.lsp.buf.type_definition()` and LazyVim drives `gy`, with exact library locations and a no-location value in each suite.
 
 ## Hover
 
@@ -543,7 +638,7 @@ The reader bounds the count, offsets, and target codes, advances ordered cursors
 
 **Freshness.** A file's symbols come from one analysis of it, and only while that analysis still describes the file: its [stamp](#analysis-snapshots-partly-present) still matches, as a [definition](#definition) requires of every source, and its bytes are still the ones the worker analyzed (`LspAnalysisCapture.analyzedText`, the check that `LspSnapshotPosition.target` makes of a definition's target). Otherwise its symbols are left out, never returned at positions the text no longer has. Unlike a definition, a symbol doesn't need the rest of its snapshot to be current, since a declaration's name and position depend only on its own file's text: after an unsaved edit, only the edited file's symbols disappear, until an analysis of the edit completes. Opening a file that was analyzed from disk hides its symbols in the same way, because the editor then shows the overlay, and the open schedules an analysis. A closed file changed on disk without a file event keeps its stamp; only its length and hash show the change, and its symbols return if the analyzed bytes do.
 
-An analysis that substituted a file's method body cannot supply that file's workspace symbols, even outside the body: its declaration offsets describe the cached text. The search skips that entry as it skips a mismatched stamp, trying the file's next analysis or omitting the file. Unsubstituted files in the same snapshot remain eligible.
+An analysis that substituted a file's method body cannot supply that file's workspace symbols, even outside the body: its declaration offsets describe the effective text. The search skips that entry as it skips a mismatched stamp, trying the file's next analysis or omitting the file. Unsubstituted files in the same snapshot remain eligible.
 
 **Shared files.** A file that several programs analyzed, such as a source two projects share, yields one symbol per declaration site. Its analyses are grouped by path, and its symbols come from the first in context order (the order of `loadedContexts`: configuration URI, then declaration order) that passes both checks without substituting the file. Neither discovery nor load order can change that order. Analyses that recorded no declaration sites are not candidates, so a parse failure in one program does not hide a file that another program analyzed successfully. A file with no current analysis contributes nothing.
 
@@ -583,7 +678,7 @@ A pathological source is one line of 514 KB: a leading `/* é */` block comment,
 
 [LspReferencesTest](../test/unit/LspReferencesTest.v3) checks exact reference sets, with and without the declaration, for shadowed locals and a parameter that shadows a field, a local captured by a lambda and a nested lambda, a match binding, same-named methods of unrelated classes and same-named type parameters, a generic class and method used at several instantiations, a component, classes with `this` and a default `.new`, an explicit constructor, a field, enum and variant cases in expressions and patterns, a data type and its case, index operators read, written, compound, and named, layouts in memory types and in `Ref` and `ref`, a layout field beside a method of the same name, and packings and their parameters. It also covers an unused declaration, positions just past a use and a declaration's name, positions that select nothing, references in a closed file in byte order of path, which is not the analysis order, after non-ASCII text, a closed file changed on disk, which loses only its own locations, semantic errors, stale snapshots with and without a pending analysis, a parse failure, waiting requests that each keep their own `includeDeclaration`, one bound on waiting references, definition, and hover requests, and parameter errors. It checks the bound on a reply's locations exactly, both with a lowered bound, where aliases do not count, and with `MAX_LOCATIONS` itself: a declaration with exactly that many references is answered in full, and one with more fails, also after its request waits for an analysis. It also checks the bound on a reply's bytes exactly, with a lowered budget that a reply meets and then misses by one byte, and at `MAX_LOCATIONS` with a file whose long percent-encoded path repeats in every Location, where the count alone would let the reply through. `OccurrenceCoverage` checks the snapshot query against the occurrences of the occurrence fixture and `lib/util` for every declaration they use, and of the Aeneas sources for every hundredth. The [references transcript](../test/diagnostics/references.jsonl) answers requests across an unsaved file and a closed one: one sent before any analysis completed, one from the closed file's declaration, one for a class with a default constructor, one after an unsaved edit that it waits for, and one after the closed file changes on disk without a file event. The [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) and the VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test) find the references of the `StringBuilder` they go to: the use, the class's name, and uses in other closed `lib/util` files.
 
-During [method-body fallback](#method-body-fallback), references omit every
+For a [substituted file](#method-body-fallback), references omit every
 location in an excluded body and map other locations to current UTF-16 ranges.
 These lists may be partial and must not be treated as a complete set of uses.
 

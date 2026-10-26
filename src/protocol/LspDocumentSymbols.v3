@@ -136,7 +136,7 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		var symbols = AeneasAdapter.documentSymbols(overlay.uri, overlay.text, owner.compilerArgs());
 		var s = if(owner.active != null, owner.active.snapshot);
 		// Details need current, unsubstituted overlay text: a matching identity
-		// alone can still carry cached-text declaration offsets after fallback.
+		// alone can still carry substituted-text declaration offsets.
 		if (s != null && (!s.matchesDocument(store, overlay.uri) ||
 			s.documentVersions[s.documentIndex(overlay.uri)].substitution != null)) s = null;
 		var path = if(s != null, s.paths[s.documentIndex(overlay.uri)]);

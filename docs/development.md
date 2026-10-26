@@ -105,13 +105,15 @@ Project results add `"projectConfiguration":{"uri":"file:///absolute/.virgil-lsp
 {"generation":1,"diagnostics":[],"documentVersions":[{"uri":"file:///absolute/a.v3","version":3,"current":false},{"uri":"file:///absolute/b.v3","version":null,"current":true}]}
 ```
 
-A [method-body fallback](architecture.md#method-body-fallback) adds a
+A [method-body fallback](architecture.md#method-body-fallback) or
+[current-text repair](architecture.md#current-text-repair) adds a
 `substitution` object to each affected `documentVersions` entry. Its byte offsets
 are `begin`, `effectiveEnd`, and `currentEnd` for the changed interval, and
 `bodyBegin` and `bodyEnd` for the excluded current body. The stamp and `current`
 still describe the overlay identity compared at capture. Raw inspection
-diagnostics use effective-text compiler coordinates; published LSP diagnostics
-are filtered and mapped to current text. Project `analyze` requests use this
+diagnostics use effective-text compiler coordinates, including any repair
+sentinel's diagnostics; published LSP diagnostics are filtered and mapped to
+current text. Project `analyze` requests use this
 capture policy; explicit `uris` requests continue to analyze exact source bytes.
 
 The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-partly-present) defines `current`, including overlay invalidation and the assumptions for disk inputs, and configuration-revision invalidation. This remains deliberately stale inspection data: no semantic results are published or discarded by this request.
@@ -143,6 +145,7 @@ The [analysis snapshot freshness policy](architecture.md#analysis-snapshots-part
 | `test/protocol/type_hierarchy.py` | Interactive [type hierarchy checks](architecture.md#type-hierarchy), including items resolved after edits | `python3 test/protocol/type_hierarchy.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/fingerprints.py` | Snapshot freshness against disk changes made while the worker is paused mid-analysis: same-length, shorter, longer, and deleted files, file and directory symlinks, an unrelated source edited, recovery, and overlay identity | `python3 test/protocol/fingerprints.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/body_fallback.py` | Method-body fallback with a real two-file project: mapped UTF-16 definition, type definition, and diagnostics, excluded queries and targets, partial references and Read/Write/Text highlights, unterminated lexical regions, edit refusals, header errors, recovery, cold and closed-file controls, and development capture | `python3 test/protocol/body_fallback.py build/virgil-lsp` (with `virgil-lsp-worker` beside it); also in `make test` |
+| `test/protocol/current_repair.py` | Current-text repair with a real three-file project: a cold open with a syntax error in a method body, its exact substitution, mapped definition, hover, references, and diagnostics outside the body, suppression inside it, no sentinel in any answer, rename and workspace-symbol refusal, repair beside method-body fallback in one analysis, restoration, and refused repairs (a missing brace, a header, a field initializer, two bodies) | `python3 test/protocol/current_repair.py build/virgil-lsp` (with `virgil-lsp-worker` beside it); also in `make test` |
 | `test/protocol/bundled_library.py` | Bundled-library discovery, client override precedence, root errors, and diagnostics, hover, and definition into bundled sources | `python3 test/protocol/bundled_library.py build/virgil-lsp` (with `virgil-lsp-worker` beside it) |
 | `test/protocol/client_initialization.py` | Replay of real editors' initialization exchanges; see the [protocol test README](../test/protocol/README.md) for coverage and capture instructions | `python3 test/protocol/client_initialization.py build/virgil-lsp` |
 | `test/protocol/` | Golden transcripts: `--stdio` input bytes, expected output bytes and exit status | `test/protocol/run.sh build/virgil-lsp` (runs every case) |

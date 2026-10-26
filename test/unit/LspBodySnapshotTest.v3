@@ -39,8 +39,12 @@ def test_provenance(t: Tester) {
 	t.assert(s.store.change(s.uri("A.v3"), 4, CURRENT) == null, "later full text");
 	t.assert(!snapshot.matchesDocument(s.store, s.uri("A.v3")), "substitution is stale");
 	t.assert_eq(null, s.text(snapshot, "A.v3"));
+	// Eviction removes future fallback only. Current-text repair then
+	// substitutes the repaired current text, which the cache never keeps.
 	snapshot = s.analyze(t);
-	t.assert(!snapshot.parsed && !snapshot.degraded(), "eviction removes future fallback only");
+	t.assert(snapshot.parsed && snapshot.degraded(), "the repaired program parsed");
+	var repaired = Strings.format1("/* é😀\t */ component A { def broken() -> int { var x =%s ;\n\treturn 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n", LspCompletionRepair.SENTINEL);
+	t.assertb(repaired, s.text(snapshot, "A.v3"));
 	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
 	s.server.close();
 }
@@ -154,7 +158,10 @@ def test_predecessor_size_limit(t: Tester) {
 	var inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
 	var parser = LspParserDiagnostics.new(LspDiagnosticLists.new(s.store, null));
 	t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
-	t.assert_eq(null, inputs.versions[0].substitution);
+	// Current-text repair substitutes instead of the oversized predecessor.
+	var sub = inputs.versions[0].substitution;
+	t.assert(sub != null, "repaired");
+	if (sub != null) t.assertb(Strings.format1("component A { def broken() { var syntax =%s ; } }\n", LspCompletionRepair.SENTINEL), sub.effective);
 	s.server.close();
 }
 

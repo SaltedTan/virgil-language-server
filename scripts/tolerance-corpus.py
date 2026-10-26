@@ -232,6 +232,42 @@ class Corpus:
                            oracle={"A.v3": original.replace(errors, 'var syntax = 1; ')}, allow_absent=True)
         state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
         yield state
+        # Current-text repair (#293) must refuse a site that needs a brace,
+        # lies in a declaration header or a field initializer, or is one of
+        # sites in two bodies, and must keep a repaired call's arity and type
+        # inside its excluded body. Each oracle also changes target's
+        # signature, so the predecessor's answers are wrong.
+        original = ("component A {\n    def broken() { var x = 0; }\n    def other() { var y = 0; }\n"
+                    "    def target() -> int { return 1; }\n}\n")
+        caller = "component B { def use() -> int { return A.target(); } }\n"
+        changed = original.replace("def target() -> int { return 1; }", "def target() -> bool { return true; }")
+        repairs = (
+            # Only a "}" completes the body. One there would end it early.
+            ("repair-needs-brace", "body", changed.replace("{ var x = 0; }", "{ if (true) { var x = ;\n    }"),
+             changed.replace("{ var x = 0; }", "{ if (true) { var x = 1;\n    } }")),
+            ("repair-in-header", "header", original.replace("def target()", "def target(limit: )"),
+             original.replace("def target()", "def target(limit: int)")),
+            ("repair-in-field-initializer", "body", changed.replace("    def target", "    def pair = (1, true);\n    def limit = pair.;\n    def target"),
+             changed.replace("    def target", "    def pair = (1, true);\n    def limit = pair.1;\n    def target")),
+            ("repair-in-two-bodies", "body", changed.replace("var x = 0;", "var x = ;").replace("var y = 0;", "var y = ;"),
+             changed.replace("var x = 0;", "var x = 1;").replace("var y = 0;", "var y = 1;")),
+            # The repaired call target(1,<sentinel>) has two arguments; the
+            # intended call, and the caller's, have other arities and types.
+            ("repair-call-arity", "body",
+             original.replace("def target() -> int { return 1; }", "def target(a: int, b: bool) -> int { return a; }")
+                     .replace("var x = 0;", "var x = target(1, ;"),
+             original.replace("def target() -> int { return 1; }", "def target(a: int, b: bool) -> int { return a; }")
+                     .replace("var x = 0;", "var x = target(1, true, 3);")),
+        )
+        for name, kind, broken, fixed in repairs:
+            # The arity control's predecessor already calls target in the
+            # body, so its reference set differs only by the binding.
+            previous = original.replace("var x = 0;", "var x = target();") if name == "repair-call-arity" else original
+            project = self.project("negative/" + name, {"A.v3": previous, "B.v3": caller})
+            state = self.state(project, name, "negative", kind, {"A.v3": previous}, {"A.v3": broken},
+                               "original small program", oracle={"A.v3": fixed}, allow_absent=True)
+            state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
+            yield state
         # Three variants per boundary, including distinct fresh diagnostic kinds.
         for variant in (0, 1, 2):
             broken = a.replace("return x;", "return x.;")

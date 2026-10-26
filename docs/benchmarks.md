@@ -869,7 +869,8 @@ answers an editor receives while another file fails to parse. It imports the
 existing benchmark helpers and `Session`; a separate command keeps the successful
 operation timings and output of `bench-lsp.py` unchanged. The baseline below
 predates [method-body fallback](architecture.md#method-body-fallback); its
-comparison follows the original results. Run both modes and all states with:
+comparison follows the original results. The [current-text repair comparison](#current-text-repair-comparison)
+follows that. Run both modes and all states with:
 
 ```sh
 mkdir -p build/bench-results
@@ -952,7 +953,13 @@ captured answer to the scorer and requires a wrong verdict. The
 the signature change whose identifier ranges still match. These controls guard
 against unrestricted substitution and foreign error-limit notices. The error-limit
 control uses 13 old body errors because the benchmark observer contributes
-another error before the intact caller reaches 15. Fifteen extra states cover
+another error before the intact caller reaches 15. Five more controls cover
+[current-text repair](architecture.md#current-text-repair): a body that only a
+`}` would complete, a site in a declaration header, a site in a field
+initializer, sites in two bodies, and a repaired call whose arity and argument
+types differ from both the intended call's and the caller's. Each of their
+oracles also changes the called method's signature, so the predecessor's answers
+are wrong. Fifteen extra states cover
 three variants each of two broken files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
 non-ASCII before the query and one CRLF case), closed-file disk changes with
 watched-file notifications, and project-file changes (remove/add membership and
@@ -977,9 +984,9 @@ the existing phase, allocation, and heap counters. RSS is sampled before shutdow
 These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
-`make test` runs scoring and cleanup regression checks and a seven-state smoke
-replay (two small repair states and all five negative controls, in both modes).
-The smoke run takes about 0.2 seconds on the reference host. The full suite
+`make test` runs scoring and cleanup regression checks and a twelve-state smoke
+replay (two small repair states and all ten negative controls, in both modes).
+The smoke run takes about 0.4 seconds on the reference host. The full suite
 remains opt-in. Run these checks separately with:
 
 ```sh
@@ -1238,3 +1245,143 @@ Server and worker SHA-256 hashes, respectively:
   `0892797acc6551aaed67992a209875c1dc38f05985b2daf3a3393ae362d0ba83`.
 - Rebased fallback: `1fe1db517385d2af97e5c20809f6a76c220ffa05f3880afdf088d5a2954cd21a`,
   `f4be6e6bc739289eed7a89c8078b2edd26a0ee7f6261543e4e7501e9f234fab5`.
+
+### Current-text repair comparison
+
+The [current-text repair](architecture.md#current-text-repair) branch for #293,
+at `edcf04d`, is compared with main at `803012c`, which already has method-body
+fallback. Both used the pinned compiler, enabled probes, the default 384 MiB
+worker heap, and the same `BuildInfo.v3`, and were built from clean clones with
+equal-length paths. Each ran the branch's driver, so both measured the same
+corpus, including the five new negative controls, pinned to CPU 12 under a
+shared lock. Other agents were active on this shared host.
+
+Eligibility for fallback is the classification of
+[Method-body fallback comparison](#method-body-fallback-comparison). Whether a
+state's current text is repaired was classified independently of the returned
+answers by a native probe calling the production `AeneasAdapter.parseFile`,
+`LspCurrentRepair.repair`, and `LspBodyEligibility.compare` functions on every
+broken file. The table counts states retaining **all four features**, allowing
+correct plus partial reference and diagnostic sets, as before → after counts
+over the group's states.
+
+| Corpus | Edit kind | Fallback eligibility | Repaired | Warm before → after | Cold before → after |
+| --- | --- | --- | --- | ---: | ---: |
+| Repair | Body | Eligible | Yes | 24 → 24 / 24 | 0 → 24 / 24 |
+| Repair | Body | Eligible | No | 2 → 2 / 2 | 0 → 0 / 2 |
+| Repair | Body | Ineligible | No | 6 → 6 / 11 | 6 → 6 / 11 |
+| Repair | Header | Eligible | Yes | 4 → 4 / 4 | 0 → 4 / 4 |
+| Repair | Header | Ineligible | No | 0 → 0 / 2 | 0 → 0 / 2 |
+| Repair | Whole file | Ineligible | No | 0 → 0 / 2 | 0 → 0 / 2 |
+| Replay | Body | Eligible | Yes | 67 → 67 / 67 | 0 → 67 / 67 |
+| Replay | Body | Eligible | No | 4 → 4 / 4 | 0 → 0 / 4 |
+| Replay | Body | Ineligible | No | 7 → 7 / 7 | 7 → 7 / 7 |
+| Replay | Header | Ineligible | No | 2 → 2 / 62 | 2 → 2 / 62 |
+| Combined | All | All | All | 116 → 116 / 185 | 15 → 110 / 185 |
+
+Of the 97 body states that fallback recovers in warm sessions, 91 now also
+recover cold, with definition, hover, references, and independent semantic
+diagnostics. The four eligible control-header states, local types and
+conditions inside method bodies, recover cold too. Every warm answer of the 185
+primary states is identical to main's, so fallback's results are unchanged. The
+six body states that stay unrecovered cold are blocked because the parser's
+first error is not where the code is incomplete, and repair doesn't guess
+another site:
+
+- `util-Vector.v3/18`, `/19`, `/23`, and `/24` end a line in `a.length +` or
+  `a.length + 10 +`, inside a call's arguments. The parser reads the next line,
+  `a[s] = e;`, as more of the argument and reports its error at that line's
+  `=`, where no repair applies.
+- `aeneas-member-of-parameter` ends a line in `buffer.`. The parser reads the
+  next line's `if (typeParams != null)` as a member and a call, and reports a
+  missing `;` before its `{`, where nothing is missing.
+- `member-in-match-arm` ends a match case in `p.`. The parser reads the next
+  case's `Square(w) =` as the member, its call, and an assignment, and fails
+  at the `>` of `=>`; neither site's repair parses.
+
+Repairing at the document's last edit would recover all six, but only in warm
+sessions, where fallback already recovers them; a cold open has no known edit.
+No fallback-ineligible primary state is repaired. Two of the 11 ineligible
+repair-fixture body states are field initializers, two have a second syntax
+error in another body or outside one, and one is a missing `}`; all five are
+refused. The other six already parse. The Aeneas condition and for-header
+replays have deleted the rest of a line that holds a `{`, so their braces are
+unbalanced and no repair parses; truncated files are refused the same way. The
+partial and wrong counts include the controls and extra states.
+
+Per-feature primary counts after repair follow. The warm rows are identical to
+the [fallback comparison](#method-body-fallback-comparison)'s.
+
+| Corpus / mode | Exact definition | Exact hover | Exact references | Partial references | Exact diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair / warm | 66/87 | 66/87 | 65/87 | 1 | 36/45 | 0 | 0 |
+| Repair / cold | 61/87 | 61/87 | 60/87 | 1 | 34/45 | 0 | 0 |
+| Replay / warm | 300/540 | 300/540 | 274/540 | 26 | 80/140 | 0 | 0 |
+| Replay / cold | 284/540 | 284/540 | 262/540 | 22 | 76/140 | 0 | 0 |
+
+There are **zero wrong answers** across all 420 mode records of both runs, and
+zero worker replacements. Main has 28 partial answers and the branch 54: the 23
+new ones are cold reference lists that omit uses inside a repaired body, the
+partial diagnostic set of the shadowing-local control now also appears cold,
+and the arity control has one partial reference list in each mode. All ten
+negative controls pass in both modes and reject their injected predecessor
+answers. Of the five new ones, a body that only a `}` would complete, a header
+site, a field-initializer site, and sites in two bodies are refused, so their
+answers are permitted suppression; the arity control is repaired in both modes,
+and its definition, hover, and diagnostics match the current program's oracle
+exactly, with no diagnostic or hover type from the repaired call outside its
+body. Among the earlier controls, the boundary-escape control is now repaired in
+both modes and matches its oracle, whose later method belongs to the component
+that the current braces give it. Twelve extra-state records gain a repair, cold
+or warm after a project-file change, and all their answers are correct.
+
+Cold definition, which includes waiting for the analysis, now waits for an
+analysis that verifies: its p95 rose from 196.3 to 678.9 ms on replays and from
+197.1 to 702.3 ms on repair states, as warm fallback analyses already did. The
+whole run took 240.80 seconds against main's 204.04, because cold broken states
+now verify and collect semantics. Warm latencies are unchanged.
+
+Successful operations were compared with `bench-lsp.py`, alternating the two
+executables over six process blocks, with two warmups and five measured
+operations per block (30 samples per build, project, and operation), on the
+same CPU and lock. Every semantic check passes, and none of the 33 comparisons
+is flagged: all have overlapping p10–p90 intervals. The largest median change,
+util `completion_hit`, is 0.727 → 1.059 ms with overlapping intervals; completion
+doesn't use the changed capture. Worker collection counts and live-after-GC
+bytes match exactly for fresh and reused analyses in all three projects; each
+analysis allocates 8 more bytes, for the parser's error recorder. Aeneas results
+are **median (p10–p90), milliseconds**:
+
+| Successful operation | Before | After |
+| --- | ---: | ---: |
+| Fresh analysis | 356.331 (344.090–361.572) | 354.023 (341.160–359.517) |
+| Reused analysis | 290.503 (281.833–310.625) | 292.463 (281.910–307.803) |
+| Definition | 0.205 (0.171–0.507) | 0.205 (0.169–0.225) |
+| Hover | 0.175 (0.159–0.227) | 0.187 (0.154–0.219) |
+| References | 0.842 (0.797–22.778) | 0.819 (0.793–24.432) |
+| Syntax diagnostics | 1.521 (0.380–1.554) | 1.491 (0.378–1.540) |
+| Semantic publication | 535.121 (514.561–549.691) | 527.048 (510.374–542.569) |
+
+The builds and measurements used these commands from each clean clone and from
+the branch, with `evidence` set to the task's scratch directory. The branch's
+clone was rebuilt with main's `BuildInfo.v3` copied in and `make -o buildinfo`:
+
+```sh
+make BUILD=build BENCH=1 all bench-metadata
+flock bench.lock taskset -c 12 python3 scripts/bench-tolerance.py \
+  --exe "$evidence/base/build/virgil-lsp" --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-base.json"
+flock bench.lock taskset -c 12 python3 scripts/bench-tolerance.py \
+  --exe "$evidence/head/build/virgil-lsp" --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-head.json"
+flock bench.lock taskset -c 12 python3 scripts/bench-lsp.py \
+  --exe "$evidence/base/build/virgil-lsp" --exe "$evidence/head/build/virgil-lsp" \
+  --blocks 6 --cpu 12 --require-probes --output "$evidence/lsp-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Before: `725a5391fc357789d035471f6e30cd3d4855d086fde16b96085623d693ccfb88`,
+  `aac0ad16d2108058d508a716c7c492332866cffd9d242e285b6e34611c64be9a`.
+- After: `650c641ebaa538a09cce5f2b43a865d1c6e91f43cac8e8f918b4623d89e44d22`,
+  `af89cf6e3247fd8db78990cb81fddce9b59deaa4c3d5f74419a56c4f7f5928b5`.

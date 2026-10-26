@@ -1,0 +1,237 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+def T = UnitTests.register;
+def X = [
+	T("LspCurrentRepair:repairs", test_repairs),
+	T("LspCurrentRepair:mapping", test_mapping),
+	T("LspCurrentRepair:two_sites", test_two_sites),
+	T("LspCurrentRepair:refusals", test_refusals),
+	T("LspCurrentRepair:anchors", test_anchors),
+	T("LspCurrentRepair:parse_budget", test_parse_budget),
+	T("LspCurrentRepair:body_edges", test_body_edges),
+	T("LspCurrentRepair:fallback_first", test_fallback_first),
+	()
+];
+def S = LspCompletionRepair.SENTINEL;
+def wrap(body: string) -> string {
+	return Strings.format1("component A { def f(p: A, a: Array<int>) { %s } def g() -> int { return 1; } }", body);
+}
+def find(text: Array<byte>, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def repair(text: string) -> (Array<byte>, LspBodyFallback, string) {
+	var parsed = AeneasAdapter.parseFile("A.v3", text, []);
+	return LspCurrentRepair.repair("A.v3", text, parsed.repairAt, [], LspCurrentRepair.MAX_SITES);
+}
+// {current} repairs to exactly {repaired}.
+def check(t: Tester, current: string, repaired: string) {
+	var r = repair(current);
+	if (r.0 == null) return t.fail2("expected a repair of %s: %s", current, Strings.nonnull(r.2));
+	if (!Strings.equal(repaired, r.0)) return t.fail2("expected %s, got %s", repaired, r.0);
+	t.assert_eq(null, r.2);
+	t.assert(AeneasAdapter.parseFile("A.v3", r.0, []).diagnostics.length == 0, "the repaired text parses");
+}
+// {current} is refused for {reason}.
+def refuse(t: Tester, current: string, reason: string) {
+	var r = repair(current);
+	if (r.0 != null) return t.fail2("expected no repair of %s, got %s", current, r.0);
+	t.assert_eq(null, r.1);
+	t.assertb(reason, r.2);
+}
+
+// Each repair that completion makes, plus a placeholder for a missing
+// initializer or operand: the sentinel where a name or an operand is
+// missing, the closers that the innermost open construct lacks, and a ";".
+def test_repairs(t: Tester) {
+	// A missing member name.
+	check(t, wrap("var n = p."), wrap(Strings.format1("var n = p.%s;", S)));
+	check(t, wrap("var n = p.f(1).\n\t"), wrap(Strings.format1("var n = p.f(1).%s;\n\t", S)));
+	// A keyword can name a member, so the parser reads "p.var" as one, and
+	// the site follows that reading.
+	check(t, wrap("var n = p.\n\tvar m = 1;"), wrap("var n = p.\n\tvar; m = 1;"));
+	// A missing ")" for a call, with and without arguments.
+	check(t, wrap("var n = p.f(\n\treturn;"), wrap(Strings.format1("var n = p.f(%s);\n\treturn;", S)));
+	check(t, wrap("var n = p.f(1, ;"), wrap(Strings.format1("var n = p.f(1,%s) ;", S)));
+	check(t, wrap("var n = p.f(1, 2\n\treturn;"), wrap("var n = p.f(1, 2);\n\treturn;"));
+	// A missing "]" for an index.
+	check(t, wrap("var n = a[\n\treturn;"), wrap(Strings.format1("var n = a[%s];\n\treturn;", S)));
+	// A missing ">" for type arguments.
+	check(t, wrap("var q: Array<\n\treturn;"), wrap(Strings.format1("var q: Array<%s>;\n\treturn;", S)));
+	// A missing ";" where the statement ends.
+	check(t, wrap("var y = 1\n\treturn;"), wrap("var y = 1;\n\treturn;"));
+	check(t, wrap("var y = p\n\treturn;"), wrap("var y = p;\n\treturn;"));
+	// A placeholder for a missing initializer or operand.
+	check(t, wrap("var x = ;"), wrap(Strings.format1("var x =%s ;", S)));
+	check(t, wrap("var x = 1 + ;"), wrap(Strings.format1("var x = 1 +%s ;", S)));
+	// A ";" just before a body's closing brace is inside the body.
+	check(t, "component A { def g() -> int { return 1 } }", "component A { def g() -> int { return 1; } }");
+	// A top-level method's body is its file component's method body.
+	check(t, "def f() { var x = ; }", Strings.format1("def f() { var x =%s ; }", S));
+	// A missing type, which only the sentinel can name.
+	check(t, wrap("var q: \n\treturn;"), wrap(Strings.format1("var q:%s; \n\treturn;", S)));
+}
+
+// The single changed interval spans the inserted bytes; the excluded body is
+// the repaired text's.
+def test_mapping(t: Tester) {
+	var current = wrap("var x = ;"), r = repair(current);
+	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
+	var m = r.1, at = find(current, "= ;") + 1, body = find(current, "{ var x");
+	t.asserti(at, m.begin);
+	t.asserti(at, m.currentEnd);
+	t.asserti(at + S.length, m.effectiveEnd);
+	t.asserti(-S.length, m.delta);
+	t.asserti(body, m.bodyBegin);
+	var end = find(current, "} def g") + 1;
+	t.asserti(end, m.currentBodyEnd);
+	t.asserti(end + S.length, m.effectiveBodyEnd);
+	// Offsets before the body stay; offsets after it shift by the insertion.
+	t.asserti(body - 1, m.toEffective(body - 1));
+	t.asserti(-1, m.toEffective(body));
+	t.asserti(-1, m.toEffective(end - 1));
+	t.asserti(end + S.length, m.toEffective(end));
+	t.asserti(end, m.toCurrent(end + S.length));
+	t.asserti(-1, m.toCurrent(at));
+	t.assert(!m.maps(body - 1, body + 1), "a range touching the body does not map");
+}
+
+// At most two sites, each in the same body, and each reparsed once.
+def test_two_sites(t: Tester) {
+	check(t, wrap("var x = ; var y = ;"), wrap(Strings.format2("var x =%s ; var y =%s ;", S, S)));
+	check(t, wrap("var n = p.f(1, \n\tvar y = ;"), wrap(Strings.format2("var n = p.f(1,%s); \n\tvar y =%s ;", S, S)));
+	refuse(t, wrap("var x = ; var y = ; var z = ;"), "repaired text does not parse");
+}
+
+def test_refusals(t: Tester) {
+	// A missing "}" needs a brace, which no repair inserts.
+	refuse(t, "component A { def f() { var x = 1;\n\tdef g() -> int { return 1; } }", "repaired text does not parse");
+	refuse(t, "component A { def f() { if (true) { var x = ; } def g() -> int { return 1; } }", "repaired text does not parse");
+	// A declaration header and a field initializer are not in a method or
+	// constructor body.
+	refuse(t, "component A { def f(x: ) { } }", "change is not strictly inside one method or constructor body");
+	refuse(t, "component A { def f() -> { } }", "change is not strictly inside one method or constructor body");
+	refuse(t, "component A { def p = A.new(); def limit = p.\n}", "change is not strictly inside one method or constructor body");
+	refuse(t, "component A { var x: int = ; }", "change is not strictly inside one method or constructor body");
+	// Sites in two bodies.
+	refuse(t, "component A { def f() { var x = ; } def g() { var y = ; } }", "change is not strictly inside one method or constructor body");
+	// An unterminated region before or across the site.
+	refuse(t, wrap("var s = \"abc;\n\tvar x = ;"), "repaired text does not parse");
+	refuse(t, wrap("var x = ; /* open"), "repaired text does not parse");
+}
+
+// A site starts at the end of the token before the parser's first error:
+// before skipped whitespace and comments, and before a keyword that the
+// parser read as an identifier. In a comment or a literal, or where nothing
+// is missing, there is no site.
+def test_anchors(t: Tester) {
+	var text = wrap("var n = p. // more\n\t/* and */");
+	var parsed = AeneasAdapter.parseFile("A.v3", text, []);
+	t.asserti(find(text, "p.") + 2, parsed.repairAt);
+	text = wrap("var n = p.f(\n\treturn n;");
+	parsed = AeneasAdapter.parseFile("A.v3", text, []);
+	t.asserti(find(text, "p.f(") + 4, parsed.repairAt);
+	t.asserti(-1, AeneasAdapter.parseFile("A.v3", wrap("var n = 1;"), []).repairAt);
+	text = wrap("if (true) { } // a.\n\tvar s = \"b.\";");
+	t.assert_eq(null, LspCurrentRepair.site(text, find(text, "a.") + 2));
+	t.assert_eq(null, LspCurrentRepair.site(text, find(text, "b.") + 2));
+	t.assert_eq(null, LspCurrentRepair.site(text, find(text, "true)") + 5));
+	t.assert_eq(null, LspCurrentRepair.site(text, -1));
+	t.assert_eq(null, LspCurrentRepair.site(text, text.length + 1));
+}
+
+// Repair parses at most its budget's repaired texts.
+def test_parse_budget(t: Tester) {
+	var current = wrap("var x = ; var y = ;");
+	var parsed = AeneasAdapter.parseFile("A.v3", current, []);
+	var r = LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 1);
+	t.assert_eq(null, r.0);
+	t.assertb("repair exceeds the parse budget", r.2);
+	r = LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 0);
+	t.assertb("repair exceeds the parse budget", r.2);
+	r = LspCurrentRepair.repair("A.v3", wrap("var x = ;"), AeneasAdapter.parseFile("A.v3", wrap("var x = ;"), []).repairAt, [], 1);
+	t.assert(r.0 != null, "one site needs one parse");
+	// A broken file with an ineligible cached predecessor and a stale parse
+	// outcome has one parse left for repair.
+	var s = AnalyzedTextSession.new(t);
+	var old = "component A { def broken() { var x = 1; } def a() -> int { return B.b(); } }\n";
+	s.open("A.v3", 1, old);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText, version = 1;
+	for (body in ["var x = ; var y = ;", "var x = ;"]) {
+		var text = Strings.format1("component A { def broken() { %s } def a() -> int { return B.b(); } }\n", body);
+		version++;
+		t.assert_eq(null, s.store.change(s.uri("A.v3"), version, text));
+		// The cached text has a header that differs, so fallback is ineligible.
+		cache.put(ctx, s.uri("A.v3"), "component A { def broken(x: int) { } def a() -> int { return B.b(); } }\n");
+		var keys = [DocumentUri.normalize(s.uri("A.v3"))];
+		var inputs = LspAnalysisCapture.capture(s.store, keys, true).0;
+		// A new parser has no parse outcome to reuse.
+		var parser = LspParserDiagnostics.new(LspDiagnosticLists.new(s.store, null));
+		t.assert_eq(null, inputs.substitute(s.store, ctx, cache, parser));
+		t.assert_eq(body.length < 12, inputs.versions[0].substitution != null);
+	}
+	s.server.close();
+}
+
+// The whole repaired body, including its braces, is excluded from a real
+// analysis's answers; offsets on either side of it map.
+def test_body_edges(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	var current = "component A { def broken() -> int { return a(1, ; } def a() -> int { return B.b(); } }\n";
+	s.open("A.v3", 1, current);
+	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
+	t.assert(snapshot.parsed && snapshot.degraded(), "the repaired program parsed");
+	var sub = snapshot.documentVersions[i].substitution;
+	if (sub == null) return s.server.close();
+	var repaired = Strings.format1("component A { def broken() -> int { return a(1,%s) ; } def a() -> int { return B.b(); } }\n", S);
+	t.assertb(repaired, s.text(snapshot, "A.v3"));
+	t.assertb(current, LspAnalysisCapture.currentText(s.store, snapshot, i, s.text(snapshot, "A.v3")));
+	var open = find(current, "{ return a("), close = find(current, "} def a") + 1;
+	t.asserti(open, sub.mapping.bodyBegin);
+	t.asserti(close, sub.mapping.currentBodyEnd);
+	t.asserti(open - 1, snapshot.effectiveOffset(i, open - 1));
+	t.asserti(-1, snapshot.effectiveOffset(i, open));
+	t.asserti(-1, snapshot.effectiveOffset(i, close - 1));
+	t.asserti(close + S.length + 1, snapshot.effectiveOffset(i, close));
+	// The arity error of the repaired call is inside the body, and so is
+	// every location of the sentinel; neither is reported at a current range.
+	var inBody = 0;
+	for (d in snapshot.diagnostics) {
+		if (!Strings.equal(d.path, s.path("A.v3"))) continue;
+		if (snapshot.currentRange(i, d.beginOffset, d.endOffset).0 < 0) inBody++;
+		else t.fail1("diagnostic outside the body: %s", d.message);
+	}
+	t.assert(inBody > 0, "the repaired body has its own errors");
+	for (d in snapshot.declarations) {
+		if (d.range == null || !Strings.equal(d.range.path, s.path("A.v3"))) continue;
+		var r = snapshot.currentRange(i, d.range.beginOffset, d.range.endOffset);
+		if (r.0 >= 0) t.assert(r.1 <= open || r.0 >= close, "declarations outside the body map");
+	}
+	s.server.close();
+}
+
+// Method-body fallback substitutes cached text when it can; repair applies
+// only when it cannot.
+def test_fallback_first(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	var old = "component A { def broken() -> int { var x = 1; return x; } def a() -> int { return B.b(); } }\n";
+	var current = "component A { def broken() -> int { var x = ; return x; } def a() -> int { return B.b(); } }\n";
+	s.open("A.v3", 1, old);
+	s.settle();
+	var ctx = s.context(), cache = s.server.projects.parseableText;
+	t.assert_eq(null, s.store.change(s.uri("A.v3"), 2, current));
+	var snapshot = s.analyze(t);
+	t.assertb(old, s.text(snapshot, "A.v3"));
+	cache.removeContext(ctx);
+	t.assert_eq(null, s.store.change(s.uri("A.v3"), 3, current));
+	snapshot = s.analyze(t);
+	t.assertb(Strings.format1("component A { def broken() -> int { var x =%s ; return x; } def a() -> int { return B.b(); } }\n", S),
+		s.text(snapshot, "A.v3"));
+	// The repaired text is not parseable text for the cache.
+	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
+	s.server.close();
+}
