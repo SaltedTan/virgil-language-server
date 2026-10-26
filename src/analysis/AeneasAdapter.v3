@@ -26,7 +26,11 @@ class AnalysisDiagnostic(path: string, beginLine: int, beginColumn: int,
 }
 
 // The result of parsing a single file.
-class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, declarationCount: int) { }
+class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, declarationCount: int) {
+	// The end of the token before the first error, or -1 if the file parsed
+	// (AnalysisParseErrors.firstTokenEnd).
+	var repairAt = -1;
+}
 
 // One source file of a program, supplied as in-memory bytes. Whole-program
 // analysis never reads its inputs from disk.
@@ -470,16 +474,25 @@ component AeneasAdapter {
 			diagnostics[i].beginOffset = errors.offsets[i].0;
 			diagnostics[i].endOffset = errors.offsets[i].1;
 		}
-		return FileParseResult.new(path, diagnostics, decls);
+		var result = FileParseResult.new(path, diagnostics, decls);
+		if (errors.numErrors > 0) result.repairAt = errors.firstTokenEnd;
+		return result;
 	}
 	// Parse block-bodied method/constructor ranges for last-parseable text.
 	// Null means the text did not parse with these language options.
 	def methodBodies(path: string, input: Array<byte>, options: Array<string>) -> Array<(int, int)> {
+		return repairParse(path, input, options).0;
+	}
+	// One parse for current-text repair: the method bodies, as {methodBodies}
+	// gives them, or null and the end of the token before the first error
+	// (FileParseResult.repairAt).
+	def repairParse(path: string, input: Array<byte>, options: Array<string>) -> (Array<(int, int)>, int) {
 		var errors = AnalysisParseErrors.new(MAX_ERRORS), syntax = SymbolSyntaxIndex.new();
 		setLanguageOptions(options);
 		var file = AnalysisSingleFileParser.parse(path, input, errors, syntax, TypeCache.new(), null);
 		resetLanguageOptions();
-		return if(errors.numErrors == 0, AnalysisMethodBodies.new(file, syntax).collect());
+		if (errors.numErrors > 0) return (null, errors.firstTokenEnd);
+		return (AnalysisMethodBodies.new(file, syntax).collect(), -1);
 	}
 	// Parse current document bytes without verification, through the same
 	// driver and recovery as {parseFile}. A failed parse yields no symbols:
