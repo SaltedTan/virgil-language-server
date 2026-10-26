@@ -328,6 +328,59 @@ local function check()
   vim.api.nvim_set_current_buf(words_buf)
   print("PASS: nvim.implementation.jump")
 
+  -- nvim.type-hierarchy.response: Polygon's item, with its declaration's
+  -- range and the data that later requests resolve, and one level up and
+  -- down from it, through the items the server gave; Shape's subtypes are
+  -- Polygon and Circle.
+  local function hierarchy(method, params)
+    response, err = client:request_sync(method, params, 10000, words_buf)
+    assert(response and not response.err, method .. " failed: " .. vim.inspect(err or response.err))
+    return response.result
+  end
+  local function item(name, detail, first, last, character)
+    local selection = {
+      start = { line = first, character = 6 }, ["end"] = { line = first, character = 6 + #name },
+    }
+    return {
+      name = name, kind = 5, detail = detail, uri = shapes_uri,
+      range = { start = { line = first, character = 0 }, ["end"] = { line = last, character = character } },
+      selectionRange = selection,
+      data = { uri = shapes_uri, position = selection.start, name = name, kind = "class" },
+    }
+  end
+  local polygon = item("Polygon", "class Polygon extends Shape", 7, 9, 1)
+  local shape = item("Shape", "class Shape", 4, 6, 1)
+  local prepared = hierarchy("textDocument/prepareTypeHierarchy", {
+    textDocument = { uri = shapes_uri }, position = { line = 7, character = 6 },
+  })
+  assert(vim.deep_equal(prepared, { polygon }), "unexpected item for Polygon: " .. vim.inspect(prepared))
+  local supertypes = hierarchy("typeHierarchy/supertypes", { item = prepared[1] })
+  assert(vim.deep_equal(supertypes, { shape }), "unexpected supertypes of Polygon: " .. vim.inspect(supertypes))
+  local subtypes = hierarchy("typeHierarchy/subtypes", { item = prepared[1] })
+  assert(vim.deep_equal(subtypes, { item("Square", "class Square extends Polygon", 10, 10, 32) }),
+    "unexpected subtypes of Polygon: " .. vim.inspect(subtypes))
+  subtypes = hierarchy("typeHierarchy/subtypes", { item = supertypes[1] })
+  assert(vim.deep_equal(subtypes, { polygon, item("Circle", "class Circle extends Shape", 11, 13, 1) }),
+    "unexpected subtypes of Shape: " .. vim.inspect(subtypes))
+  print("PASS: nvim.type-hierarchy.response")
+
+  -- nvim.type-hierarchy.quickfix: the client's own command lists Polygon's
+  -- one subtype, Square, at its declaration.
+  vim.api.nvim_set_current_buf(shapes_buf)
+  vim.api.nvim_win_set_cursor(0, { 8, 6 })
+  vim.fn.setqflist({}, " ", { title = "before the type hierarchy" })
+  vim.lsp.buf.typehierarchy("subtypes")
+  wait_for("the type hierarchy quickfix list", function()
+    return vim.fn.getqflist({ title = 0 }).title == "LSP type hierarchy"
+  end)
+  local entries = vim.fn.getqflist()
+  assert(#entries == 1 and vim.api.nvim_buf_get_name(entries[1].bufnr) == shapes and entries[1].lnum == 11
+    and entries[1].col == 1 and entries[1].text == "Square class Square extends Polygon",
+    "unexpected type hierarchy quickfix list: " .. vim.inspect(entries))
+  vim.cmd.cclose()
+  vim.api.nvim_set_current_buf(words_buf)
+  print("PASS: nvim.type-hierarchy.quickfix")
+
   -- Rename needs a program that verifies, so an unsaved edit fixes the type
   -- error first. The client's own rename, with its prepareRename and the
   -- server's versioned edit, renames both uses of the local line, and one
@@ -481,7 +534,7 @@ local function check()
   assert(exited.code == 0 and exited.signal == 0,
     "server did not exit cleanly: " .. vim.inspect(exited))
   wait_for("client removal", function() return vim.lsp.get_client_by_id(client.id) == nil end)
-  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
+  print("PASS: Neovim attach, diagnostics publish/clear, symbols, Virgil root, definition, type definition, inlay hints, hover, signature help, references, document highlights, implementation, type hierarchy, rename and undo, keyword, declaration, and member completion, workspace symbols, project file edits, and clean server exit")
 end
 
 vim.schedule(function()

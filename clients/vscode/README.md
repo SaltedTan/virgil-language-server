@@ -176,6 +176,7 @@ The test copies the [Neovim smoke-test fixture](../../test/e2e/nvim/fixture/) in
 
 - `vscode.executeTypeDefinitionProvider` on a `puts` call returns the exact `StringBuilder` class name in `lib/util/StringBuilder.v3`, while the `int` local has no type location;
 - `vscode.executeImplementationProvider` in `words/Shapes.v3` returns the exact names of the direct and transitive subclasses of `Shape`, the exact names of the methods that override its `area`, and nothing for the unextended `Circle`;
+- `vscode.prepareTypeHierarchy` on `Polygon` in `words/Shapes.v3` returns its one item, with its declaration's exact range, name range, kind, and detail, which **Show Type Hierarchy** shows; `vscode.provideSupertypes` on it returns only `Shape`, `vscode.provideSubtypes` only `Square`, one level down, and on `Shape`, `Polygon` and `Circle`;
 - with no folder open, opening `bad.v3` activates the extension, which starts the selected server;
 - with the fixture as the workspace folder, its `.virgil-lsp.json` activates the extension before any document opens; external-server runs check that the output channel names the root from `virgil.virgilRoot`, while bundled runs check the bundle selection with no path or root settings and no server on `PATH`;
 - `bad.v3` has the parser diagnostic "invalid start of expression" (`ParseError`, from `aeneas`) with the empty range at line 3, column 27, and no document symbols;

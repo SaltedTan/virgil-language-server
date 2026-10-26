@@ -22,6 +22,8 @@ All three editor suites also check that type definition on the `puts` call goes 
 
 They also check that implementation in `words/Shapes.v3` returns the exact names of the subclasses of `Shape`, direct and transitive, and of the methods that override its `area`, and nothing for the unextended `Circle`. VS Code calls `vscode.executeImplementationProvider`. Plain Neovim drives `vim.lsp.buf.implementation()` and LazyVim drives `gI`, and both check the jump from `Polygon` to its one subclass, `Square`.
 
+VS Code and plain Neovim also check type hierarchy there: the exact item of `Polygon`, with its declaration's range and detail, its one supertype, `Shape`, its one subtype, `Square`, and `Shape`'s subtypes, `Polygon` and `Circle`. VS Code calls `vscode.prepareTypeHierarchy`, `vscode.provideSupertypes`, and `vscode.provideSubtypes`; plain Neovim makes the same requests, also checking each item's data, and checks the quickfix list that `vim.lsp.buf.typehierarchy("subtypes")` fills. LazyVim binds no key to type hierarchy, so its suite doesn't check it.
+
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.
 
 The editor tests don't cover:
@@ -37,7 +39,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, implementation, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
+For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, implementation, type hierarchy, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |

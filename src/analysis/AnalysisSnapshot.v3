@@ -499,13 +499,7 @@ class AnalysisSnapshot {
 	def implementations(decl: AnalysisDeclaration) -> Array<AnalysisDeclaration> {
 		if (parents == null || decl == null) return [];
 		if (decl.kind != AnalysisDeclKind.CLASS && decl.kind != AnalysisDeclKind.METHOD) return [];
-		var d = -1;
-		for (i < declarations.length) {
-			if (declarations[i] == decl) {
-				d = i;
-				break;
-			}
-		}
+		var d = indexOf(decl);
 		if (d < 0) return [];
 		if (children == null) indexChildren();
 		var found = Vector<int>.new();
@@ -513,21 +507,50 @@ class AnalysisSnapshot {
 			var code = if(k < 0, d, found[k]) + 1;
 			for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) found.put(children[j]);
 		}
+		var order = located(found.extract(), decl.range), result = Array<AnalysisDeclaration>.new(order.length);
+		for (i < order.length) result[i] = declarations[order[i]];
+		return result;
+	}
+	// The direct subtypes of declaration {i}, if it is a class or a variant
+	// case: the indexes of the classes and cases whose parent it is, that
+	// have source ranges, in byte order of path and then by offset, each
+	// location once and never {i}'s own. The first query builds the reverse
+	// index, as {implementations} does. See
+	// docs/architecture.md#type-hierarchy.
+	def subtypes(i: int) -> Array<int> {
+		var decl = declarations[i];
+		if (parents == null || (decl.kind != AnalysisDeclKind.CLASS && decl.kind != AnalysisDeclKind.VARIANT_CASE)) return [];
+		if (children == null) indexChildren();
+		var found = Vector<int>.new(), code = i + 1;
+		for (j = firstChild(code); j < children.length && parents[children[j]] == code; j++) {
+			var k = declarations[children[j]].kind;
+			if (k == AnalysisDeclKind.CLASS || k == AnalysisDeclKind.VARIANT_CASE) found.put(children[j]);
+		}
+		return located(found.extract(), decl.range);
+	}
+	// The index of {decl} in {declarations}, or -1.
+	def indexOf(decl: AnalysisDeclaration) -> int {
+		for (i < declarations.length) if (declarations[i] == decl) return i;
+		return -1;
+	}
+	// The declarations {found} that have source ranges, in byte order of path
+	// and then by offset, each location once and never at {own}.
+	private def located(found: Array<int>, own: AnalysisRange) -> Array<int> {
 		var located = Vector<int>.new();
 		for (k < found.length) {
 			var r = declarations[found[k]].range;
 			if (r.path != null && r.beginOffset >= 0) located.put(found[k]);
 		}
 		var order = AnalysisTables.sort(located.extract(), locationBefore);
-		var result = Vector<AnalysisDeclaration>.new(), own = decl.range;
+		var result = Vector<int>.new();
 		for (i in order) {
 			var r = declarations[i].range;
 			if (own.path != null && r.beginOffset == own.beginOffset && Strings.equal(r.path, own.path)) continue;
 			if (result.length > 0) {
-				var last = result[result.length - 1].range;
+				var last = declarations[result[result.length - 1]].range;
 				if (last.beginOffset == r.beginOffset && Strings.equal(last.path, r.path)) continue;
 			}
-			result.put(declarations[i]);
+			result.put(i);
 		}
 		return result.extract();
 	}

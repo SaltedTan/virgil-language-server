@@ -101,6 +101,11 @@
       "matrix": true
     },
     {
+      "id": "type-hierarchy",
+      "label": "Type hierarchy",
+      "matrix": true
+    },
+    {
       "id": "inlay-hints",
       "label": "Inlay hints",
       "matrix": true
@@ -1875,6 +1880,36 @@
       "description": "LazyVim's gI jumps from Polygon to the exact line and column of its one subclass, Square, in words/Shapes.v3, then returns to Words.v3."
     },
     {
+      "id": "vscode.type-hierarchy.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "vscode.prepareTypeHierarchy on Polygon in words/Shapes.v3 returns its exact item, with its declaration's range, name range, kind, and detail; vscode.provideSupertypes gives Shape alone, and vscode.provideSubtypes gives Square alone, one level down, and Polygon and Circle for Shape."
+    },
+    {
+      "id": "nvim.type-hierarchy.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "prepareTypeHierarchy on Polygon in words/Shapes.v3 returns its exact item, with its declaration's range, name range, kind, detail, and data; supertypes gives Shape alone, and subtypes gives Square alone, one level down, and Polygon and Circle for Shape."
+    },
+    {
+      "id": "nvim.type-hierarchy.quickfix",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "ui-state",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "vim.lsp.buf.typehierarchy(\"subtypes\") on Polygon fills the quickfix list with one entry, Square with its detail at the exact line and column of its declaration in words/Shapes.v3, then closes it and returns to Words.v3."
+    },
+    {
       "id": "vscode.inlay-hints.response",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -1946,6 +1981,13 @@
       },
       {
         "setup": "vscode-linux",
+        "feature": "type-hierarchy",
+        "level": "api",
+        "checks": ["vscode.type-hierarchy.response"],
+        "notCovered": ["vscode.type-hierarchy-view"]
+      },
+      {
+        "setup": "vscode-linux",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -2051,6 +2093,13 @@
       },
       {
         "setup": "vscode-macos",
+        "feature": "type-hierarchy",
+        "level": "api",
+        "checks": ["vscode.type-hierarchy.response"],
+        "notCovered": ["vscode.type-hierarchy-view"]
+      },
+      {
+        "setup": "vscode-macos",
         "feature": "inlay-hints",
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
@@ -2153,6 +2202,13 @@
         "level": "api",
         "checks": ["vscode.implementation.response"],
         "notCovered": ["vscode.implementation-editor"]
+      },
+      {
+        "setup": "ssh-linux-client",
+        "feature": "type-hierarchy",
+        "level": "api",
+        "checks": ["vscode.type-hierarchy.response"],
+        "notCovered": ["vscode.type-hierarchy-view"]
       },
       {
         "setup": "ssh-linux-client",
@@ -2257,6 +2313,13 @@
         "feature": "implementation",
         "level": "api-ui-state",
         "checks": ["nvim.implementation.response", "nvim.implementation.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-linux",
+        "feature": "type-hierarchy",
+        "level": "api-ui-state",
+        "checks": ["nvim.type-hierarchy.response", "nvim.type-hierarchy.quickfix"],
         "notCovered": []
       },
       {
@@ -2362,6 +2425,13 @@
         "feature": "implementation",
         "level": "api-ui-state",
         "checks": ["nvim.implementation.response", "nvim.implementation.jump"],
+        "notCovered": []
+      },
+      {
+        "setup": "nvim-macos",
+        "feature": "type-hierarchy",
+        "level": "api-ui-state",
+        "checks": ["nvim.type-hierarchy.response", "nvim.type-hierarchy.quickfix"],
         "notCovered": []
       },
       {
@@ -2468,6 +2538,13 @@
         "level": "api-ui-state",
         "checks": ["lazyvim.implementation.response", "lazyvim.implementation.jump"],
         "notCovered": []
+      },
+      {
+        "setup": "lazyvim-linux",
+        "feature": "type-hierarchy",
+        "level": null,
+        "checks": [],
+        "notCovered": ["lazyvim.type-hierarchy"]
       },
       {
         "setup": "lazyvim-linux",
@@ -2573,6 +2650,13 @@
         "level": "api-ui-state",
         "checks": ["lazyvim.implementation.response", "lazyvim.implementation.jump"],
         "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "type-hierarchy",
+        "level": null,
+        "checks": [],
+        "notCovered": ["lazyvim.type-hierarchy"]
       },
       {
         "setup": "lazyvim-macos",
@@ -2975,6 +3059,18 @@
       "id": "vscode.implementation-editor",
       "kind": "visual",
       "what": "the editor or peek view that Go to Implementations opens",
+      "planned": null
+    },
+    {
+      "id": "vscode.type-hierarchy-view",
+      "kind": "visual",
+      "what": "the Type Hierarchy view that Show Type Hierarchy opens",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.type-hierarchy",
+      "kind": "behavior",
+      "what": "type hierarchy, which LazyVim binds to no key",
       "planned": null
     }
   ],

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- [Type hierarchy](docs/architecture.md#type-hierarchy) (`textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, and `typeHierarchy/subtypes`) shows a class's superclass, a variant case's variant, and the variant an open variant extends, and the classes, cases, and variants that extend a type, one level at a time, from the class hierarchy that verification records. VS Code shows it as **Show Type Hierarchy** and Neovim as `vim.lsp.buf.typehierarchy()`. An item from an earlier analysis still finds its declaration after edits in other files and after edits in its own file that leave the declaration where it was, and gets nothing once the declaration moves, is deleted, or is replaced, never a different declaration; VS Code and Neovim checks cover exact items ([#291](https://github.com/SaltedTan/virgil-language-server/issues/291)).
+
 ### Changed
 
 - [Rename](docs/architecture.md#rename) renames a method together with its override family, the methods that it overrides and every method that overrides one of them in subclasses and variant cases, with every use of any of them, from the class hierarchy that verification records. A method that only shares its name with others, such as `render` in unrelated classes, can now be renamed, and they keep their name, and a new name that another method has is accepted. The preflight now also checks that every method overrides the same method as before, and refuses a new name that would make a method start or stop overriding one; a family with a member in a dependency or under the Virgil root is refused ([prepare rename](docs/architecture.md#prepare-rename), [#286](https://github.com/SaltedTan/virgil-language-server/issues/286)).
