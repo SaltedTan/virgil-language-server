@@ -24,7 +24,7 @@ Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl
 
    <!-- clean-install: vsix-download -->
    ```sh
-   server_version=0.1.0-alpha.3
+   server_version=0.1.0-alpha.4
    extension_version=0.1.3
    download_url=https://github.com/SaltedTan/virgil-language-server/releases/download/v$server_version
    vsix=virgil-lsp-vscode-$extension_version-linux-x64.vsix
@@ -52,7 +52,7 @@ To use an explicit Virgil root, set `virgil.virgilRoot` in user settings, or exp
 
 <!-- clean-install: vscode-root -->
 ```sh
-export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-linux/virgil"
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.4-x86-64-linux/virgil"
 ```
 
 With Remote-SSH or Remote-WSL, the extension runs on the remote machine, next to the server and the files, so install the VSIX for that host there. A mismatched package is rejected by VS Code or reported in the output channel before a bundled binary is started. In a window connected to the remote, either run **Extensions: Install from VSIX...**, or copy the VSIX to the remote machine and run `code --install-extension` in that window's integrated terminal. The Extensions view then lists the extension under the remote, such as "SSH: host" or "WSL: Ubuntu", not under "Local". Set any needed `virgil.server.path` or `virgil.virgilRoot` override in the remote settings.
@@ -158,7 +158,7 @@ CI type-checks and tests the client, and runs the Extension Host suite from sour
 To package a platform VSIX from a tested archive, run from the repository root after `npm ci` in `clients/vscode`:
 
 ```sh
-scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz --out build/vsix
+scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz --out build/vsix
 scripts/package-vsix.py universal --out build/vsix
 ```
 
@@ -231,7 +231,7 @@ Use `npm run test:e2e:remote-ssh -- --vsix <linux-x64.vsix> --bundled` to test t
 npm run package
 npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-*.vsix
 npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-0.1.3.vsix \
-  --archive virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz --repeat 3 --out results
+  --archive virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz --repeat 3 --out results
 npm run test:e2e:remote-ssh -- --vsix /path/to/virgil-lsp-vscode-0.1.3-linux-x64.vsix \
   --bundled --repeat 3 --out bundled-results
 ```

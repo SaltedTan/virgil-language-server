@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-10-26
+
 ### Added
 
 - A [troubleshooting guide](docs/troubleshooting.md), organized by symptom, explains the messages that show why the server didn't start or a file gets no diagnostics or navigation in VS Code, Neovim, and LazyVim, and how to fix each cause. A [privacy statement](PRIVACY.md) says what the server and the editor integrations read, write, and start: they write no files of their own, collect no telemetry, and make no network connections ([#275](https://github.com/SaltedTan/virgil-language-server/issues/275)).
@@ -34,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The VS Code extension's version is now 0.1.3. Platform VSIX files for Linux x64 and macOS bundle the tested server, worker, and pinned Virgil library, and the universal VSIX still needs an external server; an empty `virgil.server.path` selects the bundle, or `virgil-lsp` on `PATH` when there is none, while an explicit path overrides both. New settings, `virgil.inlayHints.types` and `virgil.inlayHints.parameterNames`, control [inlay hints](docs/architecture.md#inlay-hints). The extension no longer shows spurious `didOpen` errors when a restart interrupts crash recovery (0.1.0 to 0.1.2), restarts a server whose pipe fails instead of leaving none, and fails pending requests promptly when malformed server output stops the client. It works with `0.1.0-alpha.4` and `main`, whose servers also answer document highlights, type definition, implementation, and inlay hints; `0.1.0-alpha.3` works as before, without them; and `0.1.0-alpha.2` and `0.1.0-alpha.1` need `virgil.virgilRoot` or `VIRGIL_LOC` to give an absolute path, since those servers exit without a root ([compatibility](docs/compatibility.md#editors)).
 - Performance benchmarks now include cancelled completion typing bursts, measuring the last useful reply, semantic diagnostics after the burst, worker replacements, and startup cost. The paired experiment rejected immediate worker reclaim because it delayed diagnostics ([measurements](docs/benchmarks.md#reclaiming-obsolete-jobs), [#262](https://github.com/SaltedTan/virgil-language-server/issues/262)).
 - Document highlights distinguish assigned uses (Write) from other uses (Read), with declaration names always Text. Compound assignments, increments, and decrements are Write; field receivers, array variables, and indexes remain Read. The LazyVim test checks navigation between highlights with `]]` and `[[` ([#249](https://github.com/SaltedTan/virgil-language-server/issues/249)).
 - Large-project analysis uses less temporary memory for both successful and diagnostic-bearing results, without increasing retained analysis memory. Repeated successful analyses also avoid a garbage collection ([performance benchmarks](docs/benchmarks.md#reference-baseline), [#240](https://github.com/SaltedTan/virgil-language-server/issues/240)).

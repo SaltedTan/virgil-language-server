@@ -141,7 +141,7 @@ To check a Linux platform VSIX locally after building and smoke-testing the arch
 
 ```sh
 (cd clients/vscode && npm ci)
-scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz --out build/vsix
+scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz --out build/vsix
 (cd clients/vscode && xvfb-run -a npm run test:e2e -- --vsix ../../build/vsix/virgil-lsp-vscode-0.1.3-linux-x64.vsix)
 ```
 
@@ -152,15 +152,15 @@ For the universal fallback, package with `scripts/package-vsix.py universal --ou
 Download the archive for your platform and `SHA256SUMS` from the release page, or with the GitHub CLI:
 
 ```sh
-gh release download v0.1.0-alpha.3 --repo SaltedTan/virgil-language-server \
+gh release download v0.1.0-alpha.4 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-*-x86-64-linux.tar.gz' --pattern SHA256SUMS   # x86-64-darwin on macOS
 ```
 
 Then check the archive's line of `SHA256SUMS`:
 
 ```sh
-awk -v file=virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz '$2 == file' SHA256SUMS | sha256sum --check        # Linux
-awk -v file=virgil-lsp-0.1.0-alpha.3-x86-64-darwin.tar.gz '$2 == file' SHA256SUMS | shasum -a 256 --check   # macOS
+awk -v file=virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz '$2 == file' SHA256SUMS | sha256sum --check        # Linux
+awk -v file=virgil-lsp-0.1.0-alpha.4-x86-64-darwin.tar.gz '$2 == file' SHA256SUMS | shasum -a 256 --check   # macOS
 ```
 
 Both print `OK` for a good download. Check the VSIX the same way, with its own line: `awk -v file=virgil-lsp-vscode-0.1.3-linux-x64.vsix '$2 == file' SHA256SUMS | sha256sum --check`. Matching the whole file name, rather than a pattern in which `.` matches any character, keeps another file's line from checking the download. After installing, `virgil-lsp --version` prints the version and the Virgil revision, which match the archive's `manifest.json` and the release notes.
@@ -180,8 +180,8 @@ Extract the archive and put a symlink to `virgil-lsp` on your `PATH`. The worker
 
 ```sh
 mkdir -p ~/.local/opt ~/.local/bin
-tar -xzf virgil-lsp-0.1.0-alpha.3-x86-64-linux.tar.gz -C ~/.local/opt
-ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
+tar -xzf virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz -C ~/.local/opt
+ln -sf ~/.local/opt/virgil-lsp-0.1.0-alpha.4-x86-64-linux/virgil-lsp ~/.local/bin/virgil-lsp
 virgil-lsp --version
 ```
 
@@ -200,7 +200,7 @@ softwareupdate --install-rosetta --agree-to-license
 The executables are unsigned. A web browser marks what it downloads as quarantined, and macOS may then refuse to run them. Download with `curl` or `gh`, which don't set the quarantine attribute, or remove it after extracting:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.3-x86-64-darwin
+xattr -dr com.apple.quarantine ~/.local/opt/virgil-lsp-0.1.0-alpha.4-x86-64-darwin
 ```
 
 ### Editors
@@ -217,7 +217,7 @@ Install `virgil-lsp-vscode-<extension version>-<target>.vsix` for the workspace 
 With Remote-SSH or WSL, install the package for the remote host in the remote window. VS Code or the extension's output channel rejects a mismatched bundle. Download and verify it against `SHA256SUMS`, then install it:
 
 ```sh
-gh release download v0.1.0-alpha.3 --repo SaltedTan/virgil-language-server \
+gh release download v0.1.0-alpha.4 --repo SaltedTan/virgil-language-server \
   --pattern 'virgil-lsp-vscode-*.vsix' --pattern SHA256SUMS
 code --install-extension virgil-lsp-vscode-0.1.3-linux-x64.vsix
 ```
