@@ -25,6 +25,9 @@ DIAGNOSTIC = {'range': {'start': ERROR, 'end': ERROR}, 'severity': 1,
 SWALLOWED = 'component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n'
 SWALLOWED_URI = 'untitled:swallowed.v3'
 SWALLOWED_ERROR = {'line': 3, 'character': 19}
+NESTED = 'component C {\n    def f() {\n        if (true) return\n        if (p(fun() {})) {}\n    }\n}\n'
+NESTED_URI = 'untitled:nested.v3'
+NESTED_ERROR = {'line': 3, 'character': 25}
 
 
 def params(diagnostics=None):
@@ -86,6 +89,25 @@ def run(exe):
                 assert [(d['message'], d['range']['start']) for d in published] == [
                     ('";" expected', SWALLOWED_ERROR)], published
                 assert action(dict(swallowed, context={'diagnostics': published})) == []
+                s.send('textDocument/didOpen', {'textDocument': {
+                    'uri': NESTED_URI, 'version': 1, 'languageId': 'virgil',
+                    'text': NESTED.replace('if (p(fun() {})) {}', 'if (p(fun() {})); {}')}}, request=False)
+                nested = dict(params(), textDocument={'uri': NESTED_URI},
+                              range={'start': NESTED_ERROR, 'end': NESTED_ERROR})
+                assert action(nested) == []
+                published = [m['params'] for direction, m in s.transcript
+                             if direction == 'recv' and m.get('method') == 'textDocument/publishDiagnostics'
+                             and m['params']['uri'] == NESTED_URI][-1]['diagnostics']
+                assert published == [], published
+                s.send('textDocument/didChange', {'textDocument': {'uri': NESTED_URI, 'version': 2},
+                       'contentChanges': [{'text': NESTED}]}, request=False)
+                assert action(nested) == []
+                published = [m['params'] for direction, m in s.transcript
+                             if direction == 'recv' and m.get('method') == 'textDocument/publishDiagnostics'
+                             and m['params']['uri'] == NESTED_URI][-1]['diagnostics']
+                assert [(d['message'], d['range']['start']) for d in published] == [
+                    ('";" expected', NESTED_ERROR)], published
+                assert action(dict(nested, context={'diagnostics': published})) == []
             for bad in ({}, [], dict(params(), range={'start': ERROR}),
                         dict(params(), context={'only': [1]}), dict(params(), context={'diagnostics': 1})):
                 reply = s.reply(s.send('textDocument/codeAction', bad))

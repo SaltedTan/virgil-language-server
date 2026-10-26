@@ -70,6 +70,8 @@ def site(t: Tester, marked: string, preferred: bool) {
 }
 def test_sites(t: Tester) {
 	site(t, "component C { def f() { a()|\nb(); } }", true);
+	site(t, "component C { def f() {\n\tp(fun() { a(); })|\n} }", true);
+	site(t, "component C { def f() {\n\tp([fun() {}])|\n} }", true);
 	site(t, "component C { def f() { return 1| // trailing\n} }", true);
 	site(t, "component C { def f() { return 1| /* trailing */\n} }", true);
 	site(t, "component C { def f() { return 1| /* trailing\n comment */ } }", true);
@@ -103,6 +105,11 @@ def test_proof(t: Tester) {
 def test_statement_line(t: Tester) {
 	for (text in [
 		"component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n",
+		"component C { def f() {\n\tif (true) return\n\tif (p(fun() {})) {}\n} }",
+		"component C { def f() {\n\tif (true) return\n\tf = fun() {} + 1\n} }",
+		"component C { def f() {\n\tfor (\n\t\ti = 0 i < 3; i++) {}\n} }",
+		"component C { def f() {\n\tif (true) return\n\tif (p([fun() {}])) {}\n} }",
+		"component C { def f() {\n\tif (true) return\n\tif (p(fun() { a(); })) {}\n} }",
 		"component C { def f() {\n\treturn\n\ta()\n} }",
 		"component C { var x: int; def f() {\n\treturn\n\tx = 1\n} }",
 		"component C { def f() { a(1,\n\t2)\n\tb(); } }",

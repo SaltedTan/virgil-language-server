@@ -289,12 +289,19 @@ conditional expression, so a `;` after `if (false)` parses but ends the wrong
 statement, and the intended `;` after `return` is on the line before. The
 first parse, through `AeneasAdapter.parseStatement`, records the tokens that
 the parser consumed (`SymbolSyntaxIndex`), with no extra parse. The
-statement's start is the first token after the last `;`, `{`, or `}` token
-that ends at or before the anchor, or the file's first token. Strings,
-character literals, and comments are never such tokens. If no token follows
-that delimiter before the anchor, or a line break lies between the start and
-the anchor, there is no action. A forgotten `;` at the end of a one-line
-statement, such as a call, assignment, `return`, local, field, one-line
+adapter scans those tokens backward from the anchor, balancing parentheses
+and brackets. Only a one-byte `;`, `{`, or `}` outside those groups marks a
+statement boundary; the next token is the statement's start, or the file's
+first token if there is no boundary. An unmatched opening parenthesis or
+bracket leaves the start unknown, except for the parenthesis opening a `for`
+header. The last consumed token on any earlier line must also be a one-byte
+`;`, `{`, or `}`, if there is such a token. This rejects an earlier line ending
+in `return` even when a lambda body's braces hide the statement's real start.
+Strings, character literals, and comments are never delimiter tokens. If the
+start is unknown, no token follows the boundary before the anchor, or a line
+break lies between the start and the anchor, there is no action. A forgotten
+`;` at the end of a one-line statement, such as a call, assignment, `return`,
+local, field, one-line
 `match` arm, or `if (c) x = 1`, still gets the fix, as does a `for` header's
 first `;`. A statement that spans lines gets none, even where the fix would be
 right, such as a call whose arguments continue on the next line, an `if (c)`

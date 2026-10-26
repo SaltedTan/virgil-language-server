@@ -469,19 +469,41 @@ component AeneasAdapter {
 		return parseWith(path, input, options, null);
 	}
 	// {parseFile}, also setting FileParseResult.statementStart from the tokens
-	// that the parser consumed: the first token after the last ";", "{", or "}"
-	// token that ends at or before {repairAt}, or the file's first token. It is
-	// -1 if that delimiter is the last token there. Strings, character
-	// literals, and comments are never delimiter tokens.
+	// that the parser consumed. Scan back from {repairAt}, balancing parentheses
+	// and brackets, to the last ";", "{", or "}" outside those groups. The
+	// statement starts at the following token, or the file's first token when
+	// there is no delimiter. Leave it unknown if an unmatched opener other than
+	// a for header's parenthesis is reached, no token follows the delimiter, or
+	// the last token on an earlier line is not ";", "{", or "}". Literals and
+	// comments are never delimiter tokens.
 	def parseStatement(path: string, input: Array<byte>, options: Array<string>) -> FileParseResult {
 		var syntax = SymbolSyntaxIndex.new();
 		var result = parseWith(path, input, options, syntax);
 		if (result.repairAt < 0) return result;
 		var tokens = syntax.tokens, last = tokens.length;
 		while (last > 0 && tokens[last - 1].end > result.repairAt) last--;
+		if (last == 0) return result;
+		var line = tokens[last - 1].line, start = -1, depth = 0, previousLine = false;
 		var i = last;
-		while (i > 0 && !delimiter(input, tokens[i - 1])) i--;
-		if (i < last) result.statementStart = tokens[i].begin;
+		while (i > 0) {
+			var token = tokens[--i];
+			if (!previousLine && token.line < line) {
+				previousLine = true;
+				if (!delimiter(input, token)) return result;
+			}
+			if (start < 0 && token.end - token.begin == 1) {
+				var c = input[token.begin];
+				if (c == ')' || c == ']') depth++;
+				else if (c == '(' || c == '[') {
+					if (depth > 0) depth--;
+					else if (c != '(' || i == 0 ||
+						!Ranges.equal(input[tokens[i - 1].begin ... tokens[i - 1].end], "for")) return result;
+				} else if (depth == 0 && delimiter(input, token)) start = i + 1;
+			}
+			if (previousLine && start >= 0) break;
+		}
+		if (start < 0) start = 0;
+		if (start < last) result.statementStart = tokens[start].begin;
 		return result;
 	}
 	private def delimiter(input: Array<byte>, t: SymbolSyntaxToken) -> bool {
