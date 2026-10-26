@@ -102,6 +102,14 @@ async function implementations(editor, line, character) {
   return (result ?? []).map((location) => [location.uri?.fsPath, ...range(location)]);
 }
 
+// Each type hierarchy item's name, kind, detail, file, range, and name range.
+function hierarchyItems(items) {
+  return (items ?? []).map((item) => [
+    item.name, item.kind, item.detail, item.uri.fsPath, range(item),
+    range({ range: item.selectionRange }),
+  ]);
+}
+
 // The text of each hover at line:character, and the range of each that has one.
 async function hovers(editor, line, character) {
   const result = await vscode.commands.executeCommand(
@@ -415,6 +423,28 @@ async function workspace(extension) {
   ]);
   assert.deepEqual(await implementations({ document: shapesDocument }, 11, 6), []);
   console.log('PASS: vscode.implementation.response');
+
+  // vscode.type-hierarchy.response: Polygon's item, as Show Type Hierarchy
+  // prepares it, and one level up and down from it, through the items the
+  // server gave; Shape's subtypes are Polygon and Circle.
+  const [polygon, ...others] = await vscode.commands.executeCommand(
+    'vscode.prepareTypeHierarchy', shapesDocument.uri, new vscode.Position(7, 6),
+  );
+  assert.deepEqual(others, []);
+  const polygonItem = ['Polygon', vscode.SymbolKind.Class, 'class Polygon extends Shape', shapes, [7, 0, 9, 1], [7, 6, 7, 13]];
+  assert.deepEqual(hierarchyItems([polygon]), [polygonItem]);
+  const supertypes = await vscode.commands.executeCommand('vscode.provideSupertypes', polygon);
+  assert.deepEqual(hierarchyItems(supertypes), [
+    ['Shape', vscode.SymbolKind.Class, 'class Shape', shapes, [4, 0, 6, 1], [4, 6, 4, 11]],
+  ]);
+  assert.deepEqual(hierarchyItems(await vscode.commands.executeCommand('vscode.provideSubtypes', polygon)), [
+    ['Square', vscode.SymbolKind.Class, 'class Square extends Polygon', shapes, [10, 0, 10, 32], [10, 6, 10, 12]],
+  ]);
+  assert.deepEqual(hierarchyItems(await vscode.commands.executeCommand('vscode.provideSubtypes', supertypes[0])), [
+    polygonItem,
+    ['Circle', vscode.SymbolKind.Class, 'class Circle extends Shape', shapes, [11, 0, 13, 1], [11, 6, 11, 12]],
+  ]);
+  console.log('PASS: vscode.type-hierarchy.response');
 
   // While the type error stands, the server refuses to rename the local line,
   // with its reason, both when VS Code prepares the rename, as F2 does, and
