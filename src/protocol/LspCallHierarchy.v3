@@ -82,11 +82,12 @@ class LspCallHierarchy {
 			return (true, JsonRpcReply.Result(JsonValue.Null));
 		}
 		if (incoming) {
+			if (key.kind == AnalysisDeclKind.FIELD) return (true, JsonRpcReply.Result(JsonValue.JArray([])));
 			// Files in byte order of path, and callers in each by offset.
 			var order = AnalysisTables.sort(Arrays.range(s.paths, 0, s.paths.length),
 				fun (a: string, b: string) => AnalysisTables.compareBytes(a, b) < 0);
 			for (path in order) {
-				var found = s.callsWhere(path, fun (t: int) => t == i);
+				var found = s.callsWhere(path, fun (t: int) => t == i && isCallableIndex(s, t));
 				if (found.length == 0 || !items.select(path)) continue;
 				var owners = LspCallOwners.new(s, path, items.symbols), edges = Vector<(int, int)>.new();
 				for (c in found) {
@@ -241,27 +242,29 @@ class LspCallHierarchyReply(owner: LspCallHierarchy, at: LspSnapshotPosition, ke
 		var direction = if(incoming, "incoming", "outgoing"), kind = items.kindOf(key.kind);
 		var k = 0;
 		while (k < edges.length) {
-			var other = edges[k].0, from = Vector<JsonValue>.new();
+			var other = edges[k].0, item = items.item(other), from = Vector<JsonValue>.new();
+			var itemBytes = items.bytes + owner.CALL_BYTES;
 			while (k < edges.length && edges[k].0 == other) {
-				var b = edges[k++].1, use = file.findOffset(b);
+				var b = edges[k++].1;
+				if (JsonValue.Null.?(item)) continue;
+				var use = file.findOffset(b);
 				if (use < 0) continue;
-				var range = at.rangeIn(j, map, b, file.occurrenceEnd(use));
-				if (!JsonValue.Null.?(range)) from.put(range);
+				var end = file.occurrenceEnd(use);
+				if (!at.maps(j, b, end)) continue;
+				if (ranges == limit) {
+					return fail(Strings.format3("the %s %s has more than %d", kind, key.name, limit),
+						Strings.format1(" %s calls", direction));
+				}
+				var more = owner.RANGE_BYTES + if(from.length == 0, itemBytes, 0);
+				if (bytes + more > maxBytes) {
+					return fail(Strings.format3("the %s calls of the %s %s", direction, kind, key.name),
+						Strings.format1(" need more than %d bytes", maxBytes));
+				}
+				ranges++;
+				bytes += more;
+				from.put(at.rangeIn(j, map, b, end));
 			}
 			if (from.length == 0) continue;
-			var item = items.item(other);
-			if (JsonValue.Null.?(item)) continue;
-			if (ranges + from.length > limit) {
-				return fail(Strings.format3("the %s %s has more than %d", kind, key.name, limit),
-					Strings.format1(" %s calls", direction));
-			}
-			var more = items.bytes + owner.CALL_BYTES + from.length * owner.RANGE_BYTES;
-			if (bytes + more > maxBytes) {
-				return fail(Strings.format3("the %s calls of the %s %s", direction, kind, key.name),
-					Strings.format1(" need more than %d bytes", maxBytes));
-			}
-			ranges += from.length;
-			bytes += more;
 			var call = Strings.newMap<JsonValue>();
 			call[if(incoming, "from", "to")] = item;
 			call["fromRanges"] = JsonValue.JArray(from.extract());

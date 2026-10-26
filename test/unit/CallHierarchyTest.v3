@@ -18,6 +18,7 @@ def X = [
 	T("CallHierarchy:constructions", constructions),
 	T("CallHierarchy:recursion", recursion),
 	T("CallHierarchy:field_initializers", field_initializers),
+	T("CallHierarchy:function_valued_field", function_valued_field),
 	T("CallHierarchy:virtual_calls", virtual_calls),
 	T("CallHierarchy:index_methods_and_headers", index_methods_and_headers),
 	T("CallHierarchy:library_callees", library_callees),
@@ -29,6 +30,7 @@ def X = [
 	T("CallHierarchy:excluded_bodies", excluded_bodies),
 	T("CallHierarchy:malformed_data", malformed_data),
 	T("CallHierarchy:reply_bounds", reply_bounds),
+	T("CallHierarchy:single_group_bounds", single_group_bounds),
 	T("CallHierarchy:outlines_per_reply", outlines_per_reply),
 	()
 ];
@@ -384,6 +386,21 @@ def field_initializers(t: Tester) {
 	p.checkCalls("incoming of total", p.expand(total, true), true, 0, "total", []);
 	p.checkCalls("outgoing of second", p.expand(second, false), false, 0, null, [call(TWICE, [("twice(5)", 0)])]);
 }
+def function_valued_field(t: Tester) {
+	var p = program(t, ["component Values {\n\tdef make() -> (int -> int) { return fun (x: int) => x; }\n\tdef f = make();\n\tdef use() { f(1); }\n}\n"], [], true);
+	var make = p.item(0, "def make", 4), incoming = p.expand(make, true), f = p.first(incoming, true);
+	var maker = method(0, "Values", "make", "def make", 4, "; }", "def make() -> int -> int");
+	p.checkCalls("incoming of make", incoming, true, 0, "make", [
+		call(field(0, "Values", "f", "def f", 4, ";", "def f: int -> int"), [("= make()", 2)])]);
+	p.checkCalls("incoming of function-valued f", p.expand(f, true), true, 0, "f", []);
+	p.checkCalls("outgoing of function-valued f", p.expand(f, false), false, 0, null, [call(maker, [("= make()", 2)])]);
+	p.checkCalls("outgoing of use", p.expand(p.item(0, "def use", 4), false), false, 0, null, []);
+	p.checkNull("prepare function-valued f", p.prepare(0, "f(1)", 0));
+	var obj = copy(JsonValue.JObject.!(f).v), data = copy(JsonValue.JObject.!(obj["data"]).v);
+	data["container"] = JsonValue.String("Other");
+	obj["data"] = JsonValue.JObject(data);
+	p.checkNull("incoming of field in another container", p.expand(JsonValue.JObject(obj), true));
+}
 // A virtual call is an edge to the method that the receiver's static type
 // binds, not to its overrides.
 def virtual_calls(t: Tester) {
@@ -660,6 +677,49 @@ def reply_bounds(t: Tester) {
 	match (p.expandWithin(p.item(0, "def run", 4), false, 6, all)) {
 		Result(v) => t.fail("outgoing calls not bounded");
 		Error(e) => t.assert_string("the method run has more than 6 outgoing calls", e.message);
+	}
+}
+def single_group_bounds(t: Tester) {
+	var text = StringBuilder.new().puts("component Many {\n\tdef f() { }\n\tdef use() {\n");
+	for (i < LspReferences.MAX_LOCATIONS) text.puts("\t\tf();\n");
+	var body = text.toString();
+	var p = program(t, [Arrays.concat(body, "\t}\n}\n")], [], true);
+	var f = p.item(0, "def f", 4), use = p.item(0, "def use", 4);
+	for (incoming in [true, false]) {
+		var item = if(incoming, f, use), other = if(incoming, use, f);
+		var data = JsonValue.JObject.!(JsonValue.JObject.!(other).v["data"]).v;
+		var bytes = 2 * JsonRpcJson.stringBytes(p.uri(0))
+			+ 2 * JsonRpcJson.stringBytes(JsonValue.String.!(data["name"]).v)
+			+ JsonRpcJson.stringBytes(JsonValue.String.!(JsonValue.JObject.!(other).v["detail"]).v)
+			+ JsonRpcJson.stringBytes("Many") + p.hierarchy.CALL_BYTES
+			+ LspReferences.MAX_LOCATIONS * p.hierarchy.RANGE_BYTES;
+		match (p.expandWithin(item, incoming, LspReferences.MAX_LOCATIONS, bytes)) {
+			Result(v) => {
+				var groups = JsonValue.JArray.!(v).v;
+				t.asserti(1, groups.length);
+				t.asserti(LspReferences.MAX_LOCATIONS, JsonValue.JArray.!(JsonValue.JObject.!(groups[0]).v["fromRanges"]).v.length);
+			}
+			Error(e) => t.fail1("single group at the limits: %s", e.message);
+		}
+		match (p.expandWithin(item, incoming, LspReferences.MAX_LOCATIONS, bytes - 1)) {
+			Result(v) => t.fail("single group byte bound not enforced");
+			Error(e) => {
+				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
+				t.assert_string(Strings.format3("the %s calls of the method %s need more than %d bytes",
+					if(incoming, "incoming", "outgoing"), if(incoming, "f", "use"), bytes - 1), e.message);
+			}
+		}
+	}
+	p.change(0, Arrays.concat(body, "\t\tf();\n\t}\n}\n"));
+	for (incoming in [true, false]) {
+		match (p.expand(if(incoming, f, use), incoming)) {
+			Result(v) => t.fail("single group range bound not enforced");
+			Error(e) => {
+				t.asserti(LspErrorCode.REQUEST_FAILED, e.code);
+				t.assert_string(Strings.format2("the method %s has more than 10000 %s calls",
+					if(incoming, "f", "use"), if(incoming, "incoming", "outgoing")), e.message);
+			}
+		}
 	}
 }
 // A reply parses each file's outline once: the request's file stays selected

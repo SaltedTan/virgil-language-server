@@ -26,6 +26,11 @@ B = ('component Use {\n'
      'component Make {\n'
      '\tdef counter = Counter.new(4);\n'
      '\tdef go() -> int { return counter.bump(); }\n'
+     '}\n'
+     'component Values {\n'
+     '\tdef make() -> (int -> int) { return fun (x: int) => x; }\n'
+     '\tdef f = make();\n'
+     '\tdef use() { f(1); }\n'
      '}\n')
 KINDS = {'method': 6, 'field': 8, 'constructor': 9}
 
@@ -50,7 +55,7 @@ def span(text, begin, end):
 # is.
 def item(path, text, container, begin, name, end, detail, kind='method'):
     b = text.index(begin)
-    n = b + begin.index(name)
+    n = b + begin.rindex(name)
     e = text.index(end, b) + len(end)
     data = {'uri': path.as_uri(), 'position': at(text, n), 'name': name, 'kind': kind, 'container': container}
     result = {'name': name, 'kind': KINDS[kind], 'uri': path.as_uri(), 'range': span(text, b, e),
@@ -141,6 +146,14 @@ def run(exe, root):
         assert prepare(s, b, B, 'Counter.new', 8) == [new]
         assert incoming(s, new) == [call('from', counter, B, 3, ('Counter.new', 8))]
         assert outgoing(s, counter) == [call('to', new, B, 3, ('Counter.new', 8))]
+        maker = item(b, B, 'Values', 'def make', 'make', '; }', 'def make() -> int -> int')
+        f = item(b, B, 'Values', 'def f', 'f', ';', 'def f: int -> int', 'field')
+        use = item(b, B, 'Values', 'def use', 'use', '; }', 'def use()')
+        assert incoming(s, maker) == [call('from', f, B, 4, ('= make()', 2))]
+        assert incoming(s, f) == []
+        assert outgoing(s, f) == [call('to', maker, B, 4, ('= make()', 2))]
+        assert outgoing(s, use) == []
+        assert prepare(s, b, B, 'f(1)') is None
         # Other names, a function's field, and nothing at all.
         for needle, skip in (('component Use', 10), ('class Counter', 6), ('def counter', 4), ('counter.bump', 0),
                              ('var n', 4), ('return', 1), ('é𝄞\t */ class Counter', 1)):
