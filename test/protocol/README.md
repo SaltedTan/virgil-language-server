@@ -172,3 +172,5 @@ assertion; the default budget is intended to stay below about one minute.
 ### Updating the model
 
 Follow the [model update procedure](schema/3.17/README.md).
+
+`code_actions.py` checks literal-support advertisement, exact versioned semicolon edits, client diagnostics, staleness after edits, and invalid params over stdio.

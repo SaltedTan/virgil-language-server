@@ -29,6 +29,8 @@ LazyVim's noice.nvim drops `window/showMessage` notifications from every languag
 { "folke/noice.nvim", opts = { lsp = { message = { enabled = false } } } },
 ```
 
+With `main`, `:lua vim.lsp.buf.code_action()` offers **Insert missing ";"** when the current syntax error can be fixed by a proven semicolon insertion. The [code action](../../docs/architecture.md#code-actions) uses a versioned edit before any trailing comment. No other syntax or semantic fixes are provided.
+
 ## Plain Neovim
 
 Download [`virgil_lsp.lua`](virgil_lsp.lua) into your configuration's `plugin/` directory (replace `config_url` as above). Neovim loads it automatically at startup after `init.vim` or `init.lua`. This uses the same configuration directory as the LazyVim step; neither init file is created or changed, even for a new configuration. Setting `noloadplugins` or starting with `--noplugin` or `--clean` skips this automatic loading. The file is downloaded beside its destination and moved into place only after a successful download, so a failed or interrupted rerun preserves an earlier installation. Any remaining `.part` file is not sourced: Neovim loads only `*.lua` and `*.vim` plugin files.

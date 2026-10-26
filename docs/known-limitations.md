@@ -7,6 +7,16 @@ This page lists what the v0.1 alpha doesn't do, or does only in part, for `0.1.0
 - Completion suggests the keywords that can start where the cursor is, from the open document's text, even while the file has syntax errors. In a project, it also suggests the names in scope there, and after a `.`, the members of the receiver's type instead. It suggests nothing in comments or strings. A file that isn't open gets no suggestions ([Completion](architecture.md#completion)).
 - Formatting and debugging are out of scope, and incremental analysis comes after v0.1 ([v0.1 scope](../README.md#v01-scope)).
 
+## Code actions
+
+Only the missing-semicolon quick fix exists. It checks the current first syntax
+error and proves one token-end insertion by reparsing; other parse errors and
+semantic diagnostics have no fix. A stale diagnostic, an insertion that leaves
+the error at the same point, or a client without literal actions and versioned
+edits gets no action. A bare CR before the semicolon error remains the parser's
+first error, so it prevents the fix. There is no fix-all or action on save
+([Code actions](architecture.md#code-actions)).
+
 ## Semantic features need a project file
 
 Without a `.virgil-lsp.json` that selects it, a document stays in [single-file mode](configuration.md#without-a-project-file), with no type errors, definition, type definition, inlay hints, hover, references, document highlights, implementations, type hierarchy, call hierarchy, signature help, or rename, and it contributes no workspace symbols. A project that lists `virgilDependencies` also needs a Virgil root: the one the editor sends, or else the library that a release archive bundles. With neither, as with a development build and no root set, or when the editor sends a root that isn't an absolute path, its project file gets a `MissingVirgilRoot` error and its documents stay in single-file mode ([The Virgil root](configuration.md#the-virgil-root)).

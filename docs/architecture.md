@@ -24,7 +24,7 @@ flowchart TD
 | `src/os/<target>/` | System calls the Virgil `System` component lacks (pipes, process creation, polling), one file per target | Present for `x86-64-linux` and `x86-64-darwin` |
 | `src/Log.v3` | Logging to standard error. Standard output is protocol-only. | Present |
 | `src/analysis/` | **The only code that touches Aeneas.** Adapter, analysis snapshots, symbol indexes, and syntax folding ranges. | Adapter and server-owned snapshots present |
-| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document synchronization, feature handlers, watched-file and workspace-folder events, parser and semantic diagnostic publication, analysis scheduling | See [JSON-RPC messages](#json-rpc-messages) for handlers and their implementation status |
+| `src/protocol/` | Byte framing, JSON-RPC message model, server request tracking, lifecycle state machine, document synchronization, feature handlers including semicolon code actions (`LspCodeActions.v3`), watched-file and workspace-folder events, parser and semantic diagnostic publication, analysis scheduling | See [JSON-RPC messages](#json-rpc-messages) for handlers and their implementation status |
 | `src/documents/` | URI normalization, versioned in-memory overlays with injected disk fallback, `PositionMap` | Present |
 | `src/workspace/` | Project-file parsing, bounded glob expansion, workspace discovery, active contexts, diagnostic ownership, and configuration revisions | Present |
 
@@ -244,6 +244,74 @@ See [Stdio transport](#stdio-transport) for the notification sink and write-fail
 - Non-`file:` URIs remain exact opaque keys: scheme case, escapes, queries, fragments, and dot segments are untouched. Empty/null URIs are rejected. Native Windows drive and UNC paths are not supported (WSL uses Linux file URIs). A drive-shaped URI such as `file:///c%3A/x.v3` maps to the POSIX path `/c:/x.v3`, without conversion to a native drive path.
 
 For example, `file:///tmp/%61%20b.v3` and `file:/tmp/a b.v3` share the key `file:///tmp/a%20b.v3` and disk path `/tmp/a b.v3`. `untitled:a%20b` and `untitled:a b` remain distinct.
+
+## Code actions
+
+`LspCodeActions` handles `textDocument/codeAction` synchronously from an open
+document's current overlay. The only action is **Insert missing ";"**, with
+`kind: "quickfix"`. It needs no worker, semantic analysis, or waiting. Closed
+and unknown documents return `[]`; malformed params get `InvalidParams`, and
+the ordinary [lifecycle](#lifecycle) gates apply.
+
+The handler first checks the client's capabilities and `context.only`. A kind
+of `quickfix` or its ancestor (the empty kind) accepts the fix; `refactor`, a
+child such as `quickfix.other`, and an empty `only` array do not. If
+`context.diagnostics` is present, even as an empty array, the request costs no
+parse unless a diagnostic has `source: "aeneas"` and exactly one of these
+messages:
+
+- `";" expected`, for statements, returns, and other required-semicolon sites;
+- `',' or ';' expected`, for local declarations;
+- `',' or ';' expected after field declaration`, for fields.
+
+Otherwise it parses the current text with `AeneasAdapter.parseFile`, the same
+driver and active project's [language options](configuration.md#compiler-flags)
+as [parser diagnostics](#parser-diagnostics). Only the first error is eligible,
+with one of those exact messages and a range intersecting the requested range.
+When client diagnostics are supplied, one must match that error's current
+UTF-16 range, message, and source. That diagnostic is attached unchanged,
+including any client data; with no `context.diagnostics` member, the action
+attaches the recomputed syntax diagnostic. Stale or semantic diagnostics
+cannot select an action without that current syntax match.
+
+The insertion is at `FileParseResult.repairAt`, the preceding token's end,
+before any following whitespace or comment. The adapter can roll back one
+token for an error reported at an already consumed token
+([current-text repair](#current-text-repair)); the three eligible parser paths
+report at the current cursor, so that existing anchor needs no adjustment.
+The [cursor scanner](#completion) rejects an anchor inside a comment, string,
+or character literal. There is one candidate and no search. The edited text
+is parsed once, with the same options. The action is offered only if the file
+parses or its first error starts strictly after the original error's byte
+offset plus the inserted byte. A later unrelated error may remain.
+
+The `WorkspaceEdit` contains one `documentChanges` entry, a `TextDocumentEdit`
+for the canonical URI and current document version, with one zero-width `;`
+insertion. `isPreferred: true` appears only when whitespace or comments occupy
+the rest of that line; code after a block comment on the same line prevents
+it. There is no command, fix-all action, or action on save.
+
+Initialize advertises `codeActionProvider: {codeActionKinds: ["quickfix"]}`
+only when the client declares
+`textDocument.codeAction.codeActionLiteralSupport`. Without literal support
+the provider is absent, and a valid request still returns `[]`. A client
+without `workspace.workspaceEdit.documentChanges: true` also gets `[]`, so
+an edit always carries the version the client must check. A request parses
+at most twice, within the [1 MiB open-document bound](#document-store); no
+code-action answer is cached.
+
+[LspCodeActionsTest](../test/unit/LspCodeActionsTest.v3) checks exact actions,
+applying each edit and requiring progress past the original error: statements,
+locals, fields, returns, strings and character literals, comments, a closing
+brace, EOF, mid-line edits, later errors, tabs, UTF-16 and canonical URIs,
+project options, stale contexts, excluded kinds, capabilities, malformed
+params, and lifecycle gates. CRLF inside comments is covered; a bare CR is
+already a parser error and gets no semicolon fix. The [stdio test](../test/protocol/code_actions.py)
+checks advertisement, versioned edits, stale diagnostics, changes, and invalid
+params. The VS Code [Extension Host test](../clients/vscode/README.md#extension-host-test)
+and [headless Neovim test](../editors/nvim/README.md#headless-smoke-test) request
+the exact action on `semicolon.v3`, apply its edit, and check that the diagnostic
+clears; [editor coverage](../test/e2e/coverage.json) records both checks.
 
 ## Document symbols
 
@@ -1223,6 +1291,7 @@ The JSON-RPC 2.0 message model in `src/protocol/` works on the JSON payload of o
 | `LspDocumentSync.v3` | Validates full-text synchronization notifications and updates the [document store](#document-store). |
 | `LspWorkspaceEvents.v3` | Handles `workspace/didChangeWatchedFiles` and `workspace/didChangeWorkspaceFolders`, and registers the file watchers ([changes on disk](configuration.md#changes-on-disk)). |
 | `LspFoldingRanges.v3` | Reads the current open overlay, requests syntax folds from the analysis adapter, converts byte offsets to UTF-16, and honors the client's folding capabilities and reply bounds. |
+| `LspCodeActions.v3` | The [code actions](#code-actions) handler: current syntax matching, one semicolon insertion, and its reparse proof. |
 | `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, converts byte ranges with `PositionMap`, maps declaration kinds to symbol kinds (`LspSymbolKind`) and to the kinds each client supports (`LspClientKinds`), and adds [details](#document-symbols) from a snapshot of that overlay. |
 | `LspSnapshotRequests.v3` | Owns the shared [snapshot selection, freshness, and waiting rules](#definition), and [cancellation](#cancellation), for requests at a position, at a range's start, or at a [type](#type-hierarchy) or [call hierarchy](#call-hierarchy) item's data. It also carries the failure reply that [prepare rename](#prepare-rename) needs instead of `null`, and gives a [rename](#rename)'s answer to the handler that runs its preflight. |
 | `LspDefinition.v3` | The [definition](#definition) and [type-definition](#type-definition) location answers. |
@@ -1338,7 +1407,7 @@ Parser and semantic diagnostic publications, automatic-analysis warnings, deferr
 | Shutting down | Every request gets `InvalidRequest`, including `shutdown` and `initialize`. | `exit` is handled. Others are dropped. | — |
 | Exited | Nothing is read. | Nothing is read. | — |
 
-Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply. Client capability handling is described under [Server requests](#server-requests), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Hover](#hover), [Signature help](#signature-help), and [Rename](#rename). Workspace roots and `initializationOptions.virgilRoot` follow [Configuration](configuration.md). The result advertises the capabilities described under [Document store](#document-store), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Definition](#definition), [Type definition](#type-definition), [Hover](#hover), [References](#references), [Document highlights](#document-highlights), [Implementation](#implementation), [Type hierarchy](#type-hierarchy), [Call hierarchy](#call-hierarchy), [Rename](#rename), [Signature help](#signature-help), [Completion](#completion), and [Workspace symbols](#workspace-symbols), which [LspServer](../src/protocol/LspServer.v3) registers, and `workspace.workspaceFolders` with `changeNotifications: true` ([Configuration](configuration.md#workspace-folders-and-active-projects)), and contains `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
+Once decoded as a valid request, `initialize` needs an object as its params; otherwise it gets `InvalidParams` (-32602) and the server stays uninitialized, so the client may try again. The [number restrictions](#json-limitations-and-workarounds) also apply. Client capability handling is described under [Server requests](#server-requests), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Hover](#hover), [Signature help](#signature-help), [Code actions](#code-actions), and [Rename](#rename). Workspace roots and `initializationOptions.virgilRoot` follow [Configuration](configuration.md). The result advertises the capabilities described under [Document store](#document-store), [Document symbols](#document-symbols), [Folding ranges](#folding-ranges), [Definition](#definition), [Type definition](#type-definition), [Hover](#hover), [References](#references), [Document highlights](#document-highlights), [Implementation](#implementation), [Type hierarchy](#type-hierarchy), [Call hierarchy](#call-hierarchy), [Rename](#rename), [Signature help](#signature-help), [Completion](#completion), [Code actions](#code-actions), and [Workspace symbols](#workspace-symbols), which [LspServer](../src/protocol/LspServer.v3) registers, and `workspace.workspaceFolders` with `changeNotifications: true` ([Configuration](configuration.md#workspace-folders-and-active-projects)), and contains `serverInfo` with `name` and `version` from the generated `BuildInfo` (see [Build model](#build-model)). The version comes from the repository's `VERSION` file and is also reported by `--version`.
 
 `exit` ends the session in any state. So does the end of the input, which is how a client process that disappears looks to the server. Either way, outstanding server requests are failed, and the process exits:
 
