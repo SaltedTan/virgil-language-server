@@ -6,7 +6,8 @@
 // worker wire, and its snapshot records the overlays it analyzed, so that
 // items in other files pass the analyzed-text checks that a request makes.
 // Incoming and outgoing calls resolve an item's data as a request does: its
-// position, converted through the current text, and then its name and kind.
+// position, converted through the current text, and then its name, kind,
+// and container.
 // The sources put non-ASCII text before their declarations, so byte offsets
 // differ from UTF-16 positions.
 def T = UnitTests.register;
@@ -24,6 +25,7 @@ def X = [
 	T("CallHierarchy:client_kinds", client_kinds),
 	T("CallHierarchy:unrelated_edit", unrelated_edit),
 	T("CallHierarchy:moved_or_replaced", moved_or_replaced),
+	T("CallHierarchy:swapped_members", swapped_members),
 	T("CallHierarchy:excluded_bodies", excluded_bodies),
 	T("CallHierarchy:malformed_data", malformed_data),
 	T("CallHierarchy:reply_bounds", reply_bounds),
@@ -39,10 +41,10 @@ def indexFrom(text: Array<byte>, needle: string, from: int) -> int {
 def indexOf(text: Array<byte>, needle: string) -> int {
 	return indexFrom(text, needle, 0);
 }
-// An expected item: its source, its name, the text that its declaration's
+// An expected item: its source, its data's container, its name, the text that its declaration's
 // range begins with, the offset of its name in that text, the text that the
 // range ends with, the SymbolKind sent, its detail, and its data's kind.
-class CallItemWant(file: int, name: string, begin: string, skip: int, end: string, kind: int, detail: string, dataKind: string) {
+class CallItemWant(file: int, container: string, name: string, begin: string, skip: int, end: string, kind: int, detail: string, dataKind: string) {
 	// The length of its selection range, if not its name's: an index
 	// method's name occupies its opening bracket.
 	var selection = -1;
@@ -50,11 +52,11 @@ class CallItemWant(file: int, name: string, begin: string, skip: int, end: strin
 def METHOD = 6;
 def FIELD = 8;
 def CONSTRUCTOR = 9;
-def method(file: int, name: string, begin: string, skip: int, end: string, detail: string) -> CallItemWant {
-	return CallItemWant.new(file, name, begin, skip, end, METHOD, detail, "method");
+def method(file: int, container: string, name: string, begin: string, skip: int, end: string, detail: string) -> CallItemWant {
+	return CallItemWant.new(file, container, name, begin, skip, end, METHOD, detail, "method");
 }
-def field(file: int, name: string, begin: string, skip: int, end: string, detail: string) -> CallItemWant {
-	return CallItemWant.new(file, name, begin, skip, end, FIELD, detail, "field");
+def field(file: int, container: string, name: string, begin: string, skip: int, end: string, detail: string) -> CallItemWant {
+	return CallItemWant.new(file, container, name, begin, skip, end, FIELD, detail, "field");
 }
 // An expected call: the item at its other end, and where each of its callee
 // names begins, as text and the offset of the name in it.
@@ -164,7 +166,8 @@ class CallProgram {
 		var data = JsonValue.JObject.!(JsonValue.JObject.!(item).v["data"]).v;
 		var kind = JsonValue.String.!(data["kind"]).v;
 		var key = LspCallHierarchyKey.new(if(Strings.equal(kind, "constructor"), AnalysisDeclKind.CONSTRUCTOR,
-			if(Strings.equal(kind, "field"), AnalysisDeclKind.FIELD, AnalysisDeclKind.METHOD)), JsonValue.String.!(data["name"]).v);
+			if(Strings.equal(kind, "field"), AnalysisDeclKind.FIELD, AnalysisDeclKind.METHOD)), JsonValue.String.!(data["name"]).v,
+			JsonValue.String.!(data["container"]).v);
 		var i = snapshot.documentIndex(JsonValue.String.!(data["uri"]).v);
 		var position = JsonValue.JObject.!(data["position"]).v;
 		var current = PositionMap.new(texts[i], PositionEncoding.UTF16).positionToOffset(
@@ -233,6 +236,7 @@ class CallProgram {
 		expectString(what, "data.uri", uri(w.file), data["uri"]);
 		expectString(what, "data.name", w.name, data["name"]);
 		expectString(what, "data.kind", w.dataKind, data["kind"]);
+		expectString(what, "data.container", w.container, data["container"]);
 		var p = JsonValue.JObject.!(data["position"]).v;
 		t.asserti(nameBegin, m.positionToOffset(JsonValue.Int.!(p["line"]).v, JsonValue.Int.!(p["character"]).v));
 	}
@@ -280,17 +284,17 @@ def expectError(t: Tester, a: ProgramAnalysis, kind: string) {
 // lambda, recursion, mutual recursion, and a generic method; then a
 // file-scope function.
 def GEOMETRY = Arrays.concat(NOTE, "class Shape {\n\tdef area() -> int { return 0; }\n\tdef scaled(k: int) -> int { return k * area(); }\n}\nclass Square extends Shape {\n\tvar side: int;\n\tnew(s: int) { side = s; }\n\tdef area() -> int { return side * side; }\n}\nclass Plain { }\ncomponent Geometry {\n\tdef total = sum(1, 2);\n\tvar first = sum(3, 4), second = twice(5);\n\tdef sum(x: int, y: int) -> int { return x + y; }\n\tdef twice(x: int) -> int { return sum(x, 0) + sum(0, x); }\n\tdef apply(f: int -> int, x: int) -> int { return f(x); }\n\tdef run(s: Shape) -> int {\n\t\tvar sq = Square.new(2), plain = Plain.new();\n\t\tvar p = sum(_, 1);\n\t\tvar l = fun (x: int) => twice(x);\n\t\treturn s.area() + sq.area() + apply(twice, 3) + sum(twice(1), twice(2)) + p(4) + l(5);\n\t}\n\tdef fact(n: int) -> int { return if(n <= 1, 1, n * fact(n - 1)); }\n\tdef even(n: int) -> bool { return n == 0 || odd(n - 1); }\n\tdef odd(n: int) -> bool { return n != 0 && even(n - 1); }\n\tdef id<T>(v: T) -> T { return v; }\n\tdef generic() -> int { return id<int>(1) + id(2); }\n}\ndef topLevel() -> int { return Geometry.sum(6, 7); }\n");
-def SUM = method(0, "sum", "def sum", 4, "; }", "def sum(x: int, y: int) -> int");
-def TWICE = method(0, "twice", "def twice", 4, "; }", "def twice(x: int) -> int");
-def APPLY = method(0, "apply", "def apply", 4, "; }", "def apply(f: int -> int, x: int) -> int");
-def RUN = method(0, "run", "def run", 4, ";\n\t}", "def run(s: Shape) -> int");
-def TOTAL = field(0, "total", "def total", 4, ";", "def total: int");
-def FIRST = field(0, "first", "var first", 4, ";", "var first: int");
-def SECOND = field(0, "second", "var first", 23, ";", "var second: int");
-def TOP = method(0, "topLevel", "def topLevel", 4, "; }", "def topLevel() -> int");
-def SHAPE_AREA = method(0, "area", "def area", 4, "; }", "def area() -> int");
-def SQUARE_AREA = method(0, "area", "def area() -> int { return side", 4, "; }", "def area() -> int");
-def SQUARE_NEW = CallItemWant.new(0, "new", "new(s: int)", 0, "; }", CONSTRUCTOR, "new(s: int)", "constructor");
+def SUM = method(0, "Geometry", "sum", "def sum", 4, "; }", "def sum(x: int, y: int) -> int");
+def TWICE = method(0, "Geometry", "twice", "def twice", 4, "; }", "def twice(x: int) -> int");
+def APPLY = method(0, "Geometry", "apply", "def apply", 4, "; }", "def apply(f: int -> int, x: int) -> int");
+def RUN = method(0, "Geometry", "run", "def run", 4, ";\n\t}", "def run(s: Shape) -> int");
+def TOTAL = field(0, "Geometry", "total", "def total", 4, ";", "def total: int");
+def FIRST = field(0, "Geometry", "first", "var first", 4, ";", "var first: int");
+def SECOND = field(0, "Geometry", "second", "var first", 23, ";", "var second: int");
+def TOP = method(0, "", "topLevel", "def topLevel", 4, "; }", "def topLevel() -> int");
+def SHAPE_AREA = method(0, "Shape", "area", "def area", 4, "; }", "def area() -> int");
+def SQUARE_AREA = method(0, "Square", "area", "def area() -> int { return side", 4, "; }", "def area() -> int");
+def SQUARE_NEW = CallItemWant.new(0, "Square", "new", "new(s: int)", 0, "; }", CONSTRUCTOR, "new(s: int)", "constructor");
 
 // Prepare gives an item for a method, a component or file-scope function,
 // or a constructor, at its name or at a use; anything else gives null.
@@ -302,7 +306,7 @@ def prepare(t: Tester) {
 	p.checkItems("topLevel", p.prepare(0, "def topLevel", 4), [TOP]);
 	p.checkItems("Square.new", p.prepare(0, "Square.new", 7), [SQUARE_NEW]);
 	p.checkItems("new(s", p.prepare(0, "new(s", 0), [SQUARE_NEW]);
-	p.checkItems("generic id", p.prepare(0, "id<int>", 0), [method(0, "id", "def id", 4, "; }", "def id<T>(v: T) -> T")]);
+	p.checkItems("generic id", p.prepare(0, "id<int>", 0), [method(0, "Geometry", "id", "def id", 4, "; }", "def id<T>(v: T) -> T")]);
 	// A default constructor selects its class; fields, parameters, and
 	// locals hold function values but are not functions.
 	for (spot in [("Plain.new", 7), ("class Plain", 6), ("component Geometry", 10), ("def total", 4), ("f(x)", 0),
@@ -345,7 +349,7 @@ def outgoing_calls(t: Tester) {
 	p.checkCalls("outgoing of apply", p.expand(p.item(0, "def apply", 4), false), false, 0, null, []);
 	p.checkCalls("outgoing of topLevel", p.expand(p.item(0, "def topLevel", 4), false), false, 0, null, [call(SUM, [("Geometry.sum", 9)])]);
 	p.checkCalls("outgoing of generic", p.expand(p.item(0, "def generic", 4), false), false, 0, null, [
-		call(method(0, "id", "def id", 4, "; }", "def id<T>(v: T) -> T"), [("id<int>(1)", 0), ("id(2)", 0)])]);
+		call(method(0, "Geometry", "id", "def id", 4, "; }", "def id<T>(v: T) -> T"), [("id<int>(1)", 0), ("id(2)", 0)])]);
 	p.checkCalls("outgoing of sum", p.expand(p.item(0, "def sum", 4), false), false, 0, null, []);
 }
 // An explicit constructor is called by a construction; a class's default
@@ -359,9 +363,9 @@ def constructions(t: Tester) {
 // A recursive method calls itself, and mutually recursive ones each other.
 def recursion(t: Tester) {
 	var p = program(t, [GEOMETRY], [], true);
-	var fact = method(0, "fact", "def fact", 4, "; }", "def fact(n: int) -> int");
-	var even = method(0, "even", "def even", 4, "; }", "def even(n: int) -> bool");
-	var odd = method(0, "odd", "def odd", 4, "; }", "def odd(n: int) -> bool");
+	var fact = method(0, "Geometry", "fact", "def fact", 4, "; }", "def fact(n: int) -> int");
+	var even = method(0, "Geometry", "even", "def even", 4, "; }", "def even(n: int) -> bool");
+	var odd = method(0, "Geometry", "odd", "def odd", 4, "; }", "def odd(n: int) -> bool");
 	p.checkCalls("outgoing of fact", p.expand(p.item(0, "def fact", 4), false), false, 0, null, [call(fact, [("fact(n - 1)", 0)])]);
 	p.checkCalls("incoming of fact", p.expand(p.item(0, "def fact", 4), true), true, 0, "fact", [call(fact, [("fact(n - 1)", 0)])]);
 	p.checkCalls("outgoing of even", p.expand(p.item(0, "def even", 4), false), false, 0, null, [call(odd, [("odd(n - 1)", 0)])]);
@@ -383,7 +387,7 @@ def field_initializers(t: Tester) {
 // binds, not to its overrides.
 def virtual_calls(t: Tester) {
 	var p = program(t, [GEOMETRY], [], true);
-	var scaled = method(0, "scaled", "def scaled", 4, "; }", "def scaled(k: int) -> int");
+	var scaled = method(0, "Shape", "scaled", "def scaled", 4, "; }", "def scaled(k: int) -> int");
 	p.checkCalls("incoming of Shape.area", p.expand(p.item(0, "def area", 4), true), true, 0, "area", [
 		call(scaled, [("* area()", 2)]), call(RUN, [("s.area()", 2)])]);
 	p.checkCalls("incoming of Square.area", p.expand(p.item(0, "sq.area()", 3), true), true, 0, "area", [call(RUN, [("sq.area()", 3)])]);
@@ -395,14 +399,14 @@ def virtual_calls(t: Tester) {
 def index_methods_and_headers(t: Tester) {
 	var text = Arrays.concat(NOTE, "class Box {\n\tdef [i: int] -> int { return i; }\n\tdef get(i: int) -> int { return this.[](i) + this[i]; }\n}\ndef f() -> int { return 1; }\nclass A(x: int) { }\nclass B extends A(f()) {\n\tdef m() -> int { return f(); }\n}\n");
 	var p = program(t, [text], [], true);
-	var index = method(0, "[]", "def [i", 4, "; }", "def [i: int] -> int");
+	var index = method(0, "Box", "[]", "def [i", 4, "; }", "def [i: int] -> int");
 	index.selection = 1;
-	var get = method(0, "get", "def get", 4, "; }", "def get(i: int) -> int");
+	var get = method(0, "Box", "get", "def get", 4, "; }", "def get(i: int) -> int");
 	p.checkItems("[i", p.prepare(0, "[i: int]", 0), [index]);
 	p.checkCalls("incoming of []", p.expand(p.item(0, "[i: int]", 0), true), true, 0, "[]", [call(get, [("[](i)", 0)])]);
 	p.checkCalls("outgoing of get", p.expand(p.item(0, "def get", 4), false), false, 0, null, [call(index, [("[](i)", 0)])]);
 	p.checkCalls("incoming of f", p.expand(p.item(0, "def f", 4), true), true, 0, "f", [
-		call(method(0, "m", "def m", 4, "; }", "def m() -> int"), [("f(); }", 0)])]);
+		call(method(0, "B", "m", "def m", 4, "; }", "def m() -> int"), [("f(); }", 0)])]);
 }
 // A library's functions are items like any others: lib/util's Ints.abs,
 // which the program and lib/util's Floats call.
@@ -420,8 +424,8 @@ def library_callees(t: Tester) {
 	}
 	if (ints < 0 || floats < 0) return t.fail("lib/util has Ints.v3 and Floats.v3");
 	var p = CallProgram.new(t, names.extract(), texts.extract(), [], true);
-	var abs = method(ints, "abs", "def abs", 4, "\n\t}", "def abs(a: int) -> u32");
-	var magnitude = method(0, "magnitude", "def magnitude", 4, "; }", "def magnitude(x: int) -> u32");
+	var abs = method(ints, "Ints", "abs", "def abs", 4, "\n\t}", "def abs(a: int) -> u32");
+	var magnitude = method(0, "Use", "magnitude", "def magnitude", 4, "; }", "def magnitude(x: int) -> u32");
 	p.checkCalls("outgoing of magnitude", p.expand(p.item(0, "def magnitude", 4), false), false, 0, null, [
 		call(abs, [("Ints.abs(x)", 5), ("Ints.abs(-x)", 5)])]);
 	var incoming = p.expand(p.item(0, "Ints.abs(x)", 5), true);
@@ -448,7 +452,7 @@ def semantic_errors(t: Tester) {
 	var text = Arrays.concat(NOTE, "component E {\n\tdef ok() -> int { return 1; }\n\tdef bad() -> int { return missing() + ok(); }\n}\n");
 	var p = program(t, [text], [], false);
 	expectError(t, p.analysis, "UnresolvedIdentifier");
-	var ok = method(0, "ok", "def ok", 4, "; }", "def ok() -> int"), bad = method(0, "bad", "def bad", 4, "; }", "def bad() -> int");
+	var ok = method(0, "E", "ok", "def ok", 4, "; }", "def ok() -> int"), bad = method(0, "E", "bad", "def bad", 4, "; }", "def bad() -> int");
 	p.checkCalls("outgoing of bad", p.expand(p.item(0, "def bad", 4), false), false, 0, null, [call(ok, [("ok();", 0)])]);
 	p.checkCalls("incoming of ok", p.expand(p.item(0, "def ok", 4), true), true, 0, "ok", [call(bad, [("ok();", 0)])]);
 	p.checkNull("missing", p.prepare(0, "missing", 2));
@@ -474,7 +478,7 @@ def CALLER = Arrays.concat(NOTE, "component Caller {\n\tdef use() -> int { retur
 def unrelated_edit(t: Tester) {
 	var p = program(t, [GEOMETRY, CALLER], [], true);
 	var sum = p.item(0, "def sum", 4);
-	var use = method(1, "use", "def use", 4, "; }", "def use() -> int");
+	var use = method(1, "Caller", "use", "def use", 4, "; }", "def use() -> int");
 	p.change(1, Arrays.concat(CALLER, "component Later {\n\tdef again() -> int { return Geometry.sum(1, 1); }\n}\n"));
 	p.change(0, Arrays.concat(GEOMETRY, "def later() -> int { return Geometry.sum(2, 2); }\n"));
 	p.checkCalls("incoming of sum after edits", p.expand(sum, true), true, 0, "sum", [
@@ -483,9 +487,9 @@ def unrelated_edit(t: Tester) {
 		call(TWICE, [("sum(x, 0)", 0), ("sum(0, x)", 0)]),
 		call(RUN, [("sum(twice(1)", 0)]),
 		call(TOP, [("Geometry.sum(6", 9)]),
-		call(method(0, "later", "def later", 4, "; }", "def later() -> int"), [("Geometry.sum(2", 9)]),
+		call(method(0, "", "later", "def later", 4, "; }", "def later() -> int"), [("Geometry.sum(2", 9)]),
 		call(use, [("Geometry.sum(8", 9)]),
-		call(method(1, "again", "def again", 4, "; }", "def again() -> int"), [("Geometry.sum(1", 9)])]);
+		call(method(1, "Later", "again", "def again", 4, "; }", "def again() -> int"), [("Geometry.sum(1", 9)])]);
 	p.checkCalls("outgoing of use after edits", p.expand(p.item(1, "def use", 4), false), false, 1, null, [call(SUM, [("Geometry.sum(8", 9)])]);
 }
 // After its declaration moves within its file, is deleted, or is replaced by
@@ -500,13 +504,39 @@ def moved_or_replaced(t: Tester) {
 	p.checkNull("incoming of a moved use", p.expand(use, true));
 	use = p.item(0, "def use", 4);
 	p.checkCalls("outgoing of use prepared again", p.expand(use, false), false, 0, null, [
-		call(method(1, "sum", "def sum", 4, "; }", "def sum(x: int, y: int) -> int"), [("Geometry.sum(8", 9)])]);
+		call(method(1, "Geometry", "sum", "def sum", 4, "; }", "def sum(x: int, y: int) -> int"), [("Geometry.sum(8", 9)])]);
 	// A field of the same name takes its place.
 	p.change(0, Arrays.concat(NOTE, "// é𝄞 moved\ncomponent Caller {\n\tdef use = Geometry.sum(8, 9);\n}\n"));
 	p.checkNull("outgoing of a method replaced by a field", p.expand(use, false));
 	p.change(0, Arrays.concat(NOTE, "// é𝄞 moved\ncomponent Caller { }\n"));
 	p.checkNull("incoming of a deleted use", p.expand(use, true));
 	p.checkNull("outgoing of an old item", p.expand(oldUse, false));
+}
+// A member of the same name and kind in another class or variant case that
+// takes an item's place, as when two lines swap, is another declaration: its
+// container differs, so the item names nothing. Each item is f's caller: a
+// method, a method of a variant case, a field, and a constructor. Items
+// prepared again find the moved member.
+def FG = "def f() -> int { return 1; }\ndef g() -> int { return 2; }\n";
+def swapped_members(t: Tester) {
+	var head = Arrays.concat(NOTE, "type V {\n"), tail = Arrays.concat("}\n", FG);
+	for (swap in [
+		("method", NOTE, "class A { def m() -> int { return f(); } }\n", "class B { def m() -> int { return g(); } }\n", FG, "A"),
+		("case method", head, "\tcase X { def m() -> int { return f(); } }\n", "\tcase Y { def m() -> int { return g(); } }\n", tail, "V.X"),
+		("field", NOTE, "class A { def x = f(); }\n", "class B { def x = g(); }\n", FG, "A"),
+		("constructor", NOTE, "class A { new() { f(); } }\n", "class B { new() { g(); } }\n", FG, "A")]) {
+		var p = program(t, [Arrays.concat(swap.1, Arrays.concat(swap.2, Arrays.concat(swap.3, swap.4)))], [], true);
+		var item = p.first(p.expand(p.item(0, "def f", 4), true), true), data = JsonValue.JObject.!(JsonValue.JObject.!(item).v["data"]).v;
+		t.assert_string(swap.5, JsonValue.String.!(data["container"]).v);
+		var toF = p.first(p.expand(item, false), false);
+		t.assert_string("f", JsonValue.String.!(JsonValue.JObject.!(toF).v["name"]).v);
+		p.change(0, Arrays.concat(swap.1, Arrays.concat(swap.3, Arrays.concat(swap.2, swap.4))));
+		p.checkNull(Strings.format1("outgoing of a swapped %s", swap.0), p.expand(item, false));
+		p.checkNull(Strings.format1("incoming of a swapped %s", swap.0), p.expand(item, true));
+		var again = p.first(p.expand(p.item(0, "def f", 4), true), true);
+		toF = p.first(p.expand(again, false), false);
+		t.assert_string("f", JsonValue.String.!(JsonValue.JObject.!(toF).v["name"]).v);
+	}
 }
 // Under method-body fallback, calls in an excluded body are reported in
 // neither direction, and an item whose own body is excluded has no
@@ -526,10 +556,10 @@ def excluded_bodies(t: Tester) {
 	var a = s.text(snapshot, "A.v3"), b = s.text(snapshot, "B.v3");
 	var atA = LspSnapshotPosition.new(s.store, snapshot, i, a, PositionMap.new(current, PositionEncoding.UTF16), []);
 	var atB = LspSnapshotPosition.new(s.store, snapshot, j, b, PositionMap.new(other, PositionEncoding.UTF16), []);
-	var key = LspCallHierarchyKey.new(AnalysisDeclKind.METHOD, _);
+	var key = LspCallHierarchyKey.new(AnalysisDeclKind.METHOD, _, _);
 	var bound = LspReferences.MAX_LOCATIONS, bytes = LspReferences.MAX_REPLY_BYTES;
 	var calls = fun (at: LspSnapshotPosition, text: Array<byte>, needle: string, name: string, incoming: bool) -> Array<JsonValue> {
-		var reply = hierarchy.calls(at, indexOf(text, needle), key(name), incoming, bound, bytes).1;
+		var reply = hierarchy.calls(at, indexOf(text, needle), key(name, if(at == atA, "A", "B")), incoming, bound, bytes).1;
 		if (!JsonRpcReply.Result.?(reply) || !JsonValue.JArray.?(JsonRpcReply.Result.!(reply).v)) {
 			t.fail1("no calls for %s", needle);
 			return [];
@@ -563,22 +593,29 @@ def excluded_bodies(t: Tester) {
 		t.asserti(end, m.positionToOffset(JsonValue.Int.!(finish["line"]).v, JsonValue.Int.!(finish["character"]).v));
 	}
 	// An item's position in the excluded body names nothing.
-	var none = hierarchy.calls(atA, -1, key("broken"), true, bound, bytes);
+	var none = hierarchy.calls(atA, -1, key("broken", "A"), true, bound, bytes);
 	t.assert(none.0 && JsonValue.Null.?(JsonRpcReply.Result.!(none.1).v), "a position in an excluded body names nothing");
 	s.server.close();
 }
-// Data without a string name or a kind of "method", "constructor", or
-// "field" is malformed. The request layer checks its uri and position.
+// Data without a string name and container or a kind of "method",
+// "constructor", or "field" is malformed. The request layer checks its uri
+// and position. Another container names nothing.
 def malformed_data(t: Tester) {
 	var p = program(t, [GEOMETRY], [], true);
 	var good = JsonValue.JObject.!(p.item(0, "def sum", 4)).v;
 	t.assert(JsonRpcReply.Result.?(p.expand(JsonValue.JObject(good), true)), "a good item");
-	for (change in [("name", JsonValue.Int(1)), ("kind", JsonValue.String("class")), ("kind", JsonValue.Null), ("name", JsonValue.Null)]) {
+	for (change in [("name", JsonValue.Int(1)), ("kind", JsonValue.String("class")), ("kind", JsonValue.Null), ("name", JsonValue.Null),
+			("container", JsonValue.Int(1)), ("container", JsonValue.Null)]) {
 		var item = copy(good), data = copy(JsonValue.JObject.!(good["data"]).v);
 		data[change.0] = change.1;
 		item["data"] = JsonValue.JObject(data);
 		p.checkInvalid(Strings.format1("malformed %s", change.0), p.expand(JsonValue.JObject(item), true));
 	}
+	var other = copy(good), data = copy(JsonValue.JObject.!(good["data"]).v);
+	data["container"] = JsonValue.String("Shape");
+	other["data"] = JsonValue.JObject(data);
+	p.checkNull("incoming in another container", p.expand(JsonValue.JObject(other), true));
+	p.checkNull("outgoing in another container", p.expand(JsonValue.JObject(other), false));
 	var item = copy(good);
 	item["data"] = JsonValue.String("sum");
 	var params = Strings.newMap<JsonValue>();
@@ -602,7 +639,7 @@ def reply_bounds(t: Tester) {
 		var w = caller.0;
 		n += caller.1;
 		bytes += 2 * uri + 2 * JsonRpcJson.stringBytes(w.name) + JsonRpcJson.stringBytes(w.detail)
-			+ p.hierarchy.CALL_BYTES + caller.1 * p.hierarchy.RANGE_BYTES;
+			+ JsonRpcJson.stringBytes(w.container) + p.hierarchy.CALL_BYTES + caller.1 * p.hierarchy.RANGE_BYTES;
 	}
 	var all = LspReferences.MAX_REPLY_BYTES;
 	match (p.expandWithin(sum, true, n, bytes)) {

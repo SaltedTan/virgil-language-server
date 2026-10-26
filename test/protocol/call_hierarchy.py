@@ -44,14 +44,15 @@ def span(text, begin, end):
     return {'start': at(text, begin), 'end': at(text, end)}
 
 
-# The item of {name} in {text} at {path}: its declaration's range begins
-# with {begin}, which contains its name, and ends with the first {end} after
-# it. A client that declares no SymbolKinds gets each kind as it is.
-def item(path, text, begin, name, end, detail, kind='method'):
+# The item of {name} in {container} in {text} at {path}: its declaration's
+# range begins with {begin}, which contains its name, and ends with the first
+# {end} after it. A client that declares no SymbolKinds gets each kind as it
+# is.
+def item(path, text, container, begin, name, end, detail, kind='method'):
     b = text.index(begin)
     n = b + begin.index(name)
     e = text.index(end, b) + len(end)
-    data = {'uri': path.as_uri(), 'position': at(text, n), 'name': name, 'kind': kind}
+    data = {'uri': path.as_uri(), 'position': at(text, n), 'name': name, 'kind': kind, 'container': container}
     result = {'name': name, 'kind': KINDS[kind], 'uri': path.as_uri(), 'range': span(text, b, e),
               'selectionRange': span(text, n, n + len(name)), 'data': data}
     if detail is not None:
@@ -115,9 +116,9 @@ def run(exe, root):
         caps = s.result(s.send('initialize', {'rootUri': root.as_uri()}))['capabilities']
         assert caps['callHierarchyProvider'] is True
         open_file(s, a, A)
-        square = item(a, A, 'def square', 'square', '; }', 'def square(x: int) -> int')
-        sum_squares = item(a, A, 'def sumSquares', 'sumSquares', '; }', 'def sumSquares(a: int, b: int) -> int')
-        use_run = item(b, B, 'def run', 'run', '; }', 'def run() -> int')
+        square = item(a, A, 'Math', 'def square', 'square', '; }', 'def square(x: int) -> int')
+        sum_squares = item(a, A, 'Math', 'def sumSquares', 'sumSquares', '; }', 'def sumSquares(a: int, b: int) -> int')
+        use_run = item(b, B, 'Use', 'def run', 'run', '; }', 'def run() -> int')
         # UTF-16 ranges after non-ASCII text, from a use in the open file, and
         # the callers in it and in a closed one, in byte order of path.
         assert prepare(s, a, A, 'square(a)', 0) == [square]
@@ -135,8 +136,8 @@ def run(exe, root):
         assert incoming(s, use_run) == []
         # A construction calls an explicit constructor, and a field's
         # initializer is its caller, which expands in turn.
-        new = item(b, B, 'new(start', 'new', '; }', 'new(start: int)', 'constructor')
-        counter = item(b, B, 'def counter', 'counter', ';', 'def counter: Counter', 'field')
+        new = item(b, B, 'Counter', 'new(start', 'new', '; }', 'new(start: int)', 'constructor')
+        counter = item(b, B, 'Make', 'def counter', 'counter', ';', 'def counter: Counter', 'field')
         assert prepare(s, b, B, 'Counter.new', 8) == [new]
         assert incoming(s, new) == [call('from', counter, B, 3, ('Counter.new', 8))]
         assert outgoing(s, counter) == [call('to', new, B, 3, ('Counter.new', 8))]
@@ -151,8 +152,8 @@ def run(exe, root):
         change(s, a, added, 2)
         assert incoming(s, square) is None
         assert outgoing(s, sum_squares) is None
-        square2 = item(a, added, 'def square', 'square', '; }', 'def square(x: int) -> int')
-        sum2 = item(a, added, 'def sumSquares', 'sumSquares', '; }', 'def sumSquares(a: int, b: int) -> int')
+        square2 = item(a, added, 'Math', 'def square', 'square', '; }', 'def square(x: int) -> int')
+        sum2 = item(a, added, 'Math', 'def sumSquares', 'sumSquares', '; }', 'def sumSquares(a: int, b: int) -> int')
         assert prepare(s, a, added, 'def square', 4) == [square2]
         assert incoming(s, square2) == [call('from', sum2, added, 6, ('square(a)', 0), ('square(b)', 0)),
                                         call('from', use_run, B, 6, ('Math.square', 5))]
@@ -162,12 +163,12 @@ def run(exe, root):
         # null.
         broken = added.replace('/* é𝄞\t */ return square(a)', '/* é𝄞\t */ var bad = ;\n\t\treturn square(a)')
         change(s, a, broken, 3)
-        square3 = item(a, broken, 'def square', 'square', '; }', None)
+        square3 = item(a, broken, 'Math', 'def square', 'square', '; }', None)
         assert incoming(s, square2) == [call('from', use_run, B, 6, ('Math.square', 5))]
         assert len(substitutions(s)) == 1
         assert outgoing(s, sum2) == []
         assert outgoing(s, use_run) == [call('to', square3, B, 6, ('Math.square', 5)),
-                                        call('to', item(a, broken, 'def sumSquares', 'sumSquares', '; }', None), B, 10,
+                                        call('to', item(a, broken, 'Math', 'def sumSquares', 'sumSquares', '; }', None), B, 10,
                                              ('Math.sumSquares', 5))]
         assert prepare(s, a, broken, 'var bad', 4) is None
         assert prepare(s, a, broken, 'square(a)', 0) is None
@@ -184,19 +185,24 @@ def run(exe, root):
         change(s, a, replaced, 5)
         assert incoming(s, square2) is None
         assert outgoing(s, square2) is None
-        assert outgoing(s, use_run) == [call('to', item(a, replaced, 'def sumSquares', 'sumSquares', '; }',
+        assert outgoing(s, use_run) == [call('to', item(a, replaced, 'Math', 'def sumSquares', 'sumSquares', '; }',
                                                         'def sumSquares(a: int, b: int) -> int'), B, 10, ('Math.sumSquares', 5))]
         # A document in no project.
         open_file(s, loose, B)
         assert prepare(s, loose, B, 'def run', 4) is None
         assert incoming(s, dict(use_run, data=dict(use_run['data'], uri=loose.as_uri()))) is None
+        # Another container names nothing.
+        assert outgoing(s, dict(use_run, data=dict(use_run['data'], container='Make'))) is None
         # Invalid params go through the same deferred method validation:
-        # data that names no valid document, position, name, or kind.
+        # data that names no valid document, position, name, kind, or
+        # container.
         invalid(s, 'textDocument/prepareCallHierarchy', {'position': {'line': 0, 'character': 0}})
         invalid(s, 'callHierarchy/incomingCalls', {})
         for bad in (None, 'run', {}, dict(use_run['data'], uri='file://host/B.v3'), dict(use_run['data'], uri=''),
                     dict(use_run['data'], position={'line': -1, 'character': 0}), dict(use_run['data'], name=None),
-                    dict(use_run['data'], kind='class'), dict(use_run['data'], kind=None)):
+                    dict(use_run['data'], kind='class'), dict(use_run['data'], kind=None),
+                    dict(use_run['data'], container=None), dict(use_run['data'], container=1),
+                    {k: v for k, v in use_run['data'].items() if k != 'container'}):
             invalid(s, 'callHierarchy/outgoingCalls', {'item': dict(use_run, data=bad)})
         s.shutdown()
     except BaseException:

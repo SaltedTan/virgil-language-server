@@ -417,7 +417,9 @@ local function check()
       name = name, kind = 6, detail = detail, uri = calls_uri,
       range = { start = { line = line, character = 1 }, ["end"] = { line = line, character = last } },
       selectionRange = selection,
-      data = { uri = calls_uri, position = selection.start, name = name, kind = "method" },
+      data = {
+        uri = calls_uri, position = selection.start, name = name, kind = "method", container = "CallFixture",
+      },
     }
   end
   local function from(line, character)
