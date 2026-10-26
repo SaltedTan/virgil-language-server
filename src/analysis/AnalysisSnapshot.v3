@@ -378,15 +378,21 @@ class AnalysisSnapshot {
 			var first = next;
 			while (next < names.length && Strings.equal(names[next].path, path)) next++;
 			var count = if(withName, next - first);
-			var targets: Array<int> = if(file != null, file.targets, []);
+			var targets: Array<int> = if(file != null, file.targets, []), scan = first;
 			for (i < targets.length) {
-				if (among(ids, file.target(i)) && !isName(file, i, names, first, next)) count++;
+				if (!among(ids, file.target(i))) continue;
+				var begin = file.occurrenceBegin(i);
+				while (scan < next && names[scan].beginOffset < begin) scan++;
+				if (scan >= next || names[scan].beginOffset != begin || names[scan].endOffset != file.occurrenceEnd(i)) count++;
 			}
 			if (count == 0) continue;
 			var spans = Array<int>.new(2 * count), n = 0, name = if(withName, first, next);
+			scan = first;
 			for (i < targets.length) {
-				if (!among(ids, file.target(i)) || isName(file, i, names, first, next)) continue;
+				if (!among(ids, file.target(i))) continue;
 				var begin = file.occurrenceBegin(i), end = file.occurrenceEnd(i);
+				while (scan < next && names[scan].beginOffset < begin) scan++;
+				if (scan < next && names[scan].beginOffset == begin && names[scan].endOffset == end) continue;
 				while (name < next && names[name].beginOffset < begin) {
 					spans[n++] = names[name].beginOffset;
 					spans[n++] = names[name++].endOffset;
@@ -406,17 +412,14 @@ class AnalysisSnapshot {
 		var c = AnalysisTables.compareBytes(x.path, y.path);
 		return c < 0 || (c == 0 && x.beginOffset < y.beginOffset);
 	}
-	// Whether use {i} of {file} has the range of one of {names} from {first}
-	// to {end}.
-	private def isName(file: AnalysisSnapshotFile, i: int, names: Array<AnalysisRange>, first: int, end: int) -> bool {
-		for (k = first; k < end; k++) if (file.spans(i, names[k].beginOffset, names[k].endOffset)) return true;
-		return false;
-	}
 	// The indexes in {declarations}, in order, of {decls} and of each
 	// declaration with the same name token as one of them. Declarations differ
 	// by kind or token, so these differ only by kind. One declaration, as
 	// every query but a family's rename has, is matched without the inner
-	// loop, which every reference query would otherwise pay for.
+	// loop, which every reference query would otherwise pay for. A family's
+	// name ranges are sorted once, and each declaration is looked up among
+	// them by binary search, so the pass costs the declarations times the
+	// logarithm of the family's size, rather than their product.
 	private def sharingName(decls: Array<AnalysisDeclaration>) -> Array<int> {
 		var ids = Vector<int>.new();
 		if (decls.length == 1) {
@@ -428,18 +431,43 @@ class AnalysisSnapshot {
 			}
 			return ids.extract();
 		}
+		var located = Vector<AnalysisRange>.new(), unlocated = Vector<AnalysisDeclaration>.new();
+		for (decl in decls) {
+			if (decl.range.beginOffset >= 0) located.put(decl.range);
+			else unlocated.put(decl);
+		}
+		var family = AnalysisTables.sort(located.extract(), rangeOrder), outside = unlocated.extract();
 		for (i < declarations.length) {
-			var d = declarations[i], q = d.range;
-			for (decl in decls) {
-				var r = decl.range;
-				if (d == decl || (r.beginOffset >= 0 && q.beginOffset == r.beginOffset
-						&& q.endOffset == r.endOffset && Strings.equal(q.path, r.path))) {
-					ids.put(i);
-					break;
-				}
-			}
+			var d = declarations[i];
+			if (hasRange(family, d.range) || isOneOf(outside, d)) ids.put(i);
 		}
 		return ids.extract();
+	}
+	// Whether {q} has the path and offsets of one of {ranges}, which are in
+	// {rangeOrder} order.
+	private def hasRange(ranges: Array<AnalysisRange>, q: AnalysisRange) -> bool {
+		if (q.beginOffset < 0) return false;
+		var low = 0, high = ranges.length;
+		while (low < high) {
+			var mid = low + (high - low) / 2, r = ranges[mid];
+			if (rangeOrder(r, q)) low = mid + 1;
+			else high = mid;
+		}
+		if (low >= ranges.length) return false;
+		var r = ranges[low];
+		return r.beginOffset == q.beginOffset && r.endOffset == q.endOffset && Strings.equal(r.path, q.path);
+	}
+	// Whether {x} is before {y} by path, then begin offset, then end offset.
+	private def rangeOrder(x: AnalysisRange, y: AnalysisRange) -> bool {
+		var c = AnalysisTables.compareBytes(x.path, y.path);
+		if (c != 0) return c < 0;
+		return x.beginOffset < y.beginOffset || (x.beginOffset == y.beginOffset && x.endOffset < y.endOffset);
+	}
+	// Whether {d} is one of {decls}, each of which has no name range, so that
+	// no lookup among the family's ranges finds it.
+	private def isOneOf(decls: Array<AnalysisDeclaration>, d: AnalysisDeclaration) -> bool {
+		for (decl in decls) if (decl == d) return true;
+		return false;
 	}
 	// Whether {target} is among {ids}, which are in order: by a scan of a few,
 	// as a single declaration's are, and by binary search of a family's.
