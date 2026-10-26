@@ -157,8 +157,8 @@ whose brace the rule inserts. As prototyped, the header is a single line that
 begins with `def` or `new` after any modifiers and ends in `{`, and the closing
 line begins with `}`; a header split over several lines is refused. An
 implementation must state these forms, tab stops, continuation lines, nested
-pairs, and what may follow the closing `}` on its line as precisely. If the body passes, every other single-brace
-reading fails the check in it:
+pairs, and what may follow the closing `}` on its line as precisely. If the
+body passes, every other single-brace reading fails the check in it:
 
 - A brace missing after the body would close the body at a deeper `}`.
 - A brace missing before the body would close an earlier construct at a `}`
@@ -198,11 +198,11 @@ fallback can't substitute:
 The substitution record holds a list of excluded bodies. Blanking moves no
 offset, and only an inserted `}` shifts later ones. Every answer rule of
 ADR-0008 and ADR-0009 stays, including the error limit's: an emptied body's
-missing return counts toward it as a sentinel does. On this corpus, an estimated 181 of 185 states
-would keep all four features, cold and warm: the repair suite would go from 34
-to 41 of 45 cold, and the replay suite from 76 to all 140. That meets the
-research's phase-3 targets of 85% and 95%, but on the corpus these rules were
-built from.
+missing return counts toward it as a sentinel does. On this corpus, an
+estimated 181 of 185 states would keep all four features, cold and warm: the
+repair suite would go from 34 to 41 of 45 cold, and the replay suite from 76 to
+all 140. That meets the research's phase-3 targets of 85% and 95%, but on the
+corpus these rules were built from.
 
 Phase 3b, declaration-level recovery of field initializers, damaged headers,
 and truncated files, waits until phase 3a is measured on new states, and
@@ -221,8 +221,8 @@ These decisions are the maintainer's:
   after them. It covered all their states here.
 - **The v1.0 gate for M6:** proposed as phase 3a shipped with no wrong answers,
   new negative controls for the brace rules and for the error limit, and
-  held-out states the rules weren't built from, such as replays of other headers and indentation styles.
-  Phase 3b would not be needed for v1.0.
+  held-out states the rules weren't built from, such as replays of other
+  headers and indentation styles. Phase 3b would not be needed for v1.0.
 
 ## Consequences
 
