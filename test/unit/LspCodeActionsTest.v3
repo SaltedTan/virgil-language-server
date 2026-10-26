@@ -102,7 +102,8 @@ def test_proof(t: Tester) {
 // The parser may read a later line into a statement whose ";" is missing. A
 // ";" at its end would parse, but the statement doesn't start on that line, so
 // no action is offered. A lambda's braces don't end the statement; a block
-// statement's do.
+// statement's do. Within one line, a ";" that a swallowed `if`, "++", or "--"
+// could follow proves too, so no action is offered there either.
 def test_statement_line(t: Tester) {
 	for (text in [
 		"component C {\n    def f() {\n        if (true) return\n        if (false) {}\n    }\n}\n",
@@ -122,14 +123,24 @@ def test_statement_line(t: Tester) {
 		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun() {\n\t\ta();\n\t}.x\n\th();\n} }",
 		// A lambda's empty body is a ";" inside the expression.
 		"component C { var g: int; def f() {\n\tif (true) return\n\tg = fun(); (1)\n\th();\n} }",
-		// On one line, a statement's `if (c)` read as a one-argument if expression.
+		// On one line, a statement's `if (c)` read as an if expression, and a
+		// prefix "++" or "--" read as a postfix one. A ";" before either proves.
 		"component C { def f(c: bool) {\n\tif (c) return if (c) {}\n} }",
 		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d) ++x; } }",
 		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d) --x; } }",
-		"component C { def f(c: bool, d: bool) { if(c) return if(d).x {} } }",
-		"component C { def f(c: bool, d: bool) { if(c) return if(d)[0] {} } }",
-		"component C { def f(c: bool, d: bool) { return p(if(d)) {} } }",
-		"component C { def f(c: bool, d: bool) { return if(p(c, d)) ++x; } }"] ) {
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d).x ++x; } }",
+		"component C { def f(c: bool, d: bool, x: int) { if(c) return if(d)[0] --x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>()) ++x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>()) --x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>()).x ++x; } }",
+		"component C { def f(c: bool, x: int) { if(c) return if(p<int, int>())[0] --x; } }",
+		"component C { def f(c: bool, d: bool) { return if(p(c, d)) ++x; } }",
+		"component C { def f(c: bool, d: bool) { if(c) return if(d) f(if(c, 1, 2)); } }",
+		// Earlier control headers' `if`s: the swallowed `if` is the last one.
+		"component C { def f(c: bool, d: bool) { if (c) if (d) return if (c) {} } }",
+		"component C { def f(c: bool, d: bool) { while (c) if (d) return if (c) {} } }",
+		"component C { var x: int; var y: int; def f() { x = y ++x; } }",
+		"component C { var x: int; var y: int; def f() { x = y --x; } }"] ) {
 		var parsed = AeneasAdapter.parseFile(URI, text, []);
 		t.assert_string("\";\" expected", parsed.diagnostics[0].message);
 		// Without the rule, the proof would accept this ";".
@@ -158,6 +169,16 @@ def test_statement_line(t: Tester) {
 	site(t, Strings.format1(body, "\tfor (i < 3) if (c) x = 1|"), true);
 	site(t, Strings.format1(body, "\treturn if(c, 1)|"), true);
 	site(t, Strings.format1(body, "\treturn if(c, 1, 2)|"), true);
+	// An `if` that a ";" before can't make a statement, or inside a group or a
+	// lambda body, leaves the fix; so does a "++" that ends its line.
+	site(t, Strings.format1(body, "\tx = if(c, 1, 2)|\n\tx = 1;"), true);
+	site(t, Strings.format1(body, "\tf(if(c, 1, 2))|\n\tx = 1;"), true);
+	site(t, Strings.format1(body, "\tp(fun() { if(c) x = 1; })|"), true);
+	site(t, Strings.format1(body, "\tmatch (c) {\n\t\ttrue => if(c) x = 1|\n\t\tfalse => x = 2;\n\t}"), true);
+	site(t, Strings.format1(body, "\tif (c) return if(c).x| {}"), false);
+	site(t, Strings.format1(body, "\tif (c) return if(c)[0]| {}"), false);
+	site(t, Strings.format1(body, "\treturn p(if(c))| {}"), false);
+	site(t, Strings.format1(body, "\tx++|\n\tx = 1;"), true);
 	site(t, "component C {\n\tdef f() {\n\t}\n\tvar x = 1|\n}", true);
 	site(t, "component C { def f() {\n\tfor (\n\t\ti = 0| i < 3; i++) {}\n} }", false);
 }

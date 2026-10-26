@@ -33,6 +33,9 @@ class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, decl
 	// The start of the statement that a ";" at {repairAt} would end, as
 	// AnalysisStatementStart finds it for AeneasAdapter.parseStatement, or -1.
 	var statementStart = -1;
+	// Where a ";" could also end that statement, earlier on the same line
+	// (AnalysisStatementStart.alternative), or -1.
+	var alternativeAt = -1;
 }
 
 // One source file of a program, supplied as in-memory bytes. Whole-program
@@ -468,12 +471,17 @@ component AeneasAdapter {
 	def parseFile(path: string, input: Array<byte>, options: Array<string>) -> FileParseResult {
 		return parseWith(path, input, options, null);
 	}
-	// {parseFile}, also setting FileParseResult.statementStart from the tokens
-	// that the parser consumed (AnalysisStatementStart), with no extra parse.
+	// {parseFile}, also setting FileParseResult.statementStart and alternativeAt
+	// from the tokens that the parser consumed (AnalysisStatementStart), with
+	// no extra parse.
 	def parseStatement(path: string, input: Array<byte>, options: Array<string>) -> FileParseResult {
 		var syntax = SymbolSyntaxIndex.new();
 		var result = parseWith(path, input, options, syntax);
-		if (result.repairAt >= 0) result.statementStart = AnalysisStatementStart.new(input, syntax.tokens).find(result.repairAt);
+		if (result.repairAt >= 0 && result.diagnostics.length > 0) {
+			var walk = AnalysisStatementStart.new(input, syntax.tokens);
+			result.statementStart = walk.find(result.repairAt, result.diagnostics[0].beginOffset);
+			result.alternativeAt = walk.alternative;
+		}
 		return result;
 	}
 	private def parseWith(path: string, input: Array<byte>, options: Array<string>, syntax: SymbolSyntaxIndex) -> FileParseResult {

@@ -321,12 +321,25 @@ walk's level, such a continuation holds no `;`, `{`, or `}` except a lambda's,
 which the walk skips, because a block statement or a declaration can't appear
 in an expression. The boundary is therefore before the intended `;`, the start
 is on that `;`'s line or earlier, and an anchor on a later line gets no action.
-Only a swallow within one line escapes the line rule. The one that ends in a
-semicolon error is a statement's `if (c)` read as an `if` expression, as in
-`if (c) return if (d) {}`. An `if` expression needs two or three arguments,
-so a one-argument `if(...)` anywhere in the statement's expression before the
-anchor gets no action, including before a suffix or inside a nested group.
-Leading control headers belong to the statement, not its expression.
+Only a swallow within one line escapes the line rule. It needs a token that
+can both begin a statement and continue the expression before it, and since
+other statement keywords can't be names, there are two: an `if`, which the
+parser reads as an `if` expression, as in `if (c) return if (d) {}`, and a
+prefix `++` or `--`, which it reads as a postfix one, as in `x = y ++z`. In
+both, a `;` before that token parses too, so an ambiguity test refuses the
+fix. The walk picks one candidate: the `++` or `--` just before the anchor,
+if code follows it on the anchor's line, or else the last `if` that the walk
+met outside the groups it skipped, after the statement's first token. An `if`
+inside a call's arguments or a lambda body doesn't count. The last `if` is the
+swallowed one, because the swallowing statement ends in `return`, the only
+statement end that takes a value: before the swallowed `if` come only control
+headers, as in `if (c) if (d) return`, and after it only suffixes and
+operators. The text with a `;` before the candidate gets the same proof as the
+fix, and if it passes too, there is no action. An `if` expression's
+alternative fails, because an `if` statement's condition can't hold the
+expression's commas, and so does the alternative for an `if` in statement
+position, such as `while (c) if (d) x = 1`, whose `;` is still missing. A `++`
+or `--` that ends its line is taken as postfix.
 
 A forgotten `;` at the end of a one-line statement, such as a call, assignment,
 `return`, local, field, one-line `match` arm, `if (c) x = 1`, or a statement
@@ -348,12 +361,16 @@ removed `;`, and in none did it insert one anywhere else. 622 removals with a
 semicolon error got no action. Most were statements that span lines, some were
 a bare `return` whose next line the parser read as its value, and 23 were
 layout lines. The other 1,060 removals gave a different first error, such as a
-`return;` before `}`, where `}` can't start the return's value.
+`return;` before `}`, where `}` can't start the return's value. The counts
+include the ambiguity test, and none of 124 hand-written same-line and
+multi-line swallows and fixes gets a wrong action.
 
 There is one candidate and no search. The edited text
 is parsed once, with the same options. The action is offered only if the file
 parses or its first error starts strictly after the original error's byte
-offset plus the inserted byte. A later unrelated error may remain.
+offset plus the inserted byte. A later unrelated error may remain. Where the
+walk found a candidate for the ambiguity test, that text is parsed once more
+under the same rule.
 
 The `WorkspaceEdit` contains one `documentChanges` entry, a `TextDocumentEdit`
 for the canonical URI and current document version, with one zero-width `;`
@@ -367,7 +384,7 @@ only when the client declares
 the provider is absent, and a valid request still returns `[]`. A client
 without `workspace.workspaceEdit.documentChanges: true` also gets `[]`, so
 an edit always carries the version the client must check. A request parses
-at most twice, within the [1 MiB open-document bound](#document-store); no
+at most three times, within the [1 MiB open-document bound](#document-store); no
 code-action answer is cached.
 
 [LspCodeActionsTest](../test/unit/LspCodeActionsTest.v3) checks exact actions,
@@ -381,8 +398,12 @@ action even though the reparse would accept the `;`: a `return` that swallows
 a following `if`, expression statement, or assignment, including through a
 lambda in the `if` condition and a lambda body that spans lines followed by
 `+ 1`, `(1)`, or `.x`, a lambda's empty body, a call whose arguments span two
-lines, and an `if (c)` or `match` arm whose body is on the next line; a
-one-line `return if (c) {}` gets none either. After an `if`, `while`, `for`,
+lines, and an `if (c)` or `match` arm whose body is on the next line. On one
+line, a `return` that swallows an `if`, including after earlier control
+headers and with a generic call or a nested `if` expression, and a prefix `++`
+or `--` read as a postfix one get none either, while an `if` expression, an
+`if` inside a call or a lambda body or after a match arm's `=>`, and a `++`
+that ends its line keep their fix. After an `if`, `while`, `for`,
 `match`, `else`, match arm, bare, local method, and lambda-argument block,
 and after a method body, the next statement still gets its fix. CRLF inside comments is covered; a bare CR is
 already a parser error and gets no semicolon fix. The [stdio test](../test/protocol/code_actions.py)

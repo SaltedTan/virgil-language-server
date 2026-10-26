@@ -11,7 +11,9 @@
 // and is attached as the client sent it; without them, the server's own
 // diagnostic is attached. The ";" goes at FileParseResult.repairAt, the end of
 // the token before the error, only if the statement it ends starts on that
-// line, and is proved by one reparse. The edit carries
+// line, and is proved by one reparse. A second reparse refuses it if a ";"
+// where an `if`, "++", or "--" could begin a statement earlier on that line
+// proves too. The edit carries
 // the open document's version, so a client without versioned documentChanges
 // gets nothing. There is no command, no fix-all, and no save action.
 class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
@@ -98,7 +100,7 @@ class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 		return action(overlay, map, parsed, attached);
 	}
 	// The reply that inserts ";" at the parser's repair point, if one reparse
-	// shows the fix works.
+	// shows the fix works and none shows that a ";" earlier on its line does too.
 	private def action(overlay: DocumentOverlay, map: PositionMap, parsed: FileParseResult,
 			diagnostic: JsonValue) -> JsonRpcReply {
 		var anchor = parsed.repairAt;
@@ -120,6 +122,11 @@ class LspCodeActions(store: DocumentStore, projects: WorkspaceProjects) {
 			if (overlay.text[i] == '\n' || overlay.text[i] == '\r') return empty();
 		}
 		if (!proves(overlay, anchor, parsed.diagnostics[0].beginOffset)) return empty();
+		// Within one line, the parser may have read the next statement's `if`,
+		// or its prefix "++" or "--", into this one. If a ";" before that token
+		// proves too, either ";" could be the missing one, so neither is offered.
+		var other = parsed.alternativeAt;
+		if (other >= 0 && proves(overlay, other, parsed.diagnostics[0].beginOffset)) return empty();
 		var at = map.offsetToPosition(anchor), point = position(at);
 		var edit = Strings.newMap<JsonValue>();
 		edit["range"] = rangeValue(point, point);

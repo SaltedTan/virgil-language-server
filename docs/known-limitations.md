@@ -23,11 +23,13 @@ right: the parser may have read a later line into the statement, as when
 `return` without its `;` reads a following `if (c)` as its value, and a parse
 alone can't tell the two apart. The server finds the statement's start by
 walking back over the parser's tokens, and it gives no fix where it can't tell
-whether a brace closes a block or a lambda. It gives none right after a
-one-argument `if (c)`, which on one line may be an `if` statement that the
-parser read as a `return` value. A layout field or a layout's size gets no fix
-either. There is no fix-all or action on save
-([Code actions](architecture.md#code-actions)).
+whether a brace closes a block or a lambda. On one line, it gives none when a
+`;` earlier in the statement would parse as well: before an `if` that may be
+an `if` statement that the parser read as a `return` value, or before a `++`
+or `--` that may start the next statement, as in `x = y ++z`. So a `++` with
+more code after it on its line, such as `i++ j++`, can lose a fix that would
+be right. A layout field or a layout's size gets no fix either. There is no
+fix-all or action on save ([Code actions](architecture.md#code-actions)).
 
 ## Semantic features need a project file
 

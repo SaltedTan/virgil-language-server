@@ -22,18 +22,27 @@ enum AnalysisBraceKind {
 // insertion point is inside a group; only a for header's "(" is a boundary.
 // Literals and comments are never bracket tokens.
 //
-// The start's line doesn't show a swallow within one line. The only one that
-// ends in a ";" error is a statement's `if (c)` read as an if expression, as
-// in `return if (c) {}`, and an if expression needs two or three arguments, so
-// a one-argument `if(...)` anywhere in the statement's expression before the
-// insertion point is refused, including before a suffix or inside a nested
-// group. Leading control headers belong to the statement, not its expression.
+// The start's line doesn't show a swallow within one line. Only two tokens can
+// begin a statement and also continue the expression before them: an `if`,
+// read as an if expression, as in `return if (c) {}`, and a prefix "++" or
+// "--", read as a postfix one, as in `x = y ++z`. {alternative} is where such
+// a statement could begin: the "++" or "--" just before the insertion point,
+// if code follows it on its line, or else the last `if` that the walk meets
+// outside the groups it skips, after the statement's first token. A swallowed
+// `if` is the last one: the statement that swallowed it ends in `return`, the
+// only statement end that takes a value, so before the `if` come only control
+// headers, and after it only suffixes and operators. If a ";" before that
+// token also proves, the caller can't tell which ";" is missing.
 class AnalysisStatementStart(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>) {
+	// After {find}, the offset of the token where a ";" could also end the
+	// statement, or -1.
+	var alternative = -1;
 	// The start offset of the statement that a ";" at {end} would end, or -1.
-	def find(end: int) -> int {
+	// {error} is the offset of the parser's first error.
+	def find(end: int, error: int) -> int {
 		var last = tokens.length;
 		while (last > 0 && tokens[last - 1].end > end) last--;
-		var i = last, boundary = -1;
+		var i = last, boundary = -1, conditional = -1;
 		while (i > 0) {
 			var c = single(--i);
 			if (c == ')' || c == ']') {
@@ -59,32 +68,28 @@ class AnalysisStatementStart(input: Array<byte>, tokens: Vector<SymbolSyntaxToke
 			} else if (c == ';' && !emptyLambda(i)) {
 				boundary = i;
 				break;
+			} else if (conditional < 0 && keyword(i, "if")) {
+				conditional = i;
 			}
 		}
 		var start = boundary + 1;
 		if (start >= last || !canStart(tokens[start])) return -1;
-		var head = start;
-		for (j = start; j + 1 < last; j++) {
-			if (j == head && keyword(j, "else")) head++;
-			var conditional = keyword(j, "if");
-			if ((!conditional && !(j == head && (keyword(j, "while") || keyword(j, "for")))) || single(j + 1) != '(') continue;
-			var depth = 0, separated = false;
-			for (k = j + 2; k < last; k++) {
-				var c = single(k);
-				if (c == '(' || c == '[' || c == '{') depth++;
-				else if (c == ')' || c == ']' || c == '}') {
-					if (depth == 0) {
-						if (c == ')') {
-							if (j == head && k + 1 < last) head = k + 1;
-							else if (conditional && !separated) return -1;
-						}
-						break;
-					}
-					depth--;
-				} else if (c == ',' && depth == 0) separated = true;
-			}
-		}
+		var t = tokens[last - 1];
+		if (last - 1 > start && step(t) && !lineBreak(t.end, error)) alternative = t.begin;
+		else if (conditional > start) alternative = tokens[conditional].begin;
 		return tokens[start].begin;
+	}
+	// Whether the token is "++" or "--".
+	private def step(t: SymbolSyntaxToken) -> bool {
+		var c = input[t.begin];
+		return t.end - t.begin == 2 && (c == '+' || c == '-') && input[t.begin + 1] == c;
+	}
+	// Whether a line ends between {from} and {to}.
+	private def lineBreak(from: int, to: int) -> bool {
+		for (k = from; k < to && k < input.length; k++) {
+			if (input[k] == '\n' || input[k] == '\r') return true;
+		}
+		return false;
 	}
 	// Classify the "{" at {j}. A block statement's "{" follows a statement
 	// boundary, "else", a match arm's "=>", or the parenthesized header of
