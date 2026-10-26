@@ -1,0 +1,5 @@
+component Semicolon {
+	def f() -> int {
+		return 1 // insert before this comment
+	}
+}

@@ -2007,6 +2007,26 @@
       "required": true,
       "source": "test/e2e/lazyvim/driver.lua",
       "description": "The editor inlay-hint API returns exactly : int at UTF-16 position 4:33 and count: at 4:41, after a comment containing non-ASCII text."
+    },
+    {
+      "id": "vscode.diagnostics.semicolon-fix",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "The VS Code code-action provider uses the published diagnostic range and returns exactly one preferred semicolon quick fix with an insertion before the trailing comment; applying its edit clears the diagnostic."
+    },
+    {
+      "id": "nvim.diagnostics.semicolon-fix",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "The Neovim LSP client requests a semicolon quick fix with its published diagnostic and checks the entire action, including the current version and exact insertion; applying it clears the diagnostic."
     }
   ],
   "retired": [],
@@ -2017,7 +2037,7 @@
         "setup": "vscode-linux",
         "feature": "diagnostics",
         "level": "api",
-        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic"],
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic", "vscode.diagnostics.semicolon-fix"],
         "notCovered": ["vscode.problems-view"]
       },
       {
@@ -2147,7 +2167,7 @@
         "setup": "vscode-macos",
         "feature": "diagnostics",
         "level": "api",
-        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic"],
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic", "vscode.diagnostics.semicolon-fix"],
         "notCovered": ["vscode.problems-view"]
       },
       {
@@ -2277,7 +2297,7 @@
         "setup": "ssh-linux-client",
         "feature": "diagnostics",
         "level": "api",
-        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic"],
+        "checks": ["vscode.diagnostics.single-file-parser", "vscode.diagnostics.parser", "vscode.diagnostics.unsaved-cycle", "vscode.diagnostics.semantic", "vscode.diagnostics.semicolon-fix"],
         "notCovered": ["vscode.problems-view"]
       },
       {
@@ -2403,7 +2423,7 @@
         "setup": "nvim-linux",
         "feature": "diagnostics",
         "level": "api",
-        "checks": ["nvim.diagnostics.parser", "nvim.diagnostics.unsaved-clear", "nvim.diagnostics.semantic"],
+        "checks": ["nvim.diagnostics.parser", "nvim.diagnostics.unsaved-clear", "nvim.diagnostics.semantic", "nvim.diagnostics.semicolon-fix"],
         "notCovered": ["nvim.parser-undo", "nvim.diagnostics-display"]
       },
       {
@@ -2533,7 +2553,7 @@
         "setup": "nvim-macos",
         "feature": "diagnostics",
         "level": "api",
-        "checks": ["nvim.diagnostics.parser", "nvim.diagnostics.unsaved-clear", "nvim.diagnostics.semantic"],
+        "checks": ["nvim.diagnostics.parser", "nvim.diagnostics.unsaved-clear", "nvim.diagnostics.semantic", "nvim.diagnostics.semicolon-fix"],
         "notCovered": ["nvim.parser-undo", "nvim.diagnostics-display"]
       },
       {

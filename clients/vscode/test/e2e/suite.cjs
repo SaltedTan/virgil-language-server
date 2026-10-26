@@ -339,6 +339,28 @@ async function workspace(extension) {
   await undo(bad, original);
   await expectParserDiagnostic(bad);
 
+  // vscode.diagnostics.semicolon-fix: use the real provider and editor edit.
+  const semicolon = await open('semicolon.v3');
+  const [semicolonDiagnostic] = await waitForDiagnostics('missing semicolon', semicolon);
+  assert.equal(semicolonDiagnostic.message, '";" expected');
+  const fixes = await vscode.commands.executeCommand('vscode.executeCodeActionProvider',
+    semicolon.document.uri, semicolonDiagnostic.range, vscode.CodeActionKind.QuickFix.value);
+  assert.equal(fixes.length, 1);
+  const [fix] = fixes;
+  assert.equal(fix.title, 'Insert missing ";"');
+  assert.equal(fix.kind.value, 'quickfix');
+  assert.equal(fix.isPreferred, true);
+  // executeCodeActionProvider omits diagnostics when it marshals the action.
+  // The stdio and Neovim tests check the attached diagnostic verbatim.
+  assert.equal(fix.command, undefined);
+  assert.deepEqual(fix.edit.entries().map(([uri, edits]) => [uri.toString(), edits.map((e) => ({
+    range: [e.range.start.line, e.range.start.character, e.range.end.line, e.range.end.character], text: e.newText,
+  }))]), [[semicolon.document.uri.toString(), [{ range: [2, 10, 2, 10], text: ';' }]]]);
+  assert.equal(await vscode.workspace.applyEdit(fix.edit), true);
+  await waitFor('cleared semicolon diagnostic', () => diagnostics(semicolon).length === 0);
+  assert.equal(semicolon.document.lineAt(2).text, '\t\treturn 1; // insert before this comment');
+  console.log('PASS: vscode.diagnostics.semicolon-fix');
+
   // Only a program that resolves StringBuilder from lib/util, through the
   // project's virgilDependencies and virgil.virgilRoot, has this single error.
   let words = await open('words', 'Words.v3');
