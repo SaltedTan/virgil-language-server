@@ -28,6 +28,7 @@ def load(name):
 
 bench = load("bench-lsp")
 states = load("tolerance-corpus")
+sessions = load("tolerance-sessions")
 ROOT = bench.ROOT
 FEATURES = ("definition", "hover", "references", "diagnostics")
 
@@ -122,15 +123,44 @@ class Run:
             self.open(path, text)
         # One observer open schedules the project even when no edited file is
         # open (closed-file disk controls). Do it last, before the first query.
-        self.open("Observer.v3", self.p["sources"]["Observer.v3"])
+        observer = self.p.get("observer", "Observer.v3")
+        if observer not in overlays:
+            self.open(observer, self.p["sources"][observer])
+
+    def apply(self, action, intended=False):
+        """Apply exactly one editor/disk event; no timed waits are needed."""
+        op, path = action["op"], action["path"]
+        text = action.get("intended" if intended else "text")
+        uri = (self.p["base"] / path).as_uri()
+        if op == "open":
+            bench.check(path not in self.versions, ("already open", path))
+            self.open(path, text)
+        elif op == "change":
+            self.change(path, text)
+        elif op in ("save", "write"):
+            (self.p["base"] / path).write_bytes(text.encode())
+            if op == "save":
+                bench.check(path in self.versions, ("save requires an open document", path))
+                bench.notify(self.s, "textDocument/didSave", {"textDocument": {"uri": uri}})
+            else:
+                bench.notify(self.s, "workspace/didChangeWatchedFiles", {"changes": [
+                    {"uri": uri, "type": action["event_type"]}]})
+        elif op == "close":
+            bench.check(path in self.versions, ("close requires an open document", path))
+            bench.notify(self.s, "textDocument/didClose", {"textDocument": {"uri": uri}})
+            del self.versions[path]
+        else:
+            raise ValueError("unknown session action: " + op)
 
     def watched_diagnostics(self, paths):
         result = []
         for path in sorted(paths):
             uri = (self.p["base"] / path).as_uri()
             publication = self.diagnostics.get(uri, {})
-            if "version" in publication:
-                bench.check(publication["version"] == self.versions[path], ("stale diagnostic version", publication))
+            # didClose may leave an unchanged empty publication carrying the
+            # old overlay version; only nonempty lists can be stale answers.
+            if "version" in publication and publication.get("diagnostics"):
+                bench.check(publication["version"] == self.versions.get(path), ("stale diagnostic version", publication))
             for diagnostic in publication.get("diagnostics", []):
                 if diagnostic.get("code") != "ParseError":
                     result.append({"uri": uri, "diagnostic": diagnostic})
@@ -258,6 +288,119 @@ def execute(exe, state, mode, oracle):
                     (project["base"] / path).write_bytes(project["sources"][path].encode())
 
 
+def substitution_kinds(snapshot, base):
+    """These sessions remove ordinary initializers; repair inserts its sentinel.
+
+    Fallback restores the original expression or the longer error-filled body.
+    These fixtures never restore exactly fifteen bytes, so inspecting the
+    interval distinguishes the two independently of answer quality.
+    """
+    return {v["uri"].removeprefix(base.as_uri() + "/"):
+            ("repair" if v["substitution"]["effectiveEnd"] - v["substitution"]["currentEnd"] == len("virgilLspCursor")
+             else "fallback") for v in snapshot["documentVersions"] if "substitution" in v}
+
+
+def check_session_step(step, row, base, mode):
+    kinds = substitution_kinds(row["snapshot"], base)
+    row["substitution_kinds"] = kinds
+    for path in step.get("absent_substitutions", []):
+        bench.check(path not in kinds, (step["id"], "closed file substituted", kinds))
+    for path, expected in step.get("substitution", {}).items():
+        if isinstance(expected, dict):
+            expected = expected[mode]
+        bench.check(kinds.get(path) == expected, (step["id"], expected, kinds))
+    if step.get("full_semantics"):
+        bench.check(all(v["correct"] for v in row["scores"].values()), ("full semantics did not return", row))
+    if step.get("no_substitutions"):
+        bench.check(not kinds, ("parseable program substituted", row))
+    if step.get("member"):
+        bench.check((base / step["member"]).as_uri() in [v["uri"] for v in row["snapshot"]["documentVersions"]], row)
+    if step.get("limit_reached"):
+        bench.check(len(row["snapshot"]["diagnostics"]) >= 15, ("error limit not reached", row))
+    if "limit_notice" in step:
+        notices = [d for d in row["answers"]["diagnostics"] if d["diagnostic"]["code"] == "ErrorLimit"]
+        # A cold fallback-excluded step repairs instead, and still excludes errors.
+        expected_notice = step["limit_notice"]
+        if isinstance(expected_notice, dict):
+            expected_notice = expected_notice[mode]
+        bench.check(bool(notices) == expected_notice, (step["id"], "ErrorLimit policy", notices))
+
+
+def execute_session(exe, case, mode, oracle=None):
+    """Replay a whole history in one process, or capture its intended-text oracle."""
+    project, intended = case["project"], oracle is None
+    row = {"id": case["id"], "description": case["description"], "suite": "session",
+           "mode": "oracle" if intended else mode, "steps": [], "configuration": project["config"],
+           "initial": case["initial"], "cache_charge": case.get("cache_charge")}
+    run = Run(exe, project, row)
+    paths = set(project["sources"]) | {a["path"] for st in case["steps"] for a in st["actions"]}
+    try:
+        for path, text in project["sources"].items():
+            (project["base"] / path).write_bytes(text.encode())
+        for path in paths - project["sources"].keys():
+            (project["base"] / path).unlink(missing_ok=True)
+        (project["base"] / ".virgil-lsp.json").write_text(json.dumps(project["config"]))
+        initial = dict(case["initial"])
+        if mode == "cold" and not intended:
+            for a in case["steps"][0]["actions"]:
+                bench.check(a["op"] == "change", "first cold step must only change initial overlays")
+                initial[a["path"]] = a["text"]
+        run.start(initial)
+        if mode == "warm" or intended:
+            row["predecessor_answers"], _ = run.answers(case["queries"], paths)
+        for index, st in enumerate(case["steps"]):
+            record = {"id": st["id"], "suite": "session", "mode": mode,
+                      "edit_kind": st["id"], "actions": st["actions"]}
+            row["steps"].append(record)
+            run.row = record
+            offset = os.fstat(run.s.err.fileno()).st_size
+            start = time.perf_counter_ns()
+            for a in st["actions"]:
+                if a["op"] == "write":
+                    a = {**a, "event_type": 2 if (project["base"] / a["path"]).exists() else 1}
+                run.apply(a, intended)
+            queries = st.get("queries", case["queries"])
+            actual, samples = run.answers(queries, paths, measure=True)
+            bench.check({q["path"] for q in queries} <= {
+                v["uri"].removeprefix(project["base"].as_uri() + "/")
+                for v in record["snapshot"]["documentVersions"]}, ("wrong project snapshot", record))
+            samples[-1].update(latency_ms=(time.perf_counter_ns() - start) / 1e6,
+                               boundary="step start to post-navigation diagnostic inspection (publication upper bound)")
+            record.update(answers=actual, samples=samples, queries=queries,
+                          state_latency_ms=(time.perf_counter_ns() - start) / 1e6,
+                          measured_probes=bench.probes(bench.logs(run.s, offset)))
+            if intended:
+                bench.check(all(actual["0:" + f] for f in FEATURES[:3]), (case["id"], st["id"], "unbound observer oracle"))
+                if st.get("stale_control"):
+                    stale = row["predecessor_answers"]
+                    scores = {k: score(k.split(":")[-1], v, actual[k]) for k, v in stale.items()}
+                    bench.check(any(s["wrong"] for s in scores.values()), "session stale control was not rejected")
+                    record["stale_control"] = {"answers": stale, "scores": scores}
+            else:
+                expected = oracle["steps"][index]["answers"]
+                record["scores"] = {k: score(k.split(":")[-1], v, expected[k]) for k, v in actual.items()}
+                record["oracle_step"] = index
+                bench.check(not any(v["wrong"] for v in record["scores"].values()), (case["id"], st["id"], "wrong session answer"))
+                check_session_step(st, record, project["base"], mode)
+        row["resources"] = bench.resources(run.s.proc.pid)
+        return row
+    except BaseException as error:
+        row["transcript"] = run.s.transcript
+        error.tolerance_record = row
+        raise
+    finally:
+        run.row = row
+        with cleanup(row):
+            run.close()
+
+
+def session_summary(rows):
+    steps = [{**st, "worker_replacements": 0} for row in rows for st in row["steps"]]
+    result = summary(steps)
+    result["worker_replacements"] = sum(row["worker_replacements"] for row in rows)
+    return result
+
+
 def summary(rows):
     groups, latencies = {}, collections.defaultdict(list)
     for row in rows:
@@ -285,9 +428,9 @@ def main():
     parser.add_argument("--output", default="-")
     parser.add_argument("--work-dir", type=Path, default=ROOT / "build/bench-results")
     parser.add_argument("--cpu", default="auto")
-    parser.add_argument("--smoke", action="store_true", help="two small repair cases in both modes; no build manifest required")
+    parser.add_argument("--smoke", action="store_true", help="small repair cases, negative controls, and one editing session; no build manifest required")
     parser.add_argument("--only", help="state ID substring for focused investigation")
-    parser.add_argument("--suite", choices=("repair", "replay", "negative", "extra"))
+    parser.add_argument("--suite", choices=("repair", "replay", "negative", "extra", "session"))
     args = parser.parse_args()
     os.chdir(ROOT)
     args.exe = args.exe.resolve()
@@ -299,26 +442,29 @@ def main():
               "git_status": bench.corpus.git_revision(ROOT, "status", "--short"), "host": bench.host_info(affinity),
               "corpus": pinned, "corpus_sha256": bench.corpus.sha256(bench.corpus.MANIFEST.read_bytes()),
               "driver_sha256": {p.name: bench.corpus.sha256(p.read_bytes()) for p in (
-                  Path(__file__), Path(__file__).with_name("tolerance-corpus.py"))},
-              "builds": [bench.binary_info(args.exe, args.smoke)], "oracles": [], "states": []}
+                  Path(__file__), Path(__file__).with_name("tolerance-corpus.py"),
+                  Path(__file__).with_name("tolerance-sessions.py"))},
+              "builds": [bench.binary_info(args.exe, args.smoke)], "oracles": [], "states": [], "sessions": [], "session_oracles": []}
     start = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix="tolerance-", dir=args.work_dir.resolve()) as temp:
             corpus = states.Corpus(args.exe, Path(temp))
-            cases = list(corpus.fixtures())
-            if args.smoke:
-                cases = [s for s in cases if s["id"] in ("member-with-prefix", "syntax-error-in-other-file")]
-                cases += [s for s in corpus.controls() if s["suite"] == "negative"]
-            else:
-                cases += list(corpus.large()) + list(corpus.controls())
-                bench.check(collections.Counter(s["suite"] for s in cases) == {
-                    "repair": 45, "replay": 140, "negative": 10, "extra": 15}, "state inventory changed")
-                bench.check(sum(len(s["queries"]) - 1 for s in cases if s["suite"] == "replay") == 400,
-                            "unchanged real-file replay query inventory changed")
-            if args.only:
+            cases = []
+            if args.suite != "session":
+                cases = list(corpus.fixtures())
+                if args.smoke:
+                    cases = [s for s in cases if s["id"] in ("member-with-prefix", "syntax-error-in-other-file")]
+                    cases += [s for s in corpus.controls() if s["suite"] == "negative"]
+                else:
+                    cases += list(corpus.large()) + list(corpus.controls())
+                    bench.check(collections.Counter(s["suite"] for s in cases) == {
+                        "repair": 45, "replay": 140, "negative": 10, "extra": 15}, "state inventory changed")
+                    bench.check(sum(len(s["queries"]) - 1 for s in cases if s["suite"] == "replay") == 400,
+                                "unchanged real-file replay query inventory changed")
+            if args.only and args.suite != "session":
                 cases = [s for s in cases if args.only in s["id"]]
                 bench.check(cases, "no states selected")
-            if args.suite:
+            if args.suite and args.suite != "session":
                 cases = [s for s in cases if s["suite"] == args.suite]
                 bench.check(cases, "no states selected")
             cache = {}
@@ -369,19 +515,38 @@ def main():
                     result["states"].append(row)
                 if len(result["states"]) % 40 == 0:
                     print(f"tolerance: {len(result['states'])} state/mode records", file=sys.stderr)
+            if args.suite in (None, "session"):
+                histories = list(sessions.fixtures(corpus, states))
+                if args.smoke:
+                    histories = [s for s in histories if s.get("smoke")]
+                else:
+                    histories.append(sessions.pressure(corpus, states))
+                    bench.check(len(histories) == 10, "session inventory changed")
+                if args.only:
+                    histories = [s for s in histories if args.only in s["id"]]
+                bench.check(histories or (args.only and cases), "no sessions selected")
+                for case in histories:
+                    oracle = execute_session(args.exe, case, "warm")
+                    result["session_oracles"].append(oracle)
+                    for mode in ("warm", "cold"):
+                        result["sessions"].append(execute_session(args.exe, case, mode, oracle))
             corpus.verify_inputs()
             result["input_sha256"] = corpus.inputs
         result["wall_seconds"] = time.monotonic() - start
         result["summary"] = summary(result["states"])
-        wrong = sum(s["wrong"] for row in result["states"] for s in row["scores"].values())
-        partial = sum(s["partial"] for row in result["states"] for s in row["scores"].values())
+        result["session_summary"] = session_summary(result["sessions"])
+        session_steps = [st for row in result["sessions"] for st in row["steps"]]
+        wrong = sum(s["wrong"] for row in result["states"] + session_steps for s in row["scores"].values())
+        partial = sum(s["partial"] for row in result["states"] + session_steps for s in row["scores"].values())
         if args.smoke:
             bench.check(wrong == 0, "wrong smoke answer")
+            for st in session_steps:
+                bench.check(all(v["correct"] for v in st["scores"].values()), st)
             for row in result["states"]:
                 if row["id"] == "member-with-prefix":
                     bench.check(all(s["correct"] for s in row["scores"].values()), row)
         print(f"tolerance: {len(result['states'])} state/mode records, {partial} partial, {wrong} wrong answers, "
-              f"{result['wall_seconds']:.2f}s", file=sys.stderr)
+              f"{len(session_steps)} session steps, {result['wall_seconds']:.2f}s", file=sys.stderr)
     except BaseException as error:
         result["error"] = repr(error)
         result["failed_record"] = getattr(error, "tolerance_record", None)
