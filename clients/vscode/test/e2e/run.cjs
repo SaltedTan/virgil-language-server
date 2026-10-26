@@ -122,9 +122,6 @@ async function main() {
       'update.mode': 'none',
       'workbench.startupEditor': 'none',
       'files.autoSave': 'off',
-      // Automatic lightbulb requests can race shutdown in the recovery and
-      // pending-edit scenarios. Explicit code-action provider checks still run.
-      'editor.lightbulb.enabled': 'off',
       // Where the server offers no completion items, as in a comment, VS Code
       // would offer the document's words instead.
       'editor.wordBasedSuggestions': 'off',
