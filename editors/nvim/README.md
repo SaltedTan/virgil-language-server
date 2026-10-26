@@ -139,9 +139,10 @@ diagnostics after an unsaved edit to the project file, that other JSON buffers
 stay detached, and a graceful server shutdown with exit status 0. The fixture
 is copied into a temporary directory; editor state is kept there, and the
 directory is removed afterward. The VS Code
-[Extension Host test](../../clients/vscode/README.md#extension-host-test) also
-uses this fixture; see the [LazyVim test's fixture setup](../../test/e2e/lazyvim/README.md#outputs)
-for its additions. A change to this fixture affects all three suites.
+[Extension Host test](../../clients/vscode/README.md#extension-host-test) and
+[LazyVim test](../../test/e2e/lazyvim/README.md) use the same fixture, so a
+change to it affects all three suites. The LazyVim test adds one file of its
+own to its copy, `words/CallPicker.v3`, for its outgoing-calls picker.
 
 The test skips with a message if Neovim is missing or older than 0.11. Set
 `REQUIRE_NVIM=1` to fail instead of skipping, as both CI jobs do. See the

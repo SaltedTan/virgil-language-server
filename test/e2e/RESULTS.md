@@ -217,7 +217,12 @@ The automated runs table has a row for each selected automated run, sorted by th
 | Editor | The editor and its version, and for VS Code, where the extension came from. |
 | Result | Whether the run passed, failed, was aborted, or was unavailable, with its counts. For a run that didn't pass, its failed checks and its unexpected passes, by ID, the first three of each, then how many more; its exit code or signal; its cleanup; the number of its issues; and "provenance unavailable" if any provenance or fact is unavailable. Then the expected failure, if the run has it: "XFAIL:", with its rule's label and issue. |
 
-See the [generated example runs table](results-example/README.md#results) for LazyVim on Linux, with a run of each leg of its lane.
+The [example](results-example/README.md)'s rows of LazyVim on Linux, a run of each leg of its lane:
+
+| Date | Commit | Where | Command | Editor | Result |
+| --- | --- | --- | --- | --- | --- |
+| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.11.6 | Passed (67 of 67 observations): 66 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
+| 2026-10-24 | `2222222` | LazyVim, Linux; `lazyvim-linux`; Linux 6.8.0, x86_64; demo run | `test/e2e/lazyvim/run.sh --archive '<archive>' --out '<dir>'` | Neovim 0.12.6 | Passed (67 of 67 observations): 66 pass, 1 xfail; XFAIL: missing-root warning ([folke/noice.nvim#1074](https://github.com/folke/noice.nvim/issues/1074)) |
 
 ### Manual observations
 
