@@ -525,6 +525,18 @@ The rename median is 0.594 ms (0.18%) higher, and every interval overlaps, so th
 
 Main refuses every method that shares its name with another, which on Aeneas includes the 65 methods named `render` and the 62 named `emit`. With the change, each family renames whole. The largest family among Aeneas's 6,806 methods, found by asking for the implementations of each, is `range` from `vst/Vst.v3`, line 768, and the 17 methods that override it: renaming it takes 339.5 ms, from 337.9 to 345.5, with 48 edits in 4 files, the median of 10 requests after the first, from a throwaway stdio client pinned to the same thread, and prepareRename 19.70 ms. The largest `emit` family, from `jvm/JvmClassfile.v3`, line 54, with 15 overrides, takes 332.5 ms for 19 edits in one file, and the largest `render` family, from `ssa/Ssa.v3`, line 189, with 6 overrides, 329.3 ms for 8 edits in 5 files. As for any rename, the preflight's analysis is most of that time.
 
+#287 makes the two scans of a family's references linear. On the generated program above, one root `class A { def m() -> int { return 0; } }` and *n* classes `class Ci extends A { def m() -> int { return m(); } }` in one file, built from main `27c57e9` in `build/base-287` and from the change in `build/next-287` with the same generated BuildInfo, and pinned to hardware thread 12 under the shared benchmark lock, times are medians of five prepareRename requests and three renames.
+
+| Family | prepareRename, main | prepareRename, with #287 | rename, main | rename, with #287 |
+| ---: | ---: | ---: | ---: | ---: |
+| 2,001 | 25.1 | 6.7 | 98.3 | 42.2 |
+| 4,001 | 96.9 | 12.9 | 350.0 | 103.8 |
+| 8,001 | 177.4 | 27.0 | 641.0 | 183.4 |
+
+The renames edit 4,001, 8,001, and 10,000 tokens. At 8,001 methods the program gives a call to only every fourth class's method, and skips the last of those, because 8,001 names leave room for at most 1,999 uses under the 10,000-edit bound; a call in every other class's method would be 4,000 uses and 12,001 edits, which rename refuses. With the change, prepareRename takes 1.9 and 2.1 times as long and rename 2.5 and 1.8 times as long as the family doubles, against main's 3.9 times from 2,001 to 4,001 methods.
+
+A paired Aeneas run against main `27c57e9`, with six alternating process blocks, two warmups, and five operations per block, held the shared lock and ran on hardware thread 12 with identical BuildInfo. `references` takes 0.804 (0.786–0.837) ms against 0.795 (0.758–0.826), `prepareRename` 16.893 (16.835–17.400) against 16.942 (16.803–17.347), and `rename` 329.368 (312.687–332.152) against 328.962 (313.642–333.996), all with overlapping intervals: single-declaration requests are unchanged.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
