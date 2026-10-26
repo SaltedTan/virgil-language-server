@@ -85,6 +85,7 @@ SUITES = \
 	'python3 test/protocol/type_hierarchy.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/folding_ranges.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/call_hierarchy.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/code_actions.py $(BUILD)/virgil-lsp' \
 	'python3 test/benchmarks/test_tolerance.py' \
 	'python3 test/protocol/client_initialization.py $(BUILD)/virgil-lsp' \
 	'$(BUILD)/retain-probe' \

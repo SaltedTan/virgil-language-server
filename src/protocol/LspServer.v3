@@ -38,6 +38,8 @@ class LspServer {
 	def projects = WorkspaceProjects.new(documents);
 	private var diagnosticLists: LspDiagnosticLists;
 	private var parserDiagnostics: LspParserDiagnostics;
+	// textDocument/codeAction, answered from the current parse without a worker.
+	private var codeActions: LspCodeActions;
 	private var projectDiagnostics: LspProjectDiagnostics;
 	private var semanticDiagnostics: LspSemanticDiagnostics;
 	private var documentWarning: Array<byte>;
@@ -126,6 +128,8 @@ class LspServer {
 		diagnosticLists = LspDiagnosticLists.new(documents, publishNotification);
 		parserDiagnostics = LspParserDiagnostics.new(diagnosticLists);
 		signatureHelp.parser = parserDiagnostics;
+		codeActions = LspCodeActions.new(documents, projects);
+		codeActions.register(dispatcher);
 		projectDiagnostics = LspProjectDiagnostics.new(publishNotification);
 		projects.warn = projectWarning;
 		projects.info = projectInfo;
@@ -374,6 +378,9 @@ class LspServer {
 		completion.clientKinds = LspSymbolKind.completions(member(member(textDocument, "completion"), "completionItemKind"));
 		var workspaceEdit = member(member(member(params, "capabilities"), "workspace"), "workspaceEdit");
 		rename.documentChanges = workspaceEdit != null && workspaceEdit["documentChanges"] == JsonValue.Bool(true);
+		codeActions.documentChanges = rename.documentChanges;
+		var codeAction = member(textDocument, "codeAction");
+		codeActions.literalSupport = member(codeAction, "codeActionLiteralSupport") != null;
 		var renaming = member(textDocument, "rename");
 		var prepareSupport = renaming != null && renaming["prepareSupport"] == JsonValue.Bool(true);
 		state = LspServerState.RUNNING;
@@ -406,6 +413,13 @@ class LspServer {
 		capabilities["implementationProvider"] = JsonValue.Bool(true);
 		capabilities["typeHierarchyProvider"] = JsonValue.Bool(true);
 		capabilities["callHierarchyProvider"] = JsonValue.Bool(true);
+		// A client that cannot apply a literal CodeAction is not told about
+		// the provider at all; a request still gets [] (LspCodeActions).
+		if (codeActions.literalSupport) {
+			var codeActionOptions = Strings.newMap<JsonValue>();
+			codeActionOptions["codeActionKinds"] = JsonValue.JArray([JsonValue.String(codeActions.KIND)]);
+			capabilities["codeActionProvider"] = JsonValue.JObject(codeActionOptions);
+		}
 		// RenameOptions may only be sent to a client that declares
 		// textDocument.rename.prepareSupport; others get true, and need no
 		// prepareRename.

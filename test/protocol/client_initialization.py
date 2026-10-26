@@ -51,6 +51,7 @@ TIMEOUT = 20
 CAPABILITIES = {
     "callHierarchyProvider": True,
     "completionProvider": {"triggerCharacters": ["."]},
+    "codeActionProvider": {"codeActionKinds": ["quickfix"]},
     "definitionProvider": True,
     "typeDefinitionProvider": True,
     "inlayHintProvider": True,
