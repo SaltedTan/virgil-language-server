@@ -1,7 +1,10 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-class AnalysisSelectionRange(begin: int, end: int) { }
+class AnalysisSelectionRange(begin: int, end: int) {
+	// Recovery retains an unknown token's boundary without selecting it.
+	var selectable = true;
+}
 
 // One index for a batch of positions. Delimiters come only from complete
 // consumed spans; comments are recognized only in the gaps between them.
@@ -11,7 +14,6 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 	def MAX_LEVELS = 128;
 	private def tokens = Vector<AnalysisSelectionRange>.new();
 	private def extents = Vector<AnalysisSelectionRange>.new();
-	private def unavailable = Vector<AnalysisSelectionRange>.new();
 	private var recoveryStop = -1;
 
 	def collect(positions: Array<int>) -> Array<Array<AnalysisSelectionRange>> {
@@ -55,27 +57,17 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 			if (tokens[mid].end <= pos) lo = mid + 1;
 			else hi = mid;
 		}
-		if (tokenAvailable(pos)) {
-			if (lo < tokens.length && tokens[lo].begin <= pos) result.put(tokens[lo]);
-			else if (lo > 0 && tokens[lo - 1].end == pos) result.put(tokens[lo - 1]);
-			else if (lo < tokens.length) result.put(tokens[lo]);
-		}
+		var token: AnalysisSelectionRange;
+		if (lo < tokens.length && tokens[lo].begin <= pos) token = tokens[lo];
+		else if (lo > 0 && tokens[lo - 1].end == pos) token = tokens[lo - 1];
+		else if (lo < tokens.length) token = tokens[lo];
+		if (token != null && token.selectable && (recoveryStop < 0 || pos < recoveryStop)) result.put(token);
 		if (cutoff < 0 || pos < cutoff) for (r in sorted) {
 			if (r.begin <= pos && pos <= r.end) append(result, r);
 		}
 		// Reserve the last level for the document even in extreme nesting.
 		append(result, AnalysisSelectionRange.new(0, input.length));
 		return result.extract();
-	}
-	private def tokenAvailable(pos: int) -> bool {
-		if (recoveryStop >= 0 && pos >= recoveryStop) return false;
-		var lo = 0, hi = unavailable.length;
-		while (lo < hi) {
-			var mid = lo + (hi - lo) / 2;
-			if (unavailable[mid].end <= pos) lo = mid + 1;
-			else hi = mid;
-		}
-		return lo == unavailable.length || pos < unavailable[lo].begin;
 	}
 	private def append(result: Vector<AnalysisSelectionRange>, r: AnalysisSelectionRange) {
 		if (result.length > 0) {
@@ -161,7 +153,11 @@ class DocumentSelectionCollector(input: Array<byte>, consumed: Vector<SymbolSynt
 					// Single-byte separators have no lexical ambiguity.
 					if (c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == ';' || c == ',') {
 						tokens.put(AnalysisSelectionRange.new(i, i + 1));
-					} else unavailable.put(AnalysisSelectionRange.new(i, i + 1));
+					} else {
+						var unknown = AnalysisSelectionRange.new(i, i + 1);
+						unknown.selectable = false;
+						tokens.put(unknown);
+					}
 					i++;
 					continue;
 				}

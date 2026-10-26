@@ -283,6 +283,9 @@ def boundaries(t: Tester) {
 	check(t, "def x = 1; \"broken", 16, [(0, 18)], []);
 	check(t, "unexpected + next", 11, [(0, 17)], []);
 	check(t, "unexpected + next", 14, [(13, 17), (0, 17)], []);
+	check(t, "unexpected  + next", 11, [(0, 18)], []);
+	check(t, "unexpected  + next", 13, [(0, 18)], []);
+	check(t, "unexpected  + next", 14, [(14, 18), (0, 18)], []);
 }
 def running() -> LspServer {
 	var s = LspServer.new(DocumentLimits.MAX_BYTES);
