@@ -455,7 +455,8 @@ Reference and highlight lists can be partial; retained highlights keep their
 Text, Read, and Write kinds from the effective occurrence index. Prepare rename,
 rename, and its preflight refuse every degraded snapshot; completion and signature help retain their existing current-text
 repair paths. Sources without cached parseable text and closed broken sources
-are not substituted.
+are not substituted from the cache; an open one can still be
+[repaired](#current-text-repair).
 Document symbols still parse the current overlay for their outline, but omit
 snapshot signature details for a substituted file: its declarations use cached
 text offsets, which cannot be matched against the current outline's offsets.
@@ -463,6 +464,100 @@ Unsubstituted files in the same snapshot can still supply signature details.
 [ADR-0008](decisions/0008-method-body-fallback.md) records the accepted decision;
 [body snapshot tests](../test/unit/LspBodySnapshotTest.v3) and the
 [protocol test](../test/protocol/body_fallback.py) exercise its lifetime and policy.
+
+### Current-text repair
+
+An open document that fails to parse, and that method-body fallback doesn't
+substitute because no parseable text is cached for it or its edit is
+ineligible, is analyzed from a bounded repair of its current text instead
+([#293](https://github.com/SaltedTan/virgil-language-server/issues/293)). Fallback
+runs first, so a file that it can substitute is never repaired. Closed files
+are never repaired.
+
+At capture, `LspAnalysisInputs.substitute` reads the overlay's parse outcome,
+which `LspParserDiagnostics` kept from the parse behind its syntax diagnostics.
+A failed single-file parse records where repair starts (`FileParseResult.repairAt`):
+the end of the token before the first error, before the whitespace and comments
+that the parser skipped to reach it. When the parser reports an error at a token
+that it has already consumed, such as a keyword read as an identifier, repair
+starts at the end of the token before that one. `LspCurrentRepair` inserts
+completion's repair there ([Names](#names), [ADR-0006](decisions/0006-incomplete-code-repair.md)),
+computed by `LspCompletionRepair.completion` with that point as the cursor:
+
+- the sentinel `virgilLspCursor` where a name or an operand is missing: after a
+  member access's `.`, or where only an expression, a type, or a pattern can
+  start, as after `=`, an operator, `return`, a call's `(` or `,`, an index's
+  `[`, or a `:` before a type. The sentinel is also the placeholder for a missing
+  initializer or operand, so `var x = ;` becomes `var x =virgilLspCursor ;`. It
+  isn't inserted where a statement can start, as after a line break that follows
+  an operand, nor after a name, a number, or another operand;
+- then the closing `)`, `]`, and `>` that the constructs open in the innermost
+  block lack, and a `;` where the statement ends, at the offset that completion
+  chooses for them.
+
+A point in a comment or a literal, or one where nothing is missing, such as
+before a block's `{`, gets no repair. Each site has exactly one candidate: there
+is no search and no ladder of alternatives.
+
+`AeneasAdapter.repairParse` parses the repaired text once, with the document's
+language options and the same parser guards as syntax diagnostics. If it still
+fails, a second site starts at that parse's first error, and the text is parsed
+once more. A text that still fails after two sites stays unrepaired. A parse that
+succeeds also gives the repaired text's method and constructor bodies, as
+`AeneasAdapter.methodBodies` gives them for fallback, and
+`LspBodyEligibility.compare(repaired, current, bodies)` must accept the pair, as
+it accepts fallback's: the single interval from the first inserted byte to the
+last must lie strictly inside one method or constructor body of the repaired
+text, start and end in ordinary code in both texts, and keep the brace depth it
+starts at. A repair never inserts or removes a brace, so it cannot end a body or
+change the owner of a later declaration. A missing `}`, a site in a declaration
+header or a field initializer, and sites in two bodies all stay unrepaired, and
+the file's project then has the ordinary empty semantic result, as before.
+
+The capture parses each broken file at most three times
+(`LspAnalysisInputs.PARSES_PER_FILE`). The current text's parse outcome is
+normally the one its syntax diagnostics already made; if that parse used other
+language options or another version, the capture parses the current text again,
+and that counts. Fallback's parse of the cached predecessor counts as well, and
+repair parses at most what remains, never more than two texts.
+
+A repaired file is substituted exactly as fallback substitutes cached text. Its
+`AnalysisDocumentVersion.substitution` holds the repaired bytes as the effective
+text, and the `LspBodyFallback` map, whose interval spans the inserted bytes and
+whose excluded body is the repaired text's body; the record needs no new field.
+Its bytes are reserved at capture and charged to the snapshot budget. Every rule
+in [Method-body fallback](#method-body-fallback) then applies unchanged:
+definition, type definition, implementation, type hierarchy, hover, references,
+highlights, inlay hints, and semantic diagnostics suppress queries, locations,
+and diagnostics in the entire excluded body, including its braces, so neither
+the sentinel nor an inserted closer, nor an error that they cause, such as a
+repaired call's arity, appears in any answer. Offsets before the interval stay
+and offsets after it shift by the inserted length. Prepare rename, rename, and
+the rename preflight refuse the snapshot, workspace symbols skip the file,
+completion, signature help, and document symbols keep their current-text paths,
+and the current text's syntax diagnostics are always published. The repaired
+text is never cached as parseable text. The worker gets one effective program per
+analysis, so repair adds no analysis, worker message, or wire version. The
+development snapshot inspection (`virgil-lsp/snapshot`) still lists the effective
+program's own diagnostics, including the sentinel's.
+
+**Anchor.** Repair starts at the parser's error, not at the document's last edit.
+On the [tolerance corpus](benchmarks.md#current-text-repair-comparison), the
+parser's error repairs 91 of the 97 body states that fallback recovers in warm
+sessions, and the last edit, where it is known, would repair all 97. The six
+differ where the parser reads the next line as the rest of an incomplete
+expression, so its first error is past the edit: `a.length +` followed by
+`a[s] = e;`, `buffer.` followed by an `if`, and a member access in a match case
+followed by the next case. A file opened with an error, which is what repair is
+for, has no known edit, and on every state that fallback can't substitute both
+points repaired the same states. With full document sync, knowing the edit would
+also mean comparing the old and new text of every change.
+[Current-text repair tests](../test/unit/LspCurrentRepairTest.v3) check exact
+repaired texts, mappings, the two-site cap, refusals, the parse budget,
+suppression at the body's edges, and fallback's priority; the
+[protocol test](../test/protocol/current_repair.py) covers a cold open, repair
+beside fallback in one analysis, rename refusal, and restoration.
+[ADR-0009](decisions/0009-current-text-repair.md) records the decision.
 
 ## Semantic diagnostics
 
