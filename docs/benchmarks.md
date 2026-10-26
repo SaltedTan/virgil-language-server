@@ -562,6 +562,30 @@ The fresh analysis median is 2.172 ms (0.64%) higher and the reused one 7.090 ms
 
 With the Aeneas project, from the name of class `Type` in the open `types/Type.v3`, prepareTypeHierarchy takes 0.49 ms and subtypes 1.51 ms, the medians of 20 requests after a first one, once the project's analysis had completed, from a throwaway stdio client of the normal build, pinned to the same thread under the same lock. Subtypes lists `Type`'s 15 direct subclasses, in 11 files, each of which it reads again and checks against its captured length and hash, or finds open, and maps and parses for the declarations' extents once. prepareTypeHierarchy parses only `Type.v3`.
 
+## Call hierarchy
+
+Measured on 2026-10-26 against main `71c6ec4`, this change's base, on the Intel Core i7-14700KF reference host with pinned Virgil `7cf038fc13a5474836bec8b14c7a3e796fd07fa5` and the default 384 MiB worker heap. Both candidates were built in this physical checkout, in `build/base-ch` and `build/next-ch`, with `BENCH=1 all bench-metadata`: main's from its `src/` checked out over the change, and the change's from its own, both with the same uncommitted documentation edit, so that their generated BuildInfo text is identical. The comparison held the shared benchmark lock, ran on P-core hardware thread 12, and used six alternating process blocks, two warmups, and five measured operations per block for the Aeneas project, with every semantic check passing and no samples removed. The change adds only new requests, which the benchmark doesn't send, and nothing new crosses the worker boundary, so nothing it measures should change.
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+
+| Measurement | Main | With call hierarchy |
+| --- | ---: | ---: |
+| Aeneas fresh analysis | 354.101 (342.273–370.561) | 351.883 (346.074–366.668) |
+| Aeneas reused analysis | 303.550 (287.827–323.907) | 304.261 (289.090–324.875) |
+| Aeneas definition | 0.195 (0.175–0.226) | 0.197 (0.176–0.250) |
+| Aeneas hover | 0.171 (0.156–0.205) | 0.179 (0.160–0.220) |
+| Aeneas references | 0.853 (0.811–4.203) | 0.870 (0.818–3.820) |
+| Aeneas prepareRename | 24.526 (17.451–27.191) | 24.349 (17.499–27.417) |
+| Aeneas rename | 344.122 (330.591–359.198) | 344.423 (339.867–393.378) |
+| Aeneas completion hit | 5.861 (2.835–6.402) | 5.845 (2.893–6.809) |
+| Aeneas completion miss | 114.043 (111.828–130.196) | 116.077 (111.245–133.584) |
+| Aeneas syntax diagnostic | 0.400 (0.386–1.535) | 0.409 (0.387–1.597) |
+| Aeneas semantic diagnostic | 524.015 (513.778–542.719) | 521.068 (513.685–536.605) |
+
+The fresh analysis median is 2.218 ms (0.63%) lower and the reused one 0.711 ms (0.23%) higher, and every interval overlaps, so the change has no measurable cost. The worker executables are the same size, 888,200 bytes, and differ in 64 bytes, since the worker sends nothing new; the server's grows from 821,872 to 837,712 bytes. Every measured worker transaction collected zero times in both candidates, and the server collected in the same operations in each: once in every semantic diagnostic, in 6 of the 30 renames, and in 12 of the 30 reused analyses.
+
+With the Aeneas project, from the name of `puts` in the open `lib/util/StringBuilder.v3`, `def puts(s: Array<byte>) -> this`, prepareCallHierarchy takes 0.42 ms, incomingCalls 76.7 ms, and outgoingCalls 0.58 ms, the medians of 20 requests of each after a first one, once the project's analysis had completed, from a throwaway stdio client of the normal build, pinned to the same thread under the same lock. The incoming calls are 655 calls from 257 callers in 76 files, about 197 KiB of JSON; outgoingCalls lists `puts`'s one callee, `acquire`. A references request for `puts` from the same position, which reads and maps the same 76 files again for its 661 uses, takes 17.1 ms, so most of incomingCalls' time is parsing those files for their callers' extents, once each. prepareCallHierarchy and outgoingCalls parse only `StringBuilder.v3`.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at

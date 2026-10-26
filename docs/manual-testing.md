@@ -24,6 +24,8 @@ They also check that implementation in `words/Shapes.v3` returns the exact names
 
 VS Code and plain Neovim also check type hierarchy there: the exact item of `Polygon`, with its declaration's range and detail, its one supertype, `Shape`, its one subtype, `Square`, and `Shape`'s subtypes, `Polygon` and `Circle`. VS Code calls `vscode.prepareTypeHierarchy`, `vscode.provideSupertypes`, and `vscode.provideSubtypes`; plain Neovim makes the same requests, also checking each item's data, and checks the quickfix list that `vim.lsp.buf.typehierarchy("subtypes")` fills. LazyVim binds no key to type hierarchy, so its suite doesn't check it.
 
+They also check call hierarchy in `words/Calls.v3`: the exact item of `square`, prepared from one of its calls, its two callers, `sumSquares`, with the ranges of its two calls, and `cube`, and the one function that `sumSquares` calls, `square`. VS Code calls `vscode.prepareCallHierarchy`, `vscode.provideIncomingCalls`, and `vscode.provideOutgoingCalls`; plain Neovim makes the same requests, also checking each item's data, and checks the quickfix list that `vim.lsp.buf.incoming_calls()` fills. The LazyVim suite doesn't check the `gai` and `gao` pickers.
+
 The [clean install test](releasing.md#clean-install-test) additionally follows the README installation commands with release assets; its separate fixture, coverage, prerequisites, and artifacts are documented there.
 
 The editor tests don't cover:
@@ -39,7 +41,7 @@ The editor tests don't cover:
 
 ## Matrix
 
-For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, implementation, type hierarchy, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
+For optional manual checks, try each selected setup with each feature: diagnostics, document symbols, definition, type definition, implementation, type hierarchy, call hierarchy, hover, signature help, references, document highlights, workspace symbols, rename, completion, configuration changes, and restart. Automated scope and deferred setups are defined in the [coverage contract](../test/e2e/RESULTS.md#coverage-of-the-matrix-and-the-checklist).
 
 | Setup | The server runs on | Archive | Automated coverage |
 | --- | --- | --- | --- |
