@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,6 +162,49 @@ class RefTest(unittest.TestCase):
         self.assertEqual(compare.select_refs("pull_request", event, "ignored", "ignored", self.now), (base, new, None))
         with self.assertRaises(ValueError):
             compare.resolve("--help")
+
+    def test_pr_pin_change_reports_skip_without_building(self):
+        base = self.commit("2026-10-17T00:00:00Z", pin="older")
+        new = self.commit("2026-10-25T00:00:00Z")
+        script = self.path / "scripts/bench-compare.py"
+        shutil.copyfile(ROOT / "scripts/bench-compare.py", script)
+        event = self.path / "event.json"
+        event.write_text(json.dumps({"pull_request": {"base": {"sha": base}, "head": {"sha": new}}}))
+        for tooling in (new, base):
+            with self.subTest(tooling=tooling):
+                self.git("checkout", "-q", tooling)
+                output = self.path / tooling
+                summary = self.path / (tooling + ".md")
+                work = self.path / "builds"
+                env = {**os.environ, "GITHUB_EVENT_NAME": "pull_request",
+                       "GITHUB_EVENT_PATH": str(event), "GITHUB_STEP_SUMMARY": str(summary)}
+                result = subprocess.run([sys.executable, script, "--work-dir", work,
+                                         "--output-dir", output], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                refs = json.loads((output / "refs.json").read_text())
+                self.assertEqual((refs["base"], refs["new"]), (base, new))
+                self.assertIn("skipped", refs["note"])
+                self.assertIn(refs["note"], summary.read_text())
+                self.assertIn("::notice::" + refs["note"], result.stdout)
+                self.assertFalse(work.exists())
+                self.assertFalse((output / "comparison.json").exists())
+
+    def test_compatible_pr_still_compares_and_explicit_pin_change_fails(self):
+        older = self.commit("2026-10-16T00:00:00Z", pin="older")
+        base = self.commit("2026-10-17T00:00:00Z")
+        new = self.commit("2026-10-25T00:00:00Z")
+        event = self.path / "event.json"
+        event.write_text(json.dumps({"pull_request": {"base": {"sha": base}, "head": {"sha": new}}}))
+        work, output = self.path / "builds", self.path / "results"
+        env = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event)}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(sys, "argv", ["bench-compare.py", "--work-dir", str(work),
+                                                "--output-dir", str(output)]), \
+                mock.patch.object(compare, "compare") as benchmark:
+            compare.main()
+        benchmark.assert_called_once_with(base, new, work, output, None)
+        with self.assertRaisesRegex(ValueError, "same pinned Virgil"):
+            compare.compare(older, new, work, output)
 
     def test_weekly_base_without_tooling_moves_forward_on_first_parent(self):
         requested = self.commit("2026-10-16T00:00:00Z", tooling=False)

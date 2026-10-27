@@ -66,11 +66,12 @@ jobs:
             --work-dir "$RUNNER_TEMP/bench-builds" \
             --output-dir "$GITHUB_WORKSPACE/results"
       - name: Summarize comparison
+        if: hashFiles('results/comparison.json') != ''
         run: |
           python3 tooling/scripts/bench-report.py results/comparison.json --annotations > results/summary.md
           cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Produce macOS reference table
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && hashFiles('results/comparison.json') != ''
         run: |
           python3 tooling/scripts/bench-report.py results/comparison.json --baseline > results/baseline.md
           cat results/baseline.md >> "$GITHUB_STEP_SUMMARY"

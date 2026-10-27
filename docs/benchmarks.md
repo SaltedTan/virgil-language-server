@@ -598,6 +598,10 @@ the defaults are `last-week` and `origin/main`. `last-week` selects from
 A pull request that changes the workflow, its benchmark scripts, their build
 inputs, or benchmark tests compares its head SHA with its base SHA, using the
 pull request's benchmark tooling.
+When a PR changes the Virgil pin, its refs cannot share the tooling corpus:
+the comparison is skipped with a notice in the job summary and `refs.json`.
+Pin updates need separate measurements using each pin's reviewed corpus, as
+in the [pinned revision comparison](#pinned-virgil-revision-comparison-2026-10-27).
 
 [`scripts/bench-compare.py`](../scripts/bench-compare.py) builds both refs with
 `BENCH=1` and `bench-metadata`, in fresh equal-length `base` and `next` checkouts
