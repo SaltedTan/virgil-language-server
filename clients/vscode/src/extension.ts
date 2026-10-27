@@ -100,6 +100,22 @@ class QueuedLanguageClient extends LanguageClient {
         // 3 minutes; then stop, with its message.
         closed: () => defaultHandler!.closed(),
       },
+      middleware: {
+        ...clientOptions.middleware,
+        // The library checks the client's state when a request arrives, then
+        // waits for the start and the pending didOpen and full-text changes
+        // before it calls this, right before the write (10.1.2). A stop that
+        // began during that wait has already sent shutdown, and the request
+        // would follow it (#212). Reject it as that first check does, so
+        // providers return their default without a notification, and nothing
+        // is written for it, not even a $/cancelRequest.
+        sendRequest: (type, param, token, next) => {
+          if (this.state !== State.Running) {
+            return Promise.reject(new ResponseError(ErrorCodes.ConnectionInactive, 'Client is not running'));
+          }
+          return next(type, param, token);
+        },
+      },
     });
     defaultHandler = this.createDefaultErrorHandler();
   }

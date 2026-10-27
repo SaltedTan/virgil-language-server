@@ -12,7 +12,7 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 - sends the [Virgil root](#settings) that project files' `virgilDependencies` are relative to;
 - watches `.virgil-lsp.json` files and `.v3` files, so that the server notices changes made outside the editor, such as a checkout ([changes on disk](../../docs/configuration.md#changes-on-disk)), and passes on workspace folders added to or removed from a multi-root workspace;
 - reports startup problems, the server's stderr, and the optional message trace in the "Virgil Language Server" output channel;
-- sends `shutdown` and then `exit` when it is deactivated, for example when the window closes;
+- sends `shutdown` and then `exit` when it is deactivated, for example when the window closes, and drops a request that would otherwise follow `shutdown`;
 - runs on the workspace side (`extensionKind: ["workspace"]`), so that with Remote-SSH and Remote-WSL the server starts on the remote machine, next to the files ([ADR-0003](../../docs/decisions/0003-supported-platforms.md)).
 
 If the server doesn't start, or a file gets no diagnostics or navigation, see [Troubleshooting](../../docs/troubleshooting.md). The [privacy statement](../../PRIVACY.md) says what the extension and the server read, write, and start; neither collects telemetry or makes network connections.
