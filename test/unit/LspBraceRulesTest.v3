@@ -97,10 +97,10 @@ def test_lost_opener(t: Tester) {
 		["\t\tif (a &&", "\t\t\t\ta)", "\t\t\tg();", "\t\t}", "\t}"]]) {
 		check(t, method(header, body), header, "\t}");
 	}
-	// A constructor, a private method, a method with a comment after its
-	// "{", and a closing "}" followed by a comment.
+	// A constructor, a private method, a method with a comment in its parameters,
+	// one with a comment after its "{", and a closing "}" followed by a comment.
 	var body = ["\t\tif (true)", "\t\t\tg();", "\t\t}", "\t} // f"];
-	for (h in ["\tnew() {", "\tprivate def f() {", "\tdef f() { // f"]) check(t, method(h, body), h, "\t} // f");
+	for (h in ["\tnew() {", "\tprivate def f() {", "\tdef f(/* f */) {", "\tdef f() { // f"]) check(t, method(h, body), h, "\t} // f");
 	// Line terminators and every offset stay.
 	var current = method(header, ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"]), r = repair(current);
 	t.asserti(current.length, r.0.length);

@@ -895,9 +895,12 @@ the stricter reading:
 - A header is one line that begins a method's or constructor's header, holds
   nothing else, and ends in `{`; a lost brace of the header itself is refused,
   as is one in a match case's block or any other block whose construct doesn't
-  start with a control statement's header. A header with a comment or a line
-  break inside it is never read as one, and refuses wherever it could be the
-  method that holds the damage or a method that holds it as a local function.
+  start with a control statement's header. A header split over lines, or with
+  a comment between its first word and its parameters or type parameters, is
+  never read as one, and refuses wherever it could be the method that holds
+  the damage or a method that holds it as a local function.
+  A comment in its parameters or after them, as in
+  `def f(x: int /* unused */) {`, doesn't change how it is read.
 - The method's `}` must begin its line; a comment may follow it on the line,
   but no code, and no comment may precede it.
 - Where the method could have ended at an earlier `}` indented like a
@@ -973,11 +976,12 @@ the error limit, including a body that the brace rule empties, and fallback's
 priority. [Brace rule tests](../test/unit/LspBraceRulesTest.v3) check rule
 2's candidate, with exact texts, for an `if`, a loop, a `match`, an `else`, a
 legal `if` without braces before a `while`, a condition over two lines, a
-constructor, a private method, and comments after the `{` and the `}`;
+constructor, a private method, and comments in a header's parameters and after
+the `{` and the `}`;
 unchanged offsets and line breaks; CRLF; tab stops and widths that disagree;
-each refusal, including headers with a comment or a line break inside them and
-declarations without a body before the method, and each rule-2 control of the
-tolerance benchmark; a file one `}` short in every shape that rule 3 read,
+each refusal, including headers split over lines or with a comment before
+their parameters and declarations without a body before the method, and each
+rule-2 control of the tolerance benchmark; a file one `}` short in every shape that rule 3 read,
 refused as any imbalance is; an error in another body, and a third refused; the
 parse budget; and a real analysis whose use, declaration, and type error after
 the emptied body keep their offsets. The
