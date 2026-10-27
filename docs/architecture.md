@@ -674,7 +674,8 @@ substitute because no parseable text is cached for it or its edit is
 ineligible, is analyzed from its current text with the damaged method or
 constructor body emptied
 ([#293](https://github.com/SaltedTan/virgil-language-server/issues/293),
-[#312](https://github.com/SaltedTan/virgil-language-server/issues/312)). Fallback
+[#312](https://github.com/SaltedTan/virgil-language-server/issues/312),
+[#317](https://github.com/SaltedTan/virgil-language-server/issues/317)). Fallback
 runs first, so a file that it can substitute is never repaired. Closed files
 are never repaired.
 
@@ -685,10 +686,13 @@ the end of the token before the error, before the whitespace and comments that
 the parser skipped to reach it. When the parser reports an error at a token
 that it has already consumed, such as a keyword read as an identifier, the
 point is the end of the token before that one. `LspCurrentRepair` first
-requires the whole current text's braces to balance in ordinary code, and no
-string, byte literal, or block comment to be unterminated, by the same
-completion cursor scanner checks that fallback applies to its intervals. A file
-that fails them, as one with a missing `}` does, stays unrepaired.
+requires that no string, byte literal, or block comment be unterminated, by the
+same completion cursor scanner checks that fallback applies to its intervals,
+and reads the whole current text's brace balance in ordinary code with that
+scanner. When the braces balance, the body is found from the parser's error, as
+below. When they are short by exactly one opener or exactly one closer, the
+brace rules below find it from the file's layout instead. A file with any other
+balance, such as two missing braces, stays unrepaired.
 
 **The body.** The candidate is the body of the method or constructor whose
 header the parser consumed and whose body holds that point. The scanner reads
@@ -705,8 +709,8 @@ but its braces kept, the file stays unrepaired.
 
 **Blanking.** Every byte strictly between the body's braces becomes a space,
 except CR and LF, so the text keeps its length and every offset and line stays
-where it is. Nothing is inserted: no sentinel, no closer, and no brace.
-`AeneasAdapter.repairParse` parses the blanked text once, with the document's
+where it is. Nothing is inserted: no sentinel and no closer, and no brace except
+the one `}` of brace rule 3 below. `AeneasAdapter.repairParse` parses the blanked text once, with the document's
 language options and the same parser guards as syntax diagnostics. If it fails
 again, the body that holds its first error is found the same way and blanked
 too, and the text is parsed once more. A text that still fails after two
@@ -718,7 +722,120 @@ be one of them, so the parser read each header as a method's or a
 constructor's. The file's project then has the ordinary empty semantic result
 whenever repair refuses, as before.
 
-The capture parses each broken file at most three times
+**Brace rules.** ADR-0010's rules 2 and 3 apply when the braces are short by
+exactly one opener (the scanner's final depth and lowest depth are both -1) or
+by exactly one closer (final depth 1, lowest depth 0). `LspLayout` reads the
+text once. Lines end at LF, and a CR right before an LF, or at the end of the
+text, belongs to the line's ending. A line's indentation is the width of its
+leading spaces and tabs: a space adds one column and a tab advances to the next
+multiple of 8. A line counts if it holds ordinary code: a byte outside
+whitespace and comments, where string and byte literals are code, read as the
+completion scanner reads them. Blank lines and lines that hold only comments
+don't count and are skipped everywhere below. The rules refuse a file with an
+irregular line: a counted line that starts inside a block comment, or that
+holds, outside comments, a control byte other than a tab, except a CR that ends
+it. The braces are those in ordinary code, and their count must agree with the
+scanner's.
+
+**Agreement.** A brace pair agrees with the layout if both braces are on one
+line, or if the `}` closes on a line exactly as deep as the line where the
+`{`'s construct starts, with every counted line between those two lines deeper.
+The construct starts on the `{`'s line, or, while that line is deeper than the
+`}`'s, on the counted line before it, if that line doesn't end in `;`, `{`, or
+`}`, since the later line then continues it. Pairing the braces in order, the
+first pair that disagrees, or the first `}` that closes nothing, locates the
+damage; a file with neither is refused. The method or constructor header that
+encloses the damage by layout is the damaged line, if it is a header, or the
+nearest counted line above it that is shallower than every counted line from it
+to the damaged line and is a header. The damaged line is the disagreeing
+pair's `}` line, or the unmatched `}`'s, when an opener is missing, and the
+disagreeing pair's `{` line when a closer is missing. A header is one whole
+line: `def` or `new` begins it, after an optional `private`, its last code byte
+is `{`, and the counted line before it, if any, ends in `;`, `{`, or `}`, so
+that it continues no other line. A header split over two lines is refused. The
+first counted line after the header that is no deeper than it ends the body,
+and it must be exactly as deep as the header.
+
+**Rule 2: a lost `{`.** The line that ends the body must begin with the
+method's `}`, right after its indentation, with no code after the `}` on its
+line, though a comment may follow it. Inside the body, exactly one line must be
+a control statement's header that lost its `{` by layout: a line that begins
+with `if`, `else`, `while`, `for`, or `match`, or with a `}` and then `else`,
+that doesn't end in a brace, and whose block, the next counted line no deeper
+than it, is a `}` exactly as deep that begins its line. With a `{` restored at
+the end of that header's line, every brace pair in the body must pair and
+agree. The body, from the header's `{` through the method's `}`, is blanked, so
+no offset moves.
+
+**Rule 3: a lost `}`.** When the line that ends the body begins with a `}` as
+rule 2 requires, a block inside the method lost its `}`: exactly one `{` in the
+body must end its line, belong to a construct that starts with a control
+statement's header, and have a block, by layout, that ends at a line that isn't
+a `}` exactly as deep as that construct's start. With a `}` restored before that
+line, ahead of every brace on it, the restored `}` must close that `{`, and
+every pair in the body must agree. The method's body is blanked, which would
+also blank the restored `}`, so nothing is inserted and no offset moves.
+Otherwise the method lost its own `}`, and the damage's `{` must be the
+method's. The line that ends the body must begin the next method or
+constructor: `def` or `new` begins it, after an optional `private`, its last
+code byte is a brace, as no field's or local definition's is, and the counted
+line before it, inside the body, ends in `;`, `{`, or `}`. Every brace pair in
+the body must agree. Every counted line of the body must be at least as deep
+as its first, and the last statement that starts at that depth, after the
+header or a line ending in `;`, `{`, or `}`, must begin with a name that can't
+begin a member: not `var`, `def`, `new`, `private`, `case`, `class`,
+`component`, `type`, `enum`, `import`, `export`, `thread`, `packing`, or
+`layout`, so the method can't have ended before it. A `}` is inserted at the
+first byte of the line that ends the body, before its indentation, and the
+body, from the header's `{` through the inserted `}`, is blanked.
+
+**Outside the body.** For either rule, every brace outside the body must pair,
+with the body's `{` closed by its `}` or by the inserted one, and every pair
+must agree with the layout. A file whose layout disagrees with its braces
+anywhere else can't show which brace it lost: a loop's `}` mistakenly as deep
+as its constructor's, in a file that mixes indentation widths, would otherwise
+make a later method's lost `}` look like the loop's.
+
+**The inserted `}`.** The inserted byte is the substitution's interval: `[at,
+at + 1)` in the effective text and the empty range at `at` in current text, a
+length difference of one. The first excluded body runs from the header's `{`
+through the inserted `}`, in effective offsets. Current offsets before the
+body map to themselves, offsets in the body up to `at` map to nothing, and
+offsets from `at` on map one byte later, so every effective offset after the
+inserted `}` maps one byte earlier. Because the `}` goes at the start of a line,
+after the previous line's LF, and CR stays where it is, current lines and
+columns are converted from current text after mapping; a position on the
+insertion's line or a later one maps back exactly, with LF or CRLF line ends. A
+second body, before or after the first, is listed in effective offsets too,
+and nothing in it maps. Every feature that maps offsets through the
+substitution, as above, uses this one map. The parse of the repaired text counts
+toward the parse budget, and a second body may still follow, at most two
+bodies in all.
+
+**Conservative readings.** Where ADR-0010 leaves a form open, the rules take
+the stricter reading:
+
+- Every brace pair outside the excluded body must agree with the layout too,
+  not only the body's lines, because of the mixed-width case above. Files
+  whose layout disagrees with their braces somewhere are refused: 4 of the 199
+  `aeneas/src` and `lib/util` files at the pinned Virgil revision, each with
+  one such pair.
+- A file with an irregular line anywhere is refused.
+- Exactly one line in the body may have lost the brace, by layout, and with it
+  restored, every pair in the body must agree; two candidates are refused.
+- A header is one line that `def` or `new` begins, after an optional
+  `private`, and that ends in `{`; a lost brace of the header itself is
+  refused, as is one in a match case's block or any other block whose
+  construct doesn't start with a control statement's header.
+- The method's `}` must begin its line; a comment may follow it on the line,
+  but no code, and no comment may precede it.
+- A block inside the method that lost its `}` empties the whole method body
+  rather than inserting a brace inside it, so no offset moves.
+- A method that lost its own `}` must be followed by a method or constructor,
+  and its last statement must begin with a name that can't begin a member, so
+  a method whose last statement is a local `var`, the last method of a
+  compound, and a method followed by a field are refused.
+ each broken file at most three times
 (`LspAnalysisInputs.PARSES_PER_FILE`). The current text's parse outcome is
 normally the one its syntax diagnostics already made; if that parse used other
 language options or another version, the capture parses the current text again,
@@ -730,7 +847,7 @@ A repaired file is substituted exactly as fallback substitutes cached text. Its
 text, and the `LspBodyFallback` map, whose list of excluded bodies holds each
 blanked body, braces included, and whose interval spans the blanked bytes
 without changing their length, so every offset outside the bodies maps to
-itself. Its bytes are reserved at capture and charged to the snapshot budget.
+itself, or, for brace rule 3's insertion, is the inserted `}`. Its bytes are reserved at capture and charged to the snapshot budget.
 Every rule in [Method-body fallback](#method-body-fallback) then applies to each
 excluded body: definition, type definition, implementation, type hierarchy,
 call hierarchy, hover, references, highlights, inlay hints, and semantic
@@ -780,11 +897,20 @@ bodies. Completion and signature help keep their repair at the cursor.
 candidate for each kind of position of the first error, exact blanked texts,
 unchanged offsets and lines, CRLF, the two-body cap, refusals, the parse
 budget, suppression at the body's edges with one and with two excluded bodies,
-the error limit, and fallback's priority; the
-[protocol test](../test/protocol/current_repair.py) covers cold opens with an
-error in one body, an error that the next line continues, and errors in two
-bodies, blanking beside fallback in one analysis, call hierarchy, rename
-refusal, and restoration. [ADR-0009](decisions/0009-current-text-repair.md) and
+the error limit, including a body that a brace rule empties, and fallback's
+priority. [Brace rule tests](../test/unit/LspBraceRulesTest.v3) check each
+rule's candidate, with exact texts, for an `if`, a loop, a `match`, an `else`,
+a legal `if` without braces before a `while`, a condition over two lines, a
+constructor, a private method, and comments after the `{` and the `}`; the
+inserted `}` before a method, a private method, and a constructor; the map at,
+before, and after the insertion, on its line and later, for every offset;
+CRLF; tab stops and widths that disagree; each refusal and each brace control
+of the tolerance benchmark; two bodies on either side; the parse budget; and a
+real analysis whose use, declaration, and type error after the insertion map
+back exactly. The [protocol test](../test/protocol/current_repair.py) covers
+cold opens with an error in one body, an error that the next line continues,
+errors in two bodies, a lost `{`, and a lost `}`, blanking beside fallback in
+one analysis, call hierarchy, rename refusal, and restoration. [ADR-0009](decisions/0009-current-text-repair.md) and
 [ADR-0010](decisions/0010-analyze-unrepairable-files.md) record the decisions.
 
 ## Semantic diagnostics
