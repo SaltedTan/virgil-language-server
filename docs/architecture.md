@@ -636,7 +636,8 @@ The worker receives one effective program, with eligible cached texts in place
 of the broken overlays; there is no extra whole-program analysis. The result
 replaces the context's snapshot. Each `AnalysisDocumentVersion.substitution`
 retains the effective bytes and the `LspBodyFallback` map: both changed intervals
-and the whole excluded current body. Its source bytes plus 256 bytes of metadata
+and the whole excluded current body, the one entry of the map's list of
+excluded bodies. Its source bytes plus 256 bytes of metadata
 are reserved at capture and charged to the existing snapshot budget, separately
 from the cache. Cache eviction cannot release a retained snapshot's text. The
 stamp remains the compared current overlay identity, so ordinary freshness,
@@ -670,95 +671,121 @@ Unsubstituted files in the same snapshot can still supply signature details.
 
 An open document that fails to parse, and that method-body fallback doesn't
 substitute because no parseable text is cached for it or its edit is
-ineligible, is analyzed from a bounded repair of its current text instead
-([#293](https://github.com/SaltedTan/virgil-language-server/issues/293)). Fallback
+ineligible, is analyzed from its current text with the damaged method or
+constructor body emptied
+([#293](https://github.com/SaltedTan/virgil-language-server/issues/293),
+[#312](https://github.com/SaltedTan/virgil-language-server/issues/312)). Fallback
 runs first, so a file that it can substitute is never repaired. Closed files
 are never repaired.
 
 At capture, `LspAnalysisInputs.substitute` reads the overlay's parse outcome,
 which `LspParserDiagnostics` kept from the parse behind its syntax diagnostics.
-A failed single-file parse records where repair starts (`FileParseResult.repairAt`):
-the end of the token before the first error, before the whitespace and comments
-that the parser skipped to reach it. When the parser reports an error at a token
-that it has already consumed, such as a keyword read as an identifier, repair
-starts at the end of the token before that one. `LspCurrentRepair` inserts
-completion's repair there ([Names](#names), [ADR-0006](decisions/0006-incomplete-code-repair.md)),
-computed by `LspCompletionRepair.completion` with that point as the cursor:
+A failed single-file parse records where its first error is (`FileParseResult.repairAt`):
+the end of the token before the error, before the whitespace and comments that
+the parser skipped to reach it. When the parser reports an error at a token
+that it has already consumed, such as a keyword read as an identifier, the
+point is the end of the token before that one. `LspCurrentRepair` first
+requires the whole current text's braces to balance in ordinary code, and no
+string, byte literal, or block comment to be unterminated, by the same
+completion cursor scanner checks that fallback applies to its intervals. A file
+that fails them, as one with a missing `}` does, stays unrepaired.
 
-- the sentinel `virgilLspCursor` where a name or an operand is missing: after a
-  member access's `.`, or where only an expression, a type, or a pattern can
-  start, as after `=`, an operator, `return`, a call's `(` or `,`, an index's
-  `[`, or a `:` before a type. The sentinel is also the placeholder for a missing
-  initializer or operand, so `var x = ;` becomes `var x =virgilLspCursor ;`. It
-  isn't inserted where a statement can start, as after a line break that follows
-  an operand, nor after a name, a number, or another operand;
-- then the closing `)`, `]`, and `>` that the constructs open in the innermost
-  block lack, and a `;` where the statement ends, at the offset that completion
-  chooses for them.
+**The body.** The candidate is the body of the method or constructor whose
+header the parser consumed and whose body holds that point. The scanner reads
+the text up to the point and finds the outermost open `{` that begins a block
+of statements directly inside the file or a compound's members: the body of a
+top-level method, or of a method or constructor of a class, component, variant,
+or variant case. The parser consumed everything before the point, so it
+consumed that body's header and `{` too. The body ends at the `}` that matches
+the `{` in ordinary code, skipping braces in comments and literals. There is
+one candidate per body, and no search: where no such `{` is open at the point,
+as for an error in a declaration header, a field initializer, a lambda in a
+field initializer, or between members, as where a method's header was deleted
+but its braces kept, the file stays unrepaired.
 
-A point in a comment or a literal, or one where nothing is missing, such as
-before a block's `{`, gets no repair. Each site has exactly one candidate: there
-is no search and no ladder of alternatives.
-
-`AeneasAdapter.repairParse` parses the repaired text once, with the document's
-language options and the same parser guards as syntax diagnostics. If it still
-fails, a second site starts at that parse's first error, and the text is parsed
-once more. A text that still fails after two sites stays unrepaired. A parse that
-succeeds also gives the repaired text's method and constructor bodies, as
-`AeneasAdapter.methodBodies` gives them for fallback, and
-`LspBodyEligibility.compare(repaired, current, bodies)` must accept the pair, as
-it accepts fallback's: the single interval from the first inserted byte to the
-last must lie strictly inside one method or constructor body of the repaired
-text, start and end in ordinary code in both texts, and keep the brace depth it
-starts at. A repair never inserts or removes a brace, so it cannot end a body or
-change the owner of a later declaration. A missing `}`, a site in a declaration
-header or a field initializer, and sites in two bodies all stay unrepaired, and
-the file's project then has the ordinary empty semantic result, as before.
+**Blanking.** Every byte strictly between the body's braces becomes a space,
+except CR and LF, so the text keeps its length and every offset and line stays
+where it is. Nothing is inserted: no sentinel, no closer, and no brace.
+`AeneasAdapter.repairParse` parses the blanked text once, with the document's
+language options and the same parser guards as syntax diagnostics. If it fails
+again, the body that holds its first error is found the same way and blanked
+too, and the text is parsed once more. A text that still fails after two
+bodies, or whose next error lies outside every body or in a body already
+blanked, as a carriage return inside the body does, stays unrepaired. A parse
+that succeeds also gives the blanked text's method and constructor bodies, as
+`AeneasAdapter.methodBodies` gives them for fallback, and each blanked pair must
+be one of them, so the parser read each header as a method's or a
+constructor's. The file's project then has the ordinary empty semantic result
+whenever repair refuses, as before.
 
 The capture parses each broken file at most three times
 (`LspAnalysisInputs.PARSES_PER_FILE`). The current text's parse outcome is
 normally the one its syntax diagnostics already made; if that parse used other
 language options or another version, the capture parses the current text again,
 and that counts. Fallback's parse of the cached predecessor counts as well, and
-repair parses at most what remains, never more than two texts.
+repair parses at most what remains, never more than two blanked texts.
 
 A repaired file is substituted exactly as fallback substitutes cached text. Its
-`AnalysisDocumentVersion.substitution` holds the repaired bytes as the effective
-text, and the `LspBodyFallback` map, whose interval spans the inserted bytes and
-whose excluded body is the repaired text's body; the record needs no new field.
-Its bytes are reserved at capture and charged to the snapshot budget. Every rule
-in [Method-body fallback](#method-body-fallback) then applies unchanged:
-definition, type definition, implementation, type hierarchy, call hierarchy, hover, references,
-highlights, inlay hints, and semantic diagnostics suppress queries, locations,
-and diagnostics in the entire excluded body, including its braces, so neither
-the sentinel nor an inserted closer, nor an error that they cause, such as a
-repaired call's arity, appears in any answer. Offsets before the interval stay
-and offsets after it shift by the inserted length. Prepare rename, rename, and
-the rename preflight refuse the snapshot, workspace symbols skip the file,
-completion, signature help, and document symbols keep their current-text paths,
-and the current text's syntax diagnostics are always published. The repaired
-text is never cached as parseable text. The worker gets one effective program per
-analysis, so repair adds no analysis, worker message, or wire version. The
-development snapshot inspection (`virgil-lsp/snapshot`) still lists the effective
-program's own diagnostics, including the sentinel's.
+`AnalysisDocumentVersion.substitution` holds the blanked bytes as the effective
+text, and the `LspBodyFallback` map, whose list of excluded bodies holds each
+blanked body, braces included, and whose interval spans the blanked bytes
+without changing their length, so every offset outside the bodies maps to
+itself. Its bytes are reserved at capture and charged to the snapshot budget.
+Every rule in [Method-body fallback](#method-body-fallback) then applies to each
+excluded body: definition, type definition, implementation, type hierarchy,
+call hierarchy, hover, references, highlights, inlay hints, and semantic
+diagnostics suppress queries, locations, and diagnostics in an entire excluded
+body, including its braces, so no error that the emptied body causes appears in
+any answer, and call hierarchy gives a method or constructor whose own body is
+excluded no outgoing calls. Prepare rename, rename, and the rename preflight
+refuse the snapshot, workspace symbols skip the file, completion, signature
+help, and document symbols keep their current-text paths, and the current
+text's syntax diagnostics are always published. The blanked text is never
+cached as parseable text. The worker gets one effective program per analysis,
+so repair adds no analysis, worker message, or wire version. The development
+snapshot inspection (`virgil-lsp/snapshot`) lists the excluded bodies and still
+lists the effective program's own diagnostics, including an emptied body's
+missing return.
 
-**Anchor.** Repair starts at the parser's error, not at the document's last edit.
-On the [tolerance corpus](benchmarks.md#current-text-repair-comparison), the
-parser's error repairs 91 of the 97 body states that fallback recovers in warm
-sessions, and the last edit, where it is known, would repair all 97. The six
-differ where the parser reads the next line as the rest of an incomplete
-expression, so its first error is past the edit: `a.length +` followed by
-`a[s] = e;`, `buffer.` followed by an `if`, and a member access in a match case
-followed by the next case. A file opened with an error, which is what repair is
-for, has no known edit, and on every state that fallback can't substitute both
-points repaired the same states. With full document sync, knowing the edit would
-also mean comparing the old and new text of every change.
-[Current-text repair tests](../test/unit/LspCurrentRepairTest.v3) check exact
-repaired texts, mappings, the two-site cap, refusals, the parse budget,
-suppression at the body's edges, and fallback's priority; the
-[protocol test](../test/protocol/current_repair.py) covers a cold open, repair
-beside fallback in one analysis, rename refusal, and restoration.
-[ADR-0009](decisions/0009-current-text-repair.md) records the decision.
+**Error limit.** A method that returns a value has no `return` once its body is
+emptied, so verification reports `MissingReturn` at the body's own `{`, inside
+the excluded body. That error counts toward the [15-error limit](#semantic-diagnostics):
+with fourteen errors before it, it is the fifteenth, verification stops at the
+next declaration, and later declarations and files get no bindings or
+diagnostics. Being excluded, it also suppresses the `ErrorLimit` notice, as any
+excluded error does. A body that returns nothing excludes no error.
+
+**Anchor.** Repair empties the body that holds the parser's first error, not
+the one at the document's last edit, which a file opened with an error doesn't
+have. Where the next line continues an unfinished expression, as when
+`a.length +` is followed by `a[s] = e;` or `buffer.` by an `if`, the parser
+reports its error on that next line, past the incomplete code, but in the same
+body, so the same body is emptied.
+
+**Insertions.** Current-text repair first inserted completion's repair
+([Names](#names), [ADR-0006](decisions/0006-incomplete-code-repair.md)) at the
+parser's error ([ADR-0009](decisions/0009-current-text-repair.md)): the sentinel
+`virgilLspCursor` where a name or an operand was missing, then the closing
+`)`, `]`, and `>` and the `;` that the innermost open construct lacked, at most
+two sites, both strictly inside one method or constructor body. Answers outside
+an excluded body don't depend on what it holds, so emptying it serves them as
+well, and guesses no syntax.
+[ADR-0010](decisions/0010-analyze-unrepairable-files.md) replaced the insertions
+with blanking once the [tolerance benchmark](benchmarks.md#body-blanking-comparison)
+showed that blanking keeps every state that they kept, with no wrong answer,
+and also recovers an expression that the next line continues and errors in two
+bodies. Completion and signature help keep their repair at the cursor.
+
+[Current-text repair tests](../test/unit/LspCurrentRepairTest.v3) check the
+candidate for each kind of position of the first error, exact blanked texts,
+unchanged offsets and lines, CRLF, the two-body cap, refusals, the parse
+budget, suppression at the body's edges with one and with two excluded bodies,
+the error limit, and fallback's priority; the
+[protocol test](../test/protocol/current_repair.py) covers cold opens with an
+error in one body, an error that the next line continues, and errors in two
+bodies, blanking beside fallback in one analysis, call hierarchy, rename
+refusal, and restoration. [ADR-0009](decisions/0009-current-text-repair.md) and
+[ADR-0010](decisions/0010-analyze-unrepairable-files.md) record the decisions.
 
 ## Semantic diagnostics
 
@@ -776,7 +803,7 @@ beside fallback in one analysis, rename refusal, and restoration.
 
 **Failures.** A worker crash, timeout, malformed or over-budget result, or startup failure, and a capture or snapshot-admission failure, leave every published list unchanged and log a warning to stderr. The first such failure also sends `window/showMessage` (`MessageType.Warning`) naming the project and the reason; later failures are only logged until an analysis completes again. The supervisor's [restart policy](decisions/0004-analysis-worker-process.md#restart-policy) provides a new worker for the next analysis, which the next open, change, save, close, or file event schedules. A failed analysis is not retried by itself.
 
-**Error limit.** `Program.ERROR` in the pinned Aeneas stops at 15 errors (`AeneasAdapter.PROGRAM_MAX_ERRORS`, checked against the compiler by `AeneasAdapter:program_error_limit`), and the adapter cannot replace it. At the limit, parsing records no more errors and parses no more files, and verification stops at the next declaration. The parser also stops at a file's first syntax error. Fifteen errors in one file therefore hide every other file's errors. When an analysis reaches the limit, an Information diagnostic (`source: "virgil-lsp"`, code `ErrorLimit`) follows the last reported error, at its range, saying that errors elsewhere may be missing. A degraded snapshot suppresses the notice if any of its errors touches an excluded body, even when the last error is visible: errors from the cached or repaired body can cause a limit that the current program would not reach. This can omit a real limit notice, leaving a partial diagnostic set. If no error is excluded, the notice stays at the last reported error. Aeneas rejects carriage returns (`ParseError: invalid character valued 0D`, one per CRLF line), as `v3c` does, so a single CRLF file reaches the limit; convert CRLF checkouts, which WSL users may have, to LF.
+**Error limit.** `Program.ERROR` in the pinned Aeneas stops at 15 errors (`AeneasAdapter.PROGRAM_MAX_ERRORS`, checked against the compiler by `AeneasAdapter:program_error_limit`), and the adapter cannot replace it. At the limit, parsing records no more errors and parses no more files, and verification stops at the next declaration. The parser also stops at a file's first syntax error. Fifteen errors in one file therefore hide every other file's errors. When an analysis reaches the limit, an Information diagnostic (`source: "virgil-lsp"`, code `ErrorLimit`) follows the last reported error, at its range, saying that errors elsewhere may be missing. A degraded snapshot suppresses the notice if any of its errors touches an excluded body, even when the last error is visible: errors from the cached body, or an emptied body's missing return, can cause a limit that the current program would not reach. This can omit a real limit notice, leaving a partial diagnostic set. If no error is excluded, the notice stays at the last reported error. Aeneas rejects carriage returns (`ParseError: invalid character valued 0D`, one per CRLF line), as `v3c` does, so a single CRLF file reaches the limit; convert CRLF checkouts, which WSL users may have, to LF.
 
 **Size limits.** Each automatic analysis has the development request's limits: 4 MiB of paths and source per program (the Aeneas sources and their dependencies use 72%), the [16 MiB result-decoding budget](decisions/0004-analysis-worker-process.md#consequences), and the worker heap. ADR-0004 owns the [supported program size measurements and recovery guidance](decisions/0004-analysis-worker-process.md#supported-program-size). A program that exceeds them is reported as a failure.
 
@@ -956,7 +983,7 @@ The collector uses a fieldless occurrence subtype to carry writes in the existin
 
 **Item data.** An item outlives the snapshot it came from, as a [type hierarchy item](#type-hierarchy) does, and its `data` follows the same design: `uri`, the declaring file's canonical URI; `position`, where its name starts, the start of its `selectionRange`, in UTF-16 positions of the text that was then current; `name`, the declaration's name; `kind`, `"method"`, `"constructor"`, or `"field"`; and `container`, the names of the [document symbols](#document-symbols) that contain the declaration in the outline of the analyzed text, outermost first, joined with `.`, such as `"Geometry"` for a component's function, `"V.C"` for a method of case `C` of variant `V`, or `""` for a file-scope function. An incomingCalls or outgoingCalls request takes `data.uri` and `data.position` as its document and position (`LspSnapshotAnchor.ITEM`), so it gets definition's snapshot selection, freshness, waiting, cancellation, and shutdown rules for the item's file, and its position becomes a byte offset of the analyzed text as definition's does. There, the item's declaration is the one whose name begins exactly at the offset, if it has the item's name and kind (`LspCallHierarchy.resolve`), and if its container, from the outline of the item's file that the reply parses anyway, is the item's. So an item still names its declaration after edits in other files, and after edits in its own file that leave the declaration's name where it was. It names none, and the request gets `null`, once the declaration moves within its file, as text inserted before it moves it, or is deleted, renamed, moved to another file, or replaced by another kind of declaration, such as a field of the same name where a method was. It names none, too, when a member of the same name and kind in another class, component, or variant case takes its place, as when two classes that each declare a method `m` swap lines, since that member's container differs. An item never names a different declaration, and preparing the hierarchy again finds a moved one. A position that falls in an excluded method body gets `null`. Data that isn't an object, or that lacks a valid `uri`, a `position` with non-negative integer `line` and `character`, a string `name`, a `kind` of `"method"`, `"constructor"`, or `"field"`, or a string `container`, gets `InvalidParams`, as other parameter errors do. A `uri` of a document in no project gets `null`, as any request's does.
 
-**Excluded bodies.** Under [method-body fallback](#method-body-fallback) or [current-text repair](#current-text-repair), a call whose callee name is in an excluded body is reported in neither direction: its range doesn't map to current text. An item whose own body is excluded gets `[]` for its outgoing calls, including calls elsewhere in its whole extent, such as `seed()` in a constructor's `new() super(seed())` header. Its declaration still resolves. Incoming calls continue to filter by each call's range: that header call lies outside the excluded body, so incoming calls of `seed` still list the constructor as a caller, while a method whose calls to an item are all inside its excluded body isn't among the item's callers. The cached text's calls inside the excluded body, and the sentinel and closers that repair inserts, therefore never appear. Items in a substituted file have no detail. These lists can be partial and must not be taken as complete.
+**Excluded bodies.** Under [method-body fallback](#method-body-fallback) or [current-text repair](#current-text-repair), a call whose callee name is in an excluded body is reported in neither direction: its range doesn't map to current text. An item whose own body is excluded gets `[]` for its outgoing calls, including calls elsewhere in its whole extent, such as `seed()` in a constructor's `new() super(seed())` header. Its declaration still resolves. Incoming calls continue to filter by each call's range: that header call lies outside the excluded body, so incoming calls of `seed` still list the constructor as a caller, while a method whose calls to an item are all inside its excluded body isn't among the item's callers. The cached text's calls inside an excluded body therefore never appear, and a body that repair blanked has none. Items in a substituted file have no detail. These lists can be partial and must not be taken as complete.
 
 **Bounds.** A reply lists at most 10,000 calls, counted as the ranges in all its `fromRanges`, and 4 MiB of their estimated encoded JSON, as references' does (`LspReferences.MAX_LOCATIONS` and `MAX_REPLY_BYTES`). Each caller or callee group counts its item's URI and name twice, since the data repeats them, its detail and container once, 432 bytes (`LspCallHierarchy.CALL_BYTES`) for the rest of the item, with ten coordinates of at most 11 digits each, and the call's own object, and 112 bytes for each of its ranges (`LspCallHierarchy.RANGE_BYTES`). Both bounds are checked before allocating each range, counting the item's bytes once per group. A reply that would exceed either gets `RequestFailed` (-32803), with "the method *name* has more than 10000 incoming calls" or "outgoing calls", or "the incoming calls of the method *name* need more than 4194304 bytes", with `constructor` or `field` for those kinds, rather than a partial list.
 

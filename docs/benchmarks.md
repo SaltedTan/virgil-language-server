@@ -915,7 +915,7 @@ python3 scripts/bench-tolerance.py --exe build/bench/virgil-lsp --cpu 4 \
 ```
 
 A normal executable works too, after `make all bench-metadata`; its probe arrays
-are empty. `--suite repair|replay|negative|extra|session` selects a group, and
+are empty. `--suite repair|replay|negative|extra|heldout|session` selects a group, and
 `--only TEXT` filters state IDs (session IDs with `--suite session`). Editing
 sessions have a separate inventory and are included in an unfiltered run. These
 filters appear in the recorded command. `--work-dir`
@@ -996,12 +996,36 @@ another error before the intact caller reaches 15. Five more controls cover
 initializer, sites in two bodies, and a repaired call whose arity and argument
 types differ from both the intended call's and the caller's. Each of their
 oracles also changes the called method's signature, so the predecessor's answers
-are wrong. Fifteen extra states cover
+are wrong. Three more cover [body blanking](architecture.md#current-text-repair)
+([#312](https://github.com/SaltedTan/virgil-language-server/issues/312)): a body
+with an unterminated string, a method whose header line was deleted, which
+leaves an extra `}`, and a body that, once emptied, has a missing return that is
+the fifteenth error, after the observer's and 13 others, so verification never
+reaches the intact caller, whose answers are missing, and the excluded error
+suppresses the limit notice. Their oracles change the called method's signature
+too. The repair controls also state how many bodies each excludes, in both
+modes: two in the two-body control, one in the arity and missing-return
+controls, and none in the others. Each record lists the bodies that its snapshot
+excluded and any that differ from this (`expectation_mismatches`, summarized in
+`summary.expectation_mismatches`); the smoke run fails on any. Fifteen extra states cover
 three variants each of two broken files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
 non-ASCII before the query and one CRLF case), closed-file disk changes with
 watched-file notifications, and project-file changes (remove/add membership and
 change a language flag). The pinned compiler rejects CRLF, so that case uses an
 LF oracle and expects semantic suppression today.
+
+Twenty-four held-out states (`heldout`) test body blanking on edits that its
+rule wasn't built from: eight of each kind that it covers, chosen with a fixed
+seed (312) from the Aeneas files that no other state edits or queries, one file
+each. A `next-line` state cuts a statement just after one of its member
+accesses' `.`, and the next statement line continues it, so that the parser's
+first error is on a later line; a `body-end` state cuts a body's last
+statement the same way, before its closing brace; and a `two-bodies` state cuts
+a statement in each of two bodies. Each cut alone must fail to parse in its own
+body, by the CLI parser, and the generator reads method bodies from the
+sources' tab layout. The intended program is the upstream file, and the
+queries are the Aeneas replays' fixed sites; edit kind is `body`, and
+`heldout_kind` and `edited_lines` record the rest.
 
 JSON has the performance harness's revision, binary SHA-256, build, host, affinity,
 command, and input-hash metadata. `states` retains mode, seed policy, edit kind,
@@ -1022,8 +1046,8 @@ These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
 `make test` runs scoring, cleanup, and session sequencing regression checks, a
-twelve-state smoke replay (two small repair states and all ten negative controls,
-in both modes), and the four-step `in-turn` editing session in both modes. The
+fifteen-state smoke replay (two small repair states and all thirteen negative
+controls, in both modes), and the four-step `in-turn` editing session in both modes. The
 short session adds overlapping broken files and recovery in one server process.
 A separate before/after run took 0.39 → 0.59 seconds on the reference host; the
 full suite remains opt-in. Run these checks separately with:
@@ -1460,7 +1484,10 @@ The histories in [`tolerance-sessions.py`](../scripts/tolerance-sessions.py) are
 - `limit-fallback-excluded` replaces an error-filled cached body and checks that
   its hidden errors suppress the limit notice, even with visible errors left.
 - `limit-repair` changes a declaration as well as breaking a body, forcing
-  current-text repair and suppressing its sentinel's error and limit notice.
+  current-text repair. Since [#312](https://github.com/SaltedTan/virgil-language-server/issues/312)
+  repair empties the body, which returns nothing, so it excludes no error and
+  the limit notice stays, as it does in the other two histories' cold mode,
+  where repair replaces fallback.
 - `cache-pressure` analyzes two copies of Aeneas in separate project contexts,
   breaks an evicted file, then breaks a file still retained in the cache.
 
@@ -1515,3 +1542,205 @@ single-edit state/mode records and the 72 session step/mode records. The 185
 primary states still retain all four features in 116 warm and 110 cold states;
 every per-feature count matches the current-text repair comparison above.
 There are zero wrong answers and zero worker replacements across the full run.
+
+### Body blanking comparison
+
+[Body blanking](architecture.md#current-text-repair) for
+[#312](https://github.com/SaltedTan/virgil-language-server/issues/312), rule 1 of
+[ADR-0010](decisions/0010-analyze-unrepairable-files.md), at `aaf73ec`, is
+compared with main at `e146354`, whose current-text repair still inserts
+completion's repairs. Both used the pinned compiler, enabled probes, the default
+384 MiB worker heap, and the same `BuildInfo.v3`, and were built from clean
+clones with equal-length paths, pinned to CPU 12 under the shared lock. The
+states ran under the branch's driver, so both builds measured the same corpus,
+including the three new controls and the held-out states; main ran it one
+`--suite` at a time and only reports the control expectations, which are the
+branch's. Main's editing sessions ran under main's own driver, since each
+history's checks expect its build's own kind of repair and limit notice. Other
+agents were active on this shared host.
+
+Whether a state's file was repaired cold is read from the cold record's
+snapshot, which lists each substituted file and its excluded bodies,
+independently of the returned answers; a cold run has no cached text, so every
+cold substitution is a repair. Before the runs, a native probe calling the
+production `AeneasAdapter.parseFile` and `LspCurrentRepair.repair` on the 200
+broken files of ADR-0010's prototype chose the same bodies as the prototype's
+one-candidate-per-body rule on 199. The other, the CRLF extra state, is refused:
+the pinned parser rejects the CR that ends its first line, outside every body. The table counts states retaining **all four features**,
+allowing correct plus partial reference and diagnostic sets, as before → after
+counts over the group's states.
+
+| Corpus | Edit kind | Fallback eligibility | Repaired cold before | Blanked cold after | Warm before → after | Cold before → after |
+| --- | --- | --- | --- | --- | ---: | ---: |
+| Repair | Body | Eligible | Yes | Yes | 24 → 24 / 24 | 24 → 24 / 24 |
+| Repair | Body | Eligible | No | Yes | 2 → 2 / 2 | 0 → 2 / 2 |
+| Repair | Body | Ineligible | No | Yes | 0 → 2 / 2 | 0 → 2 / 2 |
+| Repair | Body | Ineligible | No | No | 6 → 6 / 9 | 6 → 6 / 9 |
+| Repair | Header | Eligible | Yes | Yes | 4 → 4 / 4 | 4 → 4 / 4 |
+| Repair | Header | Ineligible | No | No | 0 → 0 / 2 | 0 → 0 / 2 |
+| Repair | Whole file | Ineligible | No | No | 0 → 0 / 2 | 0 → 0 / 2 |
+| Replay | Body | Eligible | Yes | Yes | 67 → 67 / 67 | 67 → 67 / 67 |
+| Replay | Body | Eligible | No | Yes | 4 → 4 / 4 | 0 → 4 / 4 |
+| Replay | Body | Ineligible | No | No | 7 → 7 / 7 | 7 → 7 / 7 |
+| Replay | Header | Ineligible | No | No | 2 → 2 / 62 | 2 → 2 / 62 |
+| Combined | All | All | All | All | 116 → 118 / 185 | 110 → 118 / 185 |
+
+Blanking keeps every state that the insertions kept: each of the 95 states
+repaired cold before is blanked cold after and retains all four features, and
+no primary state loses a feature in either mode. The only primary records whose
+answers changed are the ten that gain all four, which include the eight states
+that ADR-0010 names, all now recovered cold:
+
+- Six next-line continuations: `util-Vector.v3/18`, `/19`, `/23`, and `/24`,
+  `aeneas-member-of-parameter`, and `member-in-match-arm`. The parser reports
+  its first error on the next line, where no insertion applied, but in the same
+  body, so the same body is emptied.
+- Two states with errors in two bodies, `syntax-error-after-cursor` and
+  `syntax-error-elsewhere-in-file`, each of which now excludes two bodies.
+  Fallback can't substitute them, so they also gain all four features warm.
+
+Cold and warm now agree in every row: 118 of the 185 primary states retain all
+four features in each mode. The 67 others are refused: the 62 Aeneas
+condition and for-header states, the two truncated files, and the missing `}`
+have unbalanced braces, and the two field initializers have their first error
+outside every body. ADR-0010's brace rules, a later step, address the
+unbalanced ones. With blanking keeping every state, it replaced the insertions,
+as the maintainer decided in ADR-0010.
+
+Per-feature primary counts after blanking follow. Warm and cold are now
+identical; main's rows are the [current-text repair comparison](#current-text-repair-comparison)'s.
+
+| Corpus / mode | Exact definition | Exact hover | Exact references | Partial references | Exact diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair / warm | 68/87 | 68/87 | 67/87 | 1 | 38/45 | 0 | 0 |
+| Repair / cold | 68/87 | 68/87 | 67/87 | 1 | 38/45 | 0 | 0 |
+| Replay / warm | 300/540 | 300/540 | 274/540 | 26 | 80/140 | 0 | 0 |
+| Replay / cold | 300/540 | 300/540 | 274/540 | 26 | 80/140 | 0 | 0 |
+
+There are **zero wrong answers** across all 474 state/mode records of both
+builds (90 repair, 280 replay, 26 negative, 30 extra, and 48 held-out) and the
+72 session step/mode records of each, and zero worker replacements. Main has 60
+partial answers in the states and the branch 66: the four `util-Vector.v3`
+continuations' cold reference lists omit uses inside the emptied body, as their
+warm fallback lists do, and one held-out two-body state's reference list is
+partial in each mode.
+
+All 13 negative controls pass in both modes in both builds and reject their
+injected predecessor answers. `repair-in-two-bodies`, which main refuses, now
+excludes both bodies in both modes, and its definition, hover, references, and
+diagnostics match the current program's oracle exactly. Both builds refuse the
+unterminated string and the deleted header, whose extra `}` leaves the braces
+unbalanced, so their answers are permitted suppression. In
+`repair-missing-return-limit`, both builds exclude one body, main for its
+sentinel's error and the branch for the emptied body's `MissingReturn`: either
+error is the fifteenth, so the intact caller's definition, hover, and references
+are absent and the diagnostics are a partial set without the limit notice,
+permitted and never wrong. The other controls' answers and substitutions are
+unchanged, and so are all 30 extra-state records.
+
+The 24 [held-out states](#semantics-during-syntax-errors) retain all four
+features in every state and mode after blanking:
+
+| Held-out kind | Warm before → after | Cold before → after |
+| --- | ---: | ---: |
+| Next line | 8 → 8 / 8 | 4 → 8 / 8 |
+| Body end | 8 → 8 / 8 | 8 → 8 / 8 |
+| Two bodies | 0 → 8 / 8 | 0 → 8 / 8 |
+| All | 16 → 24 / 24 | 12 → 24 / 24 |
+
+In both modes, definition and hover match the oracle at all 96 queries,
+references exactly at 93 and partially at 3, and diagnostic sets exactly in all
+24 states, with no wrong answer; main had 64 and 48 exact definitions warm and
+cold. Each two-body state excludes two bodies and every other state one.
+
+The editing sessions' counts are unchanged except in the error-limit histories:
+
+| Step types | Step/mode records | Exact answers before → after | Partial sets before → after | Missing answers | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| In-turn, overlapping, newest parseable | 24 | 240 → 240 | 0 → 0 | 0 | 0 |
+| Save, close, reopen, restore | 10 | 80 → 80 | 0 → 0 | 20 | 0 |
+| New-file creation and fixes | 8 | 98 → 98 | 0 → 0 | 0 | 0 |
+| Watched disk changes and fixes | 10 | 80 → 80 | 0 → 0 | 20 | 0 |
+| Error-limit stress and fixes | 12 | 115 → 119 | 5 → 1 | 0 | 0 |
+| Cache pressure and broken bodies | 8 | 56 → 56 | 0 → 0 | 0 | 0 |
+
+The emptied body in the limit histories returns nothing, so it excludes no
+error, and the cold step of each history and `limit-repair`'s warm step now
+publish the oracle's `ErrorLimit` notice. The remaining partial set is
+`limit-fallback-excluded`'s warm step, whose cached body's hidden errors
+suppress the notice, as before. In `cache-pressure`,
+`Arm64AddrPatcher.v3` is still repaired in both modes, now by blanking, and the
+retained file is still substituted by fallback; the driver now tells repair by
+an effective interval as long as the current one.
+
+Latencies are unchanged within noise where the outcome is unchanged: cold
+definition's p95 is 691.8 → 694.7 ms on replays and 683.1 → 678.3 ms on repair
+states. Cold held-out diagnostics' median rose from 459.6 to 736.8 ms, because
+twelve more held-out states now verify and collect semantics cold. The branch's
+unfiltered run took 313.97 seconds, against 306.79 for main's suite-by-suite
+runs and sessions.
+
+A blanked cold open costs as many parses as an insertion repair: the current
+text's own parse, then one parse of the blanked text, or two for errors in two
+bodies, within the same three-parse budget. A native probe linking each build's
+`LspCurrentRepair` timed eleven full repairs of each of the 200 prototype files
+and 24 held-out texts and took the median, on the same CPU and lock. On the 123
+files that both builds repair, all with one repaired parse, the median repair
+took 0.170 ms before and 0.208 ms after, the p90 3.73 and 5.38 ms, and the
+largest increase was 2.06 ms, on the 106 KB `aeneas-call-nested` file (3.75 →
+5.82 ms): blanking scans the whole text for balanced braces and again for the
+body's matching `}`, where an insertion scanned only up to its site. The 24 files
+that only blanking repairs, 11 of them with two parses, took a median of
+0.208 ms and at most 6.52 ms, a 66 KB file with two bodies. Refusals took a
+median of 1.43 ms before and 1.61 ms after, on the 77 mostly 106 KB Aeneas files
+that neither build repairs, about 15 ns per byte of scanning. A cold open of an
+Aeneas file waits hundreds of milliseconds for its analysis, so the largest
+difference is under 1% of it.
+
+Successful operations were compared with `bench-lsp.py`, alternating the two
+executables over six process blocks, with two warmups and five measured
+operations per block (30 samples per build, project, and operation), on the
+same CPU and lock. Every semantic check passes, and none of the 33 comparisons
+is flagged: all have overlapping p10–p90 intervals. The largest median change,
+Aeneas `syntax_diagnostic`, is 1.467 → 0.417 ms, with bimodal samples and
+intervals spanning 0.377–3.635 and 0.383–4.546 ms; successful operations don't
+run repair. Worker allocated bytes and live-after-GC bytes match exactly for
+fresh and reused analyses in all three projects. Aeneas results are
+**median (p10–p90), milliseconds**:
+
+| Successful operation | Before | After |
+| --- | ---: | ---: |
+| Fresh analysis | 353.977 (343.019–365.569) | 365.069 (350.178–379.567) |
+| Reused analysis | 295.418 (281.899–313.367) | 299.709 (283.391–319.544) |
+| Definition | 0.204 (0.169–0.222) | 0.191 (0.164–0.217) |
+| Hover | 0.162 (0.152–0.192) | 0.174 (0.148–0.208) |
+| References | 0.817 (0.788–3.797) | 0.860 (0.788–4.478) |
+| Syntax diagnostics | 1.467 (0.377–3.635) | 0.417 (0.383–4.546) |
+| Semantic publication | 527.441 (512.860–541.943) | 539.847 (516.921–573.498) |
+
+The builds and measurements used these commands from each clean clone and from
+the branch, with `evidence` set to the task's scratch directory, and the
+branch's clone rebuilt with main's `BuildInfo.v3`. Main's sessions ran the same
+`--suite session` command from main's clone:
+
+```sh
+make BUILD=build BENCH=1 all bench-metadata
+for suite in repair replay negative extra heldout; do
+  flock bench.lock taskset -c 12 python3 scripts/bench-tolerance.py --suite $suite \
+    --exe "$evidence/base/build/virgil-lsp" --cpu 12 \
+    --work-dir "$evidence/bench-work" --output "$evidence/tolerance-base-$suite.json"
+done
+flock bench.lock taskset -c 12 python3 scripts/bench-tolerance.py \
+  --exe "$evidence/head/build/virgil-lsp" --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-head.json"
+flock bench.lock taskset -c 12 python3 scripts/bench-lsp.py \
+  --exe "$evidence/base/build/virgil-lsp" --exe "$evidence/head/build/virgil-lsp" \
+  --blocks 6 --cpu 12 --require-probes --output "$evidence/lsp-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Before: `6f53035cb33571ff9a93fc2e8918075923241cb1a04ca7af4870325fe476d883`,
+  `7186b8f04dcd5f342b14627ea4d6a068ea15bc4a920d2d4d626668bda1085dc2`.
+- After: `944e0a8d16c1e342a5e7f3dedbd46a3099eb9d569b552a1f806edca34fffcdf1`,
+  `dc8302642f4f9af943eeb212b32dac943ae7db01c99d75803f724704ea05ee96`.
