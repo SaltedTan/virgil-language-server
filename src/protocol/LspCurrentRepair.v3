@@ -6,13 +6,16 @@
 // (docs/architecture.md#current-text-repair; ADR-0009, amended by ADR-0010).
 // Repair blanks the body of the method or constructor that holds the parser's
 // first error: every byte between its braces becomes a space, except line
-// terminators, so no offset or line moves and no syntax is guessed. The
-// file's braces must balance in ordinary code, with no string, byte literal,
-// or block comment unterminated, so the body ends at the brace that matches
-// its opening one. If the blanked text still fails to parse, the body that
-// holds its first error is blanked too, at most MAX_BODIES in all. There is
-// one candidate per body, and no search. Each blanked pair must be a method
-// or constructor body of the blanked text's own parse.
+// terminators, so no offset or line moves and no syntax is guessed. No
+// string, byte literal, or block comment may be unterminated. When the file's
+// braces balance in ordinary code, the body ends at the brace that matches
+// its opening one. When they are one opener short, the body is the one that
+// layout delimits instead (LspLayout.braceRule); a file whose braces are
+// otherwise unbalanced, such as one closer short, is refused. If the blanked
+// text still fails to parse, the body that holds its first error is blanked
+// too, at most MAX_BODIES in all. There is one candidate per body, and no
+// search. Each blanked pair must be a method or constructor body of the
+// blanked text's own parse.
 component LspCurrentRepair {
 	def MAX_BODIES = 2;
 
@@ -25,11 +28,19 @@ component LspCurrentRepair {
 		scan.braceFrom = 0;
 		scan.scan(current.length);
 		if (scan.unterminatedRegion) return (null, null, "a string, byte literal, or block comment is unterminated");
-		if (scan.braceDepth != 0 || scan.braceMinimum != 0) return (null, null, "braces do not balance");
+		var body: (int, int);
+		if (scan.braceDepth == 0 && scan.braceMinimum == 0) {
+			body = holding(current, anchor);
+		} else if (scan.braceDepth == -1 && scan.braceMinimum == -1) {
+			var rule = LspLayout.new(current).braceRule();
+			if (rule.1 != null) return (null, null, rule.1);
+			body = rule.0;
+		} else {
+			return (null, null, "braces do not balance");
+		}
 		var text: Array<byte>, bodies = Vector<(int, int)>.new();
 		for (n < MAX_BODIES) {
 			if (n >= parses) return (null, null, "repair exceeds the parse budget");
-			var body = holding(if(text != null, text, current), anchor);
 			if (body.0 < 0) return (null, null, "the parser's error is not in a method or constructor body");
 			for (i < bodies.length) {
 				if (bodies[i].0 == body.0) return (null, null, "the parser's error is in a blanked body");
@@ -43,10 +54,11 @@ component LspCurrentRepair {
 				for (b in blanked) {
 					if (!has(parsed.0, b)) return (null, null, "a blanked pair is not a method or constructor body");
 				}
+				if (blanked.length > 1 && blanked[1].0 < blanked[0].0) blanked = [blanked[1], blanked[0]];
 				var begin = blanked[0].0 + 1, end = blanked[blanked.length - 1].1 - 1;
 				return (text, LspBodyFallback.new(begin, end, end, blanked), null);
 			}
-			anchor = parsed.1;
+			body = holding(text, parsed.1);
 		}
 		return (null, null, "blanked text does not parse");
 	}

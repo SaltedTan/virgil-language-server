@@ -27,7 +27,26 @@ class Scoring(unittest.TestCase):
                                         "repair-needs-brace", "repair-in-header", "repair-in-field-initializer",
                                         "repair-in-two-bodies", "repair-call-arity",
                                         "repair-unterminated-string", "repair-deleted-header",
-                                        "repair-missing-return-limit"})
+                                        "repair-missing-return-limit", "brace-swallow-field",
+                                        "brace-two-closers", "brace-split-header", "brace-indentation-disagrees",
+                                        "brace-mixed-width", "brace-unterminated-string",
+                                        "brace-closer-deeper-field", "brace-braceless-if-then-while",
+                                        "brace-inner-closer", "brace-method-closer", "brace-tab-stops",
+                                        "brace-and-blank-two-bodies", "brace-closer-then-blank",
+                                        "brace-opener-missing-return-limit",
+                                        "brace-closer-missing-return-limit", "brace-closer-deeper-continuation",
+                                        "brace-closer-deeper-def", "brace-closer-deeper-method",
+                                        "brace-closer-deeper-constructor", "brace-closer-deeper-case",
+                                        "brace-closer-same-line-field", "brace-closer-continued-member",
+                                        "brace-opener-deeper-method", "brace-closer-local-function",
+                                        "brace-closer-local-function-returns", "brace-closer-local-function-lines",
+                                        "brace-closer-local-value", "brace-inner-closer-local-function",
+                                        "brace-opener-bodiless-holder", "brace-method-closer-private",
+                                        "brace-inner-closer-private", "brace-closer-then-blank-private",
+                                        "brace-closer-missing-return-limit-private",
+                                        "brace-opener-holder-comment-name", "brace-opener-holder-comment-def",
+                                        "brace-opener-holder-split-def", "brace-opener-holder-split-name",
+                                        "brace-opener-holder-private-comment"})
         for name, case in CONTROLS.items():
             with self.subTest(case=name):
                 results = [tolerance.score(key.split(":")[-1], old, case["oracle"][key], True)

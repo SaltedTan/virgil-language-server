@@ -1007,9 +1007,41 @@ leaves an extra `}`, and a body that, once emptied, has a missing return that is
 the fifteenth error, after the observer's and 13 others, so verification never
 reaches the intact caller, whose answers are missing, and the excluded error
 suppresses the limit notice. Their oracles change the called method's signature
-too. The repair controls also state how many bodies each excludes, in both
-modes: two in the two-body control, one in the arity and missing-return
-controls, and none in the others. Each record lists the bodies that its snapshot
+too. Thirty-eight more cover the [brace rules](architecture.md#current-text-repair)
+([#317](https://github.com/SaltedTan/virgil-language-server/issues/317)), each a
+small tab-indented program whose oracle changes the called method's signature.
+Rule 2 must refuse 34. Seven are layouts it doesn't read: ADR-0010's
+`swallow-field`, two closers at one indentation, a method header split over two
+lines, a body line no deeper than its header, a method header that lost its `{`
+below a method indented with four spaces and closed with a tab, an unterminated
+string, and a method that lost its `}` before a field indented like one of its
+statements. Eight are places where a member could follow the method's end,
+which the caller uses: a method that lost its `}` before a field whose first
+line is deeper than its statements and whose continuation is as deep as them,
+beside a file-level field of the same name, before a deeper value, method,
+constructor, or variant case, before a field on its last statement's line, and
+before a field whose `def` is alone on a deeper line, and a method whose `}` is
+deeper than its header followed by a method that lost its `{`. Six have a local
+function or a local written as deep as the method's header, where a wrong
+reading would make it a member: a method that lost its `}` before a local
+function, one that returns a value, one that spans lines, or a local value
+whose initializer is a function; a block's `}` as deep as the method's header
+before such a local function; and a method that lost its `{` after a method that
+lost its `{` right before a `;`. Five repeat that last shape with the earlier
+method's header holding a comment between its name and `(` or between `def`
+and its name, split after `def` or after its name, or with a comment after
+`private`. The last eight lost a `}`, which no rule repairs: an inner block and
+a method that lost their `}`, a method's lost `}` beside an error in a later
+body, and a missing return as the fifteenth error, each before a plain method
+and before a private method. Each control with a local function has a second
+query on a name that a wrong reading binds elsewhere. Rule 2 must accept four:
+a legal `if` without braces followed by a `while` that lost its `{`, tabs and
+spaces of equal width, a lost `{` beside an error in another body, and an
+emptied body's missing return as the fifteenth error. The repair controls also
+state how many bodies each excludes, in both modes: two in the two-body control
+and the brace control with another error, one in the arity and missing-return
+controls and the other accepted brace controls, and
+none in the others. Each record lists the bodies that its snapshot
 excluded and any that differ from this (`expectation_mismatches`, summarized in
 `summary.expectation_mismatches`); the smoke run fails on any. Fifteen extra states cover
 three variants each of two broken files, fresh intact-file type errors, text coordinates (two UTF-16 cases with
@@ -1031,6 +1063,22 @@ sources' tab layout. The intended program is the upstream file, and the
 queries are the Aeneas replays' fixed sites; edit kind is `body`, and
 `heldout_kind` and `edited_lines` record the rest.
 
+Forty-two more held-out states test the brace rules
+([#317](https://github.com/SaltedTan/virgil-language-server/issues/317)) on edits
+that they weren't built from, chosen with a fixed seed (317) from the Aeneas
+files that no other state, the 24 above included, edits or queries, one file
+each. Each removes the last character of one line of a method: the `{` of an
+`if`, a loop, or a `match` header (`if-opener`, `loop-opener`,
+`match-opener`), the method's own header (`method-opener`), or the lone `}` of
+an inner block or of the method (`block-closer`, `method-closer`). Each kind
+appears twice in the upstream tab layout (`tabs`), twice re-indented with four
+spaces per tab (`spaces`), twice with about half the lines' tabs as eight spaces
+(`mixed`), and once with about half as four spaces (`mixed-width`), whose
+widths disagree with the tabs'. Each removal alone must fail to parse, by the
+CLI parser. The intended program is the file in that style, and the queries are
+the same fixed sites; openers have edit kind `header` and closers `body`, and
+`heldout_kind`, `indentation`, and `edited_lines` record the rest.
+
 JSON has the performance harness's revision, binary SHA-256, build, host, affinity,
 command, and input-hash metadata. `states` retains mode, seed policy, edit kind,
 text hashes, current parse outcomes, snapshots, answers, scores, and raw samples.
@@ -1050,11 +1098,14 @@ These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
 `make test` runs scoring, cleanup, and session sequencing regression checks, a
-fifteen-state smoke replay (two small repair states and all thirteen negative
+fifty-three-state smoke replay (two small repair states and all 51 negative
 controls, in both modes), and the four-step `in-turn` editing session in both modes. The
 short session adds overlapping broken files and recovery in one server process.
-A separate before/after run took 0.39 → 0.59 seconds on the reference host; the
-full suite remains opt-in. Run these checks separately with:
+A separate before/after run took 0.39 → 0.59 seconds on the reference host. As
+the brace controls were added, it took about 0.88 seconds with the first 15,
+1.08 seconds with 23, and 1.34 seconds with 33; with all 38, the smoke replay's
+median of five runs on CPU 12 is 1.48 seconds. The full suite remains opt-in.
+Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
@@ -1748,6 +1799,241 @@ Server and worker SHA-256 hashes, respectively:
   `7186b8f04dcd5f342b14627ea4d6a068ea15bc4a920d2d4d626668bda1085dc2`.
 - After: `944e0a8d16c1e342a5e7f3dedbd46a3099eb9d569b552a1f806edca34fffcdf1`,
   `dc8302642f4f9af943eeb212b32dac943ae7db01c99d75803f724704ea05ee96`.
+
+### Brace rules comparison
+
+The [brace rule](architecture.md#current-text-repair) for
+[#317](https://github.com/SaltedTan/virgil-language-server/issues/317), rule 2
+of [ADR-0010](decisions/0010-analyze-unrepairable-files.md), which repairs a
+file that lost one `{`, is compared with main at `54800ce`, which refuses every
+file whose braces don't balance. Rule 3, which would repair a lost `}`, was
+measured with it in earlier rounds, at `a514662`, `de9803e`, and `13a5309`; three
+reviews in a row found wrong readings, most of them in rule 3, where indentation
+alone decided whether a declaration was a member or a local, and it was left
+out for a redesign in
+[#320](https://github.com/SaltedTan/virgil-language-server/issues/320). The
+counts below are rule 2's alone, at `cd3bc2b`.
+
+**Stress sets and the contract.** Rule 2 trusts indentation, under the
+contract that [Current-text repair](architecture.md#current-text-repair)
+states: when every brace pair of the intended file agrees with its indentation,
+by the layout check's own reading, with tabs reaching the next multiple of 8
+columns and blank and comment-only lines skipped, rule 2 gives no wrong answer.
+A native probe linking the production `AeneasAdapter.parseFile`,
+`LspCurrentRepair.repair`, and `LspLayout` read every state of eight generated
+sets, independent of this corpus, with each state's intended program. A reading
+is wrong unless the removed brace lies in an excluded body and the intended
+text parses with each excluded body as a method or constructor body at the same
+place. The probe also asked `LspLayout`, as the rule reads a file, whether every
+brace pair of the intended text agrees with its layout, which places each state
+inside or outside the contract:
+
+| Stress set | States | Inside | Accepted inside | Wrong inside | Outside | Accepted outside | Wrong outside |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Single-brace removals (seed 9317) | 4,428 | 2,946 | 561 | 0 | 1,479 | 0 | 0 |
+| Members (seed 31701) | 22,740 | 10,774 | 1,217 | 0 | 11,966 | 0 | 0 |
+| Locals (seed 31702) | 42,060 | 5,786 | 433 | 0 | 36,274 | 0 | 0 |
+| First review | 1,000 | 860 | 65 | 0 | 140 | 0 | 0 |
+| Second review | 6,270 | 5,050 | 230 | 0 | 1,220 | 0 | 0 |
+| Second review, extended | 7,360 | 5,430 | 250 | 0 | 1,930 | 0 | 0 |
+| Third review | 59,792 | 30,512 | 800 | 0 | 29,280 | 0 | 0 |
+| Block holders | 13,536 | 0 | 0 | 0 | 13,536 | 720 | 720 |
+
+The first set holds a seeded sample of up to four single-brace removals, of a
+`{` that ends a line or a line that is only `}`, in each of the 199 pinned
+`aeneas/src` and `lib/util` files in each of six indentation styles (tabs, four
+and two spaces per tab, half the lines' tabs as eight or as four spaces, and a
+few lines off by one column); three of its states still parse and aren't
+counted inside or outside. The member set indents a member after a method one or
+two tabs deeper than its siblings, splits it over lines, or moves it onto the
+method's last line, in the same files and styles, and removes up to six braces
+from each of the 4,522 such programs that parse. The local set adds local
+functions and local values whose initializer is a function, written as deep as
+the method's header or spanning lines, and methods whose `{` is followed by
+`;`, and removes every brace from the inserted code through the next member in
+each of 5,310 programs. The three reviews' sets remove every brace from
+hand-built programs in four or five styles; the extended set adds 20 programs to
+the second review's, and the third review's adds, among other shapes,
+method headers with a comment or a line break inside them before a local
+function as deep as the header. The probe found no wrong reading in any of these, and for the third
+review's 800 accepted states, definition, hover, and references on `target`'s
+uses of `count` and `local()` in a cold open and a warm session match the
+intended program's in every state.
+
+The block-holder family is the shape that the contract excludes. Each of its
+864 parseable programs has a method or a constructor `h` whose body begins with
+a block, on `h`'s line or its own, or with an `if`, whose `}` is written as deep
+as `h`, and then a local function `local` written as deep as `h` too, before a
+`target` that calls the top-level `local()`, from 216 templates in four
+styles; removing each brace once gave 13,536 states. Every intended file has a
+brace pair that disagrees with its indentation. Rule 2 accepts 720 of these
+states, from 432 intended files, and reads every one wrongly:
+it takes `h` as ending at the block's `}`, `local` as a member whose `if` lost
+its `{`, and empties `local`'s body, so `local()` in `target` binds to the
+former local function instead of the top-level one, cold and warm. A guard that
+refused every such reading was tried and refused all 62 primary states and 12
+of the 15 held-out states below that rule 2 recovers, so none was added.
+
+**The tolerance benchmark.** A full run of rule 2 at `cd3bc2b`, built with
+probes and pinned to CPU 12 under the shared lock, completed 634 state/mode
+records and 72 session steps in 461.72 seconds. Main's counts are its run at
+`54800ce` under the driver at `8110f39`, which added the brace controls and the
+42 brace held-out states; the primary and held-out states haven't changed
+since. Whether a state's file was repaired cold is read from the cold record's
+snapshot, as in the body blanking comparison, and the table counts states
+retaining **all four features**, allowing correct plus partial reference and
+diagnostic sets, as before → after counts over the group's states.
+
+| Corpus | Edit kind | Warm before → after | Cold before → after |
+| --- | --- | ---: | ---: |
+| Repair | Body | 34 → 34 / 37 | 34 → 34 / 37 |
+| Repair | Header | 4 → 6 / 6 | 4 → 6 / 6 |
+| Repair | Whole file | 0 → 0 / 2 | 0 → 0 / 2 |
+| Replay | Body | 78 → 78 / 78 | 78 → 78 / 78 |
+| Replay | Header | 2 → 62 / 62 | 2 → 62 / 62 |
+| Combined | All | 118 → 180 / 185 | 118 → 180 / 185 |
+
+The 62 states that gain all four features, in both modes, are the Aeneas
+condition and for-header states: the repair site and 13 replays in `Parser.v3`'s
+condition, and the repair site and 47 replays in `Verifier.v3`'s for header.
+Each lacks the end of its header line, including the `{` that ends it, so rule
+2 blanks the method body that layout delimits, one body in each, and no offset
+moves. No state loses a feature. Five remain refused: the two truncated files
+and the two field initializers, which phase 3b addresses, and
+`missing-brace-end-of-method`, whose method lost its `}`, which no rule now
+repairs. ADR-0010 estimated 181 with rule 3; with rule 3, this state was
+refused anyway, since its method's last statement, `var n = 1;`, could equally
+begin a field after the method, and `def other()`, whose header a local
+function's could equally be, follows it.
+
+Per-feature primary counts after rule 2 follow; main's rows are the
+[body blanking comparison](#body-blanking-comparison)'s.
+
+| Corpus / mode | Exact definition | Exact hover | Exact references | Partial references | Exact diagnostic sets | Partial diagnostics | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repair / warm | 76/87 | 76/87 | 75/87 | 1 | 40/45 | 0 | 0 |
+| Repair / cold | 76/87 | 76/87 | 75/87 | 1 | 40/45 | 0 | 0 |
+| Replay / warm | 540/540 | 540/540 | 514/540 | 26 | 140/140 | 0 | 0 |
+| Replay / cold | 540/540 | 540/540 | 514/540 | 26 | 140/140 | 0 | 0 |
+
+There are **zero wrong answers** across all 634 state/mode records (90
+repair, 280 replay, 102 negative, 30 extra, and 132 held-out) and the 72
+session step/mode records, zero unmet control expectations, and zero worker
+replacements. In each mode, 35 answers in the states are partial: 27 primary
+reference lists, four held-out reference lists that omit uses inside an
+emptied body, one of them a brace state's, a negative control's reference list,
+and three negative controls' diagnostic sets, among them the brace
+missing-return control's. One session answer is partial. The editing sessions'
+answer counts are identical to main's: no history leaves its braces
+unbalanced.
+
+All 51 negative controls pass in both modes and reject their injected
+predecessor answers. Main refuses every one of the 38 brace controls. Rule 2
+excludes the bodies that four of them expect, in both modes: one for the
+braceless `if` before a `while` that lost its `{`, one for tabs and spaces of
+equal width, two for the lost `{` beside an error in another body, and one for
+the error-limit control, whose emptied body's `MissingReturn` is the fifteenth
+error, so the intact caller's definition, hover, and references are absent and
+the diagnostics are a partial set without the limit notice, permitted and never
+wrong. Their definition, hover, references, and diagnostics otherwise match the
+current program's oracle exactly. The other 34 are refused, so their answers
+are permitted suppression, and each that has a second query, on a name that a
+wrong reading would bind elsewhere, gets no wrong answer: the layouts rule 2
+refuses, the deeper members after a method, the local functions and locals as
+deep as a method's header, the method after one that lost its `{` right before
+a `;`, the review's commented and split headers before such a method, and every
+control for a lost `}`, which rule 3 repaired in earlier rounds and which now
+expect refusal.
+
+The [held-out states](#semantics-during-syntax-errors) for the brace rules
+(seed 317) gain all four features in 15 of 42 states, in each mode; the 24
+held-out states of #312 are unchanged:
+
+| Held-out kind | Warm before → after | Cold before → after |
+| --- | ---: | ---: |
+| Next line, body end, and two bodies (#312) | 24 → 24 / 24 | 24 → 24 / 24 |
+| `if-opener` | 0 → 6 / 7 | 0 → 6 / 7 |
+| `loop-opener` | 0 → 5 / 7 | 0 → 5 / 7 |
+| `match-opener` | 0 → 4 / 7 | 0 → 4 / 7 |
+| `method-opener` | 0 → 0 / 7 | 0 → 0 / 7 |
+| `block-closer` | 0 → 0 / 7 | 0 → 0 / 7 |
+| `method-closer` | 0 → 0 / 7 | 0 → 0 / 7 |
+| All | 24 → 39 / 66 | 24 → 39 / 66 |
+
+By indentation, rule 2 keeps 4 of the 12 `tabs` states, 6 of the 12 `spaces`
+states, 5 of the 12 `mixed` states, and none of the 6 `mixed-width` states. In
+both modes, each accepted state excludes one body, definition and hover match
+the oracle at all 60 queries, references exactly at 59 and partially at 1, and
+diagnostic sets exactly in all 15 states, with no wrong answer. Every refused
+state gets no semantic answer, as on main. The 14 block and method closers are
+refused because rule 3 isn't implemented. Among the 28 lost `{`, the seven
+`method-opener` states are refused because their header line no longer ends in
+`{` and so is no header, and six are refused by the conservative readings:
+three `mixed-width` states, where four-space and tab widths disagree with the
+braces, and three states in `X86MacroAssembler.v3`, `Vst.v3`, and `Dwarf.v3`,
+pinned files whose layout already disagrees with one brace pair elsewhere.
+
+A cold open that rule 2 repairs costs as many parses as body blanking: the
+current text's own parse, then one parse of the repaired text, or two when
+another body holds an error, within the same three-parse budget. A native probe
+linking each build's `LspCurrentRepair` timed eleven full repairs of each of
+the 171 broken primary texts and 57 brace control and held-out texts, and took
+the median, on CPU 12 under the shared lock, main's build and then rule 2's. On
+the 104 files that both builds repair, all with balanced braces and the same
+number of parses, the median repair took 0.366 ms before and 0.359 ms after,
+and the slowest 5.54 and 5.52 ms. The 81 files that only rule 2 repairs, 80 with
+one repaired parse and 1 with two, took a median of 4.13 ms and at most
+4.23 ms, a 106 KB `Verifier.v3` of a for-header state. Refusals took a median of
+0.067 ms before and 0.069 ms after on the 43 files that neither build repairs,
+and at most 1.02 and 1.44 ms, a 72 KB mixed-width held-out text. A cold open of
+an Aeneas file waits hundreds of milliseconds for its analysis, so rule 2's
+repair is about 1% of it.
+
+Successful operations don't run current-text repair. They were compared at
+`a514662`, with rule 3 then included, using `bench-lsp.py`, alternating the two
+executables over six process blocks, with two warmups and five measured
+operations per block (30 samples per build, project, and operation), on the
+same CPU and lock. Every semantic check passes, and none of the 33 comparisons
+is flagged: all have overlapping p10–p90 intervals. The largest relative median
+change, util `completion_hit`, is 0.763 → 1.126 ms, with bimodal samples and
+intervals spanning 0.690–1.340 and 0.692–1.755 ms. Worker allocated bytes, heap
+used after handling, and live-after-GC bytes match exactly for fresh and reused
+analyses in all three projects. Aeneas results are **median (p10–p90),
+milliseconds**:
+
+| Successful operation | Before | After |
+| --- | ---: | ---: |
+| Fresh analysis | 361.323 (347.339–365.274) | 361.270 (346.473–375.827) |
+| Reused analysis | 301.495 (292.513–326.368) | 311.265 (294.902–327.055) |
+| Definition | 0.189 (0.166–0.559) | 0.192 (0.169–0.534) |
+| Hover | 0.187 (0.148–0.199) | 0.185 (0.154–0.466) |
+| References | 0.823 (0.786–0.956) | 0.827 (0.794–1.166) |
+| Syntax diagnostics | 0.397 (0.375–1.499) | 0.391 (0.376–1.700) |
+| Semantic publication | 512.871 (499.062–520.607) | 513.341 (501.385–519.195) |
+
+The builds and measurements used these commands, with `evidence` set to the
+task's scratch directory; the comparison of successful operations used clean
+clones of main and `a514662` with equal-length paths and the same
+`BuildInfo.v3`:
+
+```sh
+make BUILD=build/r3-bench BENCH=1 all bench-metadata
+flock bench.lock taskset -c 12 python3 scripts/bench-tolerance.py \
+  --exe build/r3-bench/virgil-lsp --cpu 12 \
+  --work-dir "$evidence/bench-work" --output "$evidence/tolerance-r3.json"
+flock bench.lock taskset -c 12 python3 scripts/bench-lsp.py \
+  --exe "$evidence/base/build/virgil-lsp" --exe "$evidence/head/build/virgil-lsp" \
+  --blocks 6 --cpu 12 --require-probes --output "$evidence/lsp-comparison.json"
+```
+
+Server and worker SHA-256 hashes, respectively:
+
+- Main, `54800ce`: `151c82d1ff105175ae0584e690b3743c478ad846e6ff08d204ee3633d475958d`,
+  `a61c77fb664ce94b4c24810f8daa74882a4183198b0de898a29e8e11c5c1a199`.
+- `a514662`, the successful-operation comparison: `01402691b2f20a9d7ebc647b4977ac2b38ae044c7c73eee6efd706db0177b902`,
+  `708eb64db15d022775c38377132ff06555fda01e4d5989a5dd7b6d0de2f3397c`.
+- `cd3bc2b`, the tolerance run: `42744f96613ec296f71b7ef1e78bac623a9c6b0fa59b18f93c1308f28fff6a4f`,
+  `1c164f5f4e3598c67b35754834a5af4287f2afd062dde69eb8c6c1075bb42cea`.
 
 ## Pinned Virgil revision comparison (2026-10-27)
 
