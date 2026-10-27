@@ -1803,3 +1803,16 @@ replacements. The 185 primary states retain all four measured features in
 each, including session diagnostics; each is an exact subset of its own
 current-program oracle. Reference lists follow the changed upstream uses and
 source locations. The old run took 248.26 seconds and the new 250.89 seconds.
+
+Those runs predate [body blanking](#body-blanking-comparison). After this change
+was rebased onto main at `6e56a45`, which includes it, a full tolerance run on
+the rebased build at the new pin completed 474 state/mode records and 72 session
+steps, again with zero wrong answers, zero unmet control expectations, and zero
+worker replacements, in 317.21 seconds. The 185 primary states retain all four
+measured features in 118 warm and 118 cold states, the counts that the body
+blanking comparison measured at the old pin. The 24 held-out states retain all
+four in every state and mode. The generator picks them with its fixed seed from
+the pinned Aeneas sources, which this bump changes, so 18 of the 24 are on
+different files than at the old pin: 5 next-line, 6 body-end, and 7 two-bodies
+states. There are 67 partial answers, including session diagnostics, as in that
+comparison's run; each is an exact subset of its own current-program oracle.
