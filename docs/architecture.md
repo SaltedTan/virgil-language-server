@@ -750,11 +750,21 @@ nearest counted line above it that is shallower than every counted line from it
 to the damaged line and is a header. The damaged line is the disagreeing
 pair's `}` line, or the unmatched `}`'s, when an opener is missing, and the
 disagreeing pair's `{` line when a closer is missing. A header is one whole
-line: `def` or `new` begins it, after an optional `private`, its last code byte
-is `{`, and the counted line before it, if any, ends in `;`, `{`, or `}`, so
-that it continues no other line. A header split over two lines is refused. The
-first counted line after the header that is no deeper than it ends the body,
-and it must be exactly as deep as the header.
+line. It begins, after an optional `private`, with `def` and a name followed by
+`(` or `<`, with `def` and `[`, or with `new` and `(`, so that a field or a
+value whose initializer's function ends the line in `{` is no header; its last
+code byte is `{`; and the counted line before it, if any, ends in `;`, `{`, or
+`}`, so that it continues no other line. A header split over two lines is
+refused. The first counted line after the header that is no deeper than it
+ends the body, and it must be exactly as deep as the header.
+
+**Statements.** A statement or a member can begin only at a head: the first
+code byte after a `;`, `{`, or `}` in ordinary code, on its line or a later
+one. In a `for` header's parentheses, the first two `;` end no statement. A
+head's level is the braces' balance before it, and a body's own level is that
+of its first head, right after its `{`. A head at the body's level that is the
+first code of its line starts a statement on that line; any other counted line
+whose first code is at that level continues one.
 
 **Rule 2: a lost `{`.** The line that ends the body must begin with the
 method's `}`, right after its indentation, with no code after the `}` on its
@@ -764,8 +774,17 @@ with `if`, `else`, `while`, `for`, or `match`, or with a `}` and then `else`,
 that doesn't end in a brace, and whose block, the next counted line no deeper
 than it, is a `}` exactly as deep that begins its line. With a `{` restored at
 the end of that header's line, every brace pair in the body must pair and
-agree. The body, from the header's `{` through the method's `}`, is blanked, so
-no offset moves.
+agree. The method could instead have ended at the first `}` in the body where
+the braces' balance falls below the body's level, with the lost `{` a later
+member's, as where that `}` is indented like a statement and the member after
+it, a method that lost its `{`, ends at the `}` as deep as the header. So after
+that `}`, the first head at the lower level that begins with a name and doesn't
+begin a field or a value (`var`, `def var`, or `def`, a name, and `=` or `:`,
+after an optional `private`) must begin with a name that can't begin a member,
+as listed for rule 3. A field or a value holds a `{` only in a function in its
+initializer, and code would follow that function's `}` on the method's `}`
+line, which this rule doesn't allow. The body, from the header's `{` through
+the method's `}`, is blanked, so no offset moves.
 
 **Rule 3: a lost `}`.** When the line that ends the body begins with a `}` as
 rule 2 requires, a block inside the method lost its `}`: exactly one `{` in the
@@ -773,21 +792,31 @@ body must end its line, belong to a construct that starts with a control
 statement's header, and have a block, by layout, that ends at a line that isn't
 a `}` exactly as deep as that construct's start. With a `}` restored before that
 line, ahead of every brace on it, the restored `}` must close that `{`, and
-every pair in the body must agree. The method's body is blanked, which would
-also blank the restored `}`, so nothing is inserted and no offset moves.
+every pair in the body must agree. The method could instead have ended before
+the member that holds that block, at an earlier statement's end, so at the
+body's level the last head, which starts the statement that holds the block,
+must be a block or begin with a name, and if it can begin a member, it must
+begin a field or a value, whose function's `}` would need code after it on the
+method's `}` line; and no counted line after it at that level may begin with a
+word that can begin a member. The method's body is blanked, which would also
+blank the restored `}`, so nothing is inserted and no offset moves.
 Otherwise the method lost its own `}`, and the damage's `{` must be the
 method's. The line that ends the body must begin the next method or
-constructor: `def` or `new` begins it, after an optional `private`, its last
-code byte is a brace, as no field's or local definition's is, and the counted
-line before it, inside the body, ends in `;`, `{`, or `}`. Every brace pair in
-the body must agree. Every counted line of the body must be at least as deep
-as its first, and the last statement that starts at that depth, after the
-header or a line ending in `;`, `{`, or `}`, must begin with a name that can't
-begin a member: not `var`, `def`, `new`, `private`, `case`, `class`,
-`component`, `type`, `enum`, `import`, `export`, `thread`, `packing`, or
-`layout`, so the method can't have ended before it. A `}` is inserted at the
-first byte of the line that ends the body, before its indentation, and the
-body, from the header's `{` through the inserted `}`, is blanked.
+constructor: its header begins on it, its last code byte is a brace, and the
+counted line before it, inside the body, ends in `;`, `{`, or `}`. Every brace
+pair in the body must agree. The method can't have ended at an earlier
+statement's end with members after it: at the body's level, the last head,
+including one later on a line than another statement, must be a block, which
+no member is, or begin with a name that can't begin a member: not `var`, `def`,
+`new`, `private`, `case`, `class`, `component`, `type`, `enum`, `import`,
+`export`, `thread`, `packing`, or `layout`. No counted line after it at that
+level may begin with one of those words, though it continues a line. Every
+counted line of the body must be at least as deep as its first, and each that
+starts a statement at the body's level exactly as deep, so that a member
+indented deeper after the method's end can't read as one of its statements or
+their continuation. A `}` is inserted at the first byte of the line that ends
+the body, before its indentation, and the body, from the header's `{` through
+the inserted `}`, is blanked.
 
 **Outside the body.** For either rule, every brace outside the body must pair,
 with the body's `{` closed by its `}` or by the inserted one, and every pair
@@ -823,19 +852,29 @@ the stricter reading:
 - A file with an irregular line anywhere is refused.
 - Exactly one line in the body may have lost the brace, by layout, and with it
   restored, every pair in the body must agree; two candidates are refused.
-- A header is one line that `def` or `new` begins, after an optional
-  `private`, and that ends in `{`; a lost brace of the header itself is
-  refused, as is one in a match case's block or any other block whose
-  construct doesn't start with a control statement's header.
+- A header is one line that begins a method's or constructor's header and
+  ends in `{`; a lost brace of the header itself is refused, as is one in a
+  match case's block or any other block whose construct doesn't start with a
+  control statement's header.
 - The method's `}` must begin its line; a comment may follow it on the line,
   but no code, and no comment may precede it.
 - A block inside the method that lost its `}` empties the whole method body
   rather than inserting a brace inside it, so no offset moves.
 - A method that lost its own `}` must be followed by a method or constructor,
-  and its last statement must begin with a name that can't begin a member, so
-  a method whose last statement is a local `var`, the last method of a
-  compound, and a method followed by a field are refused.
- each broken file at most three times
+  and its last statement must be a block or begin with a name that can't begin
+  a member, so a method whose last statement is a local `var` or a local
+  function, the last method of a compound, and a method followed by a field
+  are refused. So are a method with a statement at its body's level indented
+  deeper than its first, even one that is only misindented, a member after
+  the last statement on its line, such as `g(); var count = 7;`, and a line
+  that continues the last statement with a member's word.
+- Where a block lost its `}`, the statement that holds it must not begin a
+  method, a constructor, or a type, as a local function's `def` could; where
+  an `if`, a loop, or a `match` lost its `{`, neither may the first statement
+  after the `}` that ends the statement holding it, other than a field or a
+  value.
+
+The capture parses each broken file at most three times
 (`LspAnalysisInputs.PARSES_PER_FILE`). The current text's parse outcome is
 normally the one its syntax diagnostics already made; if that parse used other
 language options or another version, the capture parses the current text again,

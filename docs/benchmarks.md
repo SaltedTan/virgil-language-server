@@ -1007,14 +1007,21 @@ leaves an extra `}`, and a body that, once emptied, has a missing return that is
 the fifteenth error, after the observer's and 13 others, so verification never
 reaches the intact caller, whose answers are missing, and the excluded error
 suppresses the limit notice. Their oracles change the called method's signature
-too. Fifteen more cover the [brace rules](architecture.md#current-text-repair)
+too. Twenty-three more cover the [brace rules](architecture.md#current-text-repair)
 ([#317](https://github.com/SaltedTan/virgil-language-server/issues/317)), each a
 small tab-indented program whose oracle changes the called method's signature.
-The rules must refuse seven: ADR-0010's `swallow-field`, two closers at one
+The rules must refuse fifteen: ADR-0010's `swallow-field`, two closers at one
 indentation, a method header split over two lines, a body line no deeper than
 its header, a method header that lost its `{` below a method indented with four
 spaces and closed with a tab, an unterminated string, and a method that lost
-its `}` before a field indented like one of its statements. They must accept
+its `}` before a field indented like one of its statements; then eight where a
+member could follow the method's end, which the caller uses: a method that
+lost its `}` before a field whose first line is deeper than its statements and
+whose continuation is as deep as them, beside a file-level field of the same
+name, before a deeper value, method, constructor, or variant case, before a
+field on its last statement's line, and before a field whose `def` is alone on
+a deeper line, and a method whose `}` is deeper than its header followed by a
+method that lost its `{`. They must accept
 eight: a legal `if` without braces followed by a `while` that lost its `{`, an
 inner block and a method that lost their `}`, tabs and spaces of equal width, a
 brace rule's body beside an error in another body before it and after it, and,
@@ -1079,11 +1086,11 @@ These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
 `make test` runs scoring, cleanup, and session sequencing regression checks, a
-thirty-state smoke replay (two small repair states and all 28 negative
+thirty-eight-state smoke replay (two small repair states and all 36 negative
 controls, in both modes), and the four-step `in-turn` editing session in both modes. The
 short session adds overlapping broken files and recovery in one server process.
 A separate before/after run took 0.39 → 0.59 seconds on the reference host, and
-about 0.88 seconds with the brace controls; the full suite remains opt-in. Run these checks separately with:
+about 0.88 seconds with the first 15 brace controls and 1.08 seconds with all 23; the full suite remains opt-in. Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
@@ -1807,6 +1814,36 @@ An earlier version, which read only the excluded body's layout, as ADR-0010
 suggests, accepted one wrong reading among them, a constructor's loop in a
 mixed-width `TypeEnv.v3`, so the rules read the whole file.
 
+A review then found a wrong reading that those states don't contain. Where a
+method lost its `}` and the next member's first line was indented deeper than
+the method's statements, with a continuation line as deep as them, rule 3 at
+`a514662` read the member as a statement, blanked it with the body, and
+inserted the `}` before the next method, so a use of the member's name bound
+elsewhere; a member after the last statement on its line read the same way.
+The rules now judge statements by where they can begin, after a `;`, `{`, or
+`}`, rather than by line, and check rule 2 and a block's lost `}` the same
+way ([Current-text repair](architecture.md#current-text-repair)). A second
+generator, independent of the rules and of this corpus, took a method followed
+by a member in the same 199 files and six styles and, with a fixed seed
+(31701), indented the member one or two tabs deeper than its siblings, split a
+one-line member after its `=` with its first line two tabs deeper and the rest
+one, moved a one-line member onto the method's last statement line after its
+`}`, put a lone `private`, or `def` before a `var`, on a deeper line before the
+member, or indented the method's `}` and the member's header one tab deeper
+than the member's own `}`. Removing up to six braces each, always the method's
+own `}` and the member's first brace, from the 4,522 such programs that parse
+gave 22,740 states. The rules accept 2,391 and refuse 20,349, with no wrong
+reading by the checks above. At `a514662` they accepted 3,558, and 1,167 of
+those were wrong: 1,127 with code between the removed `}` and the inserted
+one, and 40 where rule 2's blanked body was no method body in the intended
+program, holding a method after a `}` indented like a statement. On the 4,428
+states above, the rules now accept 1,722 and refuse 2,703, with no wrong
+reading; the four they no longer accept have a misindented statement in the
+method, which could equally be a deeper member. The review's own 1,000
+single-brace removals from 100 hand-built programs in five styles get 180
+accepted and 820 refused, none wrong, where `a514662` accepted 195, 15 of
+them wrong.
+
 As in the body blanking comparison, whether a state's file was repaired
 cold is read from the cold record's snapshot, and the table counts states
 retaining **all four features**, allowing correct plus partial reference and
@@ -1864,6 +1901,19 @@ oracle exactly. In each missing-return control, the emptied body's
 hover, and references are absent and the diagnostics are a partial set without
 the limit notice, permitted and never wrong. The other 13 controls' answers and
 substitutions are unchanged, and so are all 30 extra-state records.
+
+The eight deeper-member controls joined the corpus after the review. Main and
+the fixed rules refuse all eight in both modes, with no wrong answer;
+`a514662` excluded a body in each, in both modes, and every one of its eight
+diagnostic sets was wrong in each mode, as the controls require. A full run of
+the fixed rules at `7c8907c`, built with probes and pinned to CPU 12 under the
+shared lock, completed 604 state/mode records, 72 of them negative, and 72
+session steps in 476.77 seconds, with zero wrong answers, zero unmet control
+expectations, and zero worker replacements. Each of the 588 records that it
+shares with the `a514662` run has the same scores and excluded bodies, so the
+counts above stand: 180 of the 185 primary states and 49 of the 66 held-out
+states keep all four features, warm and cold, with the same 74 partial answers
+in the states and one in the sessions.
 
 The [held-out states](#semantics-during-syntax-errors) for the brace rules
 (seed 317) gain all four features in 25 of 42 states, in each mode; the 24
