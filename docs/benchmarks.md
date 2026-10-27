@@ -1086,11 +1086,12 @@ These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
 `make test` runs scoring, cleanup, and session sequencing regression checks, a
-thirty-eight-state smoke replay (two small repair states and all 36 negative
+forty-eight-state smoke replay (two small repair states and all 46 negative
 controls, in both modes), and the four-step `in-turn` editing session in both modes. The
 short session adds overlapping broken files and recovery in one server process.
 A separate before/after run took 0.39 → 0.59 seconds on the reference host, and
-about 0.88 seconds with the first 15 brace controls and 1.08 seconds with all 23; the full suite remains opt-in. Run these checks separately with:
+about 0.88 seconds with the first 15 brace controls, 1.08 seconds with 23, and
+1.34 seconds with all 33; the full suite remains opt-in. Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
@@ -1844,6 +1845,45 @@ single-brace removals from 100 hand-built programs in five styles get 180
 accepted and 820 refused, none wrong, where `a514662` accepted 195, 15 of
 them wrong.
 
+A second review found a wrong reading in a shape that none of those
+generators wrote: a method that lost its `}` after a local function and a
+local, both written as deep as the method's header. Rule 3 at `de9803e` put
+the `}` back before the local function, as if its header began the next
+method, so the local became a field, and a later use of its name bound to it
+instead of the file's own, cold and warm; the only brace pair that disagreed
+with the layout was the one that lost its closer. The rules now end a method
+only where the grammar forces it
+([Current-text repair](architecture.md#current-text-repair)): a method's own
+`}` goes back only before a header that no statement can begin, a block's lost
+`}` is read only where the end of the text or such a header follows the
+method's `}`, and rule 2 refuses a method with a plain header after a method
+header without a body. A second pass of the member generator, with its own
+seed (31702), added before a method's `}` in the same files and styles a local
+function, or a local value whose initializer is a function, as deep as the
+method's header, with a local after it or as the last statement; an `if` whose
+`}` is as deep as the header, then such a local function; or a local function
+spanning lines at the statements' depth; and, before the method, a method whose
+`{` is followed by `;` and whose local function, as deep as its header, holds a
+deeper `}`. Removing every brace from the inserted code through the next
+member, at most 12, from the 5,310 such programs that parse gave 42,060
+states. The rules accept 559 and refuse 41,501, with no wrong reading; at
+`de9803e` they accepted 4,780, and 3,425 of those were wrong, in every shape
+but the local function at the statements' depth. A copy of the second
+review's generator with 20 more programs, the review's case and its variants,
+a block's `}` before a shallow local function, and bodiless methods with other
+members between, gave 7,360 states: 300 accepted and 7,060 refused, none
+wrong. In five of the accepted states, a block's `}` written as deep as its
+method's header and then the method's own `}` removed with only whitespace
+after the first, the excluded body ends at the block's `}` and the intended
+body a few spaces later, an equivalent place: a cold open of each gives the
+same definition, hover, references, and diagnostics as the intended program,
+and `de9803e` read them the same way. The rules now accept 1,334 of the
+22,740 member states above and refuse 21,406, accept 704 of the 4,428 states
+and refuse 3,721, accept 65 of the first review's 1,000 and refuse 935, and
+accept 270 of the second review's 6,270 and refuse 6,000, with no wrong
+reading in any; at `de9803e`, ten of those 6,270 were wrong, each the review's
+case.
+
 As in the body blanking comparison, whether a state's file was repaired
 cold is read from the cold record's snapshot, and the table counts states
 retaining **all four features**, allowing correct plus partial reference and
@@ -1867,9 +1907,11 @@ moves. No state loses a feature, and no other primary record's answers changed.
 Five remain refused: the two truncated files and the two field initializers,
 which phase 3b addresses, and `missing-brace-end-of-method`, whose method lost
 its `}` after `var n = 1;`, a statement that could equally begin a field after
-the method. Rule 3 refuses a method whose last statement could begin a member,
-so the count is 180, not the 181 that ADR-0010 estimated. No primary state
-exercises rule 3; its controls and held-out states below do.
+the method, and before `def other()`, whose header a local function's could
+equally be. Rule 3 refuses a method whose last statement could begin a member,
+or that such a header follows, so the count is 180, not the 181 that ADR-0010
+estimated. No primary state exercises rule 3; its controls below do, and ten
+held-out states did until the second review.
 
 Per-feature primary counts after the brace rules follow; main's rows are the
 [body blanking comparison](#body-blanking-comparison)'s.
@@ -1915,9 +1957,36 @@ counts above stand: 180 of the 185 primary states and 49 of the 66 held-out
 states keep all four features, warm and cold, with the same 74 partial answers
 in the states and one in the sessions.
 
+The ten local-function controls joined the corpus after the second review. Six
+are refused, each with a second query on the count that target returns: the
+review's program, the same with a local function that returns a value, one
+that spans lines, and a local value whose initializer is a function; a block's
+`}` as deep as its method's header before such a local function; and rule 2
+after a method that lost its `{` right before a `;`. The pinned grammar has no
+generic local function, so there is no generic variant. Four are repaired, as
+the earlier controls for a method's own `}`, an inner block's, two bodies, and
+the error limit were, but before a private method; those four earlier
+controls, whose method a plain method follows, are now refused, with their
+texts unchanged. Main refuses all six; `de9803e` excluded a body in five of
+them, the local value's aside, and gave wrong answers in both modes in each, 32
+in all, on the second query and, after the bodiless method, the diagnostics. A
+full run of the rules at `13a5309`, built with probes and pinned to CPU 12
+under the shared lock, completed 624 state/mode records, 92 of them negative,
+and 72 session steps in 466.67 seconds, with zero wrong answers, zero unmet
+control expectations, and zero worker replacements. All 46 negative controls
+pass in both modes; the eight repaired brace controls exclude the bodies that
+they expect, and the 25 others are refused. Of the 604 records that it shares
+with the earlier run, only the four earlier controls and the ten held-out
+states below changed, each now refused. So 180 of the 185 primary states keep
+all four features, warm and cold, as before, and 39 of the 66 held-out states,
+with 72 partial answers in the states and one in the sessions: the refused
+error-limit control's partial diagnostics now come from its private variant,
+and a refused held-out state's partial reference list is gone.
+
 The [held-out states](#semantics-during-syntax-errors) for the brace rules
-(seed 317) gain all four features in 25 of 42 states, in each mode; the 24
-held-out states of #312 are unchanged:
+(seed 317) gain all four features in 15 of 42 states, in each mode, down from
+25 at `a514662` since the second review; the 24 held-out states of #312 are
+unchanged:
 
 | Held-out kind | Warm before → after | Cold before → after |
 | --- | ---: | ---: |
@@ -1926,15 +1995,15 @@ held-out states of #312 are unchanged:
 | `loop-opener` | 0 → 5 / 7 | 0 → 5 / 7 |
 | `match-opener` | 0 → 4 / 7 | 0 → 4 / 7 |
 | `method-opener` | 0 → 0 / 7 | 0 → 0 / 7 |
-| `block-closer` | 0 → 5 / 7 | 0 → 5 / 7 |
-| `method-closer` | 0 → 5 / 7 | 0 → 5 / 7 |
-| All | 24 → 49 / 66 | 24 → 49 / 66 |
+| `block-closer` | 0 → 0 / 7 | 0 → 0 / 7 |
+| `method-closer` | 0 → 0 / 7 | 0 → 0 / 7 |
+| All | 24 → 39 / 66 | 24 → 39 / 66 |
 
-By indentation, the rules keep 7 of the 12 `tabs` states, 9 of the 12
-`spaces` states, 9 of the 12 `mixed` states, and none of the 6 `mixed-width`
+By indentation, the rules keep 4 of the 12 `tabs` states, 6 of the 12
+`spaces` states, 5 of the 12 `mixed` states, and none of the 6 `mixed-width`
 states. In both modes, each accepted state excludes one body, definition and
-hover match the oracle at all 100 queries, references exactly at 98 and
-partially at 2, and diagnostic sets exactly in all 25 states, with no wrong
+hover match the oracle at all 60 queries, references exactly at 59 and
+partially at 1, and diagnostic sets exactly in all 15 states, with no wrong
 answer. Every refused state gets no semantic answer, as on main. The refusals
 are the conservative readings at work: the seven `method-opener` states, whose
 header line no longer ends in `{` and so is no header; the five other
@@ -1942,8 +2011,12 @@ header line no longer ends in `{` and so is no header; the five other
 two `tabs` states in `X86MacroAssembler.v3` and `Vst.v3` and a `mixed` one in
 `Dwarf.v3`, three of the four pinned files whose layout already disagrees with
 one brace pair elsewhere; a `spaces` block closer of a `match` case's block,
-which is no control statement's; and a `tabs` method closer of the last method
-of its component, whose `}` would go on a shallower line.
+which is no control statement's; a `tabs` method closer of the last method
+of its component, whose `}` would go on a shallower line; and, since the second
+review, the five block closers and five method closers that rule 3 repaired at
+`a514662`: nine whose method a plain method follows, whose header a local
+function's could be, and a `tabs` block closer in `X86_64Darwin.v3` whose
+method is the last of its component, so a `}` follows it.
 
 A cold open that a brace rule repairs costs as many parses as body blanking:
 the current text's own parse, then one parse of the repaired text, or two when
@@ -1963,8 +2036,8 @@ milliseconds for its analysis, so a brace rule's repair is about 1% of it.
 Latencies are unchanged within noise where the outcome is unchanged: cold
 definition's p95 is 715.2 → 717.3 ms on replays and 702.8 → 706.2 ms on repair
 states. Cold held-out diagnostics' median rose from 201.3 to 750.5 ms, and warm
-from 83.2 to 354.1 ms, because 25 more held-out states now verify and collect
-semantics. The editing sessions' answer counts are identical to main's: no
+from 83.2 to 354.1 ms, because 25 more held-out states verified and collected
+semantics at `a514662`. The editing sessions' answer counts are identical to main's: no
 history leaves its braces unbalanced. The branch's unfiltered run took 477.75
 seconds, against 404.59 for main's.
 

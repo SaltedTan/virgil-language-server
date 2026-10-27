@@ -766,6 +766,29 @@ of its first head, right after its `{`. A head at the body's level that is the
 first code of its line starts a statement on that line; any other counted line
 whose first code is at that level continues one.
 
+**Where a method ends.** The rules put a method's end only where the grammar
+forces it. Indentation may choose among places that are equivalent, with only
+whitespace and comments between them, and must agree with the braces, but it
+never decides alone whether a declaration is a member or a local. A local
+function begins as a method does: `Parser.parseDefStmt`
+(`vendor/virgil/aeneas/src/vst/Parser.v3:899`) reads `def`, a name, and `(` in
+a statement as one, so a line that looks like a method's header is no evidence
+that a method ended. A method's or constructor's header that no statement can
+begin, so that no method body can hold it, begins, as a header is read above,
+with:
+
+- `private`, or `new` and `(`: both are keywords (`Parser.v3:40` and `:43`),
+  which `parseStmt` (`:667`) passes to an expression statement, where
+  `parseVarExpr` (`:1119`) rejects them;
+- `def` and `[`, an indexing method, since `parseDefStmt` reads a name with
+  `parseIdentVoid` (`:1306`); or
+- `def`, a name, and `<` right after it, a generic method, since
+  `parseIdentCommon` (`:1320`) rejects type parameters where it has no parser
+  for them, as for a local function's name. With a space before the `<`,
+  neither a method nor a local function parses.
+
+A plain `def`, a name, and `(` can begin a statement.
+
 **Rule 2: a lost `{`.** The line that ends the body must begin with the
 method's `}`, right after its indentation, with no code after the `}` on its
 line, though a comment may follow it. Inside the body, exactly one line must be
@@ -783,8 +806,15 @@ begin a field or a value (`var`, `def var`, or `def`, a name, and `=` or `:`,
 after an optional `private`) must begin with a name that can't begin a member,
 as listed for rule 3. A field or a value holds a `{` only in a function in its
 initializer, and code would follow that function's `}` on the method's `}`
-line, which this rule doesn't allow. The body, from the header's `{` through
-the method's `}`, is blanked, so no offset moves.
+line, which this rule doesn't allow. A header that a statement can begin
+reads as a member's only because of the text before it, and a method whose `{`
+was lost right before a `;` still parses, without a body; the method that
+layout reads as damaged could then be its local function, written as deep as
+its header. So unless no statement can begin the method's header, no method or
+constructor header before it in its class, component, or variant, back to the
+last header that no statement can begin, may be followed by a `;` with no body.
+The body, from the header's `{` through the method's `}`, is blanked, so no
+offset moves.
 
 **Rule 3: a lost `}`.** When the line that ends the body begins with a `}` as
 rule 2 requires, a block inside the method lost its `}`: exactly one `{` in the
@@ -798,12 +828,22 @@ body's level the last head, which starts the statement that holds the block,
 must be a block or begin with a name, and if it can begin a member, it must
 begin a field or a value, whose function's `}` would need code after it on the
 method's `}` line; and no counted line after it at that level may begin with a
-word that can begin a member. The method's body is blanked, which would also
-blank the restored `}`, so nothing is inserted and no offset moves.
+word that can begin a member. Had the method's `}` closed the block instead,
+the method would go on after it, with its own `}` lost later, and what follows
+could be its statements, such as a local function and a local written as deep
+as its header. So the text must end after the method's `}` line, or the next
+counted line must begin a header that no statement can begin. A `}` there is
+not enough: had it closed the method, the lost `}` could be its compound's,
+and what follows would move into the compound. The method's body is blanked,
+which would also blank the restored `}`, so nothing is inserted and no offset
+moves.
 Otherwise the method lost its own `}`, and the damage's `{` must be the
 method's. The line that ends the body must begin the next method or
 constructor: its header begins on it, its last code byte is a brace, and the
-counted line before it, inside the body, ends in `;`, `{`, or `}`. Every brace
+counted line before it, inside the body, ends in `;`, `{`, or `}`; and no
+statement may be able to begin that header, so that the grammar ends the method
+there. Before a plain `def`, a name, and `(`, the method could go on, with the
+next method its local function, so its `}` isn't put back. Every brace
 pair in the body must agree. The method can't have ended at an earlier
 statement's end with members after it: at the body's level, the last head,
 including one later on a line than another statement, must be a block, which
@@ -860,14 +900,22 @@ the stricter reading:
   but no code, and no comment may precede it.
 - A block inside the method that lost its `}` empties the whole method body
   rather than inserting a brace inside it, so no offset moves.
-- A method that lost its own `}` must be followed by a method or constructor,
-  and its last statement must be a block or begin with a name that can't begin
-  a member, so a method whose last statement is a local `var` or a local
-  function, the last method of a compound, and a method followed by a field
-  are refused. So are a method with a statement at its body's level indented
-  deeper than its first, even one that is only misindented, a member after
-  the last statement on its line, such as `g(); var count = 7;`, and a line
-  that continues the last statement with a member's word.
+- A method that lost its own `}` must be followed by a method or constructor
+  whose header no statement can begin, and its last statement must be a block
+  or begin with a name that can't begin a member, so a method followed by a
+  plain method, whose header a local function's could be, a method whose last
+  statement is a local `var` or a local function, the last method of a
+  compound, and a method followed by a field are refused. So are a method
+  with a statement at its body's level indented deeper than its first, even
+  one that is only misindented, a member after the last statement on its
+  line, such as `g(); var count = 7;`, and a line that continues the last
+  statement with a member's word.
+- Where a block lost its `}`, the method's `}` must end the text or be followed
+  by a header that no statement can begin, so a block's lost `}` in a method
+  followed by a plain method, or in the last method of a compound, is refused.
+  A method with a plain header that rule 2 reads as damaged is refused after a
+  method header without a body in its compound, unless a header that no
+  statement can begin lies between them.
 - Where a block lost its `}`, the statement that holds it must not begin a
   method, a constructor, or a type, as a local function's `def` could; where
   an `if`, a loop, or a `match` lost its `{`, neither may the first statement
