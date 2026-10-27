@@ -642,6 +642,70 @@ class Corpus:
                   "\t\treturn 1;", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
                   "\t\treturn 1;", "\t", new, *helpers, "}"), None),
+            # A method loses its "}" before a member that is indented deeper
+            # than its statements, or that follows its last statement on one
+            # line, in a program whose brace pairs all agree with the layout or
+            # whose method ends on a statement's line. Each member is in the
+            # method by layout, so these must be refused. First the review's
+            # case: a field whose first line is deeper and whose continuation
+            # is as deep as the statements, beside a file-level count that
+            # target's count would otherwise bind to.
+            ("brace-closer-deeper-continuation", "body",
+             text("def count = 11;", "component A {", "\tdef f() {", "\t\tg();", "\t}", "\t\t\tvar count =", "\t\t1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             text("def count = 11;", "component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tvar count =", "\t\t1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             "component B { def use() -> int { if (A.count > 0) return A.target(); return 0; } }\n"),
+            # A deeper value, method, constructor, and variant case.
+            ("brace-closer-deeper-def", "body",
+             text("component A {", "\tdef f() {", "\t\tg();", "\t}", "\t\t\tdef count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             "component B { def use() -> int { if (A.count > 0) return A.target(); return 0; } }\n"),
+            ("brace-closer-deeper-method", "body",
+             text("component A {", "\tdef f() {", "\t\tg();", "\t}", "\t\t\tdef inner() -> int { return 1; }", new,
+                  *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef inner() -> int { return 1; }", new,
+                  *helpers, "}"),
+             "component B { def use() -> int { if (A.inner() > 0) return A.target(); return 0; } }\n"),
+            ("brace-closer-deeper-constructor", "body",
+             text("class Box {", "\tdef f() {", "\t\tg();", "\t}", "\t\t\tnew(x: int) { }", "\tdef g() { }", "}",
+                  "component A {", new, helpers[0], "}"),
+             text("class Box {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tnew(x: int) { }", "\tdef g() { }", "}",
+                  "component A {", new, helpers[0], "}"),
+             "component B { def use() -> int { var box = Box.new(1); return A.target(); } }\n"),
+            ("brace-closer-deeper-case", "body",
+             text("type V {", "\tcase X;", "\tdef f() {", "\t\tg();", "\t}", "\t\t\tcase Y;", "\tdef g() { }", "}",
+                  "component A {", new, helpers[0], "}"),
+             text("type V {", "\tcase X;", "\tdef f() {", "\t\tg();", "\t", "\t\t\tcase Y;", "\tdef g() { }", "}",
+                  "component A {", new, helpers[0], "}"),
+             "component B { def use() -> int { var v = V.Y; return A.target(); } }\n"),
+            # A field after the method's "}" on its last statement's line.
+            ("brace-closer-same-line-field", "body",
+             text("component A {", "\tdef f() {", "\t\tg(); } var count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tg(); var count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             "component B { def use() -> int { if (A.count > 0) return A.target(); return 0; } }\n"),
+            # A field whose "def" is alone on a deeper line, so that its "var"
+            # line, as deep as the statements, continues it.
+            ("brace-closer-continued-member", "body",
+             text("component A {", "\tdef f() {", "\t\tg();", "\t}", "\t\t\tdef", "\t\tvar count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef", "\t\tvar count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             "component B { def use() -> int { if (A.count > 0) return A.target(); return 0; } }\n"),
+            # Rule 2: the method's "}" is deeper than its header, after a legal
+            # if without braces, and the method after it, as deep as that "}",
+            # lost its "{". Blanking from f's header to inner's "}" would parse
+            # and drop inner, so this must be refused.
+            ("brace-opener-deeper-method", "header",
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\t}", "\t\tdef inner() -> int {",
+                  "\t\t\treturn 1;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\t}", "\t\tdef inner() -> int",
+                  "\t\t\treturn 1;", "\t}", new, *helpers, "}"),
+             "component B { def use() -> int { if (A.inner() > 0) return A.target(); return 0; } }\n"),
         )
         # Every other control is refused: no body, and so no fifteenth error.
         expected = {
