@@ -1,0 +1,339 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The legend of semantic tokens and how declarations map to it. Types and
+// modifiers are the protocol's standard ones; their order is the wire's and
+// stays stable. See docs/architecture.md#semantic-tokens for the table.
+component LspSemanticLegend {
+	def TYPES = ["namespace", "class", "enum", "enumMember", "struct", "type",
+		"typeParameter", "parameter", "variable", "property", "function", "method"];
+	def NAMESPACE = 0;
+	def CLASS = 1;
+	def ENUM = 2;
+	def ENUM_MEMBER = 3;
+	def STRUCT = 4;
+	def TYPE = 5;
+	def TYPE_PARAMETER = 6;
+	def PARAMETER = 7;
+	def VARIABLE = 8;
+	def PROPERTY = 9;
+	def FUNCTION = 10;
+	def METHOD = 11;
+	def MODIFIERS = ["declaration", "readonly"];
+	def DECLARATION = 1;
+	def READONLY = 2;
+	// Most of a reply's integers are small, so their values are shared.
+	def SMALL = smallInts(1024);
+
+	// The token type of {d}'s name, or -1 for a declaration that gets no
+	// token: a constructor, which the keyword "new" spells, and an index
+	// method, which its brackets spell.
+	def classify(d: AnalysisDeclaration) -> int {
+		if (d.name.length == 0 || d.name[0] == '[') return -1;
+		match (d.kind) {
+			COMPONENT => return NAMESPACE;
+			CLASS => return if(d.flagged(), ENUM, CLASS);
+			ENUM => return ENUM;
+			ENUM_CASE, VARIANT_CASE => return ENUM_MEMBER;
+			LAYOUT => return STRUCT;
+			PACKING => return TYPE;
+			TYPE_PARAM => return TYPE_PARAMETER;
+			PARAMETER => return PARAMETER;
+			LOCAL => return VARIABLE;
+			FIELD, LAYOUT_FIELD => return PROPERTY;
+			METHOD => return if(d.flagged(), FUNCTION, METHOD);
+			CONSTRUCTOR => return -1;
+		}
+	}
+	// The modifiers of every token of {d}: READONLY for a local, parameter,
+	// or field that nothing may assign. A declaration's name adds DECLARATION.
+	def modifiers(d: AnalysisDeclaration) -> int {
+		match (d.kind) {
+			LOCAL, PARAMETER, FIELD => return if(d.flagged(), READONLY);
+			_ => return 0;
+		}
+	}
+	def integer(v: int) -> JsonValue {
+		return if(u32.view(v) < u32.view(SMALL.length), SMALL[v], JsonValue.Int(v));
+	}
+	def provider() -> JsonValue {
+		var legend = Strings.newMap<JsonValue>();
+		legend["tokenTypes"] = strings(TYPES);
+		legend["tokenModifiers"] = strings(MODIFIERS);
+		var options = Strings.newMap<JsonValue>();
+		options["legend"] = JsonValue.JObject(legend);
+		options["full"] = JsonValue.Bool(true);
+		return JsonValue.JObject(options);
+	}
+	private def strings(list: Array<string>) -> JsonValue {
+		var values = Array<JsonValue>.new(list.length);
+		for (i < list.length) values[i] = JsonValue.String(list[i]);
+		return JsonValue.JArray(values);
+	}
+	private def smallInts(n: int) -> Array<JsonValue> {
+		var values = Array<JsonValue>.new(n);
+		for (i < n) values[i] = JsonValue.Int(i);
+		return values;
+	}
+}
+
+// textDocument/semanticTokens/full from the active project's current
+// snapshot, sharing definition's freshness, waiting, and cancellation. The
+// option is fixed at initialization, like the inlay hints'.
+class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingRequests, store: DocumentStore, projects: WorkspaceProjects) {
+	// A reply has at most this many tokens, the first in source order; later
+	// names keep the grammar's colors. Each takes five slots of 8 bytes in
+	// the reply's array and at most about 60 bytes encoded.
+	var maxTokens = MAX_TOKENS;
+	var enabled = true;
+	var refreshSupport: bool;
+	private var refreshing: bool;
+	private var dirty: bool;
+	private var baselines = OrderedStringMap<LspTokenFingerprint>.new();
+
+	def configure(options: HashMap<string, JsonValue>, capability: HashMap<string, JsonValue>) {
+		enabled = options == null || !options.has("semanticTokens") || options["semanticTokens"] != JsonValue.Bool(false);
+		refreshSupport = enabled && capability != null && capability["refreshSupport"] == JsonValue.Bool(true);
+	}
+	// Only an enabled server handles requests; otherwise the dispatcher
+	// refuses them as an unknown method.
+	def register(dispatcher: JsonRpcDispatcher, requests: LspSnapshotRequests) {
+		if (enabled) requests.registerDocument(dispatcher, "textDocument/semanticTokens/full", "semantic tokens", prepare, failure);
+	}
+	private def prepare(params: HashMap<string, JsonValue>) -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply) {
+		return answer;
+	}
+	// A document in no project has no tokens. Every other failure, such as a
+	// project that doesn't parse, is temporary, and ContentModified makes
+	// VS Code and Neovim keep the tokens they have, which they move with
+	// edits, rather than clear them until the next analysis.
+	private def failure(uri: string, identity: DocumentVersionIdentity, reason: string) -> JsonRpcReply {
+		record(uri, identity, if(reason == LspSnapshotReasons.UNOWNED, EMPTY, UNAVAILABLE));
+		if (reason == LspSnapshotReasons.UNOWNED) return reply(Vector<JsonValue>.new());
+		return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.CONTENT_MODIFIED, reason));
+	}
+	private def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
+		var data = Vector<JsonValue>.new(), file = at.snapshot.fileIndex(at.path()), hash = SEED;
+		if (file != null) {
+			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens), line = 0, character = 0;
+			while (c.next()) {
+				data.put(LspSemanticLegend.integer(c.line - line));
+				data.put(LspSemanticLegend.integer(if(c.line == line, c.character - character, c.character)));
+				data.put(LspSemanticLegend.integer(c.length));
+				data.put(LspSemanticLegend.integer(c.tokenType));
+				data.put(LspSemanticLegend.integer(c.modifiers));
+				if (refreshSupport) {
+					hash = hashInt(hashInt(hashInt(hash, c.line), c.character), c.length);
+					hash = hashInt(hashInt(hash, c.tokenType), c.modifiers);
+				}
+				line = c.line;
+				character = c.character;
+			}
+		}
+		var version = at.snapshot.documentVersions[at.index];
+		record(version.uri, version.identity, hash);
+		return (true, reply(data));
+	}
+	private def record(uri: string, identity: DocumentVersionIdentity, hash: u64) {
+		if (!refreshSupport) return;
+		var doc = store.overlay(uri), previous = baselines[uri];
+		if (doc == null || doc.identity != identity) return;
+		if (hash == UNAVAILABLE && previous != null && previous.identity == identity && previous.served) return;
+		baselines[uri] = LspTokenFingerprint.new(identity, hash, hash != UNAVAILABLE);
+	}
+	private def reply(data: Vector<JsonValue>) -> JsonRpcReply {
+		var result = Strings.newMap<JsonValue>();
+		result["data"] = JsonValue.JArray(data.extract());
+		return JsonRpcReply.Result(JsonValue.JObject(result));
+	}
+
+	// Refresh. Each open document keeps a fingerprint for its text from a
+	// request's reply or the last analysis comparison. An unowned reply
+	// records EMPTY; ContentModified preserves the same text's fingerprint
+	// only if the client was given it, or records UNAVAILABLE. A new analysis
+	// whose tokens differ for the same text sends workspace/semanticTokens/refresh,
+	// including when an unowned document joins a project or analysis recovers
+	// after ContentModified for edited text. A successful request records its
+	// tokens, so comparing them again needs no refresh.
+	def documentClosed(uri: string) { baselines.remove(uri); }
+	// Membership can change without any analysis completing. A document that
+	// left every project has no tokens; one whose active context already has a
+	// current snapshot is compared with it.
+	def scopesChanged() {
+		if (!refreshSupport) return;
+		var docs = Vector<DocumentOverlay>.new(), paths = Vector<string>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var path = DocumentUri.filePath(uri);
+			if (path != null && !Strings.endsWith(path, "/.virgil-lsp.json")) { docs.put(doc); paths.put(path); }
+		});
+		var open = docs.extract(), owners = projects.owners(paths.extract()), seen = Vector<ProjectContext>.new();
+		for (i < open.length) {
+			var ctx = owners[i];
+			if (ctx == null) {
+				remember(open[i].uri, open[i].identity, EMPTY);
+				continue;
+			}
+			var visited = false;
+			for (j < seen.length) if (seen[j] == ctx) visited = true;
+			if (visited) continue;
+			seen.put(ctx);
+			var snapshot = ctx.snapshot;
+			if (snapshot == null || !snapshot.matchesProject() || !LspAnalysisCapture.matchesSources(snapshot.documentVersions, ctx.sources)) continue;
+			var current = true;
+			for (v in snapshot.documentVersions) current = current && v.matchesDocument(store);
+			if (current) compare(ctx, snapshot, open, owners);
+		}
+		refresh();
+	}
+	// Automatic diagnostics already resolved every snapshot file's owner.
+	def analyzedOwners(ctx: ProjectContext, snapshot: AnalysisSnapshot, owners: Array<ProjectContext>) {
+		if (!refreshSupport) return;
+		var docs = Vector<DocumentOverlay>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var i = snapshot.documentIndex(uri);
+			if (i >= 0 && owners[i] == ctx) docs.put(doc);
+		});
+		compare(ctx, snapshot, docs.extract(), null);
+		refresh();
+	}
+	// A development analysis's snapshot, whose open documents' owners are
+	// resolved together.
+	def analyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
+		if (!refreshSupport) return;
+		var docs = Vector<DocumentOverlay>.new(), paths = Vector<string>.new();
+		store.eachOpen(fun (uri: string, doc: DocumentOverlay) {
+			var path = DocumentUri.filePath(uri);
+			if (path != null && snapshot.documentIndex(uri) >= 0) { docs.put(doc); paths.put(path); }
+		});
+		compare(ctx, snapshot, docs.extract(), projects.owners(paths.extract()));
+		refresh();
+	}
+	private def compare(ctx: ProjectContext, snapshot: AnalysisSnapshot, docs: Array<DocumentOverlay>, owners: Array<ProjectContext>) {
+		for (d < docs.length) {
+			if (owners != null && owners[d] != ctx) continue;
+			var doc = docs[d], i = snapshot.documentIndex(doc.uri);
+			if (i < 0 || !snapshot.documentVersions[i].matchesDocument(store)) continue;
+			var effective = LspAnalysisCapture.analyzedText(store, snapshot, i);
+			var file = snapshot.fileIndex(snapshot.paths[i]);
+			if (!snapshot.parsed || !snapshot.hasOccurrences || effective == null) {
+				remember(doc.uri, doc.identity, UNAVAILABLE);
+				continue;
+			}
+			var hash = SEED;
+			if (file != null) {
+				var c = LspTokenCursor.new(snapshot, i, file, effective, LspAnalysisCapture.currentText(store, snapshot, i, effective), maxTokens);
+				while (c.next()) {
+					hash = hashInt(hashInt(hashInt(hash, c.line), c.character), c.length);
+					hash = hashInt(hashInt(hash, c.tokenType), c.modifiers);
+				}
+			}
+			remember(doc.uri, doc.identity, hash);
+		}
+	}
+	private def remember(uri: string, identity: DocumentVersionIdentity, hash: u64) {
+		var previous = baselines[uri], same = previous != null && previous.identity == identity;
+		if (hash == UNAVAILABLE) {
+			if (same) return;
+		} else if (same) {
+			if (previous.hash == hash) return;
+			dirty = true;
+		}
+		baselines[uri] = LspTokenFingerprint.new(identity, hash, false);
+	}
+	private def hashInt(hash: u64, value: int) -> u64 {
+		for (i < 4) { hash = (hash ^ byte.view(value)) * 0x100000001b3ul; value = value >> 8; }
+		return hash;
+	}
+	private def refresh() {
+		if (!refreshSupport || refreshing || !dirty) return;
+		dirty = false;
+		refreshing = true;
+		send(pending.sendBy("workspace/semanticTokens/refresh", JsonRpcParams.Absent, System.ticksMs() + 10000, refreshed));
+	}
+	private def refreshed(reply: JsonRpcReply) { refreshing = false; refresh(); }
+	def close() { refreshSupport = false; dirty = false; baselines = OrderedStringMap<LspTokenFingerprint>.new(); }
+}
+
+def MAX_TOKENS = 100000;
+// FNV-1a's offset basis seeds a fingerprint; the tokens of a document in no
+// project hash to it. No token sequence's hash is the sentinel for a
+// document the server can't analyze, but for a collision with 2^-64 odds.
+def SEED = 0xcbf29ce484222325ul;
+def EMPTY = SEED;
+def UNAVAILABLE = 0ul;
+
+// The fingerprint from a request's reply or the last comparison for an open
+// document's text, which {identity} names, or UNAVAILABLE.
+class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: bool) { }
+
+// The tokens of file {index} of {snapshot}, in source order, at most {limit}:
+// its declaration sites and the occurrences that resolve to a source
+// declaration, merged by offset, each classified by its declaration (see
+// LspSemanticLegend.classify). A use with a site's range is the site's name.
+// {effective} is the file's analyzed text, which every token must spell its
+// declaration's name in, as references check names, so that "this" and a
+// default ".new", which resolve to their class, get none. A class, variant,
+// or component may itself be named "this", so a use spelled "this" of one
+// gets none either, since it can't be told from a receiver. Tokens in an
+// excluded body are dropped and the rest mapped to {current}, the current
+// text, as definition maps ranges; positions are its LSP lines and UTF-16
+// characters. Allocates nothing per token.
+class LspTokenCursor(snapshot: AnalysisSnapshot, index: int, file: AnalysisSnapshotFile,
+		effective: Array<byte>, current: Array<byte>, limit: int) {
+	private var site: int;
+	private var use: int;
+	private var last: int;
+	private var count: int;
+	private def positions = LspHintPositionCursor.new(current);
+	// The current token: its LSP line and character, its length in UTF-16
+	// code units, its type, and its modifiers.
+	def var line: int;
+	def var character: int;
+	def var length: int;
+	def var tokenType: int;
+	def var modifiers: int;
+
+	new() {
+		site = file.firstSite;
+	}
+	def next() -> bool {
+		var sites = file.firstSite + file.siteCount, uses = file.targets.length;
+		while (count < limit && (site < sites || use < uses)) {
+			var useBegin = if(use < uses, file.occurrenceBegin(use), int.max);
+			var d: AnalysisDeclaration, begin: int, end: int, declaration = false;
+			if (site < sites && snapshot.declarations[site].range.beginOffset <= useBegin) {
+				d = snapshot.declarations[site++];
+				begin = d.range.beginOffset;
+				end = d.range.endOffset;
+				declaration = true;
+				if (useBegin == begin && file.occurrenceEnd(use) == end) use++;
+			} else {
+				d = snapshot.declarations[file.target(use)];
+				begin = useBegin;
+				end = file.occurrenceEnd(use++);
+				if ((d.kind == AnalysisDeclKind.CLASS || d.kind == AnalysisDeclKind.COMPONENT)
+					&& LspReferences.names(effective, begin, end, "this")) continue;
+			}
+			// Tokens never overlap; nor do names, so this is only a guard.
+			if (begin < last) continue;
+			var t = LspSemanticLegend.classify(d);
+			if (t < 0 || !LspReferences.names(effective, begin, end, d.name)) continue;
+			var span = snapshot.currentRange(index, begin, end);
+			if (span.0 < 0 || span.1 > current.length) continue;
+			last = end;
+			positions.advance(span.0);
+			var startLine = positions.line, start = positions.character;
+			positions.advance(span.1);
+			// A name is on one line; a token never spans lines.
+			if (positions.line != startLine || positions.character <= start) continue;
+			line = startLine;
+			character = start;
+			length = positions.character - start;
+			tokenType = t;
+			modifiers = if(declaration, LspSemanticLegend.DECLARATION) | LspSemanticLegend.modifiers(d);
+			count++;
+			return true;
+		}
+		return false;
+	}
+}

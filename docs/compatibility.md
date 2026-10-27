@@ -78,6 +78,8 @@ The three earlier extension versions (`0.1.0`–`0.1.2`) have the same code, and
 
 With `main`, it also uses `textDocument/selectionRange` to expand selections through the current document's tokens, bracket groups, and declarations ([Selection ranges](architecture.md#selection-ranges)).
 
+With `main`, it also uses `textDocument/semanticTokens/full` and, when its client supports it, `workspace/semanticTokens/refresh` ([Semantic tokens](architecture.md#semantic-tokens)). The extension's `virgil.semanticTokens` setting sends `initializationOptions.semanticTokens`, which servers without semantic tokens ignore.
+
 With `main`, it also uses `textDocument/foldingRange` for syntax-based block and comment folds ([Folding ranges](architecture.md#folding-ranges)).
 
 With a server before `0.1.0-alpha.3`, every extension version needs a Virgil root. When neither `virgil.virgilRoot` nor `VIRGIL_LOC` gives an absolute path, `0.1.0-alpha.1` and `0.1.0-alpha.2` exit as they start, so VS Code has no language server, not even for single files ([#175](https://github.com/SaltedTan/virgil-language-server/issues/175)). Set `virgil.virgilRoot` to a Virgil checkout ([The Virgil root](releasing.md#the-virgil-root)), or install `0.1.0-alpha.3`, which starts without a root.

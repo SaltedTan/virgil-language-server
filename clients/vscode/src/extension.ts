@@ -27,8 +27,13 @@ import {
 const CHANNEL_NAME = 'Virgil Language Server';
 const SERVER_PATH_SETTING = 'virgil.server.path';
 const VIRGIL_ROOT_SETTING = 'virgil.virgilRoot';
+const SEMANTIC_TOKENS_SETTING = 'virgil.semanticTokens';
 // Settings read only when the server starts.
-const RESTART_SETTINGS = [SERVER_PATH_SETTING, VIRGIL_ROOT_SETTING, 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames'];
+const RESTART_SETTINGS = [SERVER_PATH_SETTING, VIRGIL_ROOT_SETTING, 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames',
+  SEMANTIC_TOKENS_SETTING];
+// Virgil's own extension, which colors Virgil with its own semantic tokens.
+// VS Code shows one provider's tokens, not both, so `auto` defers to it.
+const VIRGIL_EXTENSION = 'titzer.virgil';
 // The server starts this executable from the directory of its own resolved
 // path (/proc/self/exe on Linux, proc_pidpath on macOS).
 const WORKER_NAME = 'virgil-lsp-worker';
@@ -236,6 +241,16 @@ function enqueue(task: () => Promise<void>): Promise<void> {
   return queue;
 }
 
+// Whether the server sends semantic tokens: `on` and `off` decide, and
+// `auto`, the default, turns them off while titzer.virgil is enabled.
+function semanticTokens(): boolean {
+  const setting = vscode.workspace.getConfiguration().get<string>(SEMANTIC_TOKENS_SETTING, 'auto');
+  if (setting === 'on' || setting === 'off') return setting === 'on';
+  if (vscode.extensions.getExtension(VIRGIL_EXTENSION) === undefined) return true;
+  output.info(`Semantic tokens are off: ${VIRGIL_EXTENSION} is enabled, and ${SEMANTIC_TOKENS_SETTING} is auto`);
+  return false;
+}
+
 async function restart(): Promise<void> {
   await stop();
   await start();
@@ -269,6 +284,7 @@ async function start(): Promise<void> {
         types: vscode.workspace.getConfiguration().get<boolean>('virgil.inlayHints.types', true),
         parameterNames: vscode.workspace.getConfiguration().get<boolean>('virgil.inlayHints.parameterNames', true),
       },
+      semanticTokens: semanticTokens(),
     },
     // Changes made outside the editor, such as a checkout, refresh projects.
     // The client batches these events with those of the server's own

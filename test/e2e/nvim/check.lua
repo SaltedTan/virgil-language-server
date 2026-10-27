@@ -226,6 +226,41 @@ local function check()
     and hints[1].inlay_hint.label[1].value == ": int" and hints[1].inlay_hint.kind == 1, vim.inspect(hints))
   assert(vim.deep_equal(position(hints[2]), { line = 4, character = 41 })
     and hints[2].inlay_hint.label == "count:" and hints[2].inlay_hint.kind == 2, vim.inspect(hints))
+
+  -- Neovim requests semantic tokens by itself. Each token found at some byte
+  -- of the buffer, in order, with its UTF-16 column and length, type, and
+  -- modifiers. int, a built-in type, has none.
+  local function semantic_tokens()
+    local found, seen = {}, {}
+    for row, text in ipairs(vim.api.nvim_buf_get_lines(inlay_buf, 0, -1, true)) do
+      for col = 0, #text - 1 do
+        for _, token in ipairs(vim.lsp.semantic_tokens.get_at_pos(inlay_buf, row - 1, col) or {}) do
+          local key = token.line .. ":" .. token.start_col
+          if not seen[key] then
+            seen[key] = true
+            local modifiers = vim.tbl_keys(token.modifiers)
+            table.sort(modifiers)
+            local start = vim.str_utfindex(text, "utf-16", token.start_col)
+            found[#found + 1] = { token.line, start, vim.str_utfindex(text, "utf-16", token.end_col) - start,
+              token.type, modifiers }
+          end
+        end
+      end
+    end
+    return found
+  end
+  local expected_tokens = {
+    { 2, 10, 5, "namespace", { "declaration" } },
+    { 3, 6, 4, "function", { "declaration" } },
+    { 3, 11, 5, "parameter", { "declaration" } },
+    { 3, 39, 5, "parameter", {} },
+    { 4, 6, 3, "function", { "declaration" } },
+    { 4, 28, 5, "variable", { "declaration" } },
+    { 4, 36, 4, "function", {} },
+  }
+  wait_for("semantic tokens through Neovim", function() return #semantic_tokens() == #expected_tokens end)
+  assert(vim.deep_equal(semantic_tokens(), expected_tokens), vim.inspect(semantic_tokens()))
+  print("PASS: nvim.semantic-tokens.response")
   vim.api.nvim_set_current_buf(words_buf)
 
   -- The puts call returns StringBuilder; the local line has built-in int.

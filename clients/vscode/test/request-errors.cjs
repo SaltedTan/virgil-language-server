@@ -87,6 +87,7 @@ async function clientForTest(t, { stopping = false } = {}) {
       onDidChangeConfiguration: () => ({ dispose() {} }),
       createFileSystemWatcher: () => ({ dispose() {} }),
     },
+    extensions: { getExtension: () => undefined },
   };
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../out/extension.js'), 'utf8'), {

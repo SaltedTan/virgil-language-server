@@ -147,6 +147,16 @@ Both hint kinds are on by default. Set `initializationOptions.inlayHints.types` 
 
 VS Code passes the settings `virgil.inlayHints.types` and `virgil.inlayHints.parameterNames` and restarts the server when either changes. Neovim uses `init_options = { inlayHints = { types = true, parameterNames = false } }`; restart its language server after a change. The editor's own inlay-hint switch applies on top. Clients that advertise refresh support receive a refresh only when enabled labels, UTF-16 positions, or link targets change in documents the client has open; a text version or unrelated trailing comment alone does not trigger one. See the [hint rules](architecture.md#inlay-hints), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#inlay-hints).
 
+### Semantic tokens
+
+Semantic tokens are on by default. Set `initializationOptions.semanticTokens` to `false` to turn them off; the server then doesn't advertise them:
+
+```json
+{"initializationOptions":{"semanticTokens":false}}
+```
+
+VS Code passes its `virgil.semanticTokens` setting, whose default, `auto`, turns them off if the `titzer.virgil` extension is enabled when the server starts, and restarts the server when it changes. Neovim uses `init_options = { semanticTokens = false }`; restart its language server after a change. Clients that advertise refresh support receive a refresh only when an analysis, or a change in which project includes a file, changes the tokens of an open document from those the client was last given for its current text: as when an edit to another file turns a class that it uses into a variant, when a project starts to include it, or when the project analyzes again after a failure that left an edited document without tokens ([refresh rules](architecture.md#semantic-tokens)). See the [token table](architecture.md#semantic-tokens), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#semantic-tokens).
+
 ### Compiler flags
 
 `compilerArgs` accepts only the pinned compiler's language options, which change how Aeneas parses and type-checks a program. The names and defaults below are generated from `CLOptions.langOpt` in the [pinned compiler](compatibility.md#virgil-revision), exposed by [`AeneasAdapter.languageOptions()`](../src/analysis/AeneasAdapter.v3):

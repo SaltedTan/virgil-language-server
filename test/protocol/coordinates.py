@@ -91,7 +91,7 @@ class Worker:
         self.hello = dict(protocol=hello.integer(), version=hello.string(),
                           revision=hello.string(), heapBytes=hello.integer())
         hello.finish()
-        assert self.hello["protocol"] == 14, self.hello
+        assert self.hello["protocol"] == 15, self.hello
 
     def frame(self, timeout=5):
         deadline = time.monotonic() + timeout
@@ -141,7 +141,8 @@ class Worker:
             paths = list(dict.fromkeys(path for path, _ in sources))
             strings = [reader.string() for _ in range(reader.integer())]
             for _ in range(reader.integer()):
-                kind, name, path = reader.take(1)[0], strings[reader.integer()], paths[reader.integer()]
+                # The kind byte's high bit is the declaration's flag (AnalysisWire.FLAGGED).
+                kind, name, path = reader.take(1)[0] & 0x7f, strings[reader.integer()], paths[reader.integer()]
                 declarations.append(dict(kind=kind, name=name, path=path,
                                          range=[reader.integer() for _ in range(4)],
                                          offsets=[reader.integer() for _ in range(2)]))

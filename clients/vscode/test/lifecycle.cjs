@@ -23,7 +23,7 @@ const ErrorAction = { Continue: 1, Shutdown: 2 };
 const CloseAction = { DoNotRestart: 1, Restart: 2 };
 
 // `documents` are open in the editor, so each client opens them as it starts.
-function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [], target, missing, platform = process.platform, arch = process.arch } = {}) {
+function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = [], extensions = [], target, missing, platform = process.platform, arch = process.arch } = {}) {
   const openDocuments = [...new Set([...documents, ...diffEditors.flatMap(({ original, modified }) => [original, modified])])];
   const clients = [];
   const commands = new Map();
@@ -181,6 +181,8 @@ function extensionHost({ settings = {}, env = {}, documents = [], diffEditors = 
         return watcher;
       },
     },
+    // The other installed extensions, by ID.
+    extensions: { getExtension: (id) => (extensions.includes(id) ? { id } : undefined) },
   };
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../out/extension.js'), 'utf8'), {
@@ -300,7 +302,7 @@ for (const action of ['restart', 'configure', 'deactivate']) {
   });
 }
 
-for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames', 'deactivate']) {
+for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames', 'virgil.semanticTokens', 'deactivate']) {
   test(`diff-editor pending opens survive recovery followed by ${action}`, async () => {
     const host = extensionHost({
       diffEditors: [
@@ -350,7 +352,7 @@ test('restart drains a failed notification without hiding its failure or blockin
   await host.extension.deactivate();
 });
 
-for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames', 'deactivate']) {
+for (const action of ['restart', 'virgil.server.path', 'virgil.virgilRoot', 'virgil.inlayHints.types', 'virgil.inlayHints.parameterNames', 'virgil.semanticTokens', 'deactivate']) {
   test(`${action} proceeds after a recovery notification write never settles`, { timeout: 1000 }, async () => {
     const host = extensionHost({ documents: ['a.v3'] });
     await host.activate();
@@ -574,7 +576,7 @@ for (const [title, settings, env, expected] of [
   test(title, async () => {
     const host = extensionHost({ settings, env });
     await host.activate();
-    assert.deepEqual(plain(host.clients[0].options.initializationOptions), { ...expected, inlayHints: { types: true, parameterNames: true } });
+    assert.deepEqual(plain(host.clients[0].options.initializationOptions), { ...expected, inlayHints: { types: true, parameterNames: true }, semanticTokens: true });
     assert.deepEqual(host.warnings, []);
     await host.extension.deactivate();
   });
@@ -583,7 +585,7 @@ for (const [title, settings, env, expected] of [
 test('a relative virgil.virgilRoot is reported and blocks fallback, even with VIRGIL_LOC', async () => {
   const host = extensionHost({ settings: { 'virgil.virgilRoot': 'vendor/virgil' }, env: { VIRGIL_LOC: VIRGIL_ROOT } });
   await host.activate();
-  assert.deepEqual(plain(host.clients[0].options.initializationOptions), { virgilRoot: 'vendor/virgil', inlayHints: { types: true, parameterNames: true } });
+  assert.deepEqual(plain(host.clients[0].options.initializationOptions), { virgilRoot: 'vendor/virgil', inlayHints: { types: true, parameterNames: true }, semanticTokens: true });
   assert.equal(host.warnings.length, 1);
   assert.match(host.warnings[0], /virgil\.virgilRoot must be an absolute path, not vendor\/virgil/);
   await host.extension.deactivate();
@@ -598,7 +600,7 @@ test('changing virgil.virgilRoot restarts the server with the new root', async (
   await host.configure('virgil.virgilRoot');
   await settle();
   assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
-  assert.deepEqual(plain(host.clients[1].options.initializationOptions), { virgilRoot: VIRGIL_ROOT, inlayHints: { types: true, parameterNames: true } });
+  assert.deepEqual(plain(host.clients[1].options.initializationOptions), { virgilRoot: VIRGIL_ROOT, inlayHints: { types: true, parameterNames: true }, semanticTokens: true });
   await host.extension.deactivate();
 });
 
@@ -682,3 +684,31 @@ for (const key of ['types', 'parameterNames']) {
     await host.extension.deactivate();
   });
 }
+
+for (const [setting, extensions, expected] of [
+  ['auto', [], true],
+  ['auto', ['titzer.virgil'], false],
+  ['on', ['titzer.virgil'], true],
+  ['off', [], false],
+]) {
+  test(`virgil.semanticTokens ${setting}${extensions.length ? ' beside titzer.virgil' : ''} sends semanticTokens: ${expected}`, async () => {
+    const settings = setting === 'auto' ? {} : { 'virgil.semanticTokens': setting };
+    const host = extensionHost({ settings, extensions });
+    await host.activate();
+    assert.equal(host.clients[0].options.initializationOptions.semanticTokens, expected);
+    assert.equal(host.messages.includes('Semantic tokens are off: titzer.virgil is enabled, and virgil.semanticTokens is auto'),
+      setting === 'auto' && !expected);
+    await host.extension.deactivate();
+  });
+}
+
+test('changing virgil.semanticTokens restarts with semantic tokens off', async () => {
+  const host = extensionHost();
+  await host.activate();
+  host.values['virgil.semanticTokens'] = 'off';
+  await host.configure('virgil.semanticTokens');
+  await settle();
+  assert.deepEqual(host.events, ['start:0', 'shutdown:0', 'exit:0', 'start:1']);
+  assert.equal(host.clients[1].options.initializationOptions.semanticTokens, false);
+  await host.extension.deactivate();
+});

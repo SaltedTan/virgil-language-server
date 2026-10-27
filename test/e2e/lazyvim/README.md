@@ -58,6 +58,7 @@ Each run starts Neovim in a new tmux server, with `observer.lua` loaded with `--
   - signature help in noice's window: as `(` is typed, with `<C-k>` in Insert mode and `gK` in Normal mode, and while a call is typed with and without mini.pairs's `)`, with `b: int` highlighted after the `,`; and that LazyVim maps Insert `<C-s>` to Save File;
   - completion in blink.cmp's menu as you type: the keyword `while`, the local `line` first, and the member `length` after `a.`, each accepted with Enter and undone; and nothing from the server in a comment;
   - inferred type and parameter-name hints through `vim.lsp.inlay_hint`, enabled by LazyVim, at exact UTF-16 positions after non-ASCII text;
+  - semantic tokens through `vim.lsp.semantic_tokens.get_at_pos()`, which LazyVim leaves on: exactly the types and modifiers of the tokens in `words/Inlay.v3`, at exact UTF-16 positions after non-ASCII text;
   - a project-file edit on disk, then an unsaved one ([Changes on disk](#changes-on-disk));
   - a restart with the bare command, then with the named one ([Neovim 0.11 and 0.12](#neovim-011-and-012)), and a clean server exit.
 - **`noroot`** uses deliberately bundle-less copies of the server and worker and opens `.virgil-lsp.json` with `VIRGIL_LOC` unset, and checks startup, the client's attachment, the `MissingVirgilRoot` diagnostic, the warning "Invalid project file …", and a clean server exit.

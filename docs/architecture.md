@@ -13,7 +13,7 @@ flowchart TD
     S --> P
 ```
 
-`virgil-lsp --stdio` communicates with the editor over standard input/output and owns the protocol layer, in-memory document overlays, and single-file parsing. The diagram includes planned semantic features. Whole-program analysis runs automatically for configured projects, publishing [semantic diagnostics](#semantic-diagnostics) and answering [go-to-definition](#definition), [go-to-type-definition](#type-definition), [go-to-implementation](#implementation), [type hierarchy](#type-hierarchy), [call hierarchy](#call-hierarchy), [hover](#hover), [references](#references), [rename](#rename), [signature help](#signature-help), [inlay hints](#inlay-hints), and [workspace symbols](#workspace-symbols) from its results, and through the development `analyze` command and the unadvertised `virgil-lsp/analyze` stdio request; see [Analysis worker](#analysis-worker) for its process model. [Completion](#completion) describes suggestions from the document's text and temporary project analyses, including [receiver members](#member-completion). Editor integrations only launch the server and forward configuration.
+`virgil-lsp --stdio` communicates with the editor over standard input/output and owns the protocol layer, in-memory document overlays, and single-file parsing. The diagram includes planned semantic features. Whole-program analysis runs automatically for configured projects, publishing [semantic diagnostics](#semantic-diagnostics) and answering [go-to-definition](#definition), [go-to-type-definition](#type-definition), [go-to-implementation](#implementation), [type hierarchy](#type-hierarchy), [call hierarchy](#call-hierarchy), [hover](#hover), [references](#references), [rename](#rename), [signature help](#signature-help), [inlay hints](#inlay-hints), [semantic tokens](#semantic-tokens), and [workspace symbols](#workspace-symbols) from its results, and through the development `analyze` command and the unadvertised `virgil-lsp/analyze` stdio request; see [Analysis worker](#analysis-worker) for its process model. [Completion](#completion) describes suggestions from the document's text and temporary project analyses, including [receiver members](#member-completion). Editor integrations only launch the server and forward configuration.
 
 ## Source layout
 
@@ -650,7 +650,7 @@ before UTF-16 conversion. Offsets before the interval stay fixed, those after
 it shift by the length difference, and queries inside the excluded body,
 including its braces, do not map. The shared range helper also rejects ranges
 touching that body; [type hierarchy](#type-hierarchy) defines its separate
-mapping of declaration extents, which [call hierarchy](#call-hierarchy) shares. Definition, type definition, inlay hints, hover,
+mapping of declaration extents, which [call hierarchy](#call-hierarchy) shares. Definition, type definition, inlay hints, semantic tokens, hover,
 references, highlights, implementation, call hierarchy, and semantic diagnostics use these maps. Type definition shares definition's
 query and target exclusions, including a target in another substituted file.
 Reference and highlight lists can be partial; retained highlights keep their
@@ -926,7 +926,7 @@ without changing their length, so every offset outside the bodies maps to
 itself. Its bytes are reserved at capture and charged to the snapshot budget.
 Every rule in [Method-body fallback](#method-body-fallback) then applies to each
 excluded body: definition, type definition, implementation, type hierarchy,
-call hierarchy, hover, references, highlights, inlay hints, and semantic
+call hierarchy, hover, references, highlights, inlay hints, semantic tokens, and semantic
 diagnostics suppress queries, locations, and diagnostics in an entire excluded
 body, including its braces, so no error that the emptied body causes appears in
 any answer, and call hierarchy gives a method or constructor whose own body is
@@ -1363,6 +1363,49 @@ Version 13 also packs an occurrence's compiler line and column into one stored i
 
 The independent type and parameter-name switches default to true and are fixed at initialization ([configuration](configuration.md#inlay-hints)). After a current automatic analysis or project-scoped development analysis changes hints, the server requests `workspace/inlayHint/refresh` only when `workspace.inlayHint.refreshSupport` is true. The server compares fingerprints of enabled rendered labels, UTF-16 hint positions, and link targets’ URIs and LSP ranges only for documents the client has open, using each document’s active context. Each open document retains its last compared result across configuration revisions and active-context changes; an inactive project’s analysis cannot replace that baseline or trigger a refresh for that document. Leaving every project compares against empty hints, even when no new analysis will run. Results and coordinate conversions are cached per file; closed files’ hints are never enumerated. A newly opened file establishes its baseline without a refresh because the client requests its hints when it opens. Closing a file removes it from the comparison. Source hashes and overlay identities invalidate cached coordinate conversions but do not themselves count as hint changes: a trailing comment or identical text with a newer version sends no refresh. An edit in another file that changes an open document’s label or link does send a refresh. Automatic analyses reuse the active-context selection already computed for semantic diagnostics; development analyses resolve the open documents’ owners together. Ordered hint offsets are converted by a streaming scan. For linked declarations, both endpoints use actual LSP lines and UTF-16 characters, counting CR, LF, and CRLF as line breaks. Each target file’s line starts are computed at most once per analyzed text identity and reused across analyses; only the endpoint line prefixes need UTF-16 scans. Successful conversions are cached by source hash and overlay identity, which identify the same analyzed bytes. Each comparison checks the snapshot’s cheap document identity once per target file before reusing conversions, without rereading or rehashing unchanged closed files. Both current and stale identity results are kept only for that synchronous comparison. Unavailable text or failed conversions count as missing links only for that comparison and are never cached, so a later comparison can recover. Open-document baselines and context-owned target caches retain numeric fingerprints, line starts, and source stamps, without retaining source text, dense position maps, or another snapshot. Discarded analyses do not update them. At most one refresh is outstanding; further changes coalesce until its response or ten-second deadline. Shutdown prevents further refresh requests.
 
+## Semantic tokens
+
+`textDocument/semanticTokens/full` returns the tokens of a whole document from the active project's current snapshot, with `semanticTokensProvider: { legend, full: true }`. Each token colors a name by the declaration that it resolves to. Keywords, literals, comments, operators, and punctuation get no tokens, so they keep the grammar's colors. It shares [definition's freshness, waiting, and cancellation](#definition): a missing or stale snapshot waits for an already pending analysis, making it urgent. The server has no `textDocument/semanticTokens/full/delta` or `textDocument/semanticTokens/range` and advertises neither ([known limitations](known-limitations.md#semantic-tokens)).
+
+The legend holds only the protocol's standard token types and modifiers, in a fixed order, so that themes color them without configuration:
+
+| Declaration | Token type | Why |
+| --- | --- | --- |
+| Class | `class` | |
+| Component | `namespace` | A component holds functions and fields, but no value has its type. |
+| Variant, declared with `type` | `enum` | An algebraic data type, whose values are its cases. No standard type is closer. |
+| Case of a variant | `enumMember` | |
+| Enum | `enum` | |
+| Case of an enum | `enumMember` | |
+| Layout | `struct` | A fixed arrangement of fields in memory. |
+| Packing | `type` | A named bit layout of a scalar. No standard type is closer. |
+| Type parameter | `typeParameter` | |
+| Method of a class or variant | `method` | |
+| Method of a component, including a file's top-level functions | `function` | It has no receiver object. |
+| Field of a class, variant case, component, or layout, including a class's or case's parameters | `property` | |
+| Parameter | `parameter` | |
+| Local | `variable` | |
+
+A declaration's own name has the `declaration` modifier. Every token of a local, parameter, or field that the compiler marks read-only has the `readonly` modifier, such as a `def` local or field, or a class's parameter declared without `var`. The flag comes from the compiler: a local's or parameter's read-only flag, and a field's writability. The server never parses a signature for it.
+
+These names get no token:
+
+- `this`, and the `.new` of a class that declares no constructor, such as `Box.new(1)`. Both resolve to their class, but neither spells its name. A token must spell its declaration's name in the analyzed text, as a [reference](#references) must. A class, variant, or component may itself be named `this`, and then a receiver does spell its name, so no use spelled `this` of a class, variant, or component gets a token; its declaration still does, and so does a local or parameter named `this`.
+- Constructors, whose name is the keyword `new`, and index methods, which brackets spell.
+- Built-in types and their members, such as `int` and an array's `length`, and names that resolve to no source declaration.
+- Names in a method or constructor body that [method-body fallback](#method-body-fallback) or [current-text repair](#current-text-repair) excluded. The other tokens are mapped to the current text, as definition maps ranges.
+- The names after a file's 100,000th token, which keep the grammar's colors.
+
+Tokens are in source order and relative, five integers each, as the protocol encodes them. Their positions are lines and UTF-16 characters of the document's current text, counting CR, LF, and CRLF as line breaks. A token never spans lines or overlaps another.
+
+A document in no loaded project gets no tokens: `{"data": []}`. For any other reason that the snapshot can't answer, such as a project whose inputs have parse errors that neither fallback nor repair could handle, no analysis yet, or a document that changed while the request waited, the server answers `ContentModified` (-32801), with the reason as the message. VS Code 1.142.0 and Neovim 0.11 then keep the tokens that they have, moved with the user's edits, until a later request gets an answer: `vscode-languageclient` turns `ContentModified` into a cancellation of a semantic tokens request, after which VS Code keeps its tokens, and Neovim keeps its tokens after any error response. An empty answer would remove every color until the project analyzed again.
+
+When `workspace.semanticTokens.refreshSupport` is true, the server sends `workspace/semanticTokens/refresh` when a new analysis changes the tokens of a document that the client has open, for the same text, such as when an edit to another file turns a class that it uses into a variant. As for [inlay hints](#inlay-hints), the server compares a fingerprint of each open document's tokens, in its active context, after a current automatic analysis, a project-scoped development analysis, or a change of project membership. Replies also record a baseline for the request's document identity: token replies record their fingerprint, and an unowned document's empty reply records an empty fingerprint. A ContentModified reply preserves a baseline for the same identity only when the client was actually given those tokens; otherwise it records an unavailable baseline. Analysis comparisons record fingerprints that have not been served, while a comparison with the same identity and fingerprint preserves whether it was served. If a refresh's token request receives ContentModified before the client gets the changed tokens, a later successful analysis therefore sends another refresh, even when it produces the same tokens as the earlier comparison. An excluded open document answered empty therefore gets a refresh when a project change includes it and its first analysis produces tokens. A document edited while another file prevents analysis, and answered ContentModified for that new version, also gets a refresh when the other file is fixed without another edit to this document. An ordinary open or edit answered with current tokens needs no refresh when those same tokens are compared. A newly opened document's first comparison sets its fingerprint without a refresh; a document that leaves every project is compared with no tokens; closing a document drops its fingerprint. No baselines are recorded without refresh support. At most one refresh is outstanding; further changes coalesce until its response or ten-second deadline. Shutdown prevents further refresh requests.
+
+The snapshot didn't hold three facts that the table needs: that a class is a variant, that a component declares a method, and that a local, parameter, or field is read-only. Since wire version 15, the worker sends each in the high bit of the declaration's kind byte, which adds no byte. The worker and the snapshot both keep a flagged declaration as a subclass with no fields, which the worker chooses as it makes the declaration, while the syntax is in the cache: reading the syntax while encoding took 4.5 ms of the Aeneas sources' 55 ms. The Aeneas sources' result and its charged allocation are unchanged ([ADR-0004](decisions/0004-analysis-worker-process.md#supported-program-size)). A reply for the Aeneas sources' largest file takes a few milliseconds ([benchmarks](benchmarks.md#semantic-tokens)).
+
+The option is fixed at initialization ([configuration](configuration.md#semantic-tokens)). With `initializationOptions.semanticTokens` set to `false`, the server advertises no `semanticTokensProvider` and refuses the request as an unknown method, `MethodNotFound` (-32601).
+
 ## Completion
 
 `LspCompletion` (`src/protocol/LspCompletion.v3`) handles `textDocument/completion`, and the server advertises `completionProvider: {"triggerCharacters": ["."]}`: `.` asks for the receiver's members, and there is no `resolveProvider`, since an item is complete as sent. It offers the keywords that can start at the cursor, from the open document's text alone, and the declarations in scope there ([#129](https://github.com/SaltedTan/virgil-language-server/issues/129)), from a completion analysis of the document's project; after `.`, it offers the members of the receiver's type instead, from the same kind of analysis ([Member completion](#member-completion), [#130](https://github.com/SaltedTan/virgil-language-server/issues/130)).
@@ -1642,7 +1685,8 @@ The JSON-RPC 2.0 message model in `src/protocol/` works on the JSON payload of o
 | `LspFoldingRanges.v3` | Reads the current open overlay, requests syntax folds from the analysis adapter, converts byte offsets to UTF-16, and honors the client's folding capabilities and reply bounds. |
 | `LspCodeActions.v3` | The [code actions](#code-actions) handler: current syntax matching, one semicolon insertion, and its reparse proof. |
 | `LspDocumentSymbols.v3` | Reads the current open overlay, requests syntax symbols from the analysis adapter, converts byte ranges with `PositionMap`, maps declaration kinds to symbol kinds (`LspSymbolKind`) and to the kinds each client supports (`LspClientKinds`), and adds [details](#document-symbols) from a snapshot of that overlay. |
-| `LspSnapshotRequests.v3` | Owns the shared [snapshot selection, freshness, and waiting rules](#definition), and [cancellation](#cancellation), for requests at a position, at a range's start, or at a [type](#type-hierarchy) or [call hierarchy](#call-hierarchy) item's data. It also carries the failure reply that [prepare rename](#prepare-rename) needs instead of `null`, and gives a [rename](#rename)'s answer to the handler that runs its preflight. |
+| `LspSnapshotRequests.v3` | Owns the shared [snapshot selection, freshness, and waiting rules](#definition), and [cancellation](#cancellation), for whole-document requests, requests at a position or a range's start, and requests at a [type](#type-hierarchy) or [call hierarchy](#call-hierarchy) item's data. It also carries method-specific failure replies for [prepare rename](#prepare-rename) and [semantic tokens](#semantic-tokens), and gives a [rename](#rename)'s answer to the handler that runs its preflight. |
+| `LspSemanticTokens.v3` | The [semantic tokens](#semantic-tokens) legend, declaration classification, full-document answers, and refresh comparison. |
 | `LspDefinition.v3` | The [definition](#definition) and [type-definition](#type-definition) location answers. |
 | `LspHover.v3` | The [hover](#hover) answer: the display text at an offset, in Markdown or plain text. |
 | `LspReferences.v3` | The [references](#references) answer. |
@@ -1692,7 +1736,7 @@ The server sends requests to the client, such as `client/registerCapability`, an
 
 A request sent with `send` that the client never answers stays outstanding until `failAll`. A successful `shutdown`, `exit`, and the end of the input each call `failAll` with `RequestCancelled` (-32800), using the completion contract above.
 
-The server also sends `workspace/inlayHint/refresh` for supported clients ([Inlay hints](#inlay-hints)).
+The server also sends `workspace/inlayHint/refresh` and `workspace/semanticTokens/refresh` for supported clients ([Inlay hints](#inlay-hints), [Semantic tokens](#semantic-tokens)).
 
 It sends `client/registerCapability`, after `initialized`, to [watch project files and sources](configuration.md#changes-on-disk). It has a 10-second deadline; when the deadline passes, it completes with `InternalError` (-32603), "the client did not answer in time". A result is logged as information. An error, an expiry, or a cancellation is logged as a warning and leaves the server refreshing projects on use, and the session continues. The `LspServer:watcher_registration` and `LspServer:watcher_registration_failure` unit tests cover these paths.
 

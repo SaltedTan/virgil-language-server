@@ -8,7 +8,7 @@
 // here, so that the protocol changes in one place; PROTOCOL_VERSION changes
 // with it. See docs/decisions/0004-analysis-worker-process.md.
 component AnalysisWire {
-	def PROTOCOL_VERSION = 14;
+	def PROTOCOL_VERSION = 15;
 	def MAX_RESULT_ALLOCATION = 16 * 1024 * 1024;
 	// The worker executable, which the server finds in its own directory.
 	def WORKER_NAME = "virgil-lsp-worker";
@@ -54,6 +54,9 @@ component AnalysisWire {
 	private def LIVE_BYTES_OFFSET = WorkerFraming.HEADER_BYTES + 1 + 3 * 4;
 	// Declaration kinds by tag, for decoding.
 	def DECL_KINDS = declKinds();
+	// Set in a declaration's kind byte with its flag (see
+	// AnalysisDeclaration.flagged), above every kind's tag.
+	def FLAGGED: byte = 0x80;
 
 	def encodeHello(version: string, revision: string, heapBytes: long) -> Range<byte> {
 		var w = WorkerFraming.start().putb(HELLO);
@@ -161,7 +164,8 @@ component AnalysisWire {
 	// diagnostics, and, if {files} is not null, a string table, the distinct
 	// declarations, and each file's index. {files} must be the request's
 	// distinct paths in request order, and a path is sent as its index there;
-	// every declaration is in one of them. A declaration is its kind, its
+	// every declaration is in one of them. A declaration is its kind, with
+	// FLAGGED if it is flagged (see AnalysisDeclaration.flagged), its
 	// name's string index, its path index, its range (four compiler
 	// coordinates and two byte offsets), and its signature's string index plus
 	// one, or zero, then its default source-type target (declaration ID plus
@@ -534,7 +538,7 @@ component AnalysisWire {
 			var link = 0;
 			for (i < decls.length()) {
 				var d = decls[i];
-				w.putb(d.kind.tag);
+				w.putb(d.kind.tag | if(d.flagged(), FLAGGED));
 				w.put_sleb32(declarationIds[3 * i]);
 				// Every declaration is in one of the request's files; -1 would be
 				// rejected.
@@ -716,8 +720,9 @@ component AnalysisWire {
 			// the string table.
 			declarations = Array<AnalysisDeclaration>.new(r.readCount(12, 128));
 			for (i < declarations.length) {
-				var kind = r.readKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
-				var d = AnalysisDeclaration.new(kind, name, r.readRange(path));
+				var kind = r.readDeclarationKind(), name = r.readStringIndex(strings), path = r.readPath(files.paths);
+				var range = r.readRange(path);
+				var d = if(kind.1, AnalysisFlaggedDeclaration.new(kind.0, name, range), AnalysisDeclaration.new(kind.0, name, range));
 				d.signature = r.readOptionalString(strings);
 				d.typeTarget = r.readOptionalTarget(declarations.length);
 				var parent = r.readParent(i, declarations.length);
@@ -1541,8 +1546,22 @@ class AnalysisWireReader {
 		if (!r.ok || !reserve(long.view(header) + n)) return [];
 		return Ranges.dup(r.data[start ..+ n]);
 	}
+	// A declaration's kind and whether it is flagged. Only the kinds that
+	// have a flag may set it (see AnalysisDeclaration.flagged).
+	def readDeclarationKind() -> (AnalysisDeclKind, bool) {
+		var tag = r.read1(), flagged = (tag & AnalysisWire.FLAGGED) != 0;
+		if (!flagged) return (kindOf(tag), false);
+		var kind = kindOf(tag & ~AnalysisWire.FLAGGED);
+		match (kind) {
+			LOCAL, PARAMETER, FIELD, CLASS, METHOD => ;
+			_ => r.fail("invalid declaration flag");
+		}
+		return (kind, true);
+	}
 	def readKind() -> AnalysisDeclKind {
-		var tag = r.read1();
+		return kindOf(r.read1());
+	}
+	private def kindOf(tag: byte) -> AnalysisDeclKind {
 		if (tag >= AnalysisWire.DECL_KINDS.length) {
 			r.fail("invalid declaration kind");
 			return AnalysisDeclKind.LOCAL;

@@ -81,6 +81,7 @@ SUITES = \
 	'python3 test/benchmarks/test_client.py' \
 	'python3 test/protocol/type_definition.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/inlay_hints.py $(BUILD)/virgil-lsp' \
+	'python3 test/protocol/semantic_tokens.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/implementation.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/type_hierarchy.py $(BUILD)/virgil-lsp' \
 	'python3 test/protocol/folding_ranges.py $(BUILD)/virgil-lsp' \

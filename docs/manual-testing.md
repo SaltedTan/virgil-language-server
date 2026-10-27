@@ -18,6 +18,8 @@ The VS Code and plain Neovim suites check exact document highlight ranges and Re
 
 All three editor suites check inferred type and parameter-name inlay hints at exact UTF-16 positions after non-ASCII text, through `vscode.executeInlayHintProvider` and `vim.lsp.inlay_hint.get()`; LazyVim also checks that hints are enabled by default.
 
+They also check the exact semantic tokens of the same file, with their types and modifiers, at the same kind of positions. VS Code decodes them from `vscode.provideDocumentSemanticTokens` with its legend, and also checks that `virgil.semanticTokens` set to `off` leaves no provider. Plain Neovim and LazyVim read them with `vim.lsp.semantic_tokens.get_at_pos()`, at every byte of the buffer, from the requests that Neovim makes by itself.
+
 All three editor suites also check that type definition on the `puts` call goes to the exact `StringBuilder` class name in the library and that the `int` local has no type location. VS Code calls `vscode.executeTypeDefinitionProvider`; plain Neovim drives `vim.lsp.buf.type_definition()`, and LazyVim drives `gy` and checks its destination.
 
 They also check that implementation in `words/Shapes.v3` returns the exact names of the subclasses of `Shape`, direct and transitive, and of the methods that override its `area`, and nothing for the unextended `Circle`. VS Code calls `vscode.executeImplementationProvider`. Plain Neovim drives `vim.lsp.buf.implementation()` and LazyVim drives `gI`, and both check the jump from `Polygon` to its one subclass, `Square`.

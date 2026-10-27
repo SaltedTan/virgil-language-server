@@ -95,6 +95,22 @@
           "default": true,
           "scope": "window",
           "description": "Show parameter names at direct calls as inlay hints. Changing this setting restarts the language server."
+        },
+        "virgil.semanticTokens": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Off if the titzer.virgil extension is enabled when the language server starts, and on otherwise.",
+            "Color names by the declarations they resolve to, with the language server's semantic tokens.",
+            "Leave colors to the grammar and other extensions."
+          ],
+          "default": "auto",
+          "scope": "window",
+          "markdownDescription": "Color names by the declarations they resolve to, with the language server's semantic tokens. `auto` turns them off if the `titzer.virgil` extension is enabled when the language server starts, and on otherwise. Changing this setting restarts the language server."
         }
       }
     }

@@ -586,6 +586,43 @@ The fresh analysis median is 2.218 ms (0.63%) lower and the reused one 0.711 ms 
 
 With the Aeneas project, from the name of `puts` in the open `lib/util/StringBuilder.v3`, `def puts(s: Array<byte>) -> this`, prepareCallHierarchy takes 0.42 ms, incomingCalls 76.7 ms, and outgoingCalls 0.58 ms, the medians of 20 requests of each after a first one, once the project's analysis had completed, from a throwaway stdio client of the normal build, pinned to the same thread under the same lock. The incoming calls are 655 calls from 257 callers in 76 files, about 197 KiB of JSON; outgoingCalls lists `puts`'s one callee, `acquire`. A references request for `puts` from the same position, which reads and maps the same 76 files again for its 661 uses, takes 17.1 ms, so most of incomingCalls' time is parsing those files for their callers' extents, once each. prepareCallHierarchy and outgoingCalls parse only `StringBuilder.v3`. Items later gained a `container` member naming their enclosing declarations, which each request checks. Measured again in six alternating blocks of 20 requests, with every build made the same way, incomingCalls takes 80.1 ms against 76.5 ms before, and its reply grew from 201,652 to 208,744 bytes; with the check turned off it takes 79.9 ms, so the time is the larger reply's, not the check's. prepareCallHierarchy and outgoingCalls are unchanged.
 
+## Semantic tokens
+
+Measured on 2026-10-27 and 2026-10-28 on the Intel Core i7-14700KF reference host, with pinned Virgil `57318d37e9fcca8de6fda5f9cd82d669479f49ff` and the default 384 MiB worker heap, holding the shared benchmark lock, on P-core hardware thread 12.
+
+**Requests.** A throwaway stdio client of the normal build opened `vendor/virgil/aeneas/src/vst/Verifier.v3`, the largest of the Aeneas sources at 106,419 bytes, and the benchmark corpus's Aeneas project as an unsaved project file. In each of six processes, it ran six rounds of each of two kinds, the first of each a warmup. A round asks for a project analysis of the file through `virgil-lsp/analyze`, which installs a new snapshot, then sends six requests of its kind on that snapshot. A request's time runs from writing it to reading the last byte of its reply. Times are **median (p10–p90, maximum), milliseconds**:
+
+| Request | First on a snapshot (30) | Later (150) |
+| --- | ---: | ---: |
+| `textDocument/semanticTokens/full` | 4.455 (2.257–5.418, 5.863) | 2.178 (2.114–2.868, 22.397) |
+| `textDocument/hover` | 0.711 (0.676–3.956, 4.016) | 0.639 (0.609–2.312, 4.331) |
+
+Each reply holds the file's 8,164 tokens, 40,820 integers, in 86,845 bytes of JSON. A token request walks every declaration site and occurrence in the file, checks that each spells its declaration's name, converts each position to UTF-16, and encodes the reply, allocating about 1.9 MB in the server; hover looks up one name. The first token request on a snapshot took 2.3 to 2.7 ms about half the time and 3.8 to 5.9 ms otherwise, and hover's first requests had a tail too; this measurement doesn't show why. Twelve of the 150 later token requests took 19 to 23 ms. A copy of the server that recorded its collections at each request found a collection in two of the four such requests that it saw, so collections explain part of that tail, not all of it. An earlier run of the same client on the change's first commit measured the same medians for later requests, 2.184 ms for tokens and 0.635 ms for hover.
+
+**Analyses.** The worker also reads three facts from each declaration's syntax ([Semantic tokens](architecture.md#semantic-tokens)). The change's base, main `620f89d2`, and the change were built in `build/base-313` and `build/fix1-313` with `BENCH=1 all bench-metadata`: main's from its `src/` checked out over the change, and both with the same uncommitted documentation edit, so that their generated BuildInfo text is identical. The comparison used six alternating process blocks, two warmups, and five measured operations per block for the Aeneas project, with every semantic check passing and no samples removed:
+
+```sh
+flock /path/to/shared/bench.lock taskset -c 12 \
+  python3 scripts/bench-lsp.py \
+  --exe build/base-313/virgil-lsp --exe build/fix1-313/virgil-lsp \
+  --project aeneas --require-probes --blocks 6 --operations 5 --warmups 2 --cpu 12
+```
+
+Times are **median (p10–p90), milliseconds**, over 30 measured operations per build and scenario.
+
+| Measurement | Main | With semantic tokens |
+| --- | ---: | ---: |
+| Aeneas fresh analysis | 341.433 (340.579–347.433) | 344.937 (342.478–347.915) |
+| Aeneas fresh result encoding | 55.205 (54.825–56.603) | 55.768 (55.312–59.025) |
+| Aeneas fresh result decoding | 30.924 (27.867–31.139) | 31.536 (28.526–31.811) |
+| Aeneas reused analysis | 303.261 (293.409–322.214) | 305.178 (295.516–322.078) |
+| Aeneas reused result encoding | 52.844 (52.487–54.157) | 53.422 (52.870–54.394) |
+| Aeneas definition | 0.201 (0.168–0.213) | 0.181 (0.164–0.210) |
+| Aeneas hover | 0.158 (0.148–0.201) | 0.175 (0.149–3.435) |
+| Aeneas semantic diagnostic | 514.326 (495.177–519.574) | 513.415 (494.812–516.637) |
+
+The fresh analysis median is 3.504 ms (1.0%) higher and the reused one 1.917 ms (0.6%) higher, and the intervals overlap. Every measured worker transaction collected zero times in both builds, and the server collected in the same operations in each. The `RESULT` payload, 4,379,198 bytes, and the worker's allocation, 197,739,184 bytes, are the same in both ([ADR-0004](decisions/0004-analysis-worker-process.md#supported-program-size)). The first version of the change read the flag from the syntax as it encoded each declaration, which the encoder otherwise doesn't touch: encoding took 59.745 ms against main's 55.458 ms, medians of 10 `analyze --stats --bindings` runs of each, and a copy of it that never read the flag took 55.479 ms. A field for the flag restored the time but made every worker declaration 8 bytes larger, 344,568 bytes in all. The worker now chooses a subclass with no fields when it makes a flagged declaration, while its syntax is in the cache, as the snapshot does when it decodes one: 55.576 ms against main's 56.150 ms, with the same allocation.
+
 ## Scheduled comparison
 
 The [Benchmarks workflow](../.github/workflows/benchmarks.yml) runs on Mondays at
