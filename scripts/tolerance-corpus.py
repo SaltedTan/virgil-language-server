@@ -545,6 +545,19 @@ class Corpus:
         helpers = ("\tdef a() -> bool { return true; }", "\tdef g() { }")
         errors = "\t\t" + "".join("var x%d: int = true; " % n for n in range(13))
         if_block = ("\t\tif (a()) {", "\t\t\tg();", "\t\t}")
+
+        def holder(name, header):
+            # Review round 3's program: h lost its "{" right before a ";", so
+            # it parses without a body, and its local function, as deep as h,
+            # reads as a member whose if lost its "{". A comment or a line
+            # break in h's header must not hide it. target's local() would
+            # bind to the local function instead of the file's.
+            rows = ("    def local() {", "            if (true)", "                g();", "            }",
+                    "        var count = 7;", "    }", "    def target() -> bool { return local() == 11; }",
+                    "    def g() { }", "}")
+            lost = header[:-1] + (header[-1].replace("{;", ";"),)
+            return (name, "header", text("def local() -> int { return 11; }", "component A {", *header, *rows),
+                    text("def local() -> int { return 11; }", "component A {", *lost, *rows), None)
         controls = (
             # An if loses its "{" in a method that is followed by a field and
             # methods and has no "}" of its own at its indentation, as in
@@ -764,6 +777,12 @@ class Corpus:
              text("def count = 11;", "component A {", "\tdef h() -> int ;", "\tdef count() {", "\t\t\tif (a())",
                   "\t\t\t\tg();", "\t\t\t}", "\t\tvar value = 7;", "\t\treturn value;", "\t}",
                   "\tdef target() -> bool { return count == 1; }", *helpers, "}"), None),
+            *(holder(name, header) for name, header in (
+                ("brace-opener-holder-comment-name", ("    def h /* comment */ () {;",)),
+                ("brace-opener-holder-comment-def", ("    def /* comment */ h() {;",)),
+                ("brace-opener-holder-split-def", ("    def", "    h() {;")),
+                ("brace-opener-holder-split-name", ("    def h", "    () {;")),
+                ("brace-opener-holder-private-comment", ("    private def h /* comment */ () {;",)))),
             # The method's own "}", an inner block's, and the two-body and
             # error-limit cases before a private method, which no statement
             # can begin. Rule 3 put a "}" back in these before it was left out.
@@ -795,15 +814,21 @@ class Corpus:
             "brace-and-blank-two-bodies": (2, False),
             "brace-opener-missing-return-limit": (1, True),
         }
-        # Controls whose wrong reading would bind target's count elsewhere get
-        # a second query, on that count.
-        bindings = {"brace-closer-local-function", "brace-closer-local-function-returns",
-                    "brace-closer-local-function-lines", "brace-closer-local-value",
-                    "brace-inner-closer-local-function", "brace-opener-bodiless-holder"}
+        # Controls whose wrong reading would bind target's count, or its
+        # local(), elsewhere get a second query, on that name.
+        count = ("return count == 1", "return count;", "count")
+        local = ("return local() == 11", "return local();", "local")
+        bindings = {"brace-closer-local-function": count, "brace-closer-local-function-returns": count,
+                    "brace-closer-local-function-lines": count, "brace-closer-local-value": count,
+                    "brace-inner-closer-local-function": count, "brace-opener-bodiless-holder": count,
+                    "brace-opener-holder-comment-name": local, "brace-opener-holder-comment-def": local,
+                    "brace-opener-holder-split-def": local, "brace-opener-holder-split-name": local,
+                    "brace-opener-holder-private-comment": local}
         for name, kind, fixed, broken, other in controls:
             calls = other or caller
             previous = fixed.replace(new, "\tdef target() -> int { return 1; }").replace(
-                "def target() -> bool { return count == 1; }", "def target() -> int { return count; }")
+                "def target() -> bool { return count == 1; }", "def target() -> int { return count; }").replace(
+                "def target() -> bool { return local() == 11; }", "def target() -> int { return local(); }")
             assert previous != fixed, name
             bodies, reached = expected.get(name, (0, False))
             project = self.project("negative/" + name, {"A.v3": previous, "B.v3": calls})
@@ -813,10 +838,11 @@ class Corpus:
             state["queries"] = state["stale_queries"] = [query("B.v3", calls, "A.target()", "target")]
             if name in bindings:
                 # The edit leaves target's line where it was.
-                use = query("A.v3", broken, "return count == 1", "count")
-                assert use == query("A.v3", fixed, "return count == 1", "count"), name
+                anchor, stale, token = bindings[name]
+                use = query("A.v3", broken, anchor, token)
+                assert use == query("A.v3", fixed, anchor, token), name
                 state["queries"] = state["queries"] + [use]
-                state["stale_queries"] = state["stale_queries"] + [query("A.v3", previous, "return count;", "count")]
+                state["stale_queries"] = state["stale_queries"] + [query("A.v3", previous, stale, token)]
             yield state
 
     def verify_inputs(self):

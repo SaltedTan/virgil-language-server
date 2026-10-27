@@ -482,7 +482,7 @@ def main():
                 else:
                     cases += list(corpus.large()) + list(corpus.controls()) + list(corpus.heldout())
                     bench.check(collections.Counter(s["suite"] for s in cases) == {
-                        "repair": 45, "replay": 140, "negative": 46, "extra": 15, "heldout": 66}, "state inventory changed")
+                        "repair": 45, "replay": 140, "negative": 51, "extra": 15, "heldout": 66}, "state inventory changed")
                     bench.check(sum(len(s["queries"]) - 1 for s in cases if s["suite"] == "replay") == 400,
                                 "unchanged real-file replay query inventory changed")
             if args.only and args.suite != "session":
