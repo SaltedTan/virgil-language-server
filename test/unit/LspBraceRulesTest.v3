@@ -8,6 +8,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspBraceRules:lost_opener", test_lost_opener),
 	T("LspBraceRules:lost_closer", test_lost_closer),
+	T("LspBraceRules:closer_places", test_closer_places),
 	T("LspBraceRules:crlf", test_crlf),
 	T("LspBraceRules:indentation", test_indentation),
 	T("LspBraceRules:refusals", test_refusals),
@@ -32,7 +33,7 @@ def find(text: Array<byte>, needle: string) -> int {
 }
 def repair(text: Array<byte>) -> (Array<byte>, LspBodyFallback, string) {
 	var parsed = AeneasAdapter.parseFile("A.v3", text, []);
-	return LspCurrentRepair.repair("A.v3", text, parsed.repairAt, [], LspCurrentRepair.MAX_BODIES);
+	return LspCurrentRepair.repair("A.v3", text, parsed.repairAt, parsed.errorAt(), [], LspCurrentRepair.MAX_BODIES);
 }
 // {text} with every byte strictly between {open} and {close} replaced by a
 // space, except CR and LF.
@@ -62,7 +63,7 @@ def check(t: Tester, current: string, header: string, closer: string) {
 	if (!Strings.equal(expected, r.0)) return t.fail2("expected %s, got %s", expected, r.0);
 	t.asserti(0, r.1.delta);
 	t.asserti(1, r.1.bodies.length);
-	t.assert(r.1.bodies[0] == (open, close + 1), "the body that layout delimits is excluded");
+	t.assert(r.1.bodies[0] == (open, close + 1), "the body is excluded");
 	t.assert(AeneasAdapter.parseFile("A.v3", r.0, []).diagnostics.length == 0, "the blanked text parses");
 }
 // {current} is refused for {reason}.
@@ -107,72 +108,125 @@ def test_lost_opener(t: Tester) {
 	for (i < current.length) t.assert((current[i] == '\n') == (r.0[i] == '\n'), "line breaks stay");
 }
 
-// A file one "}" short is refused as on main, however its layout reads: these
-// are the shapes that rule 3 put a "}" back in or refused before it was left
-// out. A block lost its "}", before a plain method, a private method, a
-// constructor, or the end of the file.
+// Rule 3: when the braces are one closer short, every place for the lost "}"
+// that parses must leave it inside the same method or constructor body,
+// ending at a "}" that the text has, and that body is blanked. These are the
+// shapes that rule 3 read or refused before it was left out of #317, the
+// reviews' counterexamples, and the benchmark's rule-3 controls.
 def test_lost_closer(t: Tester) {
-	var unbalanced = "braces do not balance";
+	var ends = "a place for the lost \"}\" ends a method or constructor body";
+	var outermost = "the parser's first error is in the outermost open block";
+	var none = "no place for the lost \"}\" parses";
 	var header = "\tdef f(a: bool) {";
+	// An if's block in a lambda, which needs its ";" after its own "}", before a
+	// plain method and before a private one; a match case's block, before the
+	// next case, which no statement can begin; and the case with braces in a
+	// string and in comments, in a constructor, in a variant case's method,
+	// and in a top-level method; and the if's block in a lambda in a call's
+	// arguments.
+	var lambda = ["\t\tvar fn = fun () -> int {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t\treturn 1;", "\t\t};", "\t\tg();", "\t}"];
+	check(t, method(header, lambda), header, "\t}");
+	check(t, ended(header, lambda), header, "\t}");
+	var cases = ["\t\tmatch (a) {", "\t\t\ttrue => {", "\t\t\t\tg();", "\t\t\t", "\t\t\tfalse => ;", "\t\t}"];
+	check(t, lines(Arrays.concat(Arrays.concat(["component A {", header], cases), ["\t}", "\tdef g() { }", "}"])), header, "\t}");
+	check(t, lines(Arrays.concat(Arrays.concat(["component A {", header, "\t\tvar s = \"{\"; // }"], cases),
+		["\t\t/* { */", "\t}", "\tdef g() { }", "}"])), header, "\t}");
+	check(t, lines(Arrays.concat(Arrays.concat(["class A(a: bool) {", "\tnew() {"], cases), ["\t}", "\tdef g() { }", "}"])),
+		"\tnew() {", "\t}");
+	check(t, lines(["type V {", "\tcase One {", "\t\tdef f(a: bool) {", "\t\t\tmatch (a) {", "\t\t\t\ttrue => {", "\t\t\t\t\tg();",
+		"\t\t\t\t", "\t\t\t\tfalse => ;", "\t\t\t}", "\t\t}", "\t}", "\tdef g() { }", "}"]), "\t\tdef f(a: bool) {", "\t\t}");
+	check(t, lines(["def g() { }", "def f(a: bool) {", "\tmatch (a) {", "\t\ttrue => {", "\t\t\tg();", "\t\t", "\t\tfalse => ;",
+		"\t}", "}"]), "def f(a: bool) {", "}");
+	check(t, lines(["component A {", header, "\t\th(fun () -> int {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t\treturn 1;",
+		"\t\t});", "\t\tg();", "\t}", "\tdef h(x: () -> int) { }", "\tdef g() { }", "}"]), header, "\t}");
+	// A block lost its "}" before a plain method, which a local function could
+	// be, so the parser first fails at the end of the file, in the outermost
+	// open block; or before a private method, where the lost "}" could be the
+	// method's own.
 	for (body in [
 		["\t\tif (a) {", "\t\t\tg();", "\t\t", "\t\tg();", "\t}"],
 		["\t\tfor (i < 3) {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"],
 		["\t\twhile (a) {", "\t\t\tg();", "\t}"],
 		["\t\tif (a) {", "\t\t\tg();", "\t\t} else {", "\t\t\tg();", "\t\tg();", "\t}"],
-		["\t\tvar fn = fun () -> int {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t\treturn 1;", "\t\t};", "\t\tg();", "\t}"],
 		["\t\tg();", "\t\t{", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"]]) {
-		refuse(t, method(header, body), unbalanced);
-		refuse(t, ended(header, body), unbalanced);
+		refuse(t, method(header, body), outermost);
+		refuse(t, ended(header, body), ends);
 	}
-	refuse(t, lines(["def g() { }", "def f(a: bool) {", "\tif (a) {", "\t\tg();", "\tg();", "}"]), unbalanced);
-	refuse(t, lines(["class A {", header, "\t\twhile (a) {", "\t\t\tg();", "\t}", "\tnew() { }", "\tdef g() { }", "}"]), unbalanced);
+	refuse(t, lines(["def g() { }", "def f(a: bool) {", "\tif (a) {", "\t\tg();", "\tg();", "}"]), outermost);
+	refuse(t, lines(["class A {", header, "\t\twhile (a) {", "\t\t\tg();", "\t}", "\tnew() { }", "\tdef g() { }", "}"]), ends);
 	// A method lost its own "}", before a header that no statement can begin,
 	// a plain method, a field, or the end of its component, with a comment
 	// between, or with a CR.
 	for (next in ["\tprivate def h() { }", "\tnew() { }", "\tdef [i: int] -> int { return f(); }",
-			"\tdef h<T>(x: T) -> T { return x; }", "\tprivate def [i: int] = v: int { }", "\tdef h() { }", "\tvar count = 1;"]) {
-		refuse(t, lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\tdef g() { }", "}"]), unbalanced);
+			"\tdef h<T>(x: T) -> T { return x; }", "\tprivate def [i: int] = v: int { }"]) {
+		refuse(t, lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\tdef g() { }", "}"]), ends);
 	}
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "", "\t// h", "\tprivate def h() { }", "\tdef g() { }", "}"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef g() { }", "\tdef f() {", "\t\tg();", "\t", "}"]), unbalanced);
-	refuse(t, "component A { // a\r\n\tdef f() -> int {\n\t\treturn 1;\n\t\n\tprivate def g() -> int { return 2; } // g\r\n}\n", unbalanced);
+	for (next in ["\tdef h() { }", "\tvar count = 1;"]) {
+		refuse(t, lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\tdef g() { }", "}"]), outermost);
+	}
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "", "\t// h", "\tprivate def h() { }", "\tdef g() { }", "}"]), ends);
+	refuse(t, lines(["component A {", "\tdef g() { }", "\tdef f() {", "\t\tg();", "\t", "}"]), outermost);
+	refuse(t, "component A { // a\r\n\tdef f() -> int {\n\t\treturn 1;\n\t\n\tprivate def g() -> int { return 2; } // g\r\n}\n", ends);
 	// A member deeper than the method's statements, on its last statement's
-	// line, or continued; a local function or a local value as deep as its
-	// header; and a match case's block.
+	// line, or continued; and a local function or a local value as deep as its
+	// header.
 	for (m in ["\t\t\tdef count = 1;", "\t\t\tdef h() -> int { return 1; }", "\t\t\tnew(x: int) { }", "\t\tvar count = 1;"]) {
-		refuse(t, lines(["class A {", "\tdef f() {", "\t\tg();", "\t", m, "\tprivate def g() { }", "}"]), unbalanced);
+		refuse(t, lines(["class A {", "\tdef f() {", "\t\tg();", "\t", m, "\tprivate def g() { }", "}"]), ends);
 	}
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(); var count = 1;", "\tprivate def g() { }", "}"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(1,", "\t\t\tdef count = 1;", "\tprivate def g() { }", "}"]), unbalanced);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(); var count = 1;", "\tprivate def g() { }", "}"]), ends);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(1,", "\t\t\tdef count = 1;", "\tprivate def g() { }", "}"]), none);
 	var before = ["def count = 11;", "component A {", "    def f() {", "        g();"];
 	var after = ["        var count = 7;", "    ", "    def target() -> int { return count; }", "    def g() { }", "}"];
 	for (local in [["    def local() { }"], ["    def local() -> int { return 1; }"], ["    def local() {", "        g();", "    }"],
 			["    def local = fun () { };"]]) {
-		refuse(t, lines(Arrays.concat(Arrays.concat(before, local), after)), unbalanced);
+		refuse(t, lines(Arrays.concat(Arrays.concat(before, local), after)), outermost);
 	}
 	refuse(t, lines(["def count = 11;", "component A {", "    def f() {", "        if (true) {", "            g();", "    }",
-		"    def local() { }", "        var count = 7;", "    ", "    def target() -> int { return count; }", "    def g() { }", "}"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef f(a: bool) {", "\t\tmatch (a) {", "\t\t\ttrue => {", "\t\t\t\tg();", "\t\t\t", "\t\t\tfalse => ;", "\t\t}", "\t}", "\tdef g() { }", "}"]),
-		unbalanced);
+		"    def local() { }", "        var count = 7;", "    ", "    def target() -> int { return count; }", "    def g() { }", "}"]), outermost);
 	refuse(t, lines(["def count = 11;", "component A {", "    def f() {", "        g();", "    ", "            var count =",
-		"        7;", "    private def target() -> int { return count; }", "    def g() { }", "}"]), unbalanced);
+		"        7;", "    private def target() -> int { return count; }", "    def g() { }", "}"]), ends);
 	refuse(t, lines(["type V {", "\tcase X;", "\tdef f() {", "\t\tg();", "\t", "\t\t\tcase Y;", "\tdef g<T>() { }", "}",
-		"component A { }"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t\t} var count = 1;", "\tprivate def g() { }", "}"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef", "\t\tvar count = 1;", "\tprivate def g() { }", "}"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t", "\tdef g() { }", "}"]), unbalanced);
+		"component A { }"]), ends);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t\t} var count = 1;", "\tprivate def g() { }", "}"]), ends);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef", "\t\tvar count = 1;", "\tprivate def g() { }", "}"]), ends);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t", "\tdef g() { }", "}"]), outermost);
 	refuse(t, lines(["component A {", "\tdef f(a: bool) {", "\t\tprivate", "\t\tdef h() {", "\t\t\tif (a) {", "\t\t\t\tg();",
-		"\t\t\t", "\t\t}", "\t}", "\tdef g() { }", "}"]), unbalanced);
-	refuse(t, lines(["class A {", "\tdef g() { }", "\tdef f(a: bool) {", "\t\tif (a) {", "\t\t\tg();", "\t\tg();", "\t}", "}"]), unbalanced);
+		"\t\t\t", "\t\t}", "\t}", "\tdef g() { }", "}"]), ends);
+	refuse(t, lines(["class A {", "\tdef g() { }", "\tdef f(a: bool) {", "\t\tif (a) {", "\t\t\tg();", "\t\tg();", "\t}", "}"]), outermost);
 	refuse(t, lines(["class A {", "\tdef f(a: Array<int>) {", "\t\tfor (i = 0; i < a.length; ) {", "\t\t\ti++;", "\t\t}", "\t",
-		"\tdef [i: int] -> int { return i; }", "\tdef g() { }", "}"]), unbalanced);
+		"\tdef [i: int] -> int { return i; }", "\tdef g() { }", "}"]), ends);
 	// A mixed-width file in which a loop's "}" is as deep as its constructor,
 	// while a later method lost its own.
 	refuse(t, lines(["class C {", "\tnew() {", "\t\tfor (i < 2) {", "            g();", "        }", "\t}",
-		"    def g() { }", "    def h() {", "\t\tg();", "\t", "}"]), unbalanced);
+		"    def g() { }", "    def h() {", "\t\tg();", "\t", "}"]), outermost);
+	// Review round 3 of #317: an if's "}" is as deep as the method's header,
+	// and the method's own "}" is lost before a private method. The
+	// declarations agree whichever "}" was lost, but the method's extent
+	// doesn't.
+	refuse(t, lines(["def count = 11;", "component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t}", "\t",
+		"\tprivate def local() { }", "\tdef target() -> bool { return count == 1; }", "\tdef g() { }", "}"]), ends);
+	// A variant case's block, or its last method, lost its "}": the case's
+	// own "}" is then in no method body.
+	refuse(t, lines(["type V {", "\tcase One {", "\t\tdef f() { }", "\t\tdef g() {", "\t}", "\tcase Two;", "}"]),
+		"a place for the lost \"}\" leaves it in no method or constructor body");
 	// With an error in a later body, and two closers short.
-	refuse(t, lines(["component A {", "\tdef f() -> int {", "\t\treturn 1;", "\t", "\tprivate def other() {", "\t\tvar y = ;", "\t}", "\tdef g() { }", "}"]), unbalanced);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t", "\tdef g() { }", "}"]), unbalanced);
+	refuse(t, lines(["component A {", "\tdef f() -> int {", "\t\treturn 1;", "\t", "\tprivate def other() {", "\t\tvar y = ;", "\t}", "\tdef g() { }", "}"]), none);
+	refuse(t, lines(Arrays.concat(Arrays.concat(["component A {", header], cases), ["\t}", "\tdef other() {", "\t\tvar y = ;", "\t}",
+		"\tdef g() { }", "}"])), none);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t", "\tdef g() { }", "}"]), "braces do not balance");
+}
+
+// Rule 3 reads at most MAX_PLACES texts. Each place on the error's line fails
+// before its "}", and the place before the error fails past its "}", which
+// stands for the rest of its block: n calls after the error take n + 2 texts.
+def test_closer_places(t: Tester) {
+	for (n in [LspCurrentRepair.MAX_PLACES - 2, LspCurrentRepair.MAX_PLACES - 1]) {
+		var line = StringBuilder.new().puts("\t\tvar x = ;");
+		for (i < n) line.puts(" g();");
+		var current = method("\tdef f(a: bool) {", ["\t\tif (a) {", "\t\t\tg();", line.toString(), "\t}"]);
+		refuse(t, current, if(n + 2 > LspCurrentRepair.MAX_PLACES, "the places for the lost \"}\" exceed the parse budget",
+			"no place for the lost \"}\" parses"));
+	}
 }
 
 // CR is a line terminator. The pinned parser rejects a CR outside a comment,
@@ -186,6 +240,12 @@ def test_crlf(t: Tester) {
 		"the parser's error is in a blanked body");
 	// A CR that doesn't end a line makes its line irregular.
 	refuse(t, "component A {\n\tdef f(a: bool) {\n\t\tif (a)\n\t\t\tg();\r g();\n\t\t}\n\t}\n\tdef g() { }\n}\n", "a line is irregular");
+	// Rule 3, with CRs outside the body and inside it.
+	var cases = "\t\tmatch (a) {\n\t\t\ttrue => {\n\t\t\t\tg();\n\t\t\t\n\t\t\tfalse => ;\n\t\t}\n";
+	check(t, Strings.format1("component A { // a\r\n\tdef f(a: bool) {\n%s\t} // f\r\n\tdef g() { } // g\r\n} // h\r\n", cases),
+		"def f(a: bool)", "\t} // f\r");
+	refuse(t, Strings.format1("component A { // a\r\n\tdef f(a: bool) { // b\r\n%s\t}\n\tdef g() { }\n}\n", cases),
+		"the parser's error is in a blanked body");
 }
 
 // Tabs advance to the next multiple of 8 columns, so tabs and spaces mix when
@@ -342,12 +402,16 @@ def test_two_bodies(t: Tester) {
 		"\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), "blanked text does not parse");
 }
 
-// Rule 2's text costs one parse of the budget.
+// Rule 2's text costs one parse of the budget, and so does rule 3's, whose
+// places are read beyond it (test_closer_places).
 def test_parse_budget(t: Tester) {
-	var current = method("\tdef f(a: bool) {", ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"]);
-	var parsed = AeneasAdapter.parseFile("A.v3", current, []);
-	t.assertb("repair exceeds the parse budget", LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 0).2);
-	t.assert(LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 1).1 != null, "one body needs one parse");
+	for (body in [["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"],
+			["\t\tmatch (a) {", "\t\t\ttrue => {", "\t\t\t\tg();", "\t\t\t", "\t\t\tfalse => ;", "\t\t}", "\t}"]]) {
+		var current = method("\tdef f(a: bool) {", body);
+		var parsed = AeneasAdapter.parseFile("A.v3", current, []);
+		t.assertb("repair exceeds the parse budget", LspCurrentRepair.repair("A.v3", current, parsed.repairAt, parsed.errorAt(), [], 0).2);
+		t.assert(LspCurrentRepair.repair("A.v3", current, parsed.repairAt, parsed.errorAt(), [], 1).1 != null, "one body needs one parse");
+	}
 }
 
 // A real analysis of a method whose if lost its "{": declarations, uses, and

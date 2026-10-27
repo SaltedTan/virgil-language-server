@@ -10,19 +10,23 @@
 // string, byte literal, or block comment may be unterminated. When the file's
 // braces balance in ordinary code, the body ends at the brace that matches
 // its opening one. When they are one opener short, the body is the one that
-// layout delimits instead (LspLayout.braceRule); a file whose braces are
-// otherwise unbalanced, such as one closer short, is refused. If the blanked
-// text still fails to parse, the body that holds its first error is blanked
-// too, at most MAX_BODIES in all. There is one candidate per body, and no
-// search. Each blanked pair must be a method or constructor body of the
-// blanked text's own parse.
+// layout delimits instead (LspLayout.braceRule). When they are one closer
+// short, the body is the one that every place for the lost "}" agrees on
+// (closerRule); a file whose braces are otherwise unbalanced is refused. If
+// the blanked text still fails to parse, the body that holds its first error
+// is blanked too, at most MAX_BODIES in all. Each blanked pair must be a
+// method or constructor body of the blanked text's own parse.
 component LspCurrentRepair {
 	def MAX_BODIES = 2;
+	// Rule 3 parses at most this many texts with a "}" inserted, beyond the
+	// blanked texts that {repair}'s budget counts.
+	def MAX_PLACES = 16;
 
 	// The blanked text and its map to {current}, or nulls and the reason.
-	// {anchor} is FileParseResult.repairAt of {current}'s own parse. Parses
+	// {anchor} is FileParseResult.repairAt of {current}'s own parse, and
+	// {error} where its first error begins (FileParseResult.errorAt). Parses
 	// at most {parses} blanked texts, and never more than MAX_BODIES.
-	def repair(path: string, current: Array<byte>, anchor: int, options: Array<string>,
+	def repair(path: string, current: Array<byte>, anchor: int, error: int, options: Array<string>,
 			parses: int) -> (Array<byte>, LspBodyFallback, string) {
 		var scan = LspCursorScanner.new(current);
 		scan.braceFrom = 0;
@@ -33,6 +37,11 @@ component LspCurrentRepair {
 			body = holding(current, anchor);
 		} else if (scan.braceDepth == -1 && scan.braceMinimum == -1) {
 			var rule = LspLayout.new(current).braceRule();
+			if (rule.1 != null) return (null, null, rule.1);
+			body = rule.0;
+		} else if (scan.braceDepth == 1 && scan.braceMinimum == 0) {
+			if (parses < 1) return (null, null, "repair exceeds the parse budget");
+			var rule = closerRule(path, current, if(error > anchor, error, anchor), options);
 			if (rule.1 != null) return (null, null, rule.1);
 			body = rule.0;
 		} else {
@@ -80,6 +89,77 @@ component LspCurrentRepair {
 		}
 		return (-1, -1);
 	}
+	// Brace rule 3, when the braces are one closer short: the body to blank,
+	// as its opening brace and the byte after its closing brace, or the
+	// reason there is none. {error} is where the parser's first error is.
+	// The lost "}" was after the last "{" that raised the braces' balance from
+	// 0 to 1, and before the end of the error's line. Each place for it right
+	// after a ";", "{", or "}" in ordinary code, outside the parentheses
+	// opened since the innermost "{" open there, and inside the innermost
+	// "{" open at the error, is read by parsing the text with a "}" inserted
+	// there, from the last place back. Every reading that parses must put
+	// that "}" inside the same method or constructor body, which ends at a
+	// "}" the text has, so that nothing is inserted. A reading in which the
+	// inserted "}" ends the body itself, so that the method could end
+	// anywhere its "}" could go, refuses the file. Within one block, a
+	// reading that parses stands for the earlier places, since they leave
+	// the same body; where the block holds statements, members, or cases, so
+	// does one whose parse fails past the inserted "}", since the parser is
+	// then between two of them and would fail there for an earlier place too.
+	def closerRule(path: string, current: Array<byte>, error: int, options: Array<string>) -> ((int, int), string) {
+		var none = (-1, -1);
+		if (error < 0) return (none, "the parser's error is not in a method or constructor body");
+		var lines = LspLayout.new(current);
+		if (!lines.balances(1)) return (none, "the layout reading's braces differ from the scanner's");
+		var block = lines.openAt(error);
+		if (block <= lines.lastRise()) return (none, "the parser's first error is in the outermost open block");
+		var end = lines.lineEnd(error), read = Vector<int>.new(), parses = 0, found = none;
+		for (k = lines.places.length - 1; k >= 0; k--) {
+			var at = lines.places[k], open = lines.blocks[k];
+			if (at > end) continue;
+			if (at <= block) break;
+			if (holds(read, open)) continue;
+			if (parses == MAX_PLACES) return (none, "the places for the lost \"}\" exceed the parse budget");
+			parses++;
+			var parsed = AeneasAdapter.repairParse(path, insert(current, at), options);
+			if (parsed.0 == null) {
+				if (parsed.1 > at && itemBlock(current, open)) read.put(open);
+				continue;
+			}
+			var body = none;
+			for (b in parsed.0) {
+				if (b.0 < at && at < b.1) body = b;
+			}
+			if (body.0 < 0) return (none, "a place for the lost \"}\" leaves it in no method or constructor body");
+			if (body.1 == at + 1) return (none, "a place for the lost \"}\" ends a method or constructor body");
+			body = (body.0, body.1 - 1);
+			if (found.0 < 0) found = body;
+			else if (found != body) return (none, "places for the lost \"}\" leave it in different bodies");
+			read.put(open);
+		}
+		if (found.0 < 0) return (none, "no place for the lost \"}\" parses");
+		return (found, null);
+	}
+	// Whether the "{" at {open} holds statements, members, a variant's cases,
+	// or a match's cases, as the completion scanner reads it; -1 is the file.
+	// A lambda's body doesn't: closing it early leaves the parser inside an
+	// expression.
+	private def itemBlock(text: Array<byte>, open: int) -> bool {
+		if (open < 0) return true;
+		var ctx = LspCursorScanner.new(text).scan(open + 1);
+		if (ctx.opens.length == 0 || ctx.opens[ctx.opens.length - 1] != open) return false;
+		var role = ctx.roles[ctx.roles.length - 1];
+		return role == LspOpenRole.STATEMENTS || role == LspOpenRole.MEMBERS || role == LspOpenRole.VARIANT
+			|| role == LspOpenRole.MATCH;
+	}
+	// {text} with a "}" inserted at {at}.
+	private def insert(text: Array<byte>, at: int) -> Array<byte> {
+		var result = Array<byte>.new(text.length + 1);
+		for (i < at) result[i] = text[i];
+		result[at] = '}';
+		for (i = at; i < text.length; i++) result[i + 1] = text[i];
+		return result;
+	}
 	// Replaces each byte strictly between {body}'s braces with a space, except
 	// CR and LF.
 	def blank(text: Array<byte>, body: (int, int)) {
@@ -90,6 +170,10 @@ component LspCurrentRepair {
 	}
 	private def has(bodies: Array<(int, int)>, body: (int, int)) -> bool {
 		for (b in bodies) if (b == body) return true;
+		return false;
+	}
+	private def holds(opens: Vector<int>, open: int) -> bool {
+		for (i < opens.length) if (opens[i] == open) return true;
 		return false;
 	}
 }

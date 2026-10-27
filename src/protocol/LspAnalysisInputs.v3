@@ -10,14 +10,15 @@
 class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBytes: long) {
 	// The current text's parse, if its parser diagnostics' parse is stale,
 	// fallback's parse of the last parseable text, and current-text repair's
-	// parses of its repaired texts share this bound.
+	// parses of its repaired texts share this bound. Brace rule 3 also reads
+	// at most LspCurrentRepair.MAX_PLACES texts with a "}" inserted.
 	def PARSES_PER_FILE = 3;
 	var sources: Array<AnalysisSource>;
 	// One capture, one analysis: reuse the current overlay's existing parse
 	// outcome to decide fallback before submitting any worker request. A
 	// broken file that fallback cannot substitute gets current-text repair
 	// instead (LspCurrentRepair). Either way the capture parses each broken
-	// file at most PARSES_PER_FILE times.
+	// file at most PARSES_PER_FILE times, besides brace rule 3's places.
 	def substitute(store: DocumentStore, context: ProjectContext, cache: ParseableTextCache,
 			parser: LspParserDiagnostics) -> string {
 		var bytes = 32L, options = context.definition.compilerArgs;
@@ -37,7 +38,8 @@ class LspAnalysisInputs(versions: Array<AnalysisDocumentVersion>, var snapshotBy
 				if (bodies != null) result = LspBodyEligibility.compare(effective, doc.text, bodies).0;
 			}
 			if (result == null) {
-				var repaired = LspCurrentRepair.repair(sources[i].path, doc.text, outcome.0.repairAt, options, parses);
+				var repaired = LspCurrentRepair.repair(sources[i].path, doc.text, outcome.0.repairAt, outcome.0.errorAt,
+					options, parses);
 				effective = repaired.0;
 				result = repaired.1;
 			}

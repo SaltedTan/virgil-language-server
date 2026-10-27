@@ -10,7 +10,8 @@
 // line is irregular if it starts inside a block comment or holds a control
 // byte other than a tab outside comments, except a CR that ends it; the brace
 // rule refuses a file with an irregular line. Lines that don't count are
-// skipped everywhere.
+// skipped everywhere. Rule 3 (LspCurrentRepair.closerRule) reads only the
+// braces and the places where a lost "}" could go, not the indentation.
 class LspLayout {
 	def text: Array<byte>;
 	// Per line: its first byte, the byte after its indentation, its
@@ -31,12 +32,20 @@ class LspLayout {
 	// header's parentheses, the first two ";" end no statement.
 	def heads = Vector<int>.new();
 	def depths = Vector<int>.new();
+	// The offset right after each ";", "{", and "}" in ordinary code outside
+	// the parentheses opened since the innermost open "{", in order, and that
+	// "{", pairing braces in order, or -1: where rule 3 tries a lost "}".
+	def places = Vector<int>.new();
+	def blocks = Vector<int>.new();
 
 	new(text) {
 		var n = text.length, i = 0, comment = false, stop = true, depth = 0;
 		// The offset of the "(" after the last "for", the depth of the
 		// parentheses in a "for" header, and how many of its ";" remain.
 		var paren = -1, header = 0, semis = 0;
+		// The open "{", and the parentheses open since the innermost one, with
+		// those open before each.
+		var opens = Vector<int>.new(), parens = 0, outer = Vector<int>.new();
 		while (true) {
 			var start = i, width = 0, inComment = comment, odd = false;
 			while (i < n && (text[i] == ' ' || text[i] == '\t')) {
@@ -97,6 +106,23 @@ class LspLayout {
 					semis--;
 				} else if (c == 'f' && (i == 0 || !isIdent(text[i - 1])) && wordAt(i, n, "for")) {
 					paren = spaces(i + 3, n);
+				}
+				if (c == '{') {
+					opens.put(i);
+					outer.put(parens);
+					parens = 0;
+				} else if (c == '}' && opens.length > 0) {
+					opens.length--;
+					parens = outer[outer.length - 1];
+					outer.length--;
+				} else if (c == '(') {
+					parens++;
+				} else if (c == ')' && parens > 0) {
+					parens--;
+				}
+				if ((c == ';' || c == '{' || c == '}') && parens == 0) {
+					places.put(i + 1);
+					blocks.put(if(opens.length > 0, opens[opens.length - 1], -1));
 				}
 				if (first < 0) first = i;
 				last = end - 1;
@@ -159,6 +185,46 @@ class LspLayout {
 			}
 		}
 		return (-1, -1);
+	}
+	// Whether the braces' balance never falls below 0 and ends at {net}.
+	def balances(net: int) -> bool {
+		var depth = 0;
+		for (i < braces.length) {
+			depth += if(text[braces[i]] == '{', 1, -1);
+			if (depth < 0) return false;
+		}
+		return depth == net;
+	}
+	// The innermost "{" open at {offset}, pairing braces in order, or -1.
+	def openAt(offset: int) -> int {
+		var stack = Vector<int>.new();
+		for (i < braces.length) {
+			var b = braces[i];
+			if (b >= offset) break;
+			if (text[b] == '{') stack.put(b);
+			else if (stack.length > 0) stack.length--;
+		}
+		return if(stack.length > 0, stack[stack.length - 1], -1);
+	}
+	// The last "{" that raises the braces' balance from 0 to 1, or -1.
+	def lastRise() -> int {
+		var depth = 0, rise = -1;
+		for (i < braces.length) {
+			var b = braces[i];
+			if (text[b] == '{') {
+				if (depth == 0) rise = b;
+				depth++;
+			} else {
+				depth--;
+			}
+		}
+		return rise;
+	}
+	// The offset of the LF that ends the line holding {offset}, or the
+	// text's length.
+	def lineEnd(offset: int) -> int {
+		var k = lineOf(offset);
+		return if(k + 1 < starts.length, starts[k + 1] - 1, text.length);
 	}
 	// Whether the pair of the "{" at {open} and the "}" at {close} agrees with
 	// the layout: on one line, or closing on a line as deep as the line where

@@ -580,11 +580,13 @@ class Corpus:
 
     def brace_controls(self, caller):
         """Controls for the brace rules (#317, ADR-0010 rules 2 and 3). Rule 2
-        reads a file's layout when its braces are one opener short. Rule 3 is
-        left for #320, so a file one closer short is refused, and each of its
-        controls expects that. Each is a small tab-indented program; as for the
-        other repair controls, each oracle changes target's signature, so the
-        predecessor's answers are wrong."""
+        reads a file's layout when its braces are one opener short. Rule 3
+        (#320) empties a body when the braces are one closer short only where
+        every place for the lost "}" that parses leaves it in that body, before
+        the body's own "}"; the rule-3 controls from #317 are refused. Each is
+        a small tab-indented program; as for the other repair controls, each
+        oracle changes target's signature, so the predecessor's answers are
+        wrong."""
         def text(*rows):
             return "\n".join(rows) + "\n"
         new = "\tdef target() -> bool { return true; }"
@@ -899,6 +901,9 @@ class Corpus:
             "brace-tab-stops": (1, False),
             "brace-and-blank-two-bodies": (2, False),
             "brace-opener-missing-return-limit": (1, True),
+            "brace-closer-match-case": (1, False),
+            "brace-closer-lambda-if": (1, False),
+            "brace-closer-match-case-missing-return-limit": (1, True),
         }
         # Controls whose wrong reading would bind target's count, or its
         # local(), elsewhere get a second query, on that name.

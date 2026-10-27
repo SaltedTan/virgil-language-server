@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Current-text repair over real stdio: cold opens with a syntax error in a
 method body, with an error the next line continues, with errors in two
-bodies, and with a lost "{", beside method-body fallback in another file; a
-lost "}" is refused."""
+bodies, with a lost "{", and with a match case's lost "}", beside method-body
+fallback in another file; a method's own lost "}" is refused."""
 import json
 from pathlib import Path
 import sys
@@ -58,6 +58,11 @@ BRACES = '''/* é😀\t */ component A {
 '''
 LOST_OPENER = BRACES.replace('(target() > 0) {', '(target() > 0)')
 LOST_CLOSER = BRACES.replace('\t\treturn 0;\n\t}\n', '\t\treturn 0;\n\t\n')
+# Brace rule 3 reads this match when a case's block lost its "}": every place
+# for the "}" that parses leaves it in broken's body, which ends at its own "}".
+CASES = BRACES.replace('\t\tif (target() > 0) {\n\t\t\treturn target();\n\t\t}\n',
+                       '\t\tmatch (target()) {\n\t\t\t1 => {\n\t\t\t\treturn target();\n\t\t\t}\n\t\t\t_ => ;\n\t\t}\n')
+LOST_CASE_CLOSER = CASES.replace('return target();\n\t\t\t}\n', 'return target();\n\t\t\t\n', 1)
 
 
 class Case:
@@ -353,11 +358,44 @@ def braces(exe, root):
         c.s.close()
 
 
+def closer(exe, root):
+    # A match case's lost "}" empties the body that every reading of it agrees
+    # on, through the method's own "}", and moves no offset.
+    current = LOST_CASE_CLOSER
+    c = Case(exe, root, {'A.v3': current, 'B.v3': B, 'C.v3': C})
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        sub, = substitutions(c.snapshot())
+        open_ = offset(current, '{\n\t\tmatch')
+        close = offset(current, '}\n\tprivate def') + 1
+        assert sub['substitution'] == blanked((open_, close)), sub
+        target = location(c, 'A.v3', 'target', current.index('def target'))
+        assert c.query('definition') == target
+        assert c.query('references') == [target, location(c, 'A.v3', 'target', current.index('def elsewhere')),
+                                         location(c, 'B.v3', 'target')]
+        inside(c, ('{\n\t\tmatch', 'target()) {', 'target();\n', 'return 0'))
+        item, = prepare(c, 'A.v3', 'broken')
+        assert calls(c, 'outgoing', item) == []
+        callee, = prepare(c, 'A.v3', 'target', current.index('def target'))
+        assert sorted(call['from']['name'] for call in calls(c, 'incoming', callee)) == ['elsewhere', 'use']
+        for name in ('A.v3', 'B.v3'):
+            assert [d['range'] for d in c.semantic(name)] == [span(c.texts[name], '"bad"')], c.semantic(name)
+        # Restoration: the parseable text has every use again.
+        c.change('A.v3', CASES)
+        assert not substitutions(c.snapshot())
+        assert len(c.query('references')) == 5
+        no_leaks(c)
+        c.s.shutdown()
+    finally:
+        c.s.close()
+
+
 def refused(exe, root):
-    # Braces that don't balance, as with one "}" short, even before a
-    # private method, an error in a header or a field initializer, errors in
-    # three bodies, and an unterminated string leave the program unanalyzed,
-    # as before.
+    # A method's own lost "}", where the method could end anywhere its "}"
+    # could go, even before a private method, an error in a header or a field
+    # initializer, errors in three bodies, and an unterminated string leave
+    # the program unanalyzed, as before.
     for current in (A.replace('return target(); }', 'return target();', 1),
                     LOST_CLOSER, LOST_CLOSER.replace('\tprivate def unused() { }\n', ''),
                     A.replace('broken()', 'broken(x: )'),
@@ -383,12 +421,12 @@ def main():
     # Keep disposable projects beside the build, away from the shared /tmp.
     with tempfile.TemporaryDirectory(prefix='current-repair-', dir=exe.parent) as work:
         for name, run in (('cold', cold), ('continued', continued), ('two-bodies', two_bodies), ('braces', braces),
-                          ('refused', refused)):
+                          ('closer', closer), ('refused', refused)):
             root = Path(work) / name
             root.mkdir()
             run(exe, root)
-    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{", blanking '
-          'beside fallback, suppression, call hierarchy, rename refusal, restoration, and refusals passed')
+    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{", a lost "}", '
+          'blanking beside fallback, suppression, call hierarchy, rename refusal, restoration, and refusals passed')
 
 
 if __name__ == '__main__':

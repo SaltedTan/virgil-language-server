@@ -36,6 +36,11 @@ class FileParseResult(path: string, diagnostics: Array<AnalysisDiagnostic>, decl
 	// Where a ";" could also end that statement, earlier on the same line
 	// (AnalysisStatementStart.alternative), or -1.
 	var alternativeAt = -1;
+
+	// Where the first error begins, or -1 if the file parsed.
+	def errorAt() -> int {
+		return if(diagnostics.length > 0, diagnostics[0].beginOffset, -1);
+	}
 }
 
 // One source file of a program, supplied as in-memory bytes. Whole-program

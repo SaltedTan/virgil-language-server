@@ -16,7 +16,8 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		var map = PositionMap.new(doc.text, PositionEncoding.UTF16);
 		var diagnostics = Array<LspDiagnostic>.new(result.diagnostics.length);
 		for (i < diagnostics.length) diagnostics[i] = LspDiagnostics.compiler(map, result.diagnostics[i]);
-		parsedWith[doc.uri] = LspParsedDocument.new(doc.identity, options, diagnostics.length == 0, result.repairAt);
+		parsedWith[doc.uri] = LspParsedDocument.new(doc.identity, options, diagnostics.length == 0, result.repairAt,
+			result.errorAt());
 		lists.parsed(doc, diagnostics);
 	}
 	// Whether {doc}'s text parses with language options {options}: as its
@@ -31,7 +32,8 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 		var last = if(parsedWith.has(doc.uri), parsedWith[doc.uri]);
 		if (last != null && last.identity == doc.identity && sameOptions(last.options, options)) return (last, false);
 		var result = AeneasAdapter.parseFile(pathOf(doc), doc.text, options);
-		return (LspParsedDocument.new(doc.identity, options, result.diagnostics.length == 0, result.repairAt), true);
+		return (LspParsedDocument.new(doc.identity, options, result.diagnostics.length == 0, result.repairAt,
+			result.errorAt()), true);
 	}
 	// A version-only change, whose text is unchanged: the last parse and the
 	// published list still describe it, so only their version moves. Returns
@@ -76,8 +78,10 @@ class LspParserDiagnostics(lists: LspDiagnosticLists) {
 
 // The last parse of an open document for its diagnostics: the overlay it
 // parsed, the language options it parsed with, whether it parsed, and where
-// current-text repair starts if it did not (FileParseResult.repairAt).
-class LspParsedDocument(identity: DocumentVersionIdentity, options: Array<string>, clean: bool, repairAt: int) { }
+// current-text repair starts if it did not (FileParseResult.repairAt) and
+// where its first error begins (FileParseResult.errorAt).
+class LspParsedDocument(identity: DocumentVersionIdentity, options: Array<string>, clean: bool, repairAt: int,
+		errorAt: int) { }
 
 // One LSP diagnostic and the identity used to merge sources: its byte range,
 // code, and message. A whole-program parse error that repeats a single-file
