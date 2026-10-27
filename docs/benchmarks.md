@@ -1098,12 +1098,14 @@ These measurements include unavailable answers and must not be compared directly
 with the successful-operation benchmark above.
 
 `make test` runs scoring, cleanup, and session sequencing regression checks, a
-forty-eight-state smoke replay (two small repair states and all 46 negative
+fifty-three-state smoke replay (two small repair states and all 51 negative
 controls, in both modes), and the four-step `in-turn` editing session in both modes. The
 short session adds overlapping broken files and recovery in one server process.
-A separate before/after run took 0.39 → 0.59 seconds on the reference host, and
-about 0.88 seconds with the first 15 brace controls, 1.08 seconds with 23, and
-1.34 seconds with all 33; the full suite remains opt-in. Run these checks separately with:
+A separate before/after run took 0.39 → 0.59 seconds on the reference host. As
+the brace controls were added, it took about 0.88 seconds with the first 15,
+1.08 seconds with 23, and 1.34 seconds with 33; with all 38, the smoke replay's
+median of five runs on CPU 12 is 1.48 seconds. The full suite remains opt-in.
+Run these checks separately with:
 
 ```sh
 python3 test/benchmarks/test_tolerance.py
