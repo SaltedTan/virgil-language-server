@@ -10,17 +10,23 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 const { StreamMessageReader, StreamMessageWriter } = require('vscode-jsonrpc/node');
 
-// Run the installed language client's hover provider, request error handling,
-// and notification code. Only the editor API and client startup are replaced.
+// Run the installed language client's hover provider, document
+// synchronization, request error handling, and notification code. Only the
+// editor API and client startup are replaced.
 const notifications = [];
 const vscode = {
   version: '1.91.0',
   LogLevel: { Info: 3 },
   CodeActionKind: { Empty: {} },
+  EventEmitter: class { event = () => ({ dispose() {} }); fire() {} dispose() {} },
   window: {
     showErrorMessage: (message) => { notifications.push(message); return Promise.resolve(); },
   },
-  languages: { registerHoverProvider: () => ({ dispose() {} }) },
+  // The documents open in the editor; every one is a Virgil document.
+  workspace: {
+    textDocuments: [], onDidOpenTextDocument: () => ({ dispose() {} }), onDidChangeTextDocument: () => ({ dispose() {} }),
+  },
+  languages: { registerHoverProvider: () => ({ dispose() {} }), match: () => 10 },
 };
 for (const name of ['CancellationError', 'CompletionItem', 'CodeLens', 'DocumentLink', 'CodeAction',
   'Diagnostic', 'CallHierarchyItem', 'TypeHierarchyItem', 'SymbolInformation', 'InlayHint']) {
@@ -29,12 +35,15 @@ for (const name of ['CancellationError', 'CompletionItem', 'CodeLens', 'Document
 const load = Module._load;
 let library;
 let HoverFeature;
+let DidOpenTextDocumentFeature;
+let DidChangeTextDocumentFeature;
 try {
   Module._load = function (name, ...args) {
     return name === 'vscode' ? vscode : load.call(this, name, ...args);
   };
   library = require('vscode-languageclient/node');
   ({ HoverFeature } = require('vscode-languageclient/$test/common/hover'));
+  ({ DidOpenTextDocumentFeature, DidChangeTextDocumentFeature } = require('vscode-languageclient/$test/common/textSynchronization'));
 } finally {
   Module._load = load;
 }
@@ -192,9 +201,11 @@ test('lost framing rejects every pending request, including one waiting for docu
 });
 
 // A scripted server on in-memory streams. It records the method of each
-// message it reads; received(method) waits for the first message with that
-// method, and reply answers a request.
-function scriptedServer(t) {
+// message it reads; received(method, matches) waits for the first message with
+// that method that matches, and reply answers a request. The first write from
+// the client whose text hold matches is held: it neither reaches the server nor
+// completes until release is called, and held resolves once it is held.
+function scriptedServer(t, { hold = () => false } = {}) {
   const toServer = new PassThrough();
   const toClient = new PassThrough();
   const reader = new StreamMessageReader(toServer);
@@ -203,20 +214,37 @@ function scriptedServer(t) {
   const waiting = [];
   reader.listen((message) => {
     messages.push(message);
-    for (const wait of waiting.filter(({ method }) => method === message.method)) {
+    for (const wait of waiting.filter(({ method, matches }) => method === message.method && matches(message))) {
       waiting.splice(waiting.indexOf(wait), 1);
       wait.resolve(message);
     }
   });
-  t.after(() => { reader.dispose(); writer.dispose(); toServer.destroy(); toClient.destroy(); });
+  let release;
+  let isHeld;
+  const held = new Promise((resolve) => { isHeld = resolve; });
+  const fromClient = new Writable({
+    write(chunk, encoding, done) {
+      const pass = () => { toServer.write(chunk); done(); };
+      if (release === undefined && hold(chunk.toString())) {
+        release = pass;
+        isHeld();
+      } else {
+        pass();
+      }
+    },
+  });
+  t.after(() => { reader.dispose(); writer.dispose(); fromClient.destroy(); toServer.destroy(); toClient.destroy(); });
   return {
-    transports: () => ({ reader: new StreamMessageReader(toClient), writer: new StreamMessageWriter(toServer) }),
+    transports: () => ({ reader: new StreamMessageReader(toClient), writer: new StreamMessageWriter(fromClient) }),
+    messages: () => messages,
     methods: () => messages.map((message) => message.method),
-    received: (method) => new Promise((resolve) => {
-      const message = messages.find((candidate) => candidate.method === method);
-      if (message !== undefined) resolve(message); else waiting.push({ method, resolve });
+    received: (method, matches = () => true) => new Promise((resolve) => {
+      const message = messages.find((candidate) => candidate.method === method && matches(candidate));
+      if (message !== undefined) resolve(message); else waiting.push({ method, matches, resolve });
     }),
     reply: (id, response) => writer.write({ jsonrpc: '2.0', id, ...response }),
+    held,
+    release: () => release(),
   };
 }
 
@@ -295,3 +323,136 @@ test('a request that waited for document sync while the client stopped is droppe
   await assert.rejects(client.sendRequest('textDocument/hover', {}),
     (error) => error.code === library.ErrorCodes.ConnectionInactive && error.message === 'Client is not running');
 });
+
+// A Virgil document open in the editor.
+function textDocument(uri, text) {
+  return { uri: { toString: () => uri }, languageId: 'virgil', version: 1, getText: () => text };
+}
+
+const HIDDEN = 'file:///hidden.v3';
+const SECOND = 'file:///second.v3';
+const VISIBLE = 'file:///bad.v3';
+
+// Requests sent while the didOpen of a hidden document is held (#318), as when
+// a restarted client registers its providers and VS Code asks for the active
+// editor's breadcrumbs. The client opens the documents as it does when it
+// starts, with the server's text synchronization: the transport holds the
+// first hidden document's didOpen, edit then runs, and the transport lets the
+// didOpen through once every request has passed the library's own waits for
+// document synchronization and reached the middleware, right before its
+// write, or once a request's flush of pending full-text changes is about to
+// write one, since that write would wait for the held one. The server answers each request with its method, and the client then
+// stops. Returns the messages the server got, in order, each with its
+// document's URI, the didChange messages, and the requests' results.
+async function requestsBehindHiddenOpen(t, client, stop, { documents, syncKind, edit = async () => {}, requests }) {
+  const server = scriptedServer(t, { hold: (text) => text.includes('"textDocument/didOpen"') && text.includes(HIDDEN) });
+  client.createMessageTransports = async () => server.transports();
+  const connection = await client.createConnection();
+  connection.listen();
+  client.$state = 'running';
+  Object.defineProperty(client, 'visibleDocuments', {
+    value: { isVisible: (document) => document.uri.toString() === VISIBLE, dispose() {} },
+  });
+  const registration = { documentSelector: [{ language: 'virgil' }], syncKind };
+  client._didOpenTextDocumentFeature = new DidOpenTextDocumentFeature(client, client._syncedDocuments);
+  client._didChangeTextDocumentFeature = new DidChangeTextDocumentFeature(client, new Map());
+  client._didChangeTextDocumentFeature.register({ id: 'virgil', registerOptions: registration });
+  const { middleware } = client.clientOptions;
+  const sendRequest = middleware.sendRequest ?? ((type, param, token, next) => next(type, param, token));
+  let count = 0;
+  let allReached;
+  const reached = new Promise((resolve) => { allReached = resolve; });
+  middleware.sendRequest = (...args) => {
+    if (++count === requests.length) allReached();
+    return sendRequest(...args);
+  };
+  // A request's flush of pending full-text changes waits for their write.
+  const feature = client._didChangeTextDocumentFeature;
+  const aboutToSend = feature.aboutToSendNotification;
+  const changing = new Promise((resolve) => {
+    feature.aboutToSendNotification = (...args) => { resolve(); return aboutToSend.apply(feature, args); };
+  });
+  vscode.workspace.textDocuments = documents;
+  t.after(() => { vscode.workspace.textDocuments = []; });
+  client._didOpenTextDocumentFeature.register({ id: 'virgil', registerOptions: registration });
+  await server.held;
+  await edit(client._didChangeTextDocumentFeature);
+  const results = requests.map((uri) => client.sendRequest('textDocument/documentSymbol', { textDocument: { uri } },
+    library.CancellationToken.None));
+  await Promise.race([reached, changing]);
+  server.release();
+  for (const uri of requests) {
+    const request = await server.received('textDocument/documentSymbol', (message) => message.params.textDocument.uri === uri);
+    server.reply(request.id, { result: request.method });
+  }
+  const symbols = await Promise.all(results);
+  const stopping = stop();
+  server.reply((await server.received('shutdown')).id, { result: null });
+  await server.received('exit');
+  await stopping;
+  const order = server.messages().map(({ method, params }) => [method, params?.textDocument?.uri].filter(Boolean).join(' '));
+  const changes = server.messages().filter(({ method }) => method === 'textDocument/didChange').map(({ params }) => params);
+  return { order, changes, symbols };
+}
+
+// The library's client and the extension's.
+const clients = [
+  ['the library', async () => {
+    const { channel } = outputChannel();
+    const client = new UnstartedClient('virgil', 'Virgil', { command: 'virgil-lsp' }, { outputChannel: channel });
+    return { client, stop: () => client.stop() };
+  }],
+  ['the extension', async (t) => {
+    const { client } = await clientForTest(t, { stopping: true });
+    return { client, stop: () => client.stopInQueue() };
+  }],
+];
+
+for (const [name, create] of clients) {
+  test(`${name} writes a request for a document after that document's didOpen while another didOpen is held`, { timeout: 2000 }, async (t) => {
+    const { client, stop } = await create(t);
+    const { order, symbols } = await requestsBehindHiddenOpen(t, client, stop, {
+      documents: [textDocument(HIDDEN, 'component Hidden {}\n'), textDocument(SECOND, 'component Second {}\n'),
+        textDocument(VISIBLE, 'component Bad {}\n')],
+      syncKind: library.TextDocumentSyncKind.Full,
+      // The visible document's, and the second hidden document's, whose
+      // didOpen also comes after the held one.
+      requests: [VISIBLE, SECOND],
+    });
+    // vscode-languageclient 10.1.2 sent a hidden document's didOpen only once
+    // it was visible or a request or another document's didOpen sent the
+    // pending ones, one by one, so a request could overtake its document's
+    // didOpen. 11.0.0 sends every document's didOpen as it registers
+    // (microsoft/vscode-languageserver-node#1868).
+    assert.deepEqual(order, [
+      `textDocument/didOpen ${HIDDEN}`, `textDocument/didOpen ${SECOND}`, `textDocument/didOpen ${VISIBLE}`,
+      `textDocument/documentSymbol ${VISIBLE}`, `textDocument/documentSymbol ${SECOND}`, 'shutdown', 'exit',
+    ]);
+    assert.deepEqual(symbols, ['textDocument/documentSymbol', 'textDocument/documentSymbol']);
+  });
+
+  test(`${name} writes a full-text change made while a didOpen is held before a later request`, { timeout: 2000 }, async (t) => {
+    const { client, stop } = await create(t);
+    const visible = textDocument(VISIBLE, 'component Bad {}\n');
+    const { order, changes } = await requestsBehindHiddenOpen(t, client, stop, {
+      documents: [textDocument(HIDDEN, 'component Hidden {}\n'), visible],
+      syncKind: library.TextDocumentSyncKind.Full,
+      // The edit makes the visible document's version 2. The client sends a
+      // full-text change 250 ms after an edit, or before its next request or
+      // notification; the editor stub never fires the 250 ms delay.
+      edit: (feature) => {
+        visible.version = 2;
+        visible.getText = () => 'component Latest {}\n';
+        return feature.callback({ document: visible, contentChanges: [{ text: visible.getText() }] });
+      },
+      requests: [VISIBLE],
+    });
+    // The server must have version 2 when it answers, or the editor would keep
+    // an answer for version 1 as version 2's.
+    assert.deepEqual(order, [
+      `textDocument/didOpen ${HIDDEN}`, `textDocument/didOpen ${VISIBLE}`, `textDocument/didChange ${VISIBLE}`,
+      `textDocument/documentSymbol ${VISIBLE}`, 'shutdown', 'exit',
+    ]);
+    assert.deepEqual(changes, [{ textDocument: { uri: VISIBLE, version: 2 }, contentChanges: [{ text: 'component Latest {}\n' }] }]);
+  });
+}
