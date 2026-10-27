@@ -1,0 +1,198 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Current-text repair's brace rule for a lost "{" (ADR-0010 rule 2): the
+// layout reading (LspLayout) and the repair that LspCurrentRepair makes with
+// it.
+def T = UnitTests.register;
+def X = [
+	T("LspBraceRules:lost_opener", test_lost_opener),
+	T("LspBraceRules:crlf", test_crlf),
+	T("LspBraceRules:indentation", test_indentation),
+	T("LspBraceRules:refusals", test_refusals),
+	T("LspBraceRules:two_bodies", test_two_bodies),
+	T("LspBraceRules:parse_budget", test_parse_budget),
+	()
+];
+// {rows}, each ending in LF.
+def lines(rows: Array<string>) -> string {
+	var b = StringBuilder.new();
+	for (r in rows) b.puts(r).puts("\n");
+	return b.toString();
+}
+def find(text: Array<byte>, needle: string) -> int {
+	for (i = 0; i + needle.length <= text.length; i++) {
+		if (Strings.equal(needle, Arrays.range(text, i, i + needle.length))) return i;
+	}
+	return -1;
+}
+def repair(text: Array<byte>) -> (Array<byte>, LspBodyFallback, string) {
+	var parsed = AeneasAdapter.parseFile("A.v3", text, []);
+	return LspCurrentRepair.repair("A.v3", text, parsed.repairAt, [], LspCurrentRepair.MAX_BODIES);
+}
+// {text} with every byte strictly between {open} and {close} replaced by a
+// space, except CR and LF.
+def blanked(text: Array<byte>, open: int, close: int) -> Array<byte> {
+	var result = Arrays.dup(text);
+	for (i = open + 1; i < close; i++) if (result[i] != '\n' && result[i] != '\r') result[i] = ' ';
+	return result;
+}
+// The "{" that ends the line of the unique {header} in {text}.
+def opener(text: Array<byte>, header: string) -> int {
+	var at = find(text, header);
+	while (text[at] != '\n') at++;
+	while (text[at] != '{') at--;
+	return at;
+}
+// {current} is repaired by blanking, without moving any offset, exactly the
+// body from the "{" ending the line of {header} to the "}" of the first line
+// after it that is {closer}.
+def check(t: Tester, current: string, header: string, closer: string) {
+	var open = opener(current, header), close = open;
+	while (!Strings.equal(Strings.format1("\n%s\n", closer), Arrays.range(current, close, close + closer.length + 2))) close++;
+	close++;
+	while (current[close] != '}') close++;
+	var r = repair(current);
+	if (r.0 == null) return t.fail2("expected %s to be blanked: %s", current, Strings.nonnull(r.2));
+	var expected = blanked(current, open, close);
+	if (!Strings.equal(expected, r.0)) return t.fail2("expected %s, got %s", expected, r.0);
+	t.asserti(0, r.1.delta);
+	t.asserti(1, r.1.bodies.length);
+	t.assert(r.1.bodies[0] == (open, close + 1), "the body that layout delimits is excluded");
+	t.assert(AeneasAdapter.parseFile("A.v3", r.0, []).diagnostics.length == 0, "the blanked text parses");
+}
+// {current} is refused for {reason}.
+def refuse(t: Tester, current: string, reason: string) {
+	var r = repair(current);
+	if (r.0 != null) return t.fail2("expected no repair of %s, got %s", current, r.0);
+	t.assert_eq(null, r.1);
+	t.assertb(reason, r.2);
+}
+def method(header: string, body: Array<string>) -> string {
+	var rows = Vector<string>.new().put("class A {").put(header).puta(body);
+	return lines(rows.put("\tdef g() { }").put("}").extract());
+}
+
+// Rule 2: when the braces are one opener short, the method body that layout
+// delimits is blanked, wherever the header that lost its "{" is in it.
+def test_lost_opener(t: Tester) {
+	var header = "\tdef f(a: bool) {";
+	// An if, a while nested in a for, a match, an else after "}", a while
+	// after a legal if without braces, and a condition over two lines.
+	for (body in [
+		["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t\tg();", "\t}"],
+		["\t\tfor (i < 3) {", "\t\t\twhile (a)", "\t\t\t\tg();", "\t\t\t}", "\t\t}", "\t}"],
+		["\t\tmatch (a)", "\t\t\ttrue => g();", "\t\t\tfalse => ;", "\t\t}", "\t}"],
+		["\t\tif (a) {", "\t\t\tg();", "\t\t} else", "\t\t\tg();", "\t\t}", "\t}"],
+		["\t\tif (a)", "\t\t\tg();", "\t\twhile (a)", "\t\t\tg();", "\t\t}", "\t}"],
+		["\t\tif (a &&", "\t\t\t\ta)", "\t\t\tg();", "\t\t}", "\t}"]]) {
+		check(t, method(header, body), header, "\t}");
+	}
+	// A constructor, a private method, a method with a comment after its
+	// "{", and a closing "}" followed by a comment.
+	var body = ["\t\tif (true)", "\t\t\tg();", "\t\t}", "\t} // f"];
+	for (h in ["\tnew() {", "\tprivate def f() {", "\tdef f() { // f"]) check(t, method(h, body), h, "\t} // f");
+	// Line terminators and every offset stay.
+	var current = method(header, ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"]), r = repair(current);
+	t.asserti(current.length, r.0.length);
+	for (i < current.length) t.assert((current[i] == '\n') == (r.0[i] == '\n'), "line breaks stay");
+}
+
+// CR is a line terminator. The pinned parser rejects a CR outside a comment,
+// so these lines end in comments outside the excluded body, and the body's
+// own lines end in LF: a CR in a body is still a CR after blanking.
+def test_crlf(t: Tester) {
+	var current = "component A { // a\r\n\tdef f(a: bool) {\n\t\tif (a)\n\t\t\tg();\n\t\t}\n\t} // f\r\n\tdef g() { } // g\r\n} // h\r\n";
+	check(t, current, "def f(a: bool)", "\t} // f\r");
+	// A CR inside the body is a CR outside a comment once it is blanked.
+	refuse(t, "component A { // a\r\n\tdef f(a: bool) { // b\r\n\t\tif (a)\n\t\t\tg();\n\t\t}\n\t}\n\tdef g() { }\n}\n",
+		"the parser's error is in a blanked body");
+	// A CR that doesn't end a line makes its line irregular.
+	refuse(t, "component A {\n\tdef f(a: bool) {\n\t\tif (a)\n\t\t\tg();\r g();\n\t\t}\n\t}\n\tdef g() { }\n}\n", "a line is irregular");
+}
+
+// Tabs advance to the next multiple of 8 columns, so tabs and spaces mix when
+// their widths agree; other indentation styles read the same way.
+def test_indentation(t: Tester) {
+	var body = ["        if (true)", "            g();", "        }", "    }"];
+	var rows = lines(["component A {", "    def f() {", body[0], body[1], body[2], body[3], "    def g() { }", "}"]);
+	check(t, rows, "def f()", "    }");
+	rows = lines(["component A {", "  def f() {", "    if (true)", "      g();", "    }", "  }", "  def g() { }", "}"]);
+	check(t, rows, "def f()", "  }");
+	// A tab after two spaces is still at column 8.
+	rows = lines(["component A {", "  \tdef f() {", "\t        if (true)", "\t\t\tg();", "                }", "        }", "\tdef g() { }", "}"]);
+	check(t, rows, "def f()", "        }");
+	// Widths that disagree: a tab and four spaces after a tab are 12
+	// columns, not 16, though they look alike with tabs of 4.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t    if (true)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]),
+		"no one control statement's header in the method lost its \"{\" by layout");
+}
+
+// Each kind of layout that the rules refuse, among them each brace-rule
+// control of the tolerance benchmark.
+def test_refusals(t: Tester) {
+	var noHeader = "no method or constructor header encloses the damage";
+	var noCloser = "the method's body has no closing brace where layout ends it";
+	// swallow-field: the if's "}" ends nothing as deep as the method's
+	// header, and the field and methods after it would move into the method.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\t}", "\tvar x = 1;",
+		"\tdef h() -> bool { return x == 1; }", "\tdef g() { }", "}", "}"]), noCloser);
+	// Two closers at one indentation.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t}", "\t}", "\tdef g() { }", "}"]), noHeader);
+	// A deleted method header.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tvar x = 0;", "\t}", "\t\tvar y = 0;", "\t}", "\tdef g() { }", "}"]), noHeader);
+	// A method header split over two lines, or that lost its own "{".
+	refuse(t, lines(["component A {", "\tdef f(p: int,", "\t\tq: int) {", "\t\tif (p > q)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), noHeader);
+	refuse(t, lines(["component A {", "\tdef f() ", "\t\tg();", "\t}", "\tdef g() { }", "}"]), noHeader);
+	refuse(t, lines(["component A {", "\tprivate", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), noHeader);
+	// A line of the body no deeper than the header.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\twhile (true)", "\t\t\tg();", "\t\t}", "\tg();", "\t}", "\tdef g() { }", "}"]), noCloser);
+	// A header that lost its "{" below a header indented with four spaces.
+	refuse(t, lines(["component A {", "    def first() {", "\t\tg();", "\t}", "\tdef other() ", "\t\tg();", "    }", "\tdef g() { }", "}"]),
+		"no one control statement's header in the method lost its \"{\" by layout");
+	// A string left open.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t\tvar s = \"open;", "\t}", "\tdef g() { }", "}"]),
+		"a string, byte literal, or block comment is unterminated");
+	// A comment before the method's "}", or code after it.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t/* f */ }", "\tdef g() { }", "}"]),
+		"a comment precedes the method's closing brace");
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t} def g() { }", "}"]),
+		"code follows the method's closing brace on its line");
+	// A line that starts inside a block comment and holds code.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) /*", "\t\t*/ g();", "\t\t}", "\t}", "\tdef g() { }", "}"]), "a line is irregular");
+	// A layout that disagrees with its braces elsewhere in the file: here a
+	// "for" whose "}" is as deep as its method's, after the damage. Before
+	// it, the first pair that disagrees isn't the damage's.
+	refuse(t, lines(["class C {", "\tnew() {", "\t\tfor (i < 2) {", "\t\t\tg();", "\t}", "\t}", "\tdef g() { }",
+		"\tdef h() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "}"]), noHeader);
+	refuse(t, lines(["class C {", "\tdef h() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tnew() {", "\t\tfor (i < 2) {",
+		"\t\t\tg();", "\t}", "\t}", "\tdef g() { }", "}"]),
+		"a brace pair outside the method disagrees with the layout");
+}
+
+// The brace rule's body and the body that holds the next error, at most two in
+// all.
+def test_two_bodies(t: Tester) {
+	var current = lines(["component A {", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f(a: bool) {", "\t\tif (a)",
+		"\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]);
+	var r = repair(current);
+	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
+	var other = (opener(current, "def other()"), find(current, "}\n\tdef f") + 1);
+	var f = (opener(current, "def f(a"), find(current, "}\n\tdef g") + 1);
+	t.asserti(2, r.1.bodies.length);
+	t.assert(r.1.bodies[0] == other && r.1.bodies[1] == f, "both bodies are excluded, in order");
+	t.asserti(0, r.1.delta);
+	t.asserti(other.0 + 1, r.1.begin);
+	t.asserti(f.1 - 1, r.1.effectiveEnd);
+	// A third body is refused.
+	refuse(t, lines(["component A {", "\tdef e() { var x = ; }", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f(a: bool) {", "\t\tif (a)",
+		"\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), "blanked text does not parse");
+}
+
+// The brace rule's text costs one parse of the budget.
+def test_parse_budget(t: Tester) {
+	var current = method("\tdef f(a: bool) {", ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"]);
+	var parsed = AeneasAdapter.parseFile("A.v3", current, []);
+	t.assertb("repair exceeds the parse budget", LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 0).2);
+	t.assert(LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 1).1 != null, "one body needs one parse");
+}

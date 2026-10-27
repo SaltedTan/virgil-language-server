@@ -2,8 +2,8 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 """Current-text repair over real stdio: cold opens with a syntax error in a
-method body, with an error the next line continues, and with errors in two
-bodies, beside method-body fallback in another file."""
+method body, with an error the next line continues, with errors in two
+bodies, and with a lost "{", beside method-body fallback in another file."""
 import json
 from pathlib import Path
 import sys
@@ -39,6 +39,21 @@ C = '''component C {
 }
 '''
 C_BROKEN = C.replace('var n = 1;', 'var n = ;')
+# The brace rule for a lost "{" (ADR-0010 rule 2) reads this layout: an if that
+# lost its "{".
+BRACES = '''/* é😀\t */ component A {
+\tdef broken() -> int {
+\t\tif (target() > 0) {
+\t\t\treturn target();
+\t\t}
+\t\treturn 0;
+\t}
+\tdef target() -> int { return 1; }
+\tdef elsewhere() -> int { /* é😀\t */ return target(); }
+\tdef wrong() -> int { /* é😀\t */ return "bad"; }
+}
+'''
+LOST_OPENER = BRACES.replace('(target() > 0) {', '(target() > 0)')
 
 
 class Case:
@@ -293,10 +308,53 @@ def two_bodies(exe, root):
         c.s.close()
 
 
+def braces(exe, root):
+    # A lost "{" empties the body that layout delimits and moves no offset.
+    for current in (LOST_OPENER,):
+        project = root / str(len(list(root.iterdir())))
+        project.mkdir()
+        c = Case(exe, project, {'A.v3': current, 'B.v3': B, 'C.v3': C})
+        try:
+            c.open('A.v3')
+            c.open('B.v3')
+            snap = c.snapshot()
+            sub, = substitutions(snap)
+            open_ = offset(current, '{\n\t\tif')
+            close = offset(current, '}\n\tdef target') + 1
+            assert sub['substitution'] == blanked((open_, close)), sub
+            target = location(c, 'A.v3', 'target', current.index('def target'))
+            assert c.query('definition') == target
+            assert c.query('definition', 'A.v3', 'target(); }\n\tdef wrong') == target
+            assert c.query('hover') == {'contents': {'kind': 'plaintext', 'value': 'def target() -> int'},
+                                        'range': span(B, 'target')}
+            assert c.query('hover', 'A.v3', 'target', current.index('def elsewhere'))['range'] == span(
+                current, 'target', current.index('def elsewhere'))
+            assert c.query('references') == [target, location(c, 'A.v3', 'target', current.index('def elsewhere')),
+                                             location(c, 'B.v3', 'target')]
+            assert c.query('documentHighlight', 'A.v3', 'target', current.index('def elsewhere')) == [
+                {'range': span(current, 'target', current.index('def target')), 'kind': 1},
+                {'range': span(current, 'target', current.index('def elsewhere')), 'kind': 2}]
+            inside(c, ('{\n\t\tif', 'target() > 0', 'target();\n', 'return 0'))
+            item, = prepare(c, 'A.v3', 'broken')
+            assert calls(c, 'outgoing', item) == []
+            callee, = prepare(c, 'A.v3', 'target', current.index('def target'))
+            assert sorted(call['from']['name'] for call in calls(c, 'incoming', callee)) == ['elsewhere', 'use']
+            for name in ('A.v3', 'B.v3'):
+                assert [d['range'] for d in c.semantic(name)] == [span(c.texts[name], '"bad"')], c.semantic(name)
+            # Restoration: the parseable text has every use again.
+            c.change('A.v3', BRACES)
+            assert not substitutions(c.snapshot())
+            assert len(c.query('references')) == 5
+            no_leaks(c)
+            c.s.shutdown()
+        finally:
+            c.s.close()
+
+
 def refused(exe, root):
-    # Braces that don't balance, an error in a header or a field
-    # initializer, errors in three bodies, and an unterminated string leave
-    # the program unanalyzed, as before.
+    # Braces that don't balance where layout doesn't show the lost brace, an
+    # error in a header or a field initializer, errors in three bodies, and an
+    # unterminated string leave the program unanalyzed, as before.
     for current in (A.replace('return target(); }', 'return target();', 1),
                     A.replace('broken()', 'broken(x: )'),
                     A.replace('\tdef broken', '\tdef field: int = ;\n\tdef broken'),
@@ -320,12 +378,13 @@ def main():
     exe = Path(sys.argv[1]).resolve()
     # Keep disposable projects beside the build, away from the shared /tmp.
     with tempfile.TemporaryDirectory(prefix='current-repair-', dir=exe.parent) as work:
-        for name, run in (('cold', cold), ('continued', continued), ('two-bodies', two_bodies), ('refused', refused)):
+        for name, run in (('cold', cold), ('continued', continued), ('two-bodies', two_bodies), ('braces', braces),
+                          ('refused', refused)):
             root = Path(work) / name
             root.mkdir()
             run(exe, root)
-    print('current-text repair: cold open, next-line continuation, two bodies, blanking beside fallback, '
-          'suppression, call hierarchy, rename refusal, restoration, and refusals passed')
+    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{", blanking '
+          'beside fallback, suppression, call hierarchy, rename refusal, restoration, and refusals passed')
 
 
 if __name__ == '__main__':

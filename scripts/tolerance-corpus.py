@@ -643,9 +643,13 @@ class Corpus:
              text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
                   "\t\treturn 1;", "\t", new, *helpers, "}"), None),
         )
-        # Main refuses every file whose braces don't balance: no body, and
-        # so no fifteenth error.
-        expected = {}
+        # Every other control is refused: no body, and so no fifteenth error.
+        expected = {
+            "brace-braceless-if-then-while": (1, False),
+            "brace-tab-stops": (1, False),
+            "brace-and-blank-two-bodies": (2, False),
+            "brace-opener-missing-return-limit": (1, True),
+        }
         for name, kind, fixed, broken, other in controls:
             calls = other or caller
             previous = fixed.replace(new, "\tdef target() -> int { return 1; }").replace(

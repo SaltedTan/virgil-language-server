@@ -1,0 +1,352 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The layout reading of current-text repair's brace rule
+// (docs/architecture.md#current-text-repair; ADR-0010 rule 2). Lines
+// end at LF. A line's indentation is the width of its leading spaces and
+// tabs, a tab advancing to the next multiple of 8 columns. A line counts if it
+// holds ordinary code: a byte outside whitespace and comments, where string
+// and byte literals are code, read as LspCursorScanner reads them. A counted
+// line is irregular if it starts inside a block comment or holds a control
+// byte other than a tab outside comments, except a CR that ends it; the brace
+// rule refuses a file with an irregular line. Lines that don't count are
+// skipped everywhere.
+class LspLayout {
+	def text: Array<byte>;
+	// Per line: its first byte, the byte after its indentation, its
+	// indentation, and its first and last ordinary-code bytes, or -1 if it
+	// doesn't count.
+	def starts = Vector<int>.new();
+	def leads = Vector<int>.new();
+	def widths = Vector<int>.new();
+	def firsts = Vector<int>.new();
+	def lasts = Vector<int>.new();
+	// Whether a line is irregular.
+	def var irregular: bool;
+	// The offsets of the braces in ordinary code, in order.
+	def braces = Vector<int>.new();
+
+	new(text) {
+		var n = text.length, i = 0, comment = false;
+		while (true) {
+			var start = i, width = 0, inComment = comment, odd = false;
+			while (i < n && (text[i] == ' ' || text[i] == '\t')) {
+				width = if(text[i] == '\t', (width / 8 + 1) * 8, width + 1);
+				i++;
+			}
+			var lead = i, first = -1, last = -1;
+			while (i < n && text[i] != '\n') {
+				var c = text[i];
+				if (comment) {
+					if (c == '*' && i + 1 < n && text[i + 1] == '/') {
+						comment = false;
+						i += 2;
+					} else {
+						i++;
+					}
+					continue;
+				}
+				if (c == '/' && i + 1 < n && text[i + 1] == '/') {
+					while (i < n && text[i] != '\n') i++;
+					break;
+				}
+				if (c == '/' && i + 1 < n && text[i + 1] == '*') {
+					comment = true;
+					i += 2;
+					continue;
+				}
+				if (c <= ' ') {
+					if (c != ' ' && c != '\t' && !(c == '\r' && (i + 1 == n || text[i + 1] == '\n'))) odd = true;
+					i++;
+					continue;
+				}
+				var end = i + 1;
+				if (c == '\"') end = stringEnd(i);
+				else if (c == '\'') end = byteEnd(i);
+				else if (c == '{' || c == '}') braces.put(i);
+				if (first < 0) first = i;
+				last = end - 1;
+				i = end;
+			}
+			starts.put(start);
+			leads.put(lead);
+			widths.put(width);
+			firsts.put(first);
+			lasts.put(last);
+			if (first >= 0 && (inComment || odd)) irregular = true;
+			if (i >= n) break;
+			i++;
+		}
+	}
+
+	// The braces' rule when they are one opener short ({depth} -1, rule 2):
+	// the body to blank, as its opening brace and the byte after its closing
+	// brace, or the reason there is none. {depth} and {minimum} are
+	// LspCursorScanner's brace balance at the end of the text and its lowest
+	// point.
+	def braceRule(depth: int, minimum: int) -> ((int, int), string) {
+		var none = (-1, -1);
+		if (depth != -1 || minimum != -1) return (none, "braces are not short by exactly one opener");
+		if (irregular) return (none, "a line is irregular");
+		var net = 0;
+		for (i < braces.length) net += if(text[braces[i]] == '{', 1, -1);
+		if (net != depth) return (none, "the layout reading's braces differ from the scanner's");
+		var damage = disagreement();
+		if (damage.1 < 0) return (none, "every brace pair agrees with the layout");
+		var h = enclosingMethod(lineOf(damage.1));
+		if (h < 0) return (none, "no method or constructor header encloses the damage");
+		var open = lasts[h], l = nextAtMost(h, widths[h]);
+		if (l < 0 || widths[l] != widths[h]) return (none, "no line as deep as the method's header follows its body");
+		// The method's "}" is where layout puts it, and the body holds the
+		// damage.
+		if (text[firsts[l]] != '}') return (none, "the method's body has no closing brace where layout ends it");
+		var close = firsts[l];
+		if (!begins(l)) return (none, "a comment precedes the method's closing brace");
+		if (lasts[l] != close) return (none, "code follows the method's closing brace on its line");
+		var why = interior(h, open, close);
+		if (why == null) why = outside(open, close);
+		if (why != null) return (none, why);
+		return ((open, close + 1), null);
+	}
+	// The first brace pair, in the order that pairs close, whose layout
+	// disagrees, or (-1, closer) for the first "}" that closes nothing, or
+	// (-1, -1).
+	def disagreement() -> (int, int) {
+		var stack = Vector<int>.new();
+		for (i < braces.length) {
+			var b = braces[i];
+			if (text[b] == '{') {
+				stack.put(b);
+			} else if (stack.length == 0) {
+				return (-1, b);
+			} else {
+				var o = stack[stack.length - 1];
+				stack.length--;
+				if (!agrees(o, b)) return (o, b);
+			}
+		}
+		return (-1, -1);
+	}
+	// Whether the pair of the "{" at {open} and the "}" at {close} agrees with
+	// the layout: on one line, or closing on a line as deep as the line where
+	// the opener's construct starts, with every counted line between deeper.
+	// The construct starts on the opener's line, or, while that line is deeper
+	// than the closer's, on the counted line before it if that line doesn't
+	// end in ";", "{", or "}", so that the opener's line continues it.
+	def agrees(open: int, close: int) -> bool {
+		var lo = lineOf(open), lc = lineOf(close);
+		if (lo == lc) return true;
+		var w = widths[lc], s = lo;
+		while (widths[s] > w) {
+			var p = before(s);
+			if (p < 0 || ends(p)) return false;
+			s = p;
+		}
+		if (widths[s] != w) return false;
+		for (k = s + 1; k < lc; k++) {
+			if (firsts[k] >= 0 && widths[k] <= w) return false;
+		}
+		return true;
+	}
+	// The file outside the body between {open} and {close}: null if its
+	// braces pair, with the body's "{" closed by the "}" at {close}, and every
+	// pair agrees with the layout; else the reason. A file whose layout
+	// disagrees with its braces anywhere outside the body can't show which
+	// brace it lost.
+	def outside(open: int, close: int) -> string {
+		var stack = Vector<int>.new();
+		for (i < braces.length) {
+			var b = braces[i];
+			if (b > open && b < close) continue;
+			if (text[b] == '{') {
+				stack.put(b);
+				continue;
+			}
+			if (stack.length == 0) return "a \"}\" outside the method closes nothing";
+			var o = stack[stack.length - 1];
+			stack.length--;
+			if (o == open && b == close) continue;
+			if (!agrees(o, b)) return "a brace pair outside the method disagrees with the layout";
+		}
+		if (stack.length != 0) return "a \"{\" outside the method is not closed";
+		return null;
+	}
+	// The body between {open} and {close} of the method whose header is line
+	// {h}: null if its braces pair, with the "{" that the text lost restored
+	// where layout puts it, at the end of its line, and every pair agrees with
+	// the layout; else the reason.
+	def interior(h: int, open: int, close: int) -> string {
+		var k = lostOpener(h, lineOf(close));
+		if (k < 0) return "no one control statement's header in the method lost its \"{\" by layout";
+		var restored = lasts[k], stack = Vector<int>.new(), i = indexAfter(open);
+		while (true) {
+			var b = if(i < braces.length && braces[i] < close, braces[i], close);
+			if (restored >= 0 && restored < b) {
+				stack.put(restored);
+				restored = -1;
+			}
+			if (b == close) break;
+			i++;
+			if (text[b] == '{') {
+				stack.put(b);
+				continue;
+			}
+			if (stack.length == 0) return "a \"}\" in the method closes nothing";
+			var o = stack[stack.length - 1];
+			stack.length--;
+			if (!agrees(o, b)) return "a brace pair in the method disagrees with the layout";
+		}
+		if (stack.length != 0) return "a \"{\" in the method is not closed";
+		return null;
+	}
+	// Rule 2: the one line in the method of header {h} before line {l} that
+	// is a control statement's header not ending in a brace and whose block, by
+	// layout, ends with a "}" as deep that begins its line; or -1 if there
+	// isn't exactly one.
+	def lostOpener(h: int, l: int) -> int {
+		var found = -1;
+		for (k = h + 1; k < l; k++) {
+			if (firsts[k] < 0 || text[lasts[k]] == '{' || text[lasts[k]] == '}' || !controlHeader(k)) continue;
+			var e = nextAtMost(k, widths[k]);
+			if (e < 0 || e >= l || widths[e] != widths[k] || !begins(e) || text[firsts[e]] != '}') continue;
+			if (found >= 0) return -1;
+			found = k;
+		}
+		return found;
+	}
+	// The method or constructor header that layout says encloses line {k}:
+	// {k} if it is one, else the first counted line before it that is
+	// shallower than every counted line from it to {k} and is a header, or
+	// -1.
+	def enclosingMethod(k: int) -> int {
+		if (methodHeader(k)) return k;
+		var w = widths[k];
+		for (m = before(k); m >= 0; m = before(m)) {
+			if (widths[m] >= w) continue;
+			if (methodHeader(m)) return m;
+			w = widths[m];
+		}
+		return -1;
+	}
+	// Whether line {k} is a whole method or constructor header: it begins
+	// with "def" or "new", after an optional "private", its last code byte is
+	// a "{", and the counted line before it, if any, ends in ";", "{", or "}",
+	// so that it continues no other line.
+	def methodHeader(k: int) -> bool {
+		if (firsts[k] < 0 || !begins(k) || text[lasts[k]] != '{') return false;
+		var at = firsts[k];
+		if (word(k, "private")) {
+			at += 7;
+			while (at < lasts[k] && (text[at] == ' ' || text[at] == '\t')) at++;
+		}
+		if (!wordAt(at, lasts[k], "def") && !wordAt(at, lasts[k], "new")) return false;
+		var p = before(k);
+		return p < 0 || ends(p);
+	}
+	// Whether line {k} begins a control statement's header: "if", "else",
+	// "while", "for", or "match", or a "}" and then "else".
+	def controlHeader(k: int) -> bool {
+		if (firsts[k] < 0 || !begins(k)) return false;
+		var at = firsts[k];
+		if (text[at] == '}') {
+			at++;
+			while (at < lasts[k] && (text[at] == ' ' || text[at] == '\t')) at++;
+			return wordAt(at, lasts[k] + 1, "else");
+		}
+		for (w in CONTROL_WORDS) {
+			if (word(k, w)) return true;
+		}
+		return false;
+	}
+	// The line that holds {offset}.
+	def lineOf(offset: int) -> int {
+		var lo = 0, hi = starts.length - 1;
+		while (lo < hi) {
+			var mid = (lo + hi + 1) / 2;
+			if (starts[mid] <= offset) lo = mid;
+			else hi = mid - 1;
+		}
+		return lo;
+	}
+	// The nearest counted line before line {k}, or -1.
+	def before(k: int) -> int {
+		for (m = k - 1; m >= 0; m--) {
+			if (firsts[m] >= 0) return m;
+		}
+		return -1;
+	}
+	// The first counted line after line {k} that is no deeper than {width},
+	// or -1.
+	def nextAtMost(k: int, width: int) -> int {
+		for (m = k + 1; m < starts.length; m++) {
+			if (firsts[m] >= 0 && widths[m] <= width) return m;
+		}
+		return -1;
+	}
+	// Whether counted line {k}'s code ends a statement, a block, or a
+	// declaration's header: its last code byte is ";", "{", or "}".
+	def ends(k: int) -> bool {
+		var c = text[lasts[k]];
+		return c == ';' || c == '{' || c == '}';
+	}
+	// Whether counted line {k}'s code begins right after its indentation.
+	def begins(k: int) -> bool {
+		return firsts[k] == leads[k];
+	}
+	// Whether counted line {k}'s code begins with the word {w}.
+	def word(k: int, w: string) -> bool {
+		return wordAt(firsts[k], lasts[k] + 1, w);
+	}
+	private def wordAt(at: int, end: int, w: string) -> bool {
+		if (at + w.length > end) return false;
+		for (i < w.length) {
+			if (text[at + i] != w[i]) return false;
+		}
+		if (at + w.length == end) return true;
+		var c = text[at + w.length];
+		return !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'));
+	}
+	// The index in {braces} of the first brace after {offset}.
+	private def indexAfter(offset: int) -> int {
+		var lo = 0, hi = braces.length;
+		while (lo < hi) {
+			var mid = (lo + hi) / 2;
+			if (braces[mid] <= offset) lo = mid + 1;
+			else hi = mid;
+		}
+		return lo;
+	}
+	private def stringEnd(i: int) -> int {
+		var j = i + 1, n = text.length;
+		while (j < n) {
+			var b = text[j];
+			if (b == '\"') return j + 1;
+			if (b < ' ') return j;
+			j += if(b == '\\' && j + 1 < n && text[j + 1] >= ' ', 2, 1);
+		}
+		return j;
+	}
+	// As LspCursorScanner.byteLiteral reads one.
+	private def byteEnd(i: int) -> int {
+		var j = i + 1, n = text.length;
+		if (j >= n || text[j] < ' ') return j;
+		if (text[j] == '\'') return j + 1;
+		if (text[j] == '\\') {
+			j++;
+			if (j < n && text[j] == 'x') {
+				j++;
+				for (k < 2) if (j < n && isHex(text[j])) j++;
+			} else if (j < n && text[j] >= ' ') {
+				j++;
+			}
+		} else {
+			j++;
+		}
+		return if(j < n && text[j] == '\'', j + 1, j);
+	}
+	private def isHex(c: byte) -> bool {
+		return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+	}
+}
+// The words that begin a control statement's header.
+def CONTROL_WORDS = ["if", "else", "while", "for", "match"];
