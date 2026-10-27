@@ -1,7 +1,7 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 """The reviewed 45 repair states, 140 byte replay states, small controls, and
-24 held-out states.
+66 held-out states.
 
 Only disposable copies are written. Parser invocations select/validate history;
 all measured answers and oracles come from the stdio protocol.
@@ -110,6 +110,46 @@ def unfinished(rng, line):
     """{line} cut just after the "." of one of its member accesses, chosen by
     {rng}, so that the expression is unfinished at the line's end."""
     return line[:rng.choice([m.start() for m in MEMBER_ACCESS.finditer(line)]) + 1]
+
+
+# Held-out states for the brace rules (#317, ADR-0010 rules 2 and 3), which
+# they weren't built from: a "{" removed from the end of a control or method
+# header or a "}" from a line of its own, chosen with a fixed seed in Aeneas
+# files that no other state, including the held-out states above, edits or
+# queries. The upstream files are indented with tabs. "spaces" re-indents a
+# file with four spaces for each leading tab, "mixed" replaces the leading
+# tabs of about half the lines with eight spaces each, which keeps every
+# line's width, and "mixed-width" with four, which doesn't.
+BRACE_SEED = 317
+BRACE_KINDS = ("if-opener", "loop-opener", "match-opener", "method-opener", "block-closer", "method-closer")
+BRACE_PER_STYLE = {"tabs": 2, "spaces": 2, "mixed": 2, "mixed-width": 1}
+BRACE_OPENERS = {"if-opener": re.compile(r"\t\t+if \(.*\) \{$"),
+                 "loop-opener": re.compile(r"\t\t+(while|for) \(.*\) \{$"),
+                 "match-opener": re.compile(r"\t\t+match \(.*\) \{$"),
+                 "block-closer": re.compile(r"\t\t+\}$")}
+
+
+def brace_candidates(kind, lines, bodies):
+    """The indexes of the lines of {kind} in the methods {bodies}: their
+    headers, their closing lines, or the lines inside them that match."""
+    if kind == "method-opener":
+        return [b for b, _ in bodies]
+    if kind == "method-closer":
+        return [e for _, e in bodies]
+    return [n for b, e in bodies for n in range(b + 1, e) if BRACE_OPENERS[kind].match(lines[n])]
+
+
+def reindent(rng, lines, style):
+    """{lines} in the indentation {style}, choosing mixed lines by {rng}."""
+    if style == "tabs":
+        return list(lines)
+    result = []
+    for line in lines:
+        tabs = len(line) - len(line.lstrip("\t"))
+        if tabs and (style == "spaces" or rng.random() < 0.5):
+            line = " " * (tabs * (8 if style == "mixed" else 4)) + line[tabs:]
+        result.append(line)
+    return result
 
 
 class Corpus:
@@ -254,6 +294,7 @@ class Corpus:
         rng = random.Random(HELDOUT_SEED)
         rng.shuffle(files)
         counts = dict.fromkeys(HELDOUT_KINDS, 0)
+        chosen = set()
         for path in files:
             pending = sorted((k for k in HELDOUT_KINDS if counts[k] < HELDOUT_PER_KIND), key=lambda k: counts[k])
             if not pending:
@@ -274,11 +315,48 @@ class Corpus:
                         break
                 else:
                     counts[kind] += 1
+                    chosen.add(path)
                     yield self.state(project, kind + "/" + path.removeprefix("aeneas/src/"), "heldout", "body",
                                      {path: original}, {path: "\n".join(current)}, "original upstream file",
                                      heldout_kind=kind, edited_lines=[n + 1 for n, _ in edits])
                     break
         assert all(n == HELDOUT_PER_KIND for n in counts.values()), ("held-out inventory changed", counts)
+        yield from self.brace_heldout(project, sources, used | chosen)
+
+    def brace_heldout(self, project, sources, used):
+        """BRACE_PER_STYLE[style] states of each kind in BRACE_KINDS for each
+        indentation style, one file each, none of them in {used}: one "{" or
+        "}" removed from the end of a line of a method, chosen by the seed,
+        whose removal alone is a syntax error. The intended program is the
+        upstream file in that style."""
+        files = sorted(p for p in sources if p.startswith("aeneas/src/") and p not in used)
+        rng = random.Random(BRACE_SEED)
+        rng.shuffle(files)
+        wanted = [(style, kind) for style in BRACE_PER_STYLE for kind in BRACE_KINDS]
+        counts = dict.fromkeys(wanted, 0)
+        for path in files:
+            pending = sorted((w for w in wanted if counts[w] < BRACE_PER_STYLE[w[0]]), key=lambda w: counts[w])
+            if not pending:
+                break
+            lines = sources[path].split("\n")
+            bodies = method_bodies(lines)
+            for style, kind in pending:
+                candidates = brace_candidates(kind, lines, bodies)
+                if not candidates:
+                    continue
+                n = rng.choice(candidates)
+                intended = reindent(rng, lines, style)
+                current = intended[:n] + [intended[n][:-1]] + intended[n + 1:]
+                if self.error_line("\n".join(current)) is None:
+                    continue
+                counts[(style, kind)] += 1
+                yield self.state(project, "brace-" + style + "/" + kind + "/" + path.removeprefix("aeneas/src/"),
+                                 "heldout", "header" if kind.endswith("opener") else "body",
+                                 {path: "\n".join(intended)}, {path: "\n".join(current)},
+                                 "original upstream file" if style == "tabs" else "upstream file, re-indented",
+                                 heldout_kind=kind, indentation=style, edited_lines=[n + 1])
+                break
+        assert all(counts[w] == BRACE_PER_STYLE[w[0]] for w in wanted), ("brace held-out inventory changed", counts)
 
     def heldout_edit(self, rng, kind, lines, bodies):
         """The lines to cut for {kind}, each by index with its body, or None if
@@ -416,6 +494,7 @@ class Corpus:
                                expected_bodies={"A.v3": count}, expected_limit=reached)
             state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
             yield state
+        yield from self.brace_controls(caller)
         # Three variants per boundary, including distinct fresh diagnostic kinds.
         for variant in (0, 1, 2):
             broken = a.replace("return x;", "return x.;")
@@ -451,6 +530,134 @@ class Corpus:
                     kind = "header"
                 yield self.state(project, name, "extra", kind,
                                  previous, current, "original small program", **options)
+
+    def brace_controls(self, caller):
+        """Controls for the brace rules (#317, ADR-0010 rules 2 and 3), which
+        read a file's layout when its braces are one opener or one closer
+        short. Each is a small tab-indented program; as for the other repair
+        controls, each oracle changes target's signature, so the predecessor's
+        answers are wrong."""
+        def text(*rows):
+            return "\n".join(rows) + "\n"
+        new = "\tdef target() -> bool { return true; }"
+        helpers = ("\tdef a() -> bool { return true; }", "\tdef g() { }")
+        errors = "\t\t" + "".join("var x%d: int = true; " % n for n in range(13))
+        if_block = ("\t\tif (a()) {", "\t\t\tg();", "\t\t}")
+        controls = (
+            # An if loses its "{" in a method that is followed by a field and
+            # methods and has no "}" of its own at its indentation, as in
+            # ADR-0010's swallow-field: a "{" after the if parses, with the
+            # field and methods inside the method. The text can't say which
+            # brace was lost, so this must be refused.
+            ("brace-swallow-field", "header",
+             text("component A {", "\tdef f() {", *if_block, "\t}", "\tvar x = 1;", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\t}", "\tvar x = 1;", new,
+                  *helpers, "}", "}"), None),
+            # The if's "}" lost its indentation with its "{": two closers at
+            # one indentation.
+            ("brace-two-closers", "header",
+             text("component A {", "\tdef f() {", *if_block, "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t}", "\t}", new, *helpers, "}"), None),
+            # The method's header is split over two lines.
+            ("brace-split-header", "header",
+             text("component A {", "\tdef f(p: int,", "\t\tq: int) {", "\t\tif (p > q) {", "\t\t\tg();", "\t\t}", "\t}",
+                  new, *helpers, "}"),
+             text("component A {", "\tdef f(p: int,", "\t\tq: int) {", "\t\tif (p > q)", "\t\t\tg();", "\t\t}", "\t}",
+                  new, *helpers, "}"), None),
+            # A line of the damaged body is no deeper than its header.
+            ("brace-indentation-disagrees", "header",
+             text("component A {", "\tdef f() {", "\t\twhile (a()) {", "\t\t\tg();", "\t\t}", "\t\tg();", "\t}",
+                  new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\twhile (a())", "\t\t\tg();", "\t\t}", "\tg();", "\t}",
+                  new, *helpers, "}"), None),
+            # A method header loses its "{" below a method whose header is
+            # indented with four spaces and its "}" with a tab. Blanking from
+            # that header to the four-space "}" would parse, and would drop
+            # other, which B calls.
+            ("brace-mixed-width", "header",
+             text("component A {", "    def first() {", "\t\tg();", "\t}", "\tdef other() {", "\t\tg();", "    }",
+                  new, *helpers, "}"),
+             text("component A {", "    def first() {", "\t\tg();", "\t}", "\tdef other() ", "\t\tg();", "    }",
+                  new, *helpers, "}"),
+             "component B { def use() -> int { A.other(); return A.target(); } }\n"),
+            # A string left open in the damaged body.
+            ("brace-unterminated-string", "header",
+             text("component A {", "\tdef f() {", *if_block, '\t\tvar s = "open";', "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\t}", '\t\tvar s = "open;', "\t}",
+                  new, *helpers, "}"), None),
+            # A method loses its "}", and its last statement, indented like the
+            # others, is a field of the component in the intended program: no
+            # layout says where the method ends, so this must be refused.
+            ("brace-closer-deeper-field", "body",
+             text("component A {", "\tdef f() {", "\t\tg();", "\t}", "\t\tvar count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tg();", "\t", "\t\tvar count = 1;",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             "component B { def use() -> int { if (A.count > 0) return A.target(); return 0; } }\n"),
+            # A legal if without braces, then a while that lost its "{".
+            ("brace-braceless-if-then-while", "header",
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\twhile (a()) {", "\t\t\tg();",
+                  "\t\t}", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\twhile (a())", "\t\t\tg();",
+                  "\t\t}", "\t}", new, *helpers, "}"), None),
+            # An inner block loses its "}".
+            ("brace-inner-closer", "body",
+             text("component A {", "\tdef f() {", *if_block, "\t\tg();", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a()) {", "\t\t\tg();", "\t\t", "\t\tg();", "\t}",
+                  new, *helpers, "}"), None),
+            # A method loses its own "}": the only change that moves later
+            # offsets, including target's.
+            ("brace-method-closer", "body",
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", new, *helpers, "}"), None),
+            # Header and body lines indented with tabs and spaces of equal width.
+            ("brace-tab-stops", "header",
+             text("component A {", "\tdef f() {", "\t        if (a()) {", "\t\t\tg();", "                }",
+                  "        }", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t        if (a())", "\t\t\tg();", "                }",
+                  "        }", new, *helpers, "}"), None),
+            # A brace rule's body and an error in another body, before it.
+            ("brace-and-blank-two-bodies", "header",
+             text("component A {", "\tdef other() {", "\t\tvar y = 1;", "\t}", "\tdef f() {", *if_block, "\t}",
+                  new, *helpers, "}"),
+             text("component A {", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f() {", "\t\tif (a())",
+                  "\t\t\tg();", "\t\t}", "\t}", new, *helpers, "}"), None),
+            # A method loses its "}", and a later body has an error, after the
+            # inserted "}".
+            ("brace-closer-then-blank", "body",
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", "\tdef other() {",
+                  "\t\tvar y = 1;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", "\tdef other() {",
+                  "\t\tvar y = ;", "\t}", new, *helpers, "}"), None),
+            # A body that each brace rule empties has a missing return that is
+            # the fifteenth error, after the Observer's and 13 in A, as in
+            # repair-missing-return-limit.
+            ("brace-opener-missing-return-limit", "header",
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tif (a()) {",
+                  "\t\t\treturn 1;", "\t\t}", "\t\treturn 0;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tif (a())",
+                  "\t\t\treturn 1;", "\t\t}", "\t\treturn 0;", "\t}", new, *helpers, "}"), None),
+            ("brace-closer-missing-return-limit", "body",
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
+                  "\t\treturn 1;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
+                  "\t\treturn 1;", "\t", new, *helpers, "}"), None),
+        )
+        # Main refuses every file whose braces don't balance: no body, and
+        # so no fifteenth error.
+        expected = {}
+        for name, kind, fixed, broken, other in controls:
+            calls = other or caller
+            previous = fixed.replace(new, "\tdef target() -> int { return 1; }").replace(
+                "def target() -> bool { return count == 1; }", "def target() -> int { return count; }")
+            assert previous != fixed, name
+            bodies, reached = expected.get(name, (0, False))
+            project = self.project("negative/" + name, {"A.v3": previous, "B.v3": calls})
+            state = self.state(project, name, "negative", kind, {"A.v3": previous}, {"A.v3": broken},
+                               "original small program", oracle={"A.v3": fixed}, allow_absent=True,
+                               expected_bodies={"A.v3": bodies}, expected_limit=reached)
+            state["queries"] = state["stale_queries"] = [query("B.v3", calls, "A.target()", "target")]
+            yield state
 
     def verify_inputs(self):
         for path, digest in self.inputs.items():

@@ -27,7 +27,14 @@ class Scoring(unittest.TestCase):
                                         "repair-needs-brace", "repair-in-header", "repair-in-field-initializer",
                                         "repair-in-two-bodies", "repair-call-arity",
                                         "repair-unterminated-string", "repair-deleted-header",
-                                        "repair-missing-return-limit"})
+                                        "repair-missing-return-limit", "brace-swallow-field",
+                                        "brace-two-closers", "brace-split-header", "brace-indentation-disagrees",
+                                        "brace-mixed-width", "brace-unterminated-string",
+                                        "brace-closer-deeper-field", "brace-braceless-if-then-while",
+                                        "brace-inner-closer", "brace-method-closer", "brace-tab-stops",
+                                        "brace-and-blank-two-bodies", "brace-closer-then-blank",
+                                        "brace-opener-missing-return-limit",
+                                        "brace-closer-missing-return-limit"})
         for name, case in CONTROLS.items():
             with self.subTest(case=name):
                 results = [tolerance.score(key.split(":")[-1], old, case["oracle"][key], True)
