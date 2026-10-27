@@ -25,15 +25,15 @@ class LspLayout {
 	def var irregular: bool;
 	// The offsets of the braces in ordinary code, in order.
 	def braces = Vector<int>.new();
-	// The offset of each first code byte after a ";", "{", or "}" in ordinary
-	// code, where a statement or a member may begin, in order, and the
-	// braces' balance before it. In a "for" header's parentheses, the first
-	// two ";" end no statement.
+	// The offset of the text's first code byte and of each first code byte
+	// after a ";", "{", or "}" in ordinary code, where a statement or a member
+	// may begin, in order, and the braces' balance before it. In a "for"
+	// header's parentheses, the first two ";" end no statement.
 	def heads = Vector<int>.new();
 	def depths = Vector<int>.new();
 
 	new(text) {
-		var n = text.length, i = 0, comment = false, stop = false, depth = 0;
+		var n = text.length, i = 0, comment = false, stop = true, depth = 0;
 		// The offset of the "(" after the last "for", the depth of the
 		// parentheses in a "for" header, and how many of its ";" remain.
 		var paren = -1, header = 0, semis = 0;
@@ -124,9 +124,9 @@ class LspLayout {
 		if (net != -1) return (none, "the layout reading's braces differ from the scanner's");
 		var damage = disagreement();
 		if (damage.1 < 0) return (none, "every brace pair agrees with the layout");
-		var h = enclosingMethod(lineOf(damage.1));
-		if (h < 0) return (none, "no method or constructor header encloses the damage");
-		var open = lasts[h], l = nextAtMost(h, widths[h]);
+		var enclosing = enclosingMethod(lineOf(damage.1));
+		if (enclosing.1 != null) return (none, enclosing.1);
+		var h = enclosing.0, open = lasts[h], l = nextAtMost(h, widths[h]);
 		if (l < 0 || widths[l] != widths[h]) return (none, "no line as deep as the method's header follows its body");
 		// The method's "}" is where layout puts it, and the body holds the
 		// damage.
@@ -252,7 +252,8 @@ class LspLayout {
 	// balance first falls below the body's level, before members of which a
 	// later one lost the "{"; else the reason. After that "}", the first
 	// statement at that lower level that begins with a name, and not a
-	// field's or a value's, must begin with one that can't begin a member. A
+	// field's or a value's, must begin with one that can't begin a member,
+	// and none before it with a string, as an imported member's name may. A
 	// field or a value holds a "{" only in a function in its initializer, and
 	// code would follow that function's "}" on its line.
 	def endsEarly(open: int, close: int) -> string {
@@ -260,8 +261,9 @@ class LspLayout {
 		if (first >= heads.length || heads[first] >= close) return null;
 		for (s = first; s < heads.length && heads[s] < close; s++) {
 			var at = heads[s];
-			if (depths[s] >= depths[first] || !isNameStart(text[at]) || startsValue(at)) continue;
-			if (memberWord(at)) return "the method could have ended before a member that lost its \"{\"";
+			if (depths[s] >= depths[first] || startsValue(at)) continue;
+			if (text[at] == '\"' || memberWord(at)) return "the method could have ended before a member that lost its \"{\"";
+			if (!isNameStart(text[at])) continue;
 			return null;
 		}
 		return null;
@@ -271,41 +273,52 @@ class LspLayout {
 	// that a statement can begin reads as a member only because of the text
 	// before it, and a method's header that lost its "{" right before a ";"
 	// still parses, without a body. So, back from the header among the heads
-	// at its level, each method or constructor header up to the last header
-	// that no statement can begin, or to its compound's start, must have a
-	// body: the next head at that level follows a brace.
+	// at its level, up to the last header that no statement can begin, or to
+	// its compound's start, every head without a body, where the next head at
+	// that level follows no brace, must be one that can't begin a method's or
+	// constructor's header. One that startsMethod doesn't read, as with a
+	// comment or a line break in the header, counts as one that can.
 	def holder(h: int) -> string {
 		var at = firsts[h];
 		if (startsMemberOnly(at)) return null;
 		var s = indexAfter(heads, at - 1);
-		if (s >= heads.length || heads[s] != at) return null;
+		if (s >= heads.length || heads[s] != at) return "the method's header doesn't begin where a member may";
 		var level = depths[s];
 		for (t = s - 1; t >= 0 && depths[t] >= level; t--) {
 			if (depths[t] > level) continue;
 			if (depths[t + 1] == level && startsMethod(heads[t])) return "a method header without a body could hold the method as a local function";
+			if (depths[t + 1] == level && mayBeginMethod(heads[t])) return "a declaration without a body, which could be a method's, could hold the method as a local function";
 			if (startsMemberOnly(heads[t])) return null;
 		}
 		return null;
 	}
 	// The method or constructor header that layout says encloses line {k}:
 	// {k} if it is one, else the first counted line before it that is
-	// shallower than every counted line from it to {k} and is a header, or
-	// -1.
-	def enclosingMethod(k: int) -> int {
-		if (methodHeader(k)) return k;
+	// shallower than every counted line from it to {k} and is a header; or
+	// -1 and the reason. A shallower line before it whose code may begin a
+	// method's or constructor's header (mayBeginMethod), but that isn't a
+	// whole one, can't be skipped: it could be the header of the method that
+	// holds the damage.
+	def enclosingMethod(k: int) -> (int, string) {
+		if (methodHeader(k)) return (k, null);
 		var w = widths[k];
 		for (m = before(k); m >= 0; m = before(m)) {
 			if (widths[m] >= w) continue;
-			if (methodHeader(m)) return m;
+			if (methodHeader(m)) return (m, null);
+			if (mayBeginMethod(firsts[m])) return (-1, "a declaration that could enclose the damage isn't a whole method or constructor header");
 			w = widths[m];
 		}
-		return -1;
+		return (-1, "no method or constructor header encloses the damage");
 	}
 	// Whether line {k} is a whole method or constructor header: the header
-	// begins on it, its last code byte is a "{", and the counted line before
-	// it, if any, ends in ";", "{", or "}", so that it continues no other line.
+	// begins on it, its last code byte is a "{", no ";", "{", or "}" comes
+	// before that, so that the line holds nothing else, and the counted line
+	// before it, if any, ends in ";", "{", or "}", so that it continues no
+	// other line.
 	def methodHeader(k: int) -> bool {
 		if (firsts[k] < 0 || !begins(k) || text[lasts[k]] != '{' || !startsMethod(firsts[k])) return false;
+		var s = indexAfter(heads, firsts[k]);
+		if (s < heads.length && heads[s] <= lasts[k]) return false;
 		var p = before(k);
 		return p < 0 || ends(p);
 	}
@@ -362,6 +375,17 @@ class LspLayout {
 		if (at == name) return false;
 		at = spaces(at, end);
 		return at < end && (text[at] == '=' || text[at] == ':');
+	}
+	// Whether the code at {at} may begin a method's or constructor's header in
+	// any form the grammar allows (Parser.parseMember), not only the one that
+	// startsMethod reads: with "def", "new", or "private", or with a string,
+	// as an imported member's name may, though not a field's or a value's, as
+	// startsValue reads one.
+	def mayBeginMethod(at: int) -> bool {
+		if (startsValue(at)) return false;
+		if (text[at] == '\"') return true;
+		var end = lasts[lineOf(at)] + 1;
+		return wordAt(at, end, "def") || wordAt(at, end, "new") || wordAt(at, end, "private");
 	}
 	// Whether line {k} begins a control statement's header: "if", "else",
 	// "while", "for", or "match", or a "}" and then "else".

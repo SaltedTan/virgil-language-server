@@ -218,10 +218,16 @@ def test_refusals(t: Tester) {
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t}", "\t}", "\tdef g() { }", "}"]), noHeader);
 	// A deleted method header.
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tvar x = 0;", "\t}", "\t\tvar y = 0;", "\t}", "\tdef g() { }", "}"]), noHeader);
-	// A method header split over two lines, or that lost its own "{".
-	refuse(t, lines(["component A {", "\tdef f(p: int,", "\t\tq: int) {", "\t\tif (p > q)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), noHeader);
+	// A method header split over two lines, or that lost its own "{", or
+	// with a comment between its name and "(", or with another declaration
+	// before it on its line: each is a declaration that may enclose the
+	// damage, but no whole header.
+	var notWhole = "a declaration that could enclose the damage isn't a whole method or constructor header";
+	refuse(t, lines(["component A {", "\tdef f(p: int,", "\t\tq: int) {", "\t\tif (p > q)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), notWhole);
 	refuse(t, lines(["component A {", "\tdef f() ", "\t\tg();", "\t}", "\tdef g() { }", "}"]), noHeader);
-	refuse(t, lines(["component A {", "\tprivate", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), noHeader);
+	refuse(t, lines(["component A {", "\tprivate", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), notWhole);
+	refuse(t, lines(["component A {", "\tdef f /* f */ () {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), notWhole);
+	refuse(t, lines(["component A {", "\tdef h() -> int ; def f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), notWhole);
 	// A line of the body no deeper than the header.
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\twhile (true)", "\t\t\tg();", "\t\t}", "\tg();", "\t}", "\tdef g() { }", "}"]), noCloser);
 	// A header that lost its "{" below a header indented with four spaces.
@@ -258,6 +264,10 @@ def test_members(t: Tester) {
 		"\t\t\treturn 1;", "\t}", "\tdef g() { }", "}"]), lost);
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t} def h() -> int",
 		"\t\t\treturn 1;", "\t}", "\tdef g() { }", "}"]), lost);
+	// After that "}", a string, which an imported member's name may be, though
+	// a statement follows it.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t\t\"x\".length;", "\t\tg();",
+		"\t}", "\tdef g() { }", "}"]), lost);
 	// A field or a value can't have lost the "{": rule 2 reads past them.
 	var header = "\tdef f(a: bool) {";
 	check(t, method(header, ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t\tdef x = 1;", "\t\tvar y = x;", "\t\tg();", "\t}"]), header, "\t}");
@@ -290,6 +300,27 @@ def test_local_functions(t: Tester) {
 	var privately = Arrays.dup(local);
 	privately[0] = "\tprivate def local() {";
 	check(t, lines(Arrays.concat(holder, privately)), "\tprivate def local() {", "\t}");
+	// A header without a body that startsMethod doesn't read, with a comment
+	// between "def" and the name or the name and "(", split after "def" or
+	// after the name, or with "private" and a comment, is refused as one that
+	// could be a method's. First the review's program.
+	var unread = "a declaration without a body, which could be a method's, could hold the method as a local function";
+	refuse(t, lines(["def local() -> int { return 11; }", "class A {", "    def h /* comment */ () ;", "    def local() {",
+		"            if (true)", "                g();", "            }", "        var count = 7;", "    }",
+		"    def target() -> int { return local(); }", "    def g() { }", "}"]), unread);
+	for (header in [["\tdef /* comment */ h() -> int ;"], ["\tdef", "\th() -> int ;"], ["\tdef h", "\t() -> int ;"],
+			["\tprivate def h /* comment */ () -> int ;"], ["\tprivate /* comment */ def h() -> int ;"], ["\tnew /* comment */ () ;"]]) {
+		refuse(t, lines(Arrays.concat(Arrays.concat(["class A {"], header), local)), unread);
+	}
+	// A value without a body is no method's header, even over two lines.
+	for (value in [["\tdef x = 1;"], ["\tvar x: int;"], ["\tvar x =", "\t\t1;"], ["\tdef var x = 1;"]]) {
+		check(t, lines(Arrays.concat(Arrays.concat(["class A {"], value), local)), "\tdef local() {", "\t}");
+	}
+	// The text's first declaration counts too: a function without a body
+	// there could hold the next one, and a function with one can't.
+	var top = ["def local() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\tvar count = 7;", "}", "def g() { }"];
+	refuse(t, lines(Arrays.concat(["def h() -> int ;"], top)), holds);
+	check(t, lines(Arrays.concat(["def h() -> int { return 1; }"], top)), "def local() {", "}");
 }
 
 // Rule 2's body and the body that holds the next error, before it, at most
