@@ -18,6 +18,7 @@ def X = [
 	T("AnalysisScope:lambdas", test_lambdas),
 	T("AnalysisScope:type_parameters", test_type_parameters),
 	T("AnalysisScope:inheritance_and_privacy", test_inheritance_and_privacy),
+	T("AnalysisScope:inheritance_cycles", test_inheritance_cycles),
 	T("AnalysisScope:components", test_components),
 	T("AnalysisScope:field_initializers", test_field_initializers),
 	T("AnalysisScope:variants_and_enums", test_variants_and_enums),
@@ -501,6 +502,13 @@ def test_inheritance_and_privacy(t: Tester) {
 	// Two levels up, through a generic class.
 	check(t, "class A<T> {\n\tvar a: T;\n}\nclass B extends A<int> {\n\tvar b: int;\n}\nclass C extends B {\n\tdef m() { $b = a; }\n}\n", V,
 		"this=1 m/2 b/3 a/4 A/8 B/8 C/8");
+}
+
+def test_inheritance_cycles(t: Tester) {
+	var rejected = "class A extends B { def onlyA() { $onlyA(); } } class B extends A { def onlyB() {} }";
+	t.assert_string("this=1 onlyA/2 A/6 B/6", render(scopeAny(rejected, V)));
+	var surviving = "class A extends B { def onlyA() {} } class B extends A { def onlyB() { $onlyA(); } }";
+	t.assert_string("this=1 onlyB/2 onlyA/3 A/7 B/7", render(scopeAny(surviving, V)));
 }
 
 def test_components(t: Tester) {

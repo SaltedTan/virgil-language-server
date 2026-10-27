@@ -290,7 +290,7 @@ class AnalysisScopeFinder(sources: AnalysisSourceMaps, display: AnalysisDisplay,
 	}
 	// The class that {c} extends, as verification resolved it, or null.
 	private def superclass(c: VstCompound) -> VstCompound {
-		if (!VstClass.?(c)) return null;
+		if (!VstClass.?(c) || VstClass.!(c).invalidSuperclass) return null;
 		var t = VstClass.!(c).superclass;
 		return if(t != null && ClassType.?(t.binding), ClassType.!(t.binding).classDecl);
 	}

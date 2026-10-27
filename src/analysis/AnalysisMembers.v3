@@ -396,7 +396,7 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 	private def classes(decl: VstClass, subst: AnalysisTypeSubst, mode: int) {
 		var slow = decl;
 		for (level = 0; decl != null; level++) {
-			var sup = if(decl.superclass != null, resolve(decl.superclass.binding));
+			var sup = if(!decl.invalidSuperclass && decl.superclass != null, resolve(decl.superclass.binding));
 			var root = sup == null;
 			if (root && described) descriptorMember(decl, level);
 			compound(decl, subst, mode, level);
@@ -410,7 +410,7 @@ class AnalysisMemberLookup(display: AnalysisDisplay, fileName: string, layouts: 
 		}
 	}
 	private def superclassOf(decl: VstClass) -> VstClass {
-		var sup = if(decl != null && decl.superclass != null, resolve(decl.superclass.binding));
+		var sup = if(decl != null && !decl.invalidSuperclass && decl.superclass != null, resolve(decl.superclass.binding));
 		return if(ClassType.?(sup), ClassType.!(sup).classDecl);
 	}
 	// Verifier.buildDescriptors puts the root's descriptor field in its
