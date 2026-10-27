@@ -35,7 +35,7 @@ const WORKER_NAME = 'virgil-lsp-worker';
 // Files whose changes on disk the server needs to hear about: project files
 // and sources. The server registers the same watchers dynamically.
 const WATCHED_FILES = ['**/.virgil-lsp.json', '**/*.v3'];
-// Matches vscode-languageclient 10.1.2's default stop() shutdown timeout.
+// Matches vscode-languageclient 11.0.0's default stop() shutdown timeout.
 const NOTIFICATION_DRAIN_TIMEOUT_MS = 2000;
 // The codes of the errors after which the connection to the server closes: a
 // read or a write of the server's pipe that fails, as when the server has
@@ -84,7 +84,7 @@ class QueuedLanguageClient extends LanguageClient {
           }
           const result = await defaultHandler!.error(error, message, count);
           if (result.action === ErrorAction.Shutdown) {
-            // A lost response also makes shutdown time out. In 10.1.2 that
+            // A lost response also makes shutdown time out. In 11.0.0 that
             // path never disposes the connection, leaving requests pending
             // even after the server is killed. End our callers' waits now;
             // the default handler still reports the fault and stops the server.
@@ -104,7 +104,7 @@ class QueuedLanguageClient extends LanguageClient {
         ...clientOptions.middleware,
         // The library checks the client's state when a request arrives, then
         // waits for the start and the pending didOpen and full-text changes
-        // before it calls this, right before the write (10.1.2). A stop that
+        // before it calls this, right before the write (11.0.0). A stop that
         // began during that wait has already sent shutdown, and the request
         // would follow it (#212). Reject it as that first check does, so
         // providers return their default without a notification, and nothing

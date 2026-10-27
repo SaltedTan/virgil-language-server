@@ -1466,15 +1466,15 @@ async function crashLimit(failures, bad, words) {
 // server: if the old server got the edit, the restart didn't find it pending,
 // so the scenario fails rather than pass without testing that.
 //
-// vscode-languageclient 10.1.2 can then log "Delivering pending changes
-// failed" and "TypeError: this.task is not a function" in the output channel,
-// about half a second after the edit, often after the scenario has ended: the
-// stopped client's timer for the change outlives it, and its retry fails
-// (https://github.com/microsoft/vscode-languageserver-node/issues/1916). Any
-// restart with a change pending can log it, as other scenarios' restarts and
-// this one's restore sometimes do. It loses nothing, depends on timing, and
-// goes away with a fixed release, so the scenario neither requires nor forbids
-// it, and no check of this suite counts it as a failure.
+// vscode-languageclient, 11.0.0 included, can then log "Delivering pending
+// changes failed" and "TypeError: this.task is not a function" in the output
+// channel, about half a second after the edit, often after the scenario has
+// ended: the stopped client's timer for the change outlives it, and its retry
+// fails (https://github.com/microsoft/vscode-languageserver-node/issues/1916).
+// Any restart with a change pending can log it, as other scenarios' restarts
+// and this one's restore sometimes do. It loses nothing, depends on timing,
+// and goes away with a fixed release, so the scenario neither requires nor
+// forbids it, and no check of this suite counts it as a failure.
 async function pendingEditRestart(failures, bad, words) {
   const server = selectedServer();
   const breadcrumbs = setting('breadcrumbs.enabled');
