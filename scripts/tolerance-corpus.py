@@ -1,6 +1,7 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""The reviewed 45 repair states, 140 byte replay states, and small controls.
+"""The reviewed 45 repair states, 140 byte replay states, small controls, and
+24 held-out states.
 
 Only disposable copies are written. Parser invocations select/validate history;
 all measured answers and oracles come from the stdio protocol.
@@ -8,6 +9,8 @@ all measured answers and oracles come from the stdio protocol.
 import importlib.util
 import json
 from pathlib import Path
+import random
+import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +74,42 @@ def query(path, text, anchor, token):
     assert text.count(anchor) == 1, (path, anchor)
     at = text.index(anchor) + anchor.index(token)
     return {"path": path, "position": corpus.position(text, at), "token": token}
+
+
+# Held-out states for body blanking (#312, ADR-0010 rule 1), which the rule
+# wasn't built from: the edit kinds it covers, chosen with a fixed seed in
+# Aeneas files that no other state edits or queries.
+HELDOUT_SEED = 312
+HELDOUT_KINDS = ("next-line", "body-end", "two-bodies")
+HELDOUT_PER_KIND = 8
+MEMBER_ACCESS = re.compile(r"\.[A-Za-z_]")
+
+
+def method_bodies(lines):
+    """Each method or constructor body of a tab-indented Aeneas file, as the
+    index of its header line, which ends in "{", and of its closing "}" line,
+    both at one tab."""
+    result, start = [], None
+    for i, line in enumerate(lines):
+        if re.match(r"\t(private )?(def|new)\b.*\{$", line):
+            start = i
+        elif line == "\t}" and start is not None:
+            result.append((start, i))
+            start = None
+    return result
+
+
+def statement(line):
+    """A statement line of a body with a member access to cut, and no
+    literal or comment whose text could hold one."""
+    return (re.match(r"\t\t+[A-Za-z_]", line) is not None and line.endswith(";")
+            and not any(c in line for c in "\"'/") and MEMBER_ACCESS.search(line) is not None)
+
+
+def unfinished(rng, line):
+    """{line} cut just after the "." of one of its member accesses, chosen by
+    {rng}, so that the expression is unfinished at the line's end."""
+    return line[:rng.choice([m.start() for m in MEMBER_ACCESS.finditer(line)]) + 1]
 
 
 class Corpus:
@@ -138,11 +177,11 @@ class Corpus:
             project = self.project("fixtures/" + name, previous)
             yield self.state(project, name, "repair", REPAIR_EDIT_KINDS[name], previous, current, seed["policy"])
 
-    def large(self):
+    def aeneas(self, name):
+        """The Aeneas program, with fixed bound query sites in three of its files."""
         sources = {str(Path(p).relative_to(ROOT / "vendor/virgil")): self.remember(p)
                    for p in repair.aeneas_files()}
-        self.remember(ROOT / "test/fixtures/repair/aeneas-sites.txt")
-        project = self.project("aeneas", sources)
+        project = self.project(name, sources)
         anchors = [("aeneas/src/util/Paths.v3", "StringBuilder.new", "StringBuilder"),
                    ("aeneas/src/util/Char.v3", "properties[ch]", "properties"),
                    ("lib/util/StringBuilder.v3", "Arrays.", "Arrays")]
@@ -151,6 +190,11 @@ class Corpus:
             text = sources[path]
             at = text.index(anchor)
             project["queries"].append({"path": path, "position": corpus.position(text, at), "token": token})
+        return project, sources
+
+    def large(self):
+        self.remember(ROOT / "test/fixtures/repair/aeneas-sites.txt")
+        project, sources = self.aeneas("aeneas")
         sites = []
         replay = {"aeneas-member-of-component", "aeneas-call-nested", "aeneas-condition", "aeneas-for-header"}
         for name, rel, cut, needle in repair.aeneas_cases():
@@ -184,6 +228,74 @@ class Corpus:
                     previous = text
                 count += 1
         assert count == 140, ("replay inventory changed", count)
+
+    def error_line(self, text):
+        """The line of the first syntax error that the CLI parser reports in
+        {text}, counting from 1, or None if it parses."""
+        path = self.work / "parse-input.v3"
+        path.write_bytes(text.encode())
+        result = subprocess.run([str(self.exe), "parse", str(path)], capture_output=True, timeout=30)
+        assert result.returncode in (0, 1), (result.returncode, result.stderr.decode())
+        if result.returncode == 0:
+            return None
+        return int(re.search(r":(\d+):\d+: ", result.stdout.decode()).group(1))
+
+    def heldout(self):
+        """HELDOUT_PER_KIND states of each kind in HELDOUT_KINDS, one file each:
+        a member access unfinished at a line's end that the next statement
+        line continues, so that the parser's first error is on a later line;
+        one unfinished on a body's last line, before its closing brace; and
+        one in each of two bodies. Each cut alone is a syntax error in its own
+        body. The intended program is the upstream file."""
+        project, sources = self.aeneas("heldout")
+        used = {"aeneas/src/" + rel for _, rel, _, _ in repair.aeneas_cases()}
+        used |= {q["path"] for q in project["queries"]} | {"aeneas/src/arm64/Arm64AddrPatcher.v3"}
+        files = sorted(p for p in sources if p.startswith("aeneas/src/") and p not in used)
+        rng = random.Random(HELDOUT_SEED)
+        rng.shuffle(files)
+        counts = dict.fromkeys(HELDOUT_KINDS, 0)
+        for path in files:
+            pending = sorted((k for k in HELDOUT_KINDS if counts[k] < HELDOUT_PER_KIND), key=lambda k: counts[k])
+            if not pending:
+                break
+            original = sources[path]
+            lines = original.split("\n")
+            bodies = method_bodies(lines)
+            for kind in pending:
+                edits = self.heldout_edit(rng, kind, lines, bodies)
+                if edits is None:
+                    continue
+                current = list(lines)
+                for n, (b, e) in edits:
+                    current[n] = unfinished(rng, lines[n])
+                    # Lines count from 1 here, from 0 in {lines}.
+                    alone = self.error_line("\n".join(lines[:n] + [current[n]] + lines[n + 1:]))
+                    if alone is None or not b + 1 < alone <= e + 1 or (kind == "next-line" and alone <= n + 1):
+                        break
+                else:
+                    counts[kind] += 1
+                    yield self.state(project, kind + "/" + path.removeprefix("aeneas/src/"), "heldout", "body",
+                                     {path: original}, {path: "\n".join(current)}, "original upstream file",
+                                     heldout_kind=kind, edited_lines=[n + 1 for n, _ in edits])
+                    break
+        assert all(n == HELDOUT_PER_KIND for n in counts.values()), ("held-out inventory changed", counts)
+
+    def heldout_edit(self, rng, kind, lines, bodies):
+        """The lines to cut for {kind}, each by index with its body, or None if
+        the file has none."""
+        if kind == "next-line":
+            candidates = [(n, (b, e)) for b, e in bodies for n in range(b + 1, e - 1)
+                          if statement(lines[n]) and re.match(r"\t\t+[A-Za-z_]", lines[n + 1])]
+            return [rng.choice(candidates)] if candidates else None
+        if kind == "body-end":
+            candidates = [(e - 1, (b, e)) for b, e in bodies if e - 1 > b and statement(lines[e - 1])]
+            return [rng.choice(candidates)] if candidates else None
+        per_body = [[(n, (b, e)) for n in range(b + 1, e) if statement(lines[n])] for b, e in bodies]
+        per_body = [c for c in per_body if c]
+        if len(per_body) < 2:
+            return None
+        first, second = sorted(rng.sample(range(len(per_body)), 2))
+        return [rng.choice(per_body[first]), rng.choice(per_body[second])]
 
     def controls(self):
         a = "component A { def f(x: int) -> int { return x; } }\n"
@@ -259,13 +371,49 @@ class Corpus:
              original.replace("def target() -> int { return 1; }", "def target(a: int, b: bool) -> int { return a; }")
                      .replace("var x = 0;", "var x = target(1, true, 3);")),
         )
+        # Body blanking (#312) excludes both bodies of the two-body control
+        # and the arity control's one body, and refuses the other three.
+        bodies = {"repair-in-two-bodies": 2, "repair-call-arity": 1}
         for name, kind, broken, fixed in repairs:
             # The arity control's predecessor already calls target in the
             # body, so its reference set differs only by the binding.
             previous = original.replace("var x = 0;", "var x = target();") if name == "repair-call-arity" else original
             project = self.project("negative/" + name, {"A.v3": previous, "B.v3": caller})
             state = self.state(project, name, "negative", kind, {"A.v3": previous}, {"A.v3": broken},
-                               "original small program", oracle={"A.v3": fixed}, allow_absent=True)
+                               "original small program", oracle={"A.v3": fixed}, allow_absent=True,
+                               expected_bodies={"A.v3": bodies.get(name, 0)})
+            state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
+            yield state
+        # Body blanking (#312) must refuse a body with an unterminated string
+        # and a method whose header line was deleted, which leaves an extra
+        # "}", and an emptied body's missing return must count toward the
+        # error limit: here it is the fifteenth error, after the Observer's
+        # and 13 in A, so verification never reaches target or B, whose
+        # answers are missing, and the excluded error suppresses the limit
+        # notice. Each oracle changes target's signature, so the
+        # predecessor's answers are wrong and fallback can't substitute.
+        original = ("component A {\n    def broken() {\n        var x = 0;\n    }\n"
+                    "    def other() {\n        var y = 0;\n    }\n    def target() -> int { return 1; }\n}\n")
+        changed = original.replace("def target() -> int { return 1; }", "def target() -> bool { return true; }")
+        errors = "".join("var x%d: int = true; " % n for n in range(13))
+        limit = ("component A { def errors() { " + errors + "} def broken() -> int { return 1; } "
+                 "def target() -> int { return 1; } }\n")
+        limit_changed = limit.replace("def target() -> int { return 1; }", "def target() -> bool { return true; }")
+        blanking = (
+            ("repair-unterminated-string", original,
+             changed.replace("var x = 0;", 'var s = "open;\n        var x = 0;'),
+             changed.replace("var x = 0;", 'var s = "open";\n        var x = 0;'), 0, False),
+            ("repair-deleted-header", original, changed.replace("    def other() {\n", ""),
+             changed.replace("    def other() {\n        var y = 0;\n    }\n", ""), 0, False),
+            ("repair-missing-return-limit", limit,
+             limit_changed.replace("{ return 1; } def target", "{ var syntax = ; return 1; } def target"),
+             limit_changed.replace("{ return 1; } def target", "{ var syntax = 1; return 1; } def target"), 1, True),
+        )
+        for name, previous, broken, fixed, count, reached in blanking:
+            project = self.project("negative/" + name, {"A.v3": previous, "B.v3": caller})
+            state = self.state(project, name, "negative", "body", {"A.v3": previous}, {"A.v3": broken},
+                               "original small program", oracle={"A.v3": fixed}, allow_absent=True,
+                               expected_bodies={"A.v3": count}, expected_limit=reached)
             state["queries"] = state["stale_queries"] = [query("B.v3", caller, "A.target()", "target")]
             yield state
         # Three variants per boundary, including distinct fresh diagnostic kinds.
