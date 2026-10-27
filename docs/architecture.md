@@ -690,9 +690,9 @@ requires that no string, byte literal, or block comment be unterminated, by the
 same completion cursor scanner checks that fallback applies to its intervals,
 and reads the whole current text's brace balance in ordinary code with that
 scanner. When the braces balance, the body is found from the parser's error, as
-below. When they are short by exactly one opener or exactly one closer, the
-brace rules below find it from the file's layout instead. A file with any other
-balance, such as two missing braces, stays unrepaired.
+below. When they are short by exactly one opener, the brace rule below finds
+it from the file's layout instead. A file with any other balance, such as one
+missing `}` or two missing braces, stays unrepaired.
 
 **The body.** The candidate is the body of the method or constructor whose
 header the parser consumed and whose body holds that point. The scanner reads
@@ -709,8 +709,8 @@ but its braces kept, the file stays unrepaired.
 
 **Blanking.** Every byte strictly between the body's braces becomes a space,
 except CR and LF, so the text keeps its length and every offset and line stays
-where it is. Nothing is inserted: no sentinel and no closer, and no brace except
-the one `}` of brace rule 3 below. `AeneasAdapter.repairParse` parses the blanked text once, with the document's
+where it is. Nothing is inserted: no sentinel, no closer, and no brace.
+`AeneasAdapter.repairParse` parses the blanked text once, with the document's
 language options and the same parser guards as syntax diagnostics. If it fails
 again, the body that holds its first error is found the same way and blanked
 too, and the text is parsed once more. A text that still fails after two
@@ -722,20 +722,19 @@ be one of them, so the parser read each header as a method's or a
 constructor's. The file's project then has the ordinary empty semantic result
 whenever repair refuses, as before.
 
-**Brace rules.** ADR-0010's rules 2 and 3 apply when the braces are short by
-exactly one opener (the scanner's final depth and lowest depth are both -1) or
-by exactly one closer (final depth 1, lowest depth 0). `LspLayout` reads the
-text once. Lines end at LF, and a CR right before an LF, or at the end of the
-text, belongs to the line's ending. A line's indentation is the width of its
-leading spaces and tabs: a space adds one column and a tab advances to the next
-multiple of 8. A line counts if it holds ordinary code: a byte outside
-whitespace and comments, where string and byte literals are code, read as the
-completion scanner reads them. Blank lines and lines that hold only comments
-don't count and are skipped everywhere below. The rules refuse a file with an
-irregular line: a counted line that starts inside a block comment, or that
-holds, outside comments, a control byte other than a tab, except a CR that ends
-it. The braces are those in ordinary code, and their count must agree with the
-scanner's.
+**Brace rule.** ADR-0010's rule 2 applies when the braces are short by exactly
+one opener: the scanner's final depth and lowest depth are both -1.
+`LspLayout` reads the text once. Lines end at LF, and a CR right before an LF,
+or at the end of the text, belongs to the line's ending. A line's indentation
+is the width of its leading spaces and tabs: a space adds one column and a tab
+advances to the next multiple of 8. A line counts if it holds ordinary code: a
+byte outside whitespace and comments, where string and byte literals are code,
+read as the completion scanner reads them. Blank lines and lines that hold only
+comments don't count and are skipped everywhere below. The rule refuses a file
+with an irregular line: a counted line that starts inside a block comment, or
+that holds, outside comments, a control byte other than a tab, except a CR that
+ends it. The braces are those in ordinary code, and their count must agree with
+the scanner's.
 
 **Agreement.** A brace pair agrees with the layout if both braces are on one
 line, or if the `}` closes on a line exactly as deep as the line where the
@@ -744,33 +743,34 @@ The construct starts on the `{`'s line, or, while that line is deeper than the
 `}`'s, on the counted line before it, if that line doesn't end in `;`, `{`, or
 `}`, since the later line then continues it. Pairing the braces in order, the
 first pair that disagrees, or the first `}` that closes nothing, locates the
-damage; a file with neither is refused. The method or constructor header that
-encloses the damage by layout is the damaged line, if it is a header, or the
-nearest counted line above it that is shallower than every counted line from it
-to the damaged line and is a header. The damaged line is the disagreeing
-pair's `}` line, or the unmatched `}`'s, when an opener is missing, and the
-disagreeing pair's `{` line when a closer is missing. A header is one whole
-line. It begins, after an optional `private`, with `def` and a name followed by
-`(` or `<`, with `def` and `[`, or with `new` and `(`, so that a field or a
-value whose initializer's function ends the line in `{` is no header; its last
-code byte is `{`; and the counted line before it, if any, ends in `;`, `{`, or
-`}`, so that it continues no other line. A header split over two lines is
-refused. The first counted line after the header that is no deeper than it
-ends the body, and it must be exactly as deep as the header.
+damage; a file with neither is refused. The damaged line is that `}`'s line.
+The method or constructor header that encloses the damage by layout is the
+damaged line, if it is a header, or the nearest counted line above it that is
+shallower than every counted line from it to the damaged line and is a header.
+A header is one whole line. It begins, after an optional `private`, with `def`
+and a name followed by `(` or `<`, with `def` and `[`, or with `new` and `(`,
+so that a field or a value whose initializer's function ends the line in `{` is
+no header; its last code byte is `{`, with no `;`, `{`, or `}` before it, so
+that the line holds nothing else; and the counted line before it, if any, ends
+in `;`, `{`, or `}`, so that it continues no other line. A shallower line on the
+way up that could begin a method's or constructor's header in another form,
+because it begins with `def`, `new`, or `private`, or with a string, as an
+imported member's name may, and doesn't begin a field or a value, refuses the
+file rather than being passed over: a header split over two lines, or with a
+comment inside it, could be the one that holds the damage. The first counted
+line after the header that is no deeper than it ends the body, and it must be
+exactly as deep as the header.
 
-**Statements.** A statement or a member can begin only at a head: the first
-code byte after a `;`, `{`, or `}` in ordinary code, on its line or a later
-one. In a `for` header's parentheses, the first two `;` end no statement. A
-head's level is the braces' balance before it, and a body's own level is that
-of its first head, right after its `{`. A head at the body's level that is the
-first code of its line starts a statement on that line; any other counted line
-whose first code is at that level continues one.
+**Statements.** A statement or a member can begin only at a head: the text's
+first code byte, or the first code byte after a `;`, `{`, or `}` in ordinary
+code, on its line or a later one. In a `for` header's parentheses, the first two
+`;` end no statement. A head's level is the braces' balance before it, and a
+body's own level is that of its first head, right after its `{`.
 
-**Where a method ends.** The rules put a method's end only where the grammar
-forces it. Indentation may choose among places that are equivalent, with only
-whitespace and comments between them, and must agree with the braces, but it
-never decides alone whether a declaration is a member or a local. A local
-function begins as a method does: `Parser.parseDefStmt`
+**Where a method ends.** Indentation may choose among places that are
+equivalent, with only whitespace and comments between them, and must agree
+with the braces, but a member and a local can look alike. A local function
+begins as a method does: `Parser.parseDefStmt`
 (`vendor/virgil/aeneas/src/vst/Parser.v3:899`) reads `def`, a name, and `(` in
 a statement as one, so a line that looks like a method's header is no evidence
 that a method ended. A method's or constructor's header that no statement can
@@ -803,85 +803,85 @@ member's, as where that `}` is indented like a statement and the member after
 it, a method that lost its `{`, ends at the `}` as deep as the header. So after
 that `}`, the first head at the lower level that begins with a name and doesn't
 begin a field or a value (`var`, `def var`, or `def`, a name, and `=` or `:`,
-after an optional `private`) must begin with a name that can't begin a member,
-as listed for rule 3. A field or a value holds a `{` only in a function in its
-initializer, and code would follow that function's `}` on the method's `}`
-line, which this rule doesn't allow. A header that a statement can begin
-reads as a member's only because of the text before it, and a method whose `{`
-was lost right before a `;` still parses, without a body; the method that
-layout reads as damaged could then be its local function, written as deep as
-its header. So unless no statement can begin the method's header, no method or
-constructor header before it in its class, component, or variant, back to the
-last header that no statement can begin, may be followed by a `;` with no body.
-The body, from the header's `{` through the method's `}`, is blanked, so no
-offset moves.
+after an optional `private`) must begin with a name that can't begin a member:
+not `var`, `def`, `new`, `private`, `case`, `class`, `component`, `type`,
+`enum`, `import`, `export`, `thread`, `packing`, or `layout`; and no head before
+it at that level may begin with a string, as an imported member's name may. A
+field or a value holds a `{` only in a function in its initializer, and code
+would follow that function's `}` on the method's `}` line, which this rule
+doesn't allow.
 
-**Rule 3: a lost `}`.** When the line that ends the body begins with a `}` as
-rule 2 requires, a block inside the method lost its `}`: exactly one `{` in the
-body must end its line, belong to a construct that starts with a control
-statement's header, and have a block, by layout, that ends at a line that isn't
-a `}` exactly as deep as that construct's start. With a `}` restored before that
-line, ahead of every brace on it, the restored `}` must close that `{`, and
-every pair in the body must agree. The method could instead have ended before
-the member that holds that block, at an earlier statement's end, so at the
-body's level the last head, which starts the statement that holds the block,
-must be a block or begin with a name, and if it can begin a member, it must
-begin a field or a value, whose function's `}` would need code after it on the
-method's `}` line; and no counted line after it at that level may begin with a
-word that can begin a member. Had the method's `}` closed the block instead,
-the method would go on after it, with its own `}` lost later, and what follows
-could be its statements, such as a local function and a local written as deep
-as its header. So the text must end after the method's `}` line, or the next
-counted line must begin a header that no statement can begin. A `}` there is
-not enough: had it closed the method, the lost `}` could be its compound's,
-and what follows would move into the compound. The method's body is blanked,
-which would also blank the restored `}`, so nothing is inserted and no offset
-moves.
-Otherwise the method lost its own `}`, and the damage's `{` must be the
-method's. The line that ends the body must begin the next method or
-constructor: its header begins on it, its last code byte is a brace, and the
-counted line before it, inside the body, ends in `;`, `{`, or `}`; and no
-statement may be able to begin that header, so that the grammar ends the method
-there. Before a plain `def`, a name, and `(`, the method could go on, with the
-next method its local function, so its `}` isn't put back. Every brace
-pair in the body must agree. The method can't have ended at an earlier
-statement's end with members after it: at the body's level, the last head,
-including one later on a line than another statement, must be a block, which
-no member is, or begin with a name that can't begin a member: not `var`, `def`,
-`new`, `private`, `case`, `class`, `component`, `type`, `enum`, `import`,
-`export`, `thread`, `packing`, or `layout`. No counted line after it at that
-level may begin with one of those words, though it continues a line. Every
-counted line of the body must be at least as deep as its first, and each that
-starts a statement at the body's level exactly as deep, so that a member
-indented deeper after the method's end can't read as one of its statements or
-their continuation. A `}` is inserted at the first byte of the line that ends
-the body, before its indentation, and the body, from the header's `{` through
-the inserted `}`, is blanked.
+A header that a statement can begin reads as a member's only because of the
+text before it, and a method whose `{` was lost right before a `;` still
+parses, without a body; the method that layout reads as damaged could then be
+its local function, written as deep as its header. So unless no statement can
+begin the method's header, its header must begin at a head, and no declaration
+without a body before it at its level in its class, component, or variant,
+back to the last header that no statement can begin, may be one that could
+begin a method's or constructor's header in any form the grammar allows
+(`Parser.parseMember`): one that begins with `def`, `new`, or `private`, or
+with a string, other than a field or a value. A declaration with a comment or a
+line break inside its header, which the rule doesn't read as a header, counts
+as one that could. Throughout, wherever the rule decides from a declaration's
+first words whether it is a member or a statement, one that it can't classify
+with certainty refuses the repair rather than being skipped, and the headers
+that the rule repairs stay as narrow as above. The body, from the header's `{`
+through the method's `}`, is blanked, so no offset moves.
 
-**Outside the body.** For either rule, every brace outside the body must pair,
-with the body's `{` closed by its `}` or by the inserted one, and every pair
-must agree with the layout. A file whose layout disagrees with its braces
-anywhere else can't show which brace it lost: a loop's `}` mistakenly as deep
-as its constructor's, in a file that mixes indentation widths, would otherwise
-make a later method's lost `}` look like the loop's.
+**Outside the body.** Every brace outside the body must pair, with the body's
+`{` closed by its `}`, and every pair must agree with the layout. A file whose
+layout disagrees with its braces anywhere else can't show which brace it lost:
+a loop's `}` mistakenly as deep as its method's, in a file that mixes
+indentation widths, would otherwise make a lost `{` look like the loop's.
 
-**The inserted `}`.** The inserted byte is the substitution's interval: `[at,
-at + 1)` in the effective text and the empty range at `at` in current text, a
-length difference of one. The first excluded body runs from the header's `{`
-through the inserted `}`, in effective offsets. Current offsets before the
-body map to themselves, offsets in the body up to `at` map to nothing, and
-offsets from `at` on map one byte later, so every effective offset after the
-inserted `}` maps one byte earlier. Because the `}` goes at the start of a line,
-after the previous line's LF, and CR stays where it is, current lines and
-columns are converted from current text after mapping; a position on the
-insertion's line or a later one maps back exactly, with LF or CRLF line ends. A
-second body, before or after the first, is listed in effective offsets too,
-and nothing in it maps. Every feature that maps offsets through the
-substitution, as above, uses this one map. The parse of the repaired text counts
-toward the parse budget, and a second body may still follow, at most two
-bodies in all.
+**What rule 2 trusts.** Rule 2 trusts indentation, as ADR-0010 states, under
+this contract. When every brace pair of the intended file, the text before its
+`{` was lost, agrees with its indentation by the reading above, with tabs
+reaching the next multiple of 8 columns and blank and comment-only lines
+skipped, rule 2 gives no wrong answer: in every stress set of the
+[brace rules comparison](benchmarks.md#brace-rules-comparison), no accepted
+state whose intended file agrees in this way was read wrongly. When the file's
+own indentation disagrees with its braces near the damage, a lost `{` can be
+read wrongly, and answers outside the emptied body can point at the wrong
+declaration. In this file, `h`'s body begins with a block whose `}` is written
+as deep as `h`, and `h`'s local function `local` is written as deep as `h` too:
 
-**Conservative readings.** Where ADR-0010 leaves a form open, the rules take
+```virgil
+def local() -> int { return 11; }
+class A {
+    def h() {{
+        g();
+    }
+    def local() {
+            if (true)
+                g();
+            }
+        var count = 7;
+    }
+    def target() -> int { return local(); }
+    def g() { }
+}
+```
+
+If `h` loses one of the two `{` on its line, the layout reads `h` as ending at
+the block's `}`,
+and `local` as a member whose `if` lost its `{`. Rule 2 empties `local`'s body,
+and `local()` in `target` then binds to the former local function rather than
+to the top-level `local`. The guards above refuse every shape of this kind that
+the reviews found, but not this one, and a guard that refused every reading
+like it would also refuse every lost `{` that the benchmark's primary states
+recover.
+
+**A lost `}`.** ADR-0010's rule 3, which would read a missing `}` from the
+layout and put a method's `}` back, is not implemented. Three reviews found
+readings where indentation alone moved a declaration to another owner, such as
+a local function and a local after it read as members once the method's `}`
+went back before them, so a file one `}` short is refused as any other
+imbalance is.
+[#320](https://github.com/SaltedTan/virgil-language-server/issues/320) tracks
+a redesign that puts a `}` back only where every reading agrees.
+
+**Conservative readings.** Where ADR-0010 leaves a form open, the rule takes
 the stricter reading:
 
 - Every brace pair outside the excluded body must agree with the layout too,
@@ -892,35 +892,20 @@ the stricter reading:
 - A file with an irregular line anywhere is refused.
 - Exactly one line in the body may have lost the brace, by layout, and with it
   restored, every pair in the body must agree; two candidates are refused.
-- A header is one line that begins a method's or constructor's header and
-  ends in `{`; a lost brace of the header itself is refused, as is one in a
-  match case's block or any other block whose construct doesn't start with a
-  control statement's header.
+- A header is one line that begins a method's or constructor's header, holds
+  nothing else, and ends in `{`; a lost brace of the header itself is refused,
+  as is one in a match case's block or any other block whose construct doesn't
+  start with a control statement's header. A header with a comment or a line
+  break inside it is never read as one, and refuses wherever it could be the
+  method that holds the damage or a method that holds it as a local function.
 - The method's `}` must begin its line; a comment may follow it on the line,
   but no code, and no comment may precede it.
-- A block inside the method that lost its `}` empties the whole method body
-  rather than inserting a brace inside it, so no offset moves.
-- A method that lost its own `}` must be followed by a method or constructor
-  whose header no statement can begin, and its last statement must be a block
-  or begin with a name that can't begin a member, so a method followed by a
-  plain method, whose header a local function's could be, a method whose last
-  statement is a local `var` or a local function, the last method of a
-  compound, and a method followed by a field are refused. So are a method
-  with a statement at its body's level indented deeper than its first, even
-  one that is only misindented, a member after the last statement on its
-  line, such as `g(); var count = 7;`, and a line that continues the last
-  statement with a member's word.
-- Where a block lost its `}`, the method's `}` must end the text or be followed
-  by a header that no statement can begin, so a block's lost `}` in a method
-  followed by a plain method, or in the last method of a compound, is refused.
-  A method with a plain header that rule 2 reads as damaged is refused after a
-  method header without a body in its compound, unless a header that no
-  statement can begin lies between them.
-- Where a block lost its `}`, the statement that holds it must not begin a
-  method, a constructor, or a type, as a local function's `def` could; where
-  an `if`, a loop, or a `match` lost its `{`, neither may the first statement
-  after the `}` that ends the statement holding it, other than a field or a
-  value.
+- Where the method could have ended at an earlier `}` indented like a
+  statement, the first statement after it, other than a field or a value, must
+  not begin a member, and no statement before it may begin with a string.
+- A method with a plain header is refused after a declaration without a body
+  in its compound that could be a method's or a constructor's, unless a header
+  that no statement can begin lies between them.
 
 The capture parses each broken file at most three times
 (`LspAnalysisInputs.PARSES_PER_FILE`). The current text's parse outcome is
@@ -934,7 +919,7 @@ A repaired file is substituted exactly as fallback substitutes cached text. Its
 text, and the `LspBodyFallback` map, whose list of excluded bodies holds each
 blanked body, braces included, and whose interval spans the blanked bytes
 without changing their length, so every offset outside the bodies maps to
-itself, or, for brace rule 3's insertion, is the inserted `}`. Its bytes are reserved at capture and charged to the snapshot budget.
+itself. Its bytes are reserved at capture and charged to the snapshot budget.
 Every rule in [Method-body fallback](#method-body-fallback) then applies to each
 excluded body: definition, type definition, implementation, type hierarchy,
 call hierarchy, hover, references, highlights, inlay hints, and semantic
@@ -984,19 +969,21 @@ bodies. Completion and signature help keep their repair at the cursor.
 candidate for each kind of position of the first error, exact blanked texts,
 unchanged offsets and lines, CRLF, the two-body cap, refusals, the parse
 budget, suppression at the body's edges with one and with two excluded bodies,
-the error limit, including a body that a brace rule empties, and fallback's
-priority. [Brace rule tests](../test/unit/LspBraceRulesTest.v3) check each
-rule's candidate, with exact texts, for an `if`, a loop, a `match`, an `else`,
-a legal `if` without braces before a `while`, a condition over two lines, a
-constructor, a private method, and comments after the `{` and the `}`; the
-inserted `}` before a method, a private method, and a constructor; the map at,
-before, and after the insertion, on its line and later, for every offset;
-CRLF; tab stops and widths that disagree; each refusal and each brace control
-of the tolerance benchmark; two bodies on either side; the parse budget; and a
-real analysis whose use, declaration, and type error after the insertion map
-back exactly. The [protocol test](../test/protocol/current_repair.py) covers
-cold opens with an error in one body, an error that the next line continues,
-errors in two bodies, a lost `{`, and a lost `}`, blanking beside fallback in
+the error limit, including a body that the brace rule empties, and fallback's
+priority. [Brace rule tests](../test/unit/LspBraceRulesTest.v3) check rule
+2's candidate, with exact texts, for an `if`, a loop, a `match`, an `else`, a
+legal `if` without braces before a `while`, a condition over two lines, a
+constructor, a private method, and comments after the `{` and the `}`;
+unchanged offsets and line breaks; CRLF; tab stops and widths that disagree;
+each refusal, including headers with a comment or a line break inside them and
+declarations without a body before the method, and each rule-2 control of the
+tolerance benchmark; a file one `}` short in every shape that rule 3 read,
+refused as any imbalance is; an error in another body, and a third refused; the
+parse budget; and a real analysis whose use, declaration, and type error after
+the emptied body keep their offsets. The
+[protocol test](../test/protocol/current_repair.py) covers cold opens with an
+error in one body, an error that the next line continues, errors in two
+bodies, and a lost `{`, the refusal of a lost `}`, blanking beside fallback in
 one analysis, call hierarchy, rename refusal, and restoration. [ADR-0009](decisions/0009-current-text-repair.md) and
 [ADR-0010](decisions/0010-analyze-unrepairable-files.md) record the decisions.
 

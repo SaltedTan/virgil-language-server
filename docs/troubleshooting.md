@@ -117,9 +117,9 @@ Whole-program analysis needs every file of the project to parse. While a file ha
 Two exceptions keep most answers while you edit a method. Both leave definition, type definition, hover, references, document highlights, and type errors working outside the method or constructor body that has the error; the damaged body itself gets nothing, references and highlight lists can be partial, and rename stays refused:
 
 - The [method-body fallback](architecture.md#method-body-fallback): after a file has been analyzed without a syntax error, a later syntax error strictly inside one body is analyzed from the file's last parseable text for that body.
-- The [current-text repair](architecture.md#current-text-repair): when the fallback can't help, as when you open a file that already has the error, or the server has no parseable text for it yet, the server empties the method or constructor body that holds the error, or two such bodies, if that makes the open file parse. When one `{` or one `}` is missing, the file's indentation must show which one, and the server puts back a missing `}` of the method itself; no string, byte literal, or block comment may be left open.
+- The [current-text repair](architecture.md#current-text-repair): when the fallback can't help, as when you open a file that already has the error, or the server has no parseable text for it yet, the server empties the method or constructor body that holds the error, or two such bodies, if that makes the open file parse. The file's braces must balance, or lack one `{` whose place the file's indentation shows, and no string, byte literal, or block comment may be left open.
 
-Neither applies to a missing brace that the indentation doesn't place, an edit to a declaration's header or a field initializer, errors in more than two bodies, an unterminated string or comment, or a closed file ([No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing)).
+Neither applies to a missing `}`, a missing `{` that the indentation doesn't place, an edit to a declaration's header or a field initializer, errors in more than two bodies, an unterminated string or comment, or a closed file ([No error-tolerant parsing](known-limitations.md#no-error-tolerant-parsing)).
 
 Completion and signature help repair the code at the cursor in their own way ([Completion](architecture.md#completion)).
 

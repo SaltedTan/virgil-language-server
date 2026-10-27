@@ -228,6 +228,22 @@ The maintainer decided, on 2026-10-27:
   rules weren't built from, such as replays of other headers and indentation
   styles. Phase 3b is not needed for v1.0.
 
+Later on 2026-10-27, after the brace rules were built and reviewed, the
+maintainer decided two more things. Rule 3 is left out of phase 3a: three
+reviews in a row found wrong readings, where indentation alone moved a
+declaration to another owner, so a file one closer short is refused as any
+other imbalance is, and rule 3 is redesigned in
+[#320](https://github.com/SaltedTan/virgil-language-server/issues/320). Rule 2
+ships trusting indentation, as this record states, under an explicit contract:
+when every brace pair of the intended file agrees with its indentation, by the
+layout check's own reading (tabs to the next multiple of 8 columns, blank and
+comment-only lines skipped), rule 2 gives no wrong answer; when the file's own
+indentation disagrees with its braces near the damage, a lost `{` can be read
+wrongly, and answers outside the emptied body can point at the wrong
+declaration. Every guard that rule 2 has stays, and no guard is added against
+that second case, because one sound against it refuses every lost `{` that the
+benchmark's primary states recover.
+
 ## Consequences
 
 A cold open with a missing brace, an expression continued on the next line, or
