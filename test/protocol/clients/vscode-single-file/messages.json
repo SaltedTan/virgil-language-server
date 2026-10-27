@@ -514,7 +514,12 @@
           }
         }
       },
-      "initializationOptions": {},
+      "initializationOptions": {
+        "inlayHints": {
+          "types": true,
+          "parameterNames": true
+        }
+      },
       "trace": "verbose",
       "workspaceFolders": null
     }
