@@ -310,7 +310,8 @@ component AnalysisWire {
 	}
 	// Drops the parent of each declaration on a cycle of {parents}, each a
 	// declaration index plus one, or zero, and returns whether it dropped
-	// any. The walk from each declaration in turn follows parents and marks
+	// any. The decoder needs this check because malformed worker data can
+	// still contain cycles. The walk from each declaration follows parents and marks
 	// each declaration it passes, once: a walk that returns to a declaration
 	// of its own closes a cycle; one that reaches a root, or a declaration of
 	// an earlier walk, which leads to a root, does not. Each declaration is
@@ -499,8 +500,8 @@ component AnalysisWire {
 			declarationIds[3 * i + 1] = if(d.signature != null, 1 + strings.add(d.signature));
 			declarationIds[3 * i + 2] = paths[d.range.path] - 1;
 		}
-		// An inheritance cycle, which verification reports, links its classes
-		// in a cycle, which the reader rejects: send none of their parents.
+		// Defensively drop unexpected cyclic parent data, which the reader rejects.
+		// Verification normally breaks each cycle by rejecting one superclass edge.
 		dropLinkCycles(links, linked);
 		// Each signature that a sent call uses, which the display makes once,
 		// the most used first, so that most calls name theirs in one byte;
