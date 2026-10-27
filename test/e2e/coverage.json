@@ -126,6 +126,11 @@
       "matrix": true
     },
     {
+      "id": "semantic-tokens",
+      "label": "Semantic tokens",
+      "matrix": true
+    },
+    {
       "id": "hover",
       "label": "Hover",
       "matrix": true
@@ -2099,6 +2104,46 @@
       "description": "The editor inlay-hint API returns exactly : int at UTF-16 position 4:33 and count: at 4:41, after a comment containing non-ASCII text."
     },
     {
+      "id": "vscode.semantic-tokens.response",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "vscode.provideDocumentSemanticTokens, decoded with vscode.provideDocumentSemanticTokensLegend, returns exactly the namespace Inlay, the functions take and run, the parameter count, and the variable total in words/Inlay.v3, each declaration with the declaration modifier and each use with none, at exact UTF-16 positions after a comment containing non-ASCII text, and no token for the built-in int."
+    },
+    {
+      "id": "vscode.semantic-tokens.off",
+      "suites": ["vscode", "remote-ssh"],
+      "profiles": ["workspace"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "clients/vscode/test/e2e/suite.cjs",
+      "description": "Setting virgil.semanticTokens to off restarts the server, and VS Code then has no semantic tokens legend or provider for the open words/Inlay.v3; restoring the setting restarts it with the same tokens."
+    },
+    {
+      "id": "nvim.semantic-tokens.response",
+      "suites": ["nvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/nvim/check.lua",
+      "description": "vim.lsp.semantic_tokens.get_at_pos(), at every byte of the buffer, finds exactly the namespace Inlay, the functions take and run, the parameter count, and the variable total in words/Inlay.v3, each declaration with the declaration modifier and each use with none, at exact UTF-16 positions after a comment containing non-ASCII text, and no token for the built-in int."
+    },
+    {
+      "id": "lazyvim.semantic-tokens.response",
+      "suites": ["lazyvim"],
+      "profiles": ["main"],
+      "level": "api",
+      "when": null,
+      "required": true,
+      "source": "test/e2e/lazyvim/driver.lua",
+      "description": "vim.lsp.semantic_tokens.get_at_pos(), at every byte of the buffer, finds exactly the namespace Inlay, the functions take and run, the parameter count, and the variable total in words/Inlay.v3, each declaration with the declaration modifier and each use with none, at exact UTF-16 positions after a comment containing non-ASCII text, and no token for the built-in int."
+    },
+    {
       "id": "vscode.diagnostics.semicolon-fix",
       "suites": ["vscode", "remote-ssh"],
       "profiles": ["workspace"],
@@ -2200,6 +2245,13 @@
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
         "notCovered": []
+      },
+      {
+        "setup": "vscode-linux",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["vscode.semantic-tokens.response", "vscode.semantic-tokens.off"],
+        "notCovered": ["vscode.semantic-token-colors"]
       },
       {
         "setup": "vscode-linux",
@@ -2341,6 +2393,13 @@
         "level": "api",
         "checks": ["vscode.inlay-hints.response"],
         "notCovered": []
+      },
+      {
+        "setup": "vscode-macos",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["vscode.semantic-tokens.response", "vscode.semantic-tokens.off"],
+        "notCovered": ["vscode.semantic-token-colors"]
       },
       {
         "setup": "vscode-macos",
@@ -2481,6 +2540,13 @@
       },
       {
         "setup": "ssh-linux-client",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["vscode.semantic-tokens.response", "vscode.semantic-tokens.off"],
+        "notCovered": ["vscode.semantic-token-colors"]
+      },
+      {
+        "setup": "ssh-linux-client",
         "feature": "hover",
         "level": "api",
         "checks": ["vscode.hover.response"],
@@ -2622,6 +2688,13 @@
       },
       {
         "setup": "nvim-linux",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["nvim.semantic-tokens.response"],
+        "notCovered": ["nvim.semantic-token-colors"]
+      },
+      {
+        "setup": "nvim-linux",
         "feature": "hover",
         "level": "api",
         "checks": ["nvim.hover.response"],
@@ -2763,6 +2836,13 @@
       },
       {
         "setup": "nvim-macos",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["nvim.semantic-tokens.response"],
+        "notCovered": ["nvim.semantic-token-colors"]
+      },
+      {
+        "setup": "nvim-macos",
         "feature": "hover",
         "level": "api",
         "checks": ["nvim.hover.response"],
@@ -2898,6 +2978,13 @@
       },
       {
         "setup": "lazyvim-linux",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["lazyvim.semantic-tokens.response"],
+        "notCovered": ["lazyvim.semantic-token-colors"]
+      },
+      {
+        "setup": "lazyvim-linux",
         "feature": "hover",
         "level": "api-ui-state",
         "checks": ["lazyvim.hover.response", "lazyvim.hover.popup"],
@@ -3030,6 +3117,13 @@
         "level": "api",
         "checks": ["lazyvim.inlay-hints.response"],
         "notCovered": []
+      },
+      {
+        "setup": "lazyvim-macos",
+        "feature": "semantic-tokens",
+        "level": "api",
+        "checks": ["lazyvim.semantic-tokens.response"],
+        "notCovered": ["lazyvim.semantic-token-colors"]
       },
       {
         "setup": "lazyvim-macos",
@@ -3461,6 +3555,24 @@
       "id": "vscode.call-hierarchy-view",
       "kind": "visual",
       "what": "the Call Hierarchy view that Show Call Hierarchy opens",
+      "planned": null
+    },
+    {
+      "id": "vscode.semantic-token-colors",
+      "kind": "visual",
+      "what": "the colors that the theme gives semantic tokens in VS Code",
+      "planned": null
+    },
+    {
+      "id": "nvim.semantic-token-colors",
+      "kind": "visual",
+      "what": "the colors that the color scheme gives semantic tokens in Neovim",
+      "planned": null
+    },
+    {
+      "id": "lazyvim.semantic-token-colors",
+      "kind": "visual",
+      "what": "the colors that the color scheme gives semantic tokens in LazyVim",
       "planned": null
     }
   ],

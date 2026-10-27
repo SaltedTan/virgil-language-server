@@ -14,6 +14,16 @@ const { fromShutdown } = require('./shutdown.cjs');
 const EXTENSION_ID = 'virgil-language-server.virgil-lsp-vscode';
 const CHANNEL_LOG = 'Virgil Language Server.log';
 const project = process.env.VIRGIL_E2E_PROJECT;
+// The semantic tokens of words/Inlay.v3, as semanticTokens decodes them.
+const INLAY_TOKENS = [
+  [2, 10, 5, 'namespace', ['declaration']],
+  [3, 6, 4, 'function', ['declaration']],
+  [3, 11, 5, 'parameter', ['declaration']],
+  [3, 39, 5, 'parameter', []],
+  [4, 6, 3, 'function', ['declaration']],
+  [4, 28, 5, 'variable', ['declaration']],
+  [4, 36, 4, 'function', []],
+];
 
 async function waitFor(description, predicate, timeout = 10000) {
   const deadline = Date.now() + timeout;
@@ -133,6 +143,25 @@ async function signatureHelp(editor, line, character) {
     activeParameter: result.activeParameter,
     signatures: result.signatures.map((s) => [s.label, s.parameters.map((p) => p.label)]),
   };
+}
+
+// Each semantic token of the document as its line, character, length, type,
+// and modifiers, decoded with the provider's legend; undefined without one.
+async function semanticTokens(uri) {
+  const legend = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', uri);
+  const tokens = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', uri);
+  if (legend === undefined || tokens === undefined) return undefined;
+  const decoded = [];
+  let line = 0;
+  let character = 0;
+  for (let i = 0; i < tokens.data.length; i += 5) {
+    const [deltaLine, deltaStart, length, type, modifiers] = tokens.data.slice(i, i + 5);
+    line += deltaLine;
+    character = deltaLine === 0 ? character + deltaStart : deltaStart;
+    decoded.push([line, character, length, legend.tokenTypes[type],
+      legend.tokenModifiers.filter((_, bit) => modifiers & (1 << bit))]);
+  }
+  return decoded;
 }
 
 // The name, kind, file, and range of each symbol that a workspace symbol query returns.
@@ -408,6 +437,10 @@ async function workspace(extension) {
     [4, 33, vscode.InlayHintKind.Type, ': int'],
     [4, 41, vscode.InlayHintKind.Parameter, 'count:'],
   ]);
+  // The same file's semantic tokens, with UTF-16 columns after the comment's
+  // non-ASCII text. int, a built-in type, has none.
+  assert.deepEqual(await semanticTokens(inlay.document.uri), INLAY_TOKENS);
+  console.log('PASS: vscode.semantic-tokens.response');
   words = await vscode.window.showTextDocument(words.document);
   // Hover over the same use shows the class's signature in a Virgil code block.
   assert.deepEqual(await hovers(words, use, column), [
@@ -701,6 +734,7 @@ async function workspace(extension) {
 
   // The scenarios that restart the server, or could disturb it, come last.
   await trace(failures, words);
+  await semanticTokensOff(failures, words);
   await noVirgilRoot(failures, words);
   await missingServer(failures, words);
   await missingWorker(failures, words);
@@ -773,6 +807,34 @@ async function trace(failures, words) {
     await level(vscode.LogLevel.Info);
     if (words.document.getText() !== unedited) await undo(words, unedited);
     await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+  });
+}
+
+// virgil.semanticTokens set to off restarts the server, which then advertises
+// no semantic tokens, so VS Code has no provider for them. Its default, auto,
+// turns them on here, where titzer.virgil isn't installed.
+async function semanticTokensOff(failures, words) {
+  const name = 'virgil.semanticTokens';
+  const userValue = () => vscode.workspace.getConfiguration().inspect(name).globalValue;
+  const original = userValue();
+  // Open, so that the commands find the document and only a provider is missing.
+  const inlay = (await vscode.workspace.openTextDocument(path.join(project, 'words', 'Inlay.v3'))).uri;
+  const restartWith = async (value) => {
+    const log = logFromHere();
+    await setSetting(name, value);
+    await waitFor('a restart', () => {
+      const text = log();
+      return text.includes(`${name} changed; restarting the server`) && text.includes('Started virgil-lsp ');
+    }, 20000);
+  };
+  await scenario(failures, 'virgil.semanticTokens off: a restart, and no semantic tokens provider', async () => {
+    await restartWith('off');
+    assert.ok(vscode.workspace.textDocuments.some((d) => d.uri.toString() === inlay.toString()), 'Inlay.v3 is not open');
+    assert.equal(await semanticTokens(inlay), undefined);
+  }, async () => {
+    if (userValue() !== original) await restartWith(original);
+    await waitFor('the type error in words/Words.v3', () => hasTypeError(words), 40000);
+    assert.deepEqual(await semanticTokens(inlay), INLAY_TOKENS);
   });
 }
 
