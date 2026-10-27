@@ -1,9 +1,9 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// A method of requests at a document position, such as textDocument/definition,
+// A method of requests against a snapshot, such as textDocument/definition,
 // and how to answer one. Given a request's parameters, whose document and
-// position are valid, {prepare} returns its answer function, or null if its
+// any position are valid, {prepare} returns its answer function, or null if its
 // other parameters are invalid; {requires} describes the valid parameters in
 // errors. Given the request's document in a current snapshot and a byte
 // offset in it, the answer function returns whether it found something at the
@@ -128,8 +128,8 @@ class LspSnapshotWaiters(owner: LspSnapshotRequests) {
 	}
 }
 
-// Requests at a document position, answered from the retained snapshot of the
-// document's active project context. Every reply goes through {send}, unless
+// Requests answered from the retained snapshot of the document's active
+// project context. Every reply goes through {send}, unless
 // a submitter takes it (see {submit}): a request against a missing or stale
 // snapshot waits for the context's pending analysis. Each method supplies its
 // answer function, how to prepare it from other parameters, and an optional
