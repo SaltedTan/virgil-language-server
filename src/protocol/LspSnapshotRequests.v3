@@ -20,11 +20,18 @@ class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: str
 }
 // Where a request names its document and position: textDocument and
 // position; textDocument and range.start, where the answer function gets the
-// current-text offset and maps it itself; or a type or call hierarchy item's data,
+// current-text offset and maps it itself; a type or call hierarchy item's data,
 // whose uri and position may be stale, so that an offset inside an excluded
-// body reaches the answer function as -1 rather than failing the request.
-// Only a position is looked up again at the byte before.
-enum LspSnapshotAnchor { POSITION, RANGE, ITEM }
+// body reaches the answer function as -1 rather than failing the request; or
+// textDocument alone, for the whole document, whose answer function gets
+// offset 0. Only a position is looked up again at the byte before.
+enum LspSnapshotAnchor { POSITION, RANGE, ITEM, DOCUMENT }
+// The reasons that LspSnapshotRequests gives a method's failure policy, which
+// it may answer differently. Semantic tokens do (LspSemanticTokens).
+component LspSnapshotReasons {
+	// The document is in no loaded project, so no analysis will describe it.
+	def UNOWNED = "the document is not in a loaded project";
+}
 // A request's document in a current snapshot, for an answer function: file
 // {index} of {snapshot}, whose effective analyzed text is {text}. The position
 // map converts current text; ranges pass through the snapshot's mapping first.
@@ -175,6 +182,17 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		handler.failure = failure;
 		dispatcher.onDeferredRequest(method, handler.handle);
 	}
+	// Handles {method}, whose requests name only a document, with the answer
+	// function that {prepare} returns for each, and {failure} for a request
+	// it cannot answer.
+	def registerDocument(dispatcher: JsonRpcDispatcher, method: string, label: string,
+			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
+			failure: string -> JsonRpcReply) {
+		var handler = LspSnapshotMethod.new(this, label, "a valid textDocument.uri", prepare);
+		handler.anchor = LspSnapshotAnchor.DOCUMENT;
+		handler.failure = failure;
+		dispatcher.onDeferredRequest(method, handler.handle);
+	}
 	// Handles {method}, whose requests name a type or call hierarchy item, with the
 	// answer function that {prepare} returns for each. The item's data.uri and
 	// data.position stand for a request's document and position.
@@ -269,10 +287,12 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 				doc = objectMember(objectMember(params, "item"), "data");
 				position = objectMember(doc, "position");
 			}
+			DOCUMENT => ;
 		}
 		var uri = if(doc != null && doc.has("uri") && JsonValue.String.?(doc["uri"]), JsonValue.String.!(doc["uri"]).v);
 		var key = if(uri != null, DocumentUri.normalize(uri));
 		var line = intMember(position, "line"), character = intMember(position, "character");
+		if (anchor == LspSnapshotAnchor.DOCUMENT) line = character = 0;
 		var lookup = if(key != null && line >= 0 && character >= 0, prepare(params));
 		if (lookup == null) {
 			var error = JsonRpcError.new(JsonRpcErrorCode.INVALID_PARAMS,
@@ -403,7 +423,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 			failure: string -> JsonRpcReply, ctx: ProjectContext, key: string, line: int,
 			character: int, anchor: LspSnapshotAnchor) -> JsonRpcReply {
 		var s = if(ctx != null, ctx.snapshot);
-		if (ctx == null) return reject(failure, "the document is not in a loaded project");
+		if (ctx == null) return reject(failure, LspSnapshotReasons.UNOWNED);
 		if (s == null) return reject(failure, "the document's project has not been analyzed");
 		if (!current(ctx, s)) return reject(failure, "the project's analysis is stale; it does not describe the current sources");
 		if (!s.parsed) return reject(failure, "the project's analysis has parse errors");
@@ -416,7 +436,8 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 		var map = PositionMap.new(currentText, PositionEncoding.UTF16), currentOffset = map.positionToOffset(line, character);
 		// Ranges filter their mapped results in current-text coordinates; their
 		// start may itself lie in an excluded method body.
-		var offset = if(anchor == LspSnapshotAnchor.RANGE, currentOffset, s.effectiveOffset(i, currentOffset));
+		var offset = if(anchor == LspSnapshotAnchor.RANGE || anchor == LspSnapshotAnchor.DOCUMENT,
+			currentOffset, s.effectiveOffset(i, currentOffset));
 		if (offset < 0 && anchor == LspSnapshotAnchor.POSITION) {
 			return reject(failure, "the position is inside a method body excluded from the analysis");
 		}

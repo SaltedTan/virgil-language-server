@@ -19,6 +19,7 @@ REQUESTS = (
     "textDocument/selectionRange",
     "textDocument/hover", "textDocument/implementation", "textDocument/inlayHint",
     "textDocument/prepareRename", "textDocument/references", "textDocument/rename",
+    "textDocument/semanticTokens/full",
     "textDocument/signatureHelp", "textDocument/prepareTypeHierarchy", "typeHierarchy/supertypes",
     "typeHierarchy/subtypes", "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls", "workspace/symbol", "textDocument/codeAction",

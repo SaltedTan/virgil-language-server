@@ -90,10 +90,25 @@ class AnalysisDeclaration(kind: AnalysisDeclKind, name: string, range: AnalysisR
 	// Worker-only resolved type code at the declaration site. The display
 	// assigns codes; snapshots retain only the default above.
 	var sourceType = -1;
+	// The compiler's flag for this kind of declaration, which semantic tokens
+	// classify by (docs/architecture.md#semantic-tokens): for a local,
+	// parameter, or field, that nothing may assign it, as with `def`; for a
+	// class, that it is a variant, declared with `type`; for a method, that a
+	// component declares it, as a file's own component declares its
+	// top-level functions. Always false for other kinds. A flagged
+	// declaration's type, a subclass with no fields, carries it.
+	def flagged() -> bool { return false; }
 	def render(buf: StringBuilder) -> StringBuilder {
 		buf.puts(kind.name).putc(' ').puts(name).puts(" @ ");
 		return range.render(buf);
 	}
+}
+
+// A snapshot's declaration with the flag set. The object's type tag carries
+// the flag, so it has the same fields and allocation size as any other.
+class AnalysisFlaggedDeclaration extends AnalysisDeclaration {
+	new(kind: AnalysisDeclKind, name: string, range: AnalysisRange) super(kind, name, range) { }
+	def flagged() -> bool { return true; }
 }
 
 // A source use that verification resolved to a declaration in the program.

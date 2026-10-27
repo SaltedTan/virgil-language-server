@@ -1,0 +1,251 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Semantic tokens from snapshots that the worker's encoder and decoder made,
+// without a worker process. The stdio test (test/protocol/semantic_tokens.py)
+// covers requests, the option, fallback, repair, and refresh through real
+// workers.
+def X = [
+	UnitTests.register("LspSemanticTokens:classify", classify),
+	UnitTests.register("LspSemanticTokens:lf_matches_crlf", lf_matches_crlf),
+	UnitTests.register("LspSemanticTokens:limit", limit),
+	UnitTests.register("LspSemanticTokens:options", options),
+	UnitTests.register("LspSemanticTokens:refresh", refresh),
+	()
+];
+def PATH = "/semantic-tokens/Main.v3";
+def LIBRARY = "/semantic-tokens/Library.v3";
+// Every token type and modifier, with CRLF line endings, each after a comment,
+// since the compiler accepts a carriage return nowhere else, non-ASCII text
+// (U+00E9, two UTF-8 bytes and one UTF-16 unit; U+1D11E, four bytes and two
+// units) before tokens on line 4, and names that get no token: "this", a
+// default ".new", an explicit constructor's "new", and index operators.
+def SOURCE = "// Shapes\r\ncomponent Shapes { //\r\n\tdef LIMIT = 2; //\r\n\tvar count: int; //\r\n\tdef area(s: Shape) -> int { /* \xC3\xA9\xF0\x9D\x84\x9E */ match (s) { Circle(r) => return r; Square(side) => return side; } } //\r\n\tdef first<T>(a: Array<T>) -> T { var x = a[0]; def y = x; return y; } //\r\n} //\r\ntype Shape { //\r\n\tcase Circle(r: int); //\r\n\tcase Square(side: int); //\r\n} //\r\nenum Color { RED, BLUE } //\r\nclass Base(width: int) { } //\r\nclass Rect(w: int, var height: int) extends Base(w) { //\r\n\tdef scale(k: int) -> int { return width * k + Shapes.LIMIT + this.height; } //\r\n\tdef [i: int] -> int { return Rect.new(i, this[i]).height; } //\r\n} //\r\nclass Box { new() { } } //\r\nlayout Tag { //\r\n\t+0 kind: u8; //\r\n\t=1; //\r\n} //\r\npacking Low(a: 4, b: 4): 8 = #concat(b, a); //\r\ndef top(c: Color) -> Box { var t: Ref<Tag>; return Box.new(); } //\r\n";
+// Types and modifiers, as LspSemanticLegend numbers them.
+def NS = LspSemanticLegend.NAMESPACE;
+def CL = LspSemanticLegend.CLASS;
+def EN = LspSemanticLegend.ENUM;
+def EM = LspSemanticLegend.ENUM_MEMBER;
+def ST = LspSemanticLegend.STRUCT;
+def TY = LspSemanticLegend.TYPE;
+def TP = LspSemanticLegend.TYPE_PARAMETER;
+def PA = LspSemanticLegend.PARAMETER;
+def VA = LspSemanticLegend.VARIABLE;
+def PR = LspSemanticLegend.PROPERTY;
+def FN = LspSemanticLegend.FUNCTION;
+def ME = LspSemanticLegend.METHOD;
+def D = LspSemanticLegend.DECLARATION;
+def R = LspSemanticLegend.READONLY;
+// The tokens of SOURCE: line, UTF-16 character, length, type, and modifiers.
+def EXPECTED: Array<(int, int, int, int, int)> = [
+	(1, 10, 6, NS, D),		// component Shapes
+	(2, 5, 5, PR, D | R),		// def LIMIT
+	(3, 5, 5, PR, D),		// var count:
+	(4, 5, 4, FN, D),		// def area(
+	(4, 10, 1, PA, D),		// s:
+	(4, 13, 5, EN, 0),		// Shape
+	(4, 46, 1, PA, 0),		// match (s), after the non-ASCII comment
+	(4, 51, 6, EM, 0),		// Circle(
+	(4, 58, 1, VA, D | R),		// Circle(r)
+	(4, 71, 1, VA, R),		// return r
+	(4, 74, 6, EM, 0),		// Square(
+	(4, 81, 4, VA, D | R),		// Square(side)
+	(4, 97, 4, VA, R),		// return side
+	(5, 5, 5, FN, D),		// def first<
+	(5, 11, 1, TP, D),		// T
+	(5, 14, 1, PA, D),		// a:
+	(5, 23, 1, TP, 0),		// T
+	(5, 30, 1, TP, 0),		// T
+	(5, 38, 1, VA, D),		// var x
+	(5, 42, 1, PA, 0),		// a[
+	(5, 52, 1, VA, D | R),		// def y
+	(5, 56, 1, VA, 0),		// x
+	(5, 66, 1, VA, R),		// return y
+	(7, 5, 5, EN, D),		// type Shape
+	(8, 6, 6, EM, D),		// case Circle(
+	(8, 13, 1, PR, D | R),		// r:
+	(9, 6, 6, EM, D),		// case Square(
+	(9, 13, 4, PR, D | R),		// side:
+	(11, 5, 5, EN, D),		// enum Color
+	(11, 13, 3, EM, D),		// RED
+	(11, 18, 4, EM, D),		// BLUE
+	(12, 6, 4, CL, D),		// class Base(
+	(12, 11, 5, PR, D | R),		// width:
+	(13, 6, 4, CL, D),		// class Rect(
+	(13, 11, 1, PR, D | R),		// w:
+	(13, 23, 6, PR, D),		// var height:
+	(13, 44, 4, CL, 0),		// extends Base(
+	(13, 49, 1, PA, R),		// Base(w)
+	(14, 5, 5, ME, D),		// def scale(
+	(14, 11, 1, PA, D),		// k:
+	(14, 35, 5, PR, R),		// return width, inherited
+	(14, 43, 1, PA, 0),		// k
+	(14, 47, 6, NS, 0),		// Shapes.
+	(14, 54, 5, PR, R),		// LIMIT
+	(14, 67, 6, PR, 0),		// height
+	(15, 6, 1, PA, D),		// [i: int], whose "[" gets none
+	(15, 30, 4, CL, 0),		// Rect.new, whose default "new" gets none
+	(15, 39, 1, PA, 0),		// i
+	(15, 47, 1, PA, 0),		// this[i], whose "this" and "[" get none
+	(15, 51, 6, PR, 0),		// height
+	(17, 6, 3, CL, D),		// class Box, whose "new" gets none
+	(18, 7, 3, ST, D),		// layout Tag
+	(19, 4, 4, PR, D),		// kind:
+	(22, 8, 3, TY, D),		// packing Low(
+	(22, 12, 1, PA, D),		// a:
+	(22, 18, 1, PA, D),		// b:
+	(22, 37, 1, PA, 0),		// b
+	(22, 40, 1, PA, 0),		// a
+	(23, 4, 3, FN, D),		// def top(
+	(23, 8, 1, PA, D),		// c:
+	(23, 11, 5, EN, 0),		// Color
+	(23, 21, 3, CL, 0),		// Box
+	(23, 31, 1, VA, D),		// var t:
+	(23, 38, 3, ST, 0),		// Ref<Tag>
+	(23, 51, 3, CL, 0)		// Box.new(), whose explicit "new" gets none
+];
+
+def snapshot(t: Tester, sources: Array<(string, string)>) -> AnalysisSnapshot {
+	var inputs = Array<AnalysisSource>.new(sources.length), paths = Array<string>.new(sources.length);
+	for (i < sources.length) {
+		inputs[i] = AnalysisSource.new(sources[i].0, sources[i].1);
+		paths[i] = sources[i].0;
+	}
+	var a = AeneasAdapter.analyzeProgram(inputs, [], false);
+	var files = Array<(string, Array<AnalysisOccurrence>)>.new(paths.length);
+	for (i < paths.length) files[i] = (paths[i], if(a.parsed, a.occurrences(paths[i]), []));
+	var data = Ranges.dup(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, a, 0, 0, files), 0L)[4 ...]);
+	match (AnalysisWire.decodeResult(data, 1, paths)) {
+		Decoded(r) => return r.snapshot;
+		_ => t.fail("the result failed to decode");
+	}
+	return null;
+}
+def tokens(t: Tester, s: AnalysisSnapshot, text: string, limit: int) -> Array<(int, int, int, int, int)> {
+	var result = Vector<(int, int, int, int, int)>.new();
+	// Text on disk, with no substitution: its ranges map to themselves.
+	s.recordDocumentVersions([AnalysisDocumentVersion.new(ProjectFiles.uri(PATH), 0, null)]);
+	var c = LspTokenCursor.new(s, 0, s.fileIndex(PATH), text, text, limit);
+	while (c.next()) result.put((c.line, c.character, c.length, c.tokenType, c.modifiers));
+	return result.extract();
+}
+def check(t: Tester, expected: Array<(int, int, int, int, int)>, actual: Array<(int, int, int, int, int)>) {
+	for (i < Ints.min(expected.length, actual.length)) {
+		var e = expected[i], a = actual[i];
+		if (e.0 != a.0 || e.1 != a.1 || e.2 != a.2 || e.3 != a.3 || e.4 != a.4) {
+			return t.fail(Strings.format3("token %d is %s, not %s", i, render(a), render(e)));
+		}
+	}
+	t.asserti(expected.length, actual.length);
+}
+def render(x: (int, int, int, int, int)) -> string {
+	return StringBuilder.new().put3("(%d, %d, %d, ", x.0, x.1, x.2).put2("%s, %d)", LspSemanticLegend.TYPES[x.3], x.4).extract();
+}
+
+def classify(t: Tester) {
+	var s = snapshot(t, [(PATH, SOURCE)]);
+	if (s == null) return;
+	t.assert(s.verified, "the fixture verifies");
+	check(t, EXPECTED, tokens(t, s, SOURCE, 100000));
+}
+// The same source with LF line endings has the same tokens.
+def lf_matches_crlf(t: Tester) {
+	var lf = StringBuilder.new();
+	for (b in SOURCE) if (b != '\r') lf.putc(b);
+	var text = lf.extract(), s = snapshot(t, [(PATH, text)]);
+	if (s == null) return;
+	check(t, EXPECTED, tokens(t, s, text, 100000));
+}
+// A reply has the first tokens in source order up to the limit.
+def limit(t: Tester) {
+	var s = snapshot(t, [(PATH, SOURCE)]);
+	if (s == null) return;
+	check(t, Arrays.range(EXPECTED, 0, 7), tokens(t, s, SOURCE, 7));
+	check(t, [], tokens(t, s, SOURCE, 0));
+}
+def options(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES);
+	var tokens = LspSemanticTokens.new(fun (b: Array<byte>) { }, JsonRpcPendingRequests.new(), store, WorkspaceProjects.new(store));
+	var support = Strings.newMap<JsonValue>(), options = Strings.newMap<JsonValue>();
+	support["refreshSupport"] = JsonValue.Bool(true);
+	tokens.configure(null, support);
+	t.assert(tokens.enabled && tokens.refreshSupport, "on by default, with refresh");
+	tokens.configure(options, null);
+	t.assert(tokens.enabled && !tokens.refreshSupport, "on without the option, without refresh");
+	for (value in [JsonValue.Bool(true), JsonValue.Null, JsonValue.Int(0), JsonValue.String("off")]) {
+		options["semanticTokens"] = value;
+		tokens.configure(options, support);
+		t.assert(tokens.enabled, "only false turns tokens off");
+	}
+	options["semanticTokens"] = JsonValue.Bool(false);
+	tokens.configure(options, support);
+	t.assert(!tokens.enabled && !tokens.refreshSupport, "false turns tokens and their refresh off");
+}
+
+// Library changes what Main's "Kind" is, which changes Main's tokens without
+// an edit to Main. Each comparison counts the refresh requests it sends.
+def MAIN_TEXT = "component Main { def f(k: Kind) { } }\n";
+def LIBRARY_CLASS = "class Kind { }\n";
+def LIBRARY_VARIANT = "type Kind { case A; }\n";
+def refresh(t: Tester) {
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), main = ProjectFiles.uri(PATH), library = ProjectFiles.uri(LIBRARY);
+	t.assert(store.open(main, "virgil", 1, MAIN_TEXT) == null, "main opens");
+	t.assert(store.open(library, "virgil", 1, LIBRARY_CLASS) == null, "the library opens");
+	var sent = [0], pending = JsonRpcPendingRequests.new(), ctx = ProjectContext.new(null, null);
+	var tokens = LspSemanticTokens.new(fun (b: Array<byte>) { sent[0]++; }, pending, store, WorkspaceProjects.new(store));
+	tokens.refreshSupport = true;
+	var analyze = fun (text: string) {
+		var s = snapshot(t, [(PATH, MAIN_TEXT), (LIBRARY, text)]);
+		s.recordDocumentVersions(LspAnalysisCapture.capture(store, [main, library], true).0.versions);
+		tokens.analyzedOwners(ctx, s, [ctx, ctx]);
+	};
+	// The first comparison sets the baselines: the client asks when it opens.
+	analyze(LIBRARY_CLASS);
+	t.asserti(0, sent[0]);
+	analyze(LIBRARY_CLASS);
+	t.asserti(0, sent[0]);
+	// Kind is now a variant, which Main shows without an edit.
+	store.change(library, 2, LIBRARY_VARIANT);
+	analyze(LIBRARY_VARIANT);
+	t.asserti(1, sent[0]);
+	pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+	// A project that doesn't parse keeps the client's tokens and the baseline,
+	// so recovering to the same tokens sends nothing.
+	store.change(library, 3, "type Kind {");
+	analyze("type Kind {");
+	t.asserti(1, sent[0]);
+	store.change(library, 4, LIBRARY_VARIANT);
+	analyze(LIBRARY_VARIANT);
+	t.asserti(1, sent[0]);
+	// The client edited Main: it asks for its tokens itself.
+	store.change(main, 2, MAIN_TEXT);
+	store.change(library, 5, LIBRARY_CLASS);
+	analyze(LIBRARY_CLASS);
+	t.asserti(1, sent[0]);
+	// An edit to Main while the project doesn't parse leaves the client's
+	// tokens unknown, so the recovery sends one, even with the same tokens.
+	store.change(main, 3, MAIN_TEXT);
+	store.change(library, 6, "class Kind {");
+	analyze("class Kind {");
+	t.asserti(1, sent[0]);
+	store.change(library, 7, LIBRARY_CLASS);
+	analyze(LIBRARY_CLASS);
+	t.asserti(2, sent[0]);
+	// At most one refresh is outstanding; a further change waits for its reply.
+	store.change(library, 8, LIBRARY_VARIANT);
+	analyze(LIBRARY_VARIANT);
+	t.asserti(2, sent[0]);
+	pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+	t.asserti(3, sent[0]);
+	pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+	// A closed document has no baseline, and reopening it sets one.
+	tokens.documentClosed(main);
+	store.change(library, 9, LIBRARY_CLASS);
+	analyze(LIBRARY_CLASS);
+	t.asserti(3, sent[0]);
+	// Shutting down stops refreshes.
+	tokens.close();
+	store.change(library, 10, LIBRARY_VARIANT);
+	analyze(LIBRARY_VARIANT);
+	t.asserti(3, sent[0]);
+}

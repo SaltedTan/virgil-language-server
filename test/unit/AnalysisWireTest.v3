@@ -13,6 +13,7 @@ def X = [
 	T("AnalysisWire:type_targets", test_type_targets),
 	T("AnalysisWire:type_targets_selected_files", test_type_targets_selected_files),
 	T("AnalysisWire:parents", test_parents),
+	T("AnalysisWire:declaration_flags", test_declaration_flags),
 	T("AnalysisWire:link_cycles", test_link_cycles),
 	T("AnalysisWire:result_with_errors", test_result_with_errors),
 	T("AnalysisWire:result_without_occurrences", test_result_without_occurrences),
@@ -1864,6 +1865,47 @@ def parentedAll(kinds: Array<AnalysisDeclKind>, parents: Array<int>) -> DataWrit
 // a class's is a class or a variant case, a case's a class, and a method's a
 // method. Parents form no cycle, of any length. Parents add nothing to the
 // charge.
+// A declaration's kind byte carries its flag (AnalysisDeclaration.flagged),
+// which only a local, parameter, field, class, or method may have, and which
+// the snapshot's declaration keeps.
+def FLAGS_SOURCE = "component C { def K = 1; var v = 2; def f(p: int) { def a = p; var b = a; } }\nclass A(x: int, var y: int) { def m() { } }\ntype V { case X; }\n";
+def test_declaration_flags(t: Tester) {
+	var analysis = AeneasAdapter.analyzeProgram([AnalysisSource.new("flags.v3", FLAGS_SOURCE)], [], false);
+	if (!analysis.verified) return t.fail("the source verifies");
+	var data = payloadOf(AnalysisWire.finishResult(AnalysisWire.encodeResult(1, 1, 1, analysis, 0, 0,
+		[("flags.v3", analysis.occurrences("flags.v3"))]), 0L));
+	var decoded = decodedResult(data, 1, ["flags.v3"]);
+	if (decoded == null) return t.fail("the result was rejected");
+	var flagged = ["K", "f", "a", "x", "V"], plain = ["C", "v", "p", "b", "A", "y", "m", "X"];
+	for (d in decoded.snapshot.declarationSites("flags.v3")) {
+		var expected = -1;
+		for (name in flagged) if (Strings.equal(name, d.name)) expected = 1;
+		for (name in plain) if (Strings.equal(name, d.name)) expected = 0;
+		if (expected < 0) t.fail1("unexpected declaration %s", d.name);
+		else if (d.flagged() != (expected == 1)) t.fail1("the flag of %s", d.name);
+	}
+	t.asserti(flagged.length + plain.length, decoded.snapshot.declarationSites("flags.v3").length);
+	// By hand: the flag decodes only on the kinds that have one.
+	for (kind in AnalysisDeclKind) {
+		var w = file(declaration(kind.tag | AnalysisWire.FLAGGED, 0), 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY);
+		var r = decodedResult(result(0, w), 1, REQUEST), allowed = false;
+		match (kind) {
+			LOCAL, PARAMETER, FIELD, CLASS, METHOD => allowed = true;
+			_ => ;
+		}
+		if (!allowed) {
+			t.assert(r == null, "a flag on a kind without one is malformed");
+			continue;
+		}
+		var d = if(r != null, r.snapshot.definitionAt("p.v3", 1, 1));
+		t.assert(d != null && d.kind == kind && d.flagged(), "a flagged declaration decodes");
+		w = file(declaration(kind.tag, 0), 1).puta(OCCURRENCE).put_sleb32(0).puta(NO_DISPLAY);
+		r = decodedResult(result(0, w), 1, REQUEST);
+		d = if(r != null, r.snapshot.definitionAt("p.v3", 1, 1));
+		t.assert(d != null && !d.flagged(), "an unflagged declaration decodes");
+	}
+}
+
 def test_parents(t: Tester) {
 	var c = AnalysisDeclKind.CLASS, m = AnalysisDeclKind.METHOD;
 	var plain = decodedResult(result(0, parented((c, c), (0, 0))), 1, REQUEST);

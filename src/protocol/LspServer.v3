@@ -5,6 +5,7 @@
 component LspErrorCode {
 	def SERVER_NOT_INITIALIZED = -32002;	// a request arrived before initialize
 	def REQUEST_CANCELLED = -32800;		// the request was cancelled
+	def CONTENT_MODIFIED = -32801;		// no result for the content now; the client keeps its last
 	def REQUEST_FAILED = -32803;		// a valid request could not be answered
 }
 
@@ -60,6 +61,7 @@ class LspServer {
 	private var snapshotRequests: LspSnapshotRequests;
 	private def hover = LspHover.new();
 	private var inlayHints: LspInlayHints;
+	private var semanticTokens: LspSemanticTokens;
 	private var prepareRename: LspPrepareRename;
 	// Signature help from snapshots, and from call queries where the document
 	// does not parse; tests read its count of analyses.
@@ -116,6 +118,7 @@ class LspServer {
 		signatureHelp.register(dispatcher, snapshotRequests);
 		inlayHints = LspInlayHints.new(publishNotification, dispatcher.pending, documents, projects);
 		inlayHints.register(dispatcher, snapshotRequests);
+		semanticTokens = LspSemanticTokens.new(publishNotification, dispatcher.pending, documents, projects);
 		prepareRename = LspPrepareRename.new(documents, projects, publishNotification);
 		prepareRename.register(dispatcher, snapshotRequests);
 		rename = LspRename.new(documents, projects, snapshotRequests, publishNotification);
@@ -147,17 +150,27 @@ class LspServer {
 	def withAnalysis(supervisor: AnalysisSupervisor) -> this {
 		developmentAnalysis = LspDevelopmentAnalysis.new(documents, supervisor, publishNotification).withProjects(projects);
 		developmentAnalysis.register(dispatcher);
-		developmentAnalysis.hintsAnalyzed = inlayHints.analyzed;
+		developmentAnalysis.compareOpen = developmentAnalyzed;
 		semanticDiagnostics = LspSemanticDiagnostics.new(documents, projects, supervisor, diagnosticLists, publishNotification);
 		semanticDiagnostics.parser = developmentAnalysis.parser = parserDiagnostics;
 		semanticDiagnostics.development = developmentAnalysis;
 		semanticDiagnostics.warn = projectWarning;
 		semanticDiagnostics.info = analysisInfo;
-		semanticDiagnostics.hintsAnalyzed = inlayHints.analyzedOwners;
+		semanticDiagnostics.compareOpen = analyzedOwners;
 		snapshotRequests.whenAnalyzed = semanticDiagnostics.whenAnalyzed;
 		rename.scheduler = semanticDiagnostics;
 		completion.scheduler = semanticDiagnostics;
 		signatureHelp.scheduler = semanticDiagnostics;
+	}
+	// A new current snapshot can change the inlay hints and semantic tokens
+	// of open documents, which ask the client to refresh them.
+	private def developmentAnalyzed(ctx: ProjectContext, snapshot: AnalysisSnapshot) {
+		inlayHints.analyzed(ctx, snapshot);
+		semanticTokens.analyzed(ctx, snapshot);
+	}
+	private def analyzedOwners(ctx: ProjectContext, snapshot: AnalysisSnapshot, owners: Array<ProjectContext>) {
+		inlayHints.analyzedOwners(ctx, snapshot, owners);
+		semanticTokens.analyzedOwners(ctx, snapshot, owners);
 	}
 	// Called after every poll, including a timeout. Completes analyses and
 	// expires server requests the client hasn't answered in time.
@@ -191,6 +204,7 @@ class LspServer {
 		configurationChanged = false;
 		parserDiagnostics.reparse(documents, projects);
 		inlayHints.scopesChanged();
+		semanticTokens.scopesChanged();
 	}
 	private def documentOpened(doc: DocumentOverlay) {
 		documentUpdated(doc, false);
@@ -228,6 +242,7 @@ class LspServer {
 	}
 	private def documentClosed(doc: DocumentOverlay) {
 		inlayHints.documentClosed(doc.uri);
+		semanticTokens.documentClosed(doc.uri);
 		invalidateQueries();
 		if (reloadProjectFile(doc)) return;
 		parserDiagnostics.close(doc);
@@ -250,6 +265,7 @@ class LspServer {
 	private def scheduleWatched(contexts: Array<ProjectContext>) {
 		invalidateQueries();
 		inlayHints.scopesChanged();
+		semanticTokens.scopesChanged();
 		if (semanticDiagnostics != null) semanticDiagnostics.schedule(contexts, true);
 	}
 	// An event that can change the sources or the project of a completion's
@@ -360,6 +376,9 @@ class LspServer {
 		projects.initialize(params);
 		inlayHints.configure(member(params, "initializationOptions"),
 			member(member(member(params, "capabilities"), "workspace"), "inlayHint"));
+		semanticTokens.configure(member(params, "initializationOptions"),
+			member(member(member(params, "capabilities"), "workspace"), "semanticTokens"));
+		semanticTokens.register(dispatcher, snapshotRequests);
 		var watched = member(member(member(params, "capabilities"), "workspace"), "didChangeWatchedFiles");
 		workspaceEvents.dynamicWatchers = watched != null && watched["dynamicRegistration"] == JsonValue.Bool(true);
 		var textDocument = member(member(params, "capabilities"), "textDocument");
@@ -416,6 +435,8 @@ class LspServer {
 		capabilities["implementationProvider"] = JsonValue.Bool(true);
 		capabilities["typeHierarchyProvider"] = JsonValue.Bool(true);
 		capabilities["callHierarchyProvider"] = JsonValue.Bool(true);
+		// Advertised only when the option is on (docs/configuration.md#semantic-tokens).
+		if (semanticTokens.enabled) capabilities["semanticTokensProvider"] = LspSemanticLegend.provider();
 		// A client that cannot apply a literal CodeAction is not told about
 		// the provider at all; a request still gets [] (LspCodeActions).
 		if (codeActions.literalSupport) {
@@ -492,6 +513,7 @@ class LspServer {
 	// server-to-client requests.
 	private def failPending(msg: string) {
 		inlayHints.close();
+		semanticTokens.close();
 		if (semanticDiagnostics != null) semanticDiagnostics.close();
 		if (developmentAnalysis != null) developmentAnalysis.close(msg);
 		snapshotRequests.close(msg);

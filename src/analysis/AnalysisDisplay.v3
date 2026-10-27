@@ -38,6 +38,16 @@ class AnalysisWorkerDeclaration extends AnalysisDeclaration {
 	}
 }
 
+// A worker declaration with the flag set (see AnalysisDeclaration.flagged).
+// As in the snapshot, its type carries the flag, so the flag takes no space
+// and the encoder reads it without the syntax. Reading it from the syntax as
+// the result was encoded took 4.5 ms of the Aeneas sources' 55 ms.
+class AnalysisFlaggedWorkerDeclaration extends AnalysisWorkerDeclaration {
+	new(kind: AnalysisDeclKind, name: string, range: AnalysisRange, signature: string, syntax: Decl, ownType: Type)
+		super(kind, name, range, signature, syntax, ownType) { }
+	def flagged() -> bool { return true; }
+}
+
 // Renders and interns the display text of one program: a signature for each
 // declaration and the types of uses, in Virgil syntax. The collectors of all
 // of a program's files share it, so each declaration is made, and each type
@@ -85,11 +95,24 @@ class AnalysisDisplay(sources: AnalysisSourceMaps) {
 		if (token == null || token.beginLine <= 0) return null;
 		var key = (token, kind), index = declarations.add(key);
 		if (index < declarationList.length) return declarationList[index];
-		var d = AnalysisWorkerDeclaration.new(kind, token.image, sources.range(token),
-			signature(kind, token, decl), decl, if(decl == null, t, ownType(decl)));
+		var range = sources.range(token), text = signature(kind, token, decl);
+		var own = if(decl == null, t, ownType(decl)), d: AnalysisWorkerDeclaration;
+		if (flagged(kind, decl)) d = AnalysisFlaggedWorkerDeclaration.new(kind, token.image, range, text, decl, own);
+		else d = AnalysisWorkerDeclaration.new(kind, token.image, range, text, decl, own);
 		d.typeTarget = index + 1;
 		declarationList.put(d);
 		return d;
+	}
+	// Whether a declaration of {kind} with syntax {decl} is flagged (see
+	// AnalysisDeclaration.flagged).
+	private def flagged(kind: AnalysisDeclKind, decl: Decl) -> bool {
+		match (kind) {
+			LOCAL, PARAMETER => return VarDecl.?(decl) && VarDecl.!(decl).isReadOnly;
+			FIELD => return VstField.?(decl) && VstField.!(decl).writability == Writability.READ_ONLY;
+			CLASS => return VstClass.?(decl) && VstClass.!(decl).isVariant();
+			METHOD => return VstMethod.?(decl) && VstComponent.?(VstMethod.!(decl).receiver);
+			_ => return false;
+		}
 	}
 	// Stable worker-local code used by source-type records. The wire encoder
 	// translates it to its own declaration table, without another type walk.
