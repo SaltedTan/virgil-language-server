@@ -134,6 +134,14 @@ finish "analyze crash keeps the worker's trace and reports the failure" $(( $? =
 # This former hang now reports ordinary diagnostics on the real worker.
 expect "analyze reports a self inheritance cycle" 1 'InheritanceError: cyclic inheritance detected' "" -- \
     analyze "$A/worker-hang/main.v3"
+printf '%s\n' 'class A extends B {} class B extends A {} def f(a: A, b: B) { var x = [a, b]; }' \
+    > "$TMP/cyclic-array.v3"
+expect "analyze reports an inheritance cycle through array depth traversal" 1 'InheritanceError: cyclic inheritance detected' "" -- \
+    analyze "$TMP/cyclic-array.v3"
+printf '%s\n' 'class A extends B { def m() -> V { return V.X; } } class B extends A { def m() -> V { return V.X; } } type V { case X; }' \
+    > "$TMP/cyclic-overrides.v3"
+expect "analyze reports an inheritance cycle through overriding methods" 1 'InheritanceError: cyclic inheritance detected' "" -- \
+    analyze "$TMP/cyclic-overrides.v3"
 # The real worker's test-only build stalls after arming its orphan alarm,
 # preserving deterministic coverage after upstream fixed the old verifier loop.
 mkdir "$TMP/stalled"
