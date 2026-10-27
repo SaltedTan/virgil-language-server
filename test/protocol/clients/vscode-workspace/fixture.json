@@ -1,9 +1,9 @@
 {
   "editor": "Visual Studio Code",
   "editorVersion": "1.142.0",
-  "clientLibrary": "vscode-languageclient 10.1.2",
-  "captured": "2026-10-23",
-  "serverCommit": "025082d",
+  "clientLibrary": "vscode-languageclient 11.0.0",
+  "captured": "2026-10-27",
+  "serverCommit": "5ddc3e8",
   "projectRoot": "/work/project",
   "normalized": [
     "the captured project root to /work/project",

@@ -1466,18 +1466,17 @@ async function crashLimit(failures, bad, words) {
 // server: if the old server got the edit, the restart didn't find it pending,
 // so the scenario fails rather than pass without testing that.
 //
-// vscode-languageclient 10.1.2 can then log "Delivering pending changes
-// failed" and "TypeError: this.task is not a function" in the output channel,
-// about half a second after the edit, often after the scenario has ended: the
-// stopped client's timer for the change outlives it, and its retry fails
-// (https://github.com/microsoft/vscode-languageserver-node/issues/1916). Any
-// restart with a change pending can log it, as other scenarios' restarts and
-// this one's restore sometimes do. It loses nothing, depends on timing, and
-// goes away with a fixed release, so the scenario neither requires nor forbids
-// it, and no check of this suite counts it as a failure.
+// vscode-languageclient, 11.0.0 included, can then log "Delivering pending
+// changes failed" and "TypeError: this.task is not a function" in the output
+// channel, about half a second after the edit, often after the scenario has
+// ended: the stopped client's timer for the change outlives it, and its retry
+// fails (https://github.com/microsoft/vscode-languageserver-node/issues/1916).
+// Any restart with a change pending can log it, as other scenarios' restarts
+// and this one's restore sometimes do. It loses nothing, depends on timing,
+// and goes away with a fixed release, so the scenario neither requires nor
+// forbids it, and no check of this suite counts it as a failure.
 async function pendingEditRestart(failures, bad, words) {
   const server = selectedServer();
-  const breadcrumbs = setting('breadcrumbs.enabled');
   const directory = fs.mkdtempSync(path.join(path.dirname(project), 'pending-'));
   const { document } = bad;
   const uri = document.uri.toString();
@@ -1486,15 +1485,14 @@ async function pendingEditRestart(failures, bad, words) {
   await scenario(failures, 'Virgil: Restart Language Server with an unsaved edit still pending: '
     + 'the new server gets its exact text, then a later edit', async () => {
     // Breadcrumbs request bad.v3's document symbols when the new client's
-    // provider registers. In vscode-languageclient 10.1.2, the didOpen of a
-    // visible document such as bad.v3 first sends the hidden documents'
-    // pending didOpens, one by one, and a request for it doesn't wait for a
-    // didOpen already on its way, so the request can reach the new server
-    // first. The server answers it with no symbols, and VS Code keeps that
-    // answer for the document's version, which the check of the new server's
-    // symbols below would read. The scenario checks the pending edit, so it
-    // turns breadcrumbs off.
-    await setSetting('breadcrumbs.enabled', false);
+    // provider registers. vscode-languageclient 10.1.2 could send that
+    // request before bad.v3's didOpen, behind the hidden documents' didOpens
+    // (#318); 11.0.0 sends every document's didOpen as the client starts,
+    // before any request. Had the request come first, the server would have
+    // answered it with no symbols, and VS Code would have kept that answer
+    // for the document's version, which the check of the new server's symbols
+    // below reads.
+    assert.equal(setting('breadcrumbs.enabled'), true, 'breadcrumbs are off');
     assert.ok(document.getText() === saved && !document.isDirty, 'bad.v3 is not as saved');
     const editor = await vscode.window.showTextDocument(document, { preview: false });
     fs.writeFileSync(path.join(directory, 'record'), '');
@@ -1529,6 +1527,10 @@ async function pendingEditRestart(failures, bad, words) {
       .find((m) => m.method === 'textDocument/didOpen' && m.params.textDocument.uri === uri));
     assert.deepEqual([reopened.params.textDocument.text, reopened.params.textDocument.version], [text, version]);
     assert.deepEqual(await symbols(editor), [{ name: 'RestartLatest', kind: vscode.SymbolKind.Namespace }]);
+    const input = serverInput(directory, starts[1]);
+    const early = input.slice(0, input.findIndex((m) => m.method === 'textDocument/didOpen' && m.params.textDocument.uri === uri))
+      .filter((m) => m.id !== undefined && m.params?.textDocument?.uri === uri);
+    assert.deepEqual(early.map((m) => m.method), [], 'the new server got a request for bad.v3 before its didOpen');
     // A later edit reaches the new server as usual.
     await edit(editor, (builder) => builder.replace(
       new vscode.Range(0, 0, document.lineCount, 0), 'component RestartLater { def value = 2; }\n',
@@ -1541,7 +1543,6 @@ async function pendingEditRestart(failures, bad, words) {
     assert.deepEqual(await symbols(editor), [{ name: 'RestartLater', kind: vscode.SymbolKind.Namespace }]);
   }, async () => {
     try {
-      await setSetting('breadcrumbs.enabled', breadcrumbs);
       if (document.isDirty) {
         await vscode.window.showTextDocument(document, { preview: false });
         await vscode.commands.executeCommand('workbench.action.files.revert');

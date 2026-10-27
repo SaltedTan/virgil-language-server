@@ -53,12 +53,12 @@ CAPTURES = {
     "vscode-single-file": {
         "editor": "Visual Studio Code",
         "editorVersion": "1.142.0",
-        "clientLibrary": "vscode-languageclient 10.1.2",
+        "clientLibrary": "vscode-languageclient 11.0.0",
     },
     "vscode-workspace": {
         "editor": "Visual Studio Code",
         "editorVersion": "1.142.0",
-        "clientLibrary": "vscode-languageclient 10.1.2",
+        "clientLibrary": "vscode-languageclient 11.0.0",
     },
     "nvim-0.11.6-root": {
         "editor": "Neovim",
@@ -147,8 +147,8 @@ def normalize(capture, out):
         sys.exit(f"{capture.name}: add its editor and client library to CAPTURES")
     metadata = {
         **CAPTURES[capture.name],
-        "captured": "2026-10-23",
-        "serverCommit": "025082d",
+        "captured": "2026-10-27",
+        "serverCommit": "5ddc3e8",
         "projectRoot": PROJECT,
         "normalized": [
             "the captured project root to /work/project",
