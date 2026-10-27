@@ -757,9 +757,9 @@ way up that could begin a method's or constructor's header in another form,
 because it begins with `def`, `new`, or `private`, or with a string, as an
 imported member's name may, and doesn't begin a field or a value, refuses the
 file rather than being passed over: a header split over two lines, or with a
-comment inside it, could be the one that holds the damage. The first counted
-line after the header that is no deeper than it ends the body, and it must be
-exactly as deep as the header.
+comment before its parameters or type parameters, could be the one that holds
+the damage. The first counted line after the header that is no deeper than it
+ends the body, and it must be exactly as deep as the header.
 
 **Statements.** A statement or a member can begin only at a head: the text's
 first code byte, or the first code byte after a `;`, `{`, or `}` in ordinary
@@ -820,13 +820,14 @@ without a body before it at its level in its class, component, or variant,
 back to the last header that no statement can begin, may be one that could
 begin a method's or constructor's header in any form the grammar allows
 (`Parser.parseMember`): one that begins with `def`, `new`, or `private`, or
-with a string, other than a field or a value. A declaration with a comment or a
-line break inside its header, which the rule doesn't read as a header, counts
-as one that could. Throughout, wherever the rule decides from a declaration's
-first words whether it is a member or a statement, one that it can't classify
-with certainty refuses the repair rather than being skipped, and the headers
-that the rule repairs stay as narrow as above. The body, from the header's `{`
-through the method's `}`, is blanked, so no offset moves.
+with a string, other than a field or a value. A declaration with its header
+split over lines or with a comment before its parameters or type parameters,
+which the rule doesn't read as a header, counts as one that could. Throughout,
+wherever the rule decides from a declaration's first words whether it is a
+member or a statement, one that it can't classify with certainty refuses the
+repair rather than being skipped, and the headers that the rule repairs stay
+as narrow as above. The body, from the header's `{` through the method's `}`,
+is blanked, so no offset moves.
 
 **Outside the body.** Every brace outside the body must pair, with the body's
 `{` closed by its `}`, and every pair must agree with the layout. A file whose
@@ -947,12 +948,12 @@ next declaration, and later declarations and files get no bindings or
 diagnostics. Being excluded, it also suppresses the `ErrorLimit` notice, as any
 excluded error does. A body that returns nothing excludes no error.
 
-**Anchor.** Repair empties the body that holds the parser's first error, not
-the one at the document's last edit, which a file opened with an error doesn't
-have. Where the next line continues an unfinished expression, as when
-`a.length +` is followed by `a[s] = e;` or `buffer.` by an `if`, the parser
-reports its error on that next line, past the incomplete code, but in the same
-body, so the same body is emptied.
+**Anchor.** When the file's braces balance, repair empties the body that holds
+the parser's first error, not the one at the document's last edit, which a file
+opened with an error doesn't have. Where the next line continues an unfinished
+expression, as when `a.length +` is followed by `a[s] = e;` or `buffer.` by an
+`if`, the parser reports its error on that next line, past the incomplete code,
+but in the same body, so the same body is emptied.
 
 **Insertions.** Current-text repair first inserted completion's repair
 ([Names](#names), [ADR-0006](decisions/0006-incomplete-code-repair.md)) at the
