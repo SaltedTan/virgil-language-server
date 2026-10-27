@@ -1390,7 +1390,7 @@ A declaration's own name has the `declaration` modifier. Every token of a local,
 
 These names get no token:
 
-- `this`, and the `.new` of a class that declares no constructor, such as `Box.new(1)`. Both resolve to their class, but neither spells its name. A token must spell its declaration's name in the analyzed text, as a [reference](#references) must.
+- `this`, and the `.new` of a class that declares no constructor, such as `Box.new(1)`. Both resolve to their class, but neither spells its name. A token must spell its declaration's name in the analyzed text, as a [reference](#references) must. A class, variant, or component may itself be named `this`, and then a receiver does spell its name, so no use spelled `this` of a class, variant, or component gets a token; its declaration still does, and so does a local or parameter named `this`.
 - Constructors, whose name is the keyword `new`, and index methods, which brackets spell.
 - Built-in types and their members, such as `int` and an array's `length`, and names that resolve to no source declaration.
 - Names in a method or constructor body that [method-body fallback](#method-body-fallback) or [current-text repair](#current-text-repair) excluded. The other tokens are mapped to the current text, as definition maps ranges.

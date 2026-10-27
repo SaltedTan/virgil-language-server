@@ -257,7 +257,9 @@ class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64) { }
 // LspSemanticLegend.classify). A use with a site's range is the site's name.
 // {effective} is the file's analyzed text, which every token must spell its
 // declaration's name in, as references check names, so that "this" and a
-// default ".new", which resolve to their class, get none. Tokens in an
+// default ".new", which resolve to their class, get none. A class, variant,
+// or component may itself be named "this", so a use spelled "this" of one
+// gets none either, since it can't be told from a receiver. Tokens in an
 // excluded body are dropped and the rest mapped to {current}, the current
 // text, as definition maps ranges; positions are its LSP lines and UTF-16
 // characters. Allocates nothing per token.
@@ -294,6 +296,8 @@ class LspTokenCursor(snapshot: AnalysisSnapshot, index: int, file: AnalysisSnaps
 				d = snapshot.declarations[file.target(use)];
 				begin = useBegin;
 				end = file.occurrenceEnd(use++);
+				if ((d.kind == AnalysisDeclKind.CLASS || d.kind == AnalysisDeclKind.COMPONENT)
+					&& LspReferences.names(effective, begin, end, "this")) continue;
 			}
 			// Tokens never overlap; nor do names, so this is only a guard.
 			if (begin < last) continue;

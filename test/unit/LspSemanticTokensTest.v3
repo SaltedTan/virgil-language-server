@@ -9,6 +9,7 @@ def X = [
 	UnitTests.register("LspSemanticTokens:classify", classify),
 	UnitTests.register("LspSemanticTokens:lf_matches_crlf", lf_matches_crlf),
 	UnitTests.register("LspSemanticTokens:limit", limit),
+	UnitTests.register("LspSemanticTokens:named_this", named_this),
 	UnitTests.register("LspSemanticTokens:options", options),
 	UnitTests.register("LspSemanticTokens:refresh", refresh),
 	()
@@ -162,6 +163,24 @@ def limit(t: Tester) {
 	if (s == null) return;
 	check(t, Arrays.range(EXPECTED, 0, 7), tokens(t, s, SOURCE, 7));
 	check(t, [], tokens(t, s, SOURCE, 0));
+}
+// A class, variant, or component may be named "this": its declaration gets a
+// token, but a receiver, spelled as its name, gets none. A local named "this"
+// keeps its tokens.
+def named_this(t: Tester) {
+	var cases: Array<(string, Array<(int, int, int, int, int)>)> = [
+		("class this { def f() { void(this); } }\n", [(0, 6, 4, CL, D), (0, 17, 1, ME, D)]),
+		("type this { case A; def f() { void(this); } }\n", [(0, 5, 4, EN, D), (0, 17, 1, EM, D), (0, 24, 1, ME, D)]),
+		("component this { def f() { void(this); } }\n", [(0, 10, 4, NS, D), (0, 21, 1, FN, D)]),
+		("component C { def f() { var this = 1; void(this); } }\n",
+			[(0, 10, 1, NS, D), (0, 18, 1, FN, D), (0, 28, 4, VA, D), (0, 43, 4, VA, 0)])
+	];
+	for (c in cases) {
+		var s = snapshot(t, [(PATH, c.0)]);
+		if (s == null) return;
+		t.assert(s.verified, "the program verifies");
+		check(t, c.1, tokens(t, s, c.0, 100000));
+	}
 }
 def options(t: Tester) {
 	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES);
