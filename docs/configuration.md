@@ -155,7 +155,7 @@ Semantic tokens are on by default. Set `initializationOptions.semanticTokens` to
 {"initializationOptions":{"semanticTokens":false}}
 ```
 
-VS Code passes its `virgil.semanticTokens` setting, whose default, `auto`, turns them off if the `titzer.virgil` extension is enabled when the server starts, and restarts the server when it changes. Neovim uses `init_options = { semanticTokens = false }`; restart its language server after a change. Clients that advertise refresh support receive a refresh only when an analysis changes the tokens of a document that they have open and haven't edited since. See the [token table](architecture.md#semantic-tokens), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#semantic-tokens).
+VS Code passes its `virgil.semanticTokens` setting, whose default, `auto`, turns them off if the `titzer.virgil` extension is enabled when the server starts, and restarts the server when it changes. Neovim uses `init_options = { semanticTokens = false }`; restart its language server after a change. Clients that advertise refresh support can receive refresh requests for open documents after analysis or project membership changes; the [token refresh rules](architecture.md#semantic-tokens) define the comparison. See the [token table](architecture.md#semantic-tokens), [VS Code settings](../clients/vscode/README.md#settings), and [Neovim setup](../editors/nvim/README.md#semantic-tokens).
 
 ### Compiler flags
 

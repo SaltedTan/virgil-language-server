@@ -151,6 +151,8 @@ Since this extension added semantic tokens ([#313](https://github.com/SaltedTan/
 - With `on`, in either order, VS Code first showed `titzer.virgil`'s tokens, and this extension's after **Virgil: Restart Language Server**. VS Code asks the providers that match a document equally well newest first, and uses the first that returns tokens. Here `titzer.virgil` registered its provider when the first `.v3` file opened, after this extension had started its server for the project file, and the restart registered this extension's again. The order of registration decides, not the order of installation.
 - With this extension alone, its tokens colored each kind of declaration, legibly in the Dark Modern, Light Modern, and Dark High Contrast themes; with `off`, the grammar's colors remained.
 
+Which extension owns semantic coloring is still for the two maintainers to agree; `on` has no provider-selection guarantee.
+
 No CI job repeats this test, since CI downloads no other extension. To repeat it, package both extensions, install them as above, and run **Developer: Inspect Editor Tokens and Scopes** on a name, which shows its semantic token type, or compare the legends as the test did.
 
 ## Development

@@ -72,6 +72,8 @@ EXPECTED = [
 
 
 class TokensSession(Session):
+    NOTIFICATIONS = Session.NOTIFICATIONS + ('window/showMessage',)
+
     def __init__(self, *args):
         super().__init__(*args)
         self.refreshes = []
@@ -296,10 +298,63 @@ def refresh(exe, root, support):
         s.close()
 
 
+def request_baselines(exe, root, support):
+    main, library = root / 'Main.v3', root / 'Library.v3'
+    main.write_text(USER)
+    library.write_text(KIND_CLASS)
+    s, _ = start(exe, root, ['Library.v3'], support=support)
+    try:
+        # Load the project before opening its excluded file. Its empty reply
+        # must remain the baseline when a later configuration includes it.
+        open_file(s, library, KIND_CLASS)
+        tokens(s, library, KIND_CLASS)
+        open_file(s, main, USER)
+        assert request(s, main)['result'] == {'data': []}
+        assert len(s.refreshes) == 0, s.transcript
+        config = root / '.virgil-lsp.json'
+        config.write_text(json.dumps({'version': 1, 'projects': [
+            {'name': 'tokens', 'sources': ['Main.v3', 'Library.v3']}]}))
+        s.send('workspace/didChangeWatchedFiles', {'changes': [
+            {'uri': config.as_uri(), 'type': 2}]}, request=False)
+        tokens(s, library, KIND_CLASS)
+        assert len(s.refreshes) == int(support), s.transcript
+        assert tokens(s, main, USER)[3] == (0, 26, 'Kind', 'class', [])
+
+        # This real compiler crash yields no snapshot. A request for edited
+        # Main receives ContentModified, then repairing Library must refresh
+        # Main without a further edit or token request for it.
+        crash = KIND_CLASS + 'def x: i32 = 0i;\n'
+        change(s, library, crash, 2)
+        edited = '\n' + USER
+        change(s, main, edited, 2)
+        assert request(s, main)['error']['code'] == CONTENT_MODIFIED
+        assert len(s.refreshes) == int(support), s.transcript
+        change(s, library, KIND_CLASS, 3)
+        tokens(s, library, KIND_CLASS)
+        assert len(s.refreshes) == 2 * int(support), s.transcript
+        assert tokens(s, main, edited)[3] == (1, 26, 'Kind', 'class', [])
+
+        # A normal open/edit reply and a same-identity ContentModified reply
+        # preserve the displayed tokens and need no extra refresh on recovery.
+        change(s, main, USER, 3)
+        tokens(s, main, USER)
+        change(s, library, crash, 4)
+        assert request(s, main)['error']['code'] == CONTENT_MODIFIED
+        change(s, library, KIND_CLASS, 5)
+        tokens(s, library, KIND_CLASS)
+        tokens(s, main, USER)
+        assert len(s.refreshes) == 2 * int(support), s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     for case in [exact, option_off, unanalyzable, fallback, repair,
-                 lambda e, r: refresh(e, r, True), lambda e, r: refresh(e, r, False)]:
+                 lambda e, r: refresh(e, r, True), lambda e, r: refresh(e, r, False),
+                 lambda e, r: request_baselines(e, r, True),
+                 lambda e, r: request_baselines(e, r, False)]:
         with tempfile.TemporaryDirectory() as tmp:
             case(exe, Path(tmp).resolve())
     print('semantic tokens: all checks passed')

@@ -261,7 +261,7 @@ def SEED = 0xcbf29ce484222325ul;
 def EMPTY = SEED;
 def UNAVAILABLE = 0ul;
 
-// The fingerprint of the tokens that the last comparison found for an open
+// The fingerprint from a request's reply or the last comparison for an open
 // document's text, which {identity} names, or UNAVAILABLE.
 class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64) { }
 
