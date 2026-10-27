@@ -46,7 +46,9 @@ class Scoring(unittest.TestCase):
                                         "brace-closer-missing-return-limit-private",
                                         "brace-opener-holder-comment-name", "brace-opener-holder-comment-def",
                                         "brace-opener-holder-split-def", "brace-opener-holder-split-name",
-                                        "brace-opener-holder-private-comment"})
+                                        "brace-opener-holder-private-comment", "brace-closer-match-case",
+                                        "brace-closer-lambda-if", "brace-closer-match-case-missing-return-limit",
+                                        "brace-closer-match-case-then-blank", "brace-closer-equivalent"})
         for name, case in CONTROLS.items():
             with self.subTest(case=name):
                 results = [tolerance.score(key.split(":")[-1], old, case["oracle"][key], True)
