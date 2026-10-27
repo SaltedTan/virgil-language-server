@@ -89,6 +89,10 @@ The server notices changes made outside the editor, such as a checkout, only fro
 
 The server supplies inferred local types and direct-call parameter names ([rules](../../docs/architecture.md#inlay-hints)). Plain Neovim enables their display with `vim.lsp.inlay_hint.enable(true)`; LazyVim enables them by default. To disable a kind independently, add `inlayHints = { types = false, parameterNames = true }` to the server's `init_options`, alongside `virgilRoot`. Both default to true. Restart the language server after changing these initialization options. The editor's own hint switch still controls display. The headless and LazyVim tests read exact labels and UTF-16 positions through `vim.lsp.inlay_hint.get()`.
 
+## Semantic tokens
+
+The server colors names by the declarations that they resolve to ([token table](../../docs/architecture.md#semantic-tokens)). Neovim requests the tokens and highlights them by itself, in plain Neovim and in LazyVim, with the groups `@lsp.type.<type>.virgil` and `@lsp.mod.<modifier>.virgil`, such as `@lsp.type.function.virgil` (`:help lsp-semantic-highlight`). To turn them off, add `semanticTokens = false` to the server's `init_options`, alongside `virgilRoot`, and restart the language server. The headless and LazyVim tests read exact token types and UTF-16 positions through `vim.lsp.semantic_tokens.get_at_pos()`.
+
 ## Completion
 
 The server offers [completion](../../docs/architecture.md#completion) of keywords in open buffers, even while they fail to parse, and of the declarations in scope in a configured project, after a moment for an analysis. In plain Neovim, ask for it: Neovim 0.11 sets `omnifunc` to `vim.lsp.omnifunc()` when the server attaches, so `<C-x><C-o>` in Insert mode completes the word before the cursor, with no setup. Neovim's built-in LSP completion also has `vim.lsp.completion.get()`, which asks only the servers that `vim.lsp.completion.enable()` enabled for the buffer, so enable it in an `LspAttach` autocommand and map a key to it, as `:help vim.lsp.completion.get()` suggests:

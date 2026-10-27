@@ -99,11 +99,14 @@ The server's features need no further settings. [Completion](../../docs/architec
 
 [Inlay hints](../../docs/architecture.md#inlay-hints) show inferred local types and direct-call parameter names. The two server switches below are independent; VS Code's `editor.inlayHints.enabled` also controls their display. The Extension Host test reads exact labels and UTF-16 positions through `vscode.executeInlayHintProvider`.
 
+[Semantic tokens](../../docs/architecture.md#semantic-tokens) color names by the declarations that they resolve to, such as classes, variants, functions, fields, and parameters, over the grammar's colors. `virgil.semanticTokens` decides whether the server sends them. The Extension Host test reads exact token types and UTF-16 positions through `vscode.provideDocumentSemanticTokens`.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `virgil.server.path` | empty | Empty selects the bundled server, or `virgil-lsp` on `PATH` in the universal VSIX. An explicit value overrides the bundle: a command name looked up on the extension host's `PATH`, or an absolute path. Relative paths are rejected. This is a machine setting: set it in user settings, or in the remote settings with Remote-SSH and Remote-WSL. Workspace settings can't change it. Changing it restarts the server. |
 | `virgil.inlayHints.types` | `true` | Show inferred local types. Changing it restarts the server. |
 | `virgil.inlayHints.parameterNames` | `true` | Show parameter names at direct calls. Changing it restarts the server. |
+| `virgil.semanticTokens` | `auto` | `on` sends semantic tokens and `off` doesn't. `auto` sends them unless the [`titzer.virgil` extension](#with-the-virgil-extension-installed) is enabled when the server starts, since VS Code shows one extension's tokens, not both; the output channel then says that they are off. Changing it restarts the server. |
 | `virgil.virgilRoot` | empty | The absolute physical path of the Virgil checkout or installation, the directory that holds `lib/`. Project files' `virgilDependencies`, such as `lib/util/*.v3`, are relative to it ([Configuration](../../docs/configuration.md#the-virgil-root)). When empty, the extension uses `VIRGIL_LOC` from the extension host's environment: with Remote-SSH or Remote-WSL, the remote machine's. A machine setting, like `virgil.server.path`. Changing it restarts the server; a change to `VIRGIL_LOC` needs a new window. |
 | `virgil.trace.server` | `messages` | How much of each LSP message the trace records: `messages`, `compact`, or `verbose`. |
 
@@ -141,6 +144,14 @@ This extension keeps its own grammar and language configuration, as decided in [
 - The only sign of the overlap was a message in the developer console, "Overwriting grammar scope name to file mapping for scope source.virgil". It is expected with both installed, not a bug. Nothing appeared in the UI or the log files.
 
 Both extensions run on the workspace side, so with Remote-SSH both would be installed on the remote host. That case wasn't tested.
+
+Since this extension added semantic tokens ([#313](https://github.com/SaltedTan/virgil-language-server/issues/313)), both color names with them. A test on 2026-10-27 with VS Code 1.142.0 on Linux checked which extension's tokens VS Code shows. It used this extension packaged from the change, with its server, and `titzer.virgil` 0.1.0 packaged from `titzer/virgil-vscode` at `e32f13667e53`, still the head of `main`, since neither the Marketplace nor Open VSX has it. Each run installed the VSIXs with `--install-extension` into new, empty user data and extensions directories, in the order given, opened the extension test's fixture as the workspace folder, with its project file, and opened a file that declares every kind of name. It then read which provider's tokens `vscode.provideDocumentSemanticTokens` returned, by their legend, which starts with `namespace` for this extension's and with `keyword` for `titzer.virgil`'s. It found:
+
+- With `virgil.semanticTokens` at its default, `auto`, in either install order, the output channel said that semantic tokens were off because `titzer.virgil` was enabled, and VS Code showed `titzer.virgil`'s tokens, the same as with that extension alone.
+- With `on`, in either order, VS Code first showed `titzer.virgil`'s tokens, and this extension's after **Virgil: Restart Language Server**. VS Code asks the providers that match a document equally well newest first, and uses the first that returns tokens. Here `titzer.virgil` registered its provider when the first `.v3` file opened, after this extension had started its server for the project file, and the restart registered this extension's again. The order of registration decides, not the order of installation.
+- With this extension alone, its tokens colored each kind of declaration, legibly in the Dark Modern, Light Modern, and Dark High Contrast themes; with `off`, the grammar's colors remained.
+
+No CI job repeats this test, since CI downloads no other extension. To repeat it, package both extensions, install them as above, and run **Developer: Inspect Editor Tokens and Scopes** on a name, which shows its semantic token type, or compare the legends as the test did.
 
 ## Development
 

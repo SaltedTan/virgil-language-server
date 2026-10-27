@@ -326,7 +326,7 @@ Exit criteria:
 | P1       | rename                | references plus scope validation       | Conflicts, private names, stale edits         |
 | P1       | signature help        | [call sites](docs/architecture.md#signature-help) | Nested calls and partial argument lists       |
 | P1       | completion            | scope/type context plus partial parser | Incomplete syntax, ranking, latency           |
-| P2       | semantic tokens       | verified occurrence kinds              | Delta encoding and overlap policy             |
+| P2       | semantic tokens       | verified occurrence kinds              | Present, full documents only; [token table and refresh](docs/architecture.md#semantic-tokens) |
 | P2       | inlay hints           | inferred types/parameters              | Present; [rules and settings](docs/architecture.md#inlay-hints) |
 | P2       | code actions          | classified diagnostics                 | Missing-semicolon fix present; [rules](docs/architecture.md#code-actions). Safe, mechanically provable edits for other diagnostics remain later work. |
 | Deferred | formatting            | a future canonical formatter           | Language-wide style and comment preservation  |
