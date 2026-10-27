@@ -12,6 +12,7 @@ def X = [
 	T("LspBraceRules:crlf", test_crlf),
 	T("LspBraceRules:indentation", test_indentation),
 	T("LspBraceRules:refusals", test_refusals),
+	T("LspBraceRules:members", test_members),
 	T("LspBraceRules:two_bodies", test_two_bodies),
 	T("LspBraceRules:parse_budget", test_parse_budget),
 	T("LspBraceRules:analysis", test_analysis),
@@ -280,6 +281,57 @@ def test_refusals(t: Tester) {
 	refuse(t, lines(["class C {", "\tnew() {", "\t\tfor (i < 2) {", "            g();", "        }", "\t}",
 		"    def g() { }", "    def h() {", "\t\tg();", "\t", "}"]),
 		"a brace pair outside the method disagrees with the layout");
+}
+
+// No rule may read a member as part of a method's body: each refuses where the
+// method could have ended before a member, and accepts where it couldn't.
+def test_members(t: Tester) {
+	var deeper = "a statement of the method is deeper than its first";
+	var member = "the method's last statement could begin a member";
+	var continued = "a line after the method's last statement could begin a member";
+	var lost = "the method could have ended before a member that lost its \"{\"";
+	// A method that lost its own "}" before a field indented deeper than its
+	// statements and continued at their depth.
+	refuse(t, lines(["def count = 11;", "component A {", "    def f() {", "        g();", "    ", "            var count =",
+		"        7;", "    def target() -> int { return count; }", "    def g() { }", "}"]), deeper);
+	// Before a field, a method, or a constructor indented deeper, or a
+	// variant's case.
+	for (m in ["\t\t\tdef count = 1;", "\t\t\tdef h() -> int { return 1; }", "\t\t\tnew(x: int) { }"]) {
+		refuse(t, lines(["class A {", "\tdef f() {", "\t\tg();", "\t", m, "\tdef g() { }", "}"]), deeper);
+	}
+	refuse(t, lines(["type V {", "\tcase X;", "\tdef f() {", "\t\tg();", "\t", "\t\t\tcase Y;", "\tdef g() { }", "}",
+		"component A { }"]), deeper);
+	// Before a member on the line of its last statement, or of a block's "}".
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(); var count = 1;", "\tdef g() { }", "}"]), member);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t\t} var count = 1;", "\tdef g() { }", "}"]), member);
+	// Before a member whose word is alone on a deeper line, and a line that
+	// continues a statement with a member's word.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef", "\t\tvar count = 1;", "\tdef g() { }", "}"]), deeper);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(1,", "\t\t\tdef count = 1;", "\tdef g() { }", "}"]), continued);
+	// Rule 2, where the method's "}" is deeper than its header and a member
+	// after it, on a later line or its own, lost its "{".
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t\tdef h() -> int",
+		"\t\t\treturn 1;", "\t}", "\tdef g() { }", "}"]), lost);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t} def h() -> int",
+		"\t\t\treturn 1;", "\t}", "\tdef g() { }", "}"]), lost);
+	// Rule 3 for a block, where the method could have ended at its "{" and a
+	// private method holds the block.
+	refuse(t, lines(["component A {", "\tdef f(a: bool) {", "\t\tprivate", "\t\tdef h() {", "\t\t\tif (a) {", "\t\t\t\tg();",
+		"\t\t\t", "\t\t}", "\t}", "\tdef g() { }", "}"]), continued);
+	// A field or a value can't have lost the "{": rule 2 reads past them.
+	var header = "\tdef f(a: bool) {";
+	check(t, method(header, ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t\tdef x = 1;", "\t\tvar y = x;", "\t\tg();", "\t}"]), header, "\t}");
+	// Rule 3 for a block in a function that initializes a local, or in a
+	// block, which no member is.
+	check(t, method(header, ["\t\tvar fn = fun () -> int {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t\treturn 1;", "\t\t};",
+		"\t\tg();", "\t}"]), header, "\t}");
+	check(t, method(header, ["\t\tg();", "\t\t{", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"]), header, "\t}");
+	// A "for" header's ";" ends no statement, and an indexing method can
+	// follow the method.
+	var current = lines(["class A {", "\tdef f(a: Array<int>) {", "\t\tfor (i = 0; i < a.length; ) {", "\t\t\ti++;", "\t\t}", "\t",
+		"\tdef [i: int] -> int { return i; }", "\tdef g() { }", "}"]);
+	var r = repair(current);
+	t.assert(r.1 != null && r.1.begin == find(current, "\tdef [i"), "the \"}\" is inserted before the indexing method");
 }
 
 // A brace rule's body and the body that holds the next error, either before

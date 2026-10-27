@@ -25,9 +25,18 @@ class LspLayout {
 	def var irregular: bool;
 	// The offsets of the braces in ordinary code, in order.
 	def braces = Vector<int>.new();
+	// The offset of each first code byte after a ";", "{", or "}" in ordinary
+	// code, where a statement or a member may begin, in order, and the
+	// braces' balance before it. In a "for" header's parentheses, the first
+	// two ";" end no statement.
+	def heads = Vector<int>.new();
+	def depths = Vector<int>.new();
 
 	new(text) {
-		var n = text.length, i = 0, comment = false;
+		var n = text.length, i = 0, comment = false, stop = false, depth = 0;
+		// The offset of the "(" after the last "for", the depth of the
+		// parentheses in a "for" header, and how many of its ";" remain.
+		var paren = -1, header = 0, semis = 0;
 		while (true) {
 			var start = i, width = 0, inComment = comment, odd = false;
 			while (i < n && (text[i] == ' ' || text[i] == '\t')) {
@@ -60,10 +69,35 @@ class LspLayout {
 					i++;
 					continue;
 				}
+				if (stop) {
+					heads.put(i);
+					depths.put(depth);
+				}
+				var inHeader = c == ';' && header > 0 && semis > 0;
+				stop = c == '{' || c == '}' || (c == ';' && !inHeader);
 				var end = i + 1;
-				if (c == '\"') end = stringEnd(i);
-				else if (c == '\'') end = byteEnd(i);
-				else if (c == '{' || c == '}') braces.put(i);
+				if (c == '\"') {
+					end = stringEnd(i);
+				} else if (c == '\'') {
+					end = byteEnd(i);
+				} else if (c == '{' || c == '}') {
+					braces.put(i);
+					depth += if(c == '{', 1, -1);
+					header = 0;
+				} else if (c == '(') {
+					if (i == paren) {
+						header = 1;
+						semis = 2;
+					} else if (header > 0) {
+						header++;
+					}
+				} else if (c == ')') {
+					if (header > 0) header--;
+				} else if (inHeader) {
+					semis--;
+				} else if (c == 'f' && (i == 0 || !isIdent(text[i - 1])) && wordAt(i, n, "for")) {
+					paren = spaces(i + 3, n);
+				}
 				if (first < 0) first = i;
 				last = end - 1;
 				i = end;
@@ -107,6 +141,7 @@ class LspLayout {
 			if (!begins(l)) return (none, -1, "a comment precedes the method's closing brace");
 			if (lasts[l] != close) return (none, -1, "code follows the method's closing brace on its line");
 			var why = interior(h, open, close, depth);
+			if (why == null) why = if(depth < 0, endsEarly(open, close), lastStatement(h, l, false));
 			if (why == null) why = outside(open, close, close);
 			if (why != null) return (none, -1, why);
 			return ((open, close + 1), -1, null);
@@ -117,7 +152,7 @@ class LspLayout {
 		if (!memberAfter(h, l)) return (none, -1, "the line that ends the method's body does not begin a method or constructor");
 		var at = starts[l];
 		var why = interior(h, open, at, 0);
-		if (why == null) why = lastStatement(h, l);
+		if (why == null) why = lastStatement(h, l, true);
 		if (why == null) why = outside(open, at, -1);
 		if (why != null) return (none, -1, why);
 		return ((open, at + 1), at, null);
@@ -210,7 +245,7 @@ class LspLayout {
 			var k = lineOf(opener);
 			restored = starts[nextAtMost(k, widths[construct(h, k)])];
 		}
-		var stack = Vector<int>.new(), i = indexAfter(open);
+		var stack = Vector<int>.new(), i = indexAfter(braces, open);
 		while (true) {
 			var b = if(i < braces.length && braces[i] < close, braces[i], close);
 			// A restored "}" precedes every brace on its line.
@@ -259,7 +294,7 @@ class LspLayout {
 	// isn't a "}" as deep as that header; or -1 if there isn't exactly one.
 	def lostCloser(h: int, open: int, close: int) -> int {
 		var found = -1;
-		for (i = indexAfter(open); i < braces.length && braces[i] < close; i++) {
+		for (i = indexAfter(braces, open); i < braces.length && braces[i] < close; i++) {
 			var b = braces[i], k = lineOf(b);
 			if (text[b] != '{' || lasts[k] != b) continue;
 			var s = construct(h, k);
@@ -283,47 +318,82 @@ class LspLayout {
 		}
 		return k;
 	}
-	// For a method whose header is line {h} and whose "}" goes before line
-	// {l}: null if every counted line between is at least as deep as the
-	// first, and the last that starts a statement at that depth begins with a
-	// name that can't begin a member, so that the method can't have ended
-	// before it; else the reason.
-	def lastStatement(h: int, l: int) -> string {
-		var j = -1, last = -1;
+	// Rule 3, for a method whose header is line {h} and whose body ends
+	// before line {l}: null if the method can't have ended, at the end of a
+	// statement, before members that the body would then hold; else the
+	// reason. Statements begin at heads. At the body's own level, where the
+	// braces' balance is the one after its "{", the last statement must be a
+	// block, which no member is, or begin with a name, and no line after its
+	// start may begin with a word that can begin a member, though it
+	// continues a line. If {own}, the method lost its own "}": its last
+	// statement can't begin a member, every counted line must be at least as
+	// deep as the body's first, and one that starts a statement at the body's
+	// level exactly as deep, so that a member indented deeper after the
+	// method's end can't read as a statement or its continuation. Otherwise a
+	// block in it lost its "}", and had the method ended earlier, its "}"
+	// would end a member that holds that block's "{": the last statement,
+	// which can't then begin a member other than a field or a value, since
+	// code would follow the "}" of a function in its initializer.
+	def lastStatement(h: int, l: int, own: bool) -> string {
+		var s = indexAfter(heads, lasts[h]), j = -1, level = 0, depth = 0, last = -1, member = false;
 		for (k = h + 1; k < l; k++) {
 			if (firsts[k] < 0) continue;
-			if (j < 0) j = widths[k];
-			if (widths[k] < j) return "a line of the method is shallower than its first";
-			if (widths[k] > j || text[firsts[k]] == '}') continue;
-			var p = before(k);
-			if (p == h || ends(p)) last = k;
+			if (j < 0) {
+				j = widths[k];
+				level = depths[s];
+			}
+			if (own && widths[k] < j) return "a line of the method is shallower than its first";
+			if (s < heads.length && heads[s] == firsts[k]) {
+				if (own && depths[s] == level && widths[k] != j) return "a statement of the method is deeper than its first";
+			} else if (depth == level && memberWord(firsts[k])) {
+				// No brace precedes a continuation on its line or since the
+				// last head, so the last head's balance is the line's.
+				member = true;
+			}
+			while (s < heads.length && heads[s] <= lasts[k]) {
+				depth = depths[s];
+				if (depth == level) {
+					last = heads[s];
+					member = false;
+				}
+				s++;
+			}
 		}
-		if (j < 0) return null;
-		if (last < 0) return "the method has no statement at the depth of its first line";
-		var c = text[firsts[last]];
-		if (!begins(last) || !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
-			return "the method's last statement does not begin with a name";
-		}
-		for (w in MEMBER_WORDS) {
-			if (word(last, w)) return "the method's last statement could begin a member";
+		if (last < 0) return null;
+		if (member) return "a line after the method's last statement could begin a member";
+		if (text[last] == '{') return null;
+		if (!isNameStart(text[last])) return "the method's last statement does not begin with a name";
+		if (memberWord(last) && (own || !startsValue(last))) return "the method's last statement could begin a member";
+		return null;
+	}
+	// Rule 2, for the body between {open} and {close}, which is one "{"
+	// short: null if the method can't have ended at the "}" where the braces'
+	// balance first falls below the body's level, before members of which a
+	// later one lost the "{"; else the reason. After that "}", the first
+	// statement at that lower level that begins with a name, and not a
+	// field's or a value's, must begin with one that can't begin a member. A
+	// field or a value holds a "{" only in a function in its initializer, and
+	// code would follow that function's "}" on its line.
+	def endsEarly(open: int, close: int) -> string {
+		var first = indexAfter(heads, open);
+		if (first >= heads.length || heads[first] >= close) return null;
+		for (s = first; s < heads.length && heads[s] < close; s++) {
+			var at = heads[s];
+			if (depths[s] >= depths[first] || !isNameStart(text[at]) || startsValue(at)) continue;
+			if (memberWord(at)) return "the method could have ended before a member that lost its \"{\"";
+			return null;
 		}
 		return null;
 	}
 	// Whether line {l}, which follows the body of the method of header {h},
-	// begins a method or constructor: after an optional "private", "def" or
-	// "new" begins it, its last code byte is a brace, as no field's or local
-	// definition's is, and it continues no line of a body that holds at
-	// least one.
+	// begins a method or constructor: its header begins on it, its last code
+	// byte is a brace, and it continues no line of a body that holds at least
+	// one.
 	def memberAfter(h: int, l: int) -> bool {
 		var p = before(l);
 		if (p == h || !ends(p) || !begins(l)) return false;
-		var c = text[lasts[l]], at = firsts[l];
-		if (c != '{' && c != '}') return false;
-		if (word(l, "private")) {
-			at += 7;
-			while (at < lasts[l] && (text[at] == ' ' || text[at] == '\t')) at++;
-		}
-		return wordAt(at, lasts[l], "def") || wordAt(at, lasts[l], "new");
+		var c = text[lasts[l]];
+		return (c == '{' || c == '}') && startsMethod(firsts[l]);
 	}
 	// The method or constructor header that layout says encloses line {k}:
 	// {k} if it is one, else the first counted line before it that is
@@ -339,20 +409,51 @@ class LspLayout {
 		}
 		return -1;
 	}
-	// Whether line {k} is a whole method or constructor header: it begins
-	// with "def" or "new", after an optional "private", its last code byte is
-	// a "{", and the counted line before it, if any, ends in ";", "{", or "}",
-	// so that it continues no other line.
+	// Whether line {k} is a whole method or constructor header: the header
+	// begins on it, its last code byte is a "{", and the counted line before
+	// it, if any, ends in ";", "{", or "}", so that it continues no other line.
 	def methodHeader(k: int) -> bool {
-		if (firsts[k] < 0 || !begins(k) || text[lasts[k]] != '{') return false;
-		var at = firsts[k];
-		if (word(k, "private")) {
-			at += 7;
-			while (at < lasts[k] && (text[at] == ' ' || text[at] == '\t')) at++;
-		}
-		if (!wordAt(at, lasts[k], "def") && !wordAt(at, lasts[k], "new")) return false;
+		if (firsts[k] < 0 || !begins(k) || text[lasts[k]] != '{' || !startsMethod(firsts[k])) return false;
 		var p = before(k);
 		return p < 0 || ends(p);
+	}
+	// Whether the code at {at} begins a method's or constructor's header, on
+	// its line: after an optional "private", "def" and "[", "def", a name,
+	// and "(" or "<", or "new" and "(", not a field's or a value's name and
+	// "=" or ":", though a function in its initializer may end the line in a
+	// brace.
+	def startsMethod(at: int) -> bool {
+		var end = lasts[lineOf(at)] + 1;
+		if (wordAt(at, end, "private")) at = spaces(at + 7, end);
+		if (wordAt(at, end, "new")) {
+			at = spaces(at + 3, end);
+			return at < end && text[at] == '(';
+		}
+		if (!wordAt(at, end, "def")) return false;
+		at = spaces(at + 3, end);
+		if (at < end && text[at] == '[') return true;
+		var name = at;
+		while (at < end && isIdent(text[at])) at++;
+		if (at == name) return false;
+		at = spaces(at, end);
+		return at < end && (text[at] == '(' || text[at] == '<');
+	}
+	// Whether the code at {at} begins a field or a local or member value,
+	// which can't hold a "{" except in its initializer: after an optional
+	// "private", "var", "def var", or "def", a name, and "=" or ":" on its
+	// line.
+	def startsValue(at: int) -> bool {
+		var end = lasts[lineOf(at)] + 1;
+		if (wordAt(at, end, "private")) at = spaces(at + 7, end);
+		if (wordAt(at, end, "var")) return true;
+		if (!wordAt(at, end, "def")) return false;
+		at = spaces(at + 3, end);
+		if (wordAt(at, end, "var")) return true;
+		var name = at;
+		while (at < end && isIdent(text[at])) at++;
+		if (at == name) return false;
+		at = spaces(at, end);
+		return at < end && (text[at] == '=' || text[at] == ':');
 	}
 	// Whether line {k} begins a control statement's header: "if", "else",
 	// "while", "for", or "match", or a "}" and then "else".
@@ -408,21 +509,40 @@ class LspLayout {
 	def word(k: int, w: string) -> bool {
 		return wordAt(firsts[k], lasts[k] + 1, w);
 	}
+	// Whether the code at {at} begins with a word that can begin a member or
+	// a top-level declaration.
+	def memberWord(at: int) -> bool {
+		var end = lasts[lineOf(at)] + 1;
+		for (w in MEMBER_WORDS) {
+			if (wordAt(at, end, w)) return true;
+		}
+		return false;
+	}
 	private def wordAt(at: int, end: int, w: string) -> bool {
 		if (at + w.length > end) return false;
 		for (i < w.length) {
 			if (text[at + i] != w[i]) return false;
 		}
-		if (at + w.length == end) return true;
-		var c = text[at + w.length];
-		return !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'));
+		return at + w.length == end || !isIdent(text[at + w.length]);
 	}
-	// The index in {braces} of the first brace after {offset}.
-	private def indexAfter(offset: int) -> int {
-		var lo = 0, hi = braces.length;
+	// The offset of the first byte from {at} before {end} that isn't a space
+	// or a tab, or {end}.
+	private def spaces(at: int, end: int) -> int {
+		while (at < end && (text[at] == ' ' || text[at] == '\t')) at++;
+		return at;
+	}
+	private def isNameStart(c: byte) -> bool {
+		return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+	}
+	private def isIdent(c: byte) -> bool {
+		return isNameStart(c) || (c >= '0' && c <= '9');
+	}
+	// The index in {offsets}, in order, of the first offset after {offset}.
+	private def indexAfter(offsets: Vector<int>, offset: int) -> int {
+		var lo = 0, hi = offsets.length;
 		while (lo < hi) {
 			var mid = (lo + hi) / 2;
-			if (braces[mid] <= offset) lo = mid + 1;
+			if (offsets[mid] <= offset) lo = mid + 1;
 			else hi = mid;
 		}
 		return lo;
