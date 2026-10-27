@@ -9,10 +9,12 @@
 // terminators, so no offset or line moves and no syntax is guessed. No
 // string, byte literal, or block comment may be unterminated. When the file's
 // braces balance in ordinary code, the body ends at the brace that matches
-// its opening one. When they are one opener short, the body is the one that
-// layout delimits instead (LspLayout.braceRule). If the blanked text still
-// fails to parse, the body that holds its first error is blanked too, at
-// most MAX_BODIES in all. There is one candidate per body, and no
+// its opening one. When they are one opener or one closer short, the body is
+// the one that layout delimits instead (LspLayout.braceRule), and where a
+// method lost its own closing brace, a "}" is inserted before the line where
+// layout ends it: the one change that moves later offsets. If the blanked
+// text still fails to parse, the body that holds its first error is blanked
+// too, at most MAX_BODIES in all. There is one candidate per body, and no
 // search. Each blanked pair must be a method or constructor body of the
 // blanked text's own parse.
 component LspCurrentRepair {
@@ -27,13 +29,15 @@ component LspCurrentRepair {
 		scan.braceFrom = 0;
 		scan.scan(current.length);
 		if (scan.unterminatedRegion) return (null, null, "a string, byte literal, or block comment is unterminated");
-		var body: (int, int);
+		// The first body, and an inserted "}", in the repaired text.
+		var body: (int, int), inserted = -1;
 		if (scan.braceDepth == 0 && scan.braceMinimum == 0) {
 			body = holding(current, anchor);
 		} else {
 			var rule = LspLayout.new(current).braceRule(scan.braceDepth, scan.braceMinimum);
-			if (rule.1 != null) return (null, null, rule.1);
+			if (rule.2 != null) return (null, null, rule.2);
 			body = rule.0;
+			inserted = rule.1;
 		}
 		var text: Array<byte>, bodies = Vector<(int, int)>.new();
 		for (n < MAX_BODIES) {
@@ -42,7 +46,7 @@ component LspCurrentRepair {
 			for (i < bodies.length) {
 				if (bodies[i].0 == body.0) return (null, null, "the parser's error is in a blanked body");
 			}
-			if (text == null) text = Arrays.dup(current);
+			if (text == null) text = if(inserted >= 0, insert(current, inserted), Arrays.dup(current));
 			blank(text, body);
 			bodies.put(body);
 			var parsed = AeneasAdapter.repairParse(path, text, options);
@@ -52,6 +56,8 @@ component LspCurrentRepair {
 					if (!has(parsed.0, b)) return (null, null, "a blanked pair is not a method or constructor body");
 				}
 				if (blanked.length > 1 && blanked[1].0 < blanked[0].0) blanked = [blanked[1], blanked[0]];
+				// Only an inserted "}" moves later offsets.
+				if (inserted >= 0) return (text, LspBodyFallback.new(inserted, inserted + 1, inserted, blanked), null);
 				var begin = blanked[0].0 + 1, end = blanked[blanked.length - 1].1 - 1;
 				return (text, LspBodyFallback.new(begin, end, end, blanked), null);
 			}
@@ -76,6 +82,14 @@ component LspCurrentRepair {
 			return if(scan.braceClose > open, (open, scan.braceClose + 1), (-1, -1));
 		}
 		return (-1, -1);
+	}
+	// {text} with a "}" inserted before the byte at {at}.
+	def insert(text: Array<byte>, at: int) -> Array<byte> {
+		var result = Array<byte>.new(text.length + 1);
+		for (i < at) result[i] = text[i];
+		result[at] = '}';
+		for (i = at; i < text.length; i++) result[i + 1] = text[i];
+		return result;
 	}
 	// Replaces each byte strictly between {body}'s braces with a space, except
 	// CR and LF.

@@ -646,9 +646,13 @@ class Corpus:
         # Every other control is refused: no body, and so no fifteenth error.
         expected = {
             "brace-braceless-if-then-while": (1, False),
+            "brace-inner-closer": (1, False),
+            "brace-method-closer": (1, False),
             "brace-tab-stops": (1, False),
             "brace-and-blank-two-bodies": (2, False),
+            "brace-closer-then-blank": (2, False),
             "brace-opener-missing-return-limit": (1, True),
+            "brace-closer-missing-return-limit": (1, True),
         }
         for name, kind, fixed, broken, other in controls:
             calls = other or caller

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Current-text repair over real stdio: cold opens with a syntax error in a
 method body, with an error the next line continues, with errors in two
-bodies, and with a lost "{", beside method-body fallback in another file."""
+bodies, and with a lost "{" and a lost "}", beside method-body fallback in
+another file."""
 import json
 from pathlib import Path
 import sys
@@ -39,8 +40,8 @@ C = '''component C {
 }
 '''
 C_BROKEN = C.replace('var n = 1;', 'var n = ;')
-# The brace rule for a lost "{" (ADR-0010 rule 2) reads this layout: an if that
-# lost its "{".
+# The brace rules (ADR-0010 rules 2 and 3) read this layout: an if that lost
+# its "{", and a method that lost its own "}", before which a "}" is inserted.
 BRACES = '''/* é😀\t */ component A {
 \tdef broken() -> int {
 \t\tif (target() > 0) {
@@ -54,6 +55,7 @@ BRACES = '''/* é😀\t */ component A {
 }
 '''
 LOST_OPENER = BRACES.replace('(target() > 0) {', '(target() > 0)')
+LOST_CLOSER = BRACES.replace('\t\treturn 0;\n\t}\n', '\t\treturn 0;\n\t\n')
 
 
 class Case:
@@ -309,8 +311,10 @@ def two_bodies(exe, root):
 
 
 def braces(exe, root):
-    # A lost "{" empties the body that layout delimits and moves no offset.
-    for current in (LOST_OPENER,):
+    # A lost "{" empties the body that layout delimits and moves no offset; a
+    # lost "}" of the method's own is inserted before the next method, and
+    # every answer after it maps back to current text.
+    for current in (LOST_OPENER, LOST_CLOSER):
         project = root / str(len(list(root.iterdir())))
         project.mkdir()
         c = Case(exe, project, {'A.v3': current, 'B.v3': B, 'C.v3': C})
@@ -320,8 +324,13 @@ def braces(exe, root):
             snap = c.snapshot()
             sub, = substitutions(snap)
             open_ = offset(current, '{\n\t\tif')
-            close = offset(current, '}\n\tdef target') + 1
-            assert sub['substitution'] == blanked((open_, close)), sub
+            if current == LOST_OPENER:
+                close = offset(current, '}\n\tdef target') + 1
+                assert sub['substitution'] == blanked((open_, close)), sub
+            else:
+                at = offset(current, '\tdef target')
+                assert sub['substitution'] == {'begin': at, 'effectiveEnd': at + 1, 'currentEnd': at,
+                                               'bodies': [{'begin': open_, 'end': at}]}, sub
             target = location(c, 'A.v3', 'target', current.index('def target'))
             assert c.query('definition') == target
             assert c.query('definition', 'A.v3', 'target(); }\n\tdef wrong') == target
@@ -383,7 +392,7 @@ def main():
             root = Path(work) / name
             root.mkdir()
             run(exe, root)
-    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{", blanking '
+    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{" and "}", blanking '
           'beside fallback, suppression, call hierarchy, rename refusal, restoration, and refusals passed')
 
 

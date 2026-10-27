@@ -1,17 +1,20 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Current-text repair's brace rule for a lost "{" (ADR-0010 rule 2): the
-// layout reading (LspLayout) and the repair that LspCurrentRepair makes with
-// it.
+// Current-text repair's brace rules (ADR-0010 rules 2 and 3): the layout
+// reading (LspLayout) and the repairs that LspCurrentRepair makes with it.
 def T = UnitTests.register;
 def X = [
 	T("LspBraceRules:lost_opener", test_lost_opener),
+	T("LspBraceRules:lost_inner_closer", test_lost_inner_closer),
+	T("LspBraceRules:lost_method_closer", test_lost_method_closer),
+	T("LspBraceRules:insertion_mapping", test_insertion_mapping),
 	T("LspBraceRules:crlf", test_crlf),
 	T("LspBraceRules:indentation", test_indentation),
 	T("LspBraceRules:refusals", test_refusals),
 	T("LspBraceRules:two_bodies", test_two_bodies),
 	T("LspBraceRules:parse_budget", test_parse_budget),
+	T("LspBraceRules:analysis", test_analysis),
 	()
 ];
 // {rows}, each ending in LF.
@@ -98,11 +101,100 @@ def test_lost_opener(t: Tester) {
 	for (i < current.length) t.assert((current[i] == '\n') == (r.0[i] == '\n'), "line breaks stay");
 }
 
+// Rule 3 for a block inside a method: the method body that layout delimits is
+// blanked, which removes the "{" whose "}" was lost.
+def test_lost_inner_closer(t: Tester) {
+	var header = "\tdef f(a: bool) {";
+	for (body in [
+		["\t\tif (a) {", "\t\t\tg();", "\t\t", "\t\tg();", "\t}"],
+		["\t\tfor (i < 3) {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"],
+		["\t\twhile (a) {", "\t\t\tg();", "\t}"],
+		["\t\tif (a) {", "\t\t\tg();", "\t\t} else {", "\t\t\tg();", "\t\tg();", "\t}"]]) {
+		check(t, method(header, body), header, "\t}");
+	}
+}
+
+// Rule 3 for a method that lost its own "}": a "}" is inserted before the
+// next method or constructor, at the start of its line, and the body up to it
+// is blanked.
+def test_lost_method_closer(t: Tester) {
+	for (next in ["\tdef h() -> int { return f(); }", "\tprivate def h() {", "\tnew() {"]) {
+		var current = lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\t}", "\tdef g() { }", "}"]);
+		if (next[next.length - 1] == '}') current = lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\tdef g() { }", "}"]);
+		var open = opener(current, "def f()"), at = find(current, next);
+		var r = repair(current);
+		if (r.0 == null) return t.fail2("expected %s to be repaired: %s", current, Strings.nonnull(r.2));
+		var expected = StringBuilder.new().puts(blanked(Arrays.range(current, 0, at), open, at)).puts("}")
+			.puts(Arrays.range(current, at, current.length)).toString();
+		if (!Strings.equal(expected, r.0)) return t.fail2("expected %s, got %s", expected, r.0);
+		t.asserti(at, r.1.begin);
+		t.asserti(at + 1, r.1.effectiveEnd);
+		t.asserti(at, r.1.currentEnd);
+		t.asserti(1, r.1.bodies.length);
+		t.assert(r.1.bodies[0] == (open, at + 1), "the body through the inserted brace is excluded");
+		t.assert(AeneasAdapter.parseFile("A.v3", r.0, []).diagnostics.length == 0, "the repaired text parses");
+	}
+	// A comment line between the method's last statement and the next method
+	// moves into the excluded body.
+	var current = lines(["component A {", "\tdef f() {", "\t\tg();", "", "\t// h", "\tdef h() { }", "\tdef g() { }", "}"]);
+	var r = repair(current);
+	t.assert(r.1 != null && r.1.begin == find(current, "\tdef h"), "the comment is inside the body");
+}
+
+// The inserted "}" is the only change that moves offsets: those before it
+// stay, those after it, on its line and later, move by one, and the body
+// through it, braces included, maps to nothing.
+def test_insertion_mapping(t: Tester) {
+	var current = lines(["component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t",
+		"\tdef g() { }", "\tdef h() -> int { return f(); }", "}"]);
+	var r = repair(current);
+	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
+	var m = r.1, open = opener(current, "def f()"), at = find(current, "\tdef g");
+	for (x < current.length + 1) {
+		var expected = if(x < open, x, if(x < at, -1, x + 1));
+		t.asserti(expected, m.toEffective(x));
+	}
+	for (e < r.0.length + 1) {
+		var expected = if(e < open, e, if(e <= at, -1, e - 1));
+		t.asserti(expected, m.toCurrent(e));
+	}
+	// Before the insertion, at it, and after it on its line and later.
+	t.asserti(open - 1, m.toEffective(open - 1));
+	t.asserti(-1, m.toEffective(at - 1));
+	t.asserti(at + 1, m.toEffective(at));
+	var g = find(current, "g() { }"), h = find(current, "f(); }");
+	t.asserti(g + 1, m.toEffective(g));
+	t.asserti(h + 1, m.toEffective(h));
+	t.assertb("f", Arrays.range(r.0, m.toEffective(h), m.toEffective(h) + 1));
+	// Ranges after the insertion map back; one touching the body doesn't.
+	t.assert(m.maps(h + 1, h + 2), "a range after the insertion maps");
+	t.asserti(h, m.current(h + 1));
+	t.asserti(g, m.current(g + 1));
+	t.assert(!m.maps(at - 1, at + 2), "a range touching the inserted brace does not map");
+	t.assert(!m.maps(open, open + 1), "the body's opening brace does not map");
+	t.assert(m.maps(0, open), "a range before the body maps");
+	t.asserti(-1, m.toCurrent(at));
+}
+
 // CR is a line terminator. The pinned parser rejects a CR outside a comment,
 // so these lines end in comments outside the excluded body, and the body's
 // own lines end in LF: a CR in a body is still a CR after blanking.
 def test_crlf(t: Tester) {
-	var current = "component A { // a\r\n\tdef f(a: bool) {\n\t\tif (a)\n\t\t\tg();\n\t\t}\n\t} // f\r\n\tdef g() { } // g\r\n} // h\r\n";
+	var current = "component A { // a\r\n\tdef f() -> int {\n\t\treturn 1;\n\t\n\tdef g() -> int { return 2; } // g\r\n\tdef h() -> int { return g(); } // h\r\n} // i\r\n";
+	var r = repair(current);
+	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
+	var at = find(current, "\tdef g"), use = find(current, "g(); }");
+	t.asserti(at, r.1.begin);
+	t.asserti(use + 1, r.1.toEffective(use));
+	t.asserti(use, r.1.toCurrent(use + 1));
+	var cr = find(current, "// h\r") + 4;
+	t.asserti(cr + 1, r.1.toEffective(cr));
+	t.asserti('\r', r.0[cr + 1]);
+	var map = PositionMap.new(current, PositionEncoding.UTF16), p = map.offsetToPosition(r.1.toCurrent(use + 1));
+	t.asserti(5, p.line);
+	t.asserti(25, p.character);
+	// Rule 2 with CRLF lines outside the body.
+	current = "component A { // a\r\n\tdef f(a: bool) {\n\t\tif (a)\n\t\t\tg();\n\t\t}\n\t} // f\r\n\tdef g() { } // g\r\n} // h\r\n";
 	check(t, current, "def f(a: bool)", "\t} // f\r");
 	// A CR inside the body is a CR outside a comment once it is blanked.
 	refuse(t, "component A { // a\r\n\tdef f(a: bool) { // b\r\n\t\tif (a)\n\t\t\tg();\n\t\t}\n\t}\n\tdef g() { }\n}\n",
@@ -153,6 +245,20 @@ def test_refusals(t: Tester) {
 	// A string left open.
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t\tvar s = \"open;", "\t}", "\tdef g() { }", "}"]),
 		"a string, byte literal, or block comment is unterminated");
+	// A method that lost its "}" and whose last statement could be a field,
+	// that is followed by a field, or that has no statement.
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\tvar count = 1;", "\tdef g() { }", "}"]),
+		"the method's last statement could begin a member");
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\tvar count = 1;", "\tdef g() { }", "}"]),
+		"the line that ends the method's body does not begin a method or constructor");
+	refuse(t, lines(["component A {", "\tdef f() {", "\t", "\tdef g() { }", "}"]),
+		"the line that ends the method's body does not begin a method or constructor");
+	// The last method of a component, whose "}" would be on a shallower line.
+	refuse(t, lines(["component A {", "\tdef g() { }", "\tdef f() {", "\t\tg();", "\t", "}"]),
+		"no line as deep as the method's header follows its body");
+	// A match case's block, which is no control statement's.
+	refuse(t, lines(["component A {", "\tdef f(a: bool) {", "\t\tmatch (a) {", "\t\t\ttrue => {", "\t\t\t\tg();", "\t\t\t", "\t\t\tfalse => ;", "\t\t}", "\t}", "\tdef g() { }", "}"]),
+		"no one control statement's block in the method lost its \"}\" by layout");
 	// A comment before the method's "}", or code after it.
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t/* f */ }", "\tdef g() { }", "}"]),
 		"a comment precedes the method's closing brace");
@@ -168,10 +274,16 @@ def test_refusals(t: Tester) {
 	refuse(t, lines(["class C {", "\tdef h() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t}", "\tnew() {", "\t\tfor (i < 2) {",
 		"\t\t\tg();", "\t}", "\t}", "\tdef g() { }", "}"]),
 		"a brace pair outside the method disagrees with the layout");
+	// A mixed-width file in which a loop's "}" is as deep as its constructor,
+	// so that a constructor seems to have lost a "}" for its loop, while a
+	// later method lost its own.
+	refuse(t, lines(["class C {", "\tnew() {", "\t\tfor (i < 2) {", "            g();", "        }", "\t}",
+		"    def g() { }", "    def h() {", "\t\tg();", "\t", "}"]),
+		"a brace pair outside the method disagrees with the layout");
 }
 
-// The brace rule's body and the body that holds the next error, at most two in
-// all.
+// A brace rule's body and the body that holds the next error, either before
+// or after it, at most two in all.
 def test_two_bodies(t: Tester) {
 	var current = lines(["component A {", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f(a: bool) {", "\t\tif (a)",
 		"\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]);
@@ -184,15 +296,77 @@ def test_two_bodies(t: Tester) {
 	t.asserti(0, r.1.delta);
 	t.asserti(other.0 + 1, r.1.begin);
 	t.asserti(f.1 - 1, r.1.effectiveEnd);
+	// After the inserted "}", a later body's offsets move by one.
+	current = lines(["component A {", "\tdef f() -> int {", "\t\treturn 1;", "\t", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef g() { }", "}"]);
+	r = repair(current);
+	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
+	var at = find(current, "\tdef other"), o = opener(current, "def other()"), oEnd = find(current, "}\n\tdef g") + 1;
+	t.asserti(2, r.1.bodies.length);
+	t.assert(r.1.bodies[0] == (opener(current, "def f()"), at + 1), "the method through the inserted brace");
+	t.assert(r.1.bodies[1] == (o + 1, oEnd + 1), "the later body, in repaired text");
+	t.asserti(at, r.1.begin);
+	for (x = o; x < oEnd; x++) t.asserti(-1, r.1.toEffective(x));
+	t.asserti(oEnd + 1, r.1.toEffective(oEnd));
+	t.asserti(at + 2, r.1.toEffective(at + 1));
 	// A third body is refused.
 	refuse(t, lines(["component A {", "\tdef e() { var x = ; }", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f(a: bool) {", "\t\tif (a)",
 		"\t\t\tg();", "\t\t}", "\t}", "\tdef g() { }", "}"]), "blanked text does not parse");
 }
 
-// The brace rule's text costs one parse of the budget.
+// A brace rule's text costs one parse of the budget.
 def test_parse_budget(t: Tester) {
 	var current = method("\tdef f(a: bool) {", ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t}"]);
 	var parsed = AeneasAdapter.parseFile("A.v3", current, []);
 	t.assertb("repair exceeds the parse budget", LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 0).2);
 	t.assert(LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 1).1 != null, "one body needs one parse");
+}
+
+// A real analysis of a method that lost its "}": declarations, uses, and
+// diagnostics after the inserted "}" map back to current text exactly, and
+// the emptied body's missing return is excluded.
+def test_analysis(t: Tester) {
+	var s = AnalyzedTextSession.new(t);
+	var current = lines(["component A {", "\tdef broken() -> int {", "\t\tvar x = a();", "\t\treturn x;", "\t",
+		"\tdef a() -> int { return B.b(); }", "\tdef c() -> bool { return a(); }", "}"]);
+	s.open("A.v3", 1, current);
+	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
+	t.assert(snapshot.parsed && snapshot.degraded(), "the repaired program parsed");
+	var sub = snapshot.documentVersions[i].substitution;
+	if (sub == null) return s.server.close();
+	var open = opener(current, "def broken"), at = find(current, "\tdef a()");
+	t.assertb(current, LspAnalysisCapture.currentText(s.store, snapshot, i, s.text(snapshot, "A.v3")));
+	t.asserti(current.length + 1, s.text(snapshot, "A.v3").length);
+	t.assert(sub.mapping.bodies.length == 1 && sub.mapping.bodies[0] == (open, at + 1), "the body through the inserted brace");
+	t.asserti(open - 1, snapshot.effectiveOffset(i, open - 1));
+	t.asserti(-1, snapshot.effectiveOffset(i, open));
+	t.asserti(-1, snapshot.effectiveOffset(i, at - 1));
+	t.asserti(at + 1, snapshot.effectiveOffset(i, at));
+	// The use of a in c binds to a's declaration, at its current offsets.
+	var use = find(current, "a(); }\n}"), decl = find(current, "a() -> int");
+	var target = snapshot.definitionAtOffset(s.path("A.v3"), snapshot.effectiveOffset(i, use));
+	t.assert(target != null && target.range != null, "a use after the insertion binds");
+	if (target != null && target.range != null) {
+		var r = snapshot.currentRange(i, target.range.beginOffset, target.range.endOffset);
+		t.asserti(decl, r.0);
+		t.asserti(decl + 1, r.1);
+	}
+	// c's type error maps back to its own expression; the missing return is
+	// at the body's "{", inside the body.
+	var excluded = 0, mapped = 0;
+	for (d in snapshot.diagnostics) {
+		if (!Strings.equal(d.path, s.path("A.v3"))) continue;
+		var r = snapshot.currentRange(i, d.beginOffset, d.endOffset);
+		if (r.0 < 0) {
+			t.assertb("MissingReturn", d.kind);
+			t.asserti(open, d.beginOffset);
+			excluded++;
+		} else {
+			t.assertb(Arrays.range(s.text(snapshot, "A.v3"), d.beginOffset, d.endOffset), Arrays.range(current, r.0, r.1));
+			t.assert(r.0 > find(current, "def c()"), "the type error is in c");
+			mapped++;
+		}
+	}
+	t.asserti(1, excluded);
+	t.asserti(1, mapped);
+	s.server.close();
 }
