@@ -14,6 +14,7 @@ class LspSnapshotMethod(owner: LspSnapshotRequests, label: string, requires: str
 	prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply)) {
 	var anchor = LspSnapshotAnchor.POSITION;
 	var failure: string -> JsonRpcReply;
+	var documentFailure: (string, DocumentVersionIdentity, string) -> JsonRpcReply;
 	def handle(request: JsonRpcMessage.Request) {
 		owner.receive(this, request);
 	}
@@ -187,10 +188,10 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	// it cannot answer.
 	def registerDocument(dispatcher: JsonRpcDispatcher, method: string, label: string,
 			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-			failure: string -> JsonRpcReply) {
+			failure: (string, DocumentVersionIdentity, string) -> JsonRpcReply) {
 		var handler = LspSnapshotMethod.new(this, label, "a valid textDocument.uri", prepare);
 		handler.anchor = LspSnapshotAnchor.DOCUMENT;
-		handler.failure = failure;
+		handler.documentFailure = failure;
 		dispatcher.onDeferredRequest(method, handler.handle);
 	}
 	// Handles {method}, whose requests name a type or call hierarchy item, with the
@@ -262,7 +263,7 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	}
 	// Answers or defers {request} for {method}.
 	def receive(method: LspSnapshotMethod, request: JsonRpcMessage.Request) {
-		submitAt(request, method.label, method.requires, method.prepare, method.failure, null, method.anchor);
+		submitAt(request, method.label, method.requires, method.prepare, method.failure, null, method.anchor, method.documentFailure);
 	}
 	// Answers or defers {request}, as a registered method with {label},
 	// {requires}, {prepare}, and {failure} would be,
@@ -273,11 +274,12 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	def submit(request: JsonRpcMessage.Request, label: string, requires: string,
 			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
 			failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void) -> LspSnapshotRequest {
-		return submitAt(request, label, requires, prepare, failure, deliver, LspSnapshotAnchor.POSITION);
+		return submitAt(request, label, requires, prepare, failure, deliver, LspSnapshotAnchor.POSITION, null);
 	}
 	private def submitAt(request: JsonRpcMessage.Request, label: string, requires: string,
 			prepare: HashMap<string, JsonValue> -> (LspSnapshotPosition, int) -> (bool, JsonRpcReply),
-			failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void, anchor: LspSnapshotAnchor) -> LspSnapshotRequest {
+			failure: string -> JsonRpcReply, deliver: JsonRpcReply -> void, anchor: LspSnapshotAnchor,
+			documentFailure: (string, DocumentVersionIdentity, string) -> JsonRpcReply) -> LspSnapshotRequest {
 		var params = if(JsonRpcParams.ByName.?(request.params), JsonRpcParams.ByName.!(request.params).v);
 		var doc = objectMember(params, "textDocument"), position: HashMap<string, JsonValue>;
 		match (anchor) {
@@ -299,6 +301,10 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 				Strings.format2("%s params require %s", label, requires));
 			reply(deliver, request.id, JsonRpcReply.Error(error));
 			return null;
+		}
+		if (documentFailure != null) {
+			var overlay = store.overlay(key);
+			failure = documentFailure(key, if(overlay != null, overlay.identity), _);
 		}
 		var ctx = projects.forDocument(key).active;
 		if (ctx == null || whenAnalyzed == null || (ctx.snapshot != null && current(ctx, ctx.snapshot))) {

@@ -107,12 +107,13 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 	// project that doesn't parse, is temporary, and ContentModified makes
 	// VS Code and Neovim keep the tokens they have, which they move with
 	// edits, rather than clear them until the next analysis.
-	private def failure(reason: string) -> JsonRpcReply {
+	private def failure(uri: string, identity: DocumentVersionIdentity, reason: string) -> JsonRpcReply {
+		record(uri, identity, if(reason == LspSnapshotReasons.UNOWNED, EMPTY, UNAVAILABLE));
 		if (reason == LspSnapshotReasons.UNOWNED) return reply(Vector<JsonValue>.new());
 		return JsonRpcReply.Error(JsonRpcError.new(LspErrorCode.CONTENT_MODIFIED, reason));
 	}
 	private def answer(at: LspSnapshotPosition, offset: int) -> (bool, JsonRpcReply) {
-		var data = Vector<JsonValue>.new(), file = at.snapshot.fileIndex(at.path());
+		var data = Vector<JsonValue>.new(), file = at.snapshot.fileIndex(at.path()), hash = SEED;
 		if (file != null) {
 			var c = LspTokenCursor.new(at.snapshot, at.index, file, at.text, at.map.text, maxTokens), line = 0, character = 0;
 			while (c.next()) {
@@ -121,11 +122,24 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 				data.put(LspSemanticLegend.integer(c.length));
 				data.put(LspSemanticLegend.integer(c.tokenType));
 				data.put(LspSemanticLegend.integer(c.modifiers));
+				if (refreshSupport) {
+					hash = hashInt(hashInt(hashInt(hash, c.line), c.character), c.length);
+					hash = hashInt(hashInt(hash, c.tokenType), c.modifiers);
+				}
 				line = c.line;
 				character = c.character;
 			}
 		}
+		var version = at.snapshot.documentVersions[at.index];
+		record(version.uri, version.identity, hash);
 		return (true, reply(data));
+	}
+	private def record(uri: string, identity: DocumentVersionIdentity, hash: u64) {
+		if (!refreshSupport) return;
+		var doc = store.overlay(uri), previous = baselines[uri];
+		if (doc == null || doc.identity != identity) return;
+		if (hash == UNAVAILABLE && previous != null && previous.identity == identity) return;
+		baselines[uri] = LspTokenFingerprint.new(identity, hash);
 	}
 	private def reply(data: Vector<JsonValue>) -> JsonRpcReply {
 		var result = Strings.newMap<JsonValue>();
@@ -133,14 +147,14 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		return JsonRpcReply.Result(JsonValue.JObject(result));
 	}
 
-	// Refresh. Each open document keeps the fingerprint of the tokens that a
-	// request would get for its text, from the last analysis that described
-	// it. A new analysis whose tokens differ for the same text, such as after
-	// an edit to another file, sends workspace/semanticTokens/refresh. A
-	// document the client edited needs none: the client asks for its tokens
-	// after every edit. Nor does a document the server can't analyze: the
-	// client keeps its tokens, so the fingerprint it had stands until the
-	// analysis recovers.
+	// Refresh. Each open document keeps a fingerprint for its text from a
+	// request's reply or the last analysis comparison. An unowned reply
+	// records EMPTY; ContentModified preserves the same text's fingerprint,
+	// or records UNAVAILABLE if there is none. A new analysis whose tokens
+	// differ for the same text sends workspace/semanticTokens/refresh,
+	// including when an unowned document joins a project or analysis recovers
+	// after ContentModified for edited text. A successful request records its
+	// tokens, so comparing them again needs no refresh.
 	def documentClosed(uri: string) { baselines.remove(uri); }
 	// Membership can change without any analysis completing. A document that
 	// left every project has no tokens; one whose active context already has a

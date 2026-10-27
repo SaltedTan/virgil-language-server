@@ -12,6 +12,10 @@ def X = [
 	UnitTests.register("LspSemanticTokens:named_this", named_this),
 	UnitTests.register("LspSemanticTokens:options", options),
 	UnitTests.register("LspSemanticTokens:refresh", refresh),
+	UnitTests.register("LspSemanticTokens:request_empty_baseline", request_empty_baseline),
+	UnitTests.register("LspSemanticTokens:request_unavailable_baseline", request_unavailable_baseline),
+	UnitTests.register("LspSemanticTokens:request_current_baseline", request_current_baseline),
+	UnitTests.register("LspSemanticTokens:request_tokens_baseline", request_tokens_baseline),
 	()
 ];
 def PATH = "/semantic-tokens/Main.v3";
@@ -267,4 +271,139 @@ def refresh(t: Tester) {
 	store.change(library, 10, LIBRARY_VARIANT);
 	analyze(LIBRARY_VARIANT);
 	t.asserti(3, sent[0]);
+}
+
+class TokenBaselineSession {
+	def store = DocumentStore.new(null, DocumentLimits.MAX_BYTES);
+	def projects = WorkspaceProjects.new(store);
+	def pending = JsonRpcPendingRequests.new();
+	var tokens: LspSemanticTokens;
+	var requests: LspSnapshotRequests;
+	def dispatcher = JsonRpcDispatcher.new();
+	def base = ProjectFiles.join(ProjectFiles.parent(HostOs.executablePath()), "project-fixtures/semantic-token-baselines");
+	def mainPath = ProjectFiles.join(base, "Main.v3");
+	def libraryPath = ProjectFiles.join(base, "Library.v3");
+	def main = ProjectFiles.uri(mainPath);
+	def library = ProjectFiles.uri(libraryPath);
+	def config = ProjectFiles.uri(ProjectFiles.join(base, ".virgil-lsp.json"));
+	var refreshes: int;
+	var response: HashMap<string, JsonValue>;
+	var waiter: LspSnapshotWaiters;
+	new(t: Tester, included: bool, support: bool) {
+		tokens = LspSemanticTokens.new(send, pending, store, projects);
+		requests = LspSnapshotRequests.new(store, projects, send);
+		t.assert(store.open(config, "json", 1, configuration(included)) == null, "configuration opens");
+		t.assert(store.open(main, "virgil", 1, MAIN_TEXT) == null, "main opens");
+		t.assert(store.open(library, "virgil", 1, LIBRARY_CLASS) == null, "library opens");
+		var params = Strings.newMap<JsonValue>();
+		params["rootUri"] = JsonValue.String(ProjectFiles.uri(base));
+		projects.initialize(params);
+		projects.forDocument(library);
+		tokens.refreshSupport = support;
+		tokens.register(dispatcher, requests);
+	}
+	def configuration(included: bool) -> string {
+		return if(included,
+			"{\"version\":1,\"projects\":[{\"name\":\"tokens\",\"sources\":[\"Main.v3\",\"Library.v3\"]}]}",
+			"{\"version\":1,\"projects\":[{\"name\":\"tokens\",\"sources\":[\"Library.v3\"]}]}");
+	}
+	def send(bytes: Array<byte>) {
+		var msg = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		if (msg.has("method") && Strings.equal(JsonValue.String.!(msg["method"]).v, "workspace/semanticTokens/refresh")) refreshes++;
+		else response = msg;
+	}
+	def request() {
+		response = null;
+		dispatcher.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/semanticTokens/full\",\"params\":{\"textDocument\":{\"uri\":\"%s\"}}}", main));
+	}
+	def wait(ctx: ProjectContext, candidate: LspSnapshotWaiters) -> LspSnapshotWaiters {
+		waiter = candidate;
+		return candidate;
+	}
+	def publish(t: Tester) -> ProjectContext {
+		var ctx = projects.forDocument(main).active;
+		var s = snapshot(t, [(mainPath, store.overlay(main).text), (libraryPath, store.overlay(library).text)]);
+		s.recordDocumentVersions(LspAnalysisCapture.capture(store, [main, library], true).0.versions);
+		ctx.snapshot = s;
+		return ctx;
+	}
+}
+
+def request_empty_baseline(t: Tester) {
+	for (support in [true, false]) {
+		var s = TokenBaselineSession.new(t, false, support);
+		s.request();
+		var result = JsonValue.JObject.!(s.response["result"]).v;
+		t.asserti(0, JsonValue.JArray.!(result["data"]).v.length);
+		t.asserti(0, s.refreshes);
+		s.store.change(s.config, 2, s.configuration(true));
+		s.projects.refresh();
+		s.tokens.scopesChanged();
+		t.asserti(0, s.refreshes);
+		var ctx = s.publish(t);
+		s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+		t.asserti(if(support, 1), s.refreshes);
+		s.pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+		s.tokens.analyzed(ctx, ctx.snapshot);
+		s.tokens.scopesChanged();
+		t.asserti(if(support, 1), s.refreshes);
+	}
+}
+
+def request_unavailable_baseline(t: Tester) {
+	for (support in [true, false]) {
+		var s = TokenBaselineSession.new(t, true, support), ctx = s.publish(t);
+		s.request();
+		t.assert(s.response.has("result"), "current tokens are returned");
+		s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+		s.store.change(s.main, 2, Strings.format1("\n%s", MAIN_TEXT));
+		s.store.change(s.library, 2, "class Kind {");
+		ctx.snapshot = null;
+		s.requests.whenAnalyzed = s.wait;
+		s.request();
+		t.assert(s.response == null, "the request waits for analysis");
+		s.waiter.analyzed();
+		t.asserti(LspErrorCode.CONTENT_MODIFIED, JsonValue.Int.!(JsonValue.JObject.!(s.response["error"]).v["code"]).v);
+		t.asserti(0, s.refreshes);
+		s.store.change(s.library, 3, LIBRARY_CLASS);
+		ctx = s.publish(t);
+		s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+		t.asserti(if(support, 1), s.refreshes);
+		s.pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+		s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+		t.asserti(if(support, 1), s.refreshes);
+	}
+}
+
+def request_current_baseline(t: Tester) {
+	var s = TokenBaselineSession.new(t, true, true), ctx = s.publish(t);
+	s.request();
+	t.assert(s.response.has("result"), "current tokens are returned");
+	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+	t.asserti(0, s.refreshes);
+	s.store.change(s.main, 2, Strings.format1("\n%s", MAIN_TEXT));
+	ctx = s.publish(t);
+	s.request();
+	t.assert(s.response.has("result"), "edited tokens are returned");
+	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+	t.asserti(0, s.refreshes);
+	s.store.change(s.library, 2, "class Kind {");
+	ctx.snapshot = null;
+	s.request();
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, JsonValue.Int.!(JsonValue.JObject.!(s.response["error"]).v["code"]).v);
+	s.store.change(s.library, 3, LIBRARY_CLASS);
+	ctx = s.publish(t);
+	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+	t.asserti(0, s.refreshes);
+}
+
+def request_tokens_baseline(t: Tester) {
+	var s = TokenBaselineSession.new(t, true, true);
+	s.publish(t);
+	s.request();
+	t.assert(s.response.has("result"), "current tokens are returned");
+	s.store.change(s.library, 2, LIBRARY_VARIANT);
+	var ctx = s.publish(t);
+	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+	t.asserti(1, s.refreshes);
 }

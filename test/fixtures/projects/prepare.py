@@ -137,6 +137,10 @@ for name in ["plain.v3", "with space.v3", "caf\u00e9.v3", "100%.v3"]:
 # LspDefinitionTest writes and changes the sources itself.
 definition = root / "definition"
 definition.mkdir(exist_ok=True)
+semantic_token_baselines = root / "semantic-token-baselines"
+semantic_token_baselines.mkdir(exist_ok=True)
+for name in ["Main.v3", "Library.v3"]:
+    (semantic_token_baselines / name).write_text("", encoding="utf-8")
 (definition / ".virgil-lsp.json").write_text(
     '{"version":1,"projects":[{"name":"d","sources":["*.v3"]}]}',
     encoding="utf-8",
