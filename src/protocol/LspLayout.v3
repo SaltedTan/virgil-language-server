@@ -143,13 +143,16 @@ class LspLayout {
 			var why = interior(h, open, close, depth);
 			if (why == null) why = if(depth < 0, endsEarly(open, close), lastStatement(h, l, false));
 			if (why == null) why = outside(open, close, close);
+			if (why == null) why = if(depth < 0, holder(h), endsAt(l));
 			if (why != null) return (none, -1, why);
 			return ((open, close + 1), -1, null);
 		}
 		// Rule 3 for the method's own "}": insert it before line {l}, which
-		// must begin the next method or constructor.
+		// must begin the next method or constructor, with a header that no
+		// statement can begin, so that the grammar ends the method there.
 		if (depth < 0 || damage.0 != open) return (none, -1, "the method's body has no closing brace where layout ends it");
 		if (!memberAfter(h, l)) return (none, -1, "the line that ends the method's body does not begin a method or constructor");
+		if (!startsMemberOnly(firsts[l])) return (none, -1, "a statement could begin the header after the method's body");
 		var at = starts[l];
 		var why = interior(h, open, at, 0);
 		if (why == null) why = lastStatement(h, l, true);
@@ -385,6 +388,37 @@ class LspLayout {
 		}
 		return null;
 	}
+	// Rule 2, for the method whose header is line {h}: null if no method that
+	// lost its "{" can hold it as a local function; else the reason. A header
+	// that a statement can begin reads as a member only because of the text
+	// before it, and a method's header that lost its "{" right before a ";"
+	// still parses, without a body. So, back from the header among the heads
+	// at its level, each method or constructor header up to the last header
+	// that no statement can begin, or to its compound's start, must have a
+	// body: the next head at that level follows a brace.
+	def holder(h: int) -> string {
+		var at = firsts[h];
+		if (startsMemberOnly(at)) return null;
+		var s = indexAfter(heads, at - 1);
+		if (s >= heads.length || heads[s] != at) return null;
+		var level = depths[s];
+		for (t = s - 1; t >= 0 && depths[t] >= level; t--) {
+			if (depths[t] > level) continue;
+			if (depths[t + 1] == level && startsMethod(heads[t])) return "a method header without a body could hold the method as a local function";
+			if (startsMemberOnly(heads[t])) return null;
+		}
+		return null;
+	}
+	// Rule 3 for a block inside the method whose "}" begins line {l}: null if
+	// the method can't go on after that line, had its "}" closed the block
+	// and the method lost its own "}" later; else the reason. The text must
+	// end, or its next counted line begin with a method's or constructor's
+	// header that no statement can begin.
+	def endsAt(l: int) -> string {
+		var n = nextAtMost(l, int.max);
+		if (n < 0 || (begins(n) && startsMemberOnly(firsts[n]))) return null;
+		return "the method could go on after its closing brace";
+	}
 	// Whether line {l}, which follows the body of the method of header {h},
 	// begins a method or constructor: its header begins on it, its last code
 	// byte is a brace, and it continues no line of a body that holds at least
@@ -437,6 +471,22 @@ class LspLayout {
 		if (at == name) return false;
 		at = spaces(at, end);
 		return at < end && (text[at] == '(' || text[at] == '<');
+	}
+	// Whether the code at {at} begins a method's or constructor's header, as
+	// startsMethod reads it, that no statement can begin, so that no method
+	// body holds it (Parser.parseStmt, parseDefStmt): one that begins with
+	// "private" or "new", keywords that no statement or expression may begin
+	// with, or with "def" and "[", or "def", a name, and "<" right after it,
+	// as a local function's name can't take type parameters. A local
+	// function can begin with "def", a name, and "(".
+	def startsMemberOnly(at: int) -> bool {
+		if (!startsMethod(at)) return false;
+		var end = lasts[lineOf(at)] + 1;
+		if (wordAt(at, end, "private") || wordAt(at, end, "new")) return true;
+		at = spaces(at + 3, end);
+		if (text[at] == '[') return true;
+		while (at < end && isIdent(text[at])) at++;
+		return at < end && text[at] == '<';
 	}
 	// Whether the code at {at} begins a field or a local or member value,
 	// which can't hold a "{" except in its initializer: after an optional

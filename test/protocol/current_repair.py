@@ -41,7 +41,8 @@ C = '''component C {
 '''
 C_BROKEN = C.replace('var n = 1;', 'var n = ;')
 # The brace rules (ADR-0010 rules 2 and 3) read this layout: an if that lost
-# its "{", and a method that lost its own "}", before which a "}" is inserted.
+# its "{", and a method that lost its own "}", before which a "}" is inserted,
+# since no statement can begin the private method after it.
 BRACES = '''/* é😀\t */ component A {
 \tdef broken() -> int {
 \t\tif (target() > 0) {
@@ -49,6 +50,7 @@ BRACES = '''/* é😀\t */ component A {
 \t\t}
 \t\treturn 0;
 \t}
+\tprivate def unused() { }
 \tdef target() -> int { return 1; }
 \tdef elsewhere() -> int { /* é😀\t */ return target(); }
 \tdef wrong() -> int { /* é😀\t */ return "bad"; }
@@ -312,8 +314,9 @@ def two_bodies(exe, root):
 
 def braces(exe, root):
     # A lost "{" empties the body that layout delimits and moves no offset; a
-    # lost "}" of the method's own is inserted before the next method, and
-    # every answer after it maps back to current text.
+    # lost "}" of the method's own is inserted before the next method, whose
+    # header no statement can begin, and every answer after it maps back to
+    # current text.
     for current in (LOST_OPENER, LOST_CLOSER):
         project = root / str(len(list(root.iterdir())))
         project.mkdir()
@@ -325,10 +328,10 @@ def braces(exe, root):
             sub, = substitutions(snap)
             open_ = offset(current, '{\n\t\tif')
             if current == LOST_OPENER:
-                close = offset(current, '}\n\tdef target') + 1
+                close = offset(current, '}\n\tprivate def') + 1
                 assert sub['substitution'] == blanked((open_, close)), sub
             else:
-                at = offset(current, '\tdef target')
+                at = offset(current, '\tprivate def')
                 assert sub['substitution'] == {'begin': at, 'effectiveEnd': at + 1, 'currentEnd': at,
                                                'bodies': [{'begin': open_, 'end': at}]}, sub
             target = location(c, 'A.v3', 'target', current.index('def target'))
@@ -361,10 +364,13 @@ def braces(exe, root):
 
 
 def refused(exe, root):
-    # Braces that don't balance where layout doesn't show the lost brace, an
-    # error in a header or a field initializer, errors in three bodies, and an
-    # unterminated string leave the program unanalyzed, as before.
+    # Braces that don't balance where layout doesn't show the lost brace or
+    # where the method that lost its "}" could go on, as before a header that
+    # a local function's could be, an error in a header or a field
+    # initializer, errors in three bodies, and an unterminated string leave
+    # the program unanalyzed, as before.
     for current in (A.replace('return target(); }', 'return target();', 1),
+                    LOST_CLOSER.replace('\tprivate def unused() { }\n', ''),
                     A.replace('broken()', 'broken(x: )'),
                     A.replace('\tdef broken', '\tdef field: int = ;\n\tdef broken'),
                     TWO.replace('return "bad";', 'return ;.'),

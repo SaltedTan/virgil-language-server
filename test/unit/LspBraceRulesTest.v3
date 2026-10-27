@@ -13,6 +13,7 @@ def X = [
 	T("LspBraceRules:indentation", test_indentation),
 	T("LspBraceRules:refusals", test_refusals),
 	T("LspBraceRules:members", test_members),
+	T("LspBraceRules:local_functions", test_local_functions),
 	T("LspBraceRules:two_bodies", test_two_bodies),
 	T("LspBraceRules:parse_budget", test_parse_budget),
 	T("LspBraceRules:analysis", test_analysis),
@@ -76,6 +77,12 @@ def method(header: string, body: Array<string>) -> string {
 	var rows = Vector<string>.new().put("class A {").put(header).puta(body);
 	return lines(rows.put("\tdef g() { }").put("}").extract());
 }
+// As method, but followed by a private method, which no statement can begin,
+// so that the method can't go on after its "}".
+def ended(header: string, body: Array<string>) -> string {
+	var rows = Vector<string>.new().put("class A {").put(header).puta(body);
+	return lines(rows.put("\tprivate def g() { }").put("}").extract());
+}
 
 // Rule 2: when the braces are one opener short, the method body that layout
 // delimits is blanked, wherever the header that lost its "{" is in it.
@@ -103,7 +110,8 @@ def test_lost_opener(t: Tester) {
 }
 
 // Rule 3 for a block inside a method: the method body that layout delimits is
-// blanked, which removes the "{" whose "}" was lost.
+// blanked, which removes the "{" whose "}" was lost, where no statement can
+// begin the code after the method's "}".
 def test_lost_inner_closer(t: Tester) {
 	var header = "\tdef f(a: bool) {";
 	for (body in [
@@ -111,15 +119,23 @@ def test_lost_inner_closer(t: Tester) {
 		["\t\tfor (i < 3) {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"],
 		["\t\twhile (a) {", "\t\t\tg();", "\t}"],
 		["\t\tif (a) {", "\t\t\tg();", "\t\t} else {", "\t\t\tg();", "\t\tg();", "\t}"]]) {
-		check(t, method(header, body), header, "\t}");
+		check(t, ended(header, body), header, "\t}");
 	}
+	// The method ends the file, or a constructor follows it.
+	var top = lines(["def g() { }", "def f(a: bool) {", "\tif (a) {", "\t\tg();", "\tg();", "}"]);
+	check(t, top, "def f(a: bool)", "}");
+	var rows = lines(["class A {", header, "\t\twhile (a) {", "\t\t\tg();", "\t}", "\tnew() { }", "\tdef g() { }", "}"]);
+	check(t, rows, header, "\t}");
 }
 
 // Rule 3 for a method that lost its own "}": a "}" is inserted before the
 // next method or constructor, at the start of its line, and the body up to it
-// is blanked.
+// is blanked. No statement can begin that method's or constructor's header:
+// a private method, a constructor, an indexing method, or a generic method,
+// as a local function's name takes no type parameters.
 def test_lost_method_closer(t: Tester) {
-	for (next in ["\tdef h() -> int { return f(); }", "\tprivate def h() {", "\tnew() {"]) {
+	for (next in ["\tprivate def h() {", "\tnew() {", "\tdef [i: int] -> int { return f(); }",
+			"\tdef h<T>(x: T) -> T { return x; }", "\tprivate def [i: int] = v: int { }"]) {
 		var current = lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\t}", "\tdef g() { }", "}"]);
 		if (next[next.length - 1] == '}') current = lines(["class A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", next, "\tdef g() { }", "}"]);
 		var open = opener(current, "def f()"), at = find(current, next);
@@ -137,9 +153,9 @@ def test_lost_method_closer(t: Tester) {
 	}
 	// A comment line between the method's last statement and the next method
 	// moves into the excluded body.
-	var current = lines(["component A {", "\tdef f() {", "\t\tg();", "", "\t// h", "\tdef h() { }", "\tdef g() { }", "}"]);
+	var current = lines(["component A {", "\tdef f() {", "\t\tg();", "", "\t// h", "\tprivate def h() { }", "\tdef g() { }", "}"]);
 	var r = repair(current);
-	t.assert(r.1 != null && r.1.begin == find(current, "\tdef h"), "the comment is inside the body");
+	t.assert(r.1 != null && r.1.begin == find(current, "\tprivate def h"), "the comment is inside the body");
 }
 
 // The inserted "}" is the only change that moves offsets: those before it
@@ -147,10 +163,10 @@ def test_lost_method_closer(t: Tester) {
 // through it, braces included, maps to nothing.
 def test_insertion_mapping(t: Tester) {
 	var current = lines(["component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t",
-		"\tdef g() { }", "\tdef h() -> int { return f(); }", "}"]);
+		"\tprivate def g() { }", "\tdef h() -> int { return f(); }", "}"]);
 	var r = repair(current);
 	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
-	var m = r.1, open = opener(current, "def f()"), at = find(current, "\tdef g");
+	var m = r.1, open = opener(current, "def f()"), at = find(current, "\tprivate def g");
 	for (x < current.length + 1) {
 		var expected = if(x < open, x, if(x < at, -1, x + 1));
 		t.asserti(expected, m.toEffective(x));
@@ -181,10 +197,10 @@ def test_insertion_mapping(t: Tester) {
 // so these lines end in comments outside the excluded body, and the body's
 // own lines end in LF: a CR in a body is still a CR after blanking.
 def test_crlf(t: Tester) {
-	var current = "component A { // a\r\n\tdef f() -> int {\n\t\treturn 1;\n\t\n\tdef g() -> int { return 2; } // g\r\n\tdef h() -> int { return g(); } // h\r\n} // i\r\n";
+	var current = "component A { // a\r\n\tdef f() -> int {\n\t\treturn 1;\n\t\n\tprivate def g() -> int { return 2; } // g\r\n\tdef h() -> int { return g(); } // h\r\n} // i\r\n";
 	var r = repair(current);
 	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
-	var at = find(current, "\tdef g"), use = find(current, "g(); }");
+	var at = find(current, "\tprivate def g"), use = find(current, "g(); }");
 	t.asserti(at, r.1.begin);
 	t.asserti(use + 1, r.1.toEffective(use));
 	t.asserti(use, r.1.toCurrent(use + 1));
@@ -248,7 +264,7 @@ def test_refusals(t: Tester) {
 		"a string, byte literal, or block comment is unterminated");
 	// A method that lost its "}" and whose last statement could be a field,
 	// that is followed by a field, or that has no statement.
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\tvar count = 1;", "\tdef g() { }", "}"]),
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\tvar count = 1;", "\tprivate def g() { }", "}"]),
 		"the method's last statement could begin a member");
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\tvar count = 1;", "\tdef g() { }", "}"]),
 		"the line that ends the method's body does not begin a method or constructor");
@@ -293,21 +309,21 @@ def test_members(t: Tester) {
 	// A method that lost its own "}" before a field indented deeper than its
 	// statements and continued at their depth.
 	refuse(t, lines(["def count = 11;", "component A {", "    def f() {", "        g();", "    ", "            var count =",
-		"        7;", "    def target() -> int { return count; }", "    def g() { }", "}"]), deeper);
+		"        7;", "    private def target() -> int { return count; }", "    def g() { }", "}"]), deeper);
 	// Before a field, a method, or a constructor indented deeper, or a
 	// variant's case.
 	for (m in ["\t\t\tdef count = 1;", "\t\t\tdef h() -> int { return 1; }", "\t\t\tnew(x: int) { }"]) {
-		refuse(t, lines(["class A {", "\tdef f() {", "\t\tg();", "\t", m, "\tdef g() { }", "}"]), deeper);
+		refuse(t, lines(["class A {", "\tdef f() {", "\t\tg();", "\t", m, "\tprivate def g() { }", "}"]), deeper);
 	}
-	refuse(t, lines(["type V {", "\tcase X;", "\tdef f() {", "\t\tg();", "\t", "\t\t\tcase Y;", "\tdef g() { }", "}",
+	refuse(t, lines(["type V {", "\tcase X;", "\tdef f() {", "\t\tg();", "\t", "\t\t\tcase Y;", "\tdef g<T>() { }", "}",
 		"component A { }"]), deeper);
 	// Before a member on the line of its last statement, or of a block's "}".
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(); var count = 1;", "\tdef g() { }", "}"]), member);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t\t} var count = 1;", "\tdef g() { }", "}"]), member);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(); var count = 1;", "\tprivate def g() { }", "}"]), member);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t\t} var count = 1;", "\tprivate def g() { }", "}"]), member);
 	// Before a member whose word is alone on a deeper line, and a line that
 	// continues a statement with a member's word.
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef", "\t\tvar count = 1;", "\tdef g() { }", "}"]), deeper);
-	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(1,", "\t\t\tdef count = 1;", "\tdef g() { }", "}"]), continued);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\t\t\tdef", "\t\tvar count = 1;", "\tprivate def g() { }", "}"]), deeper);
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg(1,", "\t\t\tdef count = 1;", "\tprivate def g() { }", "}"]), continued);
 	// Rule 2, where the method's "}" is deeper than its header and a member
 	// after it, on a later line or its own, lost its "{".
 	refuse(t, lines(["component A {", "\tdef f() {", "\t\tif (true)", "\t\t\tg();", "\t\t}", "\t\tdef h() -> int",
@@ -323,15 +339,68 @@ def test_members(t: Tester) {
 	check(t, method(header, ["\t\tif (a)", "\t\t\tg();", "\t\t}", "\t\tdef x = 1;", "\t\tvar y = x;", "\t\tg();", "\t}"]), header, "\t}");
 	// Rule 3 for a block in a function that initializes a local, or in a
 	// block, which no member is.
-	check(t, method(header, ["\t\tvar fn = fun () -> int {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t\treturn 1;", "\t\t};",
+	check(t, ended(header, ["\t\tvar fn = fun () -> int {", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t\treturn 1;", "\t\t};",
 		"\t\tg();", "\t}"]), header, "\t}");
-	check(t, method(header, ["\t\tg();", "\t\t{", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"]), header, "\t}");
+	check(t, ended(header, ["\t\tg();", "\t\t{", "\t\t\tif (a) {", "\t\t\t\tg();", "\t\t\t", "\t\t}", "\t}"]), header, "\t}");
 	// A "for" header's ";" ends no statement, and an indexing method can
 	// follow the method.
 	var current = lines(["class A {", "\tdef f(a: Array<int>) {", "\t\tfor (i = 0; i < a.length; ) {", "\t\t\ti++;", "\t\t}", "\t",
 		"\tdef [i: int] -> int { return i; }", "\tdef g() { }", "}"]);
 	var r = repair(current);
 	t.assert(r.1 != null && r.1.begin == find(current, "\tdef [i"), "the \"}\" is inserted before the indexing method");
+}
+
+// No rule may take a header that a local function's could be, or a "}" that
+// such a header follows, as where a method ends: each refuses where the method
+// could go on or the method that it reads as damaged could be a local
+// function, and accepts where the grammar ends it.
+def test_local_functions(t: Tester) {
+	var statement = "a statement could begin the header after the method's body";
+	var goesOn = "the method could go on after its closing brace";
+	var holds = "a method header without a body could hold the method as a local function";
+	// The grammar: no statement begins with "private", "new", "def [", or
+	// "def", a name, and "<", but a local function begins with "def", a name,
+	// and "(".
+	for (stmt in ["private def h() { }", "new() { }", "def [i: int] -> int { return i; }", "def h<T>() { }", "def h() { }"]) {
+		var text = lines(["component A {", "\tdef f() {", Strings.format1("\t\t%s", stmt), "\t}", "}"]);
+		var parses = AeneasAdapter.parseFile("A.v3", text, []).diagnostics.length == 0;
+		t.assert(parses == Strings.equal(stmt, "def h() { }"), stmt);
+	}
+	// The review's case: a method lost its own "}" after a local function and
+	// a local, both as deep as its header, which would become members beside
+	// a file-level count; then local functions that return a value or span
+	// lines, a local value whose function is no header, and a method right
+	// after the method.
+	var before = ["def count = 11;", "component A {", "    def f() {", "        g();"];
+	var after = ["        var count = 7;", "    ", "    def target() -> int { return count; }", "    def g() { }", "}"];
+	for (local in [["    def local() { }"], ["    def local() -> int { return 1; }"], ["    def local() {", "        g();", "    }"]]) {
+		refuse(t, lines(Arrays.concat(Arrays.concat(before, local), after)), statement);
+	}
+	refuse(t, lines(Arrays.concat(Arrays.concat(before, ["    def local = fun () { };"]), after)),
+		"the line that ends the method's body does not begin a method or constructor");
+	refuse(t, lines(["component A {", "\tdef f() {", "\t\tg();", "\t", "\tdef g() { }", "}"]), statement);
+	// Rule 3 for a block: an if's "}" as deep as the method's header, then a
+	// local function and a local, which would become members had the method
+	// ended at that "}"; a method that a local function could begin; and a
+	// closer, as of the method's class, which a later "}" could follow.
+	refuse(t, lines(["def count = 11;", "component A {", "    def f() {", "        if (true) {", "            g();", "    }",
+		"    def local() { }", "        var count = 7;", "    ", "    def target() -> int { return count; }", "    def g() { }", "}"]), goesOn);
+	refuse(t, method("\tdef f(a: bool) {", ["\t\tif (a) {", "\t\t\tg();", "\t\tg();", "\t}"]), goesOn);
+	refuse(t, lines(["class A {", "\tdef g() { }", "\tdef f(a: bool) {", "\t\tif (a) {", "\t\t\tg();", "\t\tg();", "\t}", "}"]), goesOn);
+	// Rule 2: a method that lost its "{" right before a ";" parses without a
+	// body, so the method after it, which layout reads as damaged, could be
+	// its local function; but not one with a private method or a constructor
+	// between them, nor in another compound, nor a private method.
+	var holder = ["class A {", "\tdef h() -> int ;"];
+	var local = ["\tdef local() {", "\t\t\tif (true)", "\t\t\t\tg();", "\t\t\t}", "\t\tvar count = 7;", "\t}", "\tdef g() { }", "}"];
+	refuse(t, lines(Arrays.concat(holder, local)), holds);
+	refuse(t, lines(Arrays.concat(["class A {", "\tprivate def h() -> int ;", "\tdef x = 1;"], local)), holds);
+	for (between in [["\tprivate def p() { }"], ["\tnew() { }"], ["}", "class B {"]]) {
+		check(t, lines(Arrays.concat(Arrays.concat(holder, between), local)), "\tdef local() {", "\t}");
+	}
+	var privately = Arrays.dup(local);
+	privately[0] = "\tprivate def local() {";
+	check(t, lines(Arrays.concat(holder, privately)), "\tprivate def local() {", "\t}");
 }
 
 // A brace rule's body and the body that holds the next error, either before
@@ -349,10 +418,10 @@ def test_two_bodies(t: Tester) {
 	t.asserti(other.0 + 1, r.1.begin);
 	t.asserti(f.1 - 1, r.1.effectiveEnd);
 	// After the inserted "}", a later body's offsets move by one.
-	current = lines(["component A {", "\tdef f() -> int {", "\t\treturn 1;", "\t", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef g() { }", "}"]);
+	current = lines(["component A {", "\tdef f() -> int {", "\t\treturn 1;", "\t", "\tprivate def other() {", "\t\tvar y = ;", "\t}", "\tdef g() { }", "}"]);
 	r = repair(current);
 	if (r.1 == null) return t.fail1("expected a repair: %s", Strings.nonnull(r.2));
-	var at = find(current, "\tdef other"), o = opener(current, "def other()"), oEnd = find(current, "}\n\tdef g") + 1;
+	var at = find(current, "\tprivate def other"), o = opener(current, "def other()"), oEnd = find(current, "}\n\tdef g") + 1;
 	t.asserti(2, r.1.bodies.length);
 	t.assert(r.1.bodies[0] == (opener(current, "def f()"), at + 1), "the method through the inserted brace");
 	t.assert(r.1.bodies[1] == (o + 1, oEnd + 1), "the later body, in repaired text");
@@ -379,13 +448,13 @@ def test_parse_budget(t: Tester) {
 def test_analysis(t: Tester) {
 	var s = AnalyzedTextSession.new(t);
 	var current = lines(["component A {", "\tdef broken() -> int {", "\t\tvar x = a();", "\t\treturn x;", "\t",
-		"\tdef a() -> int { return B.b(); }", "\tdef c() -> bool { return a(); }", "}"]);
+		"\tprivate def a() -> int { return B.b(); }", "\tdef c() -> bool { return a(); }", "}"]);
 	s.open("A.v3", 1, current);
 	var snapshot = s.analyze(t), i = snapshot.documentIndex(s.uri("A.v3"));
 	t.assert(snapshot.parsed && snapshot.degraded(), "the repaired program parsed");
 	var sub = snapshot.documentVersions[i].substitution;
 	if (sub == null) return s.server.close();
-	var open = opener(current, "def broken"), at = find(current, "\tdef a()");
+	var open = opener(current, "def broken"), at = find(current, "\tprivate def a()");
 	t.assertb(current, LspAnalysisCapture.currentText(s.store, snapshot, i, s.text(snapshot, "A.v3")));
 	t.asserti(current.length + 1, s.text(snapshot, "A.v3").length);
 	t.assert(sub.mapping.bodies.length == 1 && sub.mapping.bodies[0] == (open, at + 1), "the body through the inserted brace");

@@ -315,7 +315,7 @@ def test_error_limit(t: Tester) {
 		text.puts("\t}\n\tdef broken()").puts(if(returns, " -> int", ""));
 		if (lost == 0) text.puts(" {\n\t\tvar y = ;\n\t}\n}\n");
 		else if (lost == 1) text.puts(" {\n\t\tvar y = 1;\n\t\tif (true)\n\t\t\ty++;\n\t\t}\n\t\treturn").puts(value).puts(";\n\t}\n}\n");
-		else text.puts(" {\n\t\tvar y = 1;\n\t\treturn").puts(value).puts(";\n\t\n\tdef g() { }\n}\n");
+		else text.puts(" {\n\t\tvar y = 1;\n\t\treturn").puts(value).puts(";\n\t\n\tprivate def g() { }\n}\n");
 		s.open("main.v3", 1, text.toString());
 		s.settle();
 		var snapshot = s.supervisor.snapshot;
@@ -330,7 +330,9 @@ def test_error_limit(t: Tester) {
 			else if (Strings.equal(code, "UnresolvedIdentifier")) unresolved++;
 			else t.fail1("unexpected diagnostic %s", code);
 		}
-		t.asserti(1, parse);
+		// No statement can begin the private method after the method that
+		// lost its "}", so the current text's parse reports three errors.
+		t.asserti(if(lost == 2, 3, 1), parse);
 		t.asserti(visible, unresolved);
 		t.asserti(if(returns, 0, 1), notices);
 		s.server.close();
