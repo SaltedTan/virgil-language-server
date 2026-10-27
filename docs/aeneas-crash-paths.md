@@ -6,10 +6,10 @@ This is finding 4 from the [compiler spike, PR #11](https://github.com/SaltedTan
 | --- | --- | --- | --- | --- | --- |
 | 1★ | verify | `def x: i32 = 0i;` (passed through while typing `0i32`); `NumberParser` ignores the bad suffix and leaves an untyped literal | `!NullCheckException`, `Verifier.v3:2477`, `TryRepresentationChangeOfLiteral` | likely | Report the invalid `0i` literal instead of leaving it untyped. |
 | 2★ | verify | `enum E { A(6) }` (case arguments on an enum without parameters) | `!NullCheckException`, `Verifier.v3:532`, `typeCheckEnumCase` | likely | Handle null `decl.params` before calling `length()` at `Verifier.v3:532`. |
-| 3★ | verify | `class S extends S { def f() { me; } }`, or an A↔B superclass cycle | Infinite loop in `MethodEnv.v3:176-180`, `resolveClassMember` | possible | Clear the superclass binding when a cycle is found. |
-| 4 | verify | Cyclic classes plus `var x = [a, b];` | `!StackOverflow`, `V3Class.v3:71`, `getDepth` | possible | Add cycle protection to depth traversal. |
-| 5 | verify | Mutually overriding methods in cyclic classes; or `E.set` for an enum with ≥65 cases | `TypeRef.getType` → `V3.fail` → `System.error`, `Vst.v3:556` | unusual | Bind the type ref in `getEnumSetType`; address cyclic override resolution. |
-| 6★ | verify | `class S<T>{} class A extends S<A>{} class B extends S<B>{}` then `[a, b]` | `!StackOverflow`, `TypeSystem.v3:331`, `unify0` ↔ `mergeLists` | possible | Add a cycle guard in `unify0`. |
+| 3★ | verify | `class S extends S { def f() { me; } }`, or an A↔B superclass cycle | Infinite loop in `MethodEnv.v3:176-180`, `resolveClassMember` | possible | Fixed upstream in [`57318d37`](https://github.com/titzer/virgil/commit/57318d37e9fcca8de6fda5f9cd82d669479f49ff) ([titzer/virgil#820](https://github.com/titzer/virgil/pull/820)): report the cycle and ignore the rejected superclass. |
+| 4 | verify | Cyclic classes plus `var x = [a, b];` | `!StackOverflow`, `V3Class.v3:71`, `getDepth` | possible | Fixed upstream in `57318d37` (#820): ignoring the rejected superclass makes depth traversal terminate. |
+| 5 | verify | Mutually overriding methods in cyclic classes; or `E.set` for an enum with ≥65 cases | `TypeRef.getType` → `V3.fail` → `System.error`, `Vst.v3:556` | unusual | Cyclic override resolution is fixed upstream in `57318d37` (#820). The enum-set path remains; bind the type ref in `getEnumSetType`. |
+| 6★ | verify | `class S<T>{} class A extends S<A>{} class B extends S<B>{}` then `[a, b]` | `!StackOverflow`, `TypeSystem.v3:331`, `unify0` ↔ `mergeLists` | possible | Still reproduced at `57318d37`; #820 does not cover recursive generic unification. Add a cycle guard in `unify0`. |
 | 7★ | verify | The same variant type declared twice, then `T.M.name` | `!BoundsCheckException`, `MethodEnv.v3:305` | possible (copy-paste) | Guard the duplicate-variant lookup. |
 | 8–11 | verify | `def a = f(); def b = f(); def f() => a + b;`; `def m() => m;` as a value; `layout L { =-1; }`; an unknown packing in a packing expression | Null dereference, `V3.fail`, or failed cast (sites vary by input) | unusual | Use `%s` instead of `%q` at `Verifier.v3:357`; replace user-reachable `V3.fail` paths with reported errors; null-check unresolved `packingFn` at `Verifier.v3:1163` before accessing its fields. |
 | 12★ | parse | `#` as the very last byte of a file, e.g. `class C #` with no trailing newline | `!BoundsCheckException`, `ParserState.v3:52`, `tokenFor` | possible | Add an EOF guard in `parseRepHints`; all adapter entry points contain this path through the [shared parser](architecture.md#compiler-adapter). |
@@ -26,6 +26,19 @@ This is finding 4 from the [compiler spike, PR #11](https://github.com/SaltedTan
 | 23 | parse | `xs[... ..+];` | Null dereference: `RangeExpr` has both bounds null; `parseExprStmt` at `vendor/virgil/aeneas/src/vst/Parser.v3:933` | unusual | Guard malformed range construction / expression-statement dereference upstream; all adapter entry points are contained by the shared parser's range recovery, and worker containment is the process boundary. |
 | 24 | parse | `xs[...];` or `xs[..+];` after about 100 preceding CRLF lines exhaust the parser error limit | Null dereference: `RangeExpr` has both bounds null; parser error cap at `vendor/virgil/aeneas/src/vst/ParserState.v3:160`; `parseExprStmt` at `vendor/virgil/aeneas/src/vst/Parser.v3:933` | unusual | Guard malformed range construction / expression-statement dereference upstream; all adapter entry points are contained by the shared parser's range recovery, which also runs past the error limit, and worker containment is the process boundary. |
 | 25 | parse | An expression statement chaining about 29k binary operators, 43k member suffixes, or 52k index or call suffixes, e.g. `1 + 1 + … + 1;` | `!StackOverflow` in the recursive `range()` methods of the chained expressions (`Vst.v3`), called from `parseExprStmt` at `vendor/virgil/aeneas/src/vst/Parser.v3:933` | unusual | Compute statement ranges without recursion upstream. The parser builds these chains in loops, out of reach of its stack limit, so all adapter entry points stop them at the adapter's chain limit instead. Worker containment is the process boundary. |
+
+The pin bump to `57318d37` fixes the inheritance-cycle parts of rows 3–5,
+including member lookup, cyclic classes combined in `[a, b]`, and mutually
+overriding methods whose return types were not yet bound. The historical traps
+above describe the old `7cf038fc` pin. Self and two-class cycles now report
+`cyclic inheritance detected` and keep semantic answers elsewhere in the project.
+A class/variant cycle parses with `-lang:open-types`; its wrong-kind superclass
+edges now report `cannot extend non-class type` and are ignored too. Only the
+rejected edge of a class cycle is removed, so implementation and type hierarchy
+retain its other edges. Worker and stdio regressions cover these cases.
+Row 6 still overflows the worker's stack with the new pin; it is a separate
+`unify0` recursion, not an inheritance cycle. The enum-set failures recorded in
+rows 5 and 17 are also outside this upstream fix.
 
 For rows 18–24, a term that fails to parse leaves the start of a range null: an expression-start error at `...` or `..+`, or a malformed number (`Parser.v3:1102-1104`). The range is then built without an end too (`:1166` or `:1170`), and `parseExprStmt` dereferences it at `:933` (with `Vst.v3:906` in the resulting path). The adapter's range recovery consumes the malformed operator at an expression start, as before. After that error or a malformed number, it also consumes each following range operator that no term follows, so no range is built with neither bound. A range with an end, such as `xs[0x ... 1]`, is left to the parser, which reports only the malformed start. Recovery also runs past the error limit at `ParserState.v3:160`, which row 24's CRLF prefix exhausts in `parseFile`. No vendor code is modified.
 

@@ -17,8 +17,8 @@ Up to N groups (default: one for each CPU this process may use, at most
 DEFAULT_JOBS) run at once,
 each in a slot directory of its own, because tests edit and remove files in
 the fixtures next to the executable. The first slot is BUILD itself; each
-other is BUILD/unit-slots/<n>, with copies of the executable and the worker next
-to it and fixtures of its own from prepare.py, and is removed afterwards. With
+other is BUILD/unit-slots/<n>, with copies of the executable and both worker
+builds and fixtures of its own from prepare.py, and is removed afterwards. With
 more than one slot, each group's output is printed whole once the group
 finishes.
 
@@ -140,8 +140,9 @@ def slots(build, unit_tests, jobs):
         for n in range(1, jobs):
             slot = parent / str(n)
             slot.mkdir()
-            for name in [Path(unit_tests).name, WORKER]:
+            for name in [Path(unit_tests).name, WORKER, "stall/" + WORKER]:
                 if (Path(unit_tests).parent / name).exists():
+                    (slot / name).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(Path(unit_tests).parent / name, slot / name)
             directories.append(slot)
             executables.append(str(slot / Path(unit_tests).name))

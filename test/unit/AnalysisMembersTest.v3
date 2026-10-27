@@ -10,6 +10,7 @@ def T = UnitTests.register;
 def X = [
 	T("AnalysisMembers:classes", test_classes),
 	T("AnalysisMembers:inheritance_and_privacy", test_inheritance_and_privacy),
+	T("AnalysisMembers:inheritance_cycles", test_inheritance_cycles),
 	T("AnalysisMembers:generics", test_generics),
 	T("AnalysisMembers:deep_generics", test_deep_generics),
 	T("AnalysisMembers:components", test_components),
@@ -195,6 +196,20 @@ def test_inheritance_and_privacy(t: Tester) {
 	check(t, same, "hidden/0 own/0 secret/1 shared/1 visible/1");
 	agree(t, same, []);
 }
+
+def test_inheritance_cycles(t: Tester) {
+	for (receiver in [
+		("a", "onlyA/0", true),
+		("b", "onlyB/0 onlyA/1", false),
+		("A", "new/0 onlyA/0", true),
+		("B", "new/0 onlyB/0 onlyA/1", false)
+	]) {
+		var text = Strings.format1("class A extends B { def onlyA() {} } class B extends A { def onlyB() {} } def f(a: A, b: B) { %s.$onlyA(); }", receiver.0);
+		t.assert_string(receiver.1, render(membersAny(text)));
+		agree(t, text, if(receiver.2, ["onlyB"], []));
+	}
+}
+
 // A generic class's members show its type arguments, through each
 // superclass's arguments in turn; a method's own type parameters stay.
 def test_generics(t: Tester) {

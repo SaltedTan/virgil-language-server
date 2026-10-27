@@ -162,10 +162,14 @@ class RunTest(unittest.TestCase):
         worker = self.build / "virgil-lsp-worker"
         worker.write_text("worker", encoding="utf-8")
         worker.chmod(0o755)
+        stall = self.build / "stall" / worker.name
+        stall.parent.mkdir()
+        stall.write_text("stall worker", encoding="utf-8")
+        stall.chmod(0o755)
         runner = runpy.run_path(str(self.run_py))
         try:
             executables = runner["slots"](str(self.build), str(self.executable), 3)
-            for name in (self.executable.name, worker.name):
+            for name in (self.executable.name, worker.name, "stall/" + worker.name):
                 files = [Path(executable).parent / name for executable in executables]
                 for index, copy in enumerate(files[1:], 1):
                     self.assertEqual(files[0].read_bytes(), copy.read_bytes())
@@ -175,6 +179,7 @@ class RunTest(unittest.TestCase):
         finally:
             runner["remove_slots"](str(self.build))
             worker.unlink()
+            shutil.rmtree(stall.parent)
         self.assertFalse((self.build / "unit-slots").exists())
 
     def test_count_probe_uses_a_distinct_executable_inode(self):

@@ -351,23 +351,27 @@ def unresolved_superclass(t: Tester) {
 	p.check("subtypes of N", p.expand(p.item(0, "type N", 5), true), []);
 	p.checkNull("Missing", p.prepare(0, "Missing", 2));
 }
-// The worker sends no parent of a class on an inheritance cycle, which
-// verification reports, so the classes on it have no supertypes and no
-// subtypes among each other; a class that extends one from outside keeps
-// its own. A class that extends itself has neither.
+// Verification rejects P's superclass while preserving Q -> R -> P and
+// Tail -> P. The hierarchy exposes those surviving edges, never a cycle.
 def inheritance_cycles(t: Tester) {
 	var text = Arrays.concat(NOTE, "class P extends Q { }\nclass Q extends R { }\nclass R extends P { }\nclass S extends S { }\nclass Tail extends P { }\n");
 	var p = program(t, [text], [], false);
 	expectError(t, p.analysis, "InheritanceError");
+	var root = want(0, "P", "class P", 6, "{ }", "class P extends Q");
+	var q = want(0, "Q", "class Q", 6, "{ }", "class Q extends R");
+	var r = want(0, "R", "class R", 6, "{ }", "class R extends P");
 	var tail = want(0, "Tail", "class Tail", 6, "{ }", "class Tail extends P");
-	for (name in ["class P", "class Q", "class R", "class S"]) {
+	for (name in ["class P", "class S"]) {
 		p.check(Arrays.concat("supertypes of ", name), p.expand(p.item(0, name, 6), false), []);
 	}
-	p.check("subtypes of P", p.expand(p.item(0, "class P", 6), true), [tail]);
-	for (name in ["class Q", "class R", "class S", "class Tail"]) {
+	p.check("supertypes of Q", p.expand(p.item(0, "class Q", 6), false), [r]);
+	p.check("supertypes of R", p.expand(p.item(0, "class R", 6), false), [root]);
+	p.check("subtypes of P", p.expand(p.item(0, "class P", 6), true), [r, tail]);
+	p.check("subtypes of R", p.expand(p.item(0, "class R", 6), true), [q]);
+	for (name in ["class Q", "class S", "class Tail"]) {
 		p.check(Arrays.concat("subtypes of ", name), p.expand(p.item(0, name, 6), true), []);
 	}
-	p.check("supertypes of Tail", p.expand(p.item(0, "class Tail", 6), false), [want(0, "P", "class P", 6, "{ }", "class P extends Q")]);
+	p.check("supertypes of Tail", p.expand(p.item(0, "class Tail", 6), false), [root]);
 }
 // Anything but a class, a variant, or a variant case gives null: components,
 // enums and their cases, methods, constructors, fields, locals, parameters,

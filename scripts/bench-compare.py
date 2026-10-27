@@ -133,9 +133,17 @@ def main():
     args = parser.parse_args()
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     event = json.loads(Path(event_path).read_text()) if event_path else {}
-    refs = select_refs(os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch"), event,
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+    refs = select_refs(event_name, event,
                        args.base_ref, args.new_ref, datetime.datetime.now(datetime.timezone.utc))
     base, new, note = refs
+    skip = False
+    if event_name == "pull_request":
+        pin = git("rev-parse", "HEAD:vendor/virgil")
+        skip = any(git("rev-parse", revision + ":vendor/virgil") != pin for revision in (base, new))
+        if skip:
+            note = ("PR benchmark comparison skipped: both refs and the tooling corpus must use "
+                    "the same pinned Virgil. Pin updates require measurements with each pin's reviewed corpus.")
     print(f"Comparing base {base} with new {new}", flush=True)
     if note:
         print(f"::notice::{note}", flush=True)
@@ -143,6 +151,10 @@ def main():
         if summary:
             with open(summary, "a") as f:
                 f.write(note + "\n\n")
+    if skip:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "refs.json").write_text(json.dumps({"base": base, "new": new, "note": note}, indent=2) + "\n")
+        return
     compare(base, new, args.work_dir.resolve(), args.output_dir.resolve(), note)
 
 
