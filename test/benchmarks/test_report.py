@@ -202,7 +202,7 @@ class RefTest(unittest.TestCase):
                                                 "--output-dir", str(output)]), \
                 mock.patch.object(compare, "compare") as benchmark:
             compare.main()
-        benchmark.assert_called_once_with(base, new, work, output, None)
+        benchmark.assert_called_once_with(base, new, work.resolve(), output.resolve(), None)
         with self.assertRaisesRegex(ValueError, "same pinned Virgil"):
             compare.compare(older, new, work, output)
 
