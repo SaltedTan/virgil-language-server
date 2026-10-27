@@ -4,6 +4,7 @@
 def T = UnitTests.register;
 def X = [
 	T("AnalysisWire:hello_round_trip", test_hello_round_trip),
+	T("AnalysisWire:orphan_alarm", test_orphan_alarm),
 	T("AnalysisWire:analyze_round_trip", test_analyze_round_trip),
 	T("AnalysisWire:analyze_frame_size", test_analyze_frame_size),
 	T("AnalysisWire:result_matches_analysis", test_result_matches_analysis),
@@ -104,6 +105,15 @@ def render(d: AnalysisDeclaration) -> string {
 	return if(d == null, "null", d.render(StringBuilder.new()).toString());
 }
 
+def test_orphan_alarm(t: Tester) {
+	// No limit, no alarm; otherwise twice the limit plus a second, capped.
+	t.asserti(0, AnalysisWire.orphanAlarmMs(0));
+	t.asserti(0, AnalysisWire.orphanAlarmMs(-5));
+	t.asserti(3000, AnalysisWire.orphanAlarmMs(1000));
+	t.asserti(4000, AnalysisWire.orphanAlarmMs(1500));
+	t.asserti(int.max, AnalysisWire.orphanAlarmMs(int.max / 2));
+	t.asserti(int.max, AnalysisWire.orphanAlarmMs(int.max));
+}
 def test_hello_round_trip(t: Tester) {
 	var hello = AnalysisWire.decodeHello(payloadOf(AnalysisWire.encodeHello("1.2.3", "abc-dirty", 402653184L)));
 	if (hello == null) return t.fail("hello did not decode");

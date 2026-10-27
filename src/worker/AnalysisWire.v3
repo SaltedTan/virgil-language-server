@@ -116,6 +116,15 @@ component AnalysisWire {
 		}
 		return WorkerFraming.finish(w);
 	}
+	// The alarm a worker arms for each analysis, in milliseconds: twice the
+	// request's time limit plus a second, or 0 (none) without a limit. The
+	// server kills a worker at its time limit; if the server has died, this
+	// alarm still ends a worker caught in a compiler loop.
+	def orphanAlarmMs(timeoutMs: int) -> int {
+		if (timeoutMs <= 0) return 0;
+		var alarm = 2L * timeoutMs + 1000;
+		return if(alarm > int.max, int.max, int.view(alarm));
+	}
 	// Returns null for a malformed request, including one with a language
 	// option that a project file would not accept, and a scope query for a
 	// source, offset, kinds, or prefix that do not exist, or a call query

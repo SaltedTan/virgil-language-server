@@ -35,9 +35,9 @@ component SyntheticAnalysisWorker {
 			if (request == null || request.sources.length == 0) return 1;
 			var mode = request.sources[0].path;
 			if (spells(request.sources, HANG)) {
-				// Match the real worker's orphan deadline, then deliberately stop
+				// Arm the real worker's orphan alarm, then deliberately stop
 				// answering without relying on a compiler bug to loop forever.
-				HostOs.setAlarm(2 * request.timeoutMs + 1000);
+				HostOs.setAlarm(AnalysisWire.orphanAlarmMs(request.timeoutMs));
 				while (true) HostOs.poll([], 0, -1);
 			}
 			if (Strings.endsWith(mode, ".v3")) {
