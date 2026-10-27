@@ -156,6 +156,10 @@ class LspCursorScanner(text: Array<byte>) {
 	var braceFrom = int.max;
 	def var braceDepth: int;
 	def var braceMinimum: int;
+	// The offset of the first "}" that takes the balance below zero, or -1:
+	// with braceFrom just after a "{", that brace's closer. Current-text
+	// repair uses it to find the body that it blanks.
+	def var braceClose = -1;
 	// Completion recovers after malformed literals; fallback containment must
 	// still reject every unterminated region encountered before the cursor.
 	def var unterminatedRegion: bool;
@@ -714,6 +718,7 @@ class LspCursorScanner(text: Array<byte>) {
 			if (c == '{') braceDepth++;
 			if (c == '}') braceDepth--;
 			if (braceDepth < braceMinimum) braceMinimum = braceDepth;
+			if (braceDepth < 0 && braceClose < 0) braceClose = start;
 		}
 		var closed = LspOpenRole.TOP;
 		var h = header;

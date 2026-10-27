@@ -267,6 +267,8 @@ def execute(exe, state, mode, oracle):
         expected_paths = row["configuration"]["current"]["projects"][0]["sources"]
         bench.check([v["uri"] for v in row["snapshot"]["documentVersions"]] == [
             (project["base"] / path).as_uri() for path in expected_paths], row["snapshot"])
+        row["excluded_bodies"] = excluded_bodies(row["snapshot"], project["base"])
+        row["expectation_mismatches"] = mismatches(state, row["excluded_bodies"], row["snapshot"], actual)
         row.update({"state_latency_ms": elapsed, "answers": actual,
                     "samples": samples, "scores": {
                         key: score(key.split(":")[-1], value, oracle["answers"][key], state.get("allow_absent", False))
@@ -288,16 +290,38 @@ def execute(exe, state, mode, oracle):
                     (project["base"] / path).write_bytes(project["sources"][path].encode())
 
 
-def substitution_kinds(snapshot, base):
-    """These sessions remove ordinary initializers; repair inserts its sentinel.
+def excluded_bodies(snapshot, base):
+    """The number of excluded bodies of each substituted file. Builds before
+    #312 report one body as bodyBegin and bodyEnd."""
+    return {v["uri"].removeprefix(base.as_uri() + "/"): len(v["substitution"].get("bodies", [None]))
+            for v in snapshot["documentVersions"] if "substitution" in v}
 
-    Fallback restores the original expression or the longer error-filled body.
-    These fixtures never restore exactly fifteen bytes, so inspecting the
-    interval distinguishes the two independently of answer quality.
+
+def mismatches(state, bodies, snapshot, answers):
+    """How a control's substitution differs from what it expects: the number of
+    excluded bodies of each file, and, where an excluded error is the
+    fifteenth, an analysis that reaches the error limit without a notice."""
+    found = [f"{path}: {bodies.get(path, 0)} excluded bodies, expected {count}"
+             for path, count in state.get("expected_bodies", {}).items() if bodies.get(path, 0) != count]
+    if state.get("expected_limit"):
+        notices = [d for d in answers["diagnostics"] if d["diagnostic"]["code"] == "ErrorLimit"]
+        if len(snapshot["diagnostics"]) < 15 or notices:
+            found.append(f"{len(snapshot['diagnostics'])} errors and {len(notices)} limit notices, "
+                         "expected the limit without a notice")
+    return found
+
+
+def substitution_kinds(snapshot, base):
+    """These sessions remove ordinary initializers, which fallback restores;
+    repair blanks the body, which moves no offset.
+
+    Fallback restores the original expression or the longer error-filled body,
+    so its interval always changes length, and inspecting the interval
+    distinguishes the two independently of answer quality.
     """
     return {v["uri"].removeprefix(base.as_uri() + "/"):
-            ("repair" if v["substitution"]["effectiveEnd"] - v["substitution"]["currentEnd"] == len("virgilLspCursor")
-             else "fallback") for v in snapshot["documentVersions"] if "substitution" in v}
+            ("repair" if v["substitution"]["effectiveEnd"] == v["substitution"]["currentEnd"] else "fallback")
+            for v in snapshot["documentVersions"] if "substitution" in v}
 
 
 def check_session_step(step, row, base, mode):
@@ -430,7 +454,7 @@ def main():
     parser.add_argument("--cpu", default="auto")
     parser.add_argument("--smoke", action="store_true", help="small repair cases, negative controls, and one editing session; no build manifest required")
     parser.add_argument("--only", help="state ID substring for focused investigation")
-    parser.add_argument("--suite", choices=("repair", "replay", "negative", "extra", "session"))
+    parser.add_argument("--suite", choices=("repair", "replay", "negative", "extra", "heldout", "session"))
     args = parser.parse_args()
     os.chdir(ROOT)
     args.exe = args.exe.resolve()
@@ -456,9 +480,9 @@ def main():
                     cases = [s for s in cases if s["id"] in ("member-with-prefix", "syntax-error-in-other-file")]
                     cases += [s for s in corpus.controls() if s["suite"] == "negative"]
                 else:
-                    cases += list(corpus.large()) + list(corpus.controls())
+                    cases += list(corpus.large()) + list(corpus.controls()) + list(corpus.heldout())
                     bench.check(collections.Counter(s["suite"] for s in cases) == {
-                        "repair": 45, "replay": 140, "negative": 10, "extra": 15}, "state inventory changed")
+                        "repair": 45, "replay": 140, "negative": 13, "extra": 15, "heldout": 24}, "state inventory changed")
                     bench.check(sum(len(s["queries"]) - 1 for s in cases if s["suite"] == "replay") == 400,
                                 "unchanged real-file replay query inventory changed")
             if args.only and args.suite != "session":
@@ -538,15 +562,19 @@ def main():
         session_steps = [st for row in result["sessions"] for st in row["steps"]]
         wrong = sum(s["wrong"] for row in result["states"] + session_steps for s in row["scores"].values())
         partial = sum(s["partial"] for row in result["states"] + session_steps for s in row["scores"].values())
+        unmet = [(row["id"], row["mode"], m) for row in result["states"] for m in row["expectation_mismatches"]]
+        result["summary"]["expectation_mismatches"] = unmet
         if args.smoke:
             bench.check(wrong == 0, "wrong smoke answer")
+            bench.check(not unmet, ("unmet control expectations", unmet))
             for st in session_steps:
                 bench.check(all(v["correct"] for v in st["scores"].values()), st)
             for row in result["states"]:
                 if row["id"] == "member-with-prefix":
                     bench.check(all(s["correct"] for s in row["scores"].values()), row)
         print(f"tolerance: {len(result['states'])} state/mode records, {partial} partial, {wrong} wrong answers, "
-              f"{len(session_steps)} session steps, {result['wall_seconds']:.2f}s", file=sys.stderr)
+              f"{len(unmet)} unmet control expectations, {len(session_steps)} session steps, "
+              f"{result['wall_seconds']:.2f}s", file=sys.stderr)
     except BaseException as error:
         result["error"] = repr(error)
         result["failed_record"] = getattr(error, "tolerance_record", None)

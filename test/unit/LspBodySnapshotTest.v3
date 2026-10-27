@@ -26,8 +26,9 @@ def test_provenance(t: Tester) {
 	t.assertb(OLD, s.text(snapshot, "A.v3"));
 	t.assertb(CURRENT, LspAnalysisCapture.currentText(s.store, snapshot, i, s.text(snapshot, "A.v3")));
 	t.assertb(OLD, cache.get(ctx, s.uri("A.v3")));
-	t.asserti(-1, snapshot.effectiveOffset(i, sub.mapping.bodyBegin));
-	t.asserti(-1, snapshot.currentRange(i, sub.mapping.bodyBegin - 1, sub.mapping.effectiveBodyEnd + 1).0);
+	var body = sub.mapping.bodies[0];
+	t.asserti(-1, snapshot.effectiveOffset(i, body.0));
+	t.asserti(-1, snapshot.currentRange(i, body.0 - 1, body.1 + 1).0);
 	t.asserti(CURRENT.length, snapshot.currentRange(i, OLD.length, OLD.length).0);
 	cache.removeContext(ctx);
 	t.assertb(OLD, s.text(snapshot, "A.v3"));
@@ -40,11 +41,11 @@ def test_provenance(t: Tester) {
 	t.assert(!snapshot.matchesDocument(s.store, s.uri("A.v3")), "substitution is stale");
 	t.assert_eq(null, s.text(snapshot, "A.v3"));
 	// Eviction removes future fallback only. Current-text repair then
-	// substitutes the repaired current text, which the cache never keeps.
+	// substitutes the blanked current text, which the cache never keeps.
 	snapshot = s.analyze(t);
-	t.assert(snapshot.parsed && snapshot.degraded(), "the repaired program parsed");
-	var repaired = Strings.format1("/* é😀\t */ component A { def broken() -> int { var x =%s ;\n\treturn 1; } /* é😀\t */ def a() -> int { return B.b(); } }\n", LspCompletionRepair.SENTINEL);
-	t.assertb(repaired, s.text(snapshot, "A.v3"));
+	t.assert(snapshot.parsed && snapshot.degraded(), "the blanked program parsed");
+	var blanked = "/* é😀\t */ component A { def broken() -> int {          \n           } /* é😀\t */ def a() -> int { return B.b(); } }\n";
+	t.assertb(blanked, s.text(snapshot, "A.v3"));
 	t.assert_eq(null, cache.get(ctx, s.uri("A.v3")));
 	s.server.close();
 }
@@ -161,7 +162,7 @@ def test_predecessor_size_limit(t: Tester) {
 	// Current-text repair substitutes instead of the oversized predecessor.
 	var sub = inputs.versions[0].substitution;
 	t.assert(sub != null, "repaired");
-	if (sub != null) t.assertb(Strings.format1("component A { def broken() { var syntax =%s ; } }\n", LspCompletionRepair.SENTINEL), sub.effective);
+	if (sub != null) t.assertb("component A { def broken() {                } }\n", sub.effective);
 	s.server.close();
 }
 

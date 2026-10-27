@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Current-text repair over real stdio: a cold open with a syntax error in a
-method body, beside method-body fallback in another file."""
+"""Current-text repair over real stdio: cold opens with a syntax error in a
+method body, with an error the next line continues, and with errors in two
+bodies, beside method-body fallback in another file."""
 import json
 from pathlib import Path
 import sys
@@ -20,9 +21,13 @@ A = '''/* é😀\t */ component A {
 \tdef wrong() -> int { /* é😀\t */ return "bad"; }
 }
 '''
-# The repaired call has the wrong arity; its error stays inside the body.
+# The broken call's arity is wrong too; the blanked body holds every error.
 BROKEN = A.replace('return target();', 'var bad = target(1, ;\n\t\t/* é😀\t */ return target();', 1)
-REPAIRED = BROKEN.replace('target(1, ;', 'target(1,%s) ;' % SENTINEL, 1)
+# The parser reads the next line as the rest of the member access, so its
+# first error is on that line.
+CONTINUED = A.replace('return target();', 'var n = target().\n\t\tif (n > 0) return n;\n\t\treturn target();', 1)
+# A second body that fails to parse once the first is blanked.
+TWO = BROKEN.replace('/* é😀\t */ return target(); }\n\tdef wrong', '/* é😀\t */ return target(). ; }\n\tdef wrong')
 B = '''component B {
 \tdef use() -> int { return A.target() + C.size(); }
 \tdef wrong() -> int { return "bad"; }
@@ -102,6 +107,47 @@ def offset(text, needle, start=0):
     return len(text[:text.index(needle, start)].encode())
 
 
+def body(text, needle):
+    """The UTF-8 byte range of the body whose "{" starts {needle}; these
+    bodies hold no other brace."""
+    at = text.index(needle)
+    return len(text[:at].encode()), len(text[:text.index('}', at) + 1].encode())
+
+
+def blanked(*bodies):
+    """The development inspection's record of blanked {bodies}, which move no
+    offset: the interval spans the blanked bytes."""
+    return {'begin': bodies[0][0] + 1, 'effectiveEnd': bodies[-1][1] - 1, 'currentEnd': bodies[-1][1] - 1,
+            'bodies': [{'begin': b, 'end': e} for b, e in bodies]}
+
+
+def prepare(c, name, needle, start=0):
+    return c.s.result(c.s.send('textDocument/prepareCallHierarchy', c.params(name, needle, start)))
+
+
+def calls(c, direction, item):
+    return c.s.result(c.s.send('callHierarchy/%sCalls' % direction, {'item': item}))
+
+
+def inside(c, needles):
+    """Nothing inside an excluded body, including its braces, answers."""
+    for needle in needles:
+        for method in ('definition', 'typeDefinition', 'hover', 'references', 'documentHighlight', 'implementation'):
+            assert c.query(method, 'A.v3', needle) is None, (method, needle)
+        assert prepare(c, 'A.v3', needle) is None, needle
+
+
+def no_leaks(c):
+    """No answer or publication names a sentinel or an emptied body's missing
+    return. The development inspection lists the effective program's own
+    diagnostics."""
+    inspections = {m['id'] for direction, m in c.s.transcript
+                   if direction == 'send' and m.get('method') == 'virgil-lsp/snapshot'}
+    leaked = [m for direction, m in c.s.transcript if direction == 'recv' and m.get('id') not in inspections
+              and (SENTINEL in json.dumps(m) or 'MissingReturn' in json.dumps(m))]
+    assert not leaked, leaked
+
+
 def cold(exe, root):
     c = Case(exe, root, {'A.v3': BROKEN, 'B.v3': B, 'C.v3': C})
     try:
@@ -112,15 +158,11 @@ def cold(exe, root):
         c.open('C.v3')
         snap = c.snapshot()
         sub, = substitutions(snap)
-        site = offset(BROKEN, 'target(1, ;') + len('target(1,')
-        body = offset(BROKEN, '{ var bad')
-        end = offset(BROKEN, '}', body) + 1
-        assert sub['uri'] == c.uri('A.v3') and sub['substitution'] == {
-            'begin': site, 'effectiveEnd': site + len(SENTINEL) + 1, 'currentEnd': site,
-            'bodyBegin': body, 'bodyEnd': end}, sub
+        broken = body(BROKEN, '{ var bad')
+        assert sub['uri'] == c.uri('A.v3') and sub['substitution'] == blanked(broken), sub
         generation = snap['generation']
         # Definition, hover, references, and highlights outside the body, in
-        # this file and in another, map through the single interval.
+        # this file and in another, keep their offsets.
         target = location(c, 'A.v3', 'target', BROKEN.index('def target'))
         assert c.query('definition') == target
         assert c.query('definition', 'A.v3', 'target(); }\n\tdef wrong') == target
@@ -131,13 +173,9 @@ def cold(exe, root):
                 location(c, 'B.v3', 'target')]
         assert c.query('references') == refs
         assert c.query('definition', 'B.v3', 'size') == location(c, 'C.v3', 'size')
-        # Nothing inside the excluded body, including the repaired call and
-        # its braces, answers.
-        for needle in ('target(1', 'bad', '{ var bad', 'target(); }\n\t/*'):
-            for method in ('definition', 'typeDefinition', 'hover', 'references', 'documentHighlight'):
-                assert c.query(method, 'A.v3', needle) is None, (method, needle)
-        # Semantic diagnostics outside the body remain; the repaired call's
-        # arity error and the sentinel's are inside it.
+        inside(c, ('target(1', 'bad', '{ var bad', 'target(); }\n\t/*'))
+        # Semantic diagnostics outside the body remain; the emptied body's
+        # missing return is inside it.
         for name in ('A.v3', 'B.v3'):
             semantic = c.semantic(name)
             assert len(semantic) == 1 and semantic[0]['code'] == 'TypeError', semantic
@@ -153,16 +191,16 @@ def cold(exe, root):
         assert c.s.result(c.s.send('workspace/symbol', {'query': 'target'})) == []
         assert c.snapshot()['generation'] == generation
         # Fallback in C, beside the repair in A: C's cached parseable text is
-        # substituted, and A is repaired again in the same single analysis.
+        # substituted, and A is blanked again in the same single analysis.
         c.change('C.v3', C_BROKEN)
         snap = c.snapshot()
         assert snap['generation'] == generation + 1, snap
         subs = {v['uri']: v['substitution'] for v in substitutions(snap)}
-        assert subs[c.uri('A.v3')]['currentEnd'] == site, subs
+        assert subs[c.uri('A.v3')] == blanked(broken), subs
         n = offset(C_BROKEN, '= ;') + 2
         assert subs[c.uri('C.v3')] == {'begin': n, 'effectiveEnd': n + 1, 'currentEnd': n,
-                                        'bodyBegin': offset(C_BROKEN, '{ var n'),
-                                        'bodyEnd': offset(C_BROKEN, '}', offset(C_BROKEN, '{ var n')) + 1}, subs
+                                        'bodies': [{'begin': offset(C_BROKEN, '{ var n'),
+                                                    'end': offset(C_BROKEN, '}', C_BROKEN.index('{ var n')) + 1}]}, subs
         assert c.query('definition') == target
         assert c.query('definition', 'B.v3', 'size') == location(c, 'C.v3', 'size')
         assert c.query('definition', 'C.v3', 'size(); }') is None
@@ -177,25 +215,93 @@ def cold(exe, root):
         assert len(c.query('references')) == 4
         assert c.s.result(c.s.send('workspace/symbol', {'query': 'target'}))[0]['location'] == location(
             c, 'A.v3', 'target', A.index('def target'))
-        # No answer or publication names the sentinel or its locations. The
-        # development inspection lists the effective program's own diagnostics.
-        inspections = {m['id'] for direction, m in c.s.transcript
-                       if direction == 'send' and m.get('method') == 'virgil-lsp/snapshot'}
-        leaked = [m for direction, m in c.s.transcript if direction == 'recv'
-                  and m.get('id') not in inspections and SENTINEL in json.dumps(m)]
-        assert not leaked, leaked
+        no_leaks(c)
+        c.s.shutdown()
+    finally:
+        c.s.close()
+
+
+def continued(exe, root):
+    # The parser's first error is on the line after the unfinished member
+    # access; the body that holds it is still the one blanked.
+    c = Case(exe, root, {'A.v3': CONTINUED, 'B.v3': B, 'C.v3': C})
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        snap = c.snapshot()
+        sub, = substitutions(snap)
+        assert sub['substitution'] == blanked(body(CONTINUED, '{ var n')), sub
+        error, = [d for d in c.diagnostics('A.v3') if d['code'] == 'ParseError']
+        assert error['range']['start']['line'] == CONTINUED[:CONTINUED.index('if (n')].count('\n'), error
+        target = location(c, 'A.v3', 'target', CONTINUED.index('def target'))
+        assert c.query('definition') == target
+        assert c.query('hover')['contents']['value'] == 'def target() -> int'
+        assert c.query('references') == [target, location(c, 'A.v3', 'target', CONTINUED.index('def elsewhere')),
+                                         location(c, 'B.v3', 'target')]
+        inside(c, ('{ var n', 'target().', 'n > 0', 'return n', 'target(); }\n\t/*'))
+        for name in ('A.v3', 'B.v3'):
+            assert [d['range'] for d in c.semantic(name)] == [span(c.texts[name], '"bad"')], c.semantic(name)
+        c.change('A.v3', A)
+        assert not substitutions(c.snapshot())
+        assert c.query('definition', 'A.v3', 'target();') == location(c, 'A.v3', 'target', A.index('def target'))
+        assert len(c.query('references')) == 4
+        no_leaks(c)
+        c.s.shutdown()
+    finally:
+        c.s.close()
+
+
+def two_bodies(exe, root):
+    # The first error is in broken; once that body is blanked, the next is
+    # in elsewhere. Both bodies are excluded, and answers between and after
+    # them keep their offsets.
+    c = Case(exe, root, {'A.v3': TWO, 'B.v3': B, 'C.v3': C})
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        snap = c.snapshot()
+        sub, = substitutions(snap)
+        first, second = body(TWO, '{ var bad'), body(TWO, '{ /* é😀\t */ return target(). ;')
+        assert sub['substitution'] == blanked(first, second), sub
+        target = location(c, 'A.v3', 'target', TWO.index('def target'))
+        assert c.query('definition') == target
+        assert c.query('hover')['contents']['value'] == 'def target() -> int'
+        # The uses in both bodies are left out.
+        assert c.query('references') == [target, location(c, 'B.v3', 'target')]
+        assert c.query('documentHighlight', 'A.v3', 'target', TWO.index('def target')) == [
+            {'range': span(TWO, 'target', TWO.index('def target')), 'kind': 1}]
+        inside(c, ('target(1', 'bad', '{ var bad', 'target(); }\n\t/*', 'target(). ;', '{ /* é😀\t */ return target().'))
+        # Calls in either body are in neither direction of call hierarchy.
+        use, = prepare(c, 'B.v3', 'use')
+        assert [call['to']['name'] for call in calls(c, 'outgoing', use)] == ['target', 'size']
+        for name in ('broken', 'elsewhere'):
+            item, = prepare(c, 'A.v3', name)
+            assert calls(c, 'outgoing', item) == [], name
+        callee, = prepare(c, 'A.v3', 'target', TWO.index('def target'))
+        assert [call['from']['name'] for call in calls(c, 'incoming', callee)] == ['use']
+        for name in ('A.v3', 'B.v3'):
+            assert [d['range'] for d in c.semantic(name)] == [span(c.texts[name], '"bad"')], c.semantic(name)
+        # Restoration: the parseable text has all four uses again.
+        c.change('A.v3', A)
+        assert not substitutions(c.snapshot())
+        assert len(c.query('references')) == 4
+        callee, = prepare(c, 'A.v3', 'target', A.index('def target'))
+        assert sorted(call['from']['name'] for call in calls(c, 'incoming', callee)) == ['broken', 'elsewhere', 'use']
+        no_leaks(c)
         c.s.shutdown()
     finally:
         c.s.close()
 
 
 def refused(exe, root):
-    # Repairs that would need a brace, or that lie in a header, a field
-    # initializer, or two bodies, leave the program unanalyzed, as before.
+    # Braces that don't balance, an error in a header or a field
+    # initializer, errors in three bodies, and an unterminated string leave
+    # the program unanalyzed, as before.
     for current in (A.replace('return target(); }', 'return target();', 1),
                     A.replace('broken()', 'broken(x: )'),
                     A.replace('\tdef broken', '\tdef field: int = ;\n\tdef broken'),
-                    BROKEN.replace('return "bad";', 'return ;.')):
+                    TWO.replace('return "bad";', 'return ;.'),
+                    A.replace('return target();', 'var s = "open;\n\t\treturn target();', 1)):
         project = root / str(len(list(root.iterdir())))
         project.mkdir()
         c = Case(exe, project, {'A.v3': current, 'B.v3': B, 'C.v3': C})
@@ -214,12 +320,12 @@ def main():
     exe = Path(sys.argv[1]).resolve()
     # Keep disposable projects beside the build, away from the shared /tmp.
     with tempfile.TemporaryDirectory(prefix='current-repair-', dir=exe.parent) as work:
-        for name, run in (('cold', cold), ('refused', refused)):
+        for name, run in (('cold', cold), ('continued', continued), ('two-bodies', two_bodies), ('refused', refused)):
             root = Path(work) / name
             root.mkdir()
             run(exe, root)
-    print('current-text repair: cold open, repair beside fallback, suppression, rename refusal, '
-          'restoration, and refusals passed')
+    print('current-text repair: cold open, next-line continuation, two bodies, blanking beside fallback, '
+          'suppression, call hierarchy, rename refusal, restoration, and refusals passed')
 
 
 if __name__ == '__main__':

@@ -94,9 +94,12 @@ def fixtures(corpus, states):
         if repair:
             intended = intended.replace('target() -> int { return 1;', 'target() -> bool { return true;')
         broken = intended.replace('var x = 0;', 'var x = ;', 1)
+        # Fallback of the error-filled body excludes its errors, which
+        # suppresses the notice. Repair blanks edit(), which returns nothing,
+        # so it excludes no error, and the notice stays.
         yield case(name, 'Reach the semantic error limit with ' + ('repair.' if repair else 'fallback.'), [
             step('limit-broken', action('change', 'A.v3', broken, intended),
-                 limit_notice={"warm": not (repair or hidden), "cold": False}, limit_reached=True,
+                 limit_notice={"warm": not hidden, "cold": True}, limit_reached=True,
                  substitution={'A.v3': 'repair' if repair else {'warm': 'fallback', 'cold': 'repair'}}),
             step('fixed', action('change', 'A.v3', intended), limit_notice=True, limit_reached=True)],
             sources={'A.v3': original, 'B.v3': b, 'Consumer.v3': consumer})

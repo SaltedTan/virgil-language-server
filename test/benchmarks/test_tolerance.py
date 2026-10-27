@@ -25,7 +25,9 @@ class Scoring(unittest.TestCase):
         self.assertEqual(set(CONTROLS), {"deleted-declaration", "changed-signature", "shadowing-local",
                                         "body-boundary-escape", "excluded-error-limit",
                                         "repair-needs-brace", "repair-in-header", "repair-in-field-initializer",
-                                        "repair-in-two-bodies", "repair-call-arity"})
+                                        "repair-in-two-bodies", "repair-call-arity",
+                                        "repair-unterminated-string", "repair-deleted-header",
+                                        "repair-missing-return-limit"})
         for name, case in CONTROLS.items():
             with self.subTest(case=name):
                 results = [tolerance.score(key.split(":")[-1], old, case["oracle"][key], True)
@@ -187,20 +189,21 @@ class EditingSessions(unittest.TestCase):
         with self.assertRaises(AssertionError):
             run.watched_diagnostics(["A.v3"])
 
-    def test_initializer_mapping_distinguishes_repair_from_long_cached_body(self):
+    def test_interval_length_distinguishes_blanking_from_cached_text(self):
         base = Path("/project")
         snapshot = {"documentVersions": [
             {"uri": (base / name).as_uri(), "substitution": {
-                "begin": 10, "effectiveEnd": end, "currentEnd": 10}}
-            for name, end in (("cached.v3", 11), ("repaired.v3", 25), ("old-errors.v3", 300))]}
+                "begin": 10, "effectiveEnd": end, "currentEnd": current}}
+            for name, end, current in (("cached.v3", 11, 10), ("blanked.v3", 25, 25),
+                                       ("old-errors.v3", 300, 10), ("one-byte.v3", 11, 11))]}
         self.assertEqual(tolerance.substitution_kinds(snapshot, base), {
-            "cached.v3": "fallback", "repaired.v3": "repair", "old-errors.v3": "fallback"})
+            "cached.v3": "fallback", "blanked.v3": "repair", "old-errors.v3": "fallback", "one-byte.v3": "repair"})
 
     def test_step_checks_require_eviction_evidence_and_full_restoration(self):
         base = Path("/project")
         record = {"snapshot": {"documentVersions": [
             {"uri": (base / "A.v3").as_uri(), "substitution": {
-                "begin": 10, "effectiveEnd": 25, "currentEnd": 10}}]},
+                "begin": 10, "effectiveEnd": 25, "currentEnd": 25}}]},
                   "scores": {"0:hover": tolerance.score("hover", None, {"binding": "new"})}}
         tolerance.check_session_step({"id": "evicted", "substitution": {"A.v3": "repair"}}, record, base, "warm")
         for checks in ({"substitution": {"A.v3": "fallback"}}, {"full_semantics": True},
@@ -221,6 +224,23 @@ class EditingSessions(unittest.TestCase):
         record["snapshot"]["diagnostics"] = [{}] * 14
         with self.assertRaises(AssertionError):
             tolerance.check_session_step(st, record, base, "cold")
+
+    def test_control_expectations_count_bodies_and_limit_notices(self):
+        base = Path("/project")
+        snapshot = {"documentVersions": [
+            {"uri": (base / "A.v3").as_uri(), "substitution": {"bodies": [{"begin": 1, "end": 2}, {"begin": 3, "end": 4}]}},
+            {"uri": (base / "B.v3").as_uri(), "substitution": {"bodyBegin": 1, "bodyEnd": 2}},
+            {"uri": (base / "C.v3").as_uri()}], "diagnostics": [{}] * 15}
+        bodies = tolerance.excluded_bodies(snapshot, base)
+        self.assertEqual(bodies, {"A.v3": 2, "B.v3": 1})
+        answers = {"diagnostics": []}
+        self.assertEqual(tolerance.mismatches({"expected_bodies": {"A.v3": 2, "C.v3": 0}, "expected_limit": True},
+                                              bodies, snapshot, answers), [])
+        self.assertEqual(len(tolerance.mismatches({"expected_bodies": {"A.v3": 1, "C.v3": 1}}, bodies, snapshot, answers)), 2)
+        answers["diagnostics"] = [{"diagnostic": {"code": "ErrorLimit"}}]
+        self.assertEqual(len(tolerance.mismatches({"expected_limit": True}, bodies, snapshot, answers)), 1)
+        snapshot["diagnostics"] = [{}] * 14
+        self.assertEqual(len(tolerance.mismatches({"expected_limit": True}, bodies, snapshot, {"diagnostics": []})), 1)
 
     def test_session_summaries_do_not_multiply_process_replacements(self):
         st = {"suite": "session", "mode": "cold", "edit_kind": "reopened",

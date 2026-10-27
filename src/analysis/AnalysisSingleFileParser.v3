@@ -9,9 +9,10 @@ class AnalysisParseErrors extends ErrorGen {
 	def offsets = Vector<(int, int)>.new();
 	def retrospective = AnalysisRetrospectiveStarts.new();
 	// The ends of the last two tokens that the parser consumed, and, at the
-	// first error, the end of the last token before the error's start, or -1.
-	// Current-text repair inserts there (LspCurrentRepair), before the
-	// whitespace and comments that the parser skipped to reach the error. An
+	// first error, the end of the last token before the error's start, or -1:
+	// before the whitespace and comments that the parser skipped to reach the
+	// error. Current-text repair blanks the body that holds it
+	// (LspCurrentRepair), and the semicolon quick fix inserts there. An
 	// error at a consumed token, such as a keyword read as an identifier,
 	// starts before the last end.
 	var tokenEnd: int;
