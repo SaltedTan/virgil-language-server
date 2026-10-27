@@ -22,6 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - [Rename](docs/architecture.md#rename) renames a method together with its override family, the methods that it overrides and every method that overrides one of them in subclasses and variant cases, with every use of any of them, from the class hierarchy that verification records. A method that only shares its name with others, such as `render` in unrelated classes, can now be renamed, and they keep their name, and a new name that another method has is accepted. The preflight now also checks that every method overrides the same method as before, and refuses a new name that would make a method start or stop overriding one; a family with a member in a dependency or under the Virgil root is refused ([prepare rename](docs/architecture.md#prepare-rename), [#286](https://github.com/SaltedTan/virgil-language-server/issues/286)).
 - A reused analysis worker now collects the previous result immediately after sending it, while the server decodes the result on another core, so a program near the worker's heap limit no longer starts every reused Aeneas analysis within a few kilobytes of a collection and reusing a worker costs no more than before. Reused Aeneas handling ends 4.3 MB below the semispace instead of 22 KB; with both processes on one CPU the collection competes with the result decode, so a fresh analysis takes about 24 ms longer and a reused one is unchanged ([worker margin](docs/decisions/0004-analysis-worker-process.md#supported-program-size), [#283](https://github.com/SaltedTan/virgil-language-server/issues/283)).
 
+### Fixed
+
+- Pinned Virgil moved to [`57318d37`](https://github.com/titzer/virgil/commit/57318d37e9fcca8de6fda5f9cd82d669479f49ff). Inheritance cycles now report diagnostics and preserve semantic answers elsewhere in the project instead of hanging or crashing the analysis worker; implementation and type hierarchy keep the surviving superclass edges ([#311](https://github.com/SaltedTan/virgil-language-server/issues/311), [titzer/virgil#820](https://github.com/titzer/virgil/pull/820)).
+
 ## [0.1.0-alpha.4] - 2026-10-26
 
 ### Added

@@ -1744,3 +1744,58 @@ Server and worker SHA-256 hashes, respectively:
   `7186b8f04dcd5f342b14627ea4d6a068ea15bc4a920d2d4d626668bda1085dc2`.
 - After: `944e0a8d16c1e342a5e7f3dedbd46a3099eb9d569b552a1f806edca34fffcdf1`,
   `dc8302642f4f9af943eeb212b32dac943ae7db01c99d75803f724704ea05ee96`.
+
+## Pinned Virgil revision comparison (2026-10-27)
+
+The bump from `7cf038fc` to `57318d37` ([#311](https://github.com/SaltedTan/virgil-language-server/issues/311))
+was measured from the same server sources at `239a65f2`, with pending documentation,
+the same stable compiler executable, byte-identical generated `BuildInfo.v3`,
+probes enabled, and the default 384 MiB worker heap. Both builds used this
+physical checkout and equal-length `build/pin-old` and `build/pin-new` paths.
+The build metadata records their actual source hashes; the shared BuildInfo
+retains the old revision strings deliberately to avoid layout differences.
+
+The entire run held the shared benchmark lock and ran on CPU 12 of the Intel
+Core i7-14700KF host. Each pin used its own reviewed corpus: switch the gitlink
+and corpus together before each invocation. Six alternating old/new, then
+new/old process blocks ran each project with two warmups and five measured
+operations per build, giving 30 samples per build, project, and operation.
+Every semantic check passed, no samples were removed, and all 33 latency
+comparisons have overlapping p10–p90 intervals. The short pin-update benchmark
+also passed with one block, one operation, and no warmup.
+
+Analysis times are median (p10–p90), milliseconds:
+
+| Project / analysis | Old pin | New pin |
+| --- | ---: | ---: |
+| Small / fresh | 0.420 (0.414–0.454) | 0.421 (0.413–0.445) |
+| Small / reused | 0.145 (0.130–0.162) | 0.143 (0.131–0.164) |
+| Util / fresh | 14.830 (14.731–15.063) | 14.833 (14.748–15.022) |
+| Util / reused | 12.871 (11.804–13.777) | 12.844 (11.878–13.914) |
+| Aeneas / fresh | 349.211 (339.693–358.896) | 358.876 (346.122–364.555) |
+| Aeneas / reused | 288.734 (284.006–314.423) | 297.046 (286.981–318.331) |
+
+Small and util worker allocation, post-collection live bytes, and heap used
+after handling match exactly. Aeneas grows from 205 files, 3,022,555 bytes,
+and 83,322 lines to 206 files, 3,072,972 bytes, and 84,585 lines, including
+the debugger line editor and expanded debugger and optimizer sources. Its
+larger input explains additional parse, verify, occurrence, and encoding work;
+these timings do not isolate the verifier fix from the changed corpus.
+Aeneas worker memory is median (p10–p90), bytes:
+
+| Metric | Old pin | New pin |
+| --- | ---: | ---: |
+| Fresh allocation | 193,927,776 (193,927,776–193,927,776) | 197,749,072 (197,749,072–197,749,072) |
+| Reused allocation | 193,774,288 (193,764,240–193,778,576) | 197,602,440 (197,593,928–197,604,072) |
+| Fresh heap after handling | 196,969,880 (196,969,880–196,969,880) | 200,841,688 (200,841,688–200,841,688) |
+| Reused heap after handling | 196,992,704 (196,982,656–196,996,992) | 200,871,944 (200,863,432–200,873,576) |
+| Live after collection, fresh and reused | 176,768 (176,768–176,768) | 177,344 (177,344–177,344) |
+| Reserved worker heap | 402,653,184 (402,653,184–402,653,184) | 402,653,184 (402,653,184–402,653,184) |
+
+Full tolerance runs on both builds each completed 420 single-edit state/mode
+records and 72 session steps, with zero wrong answers and zero worker
+replacements. The 185 primary states retain all four measured features in
+116 warm and 110 cold states on both pins. There are 59 partial answers on
+each, including session diagnostics; each is an exact subset of its own
+current-program oracle. Reference lists follow the changed upstream uses and
+source locations. The old run took 248.26 seconds and the new 250.89 seconds.
