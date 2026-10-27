@@ -600,13 +600,16 @@ class Corpus:
                   "\t\t}", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\twhile (a())", "\t\t\tg();",
                   "\t\t}", "\t}", new, *helpers, "}"), None),
-            # An inner block loses its "}".
+            # An inner block loses its "}". A method that a local function's
+            # header could begin follows its method, which could go on past
+            # the "}" that layout gives it, so this is refused.
             ("brace-inner-closer", "body",
              text("component A {", "\tdef f() {", *if_block, "\t\tg();", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() {", "\t\tif (a()) {", "\t\t\tg();", "\t\t", "\t\tg();", "\t}",
                   new, *helpers, "}"), None),
-            # A method loses its own "}": the only change that moves later
-            # offsets, including target's.
+            # A method loses its own "}" before a method that a local
+            # function's header could begin, so the grammar doesn't end the
+            # method there, and this is refused.
             ("brace-method-closer", "body",
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", new, *helpers, "}"), None),
@@ -622,8 +625,9 @@ class Corpus:
                   new, *helpers, "}"),
              text("component A {", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f() {", "\t\tif (a())",
                   "\t\t\tg();", "\t\t}", "\t}", new, *helpers, "}"), None),
-            # A method loses its "}", and a later body has an error, after the
-            # inserted "}".
+            # A method loses its "}", and a later body has an error; both
+            # before a method that a local function's header could begin, so
+            # refused.
             ("brace-closer-then-blank", "body",
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", "\tdef other() {",
                   "\t\tvar y = 1;", "\t}", new, *helpers, "}"),
@@ -631,7 +635,9 @@ class Corpus:
                   "\t\tvar y = ;", "\t}", new, *helpers, "}"), None),
             # A body that each brace rule empties has a missing return that is
             # the fifteenth error, after the Observer's and 13 in A, as in
-            # repair-missing-return-limit.
+            # repair-missing-return-limit. The method that lost its "}" is
+            # followed by one that a local function's header could begin, so
+            # rule 3 refuses it; its private variant below is repaired.
             ("brace-opener-missing-return-limit", "header",
              text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tif (a()) {",
                   "\t\t\treturn 1;", "\t\t}", "\t\treturn 0;", "\t}", new, *helpers, "}"),
@@ -706,18 +712,104 @@ class Corpus:
              text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\t}", "\t\tdef inner() -> int",
                   "\t\t\treturn 1;", "\t}", new, *helpers, "}"),
              "component B { def use() -> int { if (A.inner() > 0) return A.target(); return 0; } }\n"),
+            # A method that lost its "}" can't end before a header that a
+            # local function's could be, as the review's case shows: the local
+            # function and the local after it, both as deep as the method's
+            # header, would become members, and target's count would bind to
+            # the local instead of the file's count. These are refused, with a
+            # second query on that count. First the review's program, then a
+            # local function that returns a value, one that spans lines, and
+            # a local value whose function is no header.
+            ("brace-closer-local-function", "body",
+             text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local() { }",
+                  "        var count = 7;", "    }", "    def target() -> bool { return count == 1; }", "    def g() { }",
+                  "}"),
+             text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local() { }",
+                  "        var count = 7;", "    ", "    def target() -> bool { return count == 1; }", "    def g() { }",
+                  "}"), None),
+            ("brace-closer-local-function-returns", "body",
+             text("def count = 11;", "component A {", "    def f() {", "        g();",
+                  "    def local() -> int { return 1; }", "        var count = 7;", "    }",
+                  "    def target() -> bool { return count == 1; }", "    def g() { }", "}"),
+             text("def count = 11;", "component A {", "    def f() {", "        g();",
+                  "    def local() -> int { return 1; }", "        var count = 7;", "    ",
+                  "    def target() -> bool { return count == 1; }", "    def g() { }", "}"), None),
+            ("brace-closer-local-function-lines", "body",
+             text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local() {", "        g();",
+                  "    }", "        var count = 7;", "    }", "    def target() -> bool { return count == 1; }",
+                  "    def g() { }", "}"),
+             text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local() {", "        g();",
+                  "    }", "        var count = 7;", "    ", "    def target() -> bool { return count == 1; }",
+                  "    def g() { }", "}"), None),
+            ("brace-closer-local-value", "body",
+             text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local = fun () { };",
+                  "        var count = 7;", "    }", "    def target() -> bool { return count == 1; }", "    def g() { }",
+                  "}"),
+             text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local = fun () { };",
+                  "        var count = 7;", "    ", "    def target() -> bool { return count == 1; }", "    def g() { }",
+                  "}"), None),
+            # Rule 3 for a block: an if's "}" is as deep as the method's
+            # header, and a local function and a local follow before the
+            # method's "}", which is lost. Had that "}" ended the method,
+            # they would become members.
+            ("brace-inner-closer-local-function", "body",
+             text("def count = 11;", "component A {", "    def f() {", "        if (true) {", "            g();", "    }",
+                  "    def local() { }", "        var count = 7;", "    }",
+                  "    def target() -> bool { return count == 1; }", "    def g() { }", "}"),
+             text("def count = 11;", "component A {", "    def f() {", "        if (true) {", "            g();", "    }",
+                  "    def local() { }", "        var count = 7;", "    ",
+                  "    def target() -> bool { return count == 1; }", "    def g() { }", "}"), None),
+            # Rule 2: h lost its "{" right before a ";", so its header still
+            # parses, without a body, and count, its local function as deep
+            # as h, reads as a member whose if lost its "{". target's count
+            # would bind to it instead of the file's count.
+            ("brace-opener-bodiless-holder", "header",
+             text("def count = 11;", "component A {", "\tdef h() -> int {;", "\tdef count() {", "\t\t\tif (a())",
+                  "\t\t\t\tg();", "\t\t\t}", "\t\tvar value = 7;", "\t\treturn value;", "\t}",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"),
+             text("def count = 11;", "component A {", "\tdef h() -> int ;", "\tdef count() {", "\t\t\tif (a())",
+                  "\t\t\t\tg();", "\t\t\t}", "\t\tvar value = 7;", "\t\treturn value;", "\t}",
+                  "\tdef target() -> bool { return count == 1; }", *helpers, "}"), None),
+            # The method's own "}", an inner block's, and the two-body and
+            # error-limit cases before a private method, which no statement
+            # can begin, so the grammar ends the method there.
+            ("brace-method-closer-private", "body",
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", "\tprivate def p() { }",
+                  new, *helpers, "}"),
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", "\tprivate def p() { }",
+                  new, *helpers, "}"), None),
+            ("brace-inner-closer-private", "body",
+             text("component A {", "\tdef f() {", *if_block, "\t\tg();", "\t}", "\tprivate def p() { }", new, *helpers,
+                  "}"),
+             text("component A {", "\tdef f() {", "\t\tif (a()) {", "\t\t\tg();", "\t\t", "\t\tg();", "\t}",
+                  "\tprivate def p() { }", new, *helpers, "}"), None),
+            ("brace-closer-then-blank-private", "body",
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", "\tprivate def other() {",
+                  "\t\tvar y = 1;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", "\tprivate def other() {",
+                  "\t\tvar y = ;", "\t}", new, *helpers, "}"), None),
+            ("brace-closer-missing-return-limit-private", "body",
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
+                  "\t\treturn 1;", "\t}", "\tprivate def p() { }", new, *helpers, "}"),
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
+                  "\t\treturn 1;", "\t", "\tprivate def p() { }", new, *helpers, "}"), None),
         )
         # Every other control is refused: no body, and so no fifteenth error.
         expected = {
             "brace-braceless-if-then-while": (1, False),
-            "brace-inner-closer": (1, False),
-            "brace-method-closer": (1, False),
             "brace-tab-stops": (1, False),
             "brace-and-blank-two-bodies": (2, False),
-            "brace-closer-then-blank": (2, False),
             "brace-opener-missing-return-limit": (1, True),
-            "brace-closer-missing-return-limit": (1, True),
+            "brace-method-closer-private": (1, False),
+            "brace-inner-closer-private": (1, False),
+            "brace-closer-then-blank-private": (2, False),
+            "brace-closer-missing-return-limit-private": (1, True),
         }
+        # Controls whose wrong reading would bind target's count elsewhere get
+        # a second query, on that count.
+        bindings = {"brace-closer-local-function", "brace-closer-local-function-returns",
+                    "brace-closer-local-function-lines", "brace-closer-local-value",
+                    "brace-inner-closer-local-function", "brace-opener-bodiless-holder"}
         for name, kind, fixed, broken, other in controls:
             calls = other or caller
             previous = fixed.replace(new, "\tdef target() -> int { return 1; }").replace(
@@ -729,6 +821,12 @@ class Corpus:
                                "original small program", oracle={"A.v3": fixed}, allow_absent=True,
                                expected_bodies={"A.v3": bodies}, expected_limit=reached)
             state["queries"] = state["stale_queries"] = [query("B.v3", calls, "A.target()", "target")]
+            if name in bindings:
+                # The edit leaves target's line where it was.
+                use = query("A.v3", broken, "return count == 1", "count")
+                assert use == query("A.v3", fixed, "return count == 1", "count"), name
+                state["queries"] = state["queries"] + [use]
+                state["stale_queries"] = state["stale_queries"] + [query("A.v3", previous, "return count;", "count")]
             yield state
 
     def verify_inputs(self):
