@@ -349,12 +349,41 @@ def request_baselines(exe, root, support):
         s.close()
 
 
+def failed_refresh(exe, root, support):
+    main, library = root / 'Main.v3', root / 'Library.v3'
+    main.write_text(USER)
+    library.write_text(KIND_CLASS)
+    s, _ = start(exe, root, ['Main.v3', 'Library.v3'], support=support)
+    try:
+        open_file(s, main, USER)
+        open_file(s, library, KIND_CLASS)
+        assert tokens(s, main, USER)[3] == (0, 26, 'Kind', 'class', [])
+        tokens(s, library, KIND_CLASS)
+        assert len(s.refreshes) == 0, s.transcript
+        change(s, library, KIND_VARIANT, 2)
+        tokens(s, library, KIND_VARIANT)
+        assert len(s.refreshes) == int(support), s.transcript
+        change(s, library, KIND_VARIANT + 'def x: i32 = 0i;\n', 3)
+        assert request(s, main)['error']['code'] == CONTENT_MODIFIED
+        assert len(s.refreshes) == int(support), s.transcript
+        change(s, library, KIND_VARIANT, 4)
+        tokens(s, library, KIND_VARIANT)
+        assert len(s.refreshes) == 2 * int(support), s.transcript
+        assert tokens(s, main, USER)[3] == (0, 26, 'Kind', 'enum', [])
+        assert len(s.refreshes) == 2 * int(support), s.transcript
+        s.shutdown()
+    finally:
+        s.close()
+
+
 def main():
     exe = Path(sys.argv[1]).resolve()
     for case in [exact, option_off, unanalyzable, fallback, repair,
                  lambda e, r: refresh(e, r, True), lambda e, r: refresh(e, r, False),
                  lambda e, r: request_baselines(e, r, True),
-                 lambda e, r: request_baselines(e, r, False)]:
+                 lambda e, r: request_baselines(e, r, False),
+                 lambda e, r: failed_refresh(e, r, True),
+                 lambda e, r: failed_refresh(e, r, False)]:
         with tempfile.TemporaryDirectory() as tmp:
             case(exe, Path(tmp).resolve())
     print('semantic tokens: all checks passed')

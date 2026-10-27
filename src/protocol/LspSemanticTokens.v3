@@ -138,8 +138,8 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		if (!refreshSupport) return;
 		var doc = store.overlay(uri), previous = baselines[uri];
 		if (doc == null || doc.identity != identity) return;
-		if (hash == UNAVAILABLE && previous != null && previous.identity == identity) return;
-		baselines[uri] = LspTokenFingerprint.new(identity, hash);
+		if (hash == UNAVAILABLE && previous != null && previous.identity == identity && previous.served) return;
+		baselines[uri] = LspTokenFingerprint.new(identity, hash, hash != UNAVAILABLE);
 	}
 	private def reply(data: Vector<JsonValue>) -> JsonRpcReply {
 		var result = Strings.newMap<JsonValue>();
@@ -149,9 +149,9 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 
 	// Refresh. Each open document keeps a fingerprint for its text from a
 	// request's reply or the last analysis comparison. An unowned reply
-	// records EMPTY; ContentModified preserves the same text's fingerprint,
-	// or records UNAVAILABLE if there is none. A new analysis whose tokens
-	// differ for the same text sends workspace/semanticTokens/refresh,
+	// records EMPTY; ContentModified preserves the same text's fingerprint
+	// only if the client was given it, or records UNAVAILABLE. A new analysis
+	// whose tokens differ for the same text sends workspace/semanticTokens/refresh,
 	// including when an unowned document joins a project or analysis recovers
 	// after ContentModified for edited text. A successful request records its
 	// tokens, so comparing them again needs no refresh.
@@ -234,10 +234,11 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		var previous = baselines[uri], same = previous != null && previous.identity == identity;
 		if (hash == UNAVAILABLE) {
 			if (same) return;
-		} else if (same && previous.hash != hash) {
+		} else if (same) {
+			if (previous.hash == hash) return;
 			dirty = true;
 		}
-		baselines[uri] = LspTokenFingerprint.new(identity, hash);
+		baselines[uri] = LspTokenFingerprint.new(identity, hash, false);
 	}
 	private def hashInt(hash: u64, value: int) -> u64 {
 		for (i < 4) { hash = (hash ^ byte.view(value)) * 0x100000001b3ul; value = value >> 8; }
@@ -263,7 +264,7 @@ def UNAVAILABLE = 0ul;
 
 // The fingerprint from a request's reply or the last comparison for an open
 // document's text, which {identity} names, or UNAVAILABLE.
-class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64) { }
+class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: bool) { }
 
 // The tokens of file {index} of {snapshot}, in source order, at most {limit}:
 // its declaration sites and the occurrences that resolve to a source
