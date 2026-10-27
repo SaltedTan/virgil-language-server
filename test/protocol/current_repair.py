@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Current-text repair over real stdio: cold opens with a syntax error in a
 method body, with an error the next line continues, with errors in two
-bodies, and with a lost "{" and a lost "}", beside method-body fallback in
-another file."""
+bodies, and with a lost "{", beside method-body fallback in another file; a
+lost "}" is refused."""
 import json
 from pathlib import Path
 import sys
@@ -40,9 +40,9 @@ C = '''component C {
 }
 '''
 C_BROKEN = C.replace('var n = 1;', 'var n = ;')
-# The brace rules (ADR-0010 rules 2 and 3) read this layout: an if that lost
-# its "{", and a method that lost its own "}", before which a "}" is inserted,
-# since no statement can begin the private method after it.
+# The brace rule (ADR-0010 rule 2) reads this layout when an if lost its "{".
+# A method that lost its own "}" is refused, even before a private method,
+# which no statement can begin.
 BRACES = '''/* é😀\t */ component A {
 \tdef broken() -> int {
 \t\tif (target() > 0) {
@@ -313,64 +313,53 @@ def two_bodies(exe, root):
 
 
 def braces(exe, root):
-    # A lost "{" empties the body that layout delimits and moves no offset; a
-    # lost "}" of the method's own is inserted before the next method, whose
-    # header no statement can begin, and every answer after it maps back to
-    # current text.
-    for current in (LOST_OPENER, LOST_CLOSER):
-        project = root / str(len(list(root.iterdir())))
-        project.mkdir()
-        c = Case(exe, project, {'A.v3': current, 'B.v3': B, 'C.v3': C})
-        try:
-            c.open('A.v3')
-            c.open('B.v3')
-            snap = c.snapshot()
-            sub, = substitutions(snap)
-            open_ = offset(current, '{\n\t\tif')
-            if current == LOST_OPENER:
-                close = offset(current, '}\n\tprivate def') + 1
-                assert sub['substitution'] == blanked((open_, close)), sub
-            else:
-                at = offset(current, '\tprivate def')
-                assert sub['substitution'] == {'begin': at, 'effectiveEnd': at + 1, 'currentEnd': at,
-                                               'bodies': [{'begin': open_, 'end': at}]}, sub
-            target = location(c, 'A.v3', 'target', current.index('def target'))
-            assert c.query('definition') == target
-            assert c.query('definition', 'A.v3', 'target(); }\n\tdef wrong') == target
-            assert c.query('hover') == {'contents': {'kind': 'plaintext', 'value': 'def target() -> int'},
-                                        'range': span(B, 'target')}
-            assert c.query('hover', 'A.v3', 'target', current.index('def elsewhere'))['range'] == span(
-                current, 'target', current.index('def elsewhere'))
-            assert c.query('references') == [target, location(c, 'A.v3', 'target', current.index('def elsewhere')),
-                                             location(c, 'B.v3', 'target')]
-            assert c.query('documentHighlight', 'A.v3', 'target', current.index('def elsewhere')) == [
-                {'range': span(current, 'target', current.index('def target')), 'kind': 1},
-                {'range': span(current, 'target', current.index('def elsewhere')), 'kind': 2}]
-            inside(c, ('{\n\t\tif', 'target() > 0', 'target();\n', 'return 0'))
-            item, = prepare(c, 'A.v3', 'broken')
-            assert calls(c, 'outgoing', item) == []
-            callee, = prepare(c, 'A.v3', 'target', current.index('def target'))
-            assert sorted(call['from']['name'] for call in calls(c, 'incoming', callee)) == ['elsewhere', 'use']
-            for name in ('A.v3', 'B.v3'):
-                assert [d['range'] for d in c.semantic(name)] == [span(c.texts[name], '"bad"')], c.semantic(name)
-            # Restoration: the parseable text has every use again.
-            c.change('A.v3', BRACES)
-            assert not substitutions(c.snapshot())
-            assert len(c.query('references')) == 5
-            no_leaks(c)
-            c.s.shutdown()
-        finally:
-            c.s.close()
+    # A lost "{" empties the body that layout delimits and moves no offset.
+    current = LOST_OPENER
+    c = Case(exe, root, {'A.v3': current, 'B.v3': B, 'C.v3': C})
+    try:
+        c.open('A.v3')
+        c.open('B.v3')
+        snap = c.snapshot()
+        sub, = substitutions(snap)
+        open_ = offset(current, '{\n\t\tif')
+        close = offset(current, '}\n\tprivate def') + 1
+        assert sub['substitution'] == blanked((open_, close)), sub
+        target = location(c, 'A.v3', 'target', current.index('def target'))
+        assert c.query('definition') == target
+        assert c.query('definition', 'A.v3', 'target(); }\n\tdef wrong') == target
+        assert c.query('hover') == {'contents': {'kind': 'plaintext', 'value': 'def target() -> int'},
+                                    'range': span(B, 'target')}
+        assert c.query('hover', 'A.v3', 'target', current.index('def elsewhere'))['range'] == span(
+            current, 'target', current.index('def elsewhere'))
+        assert c.query('references') == [target, location(c, 'A.v3', 'target', current.index('def elsewhere')),
+                                         location(c, 'B.v3', 'target')]
+        assert c.query('documentHighlight', 'A.v3', 'target', current.index('def elsewhere')) == [
+            {'range': span(current, 'target', current.index('def target')), 'kind': 1},
+            {'range': span(current, 'target', current.index('def elsewhere')), 'kind': 2}]
+        inside(c, ('{\n\t\tif', 'target() > 0', 'target();\n', 'return 0'))
+        item, = prepare(c, 'A.v3', 'broken')
+        assert calls(c, 'outgoing', item) == []
+        callee, = prepare(c, 'A.v3', 'target', current.index('def target'))
+        assert sorted(call['from']['name'] for call in calls(c, 'incoming', callee)) == ['elsewhere', 'use']
+        for name in ('A.v3', 'B.v3'):
+            assert [d['range'] for d in c.semantic(name)] == [span(c.texts[name], '"bad"')], c.semantic(name)
+        # Restoration: the parseable text has every use again.
+        c.change('A.v3', BRACES)
+        assert not substitutions(c.snapshot())
+        assert len(c.query('references')) == 5
+        no_leaks(c)
+        c.s.shutdown()
+    finally:
+        c.s.close()
 
 
 def refused(exe, root):
-    # Braces that don't balance where layout doesn't show the lost brace or
-    # where the method that lost its "}" could go on, as before a header that
-    # a local function's could be, an error in a header or a field
-    # initializer, errors in three bodies, and an unterminated string leave
-    # the program unanalyzed, as before.
+    # Braces that don't balance, as with one "}" short, even before a
+    # private method, an error in a header or a field initializer, errors in
+    # three bodies, and an unterminated string leave the program unanalyzed,
+    # as before.
     for current in (A.replace('return target(); }', 'return target();', 1),
-                    LOST_CLOSER.replace('\tprivate def unused() { }\n', ''),
+                    LOST_CLOSER, LOST_CLOSER.replace('\tprivate def unused() { }\n', ''),
                     A.replace('broken()', 'broken(x: )'),
                     A.replace('\tdef broken', '\tdef field: int = ;\n\tdef broken'),
                     TWO.replace('return "bad";', 'return ;.'),
@@ -398,7 +387,7 @@ def main():
             root = Path(work) / name
             root.mkdir()
             run(exe, root)
-    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{" and "}", blanking '
+    print('current-text repair: cold open, next-line continuation, two bodies, a lost "{", blanking '
           'beside fallback, suppression, call hierarchy, rename refusal, restoration, and refusals passed')
 
 

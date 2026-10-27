@@ -1,15 +1,15 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// The layout reading of current-text repair's brace rules
-// (docs/architecture.md#current-text-repair; ADR-0010 rules 2 and 3). Lines
+// The layout reading of current-text repair's brace rule
+// (docs/architecture.md#current-text-repair; ADR-0010 rule 2). Lines
 // end at LF. A line's indentation is the width of its leading spaces and
 // tabs, a tab advancing to the next multiple of 8 columns. A line counts if it
 // holds ordinary code: a byte outside whitespace and comments, where string
 // and byte literals are code, read as LspCursorScanner reads them. A counted
 // line is irregular if it starts inside a block comment or holds a control
 // byte other than a tab outside comments, except a CR that ends it; the brace
-// rules refuse a file with an irregular line. Lines that don't count are
+// rule refuses a file with an irregular line. Lines that don't count are
 // skipped everywhere.
 class LspLayout {
 	def text: Array<byte>;
@@ -113,52 +113,33 @@ class LspLayout {
 		}
 	}
 
-	// The braces' rule when they are one opener short ({depth} -1, rule 2) or
-	// one closer short ({depth} 1, rule 3): the body to blank, as its
-	// opening brace and the byte after its closing brace in the repaired
-	// text, and the offset before which rule 3 inserts a "}", or -1; or the
-	// reason there is none. {depth} and {minimum} are LspCursorScanner's
-	// brace balance at the end of the text and its lowest point.
-	def braceRule(depth: int, minimum: int) -> ((int, int), int, string) {
+	// The brace rule when the braces are one opener short (rule 2): the body
+	// to blank, as its opening brace and the byte after its closing brace, or
+	// the reason there is none.
+	def braceRule() -> ((int, int), string) {
 		var none = (-1, -1);
-		if ((depth != -1 || minimum != -1) && (depth != 1 || minimum != 0)) {
-			return (none, -1, "braces are not short by exactly one opener or one closer");
-		}
-		if (irregular) return (none, -1, "a line is irregular");
+		if (irregular) return (none, "a line is irregular");
 		var net = 0;
 		for (i < braces.length) net += if(text[braces[i]] == '{', 1, -1);
-		if (net != depth) return (none, -1, "the layout reading's braces differ from the scanner's");
+		if (net != -1) return (none, "the layout reading's braces differ from the scanner's");
 		var damage = disagreement();
-		if (damage.1 < 0) return (none, -1, "every brace pair agrees with the layout");
-		var h = enclosingMethod(lineOf(if(depth < 0, damage.1, damage.0)));
-		if (h < 0) return (none, -1, "no method or constructor header encloses the damage");
+		if (damage.1 < 0) return (none, "every brace pair agrees with the layout");
+		var h = enclosingMethod(lineOf(damage.1));
+		if (h < 0) return (none, "no method or constructor header encloses the damage");
 		var open = lasts[h], l = nextAtMost(h, widths[h]);
-		if (l < 0 || widths[l] != widths[h]) return (none, -1, "no line as deep as the method's header follows its body");
-		if (text[firsts[l]] == '}') {
-			// Rule 2, or rule 3 for a block inside the method: the method's
-			// "}" is where layout puts it, and the body holds the damage.
-			var close = firsts[l];
-			if (!begins(l)) return (none, -1, "a comment precedes the method's closing brace");
-			if (lasts[l] != close) return (none, -1, "code follows the method's closing brace on its line");
-			var why = interior(h, open, close, depth);
-			if (why == null) why = if(depth < 0, endsEarly(open, close), lastStatement(h, l, false));
-			if (why == null) why = outside(open, close, close);
-			if (why == null) why = if(depth < 0, holder(h), endsAt(l));
-			if (why != null) return (none, -1, why);
-			return ((open, close + 1), -1, null);
-		}
-		// Rule 3 for the method's own "}": insert it before line {l}, which
-		// must begin the next method or constructor, with a header that no
-		// statement can begin, so that the grammar ends the method there.
-		if (depth < 0 || damage.0 != open) return (none, -1, "the method's body has no closing brace where layout ends it");
-		if (!memberAfter(h, l)) return (none, -1, "the line that ends the method's body does not begin a method or constructor");
-		if (!startsMemberOnly(firsts[l])) return (none, -1, "a statement could begin the header after the method's body");
-		var at = starts[l];
-		var why = interior(h, open, at, 0);
-		if (why == null) why = lastStatement(h, l, true);
-		if (why == null) why = outside(open, at, -1);
-		if (why != null) return (none, -1, why);
-		return ((open, at + 1), at, null);
+		if (l < 0 || widths[l] != widths[h]) return (none, "no line as deep as the method's header follows its body");
+		// The method's "}" is where layout puts it, and the body holds the
+		// damage.
+		if (text[firsts[l]] != '}') return (none, "the method's body has no closing brace where layout ends it");
+		var close = firsts[l];
+		if (!begins(l)) return (none, "a comment precedes the method's closing brace");
+		if (lasts[l] != close) return (none, "code follows the method's closing brace on its line");
+		var why = interior(h, open, close);
+		if (why == null) why = endsEarly(open, close);
+		if (why == null) why = outside(open, close);
+		if (why == null) why = holder(h);
+		if (why != null) return (none, why);
+		return ((open, close + 1), null);
 	}
 	// The first brace pair, in the order that pairs close, whose layout
 	// disagrees, or (-1, closer) for the first "}" that closes nothing, or
@@ -201,21 +182,14 @@ class LspLayout {
 		return true;
 	}
 	// The file outside the body between {open} and {close}: null if its
-	// braces pair, with the body's "{" closed by the "}" at {closer} or, if
-	// that is -1, before the byte at {close}, and every pair agrees with the
-	// layout; else the reason. A file whose layout disagrees with its braces
-	// anywhere outside the body can't show which brace it lost.
-	def outside(open: int, close: int, closer: int) -> string {
-		var stack = Vector<int>.new(), i = 0, closed = false;
-		while (true) {
-			var b = if(i < braces.length, braces[i], int.max);
-			if (!closed && closer < 0 && close <= b) {
-				if (stack.length == 0 || stack[stack.length - 1] != open) return "the method's \"{\" is not the last one open";
-				stack.length--;
-				closed = true;
-			}
-			if (b == int.max) break;
-			i++;
+	// braces pair, with the body's "{" closed by the "}" at {close}, and every
+	// pair agrees with the layout; else the reason. A file whose layout
+	// disagrees with its braces anywhere outside the body can't show which
+	// brace it lost.
+	def outside(open: int, close: int) -> string {
+		var stack = Vector<int>.new();
+		for (i < braces.length) {
+			var b = braces[i];
 			if (b > open && b < close) continue;
 			if (text[b] == '{') {
 				stack.put(b);
@@ -224,42 +198,24 @@ class LspLayout {
 			if (stack.length == 0) return "a \"}\" outside the method closes nothing";
 			var o = stack[stack.length - 1];
 			stack.length--;
-			if (o == open && b == closer) continue;
+			if (o == open && b == close) continue;
 			if (!agrees(o, b)) return "a brace pair outside the method disagrees with the layout";
 		}
 		if (stack.length != 0) return "a \"{\" outside the method is not closed";
 		return null;
 	}
 	// The body between {open} and {close} of the method whose header is line
-	// {h}: null if its braces pair, with the one brace that the text lost
-	// when {depth} is -1 or 1 restored where layout puts it, and every pair
-	// agrees with the layout; else the reason.
-	def interior(h: int, open: int, close: int, depth: int) -> string {
-		// A restored "{" ends the line that lost it; a restored "}" goes
-		// before the first line that ends the lost closer's block.
-		var restored = -1, opener = -1;
-		if (depth < 0) {
-			var k = lostOpener(h, lineOf(close));
-			if (k < 0) return "no one control statement's header in the method lost its \"{\" by layout";
-			restored = lasts[k];
-		} else if (depth > 0) {
-			opener = lostCloser(h, open, close);
-			if (opener < 0) return "no one control statement's block in the method lost its \"}\" by layout";
-			var k = lineOf(opener);
-			restored = starts[nextAtMost(k, widths[construct(h, k)])];
-		}
-		var stack = Vector<int>.new(), i = indexAfter(braces, open);
+	// {h}: null if its braces pair, with the "{" that the text lost restored
+	// where layout puts it, at the end of its line, and every pair agrees with
+	// the layout; else the reason.
+	def interior(h: int, open: int, close: int) -> string {
+		var k = lostOpener(h, lineOf(close));
+		if (k < 0) return "no one control statement's header in the method lost its \"{\" by layout";
+		var restored = lasts[k], stack = Vector<int>.new(), i = indexAfter(braces, open);
 		while (true) {
 			var b = if(i < braces.length && braces[i] < close, braces[i], close);
-			// A restored "}" precedes every brace on its line.
-			if (restored >= 0 && (restored < b || (depth > 0 && restored == b))) {
-				if (depth < 0) {
-					stack.put(restored);
-				} else if (stack.length == 0 || stack[stack.length - 1] != opener) {
-					return "the lost \"}\" does not close its block where layout ends it";
-				} else {
-					stack.length--;
-				}
+			if (restored >= 0 && restored < b) {
+				stack.put(restored);
 				restored = -1;
 			}
 			if (b == close) break;
@@ -290,84 +246,6 @@ class LspLayout {
 			found = k;
 		}
 		return found;
-	}
-	// Rule 3 for a block inside the method: the one "{" between {open} and
-	// {close} that ends its line, whose construct starts with a control
-	// statement's header, and whose block, by layout, ends at a line that
-	// isn't a "}" as deep as that header; or -1 if there isn't exactly one.
-	def lostCloser(h: int, open: int, close: int) -> int {
-		var found = -1;
-		for (i = indexAfter(braces, open); i < braces.length && braces[i] < close; i++) {
-			var b = braces[i], k = lineOf(b);
-			if (text[b] != '{' || lasts[k] != b) continue;
-			var s = construct(h, k);
-			if (!controlHeader(s)) continue;
-			var e = nextAtMost(k, widths[s]);
-			if (widths[e] == widths[s] && begins(e) && text[firsts[e]] == '}') continue;
-			if (found >= 0) return -1;
-			found = b;
-		}
-		return found;
-	}
-	// The line where the construct that line {k} of the method of header {h}
-	// belongs to starts: {k}, or, while the counted line before it is
-	// shallower, inside the method, and doesn't end in ";", "{", or "}", that
-	// line.
-	def construct(h: int, k: int) -> int {
-		while (true) {
-			var p = before(k);
-			if (p <= h || ends(p) || widths[p] >= widths[k]) return k;
-			k = p;
-		}
-		return k;
-	}
-	// Rule 3, for a method whose header is line {h} and whose body ends
-	// before line {l}: null if the method can't have ended, at the end of a
-	// statement, before members that the body would then hold; else the
-	// reason. Statements begin at heads. At the body's own level, where the
-	// braces' balance is the one after its "{", the last statement must be a
-	// block, which no member is, or begin with a name, and no line after its
-	// start may begin with a word that can begin a member, though it
-	// continues a line. If {own}, the method lost its own "}": its last
-	// statement can't begin a member, every counted line must be at least as
-	// deep as the body's first, and one that starts a statement at the body's
-	// level exactly as deep, so that a member indented deeper after the
-	// method's end can't read as a statement or its continuation. Otherwise a
-	// block in it lost its "}", and had the method ended earlier, its "}"
-	// would end a member that holds that block's "{": the last statement,
-	// which can't then begin a member other than a field or a value, since
-	// code would follow the "}" of a function in its initializer.
-	def lastStatement(h: int, l: int, own: bool) -> string {
-		var s = indexAfter(heads, lasts[h]), j = -1, level = 0, depth = 0, last = -1, member = false;
-		for (k = h + 1; k < l; k++) {
-			if (firsts[k] < 0) continue;
-			if (j < 0) {
-				j = widths[k];
-				level = depths[s];
-			}
-			if (own && widths[k] < j) return "a line of the method is shallower than its first";
-			if (s < heads.length && heads[s] == firsts[k]) {
-				if (own && depths[s] == level && widths[k] != j) return "a statement of the method is deeper than its first";
-			} else if (depth == level && memberWord(firsts[k])) {
-				// No brace precedes a continuation on its line or since the
-				// last head, so the last head's balance is the line's.
-				member = true;
-			}
-			while (s < heads.length && heads[s] <= lasts[k]) {
-				depth = depths[s];
-				if (depth == level) {
-					last = heads[s];
-					member = false;
-				}
-				s++;
-			}
-		}
-		if (last < 0) return null;
-		if (member) return "a line after the method's last statement could begin a member";
-		if (text[last] == '{') return null;
-		if (!isNameStart(text[last])) return "the method's last statement does not begin with a name";
-		if (memberWord(last) && (own || !startsValue(last))) return "the method's last statement could begin a member";
-		return null;
 	}
 	// Rule 2, for the body between {open} and {close}, which is one "{"
 	// short: null if the method can't have ended at the "}" where the braces'
@@ -408,26 +286,6 @@ class LspLayout {
 			if (startsMemberOnly(heads[t])) return null;
 		}
 		return null;
-	}
-	// Rule 3 for a block inside the method whose "}" begins line {l}: null if
-	// the method can't go on after that line, had its "}" closed the block
-	// and the method lost its own "}" later; else the reason. The text must
-	// end, or its next counted line begin with a method's or constructor's
-	// header that no statement can begin.
-	def endsAt(l: int) -> string {
-		var n = nextAtMost(l, int.max);
-		if (n < 0 || (begins(n) && startsMemberOnly(firsts[n]))) return null;
-		return "the method could go on after its closing brace";
-	}
-	// Whether line {l}, which follows the body of the method of header {h},
-	// begins a method or constructor: its header begins on it, its last code
-	// byte is a brace, and it continues no line of a body that holds at least
-	// one.
-	def memberAfter(h: int, l: int) -> bool {
-		var p = before(l);
-		if (p == h || !ends(p) || !begins(l)) return false;
-		var c = text[lasts[l]];
-		return (c == '{' || c == '}') && startsMethod(firsts[l]);
 	}
 	// The method or constructor header that layout says encloses line {k}:
 	// {k} if it is one, else the first counted line before it that is

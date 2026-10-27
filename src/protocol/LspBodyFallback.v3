@@ -4,9 +4,7 @@
 // One common-prefix/common-suffix interval, and the method or constructor
 // bodies that semantic answers exclude: for fallback, the one body that holds
 // the interval strictly within its braces; for current-text repair, each
-// blanked body, which moves no offset, except that where a brace rule
-// inserted a "}", the interval is that one byte, the last of the body it
-// closes, and later offsets move by one. All offsets are bytes, ends exclusive.
+// blanked body, which moves no offset. All offsets are bytes, ends exclusive.
 // Each body is [opening brace, byte after closing brace) in effective text,
 // and is excluded whole, including its braces.
 class LspBodyFallback(begin: int, effectiveEnd: int, currentEnd: int, bodies: Array<(int, int)>) {

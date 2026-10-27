@@ -119,7 +119,8 @@ def unfinished(rng, line):
 # queries. The upstream files are indented with tabs. "spaces" re-indents a
 # file with four spaces for each leading tab, "mixed" replaces the leading
 # tabs of about half the lines with eight spaces each, which keeps every
-# line's width, and "mixed-width" with four, which doesn't.
+# line's width, and "mixed-width" with four, which doesn't. Rule 3 is left for
+# #320, so the states that lost a "}" are refused.
 BRACE_SEED = 317
 BRACE_KINDS = ("if-opener", "loop-opener", "match-opener", "method-opener", "block-closer", "method-closer")
 BRACE_PER_STYLE = {"tabs": 2, "spaces": 2, "mixed": 2, "mixed-width": 1}
@@ -532,11 +533,12 @@ class Corpus:
                                  previous, current, "original small program", **options)
 
     def brace_controls(self, caller):
-        """Controls for the brace rules (#317, ADR-0010 rules 2 and 3), which
-        read a file's layout when its braces are one opener or one closer
-        short. Each is a small tab-indented program; as for the other repair
-        controls, each oracle changes target's signature, so the predecessor's
-        answers are wrong."""
+        """Controls for the brace rules (#317, ADR-0010 rules 2 and 3). Rule 2
+        reads a file's layout when its braces are one opener short. Rule 3 is
+        left for #320, so a file one closer short is refused, and each of its
+        controls expects that. Each is a small tab-indented program; as for the
+        other repair controls, each oracle changes target's signature, so the
+        predecessor's answers are wrong."""
         def text(*rows):
             return "\n".join(rows) + "\n"
         new = "\tdef target() -> bool { return true; }"
@@ -600,16 +602,12 @@ class Corpus:
                   "\t\t}", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() {", "\t\tif (a())", "\t\t\tg();", "\t\twhile (a())", "\t\t\tg();",
                   "\t\t}", "\t}", new, *helpers, "}"), None),
-            # An inner block loses its "}". A method that a local function's
-            # header could begin follows its method, which could go on past
-            # the "}" that layout gives it, so this is refused.
+            # An inner block loses its "}".
             ("brace-inner-closer", "body",
              text("component A {", "\tdef f() {", *if_block, "\t\tg();", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() {", "\t\tif (a()) {", "\t\t\tg();", "\t\t", "\t\tg();", "\t}",
                   new, *helpers, "}"), None),
-            # A method loses its own "}" before a method that a local
-            # function's header could begin, so the grammar doesn't end the
-            # method there, and this is refused.
+            # A method loses its own "}".
             ("brace-method-closer", "body",
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", new, *helpers, "}"), None),
@@ -625,19 +623,16 @@ class Corpus:
                   new, *helpers, "}"),
              text("component A {", "\tdef other() {", "\t\tvar y = ;", "\t}", "\tdef f() {", "\t\tif (a())",
                   "\t\t\tg();", "\t\t}", "\t}", new, *helpers, "}"), None),
-            # A method loses its "}", and a later body has an error; both
-            # before a method that a local function's header could begin, so
-            # refused.
+            # A method loses its "}", and a later body has an error.
             ("brace-closer-then-blank", "body",
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", "\tdef other() {",
                   "\t\tvar y = 1;", "\t}", new, *helpers, "}"),
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t", "\tdef other() {",
                   "\t\tvar y = ;", "\t}", new, *helpers, "}"), None),
-            # A body that each brace rule empties has a missing return that is
-            # the fifteenth error, after the Observer's and 13 in A, as in
-            # repair-missing-return-limit. The method that lost its "}" is
-            # followed by one that a local function's header could begin, so
-            # rule 3 refuses it; its private variant below is repaired.
+            # A body that rule 2 empties has a missing return that is the
+            # fifteenth error, after the Observer's and 13 in A, as in
+            # repair-missing-return-limit. The same method that lost its "}"
+            # instead is refused, so it has no fifteenth error.
             ("brace-opener-missing-return-limit", "header",
              text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tif (a()) {",
                   "\t\t\treturn 1;", "\t\t}", "\t\treturn 0;", "\t}", new, *helpers, "}"),
@@ -748,10 +743,9 @@ class Corpus:
              text("def count = 11;", "component A {", "    def f() {", "        g();", "    def local = fun () { };",
                   "        var count = 7;", "    ", "    def target() -> bool { return count == 1; }", "    def g() { }",
                   "}"), None),
-            # Rule 3 for a block: an if's "}" is as deep as the method's
-            # header, and a local function and a local follow before the
-            # method's "}", which is lost. Had that "}" ended the method,
-            # they would become members.
+            # An if's "}" is as deep as the method's header, and a local
+            # function and a local follow before the method's "}", which is
+            # lost. Had that "}" ended the method, they would become members.
             ("brace-inner-closer-local-function", "body",
              text("def count = 11;", "component A {", "    def f() {", "        if (true) {", "            g();", "    }",
                   "    def local() { }", "        var count = 7;", "    }",
@@ -772,7 +766,7 @@ class Corpus:
                   "\tdef target() -> bool { return count == 1; }", *helpers, "}"), None),
             # The method's own "}", an inner block's, and the two-body and
             # error-limit cases before a private method, which no statement
-            # can begin, so the grammar ends the method there.
+            # can begin. Rule 3 put a "}" back in these before it was left out.
             ("brace-method-closer-private", "body",
              text("component A {", "\tdef f() -> int {", "\t\tg();", "\t\treturn 1;", "\t}", "\tprivate def p() { }",
                   new, *helpers, "}"),
@@ -800,10 +794,6 @@ class Corpus:
             "brace-tab-stops": (1, False),
             "brace-and-blank-two-bodies": (2, False),
             "brace-opener-missing-return-limit": (1, True),
-            "brace-method-closer-private": (1, False),
-            "brace-inner-closer-private": (1, False),
-            "brace-closer-then-blank-private": (2, False),
-            "brace-closer-missing-return-limit-private": (1, True),
         }
         # Controls whose wrong reading would bind target's count elsewhere get
         # a second query, on that count.

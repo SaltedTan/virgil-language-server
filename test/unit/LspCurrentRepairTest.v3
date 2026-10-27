@@ -145,12 +145,13 @@ def test_two_bodies(t: Tester) {
 }
 
 def test_refusals(t: Tester) {
-	// Braces that don't balance in ordinary code: short by a brace where
-	// layout doesn't show the lost one (LspBraceRulesTest), or by two.
+	// Braces that don't balance in ordinary code: one closer short, two
+	// openers short, or one opener short where layout doesn't show the lost
+	// one (LspBraceRulesTest).
+	refuse(t, "component A { def f() { var x = 1;\n\tdef g() -> int { return 1; } }", "braces do not balance");
+	refuse(t, "component A { def f() { if (true) { var x = ; } def g() -> int { return 1; } }", "braces do not balance");
+	refuse(t, "component A { def f() { var x = ; } } } }", "braces do not balance");
 	refuse(t, "component A { def f() { var x = ; } } }", "no method or constructor header encloses the damage");
-	refuse(t, "component A { def f() { var x = ; } } } }", "braces are not short by exactly one opener or one closer");
-	refuse(t, "component A { def f() { var x = 1;\n\tdef g() -> int { return 1; } }", "no method or constructor header encloses the damage");
-	refuse(t, "component A { def f() { if (true) { var x = ; } def g() -> int { return 1; } }", "every brace pair agrees with the layout");
 	// An unterminated string, byte literal, or block comment, even where
 	// the scanner recovers at the line's end.
 	refuse(t, wrap("var s = \"abc;\n\tvar x = ;"), "a string, byte literal, or block comment is unterminated");
@@ -305,17 +306,16 @@ def test_two_body_analysis(t: Tester) {
 
 // An emptied body's missing return counts toward the error limit and, being
 // excluded, suppresses the ErrorLimit notice; a blanked body with no error
-// of its own leaves the notice. The same holds for a body that a brace rule
-// empties: one that lost a "{" or its own "}" (LspBraceRulesTest).
+// of its own leaves the notice. The same holds for a body that rule 2
+// empties, one that lost a "{" (LspBraceRulesTest).
 def test_error_limit(t: Tester) {
-	for (returns in [true, false]) for (lost < 3) {
+	for (returns in [true, false]) for (lost < 2) {
 		var s = SemanticTestSession.new(), text = StringBuilder.new().puts("component Main {\n\tdef errors() {\n");
 		var visible = AeneasAdapter.PROGRAM_MAX_ERRORS - if(returns, 1, 0), value = if(returns, " y", "");
 		for (k < visible) text.put1("\t\tvar x%d: int = missing;\n", k);
 		text.puts("\t}\n\tdef broken()").puts(if(returns, " -> int", ""));
 		if (lost == 0) text.puts(" {\n\t\tvar y = ;\n\t}\n}\n");
-		else if (lost == 1) text.puts(" {\n\t\tvar y = 1;\n\t\tif (true)\n\t\t\ty++;\n\t\t}\n\t\treturn").puts(value).puts(";\n\t}\n}\n");
-		else text.puts(" {\n\t\tvar y = 1;\n\t\treturn").puts(value).puts(";\n\t\n\tprivate def g() { }\n}\n");
+		else text.puts(" {\n\t\tvar y = 1;\n\t\tif (true)\n\t\t\ty++;\n\t\t}\n\t\treturn").puts(value).puts(";\n\t}\n}\n");
 		s.open("main.v3", 1, text.toString());
 		s.settle();
 		var snapshot = s.supervisor.snapshot;
@@ -330,9 +330,7 @@ def test_error_limit(t: Tester) {
 			else if (Strings.equal(code, "UnresolvedIdentifier")) unresolved++;
 			else t.fail1("unexpected diagnostic %s", code);
 		}
-		// No statement can begin the private method after the method that
-		// lost its "}", so the current text's parse reports three errors.
-		t.asserti(if(lost == 2, 3, 1), parse);
+		t.asserti(1, parse);
 		t.asserti(visible, unresolved);
 		t.asserti(if(returns, 0, 1), notices);
 		s.server.close();
