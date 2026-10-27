@@ -215,14 +215,14 @@ def test_enum_case_crash(t: Tester) {
 	s.close();
 }
 
-// A synthetic stall keeps timeout coverage independent of compiler fixes.
+// A test-only build of the real worker keeps stalls independent of compiler fixes.
 // The worker is killed at the time limit, and the next analysis gets a new one.
 def test_hang_times_out(t: Tester) {
-	var good = load(t, [SHAPES, MAIN]), hang = [AnalysisSource.new("hang.v3", SyntheticAnalysisWorker.HANG)];
+	var good = load(t, [SHAPES, MAIN]), hang = [AnalysisSource.new("hang.v3", "// workerStallsHere\n")];
 	if (good == null || hang == null) return;
 	var limits = AnalysisWorkerLimits.new();
 	limits.timeoutMs = 500;
-	var sl = newSupervisor(limits, HostOs.executablePath()), s = sl.0;
+	var sl = newSupervisor(limits, ExecutableFiles.adjacent("stall/virgil-lsp-worker")), s = sl.0;
 	var first = completed(t, s.analyze(good, [], ALL));
 	var start = System.ticksMs();
 	assertFailed(t, AnalysisFailure.TIMED_OUT, s.analyze(hang, [], ALL));

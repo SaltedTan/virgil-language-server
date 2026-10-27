@@ -467,12 +467,12 @@ def main():
     exe = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="virgil-worker-protocol-") as directory:
         work = Path(directory).resolve()
-        # Use the unit suite's synthetic worker only for deterministic stalls.
-        # All unmarked sources still run the real compiler adapter.
+        # The real worker's test-only build stalls after arming its orphan alarm.
+        # Unmarked sources run its ordinary analysis and result handling.
         stalled = work / "stalled"
         stalled.mkdir()
         shutil.copy2(exe, stalled / "virgil-lsp")
-        shutil.copy2(exe.with_name("unit-tests"), stalled / "virgil-lsp-worker")
+        shutil.copy2(exe.parent / "stall/virgil-lsp-worker", stalled / "virgil-lsp-worker")
         exercise(stalled / "virgil-lsp", work)
         inheritance_cycles(exe, work)
         aeneas_repeats(exe)

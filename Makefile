@@ -128,6 +128,14 @@ $(BUILD)/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
 	$(V3C) $(BENCH_FLAGS) -heap-size=$(WORKER_HEAP) -output=$(BUILD) -program-name=virgil-lsp-worker \
 	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
 
+# The real worker, with deterministic stalls enabled only for tests. Share the
+# normal worker's sources, heap and build info so the server accepts its hello.
+$(BUILD)/stall/virgil-lsp-worker: buildinfo src/worker/WorkerMain.v3 $(SERVER_LIB)
+	@mkdir -p $(BUILD)/stall
+	$(V3C) $(BENCH_FLAGS) -redef-field=WorkerStall.enabled=true \
+	  -heap-size=$(WORKER_HEAP) -output=$(BUILD)/stall -program-name=virgil-lsp-worker \
+	  src/worker/WorkerMain.v3 $(SERVER_LIB) $(BUILDINFO) $(AENEAS_SRC) $(VIRGIL_LIBS)
+
 project-fixtures:
 	python3 test/fixtures/projects/prepare.py $(BUILD)
 
@@ -155,12 +163,12 @@ $(BUILD)/type-depth-probe: buildinfo test/analysis/TypeDepthProbe.v3 $(SERVER_LI
 run-unit-tests:
 	set -f; python3 test/unit/run.py $(if $(UNIT_JOBS),--jobs=$(UNIT_JOBS)) $(BUILD) $(UNIT_TESTS) $(ARGS)
 
-test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker
+test-unit: $(BUILD)/unit-tests $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker
 	$(MAKE) --no-print-directory run-unit-tests
 
 # Unit and CLI tests start the worker next to their executables. The unit tests
 # run first, since they use every CPU themselves.
-test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
+test: $(BUILD)/virgil-lsp $(BUILD)/virgil-lsp-worker $(BUILD)/stall/virgil-lsp-worker $(BUILD)/unit-tests $(BUILD)/retain-probe $(BUILD)/type-depth-probe
 	$(MAKE) --no-print-directory run-unit-tests ARGS=
 	python3 test/suites.py $(if $(SUITE_JOBS),--jobs=$(SUITE_JOBS)) $(SUITES)
 

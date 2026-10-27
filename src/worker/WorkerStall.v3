@@ -1,0 +1,23 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// Compile-time test hook. Ordinary builds remove the hook and its marker.
+component WorkerStall {
+	def enabled = false;
+
+	def beforeAnalysis(sources: Array<AnalysisSource>) {
+		if (enabled) {
+			def marker = "workerStallsHere";
+			for (source in sources) {
+				var input = source.input;
+				for (i = 0; i + marker.length <= input.length; i++) {
+					var k = 0;
+					while (k < marker.length && input[i + k] == marker[k]) k++;
+					if (k == marker.length) {
+						while (true) HostOs.poll([], 0, -1);
+					}
+				}
+			}
+		}
+	}
+}

@@ -134,11 +134,11 @@ finish "analyze crash keeps the worker's trace and reports the failure" $(( $? =
 # This former hang now reports ordinary diagnostics on the real worker.
 expect "analyze reports a self inheritance cycle" 1 'InheritanceError: cyclic inheritance detected' "" -- \
     analyze "$A/worker-hang/main.v3"
-# The unit executable's synthetic worker preserves deterministic timeout and
-# orphan-alarm coverage after upstream fixed the old verifier loop.
+# The real worker's test-only build stalls after arming its orphan alarm,
+# preserving deterministic coverage after upstream fixed the old verifier loop.
 mkdir "$TMP/stalled"
 cp "$EXE" "$TMP/stalled/virgil-lsp"
-cp "$(dirname "$EXE")/unit-tests" "$TMP/stalled/virgil-lsp-worker"
+cp "$(dirname "$EXE")/stall/virgil-lsp-worker" "$TMP/stalled/virgil-lsp-worker"
 printf '// workerStallsHere\n' > "$TMP/stall.v3"
 EXE_REAL=$EXE
 EXE=$TMP/stalled/virgil-lsp

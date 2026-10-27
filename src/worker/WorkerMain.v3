@@ -86,6 +86,7 @@ class AnalysisWorker(requestFd: int, resultFd: int) {
 		// The server kills a worker at its time limit. If the server has died,
 		// this timer still ends a worker caught in a compiler loop.
 		HostOs.setAlarm(AnalysisWire.orphanAlarmMs(request.timeoutMs));
+		if (WorkerStall.enabled) WorkerStall.beforeAnalysis(request.sources);
 		var stats = (request.flags & AnalysisWire.WANT_STATS) != 0;
 		// Only a completion's or a signature help's analysis keeps its program,
 		// for its query.
