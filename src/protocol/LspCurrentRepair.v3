@@ -3,58 +3,81 @@
 
 // A bounded repair of an open document's current text, for a file that fails
 // to parse and that method-body fallback cannot substitute
-// (docs/architecture.md#current-text-repair, ADR-0009). Each site inserts
-// completion's repair (LspCompletionRepair) at the end of the token before
-// the parser's first error: the sentinel where a name or an operand is
-// missing, then the closers and ";" that the innermost open construct
-// lacks. There is one candidate per site, and no search. A repair never
-// inserts a brace, so it cannot end a body or change a later declaration's
-// owner; LspBodyEligibility still proves that the sites lie strictly inside
-// one method or constructor body of the repaired text.
+// (docs/architecture.md#current-text-repair; ADR-0009, amended by ADR-0010).
+// Repair blanks the body of the method or constructor that holds the parser's
+// first error: every byte between its braces becomes a space, except line
+// terminators, so no offset or line moves and no syntax is guessed. The
+// file's braces must balance in ordinary code, with no string, byte literal,
+// or block comment unterminated, so the body ends at the brace that matches
+// its opening one. If the blanked text still fails to parse, the body that
+// holds its first error is blanked too, at most MAX_BODIES in all. There is
+// one candidate per body, and no search. Each blanked pair must be a method
+// or constructor body of the blanked text's own parse.
 component LspCurrentRepair {
-	def MAX_SITES = 2;
+	def MAX_BODIES = 2;
 
-	// The repaired text and its map to {current}, or nulls and the reason.
+	// The blanked text and its map to {current}, or nulls and the reason.
 	// {anchor} is FileParseResult.repairAt of {current}'s own parse. Parses
-	// at most {parses} repaired texts, and never more than MAX_SITES.
+	// at most {parses} blanked texts, and never more than MAX_BODIES.
 	def repair(path: string, current: Array<byte>, anchor: int, options: Array<string>,
 			parses: int) -> (Array<byte>, LspBodyFallback, string) {
-		var text = current;
-		for (n < MAX_SITES) {
+		var scan = LspCursorScanner.new(current);
+		scan.braceFrom = 0;
+		scan.scan(current.length);
+		if (scan.unterminatedRegion) return (null, null, "a string, byte literal, or block comment is unterminated");
+		if (scan.braceDepth != 0 || scan.braceMinimum != 0) return (null, null, "braces do not balance");
+		var text: Array<byte>, bodies = Vector<(int, int)>.new();
+		for (n < MAX_BODIES) {
 			if (n >= parses) return (null, null, "repair exceeds the parse budget");
-			text = site(text, anchor);
-			if (text == null) return (null, null, "no repair at the parser's error");
+			var body = holding(if(text != null, text, current), anchor);
+			if (body.0 < 0) return (null, null, "the parser's error is not in a method or constructor body");
+			for (i < bodies.length) {
+				if (bodies[i].0 == body.0) return (null, null, "the parser's error is in a blanked body");
+			}
+			if (text == null) text = Arrays.dup(current);
+			blank(text, body);
+			bodies.put(body);
 			var parsed = AeneasAdapter.repairParse(path, text, options);
 			if (parsed.0 != null) {
-				var result = LspBodyEligibility.compare(text, current, parsed.0);
-				return (if(result.0 != null, text), result.0, result.1);
+				var blanked = bodies.extract();
+				for (b in blanked) {
+					if (!has(parsed.0, b)) return (null, null, "a blanked pair is not a method or constructor body");
+				}
+				var begin = blanked[0].0 + 1, end = blanked[blanked.length - 1].1 - 1;
+				return (text, LspBodyFallback.new(begin, end, end, blanked), null);
 			}
 			anchor = parsed.1;
 		}
-		return (null, null, "repaired text does not parse");
+		return (null, null, "blanked text does not parse");
 	}
-	// {text} with one repair at {anchor}, or null if there is none: the
-	// anchor is in a comment or a literal, or nothing is missing there.
-	def site(text: Array<byte>, anchor: int) -> Array<byte> {
-		if (anchor < 0 || anchor > text.length) return null;
+	// The body of the method or constructor that holds {anchor}, as its
+	// opening brace and the byte after its closing brace, or (-1, -1). The
+	// parser consumed everything before the anchor, so it consumed the body's
+	// header and its "{": the outermost open "{" of statements that the file
+	// or a compound's members encloses directly. The text's braces balance.
+	def holding(text: Array<byte>, anchor: int) -> (int, int) {
+		if (anchor < 0 || anchor > text.length) return (-1, -1);
 		var ctx = LspCursorScanner.new(text).scan(anchor);
-		if (ctx.place != LspCursorPlace.CODE && ctx.place != LspCursorPlace.NUMBER) return null;
-		var name = missingName(ctx), c = LspCompletionRepair.completion(ctx);
-		if (!name && c.0.length == 0) return null;
-		var buf = StringBuilder.new().putk(text, 0, anchor);
-		if (name) buf.puts(LspCompletionRepair.SENTINEL);
-		buf.putk(text, anchor, c.1).puts(c.0);
-		return buf.putk(text, c.1, text.length).extract();
+		for (i < ctx.opens.length) {
+			if (ctx.roles[i] != LspOpenRole.STATEMENTS) continue;
+			if (i > 0 && ctx.roles[i - 1] != LspOpenRole.MEMBERS && ctx.roles[i - 1] != LspOpenRole.VARIANT) continue;
+			var open = ctx.opens[i], scan = LspCursorScanner.new(text);
+			scan.braceFrom = open + 1;
+			scan.scan(text.length);
+			return if(scan.braceClose > open, (open, scan.braceClose + 1), (-1, -1));
+		}
+		return (-1, -1);
 	}
-	// Whether a name or an operand must start at {ctx}'s cursor: after a
-	// member access's ".", or where only an expression, a type, or a pattern
-	// can start. Where a statement can start, as after a line break that
-	// follows an operand, a ";" alone ends the statement.
-	private def missingName(ctx: LspCursorContext) -> bool {
-		if (ctx.place != LspCursorPlace.CODE || ctx.prefixStart < ctx.cursor) return false;
-		if (ctx.member()) return true;
-		var s = ctx.syntax;
-		return (s & LspCursorSyntax.STATEMENT) == 0 &&
-			(s & (LspCursorSyntax.EXPRESSION | LspCursorSyntax.TYPE | LspCursorSyntax.PATTERN)) != 0;
+	// Replaces each byte strictly between {body}'s braces with a space, except
+	// CR and LF.
+	def blank(text: Array<byte>, body: (int, int)) {
+		for (i = body.0 + 1; i < body.1 - 1; i++) {
+			var c = text[i];
+			if (c != '\n' && c != '\r') text[i] = ' ';
+		}
+	}
+	private def has(bodies: Array<(int, int)>, body: (int, int)) -> bool {
+		for (b in bodies) if (b == body) return true;
+		return false;
 	}
 }

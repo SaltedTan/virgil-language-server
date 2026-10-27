@@ -1,27 +1,41 @@
 // Copyright 2026 The Virgil Language Server Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// One common-prefix/common-suffix interval, strictly within a parsed method
-// or constructor's braces. All offsets are bytes, ends exclusive. The whole
-// body, including its braces, is excluded from semantic answers.
-class LspBodyFallback(begin: int, effectiveEnd: int, currentEnd: int,
-		bodyBegin: int, effectiveBodyEnd: int) {
+// One common-prefix/common-suffix interval, and the method or constructor
+// bodies that semantic answers exclude: for fallback, the one body that holds
+// the interval strictly within its braces; for current-text repair, each
+// blanked body, which moves no offset. All offsets are bytes, ends exclusive.
+// Each body is [opening brace, byte after closing brace) in effective text,
+// and is excluded whole, including its braces.
+class LspBodyFallback(begin: int, effectiveEnd: int, currentEnd: int, bodies: Array<(int, int)>) {
 	def delta = currentEnd - effectiveEnd;
-	def currentBodyEnd = effectiveBodyEnd + delta;
+	// {offset} of effective text in current text, for an offset outside the
+	// interval or at either end of a body.
+	def current(offset: int) -> int {
+		return if(offset >= effectiveEnd, offset + delta, offset);
+	}
 	def toEffective(offset: int) -> int {
-		if (offset >= bodyBegin && offset < currentBodyEnd) return -1;
+		for (b in bodies) {
+			if (offset >= current(b.0) && offset < current(b.1)) return -1;
+		}
 		return if(offset >= currentEnd, offset - delta, offset);
 	}
 	def toCurrent(offset: int) -> int {
-		if (offset >= bodyBegin && offset < effectiveBodyEnd) return -1;
-		return if(offset >= effectiveEnd, offset + delta, offset);
+		for (b in bodies) {
+			if (offset >= b.0 && offset < b.1) return -1;
+		}
+		return current(offset);
 	}
-	// A nonempty range must not touch the body; a point uses the same
+	// A nonempty range must not touch a body; a point uses the same
 	// half-open containment rule as a query. Endpoints alone are insufficient
-	// for a diagnostic spanning the entire body.
+	// for a diagnostic spanning an entire body.
 	def maps(begin: int, end: int) -> bool {
-		return begin >= 0 && end >= begin &&
-			if(begin == end, toCurrent(begin) >= 0, end <= bodyBegin || begin >= effectiveBodyEnd);
+		if (begin < 0 || end < begin) return false;
+		if (begin == end) return toCurrent(begin) >= 0;
+		for (b in bodies) {
+			if (end > b.0 && begin < b.1) return false;
+		}
+		return true;
 	}
 }
 
@@ -50,7 +64,7 @@ component LspBodyEligibility {
 			!code(LspCursorScanner.new(current).scan(begin).place)) return (null, "change starts in a literal or comment");
 		if (!contained(effective, begin, oldEnd)) return (null, "cached interval is not lexically and structurally contained");
 		if (!contained(current, begin, newEnd)) return (null, "current interval is not lexically and structurally contained");
-		return (LspBodyFallback.new(begin, oldEnd, newEnd, bodyBegin, bodyEnd), null);
+		return (LspBodyFallback.new(begin, oldEnd, newEnd, [(bodyBegin, bodyEnd)]), null);
 	}
 	private def code(place: LspCursorPlace) -> bool {
 		// NUMBER is completion's cursor classification, not a lexical region

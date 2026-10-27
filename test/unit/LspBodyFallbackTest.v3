@@ -90,20 +90,23 @@ def test_mapping(t: Tester) {
 	verify(t, r != null);
 	var delta = current.length - old.length;
 	t.asserti(delta, r.delta);
+	t.asserti(1, r.bodies.length);
+	var body = r.bodies[0];
+	t.asserti(body.1 + delta, r.current(body.1));
 	for (i < old.length + 1) {
-		if (i >= r.bodyBegin && i < r.effectiveBodyEnd) {
+		if (i >= body.0 && i < body.1) {
 			t.asserti(-1, r.toCurrent(i));
 		} else {
 			var mapped = r.toCurrent(i);
-			t.asserti(if(i < r.bodyBegin, i, i + delta), mapped);
+			t.asserti(if(i < body.0, i, i + delta), mapped);
 			t.asserti(i, r.toEffective(mapped));
 		}
 	}
-	for (i = r.bodyBegin; i < r.currentBodyEnd; i++) t.asserti(-1, r.toEffective(i));
-	verify(t, r.maps(0, r.bodyBegin));
-	verify(t, r.maps(r.effectiveBodyEnd, old.length));
-	verify(t, !r.maps(r.bodyBegin - 1, r.effectiveBodyEnd + 1));
-	verify(t, !r.maps(r.bodyBegin, r.bodyBegin));
+	for (i = body.0; i < body.1 + delta; i++) t.asserti(-1, r.toEffective(i));
+	verify(t, r.maps(0, body.0));
+	verify(t, r.maps(body.1, old.length));
+	verify(t, !r.maps(body.0 - 1, body.1 + 1));
+	verify(t, !r.maps(body.0, body.0));
 	verify(t, !r.maps(-1, 0));
 	var longer = wrap("\t/* é😀 */ var x = 123;"), shorter = wrap("var x = ;");
 	var shrink = compare(longer, shorter).0;

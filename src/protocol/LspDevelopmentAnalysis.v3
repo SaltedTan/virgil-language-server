@@ -153,8 +153,14 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 				sub["begin"] = JsonValue.Int(m.begin);
 				sub["effectiveEnd"] = JsonValue.Int(m.effectiveEnd);
 				sub["currentEnd"] = JsonValue.Int(m.currentEnd);
-				sub["bodyBegin"] = JsonValue.Int(m.bodyBegin);
-				sub["bodyEnd"] = JsonValue.Int(m.currentBodyEnd);
+				var bodies = Array<JsonValue>.new(m.bodies.length);
+				for (j < bodies.length) {
+					var body = Strings.newMap<JsonValue>(), b = m.bodies[j];
+					body["begin"] = JsonValue.Int(m.current(b.0));
+					body["end"] = JsonValue.Int(m.current(b.1));
+					bodies[j] = JsonValue.JObject(body);
+				}
+				sub["bodies"] = JsonValue.JArray(bodies);
 				item["substitution"] = JsonValue.JObject(sub);
 			}
 			versions[i] = JsonValue.JObject(item);

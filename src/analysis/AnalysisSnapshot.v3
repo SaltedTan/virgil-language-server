@@ -88,7 +88,7 @@ class AnalysisSnapshot {
 		if (sub == null) return (begin, end);
 		var m = sub.mapping;
 		if (!m.maps(begin, end)) return (-1, -1);
-		return (if(begin >= m.effectiveEnd, begin + m.delta, begin), if(end >= m.effectiveEnd, end + m.delta, end));
+		return (m.current(begin), m.current(end));
 	}
 
 	// False for an unrecorded URI. Disk inputs are current while no overlay is
