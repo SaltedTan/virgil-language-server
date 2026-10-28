@@ -36,6 +36,7 @@ def X = [
 	T("LspSemanticDiagnostics:failed_analysis_no_demand", test_failed_analysis_no_demand),
 	T("LspSemanticDiagnostics:demand_waiters_cancel_and_shutdown", test_demand_waiters_cancel_and_shutdown),
 	T("LspSemanticDiagnostics:visible_projects_stop", test_visible_projects_stop),
+	T("LspSemanticDiagnostics:waiter_pressure_refreshes_once", test_waiter_pressure_refreshes_once),
 	()
 ];
 class SemanticTestSession {
@@ -1219,4 +1220,47 @@ def test_visible_projects_stop(t: Tester) {
 		t.asserti(0, work.1);
 	}
 	s.server.close();
+}
+// The re-check of #330: under many waiting requests, a refused token request
+// erased the fingerprint that the last comparison found, so each demand
+// analysis refreshed the same tokens again, and the client's next requests
+// were refused again. Each round here, another project's analysis has evicted
+// the server's snapshot, and the client, after answering any refresh,
+// requests every visible document with more requests waiting than
+// LspSnapshotRequests allows, so the oldest, the server's tokens, is refused.
+// The first demand analysis refreshes those tokens; later rounds analyze the
+// server for their own requests and refresh nothing. After an edit that
+// changes the tokens, which refreshes them, one round refreshes once more.
+def test_waiter_pressure_refreshes_once(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	for (refreshes in [1, 0, 0, 0]) pressureRound(t, s, names, refreshes);
+	// Each program's analysis of the edit refreshes its tokens and hints; the
+	// second refresh of each waits for the client's answer to the first.
+	var tokens = s.tokenRefreshes, hints = s.hintRefreshes;
+	s.open("shared/Greeting.v3");
+	s.change("shared/Greeting.v3", 2, GREETING_FIELD);
+	s.settle();
+	s.acknowledge();
+	s.settle();
+	t.asserti(tokens + 2, s.tokenRefreshes);
+	t.asserti(hints + 2, s.hintRefreshes);
+	for (refreshes in [1, 0, 0, 0]) pressureRound(t, s, names, refreshes);
+	s.server.close();
+}
+// One round of test_waiter_pressure_refreshes_once, which expects {refreshes}
+// token refreshes and one analysis.
+def pressureRound(t: Tester, s: EvictionSession, names: Array<string>, refreshes: int) {
+	var analyses = s.analyses(), tokens = s.tokenRefreshes, hints = s.hintRefreshes;
+	s.acknowledge();
+	s.evict(names[0]);
+	var refused = s.tokens(names[0]);
+	for (name in names) { s.hover(name); s.hints(name); }
+	s.tokens(names[1]);
+	// The server's three requests wait; these take the waiting count past the bound.
+	for (i < LspSnapshotRequests.new(null, null, null).MAX_WAITING - 2) s.hover(names[0]);
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, s.errorCode(refused));
+	s.settle();
+	t.asserti(1, s.analyses() - analyses);
+	t.asserti(refreshes, s.tokenRefreshes - tokens);
+	t.asserti(0, s.hintRefreshes - hints);
 }

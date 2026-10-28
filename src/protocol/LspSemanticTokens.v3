@@ -138,8 +138,8 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 		if (!refreshSupport) return;
 		var doc = store.overlay(uri), previous = baselines[uri];
 		if (doc == null || doc.identity != identity) return;
-		if (hash == UNAVAILABLE && previous != null && previous.identity == identity && previous.served) return;
-		baselines[uri] = LspTokenFingerprint.new(identity, hash, hash != UNAVAILABLE);
+		if (hash == UNAVAILABLE && previous != null && previous.identity == identity && (previous.served || previous.covered)) return;
+		baselines[uri] = LspTokenFingerprint.new(identity, hash, hash != UNAVAILABLE, false);
 	}
 	private def reply(data: Vector<JsonValue>) -> JsonRpcReply {
 		var result = Strings.newMap<JsonValue>();
@@ -149,12 +149,16 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 
 	// Refresh. Each open document keeps a fingerprint for its text from a
 	// request's reply or the last analysis comparison. An unowned reply
-	// records EMPTY; ContentModified preserves the same text's fingerprint
-	// only if the client was given it, or records UNAVAILABLE. A new analysis
+	// records EMPTY; ContentModified records UNAVAILABLE. A new analysis
 	// whose tokens differ for the same text sends workspace/semanticTokens/refresh,
 	// including when an unowned document joins a project or analysis recovers
-	// after ContentModified for edited text. A successful request records its
-	// tokens, so comparing them again needs no refresh.
+	// after ContentModified. A successful request records its tokens, so
+	// comparing them again needs no refresh. ContentModified keeps the same
+	// text's fingerprint if the client was given those tokens, or if a refresh
+	// already asked for them after an earlier ContentModified. So failed
+	// requests, such as those refused while too many wait, cause at most one
+	// refresh for each fingerprint of a text, besides the one that its change
+	// sends, and can't keep the client and analyses requesting each other.
 	def documentClosed(uri: string) { baselines.remove(uri); }
 	// Membership can change without any analysis completing. A document that
 	// left every project has no tokens; one whose active context already has a
@@ -238,7 +242,10 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 			if (previous.hash == hash) return;
 			dirty = true;
 		}
-		baselines[uri] = LspTokenFingerprint.new(identity, hash, false);
+		// A refresh after the client couldn't get this text's tokens covers
+		// them, so a failed request for them changes nothing more. One for a
+		// change doesn't, so a failed request after it can recover once.
+		baselines[uri] = LspTokenFingerprint.new(identity, hash, false, same && previous.hash == UNAVAILABLE);
 	}
 	private def hashInt(hash: u64, value: int) -> u64 {
 		for (i < 4) { hash = (hash ^ byte.view(value)) * 0x100000001b3ul; value = value >> 8; }
@@ -263,8 +270,10 @@ def EMPTY = SEED;
 def UNAVAILABLE = 0ul;
 
 // The fingerprint from a request's reply or the last comparison for an open
-// document's text, which {identity} names, or UNAVAILABLE.
-class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: bool) { }
+// document's text, which {identity} names, or UNAVAILABLE. {served} if a
+// reply gave the client these tokens; {covered} if a refresh asked for them
+// after the client couldn't get this text's tokens.
+class LspTokenFingerprint(identity: DocumentVersionIdentity, hash: u64, served: bool, covered: bool) { }
 
 // The tokens of file {index} of {snapshot}, in source order, at most {limit}:
 // its declaration sites and the occurrences that resolve to a source
