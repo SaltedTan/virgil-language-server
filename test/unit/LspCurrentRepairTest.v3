@@ -33,7 +33,7 @@ def find(text: Array<byte>, needle: string) -> int {
 }
 def repair(text: string) -> (Array<byte>, LspBodyFallback, string) {
 	var parsed = AeneasAdapter.parseFile("A.v3", text, []);
-	return LspCurrentRepair.repair("A.v3", text, parsed.repairAt, [], LspCurrentRepair.MAX_BODIES);
+	return LspCurrentRepair.repair("A.v3", text, parsed.repairAt, parsed.errorAt(), [], LspCurrentRepair.MAX_BODIES);
 }
 // {current} repairs to exactly {blanked}, which moves no offset.
 def check(t: Tester, current: string, blanked: string) {
@@ -145,11 +145,13 @@ def test_two_bodies(t: Tester) {
 }
 
 def test_refusals(t: Tester) {
-	// Braces that don't balance in ordinary code: one closer short, two
-	// openers short, or one opener short where layout doesn't show the lost
-	// one (LspBraceRulesTest).
-	refuse(t, "component A { def f() { var x = 1;\n\tdef g() -> int { return 1; } }", "braces do not balance");
-	refuse(t, "component A { def f() { if (true) { var x = ; } def g() -> int { return 1; } }", "braces do not balance");
+	// Braces that don't balance in ordinary code: one closer short where no
+	// reading of the lost one holds, two openers short, or one opener short
+	// where layout doesn't show the lost one (LspBraceRulesTest).
+	refuse(t, "component A { def f() { var x = 1;\n\tdef g() -> int { return 1; } }",
+		"the parser's first error is in the outermost open block");
+	refuse(t, "component A { def f() { if (true) { var x = ; } def g() -> int { return 1; } }",
+		"no place for the lost \"}\" parses");
 	refuse(t, "component A { def f() { var x = ; } } } }", "braces do not balance");
 	refuse(t, "component A { def f() { var x = ; } } }", "no method or constructor header encloses the damage");
 	// An unterminated string, byte literal, or block comment, even where
@@ -203,12 +205,14 @@ def test_anchors(t: Tester) {
 def test_parse_budget(t: Tester) {
 	var current = "component A { def f() { var x = ; } def g() { var y = ; } }";
 	var parsed = AeneasAdapter.parseFile("A.v3", current, []);
-	var r = LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 1);
+	var r = LspCurrentRepair.repair("A.v3", current, parsed.repairAt, parsed.errorAt(), [], 1);
 	t.assert_eq(null, r.0);
 	t.assertb("repair exceeds the parse budget", r.2);
-	r = LspCurrentRepair.repair("A.v3", current, parsed.repairAt, [], 0);
+	r = LspCurrentRepair.repair("A.v3", current, parsed.repairAt, parsed.errorAt(), [], 0);
 	t.assertb("repair exceeds the parse budget", r.2);
-	r = LspCurrentRepair.repair("A.v3", wrap("var x = ;"), AeneasAdapter.parseFile("A.v3", wrap("var x = ;"), []).repairAt, [], 1);
+	var broken = wrap("var x = ;");
+	parsed = AeneasAdapter.parseFile("A.v3", broken, []);
+	r = LspCurrentRepair.repair("A.v3", broken, parsed.repairAt, parsed.errorAt(), [], 1);
 	t.assert(r.0 != null, "one body needs one parse");
 	// A broken file with an ineligible cached predecessor and a stale parse
 	// outcome has one parse left for repair.

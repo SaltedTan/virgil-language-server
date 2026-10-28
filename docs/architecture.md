@@ -675,7 +675,8 @@ ineligible, is analyzed from its current text with the damaged method or
 constructor body emptied
 ([#293](https://github.com/SaltedTan/virgil-language-server/issues/293),
 [#312](https://github.com/SaltedTan/virgil-language-server/issues/312),
-[#317](https://github.com/SaltedTan/virgil-language-server/issues/317)). Fallback
+[#317](https://github.com/SaltedTan/virgil-language-server/issues/317),
+[#320](https://github.com/SaltedTan/virgil-language-server/issues/320)). Fallback
 runs first, so a file that it can substitute is never repaired. Closed files
 are never repaired.
 
@@ -691,8 +692,10 @@ same completion cursor scanner checks that fallback applies to its intervals,
 and reads the whole current text's brace balance in ordinary code with that
 scanner. When the braces balance, the body is found from the parser's error, as
 below. When they are short by exactly one opener, the brace rule below finds
-it from the file's layout instead. A file with any other balance, such as one
-missing `}` or two missing braces, stays unrepaired.
+it from the file's layout instead, and when they are short by exactly one
+closer, rule 3 below finds it by reading every place where the lost `}` could
+have been. A file with any other balance, such as two missing braces, stays
+unrepaired.
 
 **The body.** The candidate is the body of the method or constructor whose
 header the parser consumed and whose body holds that point. The scanner reads
@@ -873,17 +876,64 @@ the reviews found, but not this one, and a guard that refused every reading
 like it would also refuse every lost `{` that the benchmark's primary states
 recover.
 
-**A lost `}`.** ADR-0010's rule 3, which would read a missing `}` from the
-layout and put a method's `}` back, is not implemented. Three reviews found
-readings where indentation alone moved a declaration to another owner, such as
-a local function and a local after it read as members once the method's `}`
-went back before them, so a file one `}` short is refused as any other
-imbalance is.
-[#320](https://github.com/SaltedTan/virgil-language-server/issues/320) tracks
-a redesign that puts a `}` back only where every reading agrees.
+**Rule 3: a lost `}`.** ADR-0010's rule 3 applies when the braces are short by
+exactly one closer: the scanner's final depth is 1 and its lowest depth is 0.
+ADR-0010 put the `}` back where layout ended the block, and three reviews of
+[#317](https://github.com/SaltedTan/virgil-language-server/issues/317) found
+readings where indentation alone moved a declaration to another owner, such as a local function and a local after it read as members once a
+method's `}` went back before them. Rule 3 reads no indentation. It tries every
+place where the `}` could have been, and repairs the file only where every
+place that parses gives the same answer.
 
-**Conservative readings.** Where ADR-0010 leaves a form open, the rule takes
-the stricter reading:
+The lost `}` closed a block that opened after the last `{` that raised the
+braces' balance from 0 to 1. The text before it is the intended text's, so the
+parser's first error comes no earlier than where it was; the rule allows up to
+the end of that error's line. The error is where the first syntax diagnostic
+begins, or the repair point above if that is later, since the parser can
+report an error at a token it has already consumed. The braces are those in
+ordinary code, as `LspLayout` reads them, and their count must agree with the
+scanner's. Pairing
+them in order, the innermost `{` open at the error must have opened after that
+last rise; when the first error is in the outermost open block itself, as when
+a method's lost `}` lets the next method parse as its local function until the
+file ends, the file is refused without a parse. A `}` that closes a block
+follows a `;`, a `{`, or another `}`, so a place is right after one of those in
+ordinary code, outside the parentheses opened since the innermost `{` open
+there, after the innermost `{` open at the error, and no later than the end of
+the error's line. From the last place back, each is read by parsing the text
+with a `}` inserted there, with the document's language options. A reading that
+parses gives the method or constructor body that holds the inserted `}`, as
+`AeneasAdapter.methodBodies` gives bodies for fallback.
+
+The file is refused if a reading leaves the inserted `}` in no method or
+constructor body, as in a variant case's block; if the inserted `}` ends that
+body itself; or if two readings leave it in different bodies. It is refused
+too if no reading parses, as when another body also has a syntax error. A
+method's own lost `}` is never repaired: the method could then end wherever its
+`}` could go, and call hierarchy reports a method's extent. Review round 3's
+counterexample is this shape: a method that lost its `}` after an `if` whose
+`}` is as deep as the method's header, before a private method: whichever `}`
+was lost, the declarations agree, but the method's extent doesn't. Otherwise
+every reading leaves the `}` in the same body, which starts at the same `{` and
+ends at the same `}`, one that the text has. That body is blanked as above. The
+blanked text balances, since the unmatched `{` was inside the body, so nothing
+is inserted and no offset moves.
+
+Within one block, a reading that parses stands for the block's earlier places:
+the braces after it pair the same way for each, so they leave the same body. A
+reading whose parse fails past the inserted `}` stands for them too when the
+block holds statements, members, or a match's or variant's cases, as the
+completion scanner reads its role: the parser is then between two of them and
+fails at the same point for an earlier place. A lambda's body doesn't count,
+since closing it early leaves the parser inside an expression that still needs
+its `;`. Rule 3 parses at most 16 texts (`LspCurrentRepair.MAX_PLACES`) and
+refuses a file that would need more; the maintainer chose that cap on
+2026-10-28, beyond ADR-0010's three-parse budget.
+
+**Conservative readings.** Where ADR-0010 leaves a form open, the rules take
+the stricter reading. Every item but the one that names rule 3 is rule 2's:
+rule 3 reads no layout, so a file one `}` short is read the same whether or
+not its indentation agrees with its braces.
 
 - Every brace pair outside the excluded body must agree with the layout too,
   not only the body's lines, because of the mixed-width case above. Files
@@ -904,6 +954,9 @@ the stricter reading:
   `def f(x: int /* unused */) {`, doesn't change how it is read.
 - The method's `}` must begin its line; a comment may follow it on the line,
   but no code, and no comment may precede it.
+- Rule 3 refuses a method's own lost `}`, even where every reading has the
+  same declarations, and a file whose lost `}` would take more than 16 parses
+  to read.
 - Where the method could have ended at an earlier `}` indented like a
   statement, the first statement after it, other than a field or a value, must
   not begin a member, and no statement before it may begin with a string.
@@ -916,7 +969,10 @@ The capture parses each broken file at most three times
 normally the one its syntax diagnostics already made; if that parse used other
 language options or another version, the capture parses the current text again,
 and that counts. Fallback's parse of the cached predecessor counts as well, and
-repair parses at most what remains, never more than two blanked texts.
+repair parses at most what remains, never more than two blanked texts. Rule 3's
+readings are a stated extension of this budget: a file one `}` short also costs
+up to 16 parses of texts with a `}` inserted, whether it is repaired or
+refused, and its blanked text still counts.
 
 A repaired file is substituted exactly as fallback substitutes cached text. Its
 `AnalysisDocumentVersion.substitution` holds the blanked bytes as the effective
@@ -982,14 +1038,21 @@ the `{` and the `}`;
 unchanged offsets and line breaks; CRLF; tab stops and widths that disagree;
 each refusal, including headers split over lines or with a comment before
 their parameters and declarations without a body before the method, and each
-rule-2 control of the tolerance benchmark; a file one `}` short in every shape that rule 3 read,
-refused as any imbalance is; an error in another body, and a third refused; the
-parse budget; and a real analysis whose use, declaration, and type error after
-the emptied body keep their offsets. The
+rule-2 control of the tolerance benchmark; rule 3's body, with exact texts,
+for an `if`'s block in a lambda before a plain and a private method, a match
+case's block, with braces in a string and in comments, in a constructor, a
+variant case's method, a top-level method, and a lambda in a call's arguments;
+each of rule 3's refusals, over every shape that ADR-0010's rule 3 read or
+refused before it was left out, review round 3's counterexample, a variant
+case's block, an error in a later body, and two closers short; its limit of 16
+places; an error in another body, and a third refused; the parse budget, for
+rules 2 and 3; CRLF for both; and a real analysis whose use, declaration, and
+type error after the emptied body keep their offsets. The
 [protocol test](../test/protocol/current_repair.py) covers cold opens with an
 error in one body, an error that the next line continues, errors in two
-bodies, and a lost `{`, the refusal of a lost `}`, blanking beside fallback in
-one analysis, call hierarchy, rename refusal, and restoration. [ADR-0009](decisions/0009-current-text-repair.md) and
+bodies, a lost `{`, and a match case's lost `}`, the refusal of a method's own
+lost `}`, blanking beside fallback in one analysis, call hierarchy, rename
+refusal, and restoration. [ADR-0009](decisions/0009-current-text-repair.md) and
 [ADR-0010](decisions/0010-analyze-unrepairable-files.md) record the decisions.
 
 ## Semantic diagnostics

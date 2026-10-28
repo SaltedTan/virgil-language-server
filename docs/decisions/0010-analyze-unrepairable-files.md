@@ -244,6 +244,24 @@ declaration. Every guard that rule 2 has stays, and no guard is added against
 that second case, because one sound against it refuses every lost `{` that the
 benchmark's primary states recover.
 
+On 2026-10-28, rule 3 was redesigned in
+[#320](https://github.com/SaltedTan/virgil-language-server/issues/320) and
+differs from the decision above: it inserts no `}` and reads no layout. It
+parses the text with a `}` inserted at each place where the lost one could have
+been, after the last `{` that raised the braces' balance from 0 to 1 and up to
+the end of the line of the parser's first error, and accepts only when every
+reading that parses leaves that `}` in the same method or constructor body,
+before the body's own `}`. That body is blanked as rule 1 blanks one, so no
+offset moves. A method's own lost `}` is refused, since its extent would be
+unknown. The search costs at most 16 parses beyond the three-parse budget, a
+cap the maintainer chose on 2026-10-28, and a file that would need more is
+refused. It
+was measured on held-out states and controls it wasn't built from, and on the
+reviews' stress sets, with no wrong reading
+([brace rule 3 comparison](../benchmarks.md#brace-rule-3-comparison)).
+The maintainer decided on 2026-10-28 to ship it only if an independent
+adversarial review found no wrong answer; that review found none.
+
 ## Consequences
 
 A cold open with a missing brace, an expression continued on the next line, or

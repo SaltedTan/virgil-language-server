@@ -1,7 +1,7 @@
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
 """The reviewed 45 repair states, 140 byte replay states, small controls, and
-66 held-out states.
+94 held-out states.
 
 Only disposable copies are written. Parser invocations select/validate history;
 all measured answers and oracles come from the stdio protocol.
@@ -128,6 +128,16 @@ BRACE_OPENERS = {"if-opener": re.compile(r"\t\t+if \(.*\) \{$"),
                  "loop-opener": re.compile(r"\t\t+(while|for) \(.*\) \{$"),
                  "match-opener": re.compile(r"\t\t+match \(.*\) \{$"),
                  "block-closer": re.compile(r"\t\t+\}$")}
+
+
+# Held-out states for a lost "}" (#320, ADR-0010 rule 3), which the rule
+# wasn't built from: the "}" of a line of its own in a method, an inner
+# block's or the method's own, removed with the seed 320 in Aeneas files that
+# no other state, including the held-out states above, edits or queries, in
+# the four indentation styles above.
+CLOSER_SEED = 320
+CLOSER_PER_KIND = {"block-closer": 5, "method-closer": 2}
+CLOSER_STYLES = ("tabs", "spaces", "mixed", "mixed-width")
 
 
 def brace_candidates(kind, lines, bodies):
@@ -322,7 +332,9 @@ class Corpus:
                                      heldout_kind=kind, edited_lines=[n + 1 for n, _ in edits])
                     break
         assert all(n == HELDOUT_PER_KIND for n in counts.values()), ("held-out inventory changed", counts)
-        yield from self.brace_heldout(project, sources, used | chosen)
+        brace = list(self.brace_heldout(project, sources, used | chosen))
+        yield from brace
+        yield from self.closer_heldout(project, sources, used | chosen | {p for s in brace for p in s["changed"]})
 
     def brace_heldout(self, project, sources, used):
         """BRACE_PER_STYLE[style] states of each kind in BRACE_KINDS for each
@@ -358,6 +370,40 @@ class Corpus:
                                  heldout_kind=kind, indentation=style, edited_lines=[n + 1])
                 break
         assert all(counts[w] == BRACE_PER_STYLE[w[0]] for w in wanted), ("brace held-out inventory changed", counts)
+
+    def closer_heldout(self, project, sources, used):
+        """CLOSER_PER_KIND[kind] states of each kind for each style in
+        CLOSER_STYLES, one file each, none of them in {used}: the "}" of a
+        line of its own in a method removed, chosen by the seed, whose removal
+        alone is a syntax error. The intended program is the upstream file in
+        that style."""
+        files = sorted(p for p in sources if p.startswith("aeneas/src/") and p not in used)
+        rng = random.Random(CLOSER_SEED)
+        rng.shuffle(files)
+        wanted = [(style, kind) for style in CLOSER_STYLES for kind in CLOSER_PER_KIND]
+        counts = dict.fromkeys(wanted, 0)
+        for path in files:
+            pending = sorted((w for w in wanted if counts[w] < CLOSER_PER_KIND[w[1]]), key=lambda w: counts[w])
+            if not pending:
+                break
+            lines = sources[path].split("\n")
+            bodies = method_bodies(lines)
+            for style, kind in pending:
+                candidates = brace_candidates(kind, lines, bodies)
+                if not candidates:
+                    continue
+                n = rng.choice(candidates)
+                intended = reindent(rng, lines, style)
+                current = intended[:n] + [intended[n][:-1]] + intended[n + 1:]
+                if self.error_line("\n".join(current)) is None:
+                    continue
+                counts[(style, kind)] += 1
+                yield self.state(project, "closer-" + style + "/" + kind + "/" + path.removeprefix("aeneas/src/"),
+                                 "heldout", "body", {path: "\n".join(intended)}, {path: "\n".join(current)},
+                                 "original upstream file" if style == "tabs" else "upstream file, re-indented",
+                                 heldout_kind=kind, indentation=style, edited_lines=[n + 1])
+                break
+        assert all(counts[w] == CLOSER_PER_KIND[w[1]] for w in wanted), ("closer held-out inventory changed", counts)
 
     def heldout_edit(self, rng, kind, lines, bodies):
         """The lines to cut for {kind}, each by index with its body, or None if
@@ -534,11 +580,13 @@ class Corpus:
 
     def brace_controls(self, caller):
         """Controls for the brace rules (#317, ADR-0010 rules 2 and 3). Rule 2
-        reads a file's layout when its braces are one opener short. Rule 3 is
-        left for #320, so a file one closer short is refused, and each of its
-        controls expects that. Each is a small tab-indented program; as for the
-        other repair controls, each oracle changes target's signature, so the
-        predecessor's answers are wrong."""
+        reads a file's layout when its braces are one opener short. Rule 3
+        (#320) empties a body when the braces are one closer short only where
+        every place for the lost "}" that parses leaves it in that body, before
+        the body's own "}"; the rule-3 controls from #317 are refused. Each is
+        a small tab-indented program; as for the other repair controls, each
+        oracle changes target's signature, so the predecessor's answers are
+        wrong."""
         def text(*rows):
             return "\n".join(rows) + "\n"
         new = "\tdef target() -> bool { return true; }"
@@ -806,6 +854,46 @@ class Corpus:
                   "\t\treturn 1;", "\t}", "\tprivate def p() { }", new, *helpers, "}"),
              text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tg();",
                   "\t\treturn 1;", "\t", "\tprivate def p() { }", new, *helpers, "}"), None),
+            # A file one "}" short in which every place for the lost "}" that
+            # parses ends the method at the same "}" (#320): a match case's
+            # block, before the next case, which no statement can begin; an
+            # if's block in a lambda, which needs its ";" after its own "}";
+            # and the match case again, where the emptied body's missing
+            # return is the fifteenth error, and with an error in a later body.
+            ("brace-closer-match-case", "body",
+             text("component A {", "\tdef f(x: int) {", "\t\tmatch (x) {", "\t\t\t0 => {", "\t\t\t\tg();", "\t\t\t}",
+                  "\t\t\t_ => g();", "\t\t}", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f(x: int) {", "\t\tmatch (x) {", "\t\t\t0 => {", "\t\t\t\tg();", "\t\t\t",
+                  "\t\t\t_ => g();", "\t\t}", "\t}", new, *helpers, "}"), None),
+            ("brace-closer-lambda-if", "body",
+             text("component A {", "\tdef f() {", "\t\tvar fn = fun () -> int {", "\t\t\tif (a()) {", "\t\t\t\tg();",
+                  "\t\t\t}", "\t\t\treturn 1;", "\t\t};", "\t\tg();", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f() {", "\t\tvar fn = fun () -> int {", "\t\t\tif (a()) {", "\t\t\t\tg();",
+                  "\t\t\t", "\t\t\treturn 1;", "\t\t};", "\t\tg();", "\t}", new, *helpers, "}"), None),
+            ("brace-closer-match-case-missing-return-limit", "body",
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tmatch (a()) {",
+                  "\t\t\ttrue => {", "\t\t\t\treturn 1;", "\t\t\t}", "\t\t\tfalse => ;", "\t\t}", "\t\treturn 0;", "\t}",
+                  new, *helpers, "}"),
+             text("component A {", "\tdef errors() {", errors, "\t}", "\tdef broken() -> int {", "\t\tmatch (a()) {",
+                  "\t\t\ttrue => {", "\t\t\t\treturn 1;", "\t\t\t", "\t\t\tfalse => ;", "\t\t}", "\t\treturn 0;", "\t}",
+                  new, *helpers, "}"), None),
+            ("brace-closer-match-case-then-blank", "body",
+             text("component A {", "\tdef f(x: int) {", "\t\tmatch (x) {", "\t\t\t0 => {", "\t\t\t\tg();", "\t\t\t}",
+                  "\t\t\t_ => g();", "\t\t}", "\t}", "\tdef other() {", "\t\tvar y = 1;", "\t}", new, *helpers, "}"),
+             text("component A {", "\tdef f(x: int) {", "\t\tmatch (x) {", "\t\t\t0 => {", "\t\t\t\tg();", "\t\t\t",
+                  "\t\t\t_ => g();", "\t\t}", "\t}", "\tdef other() {", "\t\tvar y = ;", "\t}", new, *helpers, "}"),
+             None),
+            # Review round 3 of #317: an if's "}" is as deep as the method's
+            # header, and the method's own "}", after it, is lost before a
+            # private method. Whether the lost "}" was the if's or the
+            # method's, the declarations agree, but the method's extent, which
+            # call hierarchy reports, doesn't, so this must be refused.
+            ("brace-closer-equivalent", "body",
+             text("def count = 11;", "component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t}", "\t}",
+                  "\tprivate def local() { }", "\tdef target() -> bool { return count == 1; }", "\tdef g() { }", "}"),
+             text("def count = 11;", "component A {", "\tdef f() {", "\t\tif (true) {", "\t\t\tg();", "\t}", "\t",
+                  "\tprivate def local() { }", "\tdef target() -> bool { return count == 1; }", "\tdef g() { }", "}"),
+             None),
         )
         # Every other control is refused: no body, and so no fifteenth error.
         expected = {
@@ -813,6 +901,9 @@ class Corpus:
             "brace-tab-stops": (1, False),
             "brace-and-blank-two-bodies": (2, False),
             "brace-opener-missing-return-limit": (1, True),
+            "brace-closer-match-case": (1, False),
+            "brace-closer-lambda-if": (1, False),
+            "brace-closer-match-case-missing-return-limit": (1, True),
         }
         # Controls whose wrong reading would bind target's count, or its
         # local(), elsewhere get a second query, on that name.
@@ -821,6 +912,7 @@ class Corpus:
         bindings = {"brace-closer-local-function": count, "brace-closer-local-function-returns": count,
                     "brace-closer-local-function-lines": count, "brace-closer-local-value": count,
                     "brace-inner-closer-local-function": count, "brace-opener-bodiless-holder": count,
+                    "brace-closer-equivalent": count,
                     "brace-opener-holder-comment-name": local, "brace-opener-holder-comment-def": local,
                     "brace-opener-holder-split-def": local, "brace-opener-holder-split-name": local,
                     "brace-opener-holder-private-comment": local}
