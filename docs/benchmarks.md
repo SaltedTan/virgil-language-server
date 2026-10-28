@@ -2291,6 +2291,41 @@ Server and worker SHA-256 hashes, respectively:
 - `2c8a90bb`: `7d7d75f12ead3a215a02ee85101f1eed98c7ea4aa1dc35f378201025f49a5f33`,
   `478b321bcf9fcb9155df35df9210f4ce3997efd353bb50c6ce4954360c9e9288`.
 
+### Release scorecard
+
+[`scripts/check-tolerance.py`](../scripts/check-tolerance.py) qualifies one
+complete capture against the phase-3a release floors. Capture and qualification
+stay separate commands: the checker only reads a `bench-tolerance.py` JSON
+capture, refuses `--smoke`, `--suite`, and `--only` runs, and checks the stable
+state, suite, group, warm/cold, oracle, and session-step inventory in
+[`test/benchmarks/tolerance-inventory.json`](../test/benchmarks/tolerance-inventory.json)
+before it trusts an aggregate. It reports availability per mode, separates exact,
+partial, missing, and wrong answers per feature, requires zero wrong answers and
+zero control-expectation mismatches, and prints a zero floor as an uncovered
+class. Captures now record a `capture` object with `smoke`, `suite`, `only`, and
+`full`; older captures are read from their `command`. Run:
+
+```sh
+python3 scripts/check-tolerance.py build/bench-results/v1-tolerance.json
+```
+
+The full run on 2026-10-29 at `ced30385` (server
+`d585307457921dda3bdb19ae0177f5cdc9a0367e119d9b282a321e6edbcab88d`,
+542.08 seconds) passed every floor in both modes with zero wrong answers, zero
+expectation mismatches, all 56 negative controls in both modes, and all 56
+stale-predecessor injections rejected:
+
+| Mode | Primary all four features | Held-out | Exact definition | Exact hover | Exact references | Exact diagnostic sets | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Warm | 180/185 | 44/94 | 616/627 | 616/627 | 589/627 | 180/185 | 0 |
+| Cold | 180/185 | 44/94 | 616/627 | 616/627 | 589/627 | 180/185 | 0 |
+
+Fully exact states were 153 of 185 primary and 40 of 94 held-out. The held-out
+subgroups were the same in both modes: 24/24 body quarantine, 15/28 lost openers,
+2/7 seed-317 block closers, 3/20 seed-320 block closers, and 0/15 method closers.
+The last is an uncovered class, as are the two truncated files; header and
+field-initializer errors and truncated files remain phase 3b.
+
 ## Pinned Virgil revision comparison (2026-10-27)
 
 The bump from `7cf038fc` to `57318d37` ([#311](https://github.com/SaltedTan/virgil-language-server/issues/311))

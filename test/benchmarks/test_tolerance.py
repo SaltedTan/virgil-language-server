@@ -17,7 +17,67 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("tolerance", ROOT / "scripts/bench-tolerance.py")
 tolerance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tolerance)
+spec = importlib.util.spec_from_file_location("tolerance_check", ROOT / "scripts/check-tolerance.py")
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
 CONTROLS = json.loads(Path(__file__).with_name("tolerance-negative-oracles.json").read_text())["cases"]
+
+SCORECARD_ANSWERS = {
+    "0:definition": {"uri": "project:///Observer.v3", "range": {}},
+    "0:hover": {"contents": "bound", "range": {}},
+    "0:references": [{"uri": "project:///Observer.v3", "range": {}}],
+    "diagnostics": [],
+}
+
+
+def exact_verdict():
+    return {"available": True, "correct": True, "partial": False, "missing": False,
+            "wrong": False, "matches_oracle": True}
+
+
+def missing_verdict():
+    return {"available": False, "correct": False, "partial": False, "missing": True,
+            "wrong": False, "matches_oracle": False}
+
+
+def wrong_verdict():
+    return {"available": True, "correct": False, "partial": False, "missing": False,
+            "wrong": True, "matches_oracle": False}
+
+
+def scorecard_state(state_id, mode, scores=None, expectation=()):
+    return {"id": state_id, "suite": "repair", "edit_kind": "body", "mode": mode,
+            "oracle_id": 0, "answers": dict(SCORECARD_ANSWERS),
+            "scores": scores or {key: exact_verdict() for key in SCORECARD_ANSWERS},
+            "samples": [{"feature": "definition", "latency_ms": 1}],
+            "expectation_mismatches": list(expectation), "configuration": {},
+            "texts": {}, "snapshot": {}}
+
+
+def scorecard_capture(records, *, command=None, smoke=None, oracles=None, sessions=()):
+    capture = {
+        "schema": 1, "suite": "tolerance", "started_utc": "2026-10-29T00:00:00+00:00",
+        "command": command or ["python3", "scripts/bench-tolerance.py"],
+        "capture": {"smoke": False, "suite": None, "only": None, "full": True}
+        if smoke is None else smoke,
+        "server_revision": "revision", "host": {}, "corpus": {},
+        "corpus_sha256": "0" * 64, "driver_sha256": {}, "builds": [{}],
+        "input_sha256": {}, "wall_seconds": 1,
+        "oracles": oracles or [{"id": 0, "answers": {"0:definition": {}},
+                                 "queries": [{}], "configuration": {},
+                                 "diagnostic_paths": []}],
+        "states": records, "sessions": [], "session_oracles": [],
+        "summary": {}, "session_summary": {},
+    }
+    return capture
+
+
+def scorecard_inventory(*state_ids):
+    return {"schema": 1,
+            "states": [{"id": state_id, "suite": "repair", "edit_kind": "body", "queries": 1}
+                       for state_id in state_ids],
+            "sessions": []}
+
 
 
 class Scoring(unittest.TestCase):
@@ -172,6 +232,98 @@ class Scoring(unittest.TestCase):
         at = text.index("A.f") + 2
         self.assertEqual(q["position"], {"line": 0, "character": at + 1})
         self.assertEqual(tolerance.states.corpus.position(text, len(text)), {"line": 1, "character": 0})
+
+
+class Scorecard(unittest.TestCase):
+    def test_refuses_missing_state_and_missing_mode(self):
+        inventory = scorecard_inventory("first", "second", "third")
+        missing_mode = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm")])
+        failures = checker.validate(missing_mode, inventory)
+        self.assertTrue(any("state second has modes" in failure for failure in failures), failures)
+        missing_state = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        failures = checker.validate(missing_state, inventory)
+        self.assertTrue(any("state third has modes []" in failure for failure in failures), failures)
+
+    def test_refuses_duplicate_replacing_a_missing_state(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "warm")])
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("duplicates state/mode second/" in failure for failure in failures),
+                        failures)
+        self.assertTrue(any("state second has modes" in failure for failure in failures), failures)
+
+    def test_refuses_false_aggregate_gain_hiding_a_subgroup_loss(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("second", "warm"),
+            scorecard_state("first", "cold"),
+            scorecard_state("second", "cold", {
+                key: missing_verdict() for key in SCORECARD_ANSWERS})])
+        report = checker.evaluate(capture, inventory,
+                                  {"primary": {"all_features": (2, 2)}})
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("cold: primary.all_features is 1/2" in failure
+                            for failure in report["failures"]), report["failures"])
+        self.assertEqual(report["metrics"]["modes"]["warm"]["primary"]["all_features"], [2, 2])
+        self.assertEqual(report["metrics"]["modes"]["cold"]["primary"]["all_features"], [1, 2])
+
+    def test_refuses_a_wrong_answer(self):
+        inventory = scorecard_inventory("first")
+        scores = {key: exact_verdict() for key in SCORECARD_ANSWERS}
+        scores["0:hover"] = wrong_verdict()
+        capture = scorecard_capture([scorecard_state("first", "warm", dict(scores)),
+                                     scorecard_state("first", "cold", dict(scores))])
+        report = checker.evaluate(capture, inventory, {})
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("wrong answers" in failure for failure in report["failures"]),
+                        report["failures"])
+
+    def test_refuses_an_unmet_exclusion_expectation(self):
+        inventory = scorecard_inventory("first")
+        mismatch = "A.v3: 1 excluded bodies, expected 0"
+        capture = scorecard_capture([
+            scorecard_state("first", "warm", expectation=[mismatch]),
+            scorecard_state("first", "cold")])
+        report = checker.evaluate(capture, inventory, {})
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("expectation mismatches" in failure for failure in report["failures"]),
+                        report["failures"])
+
+    def test_refuses_smoke_and_filtered_captures(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        smoke = scorecard_capture(records, smoke={"smoke": True, "suite": None,
+                                                  "only": None, "full": False})
+        self.assertTrue(any("not a full capture" in failure
+                            for failure in checker.validate(smoke, inventory)))
+        for flag in ("--smoke", "--suite", "--only"):
+            with self.subTest(flag=flag):
+                old = scorecard_capture(records)
+                del old["capture"]
+                old["command"] = ["python3", "scripts/bench-tolerance.py", flag, "value"]
+                self.assertTrue(any("not a full capture" in failure
+                                    for failure in checker.validate(old, inventory)))
+
+    def test_accepts_a_complete_capture(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        floors = {"primary": {"all_features": (2, 2)},
+                  "exact": {feature: (2, 2) for feature in checker.FEATURES}}
+        report = checker.evaluate(capture, inventory, floors)
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertEqual(report["metrics"]["counts"]["state_ids"], 2)
+        self.assertEqual(report["metrics"]["counts"]["state_mode_records"], 4)
+        self.assertEqual(report["metrics"]["modes"]["warm"]["baselines"]["primary_all_exact"], [2, 2])
+        self.assertIn("Tolerance release scorecard: PASS",
+                      checker.format_scorecard(report, capture))
 
 
 class EditingSessions(unittest.TestCase):

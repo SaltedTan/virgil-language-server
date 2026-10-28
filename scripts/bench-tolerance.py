@@ -462,7 +462,10 @@ def main():
     pinned, _ = bench.corpus.validate(strict=not args.smoke)
     affinity = bench.pin_cpu(args.cpu)
     result = {"schema": 1, "suite": "tolerance", "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "command": [sys.executable, *sys.argv], "server_revision": bench.corpus.git_revision(ROOT, "rev-parse", "HEAD"),
+              "command": [sys.executable, *sys.argv],
+              "capture": {"smoke": args.smoke, "suite": args.suite, "only": args.only,
+                          "full": not (args.smoke or args.suite or args.only)},
+              "server_revision": bench.corpus.git_revision(ROOT, "rev-parse", "HEAD"),
               "git_status": bench.corpus.git_revision(ROOT, "status", "--short"), "host": bench.host_info(affinity),
               "corpus": pinned, "corpus_sha256": bench.corpus.sha256(bench.corpus.MANIFEST.read_bytes()),
               "driver_sha256": {p.name: bench.corpus.sha256(p.read_bytes()) for p in (
