@@ -68,7 +68,8 @@ class LspServer {
 	var signatureHelp: LspSignatureHelp;
 	// textDocument/rename; tests may lower its bounds.
 	var rename: LspRename;
-	private def documentSymbols = LspDocumentSymbols.new(documents, projects);
+	// textDocument/documentSymbol; tests may lower its bounds.
+	def documentSymbols = LspDocumentSymbols.new(documents, projects);
 	private def workspaceSymbols = LspWorkspaceSymbols.new(documents, projects);
 	private def typeHierarchy = LspTypeHierarchy.new();
 	private def selectionRanges = LspSelectionRanges.new(documents, projects);
