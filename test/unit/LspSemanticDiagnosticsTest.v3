@@ -28,8 +28,10 @@ def X = [
 	T("LspSemanticDiagnostics:evicted_demand_semantic_tokens", test_evicted_demand_semantic_tokens),
 	T("LspSemanticDiagnostics:evicted_demand_coalesces", test_evicted_demand_coalesces),
 	T("LspSemanticDiagnostics:eviction_schedules_nothing", test_eviction_schedules_nothing),
-	T("LspSemanticDiagnostics:demand_analysis_sends_no_refresh", test_demand_analysis_sends_no_refresh),
-	T("LspSemanticDiagnostics:event_replaces_demand", test_event_replaces_demand),
+	T("LspSemanticDiagnostics:demand_analysis_refreshes_once", test_demand_analysis_refreshes_once),
+	T("LspSemanticDiagnostics:unchanged_demand_sends_no_refresh", test_unchanged_demand_sends_no_refresh),
+	T("LspSemanticDiagnostics:demand_refreshes_changed_documents", test_demand_refreshes_changed_documents),
+	T("LspSemanticDiagnostics:event_joins_waiting_demand", test_event_joins_waiting_demand),
 	T("LspSemanticDiagnostics:failed_demand_not_retried", test_failed_demand_not_retried),
 	T("LspSemanticDiagnostics:failed_analysis_no_demand", test_failed_analysis_no_demand),
 	T("LspSemanticDiagnostics:demand_waiters_cancel_and_shutdown", test_demand_waiters_cancel_and_shutdown),
@@ -778,20 +780,22 @@ def test_urgent_context_starts_first(t: Tester) {
 	supervisor.close();
 }
 
-// A server for two-programs whose client supports both refresh requests. It
+// A server for the fixture project directory {fixture}, two-programs or
+// evicted-refresh, whose client supports both refresh requests. It
 // records replies, counts refresh requests and analyses, and acknowledges
 // refreshes only when told to, as a client does before requesting again.
 class EvictionSession {
 	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
 	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
-	def base = ProjectTestFiles.repository("test/fixtures/projects/two-programs");
+	var base: string;
 	def replies = Vector<HashMap<string, JsonValue>>.new();
 	def refreshIds = Vector<JsonValue>.new();
 	var tokenRefreshes: int;
 	var hintRefreshes: int;
 	var failures: int;
 	var nextId = 100;
-	new(open: bool) {
+	new(fixture: string, open: bool) {
+		base = ProjectTestFiles.repository(Strings.format1("test/fixtures/projects/%s", fixture));
 		HostOs.ignoreSigpipe();
 		server.sendNotification = receive;
 		server.warnProject = warn;
@@ -909,8 +913,9 @@ def tokenData(v: JsonValue) -> int {
 	return JsonValue.JArray.!(JsonValue.JObject.!(v).v["data"]).v.length;
 }
 def hovered(v: JsonValue) -> bool {
-	if (!JsonValue.JObject.?(v)) return false;
-	var text = rendered(v), word = "component Greeting";
+	return JsonValue.JObject.?(v) && contains(rendered(v), "component Greeting");
+}
+def contains(text: string, word: string) -> bool {
 	for (i = 0; i + word.length <= text.length; i++) {
 		if (Strings.equal(Arrays.range(text, i, i + word.length), word)) return true;
 	}
@@ -919,7 +924,7 @@ def hovered(v: JsonValue) -> bool {
 // A request whose project's snapshot admission evicted analyzes the project
 // again, once, and is answered from that analysis; later requests use it.
 def test_evicted_demand_answers(t: Tester) {
-	var s = EvictionSession.new(true), name = "server/Program.v3";
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
 	var ctx = s.evict(name), before = s.analyses();
 	var hover = s.hover(name);
 	t.assert(s.reply(hover) == null, "the hover waits for an analysis");
@@ -937,7 +942,7 @@ def test_evicted_demand_answers(t: Tester) {
 	s.server.close();
 }
 def test_evicted_demand_semantic_tokens(t: Tester) {
-	var s = EvictionSession.new(true), name = "server/Program.v3";
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
 	var data = tokenData(s.result(s.tokens(name)));
 	t.assert(data > 0, "the analyzed document has tokens");
 	s.evict(name);
@@ -951,7 +956,7 @@ def test_evicted_demand_semantic_tokens(t: Tester) {
 }
 // Requests that arrive while a demand analysis runs or waits share it.
 def test_evicted_demand_coalesces(t: Tester) {
-	var s = EvictionSession.new(true), server = "server/Program.v3", client = "client/Program.v3";
+	var s = EvictionSession.new("two-programs", true), server = "server/Program.v3", client = "client/Program.v3";
 	s.evict(server);
 	s.evict(client);
 	var before = s.analyses();
@@ -967,7 +972,7 @@ def test_evicted_demand_coalesces(t: Tester) {
 }
 // Admission that evicts a snapshot schedules no analysis.
 def test_eviction_schedules_nothing(t: Tester) {
-	var s = EvictionSession.new(true);
+	var s = EvictionSession.new("two-programs", true);
 	var server = s.context("server/Program.v3"), client = s.context("client/Program.v3"), before = s.analyses();
 	s.server.projects.admitSnapshot(server, null, long.view(s.server.projects.snapshotBudget));
 	t.assert(client.snapshot == null && client.evicted, "admission evicts the other snapshot");
@@ -980,11 +985,11 @@ def test_eviction_schedules_nothing(t: Tester) {
 	t.assert(client.snapshot == null && client.evicted, "nothing analyzed the evicted project");
 	s.server.close();
 }
-// A demand analysis sends no refresh, even when comparing its snapshot would
-// find a document's tokens changed. An event's analysis of the same sources
-// compares them and asks for a refresh.
-def test_demand_analysis_sends_no_refresh(t: Tester) {
-	var s = EvictionSession.new(true), name = "server/Program.v3";
+// A demand analysis compares open documents as any analysis does. One
+// whose tokens the client couldn't get for this text gets one refresh;
+// after the client asks again, nothing more is analyzed or refreshed.
+def test_demand_analysis_refreshes_once(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
 	var ctx = s.context(name);
 	// Without a snapshot or an eviction, the tokens request fails at once,
 	// and the client is known to have none for this text.
@@ -996,22 +1001,89 @@ def test_demand_analysis_sends_no_refresh(t: Tester) {
 	s.settle();
 	t.asserti(before + 1, s.analyses());
 	t.assert(hovered(s.result(hover)), "the hover is answered from the demand analysis");
-	t.asserti(0, s.tokenRefreshes);
+	t.asserti(1, s.tokenRefreshes);
 	t.asserti(0, s.hintRefreshes);
+	for (round < 3) {
+		var work = visibleRound(s, ["server/Program.v3", "client/Program.v3"]);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+		t.assertz(true, work.2);
+	}
+	// A save analyzes the same sources again and finds nothing to refresh.
 	s.save(name);
 	s.settle();
 	t.asserti(before + 2, s.analyses());
 	t.asserti(1, s.tokenRefreshes);
+	t.asserti(0, s.hintRefreshes);
 	s.server.close();
 }
-// A save while a demand analysis waits makes it the save's analysis: one
-// analysis runs, and it compares open documents as the save's would.
-def test_event_replaces_demand(t: Tester) {
-	var s = EvictionSession.new(true), name = "server/Program.v3";
-	var ctx = s.context(name);
-	ctx.snapshot = null;
-	t.asserti(LspErrorCode.CONTENT_MODIFIED, s.errorCode(s.tokens(name)));
-	ctx.evicted = true;
+// A demand analysis whose open documents' tokens and hints are those the
+// client already has asks for no refresh.
+def test_unchanged_demand_sends_no_refresh(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	for (name in names) {
+		t.assert(tokenData(s.result(s.tokens(name))) > 0, "the client has the document's tokens");
+		t.assert(JsonValue.JArray.?(s.result(s.hints(name))), "the client has the document's hints");
+	}
+	for (name in names) {
+		s.evict(name);
+		var before = s.analyses(), hover = s.hover(name);
+		s.settle();
+		t.asserti(before + 1, s.analyses());
+		t.assert(hovered(s.result(hover)), "the hover is answered from the demand analysis");
+	}
+	t.asserti(0, s.tokenRefreshes);
+	t.asserti(0, s.hintRefreshes);
+	s.server.close();
+}
+// The case of the review of #330: the client project's analysis after an edit
+// fails, since both snapshots are retained, and the server's analysis then
+// evicts the client's stale snapshot. The demand analysis that a hover
+// causes carries the edit, which changes the tokens and hints of Use.v3,
+// whose text the client hasn't changed: it sends one refresh of each.
+// Afterwards the client's requests analyze and refresh nothing.
+def test_demand_refreshes_changed_documents(t: Tester) {
+	var s = EvictionSession.new("evicted-refresh", true), program = "client/Program.v3", use = "client/Use.v3";
+	var names = ["server/Program.v3", program, use];
+	s.open(use);
+	s.settle();
+	var client = s.context(program), server = s.context(names[0]);
+	t.assert(s.supervisor.snapshot == server.snapshot, "the server's snapshot is the latest");
+	var tokens = rendered(s.result(s.tokens(use))), hints = rendered(s.result(s.hints(use)));
+	t.assert(tokenData(s.result(s.tokens(use))) > 0, "Use.v3 has tokens");
+	t.assert(contains(hints, "\"label\":\"width:\""), "Use.v3 labels area's argument");
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
+	// Shape becomes an enum, and area's parameter, declared and used, size.
+	var text = replace(s.text(program), "class Shape { }", "enum Shape { A, B }");
+	for (i < 2) text = replace(text, "width", "size");
+	s.change(program, 2, text);
+	s.settle();
+	t.assert(s.failures > 0, "the edit's analysis of the client fails admission");
+	t.assert(client.snapshot == null && client.evicted, "the server's analysis evicts the client's stale snapshot");
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
+	var before = s.analyses(), hover = s.hover(program);
+	s.settle();
+	t.asserti(before + 1, s.analyses());
+	t.assert(hovered(s.result(hover)), "the hover is answered from the demand analysis");
+	t.asserti(1, s.tokenRefreshes);
+	t.asserti(1, s.hintRefreshes);
+	t.assert(!Strings.equal(tokens, rendered(s.result(s.tokens(use)))), "Use.v3's tokens changed");
+	t.assert(contains(rendered(s.result(s.hints(use))), "\"label\":\"size:\""), "Use.v3's hint changed");
+	// Each round also hovers Use.v3 where it has no Greeting, so only the
+	// work counts.
+	for (round < 3) {
+		var work = visibleRound(s, names);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+	}
+	s.server.close();
+}
+// A save while a demand analysis waits schedules the same analysis: one
+// analysis of the project answers the request and the save.
+def test_event_joins_waiting_demand(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	s.evict(name);
 	// A development analysis keeps the worker busy, so the demand waits.
 	s.server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"virgil-lsp/analyze\",\"params\":{\"uri\":\"%s\"}}", s.uri("client/Program.v3")));
 	t.assertz(true, s.supervisor.busy());
@@ -1021,13 +1093,13 @@ def test_event_replaces_demand(t: Tester) {
 	s.settle();
 	t.asserti(before + 2, s.analyses());
 	t.assert(hovered(s.result(hover)), "the hover is answered from the save's analysis");
-	t.asserti(1, s.tokenRefreshes);
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
 	s.server.close();
 }
 // A demand analysis that fails answers its requests as before and is not
 // tried again for the next request. An edit schedules the project again.
 def test_failed_demand_not_retried(t: Tester) {
-	var s = EvictionSession.new(true), name = "server/Program.v3";
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
 	var ctx = s.evict(name), before = s.analyses();
 	s.server.projects.snapshotBudget = 0;
 	var hover = s.hover(name);
@@ -1050,7 +1122,7 @@ def test_failed_demand_not_retried(t: Tester) {
 // A project whose automatic analyses failed, with no snapshot to evict,
 // answers at once and is not analyzed for a request.
 def test_failed_analysis_no_demand(t: Tester) {
-	var s = EvictionSession.new(false), name = "server/Program.v3";
+	var s = EvictionSession.new("two-programs", false), name = "server/Program.v3";
 	s.server.projects.snapshotBudget = 0;
 	s.open(name);
 	s.open("client/Program.v3");
@@ -1069,7 +1141,7 @@ def test_failed_analysis_no_demand(t: Tester) {
 // Cancellation answers a request waiting for a demand analysis, and shutdown
 // answers the rest, as for any analysis.
 def test_demand_waiters_cancel_and_shutdown(t: Tester) {
-	var s = EvictionSession.new(true), name = "server/Program.v3";
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
 	s.evict(name);
 	var first = s.hover(name);
 	t.assertz(true, s.server.analyzing());
@@ -1104,7 +1176,7 @@ def visibleRound(s: EvictionSession, names: Array<string>) -> (int, int, bool) {
 // visible document again after each refresh, as editors do, causes at most
 // one demand analysis per evicted project, and then no work at all.
 def test_visible_projects_stop(t: Tester) {
-	var s = EvictionSession.new(true), names = ["server/Program.v3", "client/Program.v3"];
+	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
 	var server = s.context(names[0]), client = s.context(names[1]);
 	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
 		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
@@ -1114,9 +1186,14 @@ def test_visible_projects_stop(t: Tester) {
 	s.change(names[1], 2, text);
 	s.settle();
 	t.assert(client.snapshot == null && client.evicted, "the edit's analyses evict the client's snapshot");
+	// The first round analyzes the client once more. The edit's new local
+	// gets a type hint, which the comparison finds, as any analysis of the
+	// edit would: one inlay hint refresh, and none for tokens, which a
+	// document's new text never needs.
 	var work = visibleRound(s, names);
 	t.asserti(1, work.0);
-	t.asserti(0, work.1);
+	t.asserti(0, s.tokenRefreshes);
+	t.asserti(1, s.hintRefreshes);
 	t.assertz(true, work.2);
 	for (round < 3) {
 		work = visibleRound(s, names);
@@ -1124,15 +1201,17 @@ def test_visible_projects_stop(t: Tester) {
 		t.asserti(0, work.1);
 		t.assertz(true, work.2);
 	}
-	// An edit to the shared file changes both programs' tokens, so its
-	// analyses ask for refreshes. Admission refuses one program's analysis
-	// while its stale snapshot is retained; that is a failed analysis, not
-	// an eviction, so the client's next requests analyze nothing.
-	var failures = s.failures;
+	// An edit to the shared file changes both programs' tokens and hints, so
+	// its analyses ask for a refresh of each, once. Admission refuses one
+	// program's analysis while its stale snapshot is retained; that is a
+	// failed analysis, not an eviction, so the client's next requests
+	// analyze nothing.
+	var failures = s.failures, tokens = s.tokenRefreshes, hints = s.hintRefreshes;
 	s.open("shared/Greeting.v3");
 	s.change("shared/Greeting.v3", 2, GREETING_FIELD);
 	s.settle();
-	t.assert(s.tokenRefreshes > 0, "the edit's analyses ask for a token refresh");
+	t.asserti(tokens + 1, s.tokenRefreshes);
+	t.asserti(hints + 1, s.hintRefreshes);
 	t.assert(s.failures > failures, "admission refuses an analysis");
 	for (round < 3) {
 		work = visibleRound(s, names);

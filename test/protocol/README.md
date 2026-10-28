@@ -32,7 +32,8 @@ It opens `aeneas/src/vst/Verifier.v3` and `apps/Demangle/Demangle.v3`, edits
 the first, and then requests hover, definition, and semantic tokens in both,
 printing each step's replies, their times, and the latest snapshot as JSON
 lines. It passes when the compiler's requests are answered after the edit, no
-refresh request arrives while they wait, and no analysis runs afterwards.
+refresh request arrives while they wait, since the rebuilt compiler's tokens
+and hints are those the client already has, and no analysis runs afterwards.
 Automatic analyses have no completion signal, so it waits until the latest
 snapshot's generation hasn't changed for four seconds
 (`EVICTED_SNAPSHOT_QUIET` changes that); every receive has a deadline. On

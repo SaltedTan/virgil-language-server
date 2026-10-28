@@ -18,7 +18,8 @@ compiler's snapshot evicted, so hover, definition, and semantic tokens there
 used to answer null, null, and ContentModified until the next edit. Now the
 first request analyzes the compiler again and is answered from that analysis.
 The client supports both refresh requests and answers each; the script checks
-that the demand analysis sends none and that no analysis runs afterwards.
+that the analysis, which changes no open document's tokens or hints, sends
+none, and that no analysis runs afterwards.
 
 Automatic analyses have no completion signal, so the script waits until the
 latest snapshot's generation (virgil-lsp/snapshot) has not changed for
@@ -177,7 +178,7 @@ def main():
         print(json.dumps({"step": "after", "snapshot": after, "refreshesDuringRequests": demanded,
                           "refreshesTotal": len(s.refreshes)}), flush=True)
         assert answered(edited["compiler"]), "the compiler's requests are answered after its snapshot was evicted"
-        assert demanded == 0, "a demand analysis sends no refresh"
+        assert demanded == 0, "an unchanged rebuild sends no refresh"
         assert after["generation"] == quiet, "no analysis runs without a request"
         s.shutdown()
         print("evicted_snapshot: ok", flush=True)

@@ -1,0 +1,15 @@
+// The client program. Declares the same top-level name as server/Program.v3,
+// so the two programs cannot be analyzed as one.
+component Program {
+	def main() -> int {
+		var greeting = Greeting.text("client");
+		System.puts(greeting);
+		System.ln();
+		return greeting.length;
+	}
+	def area(width: int) -> int {
+		return width;
+	}
+}
+// Use.v3 colors Shape as a class and labels area's argument "width:".
+class Shape { }

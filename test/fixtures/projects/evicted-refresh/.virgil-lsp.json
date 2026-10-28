@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "server",
+      "sources": ["server/*.v3", "shared/*.v3"]
+    },
+    {
+      "name": "client",
+      "sources": ["client/*.v3", "shared/*.v3"]
+    }
+  ]
+}
