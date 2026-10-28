@@ -827,6 +827,7 @@ def test_snapshot_budget(t: Tester) {
 		if (i == 6) {
 			t.assert(contexts[0].snapshot != null, "recently used context survives eviction");
 			t.assert(contexts[1].snapshot == null, "least recently used inactive context evicted first");
+			t.assert(contexts[1].evicted && !contexts[0].evicted, "eviction is recorded on the evicted context only");
 		}
 		latest = occurrenceSnapshot(i + 1);
 		if (latest == null) return t.fail("snapshot fixture rejected");
@@ -837,6 +838,8 @@ def test_snapshot_budget(t: Tester) {
 		t.assert(retained <= w.MAX_SNAPSHOT_BYTES, "aggregate snapshots remain bounded");
 	}
 	t.assert(contexts[0].snapshot == null, "old context eventually evicted");
+	t.assertz(true, contexts[0].evicted);
+	t.assertz(false, contexts[32].evicted);
 	t.assertz(true, w.admitSnapshot(contexts[0], latest, reserve));
 	contexts[0].snapshot = occurrenceSnapshot(34);
 	t.assert(contexts[0].snapshot.definitionAt("p.v3", 1, 1) != null, "evicted context reanalyzes on demand");

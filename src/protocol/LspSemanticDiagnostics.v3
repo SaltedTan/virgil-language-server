@@ -6,13 +6,18 @@
 class LspSemanticRun(context: ProjectContext, keys: Array<string>, inputs: LspAnalysisInputs) {
 	// The listener of {LspSemanticDiagnostics.whenAnalyzed}, or null.
 	var listener: LspSnapshotWaiters;
+	// Started for a request's demand alone (LspSemanticWait.demand).
+	var demand: bool;
 }
 // A context waiting to be analyzed once {due} (System.ticksMs) has passed. An
 // urgent wait stays due, whatever later changes schedule, and starts before
-// other due contexts.
+// other due contexts. A demand wait analyzes an evicted context again only
+// because a request needs its snapshot; scheduling the context for an event
+// makes it an ordinary wait.
 class LspSemanticWait(context: ProjectContext) {
 	var due: int;
 	var urgent: bool;
+	var demand: bool;
 	var listener: LspSnapshotWaiters;
 }
 
@@ -38,7 +43,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	var info: string -> void;
 	var development: LspDevelopmentAnalysis;
 	// Compares open documents' inlay hints and semantic tokens with a
-	// published snapshot, for their refresh requests.
+	// published snapshot, other than a demand analysis's, for their refresh
+	// requests.
 	var compareOpen: (ProjectContext, AnalysisSnapshot, Array<ProjectContext>) -> void;
 	private var running: LspSemanticRun;
 	private var waiting = Vector<LspSemanticWait>.new();
@@ -138,8 +144,15 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	// Returns the listener of the analysis of {ctx} that captures the newest
 	// documents, or null if no analysis of {ctx} waits or runs. That is the
 	// waiting one, if there is one, which becomes urgent and starts before any
-	// other; otherwise the running one. A scheduler has one consumer, the
-	// server's LspSnapshotRequests, so an analysis has at most one listener,
+	// other; otherwise the running one. If neither exists and admission
+	// evicted the context's snapshot (ProjectContext.evicted), it schedules a
+	// demand analysis, urgent like a waiting one, and returns its listener.
+	// Starting any analysis of the context clears the eviction, so a demand
+	// analysis that fails is not repeated until an event schedules the context
+	// again. A demand analysis sends no refresh: a refresh would make the
+	// client request every visible document again, and their demand analyses
+	// could evict each other's snapshots without end. A scheduler has one
+	// consumer, the server's LspSnapshotRequests, so an analysis has at most one listener,
 	// its waiting definition and hover requests: {candidate} becomes it unless
 	// it already has one. The listener moves from a waiting analysis to the
 	// run when it starts, and is notified once, when that analysis completes,
@@ -159,9 +172,18 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			startNext();
 			return listener;
 		}
-		if (running == null || running.context != ctx) return null;
-		if (running.listener == null) running.listener = candidate;
-		return running.listener;
+		if (running != null && running.context == ctx) {
+			if (running.listener == null) running.listener = candidate;
+			return running.listener;
+		}
+		if (!ctx.evicted || ctx.snapshot != null || !ctx.config.current) return null;
+		var w = LspSemanticWait.new(ctx);
+		w.urgent = w.demand = true;
+		w.due = System.ticksMs();
+		w.listener = candidate;
+		waiting.put(w);
+		startNext();
+		return candidate;
 	}
 	// Stops scheduling; the caller closes the supervisor.
 	def close() {
@@ -188,6 +210,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			for (i < waiting.length) { if(waiting[i].context == ctx) wait = waiting[i]; }
 			if (wait == null) waiting.put(wait = LspSemanticWait.new(ctx));
 			wait.due = if(wait.urgent, now, due);
+			wait.demand = false;
 		}
 		for (i < dropped.length) finished(dropped[i].listener);
 	}
@@ -221,9 +244,13 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			var rest = Vector<LspSemanticWait>.new();
 			for (i < waiting.length) { if(waiting[i] != next) rest.put(waiting[i]); }
 			waiting = rest;
+			// This analysis recovers from any eviction, or fails to.
+			next.context.evicted = false;
 			start(next.context);
-			if (running != null) running.listener = next.listener;
-			else finished(next.listener);
+			if (running != null) {
+				running.listener = next.listener;
+				running.demand = next.demand;
+			} else finished(next.listener);
 		}
 	}
 	private def start(ctx: ProjectContext) {
@@ -332,7 +359,7 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			lists.semantic(run.keys[i], ctx, inputs.versions, if(found[i] != null, found[i].extract(), []));
 		}
 		lists.clearOwned(ctx, keep);
-		if (compareOpen != null) compareOpen(ctx, snapshot, owners);
+		if (compareOpen != null && !run.demand) compareOpen(ctx, snapshot, owners);
 	}
 	private def discard(ctx: ProjectContext, snapshot: AnalysisSnapshot, why: string) {
 		log(info, Strings.format3("discarded analysis %d of project %s: %s", snapshot.generation, ctx.definition.name, why));

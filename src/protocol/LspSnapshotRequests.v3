@@ -131,9 +131,10 @@ class LspSnapshotWaiters(owner: LspSnapshotRequests) {
 // Requests answered from the retained snapshot of the document's active
 // project context. Every reply goes through {send}, unless
 // a submitter takes it (see {submit}): a request against a missing or stale
-// snapshot waits for the context's pending analysis. Each method supplies its
-// answer function, how to prepare it from other parameters, and an optional
-// failure reply. See docs/architecture.md#definition for the shared rules;
+// snapshot waits for the context's pending analysis, or, if admission evicted
+// the snapshot, for the analysis that the request's demand schedules. Each
+// method supplies its answer function, how to prepare it from other
+// parameters, and an optional failure reply. See docs/architecture.md#definition for the shared rules;
 // each method owns its lookup policy, including whether the byte before the
 // position is eligible.
 class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) {
@@ -143,7 +144,8 @@ class LspSnapshotRequests(store: DocumentStore, projects: WorkspaceProjects, sen
 	def MAX_WAITING = 256;
 	private def NULL = JsonRpcReply.Result(JsonValue.Null);
 	// Returns the listener of a context's pending analysis, registering the
-	// candidate if it has none, or null if none is pending
+	// candidate if it has none, or null if none is pending; an evicted
+	// snapshot's context may get an analysis for the request's demand
 	// (LspSemanticDiagnostics.whenAnalyzed). Without it, a missing or stale
 	// snapshot is answered through the method's failure policy at once.
 	var whenAnalyzed: (ProjectContext, LspSnapshotWaiters) -> LspSnapshotWaiters;

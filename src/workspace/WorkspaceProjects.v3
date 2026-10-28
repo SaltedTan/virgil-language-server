@@ -10,6 +10,12 @@ class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	var hintTargets = OrderedStringMap<LspHintTargetFingerprint>.new();
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
+	// Snapshot admission cleared {snapshot} to make room, and no automatic
+	// analysis of this context has started since. A request that needs the
+	// snapshot may then analyze the context again, once (see
+	// LspSemanticDiagnostics.whenAnalyzed). A context never analyzed, or
+	// whose analysis failed after the eviction, has neither.
+	var evicted: bool;
 	var lastUsed: long;
 	def contains(path: string, memberOnly: bool) -> bool {
 		for (s in sources) { if(Strings.equal(path, s.path) && (!memberOnly || s.member)) return true; }
@@ -47,6 +53,9 @@ class WorkspaceProjects(store: DocumentStore) {
 	// whether another program owns its files (otherProgram). Tests lower it.
 	def MAX_OWNERSHIP_STEPS = 8000000;
 	def var folders: Array<string> = [];
+	// The bytes that retained snapshots and an incoming analysis's reservation
+	// may take together (admitSnapshot). Tests lower it.
+	var snapshotBudget = MAX_SNAPSHOT_BYTES;
 	// Fixed for the session: initialize() sets it, and clients restart the
 	// server to change it. Were it to change, otherProgram() could miss a
 	// dependency that a context's list still holds from the old root.
@@ -434,7 +443,7 @@ class WorkspaceProjects(store: DocumentStore) {
 				if (ctx.snapshot != null && ctx.snapshot != latest && ctx.snapshot != original) retained += ctx.snapshot.retainedBytes;
 			}
 		}
-		while (retained > long.view(MAX_SNAPSHOT_BYTES) - incomingBytes) {
+		while (retained > long.view(snapshotBudget) - incomingBytes) {
 			var victim: ProjectContext;
 			for (i < configs.length) {
 				for (ctx in configs[i].contexts) {
@@ -445,6 +454,7 @@ class WorkspaceProjects(store: DocumentStore) {
 			if (victim == null) return false;
 			retained -= victim.snapshot.retainedBytes;
 			victim.snapshot = null;
+			victim.evicted = true;
 		}
 		return true;
 	}
