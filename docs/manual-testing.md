@@ -105,6 +105,10 @@ Report a failed check with the [bug report form](https://github.com/SaltedTan/vi
 
 Follow the [editor evidence contract](../test/e2e/RESULTS.md) for new release results, including evidence labels and coverage gaps. Record optional manual observations of matrix features or VS Code checklist steps in the [manual result format](../test/e2e/RESULTS.md#result-events), with their date, the server's source revision, the editor's version, and the person's attestation. The historical results below keep their hand-written labels.
 
+### 0.1.0-alpha.5
+
+This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.
+
 ### 0.1.0-alpha.4
 
 This release's gate needs automated evidence only ([release gate](../test/e2e/RESULTS.md#the-release-gate)). The dry-run results follow.

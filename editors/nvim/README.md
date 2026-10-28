@@ -4,9 +4,9 @@
 
 Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on PATH](../../README.md#editor-setup). LazyVim additionally requires an existing [LazyVim starter installation](https://www.lazyvim.org/installation) and its prerequisites (including Git and a C compiler for parsers). No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
 
-With `main`'s server, [folding ranges](../../docs/architecture.md#folding-ranges) come from brace blocks and multiline comments in the current buffer. Neovim can use them with `:setlocal foldmethod=expr foldexpr=v:lua.vim.lsp.foldexpr()`.
+With a `0.1.0-alpha.5` or later server, [folding ranges](../../docs/architecture.md#folding-ranges) come from brace blocks and multiline comments in the current buffer. Neovim can use them with `:setlocal foldmethod=expr foldexpr=v:lua.vim.lsp.foldexpr()`.
 
-With `main`'s server, `textDocument/selectionRange` returns [selection chains](../../docs/architecture.md#selection-ranges) through tokens, bracket groups, declarations, and the current buffer. The headless test checks an exact chain by sending the request directly.
+With a `0.1.0-alpha.5` or later server, `textDocument/selectionRange` returns [selection chains](../../docs/architecture.md#selection-ranges) through tokens, bracket groups, declarations, and the current buffer. The headless test checks an exact chain by sending the request directly.
 
 ## LazyVim
 
@@ -14,7 +14,7 @@ Download [`lazyvim/virgil.lua`](lazyvim/virgil.lua) to your existing LazyVim ins
 
 <!-- clean-install: lazyvim -->
 ```sh
-config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.4/editors/nvim
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.5/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/lua/plugins"
 curl --fail --location "$config_url/lazyvim/virgil.lua" -o "$nvim_config/lua/plugins/virgil.lua.part" &&
@@ -31,7 +31,7 @@ LazyVim's noice.nvim drops `window/showMessage` notifications from every languag
 { "folke/noice.nvim", opts = { lsp = { message = { enabled = false } } } },
 ```
 
-With `main`, `:lua vim.lsp.buf.code_action()` offers **Insert missing ";"** when the current syntax error can be fixed by a proven semicolon insertion. The [code action](../../docs/architecture.md#code-actions) uses a versioned edit before any trailing comment. No other syntax or semantic fixes are provided.
+With `0.1.0-alpha.5` or `main`, `:lua vim.lsp.buf.code_action()` offers **Insert missing ";"** when the current syntax error can be fixed by a proven semicolon insertion. The [code action](../../docs/architecture.md#code-actions) uses a versioned edit before any trailing comment. No other syntax or semantic fixes are provided.
 
 ## Plain Neovim
 
@@ -39,7 +39,7 @@ Download [`virgil_lsp.lua`](virgil_lsp.lua) into your configuration's `plugin/` 
 
 <!-- clean-install: plain-nvim -->
 ```sh
-config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.4/editors/nvim
+config_url=https://raw.githubusercontent.com/SaltedTan/virgil-language-server/v0.1.0-alpha.5/editors/nvim
 nvim_config="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 mkdir -p "$nvim_config/plugin"
 curl --fail --location "$config_url/virgil_lsp.lua" -o "$nvim_config/plugin/virgil_lsp.lua.part" &&
@@ -66,7 +66,7 @@ For a release install, you can select its bundled library explicitly instead (re
 
 <!-- clean-install: nvim-root -->
 ```sh
-export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.4-x86-64-linux/virgil"
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.5-x86-64-linux/virgil"
 ```
 
 Or replace `vim.env.VIRGIL_LOC` with the path. See [The Virgil root](../../docs/configuration.md#the-virgil-root) for bundle placement, root errors, and projects needing a checkout override. `:lua =vim.lsp.get_clients({ name = "virgil_lsp" })[1].config.init_options` shows what was sent. The option is read when the server starts: after changing it, restart Neovim, or run `:LspRestart` with nvim-lspconfig (`:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`).
