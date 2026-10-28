@@ -11,6 +11,10 @@ def X = [
 	T("LspDocumentSymbols:bound_index_operators", test_symbol_bound_index_operators),
 	T("LspDocumentSymbols:expression_bodies", test_symbol_expression_bodies),
 	T("LspDocumentSymbols:large_single_line", test_symbol_large_single_line),
+	T("LspDocumentSymbols:count_bound", test_symbol_count_bound),
+	T("LspDocumentSymbols:byte_bound", test_symbol_byte_bound),
+	T("LspDocumentSymbols:byte_bound_long_uri", test_symbol_long_uri),
+	T("LspDocumentSymbols:byte_bound_escaped_names", test_symbol_byte_bound_escaped_names),
 	T("LspDocumentSymbols:variant_cases", test_symbol_variant_cases),
 	T("LspDocumentSymbols:default_case", test_symbol_default_case),
 	T("LspDocumentSymbols:flat_symbols", test_symbol_flat),
@@ -20,6 +24,7 @@ def X = [
 	T("LspDocumentSymbols:details_stale_snapshot", test_symbol_details_stale),
 	T("LspDocumentSymbols:details_substituted_snapshot", test_symbol_details_substituted),
 	T("LspDocumentSymbols:details_outside_project", test_symbol_details_outside_project),
+	T("LspDocumentSymbols:details_byte_bound", test_symbol_details_byte_bound),
 	T("LspDocumentSymbols:version_only_change", test_symbol_version_only),
 	()
 ];
@@ -353,8 +358,10 @@ def test_symbol_expression_bodies(t: Tester) {
 	}
 }
 
+// A component whose fields, with it, are exactly the most symbols a reply may have.
 def test_symbol_large_single_line(t: Tester) {
-	var count = 10000;
+	var s = running(t);
+	var count = s.documentSymbols.MAX_SYMBOLS - 1;
 	var buf = StringBuilder.new().puts("component C { var ");
 	var names = Array<string>.new(count), starts = Array<int>.new(count);
 	for (i < count) {
@@ -366,7 +373,6 @@ def test_symbol_large_single_line(t: Tester) {
 	buf.puts(";");
 	var fieldEnd = buf.length;
 	var text = buf.puts(" }").extract();
-	var s = running(t);
 	s.documents.open(URI, "virgil", 1, text);
 	var started = System.ticksUs();
 	var a = symbols(t, s);
@@ -376,6 +382,170 @@ def test_symbol_large_single_line(t: Tester) {
 	var c = children(a[0]);
 	t.asserti(count, c.length);
 	for (i < count) checkSymbol(t, c[i], names[i], 8, 0, 14, 0, fieldEnd, 0, starts[i]);
+	// One more field is one symbol too many, at the default bounds too.
+	s.documents.change(URI, 2, Arrays.concat(Arrays.range(text, 0, fieldEnd - 1), ", g: int; }"));
+	t.assert_string(failed("the document has more than 10000 symbols"), s.handle(REQUEST));
+}
+
+// The reply to a documentSymbol request for {uri}, with the id of REQUEST.
+def symbolReply(s: LspServer, uri: string) -> string {
+	var doc = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
+	doc["uri"] = JsonValue.String(uri);
+	params["textDocument"] = JsonValue.JObject(doc);
+	return s.handle(JsonRpcMessage.Request(JsonRpcId.Int(9), "textDocument/documentSymbol", JsonRpcParams.ByName(params)).encode());
+}
+// The reply that {r} encodes, with the id of REQUEST.
+def encodeReply(r: JsonRpcReply) -> string {
+	match (r) {
+		Result(v) => return JsonRpcMessage.Response(JsonRpcId.Int(9), v).encode();
+		Error(e) => return JsonRpcMessage.ErrorResponse(JsonRpcId.Int(9), e).encode();
+	}
+}
+def failed(message: string) -> string {
+	return Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32803,\"message\":\"%s\"}}", message);
+}
+def RESULT = "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":";
+// The parsed result of {reply}, which must succeed.
+def resultOf(t: Tester, reply: string) -> Array<JsonValue> {
+	t.assert(reply != null && Strings.startsWith(reply, RESULT), "the outline must succeed");
+	if (reply == null || !Strings.startsWith(reply, RESULT)) return [];
+	var parsed = JsonRpcJsonParser.new(reply);
+	parsed.maxValues = int.max;
+	return JsonValue.JArray.!(JsonValue.JObject.!(parsed.parseDocument()).v["result"]).v;
+}
+// The estimate that bounds the encoded {symbols}, a parsed result whose
+// strings have no invalid UTF-8: SYMBOL_BYTES for each symbol, nested ones
+// included, and each of its strings as JsonRpcJson.stringBytes counts them.
+def estimate(s: LspServer, symbols: Array<JsonValue>) -> int {
+	var bytes = 0;
+	for (v in symbols) {
+		var obj = JsonValue.JObject.!(v).v;
+		bytes += s.documentSymbols.SYMBOL_BYTES + JsonRpcJson.stringBytes(JsonValue.String.!(obj["name"]).v);
+		for (key in ["detail", "containerName"]) {
+			if (obj.has(key)) bytes += JsonRpcJson.stringBytes(JsonValue.String.!(obj[key]).v);
+		}
+		if (obj.has("location")) {
+			bytes += JsonRpcJson.stringBytes(JsonValue.String.!(JsonValue.JObject.!(obj["location"]).v["uri"]).v);
+		}
+		if (obj.has("children")) bytes += estimate(s, children(v));
+	}
+	return bytes;
+}
+// Checks that the reply {ask} gets from {s} encodes its result in at most
+// {need} bytes, and that a byte bound of exactly {need} gives the same reply
+// while one byte less refuses it.
+def checkByteBound(t: Tester, s: LspServer, ask: LspServer -> string, need: int) {
+	var reply = ask(s);
+	resultOf(t, reply);
+	t.assert(reply.length - RESULT.length - 1 <= need, "the estimate must bound the encoded result");
+	s.documentSymbols.maxReplyBytes = need;
+	t.assert_string(reply, ask(s));
+	s.documentSymbols.maxReplyBytes = need - 1;
+	t.assert_string(failed(Strings.format1("the document's outline needs more than %d bytes", need - 1)), ask(s));
+	s.documentSymbols.maxReplyBytes = s.documentSymbols.MAX_REPLY_BYTES;
+}
+// A server initialized for flat symbols, with every kind.
+def flatRunning(t: Tester) -> LspServer {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	t.assert(s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"textDocument\":{\"documentSymbol\":{\"symbolKind\":{\"valueSet\":%s}}}}}}", SYMBOL_KINDS)) != null, "initialize reply");
+	return s;
+}
+def NESTED = "component C {\n\tdef a() {}\n\tdef b() {}\n}\nclass K {\n\tvar x: int;\n}\n";
+
+// Nested symbols count against the one bound of the whole reply, in both
+// shapes: five symbols, two at the root.
+def test_symbol_count_bound(t: Tester) {
+	for (s in [running(t), flatRunning(t)]) {
+		s.documents.open(URI, "virgil", 1, NESTED);
+		var reply = s.handle(REQUEST);
+		t.asserti(if(s.documentSymbols.hierarchy, 2, 5), resultOf(t, reply).length);
+		s.documentSymbols.maxSymbols = 5;
+		t.assert_string(reply, s.handle(REQUEST));
+		s.documentSymbols.maxSymbols = 4;
+		t.assert_string(failed("the document has more than 4 symbols"), s.handle(REQUEST));
+		s.documentSymbols.maxSymbols = 1;
+		t.assert_string(failed("the document has more than 1 symbols"), s.handle(REQUEST));
+		// The first symbol is already past a byte bound of 0, but an empty
+		// outline needs nothing.
+		s.documentSymbols.maxSymbols = s.documentSymbols.MAX_SYMBOLS;
+		s.documentSymbols.maxReplyBytes = 0;
+		t.assert_string(failed("the document's outline needs more than 0 bytes"), s.handle(REQUEST));
+		s.documents.change(URI, 2, "");
+		t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":[]}", s.handle(REQUEST));
+	}
+}
+
+// The byte bound admits exactly a reply's estimate, which bounds its encoded
+// JSON, in both shapes: with nested symbols, a long name, and, for the flat
+// one, the escaped URI that each symbol repeats and their containers.
+def test_symbol_byte_bound(t: Tester) {
+	var long = Arrays.concat("l", Array<byte>.new(5000));
+	for (i = 1; i < long.length; i++) long[i] = byte.view('a' + i % 26);
+	var text = Arrays.concat(NESTED, Strings.format1("component %s { def m() {} }\n", long));
+	var uri = "untitled:q\"b\\c\x01\x1F\t\xC3\xA9\xF0\x9D\x84\x9E";
+	for (s in [running(t), flatRunning(t)]) {
+		for (u in [URI, uri]) {
+			t.assert(s.documents.open(u, "virgil", 1, text) == null, "open");
+			var a = resultOf(t, symbolReply(s, u));
+			t.asserti(if(s.documentSymbols.hierarchy, 3, 7), a.length);
+			checkByteBound(t, s, symbolReply(_, u), estimate(s, a));
+		}
+	}
+}
+
+// A flat reply repeats the document's URI in every symbol, so a few symbols
+// with a long URI exceed the default byte bound; the hierarchy omits the URI.
+def test_symbol_long_uri(t: Tester) {
+	var uri = Arrays.concat("untitled:", Array<byte>.new(100000));
+	for (i = 9; i < uri.length; i++) uri[i] = 'u';
+	var buf = StringBuilder.new();
+	for (i < 50) buf.put1("def a%d = 0; ", i);
+	var text = buf.extract();
+	var flat = flatRunning(t);
+	t.assert(flat.documents.open(uri, "virgil", 1, text) == null, "open");
+	t.assert_string(failed("the document's outline needs more than 4194304 bytes"), symbolReply(flat, uri));
+	var s = running(t);
+	t.assert(s.documents.open(uri, "virgil", 1, text) == null, "open");
+	t.asserti(50, resultOf(t, symbolReply(s, uri)).length);
+}
+
+// The reply to the symbols that {sym} gives the outline of text {text} of {uri}.
+def answerOf(s: LspServer, uri: string, text: string, sym: Array<AnalysisDocumentSymbol>) -> string {
+	return encodeReply(s.documentSymbols.answer(uri, sym, PositionMap.new(text, PositionEncoding.UTF16), null, null));
+}
+// No parse makes names that JSON escapes, but the estimate counts each name as
+// JsonRpcJson.stringBytes does: quotes, a backslash, control characters with
+// short and long escapes, non-ASCII text, and a byte that isn't UTF-8, which
+// is sent as an escaped replacement character, as names and as a container.
+def test_symbol_byte_bound_escaped_names(t: Tester) {
+	var text = "0123456789\n0123456789\n";
+	var names = ["q\"b\\c", "\x01\x1F\n\t", "\xC3\xA9\xF0\x9D\x84\x9E", "bad\xFF", "plain"];
+	def S = AnalysisDocumentSymbol.new(_, AnalysisDeclKind.METHOD, 0, 21, 11, 12, _);
+	var leaf = S(names[3], []);
+	var inner = S(names[1], [S(names[2], []), leaf]);
+	var syms = [S(names[0], [inner]), S(names[4], [])];
+	for (s in [running(t), flatRunning(t)]) {
+		var hierarchy = s.documentSymbols.hierarchy;
+		var need = 0;
+		for (n in names) need += s.documentSymbols.SYMBOL_BYTES + JsonRpcJson.stringBytes(n);
+		// Flat symbols repeat the URI and name their containers: the first
+		// contains the second, which contains the third and the fourth.
+		if (!hierarchy) need += 5 * JsonRpcJson.stringBytes(URI) + JsonRpcJson.stringBytes(names[0]) + 2 * JsonRpcJson.stringBytes(names[1]);
+		t.asserti(if(hierarchy, 1493, 1643), need);
+		checkByteBound(t, s, answerOf(_, URI, text, syms), need);
+		t.asserti(if(hierarchy, 2, 5), resultOf(t, answerOf(s, URI, text, syms)).length);
+	}
+}
+
+// A hierarchical symbol's detail counts toward the byte bound.
+def test_symbol_details_byte_bound(t: Tester) {
+	var s = SymbolTestSession.new(t);
+	s.open(s.uri(), 1, DETAILS);
+	s.settle();
+	var a = resultOf(t, symbolReply(s.server, s.uri()));
+	t.assert_string(DETAILS_OUTLINE, details(a));
+	checkByteBound(t, s.server, symbolReply(_, s.uri()), estimate(s.server, a));
+	s.server.close();
 }
 
 def test_symbol_params(t: Tester) {

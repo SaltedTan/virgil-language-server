@@ -113,11 +113,38 @@ class LspClientKinds(initial: int, fallback: int -> int) {
 // Reply shapes follow the client's capabilities; see
 // docs/architecture.md#document-symbols.
 class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
+	// Bounds a reply, whose symbols, nested ones included, take about 2 KB of
+	// the server's heap each in the hierarchical shape, and 1.4 KB in the flat
+	// one, until it is encoded: 44,000 hierarchical or 64,000 flat symbols,
+	// which fit in a document well below the overlay limit, filled the default
+	// heap's 100 MiB semispace and killed the process. A reply of this many
+	// symbols needs less than 30 MiB, beside the 32 MiB snapshot budget; the
+	// largest outline in the pinned Virgil checkout has 1,030. A document with
+	// more gets RequestFailed. See docs/architecture.md#document-symbols.
+	def MAX_SYMBOLS = 10000;
+	// Bounds the encoded size of a reply, whose flat symbols repeat the
+	// document's URI and their container's name: a count alone does not bound
+	// a reply with a long URI or long names, and encoding needs several times
+	// its size while the buffer grows and the message is framed. 450 flat
+	// symbols that repeat a 100,000-character URI killed the process, while a
+	// reply of this size needs less than 20 MiB. A document whose outline
+	// needs more gets RequestFailed. See docs/architecture.md#document-symbols.
+	def MAX_REPLY_BYTES = 4194304;
+	// The most bytes that a symbol's JSON adds beyond its strings as
+	// JsonRpcJson.stringBytes counts them, with their quotes: the rest of a
+	// hierarchical symbol's object, the larger shape, with its children's
+	// brackets, a two-digit kind, two ranges with eight numbers in total of at
+	// most 11 digits each, and the array's comma. It is 281; a flat symbol's
+	// is 171. See docs/architecture.md#document-symbols.
+	def SYMBOL_BYTES = 288;
 	// True if the client's initialize declared
 	// textDocument.documentSymbol.hierarchicalDocumentSymbolSupport: true.
 	var hierarchy: bool;
 	// The client's textDocument.documentSymbol.symbolKind.
 	var clientKinds = LspSymbolKind.symbols(null);
+	// The bounds of a reply; tests may lower them.
+	var maxSymbols = MAX_SYMBOLS;
+	var maxReplyBytes = MAX_REPLY_BYTES;
 
 	def register(dispatcher: JsonRpcDispatcher) {
 		dispatcher.onRequest("textDocument/documentSymbol", documentSymbol);
@@ -140,8 +167,41 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		if (s != null && (!s.matchesDocument(store, overlay.uri) ||
 			s.documentVersions[s.documentIndex(overlay.uri)].substitution != null)) s = null;
 		var path = if(s != null, s.paths[s.documentIndex(overlay.uri)]);
+		return answer(overlay.uri, symbols, map, s, path);
+	}
+	// The reply of the outline {symbols} of the document {uri}, whose text
+	// {map} converts, in the client's shape, or RequestFailed if it has more
+	// than {maxSymbols} symbols, nested ones included, or its estimated encoded
+	// JSON needs more than {maxReplyBytes}, never a partial outline. Tests
+	// also give it symbols that no parse makes, such as names with escapes.
+	def answer(uri: string, symbols: Array<AnalysisDocumentSymbol>, map: PositionMap, s: AnalysisSnapshot,
+			path: string) -> JsonRpcReply {
+		// Each flat symbol repeats the URI; a hierarchical one has a detail instead.
+		var budget = LspDocumentSymbolBudget.new(maxSymbols, maxReplyBytes);
+		var uriBytes = if(!hierarchy, JsonRpcJson.stringBytes(uri));
+		if (!admit(symbols, null, uriBytes, s, path, budget)) return JsonRpcReply.Error(budget.error);
 		if (hierarchy) return JsonRpcReply.Result(encodeSymbols(symbols, map, s, path));
-		return JsonRpcReply.Result(encodeSymbolInformation(overlay.uri, symbols, map));
+		return JsonRpcReply.Result(encodeSymbolInformation(uri, symbols, map));
+	}
+	// Adds the symbols of {symbols} and their children, in the reply's
+	// pre-order, to {budget}, before any of their JSON is built. False at the
+	// first symbol past either bound. Each counts SYMBOL_BYTES and its name;
+	// a hierarchical one, its detail, and a flat one, {uriBytes} and its
+	// {container}'s name.
+	private def admit(symbols: Array<AnalysisDocumentSymbol>, container: string, uriBytes: int,
+			s: AnalysisSnapshot, path: string, budget: LspDocumentSymbolBudget) -> bool {
+		for (sym in symbols) {
+			var bytes = SYMBOL_BYTES + JsonRpcJson.stringBytes(sym.name);
+			if (hierarchy) {
+				var signature = if(s != null, signatureOf(s, path, sym));
+				if (signature != null) bytes += JsonRpcJson.stringBytes(signature);
+			} else {
+				bytes += uriBytes;
+				if (container != null) bytes += JsonRpcJson.stringBytes(container);
+			}
+			if (!budget.add(bytes) || !admit(sym.children, sym.name, uriBytes, s, path, budget)) return false;
+		}
+		return true;
 	}
 	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
 		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;
@@ -207,5 +267,27 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 		obj["line"] = JsonValue.Int(p.line);
 		obj["character"] = JsonValue.Int(p.character);
 		return JsonValue.JObject(obj);
+	}
+}
+
+// The symbols of one document-symbol reply and their estimated encoded bytes,
+// as LspDocumentSymbols admits them, within its bounds; {error} says which
+// bound a symbol would exceed.
+class LspDocumentSymbolBudget(maxSymbols: int, maxBytes: int) {
+	var symbols: int;
+	var bytes: int;
+	var error: JsonRpcError;
+
+	// Adds a symbol of {more} bytes. False with an {error} if it would exceed a bound.
+	def add(more: int) -> bool {
+		if (symbols == maxSymbols) return fail(Strings.format1("the document has more than %d symbols", maxSymbols));
+		if (more > maxBytes - bytes) return fail(Strings.format1("the document's outline needs more than %d bytes", maxBytes));
+		symbols++;
+		bytes += more;
+		return true;
+	}
+	private def fail(message: string) -> bool {
+		error = JsonRpcError.new(LspErrorCode.REQUEST_FAILED, message);
+		return false;
 	}
 }
