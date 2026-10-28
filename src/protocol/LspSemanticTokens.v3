@@ -149,7 +149,8 @@ class LspSemanticTokens(send: Array<byte> -> void, pending: JsonRpcPendingReques
 
 	// Refresh. Each open document keeps a fingerprint for its text from a
 	// request's reply or the last analysis comparison. An unowned reply
-	// records EMPTY. A new analysis
+	// records EMPTY; ContentModified records UNAVAILABLE, unless it keeps the
+	// fingerprint as described below. A new analysis
 	// whose tokens differ for the same text sends workspace/semanticTokens/refresh,
 	// including when an unowned document joins a project or analysis recovers
 	// after ContentModified. A successful request records its tokens, so
