@@ -8,7 +8,7 @@ body:
         Thanks for reporting! A minimal reproduction makes bugs much faster to fix.
 
         Please check the [known limitations](https://github.com/SaltedTan/virgil-language-server/blob/main/docs/known-limitations.md) first.
-        For example, type errors, definition, and hover need a project file, and they stop while any file of the project has a syntax error.
+        Type errors, definition, and hover need a project file. Some syntax errors can be recovered; see [error tolerance](https://github.com/SaltedTan/virgil-language-server/blob/main/docs/known-limitations.md#no-error-tolerant-parsing) for the cases where semantic features remain unavailable.
   - type: checkboxes
     id: checks
     attributes:
