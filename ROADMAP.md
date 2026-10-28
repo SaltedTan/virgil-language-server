@@ -554,7 +554,7 @@ These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 ## Appendix: the original August 2026 plan
 
-_Kept as written in August 2026, apart from heading levels and the list markers that hold the milestone estimates. It is no longer the plan; the delivered milestones above replaced it._
+_Archived from the previous roadmap: the August 2026 plan with the status notes added in October. Only heading levels and the list markers that hold the milestone estimates have changed. It is no longer the plan; the delivered milestones above replaced it._
 
 ### Original milestone estimates
 
