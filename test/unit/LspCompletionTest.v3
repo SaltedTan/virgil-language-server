@@ -1385,11 +1385,12 @@ def test_text_edits(t: Tester) {
 	checkRange(t, items[9], 2, 2, 8, "return");
 }
 
-// A keyword-only reply is complete where only keywords can be right for the
-// text, and where no analysis can add names to it: with no project or worker,
-// in a comment, after a number's ".", and where neither the text nor its
-// repair parses. LspCompletionScopeTest covers the replies that a later
-// request may improve, which say that they are incomplete.
+// A keyword-only reply is complete where no analysis can add names to it:
+// with no project or worker, in a comment, and after a number's ".".
+// LspCompletionScopeTest covers the replies that need a worker: those that a
+// later request may improve, which say that they are incomplete, and those
+// that typing more of the word can't, such as a text that neither parses nor
+// repairs, or another file that doesn't parse.
 def test_keyword_only_complete(t: Tester) {
 	var s = server(t);
 	// An untitled document has no project, and this server has no worker, so
@@ -1405,12 +1406,6 @@ def test_keyword_only_complete(t: Tester) {
 	t.asserti(0, JsonValue.JArray.!(comment["items"]).v.length);
 	t.assertz(false, JsonValue.Bool.!(number["isIncomplete"]).v);
 	t.asserti(0, JsonValue.JArray.!(number["items"]).v.length);
-	// The statement position is plain from the text, but the file and the
-	// repair both fail to parse, so no analysis starts and none would help.
-	s.documents.change(URI, 3, "class A {\n\tdef f() {\n\t\tvar x = g(1,;\n\t\twh\n\t}\n\tdef g( {\n}\n");
-	result = complete(t, s, URI, 3, 4);
-	t.assertz(false, JsonValue.Bool.!(result["isIncomplete"]).v);
-	t.assert_string("break continue def false for fun if match null return true var while", render(result));
 }
 
 def test_utf16_ranges(t: Tester) {

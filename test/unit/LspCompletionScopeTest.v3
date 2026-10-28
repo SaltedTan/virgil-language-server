@@ -39,6 +39,7 @@ def X = [
 	T("LspCompletionScope:stale_document_or_superseded", test_stale_document_or_superseded),
 	T("LspCompletionScope:ref_layouts", test_ref_layouts),
 	T("LspCompletionScope:unreached", test_unreached),
+	T("LspCompletionScope:other_file_unparsed", test_other_file_unparsed),
 	T("LspCompletionMembers:as_typed", test_members_as_typed),
 	T("LspCompletionMembers:items", test_members_items),
 	T("LspCompletionMembers:repairs", test_members_repairs),
@@ -776,6 +777,23 @@ def test_unreached(t: Tester) {
 	for (i < 16) classErrors.put1("\t\tunresolved%d;\n", i);
 	t.assert(!Strings.startsWith(complete(t, s, Arrays.concat(inScale("\t\tto$"), classErrors.puts("\t}\n}\n").toString())), "|"),
 		"declarations where verification reached");
+	s.server.close();
+}
+
+// Another file of the project that doesn't parse, here with a damaged method
+// header, leaves the analysis without names, and the reply is the keywords,
+// complete: typing more of the word doesn't change that file. A request after
+// it parses again gets the names.
+def test_other_file_unparsed(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	s.change("Other.v3", 2, "component Other {\n\tdef helper(-> int { return 1; }\n}\ndef otherShared = 2;\n");
+	s.settle();
+	t.assert_string("| 13", complete(t, s, inScale("\t\tto$")));
+	s.change("Other.v3", 3, OTHER);
+	s.settle();
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tto$")), "|"), "the names once Other.v3 parses");
 	s.server.close();
 }
 

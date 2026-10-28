@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A completion that answers with only keywords, or with an empty list after `.`, now sets `isIncomplete` when the names are missing for a temporary reason, so that the client asks again as the user types: the analysis failed, did not start, or was replaced by a newer request. A keyword-only reply that only the text decides, such as one in a comment or in a document with no project or worker, stays complete ([#327](https://github.com/SaltedTan/virgil-language-server/issues/327)).
+- A completion that answers with only keywords, or with an empty list after `.`, now sets `isIncomplete` when the names are missing for a temporary reason, so that the client asks again as the user types: the analysis failed, did not start, or was replaced by a newer request. A keyword-only reply that typing more of the word can't change stays complete: in a comment, in a document with no project or worker, or where the project's analysis has no names at the cursor, as when another of its files doesn't parse ([#327](https://github.com/SaltedTan/virgil-language-server/issues/327)).
 
 ## [0.1.0-alpha.5] - 2026-10-28
 
