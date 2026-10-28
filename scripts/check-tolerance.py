@@ -32,6 +32,7 @@ import math
 from pathlib import Path
 import re
 import sys
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY_PATH = ROOT / "test/benchmarks/tolerance-inventory.json"
@@ -213,6 +214,29 @@ def _check_measures(problems, where, row, required=()):
                                text.get("bytes") if isinstance(text, dict) else None))
     if isinstance(row.get("excluded_bodies"), dict):
         values.extend(("excluded_bodies." + path, count) for path, count in row["excluded_bodies"].items())
+    for field in ("probes", "measured_probes"):
+        if field not in row:
+            continue
+        if not isinstance(row[field], list):
+            _fail(problems, where + " " + field + " is not an array")
+            continue
+        for index, probe in enumerate(row[field]):
+            name = field + "[" + str(index) + "]"
+            if not isinstance(probe, dict):
+                _fail(problems, where + " " + name + " is not an object")
+                continue
+            values.extend((name + "." + key, probe.get(key)) for key in ("value", "analysis_id"))
+    if row.get("cache_charge") is not None:
+        pending = [("cache_charge", row["cache_charge"])]
+        while pending:
+            name, value = pending.pop()
+            if isinstance(value, dict):
+                pending.extend((name + "." + key, leaf) for key, leaf in value.items())
+            elif isinstance(value, list):
+                pending.extend((name + "[" + str(index) + "]", leaf)
+                               for index, leaf in enumerate(value))
+            else:
+                values.append((name, value))
     for name, value in values:
         if not _is_measure(value):
             _fail(problems, where + " " + name + " is not a finite nonnegative number: " + repr(value))
@@ -471,6 +495,8 @@ def _check_oracles(capture, problems):
             _fail(problems, where + " is not an object")
             continue
         _check_markers(problems, where, oracle)
+        if isinstance(oracle.get("process"), dict):
+            _check_measures(problems, where + " process", oracle["process"])
         oracle_id = oracle.get("id")
         if not _is_int(oracle_id):
             _fail(problems, where + " has no integer id")
@@ -533,6 +559,7 @@ def _check_states(capture, states_inventory, oracles, problems):
         if isinstance(row.get("samples"), list) and not row["samples"]:
             _fail(problems, where + " has no samples")
         _check_measures(problems, where, row, ("state_latency_ms", "worker_replacements"))
+        _check_snapshot(problems, where, row["snapshot"])
         expected_answers = None
         if expected is not None and _is_int(expected.get("queries")):
             expected_answers = 3 * expected["queries"] + 1
@@ -607,6 +634,37 @@ def _check_states(capture, states_inventory, oracles, problems):
         _fail(problems, "capture has oracles that no state uses, or used oracles that are missing")
     _check_mode_evidence(problems, records)
     return records
+
+
+def _check_snapshot(problems, where, snapshot, queries=None):
+    if not isinstance(snapshot, dict):
+        return
+    configuration = snapshot.get("projectConfiguration")
+    if not isinstance(configuration, dict) or configuration.get("current") is not True:
+        _fail(problems, where + " snapshot projectConfiguration is not current")
+    documents = snapshot.get("documentVersions")
+    if not isinstance(documents, list) or not documents:
+        _fail(problems, where + " snapshot has no document versions")
+        return
+    uris = set()
+    for entry in documents:
+        if not isinstance(entry, dict) or not isinstance(entry.get("uri"), str):
+            _fail(problems, where + " snapshot document has no string uri")
+            continue
+        uris.add(entry["uri"])
+        if entry.get("current") is not True:
+            _fail(problems, where + " snapshot document " + entry["uri"] + " is not current")
+    if not isinstance(queries, list):
+        return
+    configuration_uri = configuration.get("uri") if isinstance(configuration, dict) else None
+    if not isinstance(configuration_uri, str):
+        _fail(problems, where + " snapshot projectConfiguration has no string uri")
+        return
+    base = configuration_uri.rsplit("/", 1)[0] + "/"
+    for query in queries:
+        path = query.get("path") if isinstance(query, dict) else None
+        if not isinstance(path, str) or base + quote(path) not in uris:
+            _fail(problems, where + " snapshot lacks queried document " + repr(path))
 
 
 def _document_versions(row):
@@ -702,6 +760,8 @@ def _check_injection(problems, where, stale, oracle_answers, allow_absent):
     if not isinstance(stale, dict):
         _fail(problems, where + " has no stale-predecessor injection")
         return False
+    if isinstance(stale.get("process"), dict):
+        _check_measures(problems, where + " injection process", stale["process"])
     answers, scores = stale.get("answers"), stale.get("scores")
     if not isinstance(answers, dict) or not answers:
         _fail(problems, where + ": injection answers is not a non-empty object")
@@ -787,6 +847,7 @@ def _check_step(problems, where, step, fields, mode):
     complete = _check_fields(problems, where, step, fields)
     before = len(problems)
     _check_measures(problems, where, step, ("state_latency_ms",))
+    _check_snapshot(problems, where, step.get("snapshot"), step.get("queries"))
     complete = complete and len(problems) == before
     for field in ("samples", "queries"):
         if isinstance(step.get(field), list) and not step[field]:
@@ -1260,11 +1321,10 @@ def format_scorecard(report, capture=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path, help="full bench-tolerance.py JSON capture")
-    parser.add_argument("--inventory", type=Path, default=INVENTORY_PATH)
     args = parser.parse_args()
     with args.capture.open() as source:
         capture = json.load(source)
-    inventory = load_inventory(args.inventory)
+    inventory = load_inventory(INVENTORY_PATH)
     report = evaluate(capture, inventory)
     print(format_scorecard(report, capture))
     return 0 if report["ok"] else 1

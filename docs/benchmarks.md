@@ -2294,7 +2294,10 @@ Server and worker SHA-256 hashes, respectively:
 ### Release scorecard
 
 [`scripts/check-tolerance.py`](../scripts/check-tolerance.py) qualifies one
-complete capture against the phase-3a release floors. Capture and qualification
+complete capture against the phase-3a release floors. The floors cover phase
+3a's bounded open-body scope: rule 2 reads a missing `{` only where the file's
+indentation places it, and header and field-initializer errors and truncated
+files remain phase 3b. Capture and qualification
 stay separate commands: the checker only reads a `bench-tolerance.py` JSON
 capture, refuses `--smoke`, `--suite`, and `--only` runs whether the filter
 appears in the `capture` metadata or the `command`, and checks the stable

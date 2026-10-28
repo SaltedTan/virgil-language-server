@@ -6,6 +6,7 @@ import copy
 import contextlib
 import importlib.util
 import itertools
+import io
 import json
 from pathlib import Path
 import sys
@@ -54,7 +55,9 @@ def scorecard_state(state_id, mode, answers=None, expectation=(), oracle_id=0,
                 {"name": "tolerance", "sources": ["A.v3"]}]}},
             "texts": {}, "changed": ["A.v3"], "server_pid": next(PIDS),
             # Warm changes the edited overlay once; cold opens it once.
-            "snapshot": {"documentVersions": [
+            "snapshot": {"projectConfiguration": {"current": True,
+                                                    "uri": "file:///project/.virgil-lsp.json"},
+                         "documentVersions": [
                 {"uri": "file:///project/A.v3", "version": 2 if mode == "warm" else 1,
                  "current": True}]}}
 
@@ -119,7 +122,11 @@ def session_step(step_id, mode, *, oracle=False, answers=None, actions=True):
               "answers": answers,
               "samples": [{"feature": "hover", "latency_ms": 1}],
               "queries": [{"path": "Observer.v3", "position": {"line": 0, "character": 0}}],
-              "snapshot": {"documentVersions": []}, "state_latency_ms": 1.5,
+              "snapshot": {"projectConfiguration": {"current": True,
+                                                      "uri": "file:///project/.virgil-lsp.json"},
+                           "documentVersions": [{"uri": "file:///project/Observer.v3",
+                                                 "current": True, "version": 1}]},
+              "state_latency_ms": 1.5,
               "measured_probes": []}
     if actions:
         record["actions"] = [{"op": "change", "path": "A.v3", "text": "broken",
@@ -583,6 +590,91 @@ class Scorecard(unittest.TestCase):
                 mutate(capture["states"][1])
                 failures = checker.validate(capture, inventory)
                 self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_refuses_stale_state_configuration(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for mode in range(2):
+            for current in (False, 1, None):
+                with self.subTest(mode=mode, current=current):
+                    broken = copy.deepcopy(capture)
+                    broken["states"][mode]["snapshot"]["projectConfiguration"]["current"] = current
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any("projectConfiguration is not current" in failure
+                                        for failure in failures), failures)
+
+    def test_refuses_invalid_session_snapshots(self):
+        capture, inventory = session_capture()
+        self.assertEqual(checker.validate(capture, inventory), [])
+        cases = (
+            ("empty", {}, "projectConfiguration is not current"),
+            ("configuration", {"projectConfiguration": {"current": False}},
+             "projectConfiguration is not current"),
+            ("documents", {"documentVersions": []}, "no document versions"),
+            ("document type", {"documentVersions": [None]}, "no string uri"),
+            ("uri", {"documentVersions": [{"uri": 1, "current": True}]}, "no string uri"),
+            ("current", {"documentVersions": [{"uri": "file:///project/Observer.v3",
+                                               "current": 1}]}, "is not current"),
+            ("query", {"documentVersions": [{"uri": "file:///project/Other.v3",
+                                             "current": True}]}, "lacks queried document"),
+            ("directory", {"documentVersions": [{"uri": "file:///elsewhere/Observer.v3",
+                                                 "current": True}]}, "lacks queried document"))
+        for collection, index in (("session_oracles", 0), ("sessions", 0), ("sessions", 1)):
+            for name, replacement, message in cases:
+                with self.subTest(collection=collection, index=index, snapshot=name):
+                    broken = copy.deepcopy(capture)
+                    snapshot = broken[collection][index]["steps"][0]["snapshot"]
+                    if name == "empty":
+                        snapshot.clear()
+                    snapshot.update(replacement)
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_refuses_invalid_probe_and_cache_measurements(self):
+        capture, inventory = negative_capture(stale_control())
+        sessions, session_inventory = session_capture()
+        capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
+        inventory["sessions"] = session_inventory["sessions"]
+        capture["oracles"][0]["process"] = {}
+        capture["oracles"][0]["stale_control"]["process"] = {}
+        capture["session_oracles"][0]["steps"][0]["stale_control"]["process"] = {}
+        paths = [("states", 0), ("states", 1), ("oracles", 0, "process"),
+                 ("oracles", 0, "stale_control", "process"),
+                 ("session_oracles", 0, "steps", 0, "stale_control", "process")]
+        for collection, index in (("sessions", 0), ("sessions", 1), ("session_oracles", 0)):
+            paths.extend(((collection, index), (collection, index, "steps", 0)))
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for path in paths:
+            for field in ("probes", "measured_probes", "worker_replacements", "cache_charge"):
+                for value in (0, 1.5, -1, float("nan"), float("inf"), True, "1"):
+                    for probe_key in (("value", "analysis_id") if field.endswith("probes") else (None,)):
+                        with self.subTest(path=path, field=field, value=value, probe_key=probe_key):
+                            broken = copy.deepcopy(capture)
+                            row = broken
+                            for part in path:
+                                row = row[part]
+                            if probe_key:
+                                row[field] = [{"value": 1, "analysis_id": 0, probe_key: value}]
+                            elif field == "cache_charge":
+                                row[field] = {"first": {"bytes": value}, "second": [1]}
+                            else:
+                                row[field] = value
+                            failures = checker.validate(broken, inventory)
+                            if type(value) in (int, float) and value in (0, 1.5):
+                                self.assertEqual(failures, [])
+                            else:
+                                self.assertTrue(any(field in failure and "finite nonnegative" in failure
+                                                    for failure in failures), failures)
+
+    def test_cli_refuses_an_alternate_inventory(self):
+        with mock.patch.object(sys, "argv", ["check-tolerance.py", "capture.json",
+                                            "--inventory", "alternate.json"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as result:
+                    checker.main()
+        self.assertEqual(result.exception.code, 2)
 
     def test_refuses_an_injection_without_every_answer(self):
         # Only the wrong definition is kept; the oracle has every answer.
