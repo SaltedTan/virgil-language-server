@@ -721,25 +721,45 @@ def _check_mode_evidence(problems, records):
                 and isinstance(row.get("snapshot"), dict) and isinstance(row.get("changed"), list)):
             by_state[row["id"]].setdefault(row["mode"], row)
     for state_id, modes in by_state.items():
+        # Corpus generation requires a parser; this category carries its disk flag.
+        disk = state_id.split("/", 1)[0] == "closed-file-on-disk"
         for mode, row in modes.items():
+            where = "state " + state_id + " " + mode
+            changed = row["changed"]
+            texts = row.get("texts")
+            current = texts.get("current") if isinstance(texts, dict) else None
+            changed_valid = (bool(changed) and isinstance(current, dict)
+                             and all(isinstance(path, str) and path in current for path in changed)
+                             and len(set(changed)) == len(changed))
+            if not changed_valid:
+                _fail(problems, where + " changed must be nonempty distinct strings in texts.current")
             snapshot_valid = _check_snapshot(problems, "state " + state_id + " " + mode, row["snapshot"])
             if not _check_snapshot_sources(problems, "state " + state_id + " " + mode, row):
                 continue
-            if not snapshot_valid:
+            if not snapshot_valid or not changed_valid:
                 continue
-            versions = {entry["uri"]: entry["version"] for entry in row["snapshot"]["documentVersions"]}
+            sources = row["configuration"]["current"]["projects"][0]["sources"]
+            documents = dict(zip(sources, row["snapshot"]["documentVersions"]))
+            expected_version = None if disk else (1 if mode == "cold" else 2)
+            incorrect = sorted(path for path in changed if path not in documents
+                               or documents[path]["version"] != expected_version)
+            if incorrect:
+                _fail(problems, where + " snapshot has edited documents not at version "
+                      + ("null" if disk else str(expected_version)) + ": " + ", ".join(incorrect))
             if mode == "cold":
-                stale = sorted(uri for uri, version in versions.items() if version not in (None, 1))
+                stale = sorted(entry["uri"] for entry in documents.values()
+                               if entry["version"] not in (None, 1))
                 if stale:
                     _fail(problems, "state " + state_id + " cold snapshot has documents past version 1: "
                           + ", ".join(stale))
             else:
-                unchanged = sorted(uri for uri, version in versions.items() if version not in (None, 2)
-                                   and any(isinstance(path, str) and uri.endswith("/" + path)
-                                           for path in row["changed"]))
+                unchanged = sorted(entry["uri"] for path, entry in documents.items()
+                                   if path not in changed and entry["version"] not in (None, 1))
                 if unchanged:
-                    _fail(problems, "state " + state_id + " warm snapshot has edited documents not at "
-                          "version 2: " + ", ".join(unchanged))
+                    _fail(problems, where + " snapshot has other open documents not at version 1: "
+                          + ", ".join(unchanged))
+        if len(modes) == 2 and modes["warm"]["changed"] != modes["cold"]["changed"]:
+            _fail(problems, "state " + state_id + " warm and cold records have different changed lists")
         if len(modes) == 2 and modes["warm"].get("server_pid") == modes["cold"].get("server_pid"):
             _fail(problems, "state " + state_id + " warm and cold records come from one server process "
                   + repr(modes["warm"].get("server_pid")))

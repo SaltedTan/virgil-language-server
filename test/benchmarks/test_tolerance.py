@@ -53,7 +53,8 @@ def scorecard_state(state_id, mode, answers=None, expectation=(), oracle_id=0,
             "expectation_mismatches": list(expectation),
             "configuration": {"current": {"version": 1, "projects": [
                 {"name": "tolerance", "sources": ["A.v3"]}]}},
-            "texts": {}, "changed": ["A.v3"], "server_pid": next(PIDS),
+            "texts": {"current": {"A.v3": {"bytes": 1}}},
+            "changed": ["A.v3"], "server_pid": next(PIDS),
             # Warm changes the edited overlay once; cold opens it once.
             "snapshot": {"projectConfiguration": {"current": True,
                                                     "uri": "file:///project/.virgil-lsp.json"},
@@ -621,9 +622,9 @@ class Scorecard(unittest.TestCase):
                     self.assertFalse(checker.evaluate(broken, inventory, {})["ok"])
 
     def test_accepts_explicit_null_snapshot_versions(self):
-        inventory = scorecard_inventory("first")
-        capture = scorecard_capture([scorecard_state("first", "warm"),
-                                     scorecard_state("first", "cold")])
+        inventory = scorecard_inventory("closed-file-on-disk/0")
+        capture = scorecard_capture([scorecard_state("closed-file-on-disk/0", "warm"),
+                                     scorecard_state("closed-file-on-disk/0", "cold")])
         sessions, session_inventory = session_capture()
         capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
         inventory["sessions"] = session_inventory["sessions"]
@@ -632,6 +633,87 @@ class Scorecard(unittest.TestCase):
         for row in rows:
             row["snapshot"]["documentVersions"][0]["version"] = None
         self.assertEqual(checker.validate(capture, inventory), [])
+
+    def test_requires_exact_state_edit_versions(self):
+        for state_id, disk in (("first", False), ("closed-file-on-disk/0", True)):
+            inventory = scorecard_inventory(state_id)
+            capture = scorecard_capture([scorecard_state(state_id, "warm"),
+                                         scorecard_state(state_id, "cold")])
+            if disk:
+                for row in capture["states"]:
+                    row["snapshot"]["documentVersions"][0]["version"] = None
+            self.assertEqual(checker.validate(capture, inventory), [])
+            for index in range(2):
+                for version in (None, 0, 1, 2, 3):
+                    with self.subTest(disk=disk, mode=capture["states"][index]["mode"], version=version):
+                        broken = copy.deepcopy(capture)
+                        broken["states"][index]["snapshot"]["documentVersions"][0]["version"] = version
+                        failures = checker.validate(broken, inventory)
+                        expected = None if disk else (2 if index == 0 else 1)
+                        if version == expected:
+                            self.assertEqual(failures, [])
+                        else:
+                            self.assertTrue(any("edited documents not at version" in failure
+                                                for failure in failures), failures)
+
+    def test_requires_changed_paths_and_matching_mode_lists(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        for row in capture["states"]:
+            row["configuration"]["current"]["projects"][0]["sources"].append("B.v3")
+            row["texts"]["current"]["B.v3"] = {"bytes": 1}
+            row["changed"].append("B.v3")
+            row["snapshot"]["documentVersions"].append(
+                {"uri": "file:///project/B.v3", "current": True,
+                 "version": 2 if row["mode"] == "warm" else 1})
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for index in range(2):
+            for changed in ([], ["A.v3", "A.v3"], ["Unknown.v3"], [1], [{}]):
+                with self.subTest(index=index, changed=changed):
+                    broken = copy.deepcopy(capture)
+                    broken["states"][index]["changed"] = changed
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any("changed must be nonempty distinct strings in texts.current"
+                                        in failure for failure in failures), failures)
+        for changed in (["A.v3"], ["B.v3", "A.v3"]):
+            with self.subTest(changed=changed):
+                broken = copy.deepcopy(capture)
+                broken["states"][1]["changed"] = changed
+                failures = checker.validate(broken, inventory)
+                self.assertTrue(any("different changed lists" in failure for failure in failures), failures)
+        for index in range(2):
+            broken = copy.deepcopy(capture)
+            broken["states"][index]["texts"]["current"].pop("A.v3")
+            failures = checker.validate(broken, inventory)
+            self.assertTrue(any("changed must be nonempty distinct strings in texts.current"
+                                in failure for failure in failures), failures)
+        for row in capture["states"]:
+            row["texts"]["current"]["Missing.v3"] = {"bytes": 1}
+            row["changed"].append("Missing.v3")
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("edited documents not at version" in failure and "Missing.v3" in failure
+                            for failure in failures), failures)
+
+    def test_requires_other_open_state_documents_at_version_one(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        for row in capture["states"]:
+            row["configuration"]["current"]["projects"][0]["sources"].append("Observer.v3")
+            row["snapshot"]["documentVersions"].append(
+                {"uri": "file:///project/Observer.v3", "current": True, "version": 1})
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for index in range(2):
+            for version in (None, 0, 2):
+                with self.subTest(index=index, version=version):
+                    broken = copy.deepcopy(capture)
+                    broken["states"][index]["snapshot"]["documentVersions"][1]["version"] = version
+                    failures = checker.validate(broken, inventory)
+                    if version is None:
+                        self.assertEqual(failures, [])
+                    else:
+                        self.assertTrue(any("version 1" in failure for failure in failures), failures)
 
     def test_refuses_stale_state_configuration(self):
         inventory = scorecard_inventory("first")
