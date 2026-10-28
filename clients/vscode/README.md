@@ -7,8 +7,8 @@ A thin TypeScript extension built on `vscode-languageclient/node`. It:
 - contributes the `virgil` language for `.v3` files, with comment and bracket configuration and a small TextMate grammar;
 - starts `virgil-lsp --stdio` when a `virgil` document opens or the workspace contains a `.virgil-lsp.json` project file;
 - sends the server `virgil` documents (saved files and untitled buffers) and `.virgil-lsp.json` buffers, so that configuration diagnostics follow unsaved edits to project files;
-- provides syntax-based [folding ranges](../../docs/architecture.md#folding-ranges) for blocks and comments with `main`'s server;
-- provides [selection ranges](../../docs/architecture.md#selection-ranges) through tokens, bracket groups, declarations, and the document for **Expand Selection** and **Shrink Selection** with `main`'s server;
+- provides syntax-based [folding ranges](../../docs/architecture.md#folding-ranges) for blocks and comments with a `0.1.0-alpha.5` or later server;
+- provides [selection ranges](../../docs/architecture.md#selection-ranges) through tokens, bracket groups, declarations, and the document for **Expand Selection** and **Shrink Selection** with a `0.1.0-alpha.5` or later server;
 - sends the [Virgil root](#settings) that project files' `virgilDependencies` are relative to;
 - watches `.virgil-lsp.json` files and `.v3` files, so that the server notices changes made outside the editor, such as a checkout ([changes on disk](../../docs/configuration.md#changes-on-disk)), and passes on workspace folders added to or removed from a multi-root workspace;
 - reports startup problems, the server's stderr, and the optional message trace in the "Virgil Language Server" output channel;
@@ -26,8 +26,8 @@ Requirements: an installed VS Code with its `code` command on `PATH`, plus `curl
 
    <!-- clean-install: vsix-download -->
    ```sh
-   server_version=0.1.0-alpha.4
-   extension_version=0.1.3
+   server_version=0.1.0-alpha.5
+   extension_version=0.1.4
    download_url=https://github.com/SaltedTan/virgil-language-server/releases/download/v$server_version
    vsix=virgil-lsp-vscode-$extension_version-linux-x64.vsix
    mkdir -p "$HOME/Downloads/virgil-lsp" &&
@@ -54,7 +54,7 @@ To use an explicit Virgil root, set `virgil.virgilRoot` in user settings, or exp
 
 <!-- clean-install: vscode-root -->
 ```sh
-export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.4-x86-64-linux/virgil"
+export VIRGIL_LOC="$HOME/.local/opt/virgil-lsp-0.1.0-alpha.5-x86-64-linux/virgil"
 ```
 
 With Remote-SSH or Remote-WSL, the extension runs on the remote machine, next to the server and the files, so install the VSIX for that host there. A mismatched package is rejected by VS Code or reported in the output channel before a bundled binary is started. In a window connected to the remote, either run **Extensions: Install from VSIX...**, or copy the VSIX to the remote machine and run `code --install-extension` in that window's integrated terminal. The Extensions view then lists the extension under the remote, such as "SSH: host" or "WSL: Ubuntu", not under "Local". Set any needed `virgil.server.path` or `virgil.virgilRoot` override in the remote settings.
@@ -91,7 +91,7 @@ To run the extension from source instead of installing a VSIX, you need a [suppo
 
 The extension runs only in [trusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust), because the server analyzes the workspace's files.
 
-With `main`, **Quick Fix...** offers **Insert missing ";"** for a missing semicolon when one insertion proves progress past the current syntax error. The [code action](../../docs/architecture.md#code-actions) carries the document version, preserves trailing comments, and clears that error when applied; other syntax and semantic errors have no fix.
+With `0.1.0-alpha.5` or `main`, **Quick Fix...** offers **Insert missing ";"** for a missing semicolon when one insertion proves progress past the current syntax error. The [code action](../../docs/architecture.md#code-actions) carries the document version, preserves trailing comments, and clears that error when applied; other syntax and semantic errors have no fix.
 
 The server's features need no further settings. [Completion](../../docs/architecture.md#completion) of keywords and of the declarations in scope, for example, appears in VS Code's suggestion list as you type, like other completion providers' items, and typing `.` lists the receiver's [members](../../docs/architecture.md#member-completion).
 
@@ -170,12 +170,12 @@ CI type-checks and tests the client, and runs the Extension Host suite from sour
 
 ### Packaging
 
-`npm run package` compiles the extension and runs the pinned [`@vscode/vsce`](https://github.com/microsoft/vscode-vsce), which writes `virgil-lsp-vscode-<version>.vsix` in this directory. The VSIX contains `out/extension.js`, `package.json`, the grammar, the language configuration, this README, the repository's `LICENSE` (through the symbolic link `LICENSE` here), and the runtime dependencies from `node_modules`, each with its own license file ([third-party notices](../../THIRD_PARTY_NOTICES.md#vs-code-client-npm)). vsce leaves out the development dependencies, and `.vscodeignore` leaves out the TypeScript sources, tests, source maps, type declarations, and the Extension Host test's VS Code download. To see what a VSIX contains, run `unzip -l virgil-lsp-vscode-0.1.3.vsix`; `npx vsce ls` lists what the next package would contain.
+`npm run package` compiles the extension and runs the pinned [`@vscode/vsce`](https://github.com/microsoft/vscode-vsce), which writes `virgil-lsp-vscode-<version>.vsix` in this directory. The VSIX contains `out/extension.js`, `package.json`, the grammar, the language configuration, this README, the repository's `LICENSE` (through the symbolic link `LICENSE` here), and the runtime dependencies from `node_modules`, each with its own license file ([third-party notices](../../THIRD_PARTY_NOTICES.md#vs-code-client-npm)). vsce leaves out the development dependencies, and `.vscodeignore` leaves out the TypeScript sources, tests, source maps, type declarations, and the Extension Host test's VS Code download. To see what a VSIX contains, run `unzip -l virgil-lsp-vscode-0.1.4.vsix`; `npx vsce ls` lists what the next package would contain.
 
 To package a platform VSIX from a tested archive, run from the repository root after `npm ci` in `clients/vscode`:
 
 ```sh
-scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz --out build/vsix
+scripts/package-vsix.py linux-x64 --archive build/release/virgil-lsp-0.1.0-alpha.5-x86-64-linux.tar.gz --out build/vsix
 scripts/package-vsix.py universal --out build/vsix
 ```
 
@@ -234,7 +234,7 @@ A line on the server's output that isn't a message, as from a wrapper script, le
 
 The check of a restart with an unsaved edit pending starts the server from the same script, with a file that makes every start copy the server's input and record its exit status, so that the test can tell what reached the old server and the new one. The client sends a full-text change 250 milliseconds after an edit, or with its next request or notification, so the test makes no request or notification between the edit and the restart, and fails if the old server got the edit anyway, because the check would then prove nothing. The client can also log `Delivering pending changes failed: TypeError: this.task is not a function`, a `vscode-languageclient` bug that loses nothing ([known limitations](../../docs/known-limitations.md#platforms-and-editors)). The check neither requires nor forbids that error, which can come about half a second after the edit, once the check is over. Other checks' restarts can log it too, when a change happens to be pending, and no check counts it as a failure.
 
-To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.3.vsix ../../build/virgil-lsp`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
+To run the same checks on a packaged extension, package it and pass the VSIX: `npm run package`, then `npm run test:e2e -- --vsix virgil-lsp-vscode-0.1.4.vsix ../../build/virgil-lsp`. Before each start, the test then installs the VSIX into the empty extensions directory with VS Code's `--install-extension`, as a user would. VS Code loads the installed copy instead of this directory, and the suite checks that the extension it finds is that copy.
 
 The first download of VS Code has a ten-minute timeout; each start of VS Code and each installation of a VSIX has a 120-second timeout. Each runs in a process group of its own, including the `tar` that extracts a download. On a timeout, SIGINT, or SIGTERM, the test sends SIGTERM to the whole group, then SIGKILL if it remains after five seconds. An interrupt exits with status 130 for SIGINT or 143 for SIGTERM after stopping the group. The group's first process is a small Node.js keeper, [`keeper.cjs`](test/e2e/keeper.cjs), which starts the command in the group and stays until the test has seen the rest of the group exit, or until the group's SIGKILL. While the keeper is in the group, no other process or group can have the group's number. The test never signals the group by that number itself: it asks the keeper, which signals its own group. If the keeper has exited or its output ends before confirming a signal, the test instead signals each process that it saw in the group, by its PID and start time, as the [Remote-SSH test](#remote-ssh-test) does; if the keeper doesn't answer within a second, as when it has been stopped, the test signals those processes and the keeper itself the same way for the rest of the run, even if a late reply arrives. On macOS, the runner chooses its identity source once per run, on its first native probe. When that probe succeeds, Python 3 reads microsecond start times through libproc's `proc_pidinfo(PROC_PIDTBSDINFO)` for both recording and checking throughout the run. Native group scans read only that group, so inaccessible processes belonging to other users cannot block it. A later failed or partial native read of the group leaves the scan inconclusive, without losing ownership or changing remembered identities; a signal to a single process requires a fresh native identity check. If the first probe finds Python or libproc unavailable, the runner uses `ps` throughout the run. Its start times have one-second resolution: a process given a recorded PID within the original process's start second could then get the signal too. Without pidfds, the identity check and the signal remain separate system calls, with a PID-reuse race between them. If the test itself is killed, the keeper stops its group: SIGTERM, then SIGKILL five seconds later. When VS Code exits, closing its window, the servers that it started are in its group: if a `virgil-lsp` or `virgil-lsp-worker` process remains there five seconds later, the test fails and stops the group the same way. The check ends early if the keeper has gone and no process that the test saw in the group is left there, since another group may then have the group's number. It also fails if the output channel's log records an unclean exit of the last server, but the channel usually closes before the server exits. It waits for the group to exit before removing its temporary directory, unless processes remain in the group 30 seconds after its SIGKILL, such as one that the test's user may not signal or one in an uninterruptible sleep, even the keeper: the test then fails, and stops waiting for them, so that it can exit while they run on. On a launch failure, the test prints the "Virgil Language Server" output channel's log, which also holds the server's stderr. The temporary directory is removed afterward. With `--logs DIR`, a new or empty directory, the test first copies the VS Code logs of a launch or installation that fails, including on a timeout, SIGINT, or SIGTERM, into `DIR/<launch>`, such as `DIR/single-file`: those of the main process, the shared process, the window, and its extension host, and `chromium.log`, which holds the renderer's console messages and, instead of the test's output, Chromium's warnings and errors. Passing launches keep no files. If logs are missing or cannot be copied, the test reports that without changing the original failure or its exit status. Every CI job that runs the test passes it, and uploads what it kept as an artifact.
 
@@ -251,9 +251,9 @@ Use `npm run test:e2e:remote-ssh -- --vsix <linux-x64.vsix> --bundled` to test t
 ```sh
 npm run package
 npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-*.vsix
-npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-0.1.3.vsix \
-  --archive virgil-lsp-0.1.0-alpha.4-x86-64-linux.tar.gz --repeat 3 --out results
-npm run test:e2e:remote-ssh -- --vsix /path/to/virgil-lsp-vscode-0.1.3-linux-x64.vsix \
+npm run test:e2e:remote-ssh -- --vsix virgil-lsp-vscode-0.1.4.vsix \
+  --archive virgil-lsp-0.1.0-alpha.5-x86-64-linux.tar.gz --repeat 3 --out results
+npm run test:e2e:remote-ssh -- --vsix /path/to/virgil-lsp-vscode-0.1.4-linux-x64.vsix \
   --bundled --repeat 3 --out bundled-results
 ```
 
