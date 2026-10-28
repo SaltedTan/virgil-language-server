@@ -21,7 +21,7 @@ cd virgil-language-server
 make test
 ```
 
-[docs/development.md](docs/development.md) covers the build, tests, and repository layout in more detail.
+[docs/development.md](docs/development.md) covers the build, tests, and repository layout in more detail. Coding agents and people starting from a single issue can read the repository instructions in [AGENTS.md](AGENTS.md) first.
 
 ## Pull requests
 
