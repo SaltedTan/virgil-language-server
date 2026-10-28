@@ -253,7 +253,9 @@ the end of the line of the parser's first error, and accepts only when every
 reading that parses leaves that `}` in the same method or constructor body,
 before the body's own `}`. That body is blanked as rule 1 blanks one, so no
 offset moves. A method's own lost `}` is refused, since its extent would be
-unknown. The search costs at most 16 parses beyond the three-parse budget. It
+unknown. The search costs at most 16 parses beyond the three-parse budget, a
+cap the maintainer chose on 2026-10-28, and a file that would need more is
+refused. It
 was measured on held-out states and controls it wasn't built from, and on the
 reviews' stress sets, with no wrong reading
 ([brace rule 3 comparison](../benchmarks.md#brace-rule-3-comparison)).

@@ -927,10 +927,13 @@ completion scanner reads its role: the parser is then between two of them and
 fails at the same point for an earlier place. A lambda's body doesn't count,
 since closing it early leaves the parser inside an expression that still needs
 its `;`. Rule 3 parses at most 16 texts (`LspCurrentRepair.MAX_PLACES`) and
-refuses a file that would need more.
+refuses a file that would need more; the maintainer chose that cap on
+2026-10-28, beyond ADR-0010's three-parse budget.
 
-**Conservative readings.** Where ADR-0010 leaves a form open, the rule takes
-the stricter reading:
+**Conservative readings.** Where ADR-0010 leaves a form open, the rules take
+the stricter reading. Every item but the one that names rule 3 is rule 2's:
+rule 3 reads no layout, so a file one `}` short is read the same whether or
+not its indentation agrees with its braces.
 
 - Every brace pair outside the excluded body must agree with the layout too,
   not only the body's lines, because of the mixed-width case above. Files
