@@ -591,6 +591,48 @@ class Scorecard(unittest.TestCase):
                 failures = checker.validate(capture, inventory)
                 self.assertTrue(any(message in failure for failure in failures), failures)
 
+    def test_refuses_missing_or_invalid_snapshot_versions(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        sessions, session_inventory = session_capture()
+        capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
+        inventory["sessions"] = session_inventory["sessions"]
+        paths = [("states", 0), ("states", 1), ("session_oracles", 0, "steps", 0),
+                 ("sessions", 0, "steps", 0), ("sessions", 1, "steps", 0)]
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for path in paths:
+            for value in ("missing", True, False, 1.0, "1", [], {}):
+                with self.subTest(path=path, version=value):
+                    broken = copy.deepcopy(capture)
+                    row = broken
+                    for part in path:
+                        row = row[part]
+                    document = row["snapshot"]["documentVersions"][0]
+                    if value == "missing":
+                        document.pop("version")
+                        message = "is missing version"
+                    else:
+                        document["version"] = value
+                        message = "version is not null or a non-boolean integer"
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any(document["uri"] in failure and message in failure
+                                        for failure in failures), failures)
+                    self.assertFalse(checker.evaluate(broken, inventory, {})["ok"])
+
+    def test_accepts_explicit_null_snapshot_versions(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        sessions, session_inventory = session_capture()
+        capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
+        inventory["sessions"] = session_inventory["sessions"]
+        rows = (capture["states"] + [session["steps"][0] for session in
+                                    capture["sessions"] + capture["session_oracles"]])
+        for row in rows:
+            row["snapshot"]["documentVersions"][0]["version"] = None
+        self.assertEqual(checker.validate(capture, inventory), [])
+
     def test_refuses_stale_state_configuration(self):
         inventory = scorecard_inventory("first")
         capture = scorecard_capture([scorecard_state("first", "warm"),

@@ -559,7 +559,6 @@ def _check_states(capture, states_inventory, oracles, problems):
         if isinstance(row.get("samples"), list) and not row["samples"]:
             _fail(problems, where + " has no samples")
         _check_measures(problems, where, row, ("state_latency_ms", "worker_replacements"))
-        _check_snapshot(problems, where, row["snapshot"])
         expected_answers = None
         if expected is not None and _is_int(expected.get("queries")):
             expected_answers = 3 * expected["queries"] + 1
@@ -637,15 +636,16 @@ def _check_states(capture, states_inventory, oracles, problems):
 
 
 def _check_snapshot(problems, where, snapshot, queries=None):
+    before = len(problems)
     if not isinstance(snapshot, dict):
-        return
+        return False
     configuration = snapshot.get("projectConfiguration")
     if not isinstance(configuration, dict) or configuration.get("current") is not True:
         _fail(problems, where + " snapshot projectConfiguration is not current")
     documents = snapshot.get("documentVersions")
     if not isinstance(documents, list) or not documents:
         _fail(problems, where + " snapshot has no document versions")
-        return
+        return False
     uris = set()
     for entry in documents:
         if not isinstance(entry, dict) or not isinstance(entry.get("uri"), str):
@@ -654,26 +654,23 @@ def _check_snapshot(problems, where, snapshot, queries=None):
         uris.add(entry["uri"])
         if entry.get("current") is not True:
             _fail(problems, where + " snapshot document " + entry["uri"] + " is not current")
+        if "version" not in entry:
+            _fail(problems, where + " snapshot document " + entry["uri"] + " is missing version")
+        elif entry["version"] is not None and not _is_int(entry["version"]):
+            _fail(problems, where + " snapshot document " + entry["uri"]
+                  + " version is not null or a non-boolean integer: " + repr(entry["version"]))
     if not isinstance(queries, list):
-        return
+        return len(problems) == before
     configuration_uri = configuration.get("uri") if isinstance(configuration, dict) else None
     if not isinstance(configuration_uri, str):
         _fail(problems, where + " snapshot projectConfiguration has no string uri")
-        return
+        return False
     base = configuration_uri.rsplit("/", 1)[0] + "/"
     for query in queries:
         path = query.get("path") if isinstance(query, dict) else None
         if not isinstance(path, str) or base + quote(path) not in uris:
             _fail(problems, where + " snapshot lacks queried document " + repr(path))
-
-
-def _document_versions(row):
-    """{uri: version} of a state's snapshot, or None when it records none."""
-    versions = row["snapshot"].get("documentVersions")
-    if not isinstance(versions, list) or not all(
-            isinstance(entry, dict) and isinstance(entry.get("uri"), str) for entry in versions):
-        return None
-    return {entry["uri"]: entry.get("version") for entry in versions}
+    return len(problems) == before
 
 
 def _check_snapshot_sources(problems, where, row):
@@ -725,12 +722,12 @@ def _check_mode_evidence(problems, records):
             by_state[row["id"]].setdefault(row["mode"], row)
     for state_id, modes in by_state.items():
         for mode, row in modes.items():
+            snapshot_valid = _check_snapshot(problems, "state " + state_id + " " + mode, row["snapshot"])
             if not _check_snapshot_sources(problems, "state " + state_id + " " + mode, row):
                 continue
-            versions = _document_versions(row)
-            if versions is None:
-                _fail(problems, "state " + state_id + " " + mode + " snapshot has no document versions")
+            if not snapshot_valid:
                 continue
+            versions = {entry["uri"]: entry["version"] for entry in row["snapshot"]["documentVersions"]}
             if mode == "cold":
                 stale = sorted(uri for uri, version in versions.items() if version not in (None, 1))
                 if stale:
