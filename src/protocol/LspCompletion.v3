@@ -273,7 +273,8 @@ class LspCompletionRequest extends LspQueryRequest {
 
 	new(completion, id: JsonRpcId, keywords, range) super(completion, id) { }
 	// The keywords, marked incomplete when a later request may have the
-	// names: the analysis failed, did not start, or was replaced.
+	// names: the analysis failed, was replaced, or was stale and could not
+	// rerun.
 	def fallback() -> JsonRpcReply {
 		return completion.keywordList(this, true);
 	}
@@ -296,10 +297,9 @@ class LspCompletionRequest extends LspQueryRequest {
 // project: the document as typed if it parses, or with the repair that the
 // cursor's context selects (LspCompletionRepair). A request that needs no
 // analysis is answered at once; one that does is scheduled, replaced,
-// cancelled, and reused as LspQueryRequests describes. A keyword-only reply is
-// incomplete when the analysis failed, did not start, or was replaced, so that
-// the client asks again, and complete where typing more of the word can't add
-// names. See docs/architecture.md#completion.
+// cancelled, and reused as LspQueryRequests describes. LspCompletionRequest
+// distinguishes temporary and permanent fallback replies. See
+// docs/architecture.md#completion.
 class LspCompletion extends LspQueryRequests {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"

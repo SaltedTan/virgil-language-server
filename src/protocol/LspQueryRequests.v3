@@ -32,10 +32,10 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	def complete(outcome: AnalysisOutcome) {
 		owner.complete(this, outcome);
 	}
-	// The reply without the query's answer, where a later request may have
-	// it: no analysis is needed, or the analysis failed, did not start, or
-	// was replaced. Completion's keyword list is then incomplete, so that
-	// its client asks again at the next keystroke.
+	// The default reply without the query's answer. Completion uses this
+	// for a failed or replaced request, or a stale result that cannot rerun,
+	// and marks its keyword list incomplete so that its client asks again
+	// at the next keystroke.
 	def fallback() -> JsonRpcReply {
 		return JsonRpcReply.Result(JsonValue.Null);
 	}
