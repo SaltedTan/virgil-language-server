@@ -141,14 +141,11 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	// other; otherwise the running one. If neither exists and admission
 	// evicted the context's snapshot (ProjectContext.evicted), it schedules a
 	// demand analysis, urgent like a waiting one, and returns its listener.
-	// Starting any analysis of the context clears the eviction, so a demand
-	// analysis that fails is not repeated until an event schedules the context
-	// again. A demand analysis compares open documents as any analysis does,
-	// so it asks the client to refresh only documents whose tokens or hints
-	// changed since the client last got them; an unchanged rebuild asks for
-	// nothing, so projects that don't fit together can't keep each other's
-	// documents requested and rebuilt without end. A scheduler has one
-	// consumer, the server's LspSnapshotRequests, so an analysis has at most
+	// Starting any automatic analysis of the context clears the eviction, so
+	// a demand analysis that fails is not repeated until an event schedules the context
+	// again. A demand analysis uses the usual open-document comparisons; see
+	// LspSemanticTokens and LspInlayHints for their refresh baselines. A scheduler
+	// has one consumer, the server's LspSnapshotRequests, so an analysis has at most
 	// one listener, its waiting definition and hover requests: {candidate}
 	// becomes it unless it already has one. The listener moves from a waiting analysis to the
 	// run when it starts, and is notified once, when that analysis completes,
