@@ -280,7 +280,7 @@ missing return is the fifteenth error, and held-out states. The
 `repair-in-two-bodies` control would expect two excluded bodies instead of a
 refusal. [Architecture](../architecture.md#current-text-repair),
 [known limitations](../known-limitations.md#no-error-tolerant-parsing), and
-[ROADMAP M6](../../ROADMAP.md#m6--error-tolerance-and-incrementality-48-weeks-evidence-driven)
+[ROADMAP M6](../../ROADMAP.md#m6--error-tolerance-and-incrementality)
 change with the implementation.
 
 ## Alternatives considered

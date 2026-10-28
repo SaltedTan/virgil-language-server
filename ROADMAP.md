@@ -1,16 +1,31 @@
-# Virgil Language Server: Greenfield Open-Source Roadmap
+# Virgil Language Server: Roadmap
 
-_Revised 13 August 2026 for a new open-source GitHub project. Repository observations and external links should be rechecked when implementation begins._
+_Revised 2026-10-29. This document is the project's roadmap: the milestones delivered through `0.1.0-alpha.5`, the remaining path to v1.0, and the original August 2026 plan, kept at the end for its reasoning._
+
+## Current state (2026-10-29)
+
+| Milestone | State |
+| --- | --- |
+| M0 — project foundation and compiler feasibility | Complete; the repository, license, community documents, and pinned compiler shipped with `0.1.0-alpha.1` on 2026-10-20 ([CHANGELOG](CHANGELOG.md)). |
+| M1 — correct JSON-RPC/LSP core | Complete; shipped with `0.1.0-alpha.1` ([CHANGELOG](CHANGELOG.md)). |
+| M2 — document store and syntax diagnostics | Complete; shipped with `0.1.0-alpha.1` ([CHANGELOG](CHANGELOG.md)). |
+| M3 — project model and semantic diagnostics | Complete; shipped with `0.1.0-alpha.1` ([CHANGELOG](CHANGELOG.md)). |
+| M4 — semantic navigation and the v0.1 alpha | Complete; shipped with `0.1.0-alpha.1` ([CHANGELOG](CHANGELOG.md)). |
+| M5 — references, rename, signature help, and completion | Complete; shipped with `0.1.0-alpha.2` on 2026-10-22 ([CHANGELOG](CHANGELOG.md)). |
+| M6 phase 3a — error tolerance | Delivered in `0.1.0-alpha.4` and `0.1.0-alpha.5` under the accepted contract of [ADR-0008](docs/decisions/0008-method-body-fallback.md), [ADR-0009](docs/decisions/0009-current-text-repair.md), and [ADR-0010](docs/decisions/0010-analyze-unrepairable-files.md) rules 1–3 ([CHANGELOG](CHANGELOG.md)). |
+| M6 phase 3b — header, field-initializer, and truncated-file recovery | Deferred; not required for v1.0 ([ADR-0010](docs/decisions/0010-analyze-unrepairable-files.md)). |
+| M6 — full incrementality | Not started and evidence-driven; parse caches, invalidation, and scheduling wait for measurements that identify a bottleneck ([M6](#m6--error-tolerance-and-incrementality)). |
+| M7 — distribution and ecosystem integration | Packages, testing, and docs delivered; Marketplace publishing ([#192](https://github.com/SaltedTan/virgil-language-server/issues/192)), native Apple Silicon ([#191](https://github.com/SaltedTan/virgil-language-server/issues/191)), and the Mac Remote-SSH check ([#186](https://github.com/SaltedTan/virgil-language-server/issues/186)) are tracked separately. |
 
 ## Executive recommendation
 
-Create a new public repository from an empty Git history under your GitHub account. Use the working repository name `virgil-language-server`, the executable name `virgil-lsp`, and keep the server, VS Code extension, and LazyVim/Neovim setup in one repository through v0.1. This is a new implementation, not a fork of the existing prototype.
+The project began on 13 August 2026 as a new public repository with its own history under one GitHub account, the working name `virgil-language-server`, the executable name `virgil-lsp`, and the server, VS Code extension, and LazyVim/Neovim setup in one repository through v0.1. It is an independent implementation, not a fork of the existing prototype, and that has not changed.
 
-Build one editor-independent server executable in Virgil, reuse Aeneas's parser and semantic verifier through a narrow adapter, and keep the VS Code and Neovim/LazyVim integrations thin. Start with full-document synchronization and fresh whole-program analysis; add incremental behavior only after the non-incremental path is correct and measured.
+Build one editor-independent server in Virgil, reuse Aeneas's parser and semantic verifier through a narrow adapter, and keep the VS Code and Neovim/LazyVim integrations thin. Start with full-document synchronization and fresh whole-program analysis; add incremental behavior only after the non-incremental path is correct and measured. That is what the repository does: the server owns the protocol, documents, projects, and features, the adapter is the only code that touches Aeneas, and incrementality remains deferred until measurements call for it.
 
-You will be the initial maintainer, but structure the repository as an ordinary open-source project: publish the roadmap, accept issues and pull requests, document contribution expectations, and make technical decisions in public. Additional maintainers can be added later if sustained contribution and project growth make that useful.
+The project has one initial maintainer, but it is structured as an ordinary open-source project: the roadmap is public, issues and pull requests are welcome, contribution expectations are documented, and technical decisions are recorded in public ADRs under `docs/decisions/`. Additional maintainers can be added later if sustained contribution and project growth make that useful.
 
-The recommended v0.1 is deliberately smaller than a “complete IDE”: correct protocol handling, file synchronization, syntax and semantic diagnostics, document symbols, go-to-definition, hover, and documented setup for LazyVim and VS Code. Completion, rename, error-tolerant parsing, and incremental compilation should follow after that foundation. Expect approximately 12–20 part-time weeks to reach a credible v0.1 alpha from an empty repository.
+The v0.1 release was deliberately smaller than a “complete IDE”: correct protocol handling, file synchronization, syntax and semantic diagnostics, document symbols, go-to-definition, hover, and documented setup for LazyVim and VS Code. That scope shipped with `0.1.0-alpha.1` on 2026-10-20, nineteen days after the repository's first commit, so the August estimate of 12–20 part-time weeks from an empty repository is history. Completion and rename followed in `0.1.0-alpha.2`, error-tolerance phase 3a in `0.1.0-alpha.4` and `0.1.0-alpha.5`, and the remaining incrementality work stays evidence-driven.
 
 ## Open-source project model
 
@@ -43,7 +58,7 @@ Starting from scratch does not require pretending prior work is invisible. Study
 
 ### v0.1 goal
 
-A user can install the server following the [build and executable placement guidance](README.md#building), open a configured Virgil project in either LazyVim or VS Code, and receive:
+The v0.1 release, shipped with `0.1.0-alpha.1` on 2026-10-20, lets a user install the server following the [build and executable placement guidance](README.md#building), open a configured Virgil project in either LazyVim or VS Code, and receive:
 
 - `.v3` file detection;
 - parser and type-checker diagnostics for unsaved buffers;
@@ -57,9 +72,12 @@ A user can install the server following the [build and executable placement guid
 
 ### Later releases
 
-- v0.2: prepare-rename/rename, already available in `0.1.0-alpha.2`.
-- v0.3: context-aware completion, better behavior on incomplete syntax, faster reanalysis.
-- v0.5: platform-specific VS Code packages, an upstream `nvim-lspconfig` configuration, compatibility testing. Release automation is [present](docs/releasing.md).
+The August plan named v0.2, v0.3, and v0.5 as later releases. What shipped, and what remains:
+
+- v0.2's prepare-rename and rename, and v0.3's context-aware completion and signature help, shipped in `0.1.0-alpha.2`; v0.3's better behavior on incomplete syntax shipped as M6 phase 3a in `0.1.0-alpha.4` and `0.1.0-alpha.5`. The faster reanalysis that v0.3 also named remains part of M6's evidence-driven incrementality work, and no incremental analysis has shipped.
+- v0.5's platform-specific VS Code packages shipped in `0.1.0-alpha.4` ([#267](https://github.com/SaltedTan/virgil-language-server/issues/267), [PR #268](https://github.com/SaltedTan/virgil-language-server/pull/268)). Compatibility tests already exist: the pinned Virgil revision is required CI and current Virgil `master` runs in scheduled advisory CI, captured VS Code and Neovim initialization messages replay in the protocol suite ([#231](https://github.com/SaltedTan/virgil-language-server/issues/231)), and a clean-install test follows the README commands ([#250](https://github.com/SaltedTan/virgil-language-server/issues/250)).
+- An upstream `nvim-lspconfig` configuration and a Mason entry have not been submitted; both wait for a stable release command, release URL, root markers, and documentation. Mason's admission rules make `nvim-lspconfig` acceptance the realistic route for a small new project.
+- The next stability preview has no agreed name or date. It will be the first release that meets the remaining v1.0 criteria.
 - v1.0: stable configuration format, defined performance budgets, robust error recovery, completion/references/rename suitable for everyday use, and a documented compatibility policy for Virgil versions.
 
 ### Non-goals for the first release
@@ -80,7 +98,7 @@ See the [architecture overview](docs/architecture.md#overview) and [ADR-0004](do
 - The compiler adapter can directly use Aeneas's parser, verifier, and bound syntax tree; see the [adapter boundary](docs/decisions/0002-pinned-virgil-adapter-boundary.md).
 - It avoids translating or duplicating the language's rapidly changing semantics.
 - Aeneas is already self-hosted, so the server can share the compiler's actual semantic model.
-- A single native executable is easy for Neovim and VS Code to launch.
+- One editor launch command, `virgil-lsp`, is easy for Neovim and VS Code to launch. A release archive keeps the server, its `virgil-lsp-worker`, and the pinned Virgil library beside each other, so an editor starts one command and the server starts the worker ([What a release contains](docs/releasing.md#what-a-release-contains)).
 
 The trade-off is that you must implement protocol plumbing yourself and solve distribution for each host platform. That is still preferable to a TypeScript server that repeatedly shells out to `v3c`: a subprocess-only design handles saved diagnostics, but it does not naturally analyze unsaved buffers or expose the bound AST required for definition, hover, references, and rename.
 
@@ -115,7 +133,7 @@ The [analysis snapshot contract](docs/architecture.md#analysis-snapshots-partly-
 
 ## Important correctness problems to solve first
 
-The existing prototype is a useful skeleton, but its protocol code should be considered untrusted until these cases pass tests:
+The existing prototype was a useful skeleton, but its protocol code was treated as untrusted until these cases passed tests. They were M1's checklist, and the golden transcript tests cover them now:
 
 1. A JSON-RPC response must echo the incoming request's `id`. The current prototype generates a new outgoing ID.
 2. IDs may be integers or strings; notifications have no ID and must receive no response.
@@ -150,9 +168,9 @@ Where possible, align this manifest with Aeneas's emerging query-mode concepts r
 
 ## Milestone roadmap
 
-Estimates below assume one developer working part-time while learning the codebase. They are planning ranges, not deadlines.
+The milestones below record what each delivered and where it shipped. The August part-time estimates and the original first-issue backlog are in the [appendix](#appendix-the-original-august-2026-plan).
 
-### M0 — Project foundation and compiler feasibility (1–2 weeks)
+### M0 — Project foundation and compiler feasibility
 
 Deliverables:
 
@@ -174,7 +192,7 @@ Exit criteria:
 - Every imported asset and dependency has a recorded license and revision.
 - A prospective contributor can understand the goal, build the project, run tests, and choose a small issue without private instructions.
 
-### M1 — Correct JSON-RPC/LSP core from scratch (2–4 weeks)
+### M1 — Correct JSON-RPC/LSP core from scratch
 
 Deliverables:
 
@@ -193,7 +211,7 @@ Exit criteria:
 - Fragmented, consecutive, malformed, Unicode, and oversized messages behave deterministically.
 - Both editors can start and stop the server without protocol errors.
 
-### M2 — Document store and syntax-diagnostics slice (2–3 weeks)
+### M2 — Document store and syntax-diagnostics slice
 
 Deliverables:
 
@@ -213,7 +231,7 @@ Exit criteria:
 - Closing or fixing a file clears stale diagnostics.
 - No code generation or user-program execution occurs.
 
-### M3 — Project model and semantic diagnostics (3–5 weeks)
+### M3 — Project model and semantic diagnostics
 
 Deliverables:
 
@@ -235,7 +253,7 @@ Exit criteria:
 - Editing one project cannot leak symbols or diagnostics into another.
 - Full analysis timing and memory use are recorded, not guessed.
 
-### M4 — Semantic navigation MVP and v0.1 alpha (3–5 weeks)
+### M4 — Semantic navigation MVP and v0.1 alpha
 
 Deliverables:
 
@@ -256,7 +274,7 @@ Exit criteria:
 - Requests against stale snapshots fail safely or return a newer matching snapshot. *(present; [freshness](docs/architecture.md#definition))*
 - The alpha has known limitations and a reproducible issue template. *(present; [known limitations](docs/known-limitations.md) and the [bug report form](.github/ISSUE_TEMPLATE/bug_report.yml))*
 
-### M5 — References, rename, signature help, and completion (4–8 weeks)
+### M5 — References, rename, signature help, and completion
 
 Recommended order:
 
@@ -272,12 +290,12 @@ Completion comes late because users invoke it while code is incomplete. It requi
 Exit criteria:
 
 - Rename edits exactly the occurrences bound to the renamed declaration, or to every method of a renamed method's override family, and refuses ambiguous/error states. *(present; the [binding and hierarchy preflight](docs/architecture.md#rename) and [what rename refuses](docs/known-limitations.md#what-rename-refuses))*
-- Completion remains useful with a missing identifier or delimiter near the cursor. *(present for a missing name and a missing `)`, `]`, `>`, or `;`, which the [repair at the cursor](docs/architecture.md#completion) supplies; a missing `}` or a syntax error away from the cursor gets keywords only, or nothing after a `.`, until M6's error tolerance, as [ADR-0006](docs/decisions/0006-incomplete-code-repair.md) decided ([known limitations](docs/known-limitations.md#no-error-tolerant-parsing)))*
+- Completion remains useful with a missing identifier or delimiter near the cursor. *(present for a missing name and a missing `)`, `]`, `>`, or `;`, which the [repair at the cursor](docs/architecture.md#completion) supplies. Snapshot recovery keeps read-only answers outside a damaged method body: [method-body fallback](docs/decisions/0008-method-body-fallback.md), [current-text repair](docs/decisions/0009-current-text-repair.md), and [ADR-0010](docs/decisions/0010-analyze-unrepairable-files.md)'s brace rules. It does not extend completion or signature help, which keep [ADR-0006](docs/decisions/0006-incomplete-code-repair.md)'s cursor repair: a missing `}` or a syntax error away from the cursor gets keywords only, or nothing after a `.` ([known limitations](docs/known-limitations.md#no-error-tolerant-parsing)))*
 - Feature tests cover shadowing, same-named members, generics, components, classes, variants, and enum cases. *(present; unit tests such as `AnalysisScope:shadowing`, `LspCompletionScope:hidden_bindings`, `LspRename:same_named_methods` and `enums_and_variants`, `AnalysisMembers:generics`, `components`, `classes`, `variants`, and `enums`, and `LspReferences:members_and_generics`)*
 
 M5 was completed with `0.1.0-alpha.2`.
 
-### M6 — Error tolerance and incrementality (4–8+ weeks, evidence-driven)
+### M6 — Error tolerance and incrementality
 
 Deliverables may include:
 
@@ -293,7 +311,7 @@ Consider a licensed, current Tree-sitter grammar as a syntax fallback, not as th
 
 Do not promise “incremental compilation” until measurements identify the bottleneck. Incremental text synchronization, incremental parsing, incremental name resolution, and incremental type checking are separate capabilities.
 
-### M7 — Distribution and ecosystem integration (2–4 weeks, then ongoing)
+### M7 — Distribution and ecosystem integration
 
 Deliverables:
 
@@ -301,9 +319,9 @@ Deliverables:
 - A clear support matrix: Linux x86-64 (also used by SSH remotes) and Apple Silicon macOS, with WSL 2 best effort since 2026-10-20, per [ADR-0003](docs/decisions/0003-supported-platforms.md). Native Windows remains out of scope unless a native or JVM distribution is validated.
 - VS Code extension setting for an external server path during development. *(present; [client settings](clients/vscode/README.md#settings))*
 - Platform-specific VSIX packages. *(present; [packaging](clients/vscode/README.md#packaging))*
-- Marketplace README, changelog, privacy statement, and troubleshooting guide.
-- `nvim-lspconfig` pull request after the executable has a stable command, release URL, root markers, and documentation.
-- Mason registry submission only after its admission requirements are met, most likely through `nvim-lspconfig` approval.
+- Marketplace README, changelog, privacy statement, and troubleshooting guide. *(present for the repository documents: [privacy statement](PRIVACY.md) and [troubleshooting guide](docs/troubleshooting.md) shipped in `0.1.0-alpha.4` ([#275](https://github.com/SaltedTan/virgil-language-server/issues/275)); the Marketplace listing itself is [#192](https://github.com/SaltedTan/virgil-language-server/issues/192))*
+- `nvim-lspconfig` pull request after the executable has a stable command, release URL, root markers, and documentation. *(not yet submitted)*
+- Mason registry submission only after its admission requirements are met, most likely through `nvim-lspconfig` approval. *(not yet submitted)*
 
 Exit criteria:
 
@@ -351,7 +369,7 @@ vim.lsp.config("virgil_lsp", {
 vim.lsp.enable("virgil_lsp")
 ```
 
-The final project should provide a LazyVim-specific copy-paste file, a minimal `nvim --clean` reproduction config, and troubleshooting commands such as `:checkhealth vim.lsp`. Syntax highlighting can initially reuse or adapt explicitly licensed Virgil syntax assets; semantic features must still come from the LSP.
+The project provides a LazyVim-specific copy-paste file, a minimal `nvim --clean` reproduction config, and troubleshooting commands such as `:checkhealth vim.lsp`. Syntax highlighting can initially reuse or adapt explicitly licensed Virgil syntax assets; semantic features must still come from the LSP.
 
 ### Visual Studio Code
 
@@ -385,47 +403,9 @@ Useful protocol invariants for property tests:
 
 Establish performance budgets only after measuring. Reasonable initial objectives to test—not promises—are sub-250 ms server startup, sub-100 ms per-file parsing for ordinary files, and sub-second full verification for a small project on a contemporary laptop. The Virgil compiler itself should be a separate large-workspace benchmark.
 
-## Suggested repository structure
+## Repository structure
 
-```text
-virgil-language-server/
-├── src/
-│   ├── protocol/       # framing, JSON-RPC messages, lifecycle
-│   ├── documents/      # URI, text, version, position maps
-│   ├── workspace/      # config, globs, projects, scheduling
-│   ├── analysis/       # Aeneas adapter, snapshots, indexes
-│   ├── features/       # diagnostics, symbols, hover, definition, ...
-│   └── main.v3
-├── clients/
-│   └── vscode/         # thin extension; optionally separate repo later
-├── editors/
-│   └── nvim/           # tested example configs, not another client
-├── test/
-│   ├── protocol/
-│   ├── analysis/
-│   ├── features/
-│   ├── fixtures/
-│   └── e2e/
-├── docs/
-│   ├── architecture.md
-│   ├── configuration.md
-│   ├── development.md
-│   ├── compatibility.md
-│   └── decisions/      # numbered architecture decision records
-├── vendor/virgil/      # exact, pinned upstream submodule
-├── .github/
-│   ├── workflows/
-│   ├── ISSUE_TEMPLATE/
-│   └── CODEOWNERS
-├── CHANGELOG.md
-├── CODE_OF_CONDUCT.md
-├── CONTRIBUTING.md
-├── ROADMAP.md
-├── SECURITY.md
-├── THIRD_PARTY_NOTICES.md
-├── LICENSE
-└── README.md
-```
+The repository is a monorepo. `src/` holds the server and the analysis worker, with `src/analysis/` as the only code that touches Aeneas; `clients/vscode/` holds the thin TypeScript client; `editors/nvim/` holds the tested Neovim and LazyVim configurations; `test/` holds protocol, analysis, feature, fixture, and end-to-end tests; `docs/` holds the architecture, configuration, development, compatibility, release, and decision documents; `scripts/` holds build and release helpers; and `vendor/virgil/` is the exact, pinned upstream submodule. The root holds the license, changelog, roadmap, and community documents. [Source layout](docs/architecture.md#source-layout) owns each `src/` directory's responsibility and status.
 
 Keep this as a monorepo through v0.1 so the server, both editor integrations, fixtures, and release automation change together. Split a client into another repository only if its independent release cadence or contributor base makes that operationally worthwhile.
 
@@ -444,12 +424,18 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 
 ### Milestones
 
-- `protocol-foundation`
-- `diagnostics-slice`
-- `semantic-navigation`
-- `v0.1-alpha`
-- `rich-language-features`
-- `v1.0`
+The live milestones on 2026-10-29 are:
+
+| Milestone | Open | Closed | State |
+| --- | ---: | ---: | --- |
+| `protocol-foundation` | 0 | 10 | Complete; the maintainer will close it. |
+| `diagnostics-slice` | 0 | 28 | Complete; the maintainer will close it. |
+| `semantic-navigation` | 0 | 13 | Complete; the maintainer will close it. |
+| `rich-language-features` | 0 | 19 | Complete; the maintainer will close it. |
+| `v0.1-alpha` | 0 | 8 | Closed; it stays as it is. |
+| `v1.0` | 18 | 0 | Open; it holds the remaining work. |
+
+The maintainer performs these GitHub edits: close `protocol-foundation`, `diagnostics-slice`, `semantic-navigation`, and `rich-language-features`, keep the closed `v0.1-alpha` as it is, and keep `v1.0` open. This document doesn't change GitHub metadata.
 
 ### Labels
 
@@ -458,29 +444,6 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 - `area/docs`, `area/community`, `dependency/virgil`
 - `type/bug`, `type/feature`, `type/refactor`, `type/docs`, `type/test`
 - `good first issue`, `help wanted`, `blocked/dependency`, `breaking`, `performance`
-
-### First issue backlog, in dependency order
-
-1. Initialize the new repository, license, community files, branch rules, and CI. *(present)*
-2. Record the server-language and compiler-dependency decisions in ADR-001 and ADR-002. *(present; [ADR-0001](docs/decisions/0001-virgil-native-server.md), [ADR-0002](docs/decisions/0002-pinned-virgil-adapter-boundary.md))*
-3. Pin Virgil and complete the parse/verify/binding compiler-integration spike. *(present; [#1](https://github.com/SaltedTan/virgil-language-server/issues/1))*
-4. Implement the JSON-RPC envelope model so responses preserve incoming IDs. *(present; [#2](https://github.com/SaltedTan/virgil-language-server/issues/2))*
-5. Harden stdio framing and enforce protocol-only stdout. *(present; [#3](https://github.com/SaltedTan/virgil-language-server/issues/3))*
-6. Add golden transcript tests for requests, notifications, lifecycle, and malformed packets. *(present; [#4](https://github.com/SaltedTan/virgil-language-server/issues/4))*
-7. Implement versioned full-text document synchronization. *(present; [#6](https://github.com/SaltedTan/virgil-language-server/issues/6))*
-8. Integrate [`PositionMap`](docs/architecture.md#coordinates) with the document store and diagnostics. *(present; [#7](https://github.com/SaltedTan/virgil-language-server/issues/7))*
-9. Publish parser diagnostics for unsaved single files. *(present; [#8](https://github.com/SaltedTan/virgil-language-server/issues/8))*
-10. Implement document symbols from the VST. *(present; [#9](https://github.com/SaltedTan/virgil-language-server/issues/9))*
-11. Specify `.virgil-lsp.json` and add fixture projects. *(present; [#53](https://github.com/SaltedTan/virgil-language-server/issues/53))*
-12. Build a fresh parse/verify-only `Program` from disk plus overlays. *(present; [PR #52](https://github.com/SaltedTan/virgil-language-server/pull/52))*
-13. Publish whole-project semantic diagnostics. *(present; [#58](https://github.com/SaltedTan/virgil-language-server/issues/58))*
-14. Build declaration and occurrence indexes from verified bindings. *(present; [#104](https://github.com/SaltedTan/virgil-language-server/issues/104); see the [compiler adapter](docs/architecture.md#compiler-adapter))*
-15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
-16. Implement hover. *(present for indexed uses, declaration names, and builtin uses; [display data](docs/architecture.md#display-text) [#105](https://github.com/SaltedTan/virgil-language-server/issues/105), handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106); see [Hover](docs/architecture.md#hover))*
-17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
-18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
-
-Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
 
 ## Open-source and licensing plan
 
@@ -543,42 +506,11 @@ Those exercises directly become the document-symbol, diagnostics, definition, an
 
 For LSP, read only the relevant sections of the [3.17 specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) first: base protocol, lifecycle, text synchronization, diagnostics, document symbols, definition, and hover. The official [VS Code Language Server Extension Guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide) is a useful client and test reference. The 3.18 specification is current but still described as under development, so implement a conservative interoperable subset and negotiate capabilities.
 
-## First 30 days
-
-### Week 1
-
-- Create the empty `virgil-language-server` repository, initial README, Apache-2.0 license, roadmap, and community documents.
-- Configure branch protection, Issues, Discussions, the GitHub Project, and required Linux CI.
-- Record ADR-001 and ADR-002 and create the first six foundation/protocol issues.
-- Add the pinned Virgil submodule and prove a clean checkout can build the required compiler libraries.
-
-### Week 2
-
-- Complete the one-file parse, two-file verify, structured-error, and binding-query compiler spike.
-- Turn the spike into the first tests for the narrow `AeneasAdapter` boundary.
-- Write framing and JSON-RPC golden tests directly from the LSP 3.17 specification.
-- Implement byte framing, request ID preservation, and request/notification/response distinction.
-
-### Week 3
-
-- Implement initialize/shutdown/exit state handling and route all logs away from stdout.
-- Connect minimal VS Code and Neovim development clients to the lifecycle-only server.
-- Add a versioned full-text document store.
-- Implement URI normalization and connect [`PositionMap`](docs/architecture.md#coordinates) to the document store.
-
-### Week 4
-
-- Implement `didOpen`, `didChange`, and `didClose` with full-text synchronization.
-- Use the [single-file compiler adapter](docs/architecture.md#compiler-adapter) on the unsaved overlay.
-- Publish/clear syntax diagnostics.
-- Implement document symbols with your own VST visitor informed by Virgil's licensed `vctags` example.
-- Demo the same edit in LazyVim and VS Code and tag an internal `v0.0.1` checkpoint if the transcript suite is green.
-
-At day 30, review the architecture, contributor setup, and dependency/licensing records. The new repository should contain a lifecycle-correct server and an unsaved-file syntax slice that both editor clients can launch. The next commitment should be the project manifest plus whole-project parse/verify integration, not completion.
-
 ## Release gates
 
 ### v0.1-alpha is ready when
+
+These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 - The license, contribution guide, code of conduct, security policy, roadmap, and third-party notices are present.
 - Every third-party dependency or adapted asset has a compatible license and recorded attribution.
@@ -617,3 +549,76 @@ At day 30, review the architecture, contributor setup, and dependency/licensing 
 - [Developer Certificate of Origin 1.1](https://developercertificate.org/)
 - [GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 - [GitHub `CODEOWNERS`](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
+
+## Appendix: the original August 2026 plan
+
+_Kept as written in August 2026, apart from heading levels and the list markers that hold the milestone estimates. It is no longer the plan; the delivered milestones above replaced it._
+
+### Original milestone estimates
+
+Estimates below assume one developer working part-time while learning the codebase. They are planning ranges, not deadlines.
+
+- M0 — Project foundation and compiler feasibility (1–2 weeks)
+- M1 — Correct JSON-RPC/LSP core from scratch (2–4 weeks)
+- M2 — Document store and syntax-diagnostics slice (2–3 weeks)
+- M3 — Project model and semantic diagnostics (3–5 weeks)
+- M4 — Semantic navigation MVP and v0.1 alpha (3–5 weeks)
+- M5 — References, rename, signature help, and completion (4–8 weeks)
+- M6 — Error tolerance and incrementality (4–8+ weeks, evidence-driven)
+- M7 — Distribution and ecosystem integration (2–4 weeks, then ongoing)
+
+### First issue backlog, in dependency order
+
+1. Initialize the new repository, license, community files, branch rules, and CI. *(present)*
+2. Record the server-language and compiler-dependency decisions in ADR-001 and ADR-002. *(present; [ADR-0001](docs/decisions/0001-virgil-native-server.md), [ADR-0002](docs/decisions/0002-pinned-virgil-adapter-boundary.md))*
+3. Pin Virgil and complete the parse/verify/binding compiler-integration spike. *(present; [#1](https://github.com/SaltedTan/virgil-language-server/issues/1))*
+4. Implement the JSON-RPC envelope model so responses preserve incoming IDs. *(present; [#2](https://github.com/SaltedTan/virgil-language-server/issues/2))*
+5. Harden stdio framing and enforce protocol-only stdout. *(present; [#3](https://github.com/SaltedTan/virgil-language-server/issues/3))*
+6. Add golden transcript tests for requests, notifications, lifecycle, and malformed packets. *(present; [#4](https://github.com/SaltedTan/virgil-language-server/issues/4))*
+7. Implement versioned full-text document synchronization. *(present; [#6](https://github.com/SaltedTan/virgil-language-server/issues/6))*
+8. Integrate [`PositionMap`](docs/architecture.md#coordinates) with the document store and diagnostics. *(present; [#7](https://github.com/SaltedTan/virgil-language-server/issues/7))*
+9. Publish parser diagnostics for unsaved single files. *(present; [#8](https://github.com/SaltedTan/virgil-language-server/issues/8))*
+10. Implement document symbols from the VST. *(present; [#9](https://github.com/SaltedTan/virgil-language-server/issues/9))*
+11. Specify `.virgil-lsp.json` and add fixture projects. *(present; [#53](https://github.com/SaltedTan/virgil-language-server/issues/53))*
+12. Build a fresh parse/verify-only `Program` from disk plus overlays. *(present; [PR #52](https://github.com/SaltedTan/virgil-language-server/pull/52))*
+13. Publish whole-project semantic diagnostics. *(present; [#58](https://github.com/SaltedTan/virgil-language-server/issues/58))*
+14. Build declaration and occurrence indexes from verified bindings. *(present; [#104](https://github.com/SaltedTan/virgil-language-server/issues/104); see the [compiler adapter](docs/architecture.md#compiler-adapter))*
+15. Implement go-to-definition. *(present for indexed uses; [#103](https://github.com/SaltedTan/virgil-language-server/issues/103); see [Definition](docs/architecture.md#definition))*
+16. Implement hover. *(present for indexed uses, declaration names, and builtin uses; [display data](docs/architecture.md#display-text) [#105](https://github.com/SaltedTan/virgil-language-server/issues/105), handler [#106](https://github.com/SaltedTan/virgil-language-server/issues/106); see [Hover](docs/architecture.md#hover))*
+17. Add headless Neovim E2E test and LazyVim documentation. *([present](editors/nvim/README.md))*
+18. Add VS Code client E2E test and prerelease packaging. *(present: [Extension Host test](clients/vscode/README.md#extension-host-test) and [prerelease VSIX](clients/vscode/README.md#installing-from-a-vsix); see the [release runbook](docs/releasing.md#what-a-release-contains) for current release assets)*
+
+Do not create every later feature issue in excessive detail before the analyzer design is validated; refine the backlog at each milestone review. Label self-contained documentation and fixture work as `good first issue`, but keep architecture-critical tasks clearly owned and explained.
+
+### First 30 days
+
+#### Week 1
+
+- Create the empty `virgil-language-server` repository, initial README, Apache-2.0 license, roadmap, and community documents.
+- Configure branch protection, Issues, Discussions, the GitHub Project, and required Linux CI.
+- Record ADR-001 and ADR-002 and create the first six foundation/protocol issues.
+- Add the pinned Virgil submodule and prove a clean checkout can build the required compiler libraries.
+
+#### Week 2
+
+- Complete the one-file parse, two-file verify, structured-error, and binding-query compiler spike.
+- Turn the spike into the first tests for the narrow `AeneasAdapter` boundary.
+- Write framing and JSON-RPC golden tests directly from the LSP 3.17 specification.
+- Implement byte framing, request ID preservation, and request/notification/response distinction.
+
+#### Week 3
+
+- Implement initialize/shutdown/exit state handling and route all logs away from stdout.
+- Connect minimal VS Code and Neovim development clients to the lifecycle-only server.
+- Add a versioned full-text document store.
+- Implement URI normalization and connect [`PositionMap`](docs/architecture.md#coordinates) to the document store.
+
+#### Week 4
+
+- Implement `didOpen`, `didChange`, and `didClose` with full-text synchronization.
+- Use the [single-file compiler adapter](docs/architecture.md#compiler-adapter) on the unsaved overlay.
+- Publish/clear syntax diagnostics.
+- Implement document symbols with your own VST visitor informed by Virgil's licensed `vctags` example.
+- Demo the same edit in LazyVim and VS Code and tag an internal `v0.0.1` checkpoint if the transcript suite is green.
+
+At day 30, review the architecture, contributor setup, and dependency/licensing records. The new repository should contain a lifecycle-correct server and an unsaved-file syntax slice that both editor clients can launch. The next commitment should be the project manifest plus whole-project parse/verify integration, not completion.
