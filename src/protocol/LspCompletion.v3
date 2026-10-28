@@ -263,15 +263,24 @@ component LspCompletionRepair {
 
 // One textDocument/completion request whose candidates need an analysis:
 // its keywords, which are its reply without the analysis's answer, and the
-// range that each item's edit replaces, the prefix.
+// range that each item's edit replaces, the prefix. The reply is incomplete
+// when a later request may have the names there, and complete where only the
+// keywords can be right for the text.
 class LspCompletionRequest extends LspQueryRequest {
 	def completion: LspCompletion;
 	def keywords: Array<JsonValue>;
 	def range: JsonValue;
 
 	new(completion, id: JsonRpcId, keywords, range) super(completion, id) { }
+	// The keywords, marked incomplete when a later request may have the
+	// names: the analysis failed, did not start, or was replaced.
 	def fallback() -> JsonRpcReply {
-		return completion.keywordList(this);
+		return completion.keywordList(this, true);
+	}
+	// The keywords, complete: the text has no answer for this position, or
+	// the session is ending.
+	def permanentFallback() -> JsonRpcReply {
+		return completion.keywordList(this, false);
 	}
 	// The declarations in scope and the keywords, or after "." the members.
 	def answer(snapshot: AnalysisSnapshot) -> JsonValue {
@@ -285,8 +294,10 @@ class LspCompletionRequest extends LspQueryRequest {
 // project: the document as typed if it parses, or with the repair that the
 // cursor's context selects (LspCompletionRepair). A request that needs no
 // analysis is answered at once; one that does is scheduled, replaced,
-// cancelled, and reused as LspQueryRequests describes. See
-// docs/architecture.md#completion.
+// cancelled, and reused as LspQueryRequests describes. A keyword-only reply is
+// incomplete when the analysis failed, did not start, or was replaced, so that
+// the client asks again, and complete where only keywords can be right for the
+// text. See docs/architecture.md#completion.
 class LspCompletion extends LspQueryRequests {
 	def KEYWORD_KIND = 14;	// CompletionItemKind.Keyword
 	def VARIABLE_KIND = 6;	// CompletionItemKind.Variable, for "this"
@@ -323,8 +334,9 @@ class LspCompletion extends LspQueryRequests {
 		for (i < words.length) r.keywords[i] = item(words[i], KEYWORD_KIND, null, null, r.range);
 		var kinds = LspCompletionRepair.kinds(ctx), project = mapping.active;
 		var path = DocumentUri.filePath(overlay.uri);
-		// Keywords alone where no name can go, and without a project or a worker.
-		if (kinds == 0 || project == null || path == null || scheduler == null) return finish(r, keywordList(r));
+		// Keywords alone, complete, where no name can go, and without a
+		// project or a worker.
+		if (kinds == 0 || project == null || path == null || scheduler == null) return finish(r, keywordList(r, false));
 		var reuse = cached(overlay, ctx.cursor);
 		if (reuse != JsonValue.Null) return finish(r, JsonRpcReply.Result(reuse));
 		// The document as typed if it parses, or with the repair; the repair
@@ -334,7 +346,7 @@ class LspCompletion extends LspQueryRequests {
 		var text = overlay.text, options = project.definition.compilerArgs;
 		if (!parses(path, text, options)) {
 			text = LspCompletionRepair.repair(ctx);
-			if (!parses(path, text, options)) return finish(r, keywordList(r));
+			if (!parses(path, text, options)) return finish(r, keywordList(r, false));
 		}
 		r.offset = ctx.prefixStart;
 		r.kinds = kinds;
@@ -417,8 +429,11 @@ class LspCompletion extends LspQueryRequests {
 		}
 		return digits;
 	}
-	def keywordList(r: LspCompletionRequest) -> JsonRpcReply {
-		return JsonRpcReply.Result(list(r.keywords, false));
+	// {r}'s keywords alone. {incomplete} says that a later request may have
+	// the names at this position, so that the client asks again rather than
+	// filtering the keywords as it types.
+	def keywordList(r: LspCompletionRequest, incomplete: bool) -> JsonRpcReply {
+		return JsonRpcReply.Result(list(r.keywords, incomplete));
 	}
 	// An item whose edit replaces {range}, the prefix, with {label}.
 	private def item(label: string, kind: int, detail: string, sortText: string, range: JsonValue) -> JsonValue {
@@ -434,7 +449,8 @@ class LspCompletion extends LspQueryRequests {
 	}
 	// A CompletionList. A complete one lets the client filter it by the prefix
 	// and ask again only once the prefix no longer matches; an incomplete one,
-	// which the cap filtered by the prefix, makes it ask again as the prefix
+	// which the cap filtered by the prefix, or whose keywords stand in for
+	// names that a later request may have, makes it ask again as the prefix
 	// grows.
 	private def list(items: Array<JsonValue>, incomplete: bool) -> JsonValue {
 		var result = Strings.newMap<JsonValue>();

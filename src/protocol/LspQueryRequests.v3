@@ -32,10 +32,18 @@ class LspQueryRequest(owner: LspQueryRequests, id: JsonRpcId) {
 	def complete(outcome: AnalysisOutcome) {
 		owner.complete(this, outcome);
 	}
-	// The reply without the query's answer: where no analysis is needed, or
-	// the analysis failed, did not parse, or has no answer.
+	// The reply without the query's answer, where a later request may have
+	// it: no analysis is needed, or the analysis failed, did not start, or
+	// was replaced. Completion's keyword list is then incomplete, so that
+	// its client asks again at the next keystroke.
 	def fallback() -> JsonRpcReply {
 		return JsonRpcReply.Result(JsonValue.Null);
+	}
+	// The reply where a later request cannot have the answer either: the
+	// analysis completed without one, for this text, or the session is
+	// ending. Completion's keyword list is then complete.
+	def permanentFallback() -> JsonRpcReply {
+		return fallback();
 	}
 	// The reply from {snapshot}, the result of the request's analysis, or
 	// Null where it has no answer.
@@ -95,7 +103,9 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 	private def submit(r: LspQueryRequest) {
 		waiting = r;
 		r.job = LspAnalysisJob.new(r.begin, r.complete);
-		if (!scheduler.submit(r.job)) finish(r, r.fallback());
+		// The scheduler refuses a job only once it is closed, as the server
+		// shuts down, which refuses later requests too.
+		if (!scheduler.submit(r.job)) finish(r, r.permanentFallback());
 	}
 	// Starts {r}'s analysis: the project's sources as an automatic analysis
 	// captures them, with {r}'s text for its document, admitted within the
@@ -134,11 +144,13 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		return overlay != null && overlay.identity == r.identity && ctx == r.context && ctx.config.current;
 	}
 	// Replies to {r} once its analysis ends: with its answer, or, if it
-	// failed, did not parse, or has none, its fallback reply. An analysis
-	// whose sources an event invalidated while it ran is stale: it runs
-	// again, once, if its document is unchanged and no newer request waits;
-	// otherwise the reply is the fallback. A stale result is neither sent nor
-	// kept.
+	// failed, did not start, or has no answer, its fallback reply. An
+	// analysis whose sources an event invalidated while it ran is stale: it
+	// runs again, once, if its document is unchanged and no newer request
+	// waits; otherwise the reply is the fallback. A stale result is neither
+	// sent nor kept. Only a failed or stale analysis is retried at the next
+	// request: a text that the analysis completed without an answer for gets
+	// the permanent fallback.
 	def complete(r: LspQueryRequest, outcome: AnalysisOutcome) {
 		if (running == r) running = null;
 		if (r.answered) return;
@@ -158,6 +170,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 				cachedResult = result;
 				return finish(r, JsonRpcReply.Result(result));
 			}
+			return finish(r, r.permanentFallback());
 		}
 		finish(r, r.fallback());
 	}
@@ -179,10 +192,11 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 			}
 		}
 	}
-	// Answers the waiting and running requests with their fallback replies,
-	// at shutdown, exit, or the end of the input.
+	// Answers the waiting and running requests with their permanent fallback
+	// replies, at shutdown, exit, or the end of the input: no later request
+	// can ask again.
 	def close() {
-		for (r in [waiting, running]) if (r != null) finish(r, r.fallback());
+		for (r in [waiting, running]) if (r != null) finish(r, r.permanentFallback());
 	}
 	// Forgets the last reply, and makes the running analysis stale: the
 	// sources or the configuration may have changed. Called for document
