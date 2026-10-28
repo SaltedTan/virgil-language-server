@@ -129,7 +129,7 @@ A project's program may also select at most 1,024 files and 4 MiB of paths and s
 
 Every analysis checks the whole program again. For the Aeneas sources, diagnostics arrived about 220 ms after a save on the measured machine ([measurements](architecture.md#semantic-diagnostics)).
 
-Open documents share 1 MiB of text and metadata. Beyond that, the server shows a warning and ignores the open or edit; close other documents, then reopen the document or edit it again ([Document store](architecture.md#document-store)).
+Open documents share 1 MiB of text and metadata. Beyond that, the server shows one warning per pressure episode and ignores each open or edit, logging every rejection; closing an accepted document or making one shorter rearms the warning. Close other documents, then reopen the document or edit it again ([Document store](architecture.md#document-store)).
 
 ## Platforms and editors
 

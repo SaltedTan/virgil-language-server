@@ -85,7 +85,7 @@ Without a `.virgil-lsp.json` that selects it, a file stays in [single-file mode]
 
 ### Too much open text
 
-The server keeps the text of open documents in a shared budget of 1 MiB, which also counts some metadata for each document. An open or an edit that would exceed it is rejected: the server keeps the document as it was, or doesn't open it, and logs this warning; the editor also shows the message after the `virgil-lsp: warning:` prefix:
+The server keeps the text of open documents in a shared budget of 1 MiB, which also counts some metadata for each document. An open or an edit that would exceed it is rejected: the server keeps the document as it was, or doesn't open it, and logs this warning. For the first such rejection, the editor also shows the message after the `virgil-lsp: warning:` prefix. Later rejections are only logged, until closing a document or a shorter full-text edit frees capacity; the next rejection after that shows the message again:
 
 ```text
 virgil-lsp: warning: ignored textDocument/didOpen: aggregate open-document capacity exceeded; close documents or reduce text and retry
