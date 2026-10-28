@@ -1,0 +1,9 @@
+// The server program. Declares the same top-level name as client/Program.v3,
+// so the two programs cannot be analyzed as one.
+component Program {
+	def main() -> int {
+		System.puts(Greeting.text("server"));
+		System.ln();
+		return 0;
+	}
+}

@@ -138,10 +138,21 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 	// Returns the listener of the analysis of {ctx} that captures the newest
 	// documents, or null if no analysis of {ctx} waits or runs. That is the
 	// waiting one, if there is one, which becomes urgent and starts before any
-	// other; otherwise the running one. A scheduler has one consumer, the
-	// server's LspSnapshotRequests, so an analysis has at most one listener,
-	// its waiting definition and hover requests: {candidate} becomes it unless
-	// it already has one. The listener moves from a waiting analysis to the
+	// other; otherwise the running one. If neither exists and admission
+	// evicted the context's snapshot (ProjectContext.evicted), it schedules a
+	// demand analysis, urgent like a waiting one, and returns its listener.
+	// Starting any automatic analysis of the context clears the eviction, so a
+	// demand analysis that fails is not repeated until an event schedules the
+	// context again. A demand analysis compares open documents as any analysis
+	// does, so it asks the client to refresh only documents whose tokens or
+	// hints changed since the client last got them, besides at most one
+	// refresh for each token result after failed token requests
+	// (LspSemanticTokens); an unchanged rebuild asks for nothing more, so
+	// projects that don't fit together can't keep each other's documents
+	// requested and rebuilt without end. A scheduler has one consumer, the
+	// server's LspSnapshotRequests, so an analysis has at most
+	// one listener, its waiting definition and hover requests: {candidate}
+	// becomes it unless it already has one. The listener moves from a waiting analysis to the
 	// run when it starts, and is notified once, when that analysis completes,
 	// fails, or is dropped, which may happen before this returns if the waiting
 	// analysis cannot start. Closing drops listeners without notifying them.
@@ -159,9 +170,18 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			startNext();
 			return listener;
 		}
-		if (running == null || running.context != ctx) return null;
-		if (running.listener == null) running.listener = candidate;
-		return running.listener;
+		if (running != null && running.context == ctx) {
+			if (running.listener == null) running.listener = candidate;
+			return running.listener;
+		}
+		if (!ctx.evicted || ctx.snapshot != null || !ctx.config.current) return null;
+		var w = LspSemanticWait.new(ctx);
+		w.urgent = true;
+		w.due = System.ticksMs();
+		w.listener = candidate;
+		waiting.put(w);
+		startNext();
+		return candidate;
 	}
 	// Stops scheduling; the caller closes the supervisor.
 	def close() {
@@ -221,6 +241,8 @@ class LspSemanticDiagnostics(store: DocumentStore, projects: WorkspaceProjects, 
 			var rest = Vector<LspSemanticWait>.new();
 			for (i < waiting.length) { if(waiting[i] != next) rest.put(waiting[i]); }
 			waiting = rest;
+			// This analysis recovers from any eviction, or fails to.
+			next.context.evicted = false;
 			start(next.context);
 			if (running != null) running.listener = next.listener;
 			else finished(next.listener);

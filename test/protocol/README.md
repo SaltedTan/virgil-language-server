@@ -13,6 +13,33 @@ and the server's stderr on failure.
   editors captured, from `clients/<name>/messages.json`, then opens a file,
   requests its document symbols, and shuts down.
 
+## Evicted-snapshot reproduction
+
+`evicted_snapshot.py` repeats the case of
+[#330](https://github.com/SaltedTan/virgil-language-server/issues/330) with a
+real worker: a project whose snapshot was evicted to keep all snapshots within
+their 32 MiB budget is analyzed again for the first request that needs it. It
+is opt-in, and `make test` doesn't run it, since its fixture is a copy of the
+pinned Aeneas sources and `apps/Demangle`, whose two analyses take about 13 MB
+each. Run it by hand from the repository root after `make all`, with `TMPDIR`
+pointing at a scratch directory that has room for the copy (about 6 MB):
+
+```sh
+TMPDIR=<scratch> python3 test/protocol/evicted_snapshot.py [build/virgil-lsp]
+```
+
+It opens `aeneas/src/vst/Verifier.v3` and `apps/Demangle/Demangle.v3`, edits
+the first, and then requests hover, definition, and semantic tokens in both,
+printing each step's replies, their times, and the latest snapshot as JSON
+lines. It passes when the compiler's requests are answered after the edit, no
+refresh request arrives while they wait, since the rebuilt compiler's tokens
+and hints are those the client already has, and no analysis runs afterwards.
+Automatic analyses have no completion signal, so it waits until the latest
+snapshot's generation hasn't changed for four seconds
+(`EVICTED_SNAPSHOT_QUIET` changes that); every receive has a deadline. On
+`ced30385`, before the fix, the compiler's hover and definition answer null
+and its semantic tokens fail with `ContentModified`.
+
 ## Capturing a new client's initialization messages
 
 The fixtures in `clients/` are the client's own words, so they catch members

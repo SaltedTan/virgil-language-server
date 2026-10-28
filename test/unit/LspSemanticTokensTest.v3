@@ -16,6 +16,7 @@ def X = [
 	UnitTests.register("LspSemanticTokens:request_unavailable_baseline", request_unavailable_baseline),
 	UnitTests.register("LspSemanticTokens:request_current_baseline", request_current_baseline),
 	UnitTests.register("LspSemanticTokens:request_tokens_baseline", request_tokens_baseline),
+	UnitTests.register("LspSemanticTokens:request_failure_refreshes_once", request_failure_refreshes_once),
 	()
 ];
 def PATH = "/semantic-tokens/Main.v3";
@@ -406,4 +407,41 @@ def request_tokens_baseline(t: Tester) {
 	var ctx = s.publish(t);
 	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
 	t.asserti(1, s.refreshes);
+}
+
+// Main's token request fails each time before an analysis finds the same
+// tokens again, as a request refused while too many wait can. The first
+// failure makes the next analysis send a refresh; once that refresh has asked
+// for those tokens, further failures send nothing. A change of the tokens
+// sends one refresh, and a failure after it one more, then nothing.
+def request_failure_refreshes_once(t: Tester) {
+	var s = TokenBaselineSession.new(t, true, true), ctx = s.publish(t);
+	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+	t.asserti(0, s.refreshes);
+	for (round < 3) {
+		ctx = failedRequest(t, s);
+		s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+		t.asserti(1, s.refreshes);
+		s.pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+	}
+	// Kind becomes a variant, which changes Main's tokens for the same text.
+	s.store.change(s.library, 2, LIBRARY_VARIANT);
+	ctx = s.publish(t);
+	s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+	t.asserti(2, s.refreshes);
+	s.pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+	for (round < 3) {
+		ctx = failedRequest(t, s);
+		s.tokens.analyzedOwners(ctx, ctx.snapshot, [ctx, ctx]);
+		t.asserti(3, s.refreshes);
+		s.pending.failAll(JsonRpcError.new(JsonRpcErrorCode.INTERNAL_ERROR, "answered"));
+	}
+}
+// Answers Main's token request with ContentModified, then publishes a new
+// snapshot of the same sources, and returns its context.
+def failedRequest(t: Tester, s: TokenBaselineSession) -> ProjectContext {
+	s.projects.forDocument(s.main).active.snapshot = null;
+	s.request();
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, JsonValue.Int.!(JsonValue.JObject.!(s.response["error"]).v["code"]).v);
+	return s.publish(t);
 }

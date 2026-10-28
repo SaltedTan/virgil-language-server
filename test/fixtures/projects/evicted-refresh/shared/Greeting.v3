@@ -1,0 +1,6 @@
+// Shared by both programs. It belongs to the "server" and "client" projects.
+component Greeting {
+	def text(who: string) -> string {
+		return who;
+	}
+}

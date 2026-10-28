@@ -1,0 +1,8 @@
+// Uses declarations of Program.v3, whose edits change this file's semantic
+// tokens and inlay hints without changing its text.
+component Use {
+	var shape: Shape;
+	def total() -> int {
+		return Program.area(3);
+	}
+}

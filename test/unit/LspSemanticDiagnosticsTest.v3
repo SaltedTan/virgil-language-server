@@ -24,6 +24,19 @@ def X = [
 	T("LspSemanticDiagnostics:shutdown_stops_scheduling", test_shutdown_stops_scheduling),
 	T("LspSemanticDiagnostics:disk_change_discards_result", test_disk_change_discards_result),
 	T("LspSemanticDiagnostics:urgent_context_starts_first", test_urgent_context_starts_first),
+	T("LspSemanticDiagnostics:evicted_demand_answers", test_evicted_demand_answers),
+	T("LspSemanticDiagnostics:evicted_demand_semantic_tokens", test_evicted_demand_semantic_tokens),
+	T("LspSemanticDiagnostics:evicted_demand_coalesces", test_evicted_demand_coalesces),
+	T("LspSemanticDiagnostics:eviction_schedules_nothing", test_eviction_schedules_nothing),
+	T("LspSemanticDiagnostics:demand_analysis_refreshes_once", test_demand_analysis_refreshes_once),
+	T("LspSemanticDiagnostics:unchanged_demand_sends_no_refresh", test_unchanged_demand_sends_no_refresh),
+	T("LspSemanticDiagnostics:demand_refreshes_changed_documents", test_demand_refreshes_changed_documents),
+	T("LspSemanticDiagnostics:event_joins_waiting_demand", test_event_joins_waiting_demand),
+	T("LspSemanticDiagnostics:failed_demand_not_retried", test_failed_demand_not_retried),
+	T("LspSemanticDiagnostics:failed_analysis_no_demand", test_failed_analysis_no_demand),
+	T("LspSemanticDiagnostics:demand_waiters_cancel_and_shutdown", test_demand_waiters_cancel_and_shutdown),
+	T("LspSemanticDiagnostics:visible_projects_stop", test_visible_projects_stop),
+	T("LspSemanticDiagnostics:waiter_pressure_refreshes_once", test_waiter_pressure_refreshes_once),
 	()
 ];
 class SemanticTestSession {
@@ -766,4 +779,488 @@ def test_urgent_context_starts_first(t: Tester) {
 	}
 	semantic.close();
 	supervisor.close();
+}
+
+// A server for the fixture project directory {fixture}, two-programs or
+// evicted-refresh, whose client supports both refresh requests. It
+// records replies, counts refresh requests and analyses, and acknowledges
+// refreshes only when told to, as a client does before requesting again.
+class EvictionSession {
+	def supervisor = AnalysisSupervisor.new(WorkerProcesses.defaultPath(), AnalysisWorkerLimits.new());
+	def server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
+	var base: string;
+	def replies = Vector<HashMap<string, JsonValue>>.new();
+	def refreshIds = Vector<JsonValue>.new();
+	var tokenRefreshes: int;
+	var hintRefreshes: int;
+	var failures: int;
+	var nextId = 100;
+	new(fixture: string, open: bool) {
+		base = ProjectTestFiles.repository(Strings.format1("test/fixtures/projects/%s", fixture));
+		HostOs.ignoreSigpipe();
+		server.sendNotification = receive;
+		server.warnProject = warn;
+		server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"rootUri\":\"%s\",\"capabilities\":{\"workspace\":{\"semanticTokens\":{\"refreshSupport\":true},\"inlayHint\":{\"refreshSupport\":true}}}}}",
+			ProjectFiles.uri(base)));
+		if (!open) return;
+		this.open("server/Program.v3");
+		this.open("client/Program.v3");
+		settle();
+	}
+	def receive(bytes: Array<byte>) {
+		var msg = JsonValue.JObject.!(JsonRpcJsonParser.new(bytes).parseDocument()).v;
+		var name = if(msg.has("method"), JsonValue.String.!(msg["method"]).v);
+		if (name != null && msg.has("id")) {
+			if (Strings.equal(name, "workspace/semanticTokens/refresh")) tokenRefreshes++;
+			if (Strings.equal(name, "workspace/inlayHint/refresh")) hintRefreshes++;
+			refreshIds.put(msg["id"]);
+		} else if (name == null) replies.put(msg);
+	}
+	def warn(msg: string) {
+		if (Strings.startsWith(msg, "automatic analysis of project")) failures++;
+	}
+	def uri(name: string) -> string { return ProjectFiles.uri(ProjectFiles.join(base, name)); }
+	def text(name: string) -> string { return System.fileLoad(ProjectFiles.join(base, name)); }
+	def context(name: string) -> ProjectContext { return server.projects.forDocument(uri(name)).active; }
+	// Clears {name}'s project's snapshot as admission does.
+	def evict(name: string) -> ProjectContext {
+		var ctx = context(name);
+		ctx.snapshot = null;
+		ctx.evicted = true;
+		return ctx;
+	}
+	// The automatic analyses completed or failed so far. No request here
+	// starts an analysis that doesn't belong to a project.
+	def analyses() -> int {
+		return failures + if(supervisor.snapshot != null, supervisor.snapshot.generation);
+	}
+	def open(name: string) {
+		server.handle(Strings.format2("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"%s\",\"languageId\":\"virgil\",\"version\":1,\"text\":%s}}}",
+			uri(name), quote(text(name))));
+	}
+	def change(name: string, version: int, text: string) {
+		server.handle(StringBuilder.new()
+			.put2("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"%s\",\"version\":%d},", uri(name), version)
+			.put1("\"contentChanges\":[{\"text\":%s}]}}", quote(text)).extract());
+	}
+	def save(name: string) {
+		server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didSave\",\"params\":{\"textDocument\":{\"uri\":\"%s\"}}}", uri(name)));
+	}
+	private def quote(s: string) -> string {
+		return rendered(JsonValue.String(s));
+	}
+	def request(method: string, name: string, rest: string) -> int {
+		var id = nextId++;
+		server.handle(StringBuilder.new()
+			.put2("{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"%s\",", id, method)
+			.put2("\"params\":{\"textDocument\":{\"uri\":\"%s\"}%s}}", uri(name), rest).extract());
+		return id;
+	}
+	def at(method: string, name: string, line: int, character: int) -> int {
+		return request(method, name, Strings.format2(",\"position\":{\"line\":%d,\"character\":%d}", line, character));
+	}
+	// Hover on the use of Greeting in {name}, one of the two programs.
+	def hover(name: string) -> int { return at("textDocument/hover", name, 4, greeting(name)); }
+	def definition(name: string) -> int { return at("textDocument/definition", name, 4, greeting(name)); }
+	def references(name: string) -> int {
+		return request("textDocument/references", name, Strings.format1(",\"position\":{\"line\":4,\"character\":%d},\"context\":{\"includeDeclaration\":true}", greeting(name)));
+	}
+	def tokens(name: string) -> int { return request("textDocument/semanticTokens/full", name, ""); }
+	def hints(name: string) -> int {
+		return request("textDocument/inlayHint", name, ",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":20,\"character\":0}}");
+	}
+	private def greeting(name: string) -> int { return if(Strings.startsWith(name, "server/"), 14, 17); }
+	def cancel(id: int) {
+		server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":%d}}", id));
+	}
+	// The reply to {id}, or null if it has none yet.
+	def reply(id: int) -> HashMap<string, JsonValue> {
+		for (i < replies.length) {
+			var r = replies[i];
+			if (r.has("id") && r["id"] == JsonValue.Int(id)) return r;
+		}
+		return null;
+	}
+	// The result of {id}'s reply; JsonValue.Null without a successful reply.
+	def result(id: int) -> JsonValue {
+		var r = reply(id);
+		return if(r != null && r.has("result"), r["result"], JsonValue.Null);
+	}
+	def errorCode(id: int) -> int {
+		var r = reply(id);
+		if (r == null || !r.has("error")) return 0;
+		return JsonValue.Int.!(JsonValue.JObject.!(r["error"]).v["code"]).v;
+	}
+	// Answers every refresh request received so far.
+	def acknowledge() {
+		for (i < refreshIds.length) {
+			server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":null}", rendered(refreshIds[i])));
+		}
+		refreshIds.clear();
+	}
+	// Polls until no analysis runs or waits.
+	def settle() {
+		var fds = Array<int>.new(4);
+		server.onPoll();
+		while (server.analyzing()) {
+			var count = supervisor.pollFds(fds, 0);
+			HostOs.poll(fds, count, server.pollTimeout());
+			server.onPoll();
+		}
+	}
+}
+def tokenData(v: JsonValue) -> int {
+	if (!JsonValue.JObject.?(v)) return -1;
+	return JsonValue.JArray.!(JsonValue.JObject.!(v).v["data"]).v.length;
+}
+def hovered(v: JsonValue) -> bool {
+	return JsonValue.JObject.?(v) && contains(rendered(v), "component Greeting");
+}
+def contains(text: string, word: string) -> bool {
+	for (i = 0; i + word.length <= text.length; i++) {
+		if (Strings.equal(Arrays.range(text, i, i + word.length), word)) return true;
+	}
+	return false;
+}
+// A request whose project's snapshot admission evicted analyzes the project
+// again, once, and is answered from that analysis; later requests use it.
+def test_evicted_demand_answers(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	var ctx = s.evict(name), before = s.analyses();
+	var hover = s.hover(name);
+	t.assert(s.reply(hover) == null, "the hover waits for an analysis");
+	t.assertz(true, s.server.analyzing());
+	s.settle();
+	t.asserti(before + 1, s.analyses());
+	t.assert(hovered(s.result(hover)), "the hover is answered from the new snapshot");
+	t.assert(ctx.snapshot != null && !ctx.evicted, "the project has a snapshot again");
+	var definition = s.definition(name), references = s.references(name);
+	t.assert(s.result(definition) != JsonValue.Null, "the definition is answered at once");
+	t.assert(JsonValue.JArray.?(s.result(references)), "the references are answered at once");
+	t.assertz(false, s.server.analyzing());
+	t.asserti(before + 1, s.analyses());
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
+	s.server.close();
+}
+def test_evicted_demand_semantic_tokens(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	var data = tokenData(s.result(s.tokens(name)));
+	t.assert(data > 0, "the analyzed document has tokens");
+	s.evict(name);
+	var before = s.analyses(), tokens = s.tokens(name);
+	t.assert(s.reply(tokens) == null, "the tokens wait for an analysis");
+	s.settle();
+	t.asserti(before + 1, s.analyses());
+	t.asserti(data, tokenData(s.result(tokens)));
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
+	s.server.close();
+}
+// Requests that arrive while a demand analysis runs or waits share it.
+def test_evicted_demand_coalesces(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), server = "server/Program.v3", client = "client/Program.v3";
+	s.evict(server);
+	s.evict(client);
+	var before = s.analyses();
+	// The server's starts at once; the client's waits for it.
+	var ids = [s.hover(server), s.definition(server), s.references(server), s.tokens(server), s.hints(server),
+		s.hover(client), s.tokens(client), s.definition(client), s.hover(client)];
+	for (id in ids) t.assert(s.reply(id) == null, "each request waits");
+	s.settle();
+	t.asserti(before + 2, s.analyses());
+	for (id in ids) t.assert(s.result(id) != JsonValue.Null, "each request is answered from its project's one analysis");
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
+	s.server.close();
+}
+// Admission that evicts a snapshot schedules no analysis.
+def test_eviction_schedules_nothing(t: Tester) {
+	var s = EvictionSession.new("two-programs", true);
+	var server = s.context("server/Program.v3"), client = s.context("client/Program.v3"), before = s.analyses();
+	s.server.projects.admitSnapshot(server, null, long.view(s.server.projects.snapshotBudget));
+	t.assert(client.snapshot == null && client.evicted, "admission evicts the other snapshot");
+	t.assert(server.snapshot != null && !server.evicted, "the active project keeps its snapshot");
+	t.assertz(false, s.server.analyzing());
+	s.settle();
+	t.assert(hovered(s.result(s.hover("server/Program.v3"))), "a request for the kept snapshot is answered at once");
+	t.assertz(false, s.server.analyzing());
+	t.asserti(before, s.analyses());
+	t.assert(client.snapshot == null && client.evicted, "nothing analyzed the evicted project");
+	s.server.close();
+}
+// A demand analysis compares open documents as any analysis does. One
+// whose tokens the client couldn't get for this text gets one refresh;
+// after the client asks again, nothing more is analyzed or refreshed.
+def test_demand_analysis_refreshes_once(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	var ctx = s.context(name);
+	// Without a snapshot or an eviction, the tokens request fails at once,
+	// and the client is known to have none for this text.
+	ctx.snapshot = null;
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, s.errorCode(s.tokens(name)));
+	t.assertz(false, s.server.analyzing());
+	ctx.evicted = true;
+	var before = s.analyses(), hover = s.hover(name);
+	s.settle();
+	t.asserti(before + 1, s.analyses());
+	t.assert(hovered(s.result(hover)), "the hover is answered from the demand analysis");
+	t.asserti(1, s.tokenRefreshes);
+	t.asserti(0, s.hintRefreshes);
+	for (round < 3) {
+		var work = visibleRound(s, ["server/Program.v3", "client/Program.v3"]);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+		t.assertz(true, work.2);
+	}
+	// A save analyzes the same sources again and finds nothing to refresh.
+	s.save(name);
+	s.settle();
+	t.asserti(before + 2, s.analyses());
+	t.asserti(1, s.tokenRefreshes);
+	t.asserti(0, s.hintRefreshes);
+	s.server.close();
+}
+// A demand analysis whose open documents' tokens and hints are those the
+// client already has asks for no refresh.
+def test_unchanged_demand_sends_no_refresh(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	for (name in names) {
+		t.assert(tokenData(s.result(s.tokens(name))) > 0, "the client has the document's tokens");
+		t.assert(JsonValue.JArray.?(s.result(s.hints(name))), "the client has the document's hints");
+	}
+	for (name in names) {
+		s.evict(name);
+		var before = s.analyses(), hover = s.hover(name);
+		s.settle();
+		t.asserti(before + 1, s.analyses());
+		t.assert(hovered(s.result(hover)), "the hover is answered from the demand analysis");
+	}
+	t.asserti(0, s.tokenRefreshes);
+	t.asserti(0, s.hintRefreshes);
+	s.server.close();
+}
+// The case of the review of #330: the client project's analysis after an edit
+// fails, since both snapshots are retained, and the server's analysis then
+// evicts the client's stale snapshot. The demand analysis that a hover
+// causes carries the edit, which changes the tokens and hints of Use.v3,
+// whose text the client hasn't changed: it sends one refresh of each.
+// Afterwards the client's requests analyze and refresh nothing.
+def test_demand_refreshes_changed_documents(t: Tester) {
+	var s = EvictionSession.new("evicted-refresh", true), program = "client/Program.v3", use = "client/Use.v3";
+	var names = ["server/Program.v3", program, use];
+	s.open(use);
+	s.settle();
+	var client = s.context(program), server = s.context(names[0]);
+	t.assert(s.supervisor.snapshot == server.snapshot, "the server's snapshot is the latest");
+	var tokens = rendered(s.result(s.tokens(use))), hints = rendered(s.result(s.hints(use)));
+	t.assert(tokenData(s.result(s.tokens(use))) > 0, "Use.v3 has tokens");
+	t.assert(contains(hints, "\"label\":\"width:\""), "Use.v3 labels area's argument");
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
+	// Shape becomes an enum, and area's parameter, declared and used, size.
+	var text = replace(s.text(program), "class Shape { }", "enum Shape { A, B }");
+	for (i < 2) text = replace(text, "width", "size");
+	s.change(program, 2, text);
+	s.settle();
+	t.assert(s.failures > 0, "the edit's analysis of the client fails admission");
+	t.assert(client.snapshot == null && client.evicted, "the server's analysis evicts the client's stale snapshot");
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
+	var before = s.analyses(), hover = s.hover(program);
+	s.settle();
+	t.asserti(before + 1, s.analyses());
+	t.assert(hovered(s.result(hover)), "the hover is answered from the demand analysis");
+	t.asserti(1, s.tokenRefreshes);
+	t.asserti(1, s.hintRefreshes);
+	t.assert(!Strings.equal(tokens, rendered(s.result(s.tokens(use)))), "Use.v3's tokens changed");
+	t.assert(contains(rendered(s.result(s.hints(use))), "\"label\":\"size:\""), "Use.v3's hint changed");
+	// Each round also hovers Use.v3 where it has no Greeting, so only the
+	// work counts.
+	for (round < 3) {
+		var work = visibleRound(s, names);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+	}
+	s.server.close();
+}
+// A save while a demand analysis waits schedules the same analysis: one
+// analysis of the project answers the request and the save.
+def test_event_joins_waiting_demand(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	s.evict(name);
+	// A development analysis keeps the worker busy, so the demand waits.
+	s.server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"virgil-lsp/analyze\",\"params\":{\"uri\":\"%s\"}}", s.uri("client/Program.v3")));
+	t.assertz(true, s.supervisor.busy());
+	var before = s.analyses(), hover = s.hover(name);
+	t.assert(s.reply(hover) == null, "the hover waits");
+	s.save(name);
+	s.settle();
+	t.asserti(before + 2, s.analyses());
+	t.assert(hovered(s.result(hover)), "the hover is answered from the save's analysis");
+	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
+	s.server.close();
+}
+// A demand analysis that fails answers its requests as before and is not
+// tried again for the next request. An edit schedules the project again.
+def test_failed_demand_not_retried(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	var ctx = s.evict(name), before = s.analyses();
+	s.server.projects.snapshotBudget = 0;
+	var hover = s.hover(name);
+	t.asserti(before + 1, s.analyses());
+	t.assert(s.reply(hover) != null && s.result(hover) == JsonValue.Null, "the failed analysis answers the hover with null");
+	t.assertz(false, ctx.evicted);
+	s.server.projects.snapshotBudget = s.server.projects.MAX_SNAPSHOT_BYTES;
+	var tokens = s.tokens(name), again = s.hover(name);
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, s.errorCode(tokens));
+	t.assert(s.reply(again) != null && s.result(again) == JsonValue.Null, "the next hover is answered at once");
+	t.assertz(false, s.server.analyzing());
+	s.settle();
+	t.asserti(before + 1, s.analyses());
+	s.change(name, 2, Strings.format1("%s\n", s.text(name)));
+	s.settle();
+	t.asserti(before + 2, s.analyses());
+	t.assert(hovered(s.result(s.hover(name))), "the edit's analysis answers");
+	s.server.close();
+}
+// A project whose automatic analyses failed, with no snapshot to evict,
+// answers at once and is not analyzed for a request.
+def test_failed_analysis_no_demand(t: Tester) {
+	var s = EvictionSession.new("two-programs", false), name = "server/Program.v3";
+	s.server.projects.snapshotBudget = 0;
+	s.open(name);
+	s.open("client/Program.v3");
+	s.settle();
+	var failures = s.analyses(), ctx = s.context(name);
+	t.assert(failures > 0, "the automatic analyses failed");
+	t.assert(ctx.snapshot == null && !ctx.evicted, "the project has neither a snapshot nor an eviction");
+	s.server.projects.snapshotBudget = s.server.projects.MAX_SNAPSHOT_BYTES;
+	var hover = s.hover(name), tokens = s.tokens(name);
+	t.assert(s.reply(hover) != null && s.result(hover) == JsonValue.Null, "the hover is answered at once");
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, s.errorCode(tokens));
+	t.assertz(false, s.server.analyzing());
+	t.asserti(failures, s.analyses());
+	s.server.close();
+}
+// Cancellation answers a request waiting for a demand analysis, and shutdown
+// answers the rest, as for any analysis.
+def test_demand_waiters_cancel_and_shutdown(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), name = "server/Program.v3";
+	s.evict(name);
+	var first = s.hover(name);
+	t.assertz(true, s.server.analyzing());
+	s.cancel(first);
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, s.errorCode(first));
+	var second = s.hover(name), tokens = s.tokens(name);
+	t.assert(s.reply(second) == null && s.reply(tokens) == null, "later requests wait for the same analysis");
+	s.server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"shutdown\"}");
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, s.errorCode(second));
+	t.asserti(LspErrorCode.REQUEST_CANCELLED, s.errorCode(tokens));
+	s.server.close();
+}
+// Greeting.text as a field rather than a method, which changes its tokens in
+// both programs.
+def GREETING_FIELD = "// Shared by both programs. It belongs to the \"server\" and \"client\" projects.\ncomponent Greeting {\n\tdef text: string -> string = echo;\n\tdef echo(who: string) -> string {\n\t\treturn who;\n\t}\n}\n";
+// One round of a client that shows both programs: it answers the refresh
+// requests it has, requests every visible document's hover, tokens, and
+// hints, and waits for the replies. Returns the analyses and refresh
+// requests the round caused, and whether every hover was answered.
+def visibleRound(s: EvictionSession, names: Array<string>) -> (int, int, bool) {
+	var analyses = s.analyses(), refreshes = s.tokenRefreshes + s.hintRefreshes;
+	var hovers = Vector<int>.new();
+	s.acknowledge();
+	for (name in names) { hovers.put(s.hover(name)); s.tokens(name); s.hints(name); }
+	s.settle();
+	var answered = true;
+	for (i < hovers.length) answered = answered && hovered(s.result(hovers[i]));
+	return (s.analyses() - analyses, s.tokenRefreshes + s.hintRefreshes - refreshes, answered);
+}
+// Two visible programs whose snapshots don't both fit beside an incoming
+// analysis's reservation. After an edit, a client that requests every
+// visible document again after each refresh, as editors do, causes at most
+// one demand analysis per evicted project, and then no work at all.
+def test_visible_projects_stop(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	var server = s.context(names[0]), client = s.context(names[1]);
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
+	// The client's analysis fails, since both snapshots are retained, and
+	// then the server's evicts the client's snapshot, as in the issue (#330).
+	var text = replace(s.text(names[1]), "return greeting.length;", "var n = greeting.length;\n\t\treturn n;");
+	s.change(names[1], 2, text);
+	s.settle();
+	t.assert(client.snapshot == null && client.evicted, "the edit's analyses evict the client's snapshot");
+	// The first round analyzes the client once more. The edit's new local
+	// gets a type hint, which the comparison finds, as any analysis of the
+	// edit would: one inlay hint refresh, and none for tokens, which a
+	// document's new text never needs.
+	var work = visibleRound(s, names);
+	t.asserti(1, work.0);
+	t.asserti(0, s.tokenRefreshes);
+	t.asserti(1, s.hintRefreshes);
+	t.assertz(true, work.2);
+	for (round < 3) {
+		work = visibleRound(s, names);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+		t.assertz(true, work.2);
+	}
+	// An edit to the shared file changes both programs' tokens and hints, so
+	// its analyses ask for a refresh of each, once. Admission refuses one
+	// program's analysis while its stale snapshot is retained; that is a
+	// failed analysis, not an eviction, so the client's next requests
+	// analyze nothing.
+	var failures = s.failures, tokens = s.tokenRefreshes, hints = s.hintRefreshes;
+	s.open("shared/Greeting.v3");
+	s.change("shared/Greeting.v3", 2, GREETING_FIELD);
+	s.settle();
+	t.asserti(tokens + 1, s.tokenRefreshes);
+	t.asserti(hints + 1, s.hintRefreshes);
+	t.assert(s.failures > failures, "admission refuses an analysis");
+	for (round < 3) {
+		work = visibleRound(s, names);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+	}
+	s.server.close();
+}
+// The re-check of #330: under many waiting requests, a refused token request
+// erased the fingerprint that the last comparison found, so each demand
+// analysis refreshed the same tokens again, and the client's next requests
+// were refused again. Each round here, another project's analysis has evicted
+// the server's snapshot, and the client, after answering any refresh,
+// requests every visible document with more requests waiting than
+// LspSnapshotRequests allows, so the oldest, the server's tokens, is refused.
+// The first demand analysis refreshes those tokens; later rounds analyze the
+// server for their own requests and refresh nothing. After an edit that
+// changes the tokens, which refreshes them, one round refreshes once more.
+def test_waiter_pressure_refreshes_once(t: Tester) {
+	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	for (refreshes in [1, 0, 0, 0]) pressureRound(t, s, names, refreshes);
+	// Each program's analysis of the edit refreshes its tokens and hints; the
+	// second refresh of each waits for the client's answer to the first.
+	var tokens = s.tokenRefreshes, hints = s.hintRefreshes;
+	s.open("shared/Greeting.v3");
+	s.change("shared/Greeting.v3", 2, GREETING_FIELD);
+	s.settle();
+	s.acknowledge();
+	s.settle();
+	t.asserti(tokens + 2, s.tokenRefreshes);
+	t.asserti(hints + 2, s.hintRefreshes);
+	for (refreshes in [1, 0, 0, 0]) pressureRound(t, s, names, refreshes);
+	s.server.close();
+}
+// One round of test_waiter_pressure_refreshes_once, which expects {refreshes}
+// token refreshes and one analysis.
+def pressureRound(t: Tester, s: EvictionSession, names: Array<string>, refreshes: int) {
+	var analyses = s.analyses(), tokens = s.tokenRefreshes, hints = s.hintRefreshes;
+	s.acknowledge();
+	s.evict(names[0]);
+	var refused = s.tokens(names[0]);
+	for (name in names) { s.hover(name); s.hints(name); }
+	s.tokens(names[1]);
+	// The server's three requests wait; these take the waiting count past the bound.
+	for (i < LspSnapshotRequests.new(null, null, null).MAX_WAITING - 2) s.hover(names[0]);
+	t.asserti(LspErrorCode.CONTENT_MODIFIED, s.errorCode(refused));
+	s.settle();
+	t.asserti(1, s.analyses() - analyses);
+	t.asserti(refreshes, s.tokenRefreshes - tokens);
+	t.asserti(0, s.hintRefreshes - hints);
 }
