@@ -131,7 +131,7 @@ Every analysis checks the whole program again. For the Aeneas sources, diagnosti
 
 Open documents share 1 MiB of text and metadata. Beyond that, the server shows one warning per pressure episode and ignores each open or edit, logging every rejection; closing an accepted document or making one shorter rearms the warning. Close other documents, then reopen the document or edit it again ([Document store](architecture.md#document-store)).
 
-A document's outline may have at most 10,000 symbols, nested ones included, and 4 MiB of JSON. A flat outline, which editors without hierarchical symbols get, reaches the byte limit sooner, since each of its symbols repeats the document's URI and its parent's name. A larger outline fails as a whole rather than showing only some of the file's symbols, so the editor gets no outline for that document; smaller files still have outlines, and the document's other features still work ([Document symbols](architecture.md#document-symbols)).
+A document's outline may have at most 10,000 symbols, nested ones included, and 4 MiB of estimated JSON. A flat outline, which editors without hierarchical symbols get, can reach the byte limit sooner, since each of its symbols repeats the document's URI and, for a nested symbol, its parent's name. A larger outline fails as a whole rather than showing only some of the file's symbols, so the editor gets no outline for that document; smaller files still have outlines, and the document's other features still work ([Document symbols](architecture.md#document-symbols)).
 
 ## Platforms and editors
 

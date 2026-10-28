@@ -130,11 +130,10 @@ class LspDocumentSymbols(store: DocumentStore, projects: WorkspaceProjects) {
 	// reply of this size needs less than 20 MiB. A document whose outline
 	// needs more gets RequestFailed. See docs/architecture.md#document-symbols.
 	def MAX_REPLY_BYTES = 4194304;
-	// The most bytes that a symbol's JSON adds beyond its strings as
-	// JsonRpcJson.stringBytes counts them, with their quotes: the rest of a
-	// hierarchical symbol's object, the larger shape, with its children's
-	// brackets, a two-digit kind, two ranges with eight numbers of at most 11
-	// digits each, and the array's comma. It is 281; a flat symbol's is 171.
+	// Conservative overhead beyond quoted strings as JsonRpcJson.stringBytes
+	// counts them. Must cover both reply shapes, including children's brackets
+	// and the array's comma. The byte calculation is in
+	// docs/architecture.md#document-symbols.
 	def SYMBOL_BYTES = 288;
 	// True if the client's initialize declared
 	// textDocument.documentSymbol.hierarchicalDocumentSymbolSupport: true.

@@ -494,7 +494,7 @@ def test_symbol_byte_bound(t: Tester) {
 }
 
 // A flat reply repeats the document's URI in every symbol, so a few symbols
-// with a long URI exceed the default byte bound; the hierarchy names it once.
+// with a long URI exceed the default byte bound; the hierarchy omits the URI.
 def test_symbol_long_uri(t: Tester) {
 	var uri = Arrays.concat("untitled:", Array<byte>.new(100000));
 	for (i = 9; i < uri.length; i++) uri[i] = 'u';
