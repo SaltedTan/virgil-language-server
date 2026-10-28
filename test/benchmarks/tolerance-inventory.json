@@ -1311,392 +1311,448 @@
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 41
+   "oracle": 41,
+   "allow_absent": true
   },
   {
    "id": "changed-signature",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 42
+   "oracle": 42,
+   "allow_absent": true
   },
   {
    "id": "shadowing-local",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 43
+   "oracle": 43,
+   "allow_absent": true
   },
   {
    "id": "body-boundary-escape",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 44
+   "oracle": 44,
+   "allow_absent": true
   },
   {
    "id": "excluded-error-limit",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 45
+   "oracle": 45,
+   "allow_absent": true
   },
   {
    "id": "repair-needs-brace",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 46
+   "oracle": 46,
+   "allow_absent": true
   },
   {
    "id": "repair-in-header",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 47
+   "oracle": 47,
+   "allow_absent": true
   },
   {
    "id": "repair-in-field-initializer",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 48
+   "oracle": 48,
+   "allow_absent": true
   },
   {
    "id": "repair-in-two-bodies",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 49
+   "oracle": 49,
+   "allow_absent": true
   },
   {
    "id": "repair-call-arity",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 50
+   "oracle": 50,
+   "allow_absent": true
   },
   {
    "id": "repair-unterminated-string",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 51
+   "oracle": 51,
+   "allow_absent": true
   },
   {
    "id": "repair-deleted-header",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 52
+   "oracle": 52,
+   "allow_absent": true
   },
   {
    "id": "repair-missing-return-limit",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 53
+   "oracle": 53,
+   "allow_absent": true
   },
   {
    "id": "brace-swallow-field",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 54
+   "oracle": 54,
+   "allow_absent": true
   },
   {
    "id": "brace-two-closers",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 55
+   "oracle": 55,
+   "allow_absent": true
   },
   {
    "id": "brace-split-header",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 56
+   "oracle": 56,
+   "allow_absent": true
   },
   {
    "id": "brace-indentation-disagrees",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 57
+   "oracle": 57,
+   "allow_absent": true
   },
   {
    "id": "brace-mixed-width",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 58
+   "oracle": 58,
+   "allow_absent": true
   },
   {
    "id": "brace-unterminated-string",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 59
+   "oracle": 59,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-deeper-field",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 60
+   "oracle": 60,
+   "allow_absent": true
   },
   {
    "id": "brace-braceless-if-then-while",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 61
+   "oracle": 61,
+   "allow_absent": true
   },
   {
    "id": "brace-inner-closer",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 62
+   "oracle": 62,
+   "allow_absent": true
   },
   {
    "id": "brace-method-closer",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 63
+   "oracle": 63,
+   "allow_absent": true
   },
   {
    "id": "brace-tab-stops",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 64
+   "oracle": 64,
+   "allow_absent": true
   },
   {
    "id": "brace-and-blank-two-bodies",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 65
+   "oracle": 65,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-then-blank",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 66
+   "oracle": 66,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-missing-return-limit",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 67
+   "oracle": 67,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-missing-return-limit",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 68
+   "oracle": 68,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-deeper-continuation",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 69
+   "oracle": 69,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-deeper-def",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 70
+   "oracle": 70,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-deeper-method",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 71
+   "oracle": 71,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-deeper-constructor",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 72
+   "oracle": 72,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-deeper-case",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 73
+   "oracle": 73,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-same-line-field",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 74
+   "oracle": 74,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-continued-member",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 75
+   "oracle": 75,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-deeper-method",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 1,
-   "oracle": 76
+   "oracle": 76,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-local-function",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 2,
-   "oracle": 77
+   "oracle": 77,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-local-function-returns",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 2,
-   "oracle": 78
+   "oracle": 78,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-local-function-lines",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 2,
-   "oracle": 79
+   "oracle": 79,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-local-value",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 2,
-   "oracle": 80
+   "oracle": 80,
+   "allow_absent": true
   },
   {
    "id": "brace-inner-closer-local-function",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 2,
-   "oracle": 81
+   "oracle": 81,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-bodiless-holder",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 2,
-   "oracle": 82
+   "oracle": 82,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-holder-comment-name",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 2,
-   "oracle": 83
+   "oracle": 83,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-holder-comment-def",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 2,
-   "oracle": 84
+   "oracle": 84,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-holder-split-def",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 2,
-   "oracle": 85
+   "oracle": 85,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-holder-split-name",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 2,
-   "oracle": 86
+   "oracle": 86,
+   "allow_absent": true
   },
   {
    "id": "brace-opener-holder-private-comment",
    "suite": "negative",
    "edit_kind": "header",
    "queries": 2,
-   "oracle": 87
+   "oracle": 87,
+   "allow_absent": true
   },
   {
    "id": "brace-method-closer-private",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 88
+   "oracle": 88,
+   "allow_absent": true
   },
   {
    "id": "brace-inner-closer-private",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 89
+   "oracle": 89,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-then-blank-private",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 90
+   "oracle": 90,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-missing-return-limit-private",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 91
+   "oracle": 91,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-match-case",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 92
+   "oracle": 92,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-lambda-if",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 93
+   "oracle": 93,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-match-case-missing-return-limit",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 94
+   "oracle": 94,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-match-case-then-blank",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 1,
-   "oracle": 95
+   "oracle": 95,
+   "allow_absent": true
   },
   {
    "id": "brace-closer-equivalent",
    "suite": "negative",
    "edit_kind": "body",
    "queries": 2,
-   "oracle": 96
+   "oracle": 96,
+   "allow_absent": true
   },
   {
    "id": "two-broken-files/0",

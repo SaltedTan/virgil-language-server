@@ -66,6 +66,9 @@ def state_rows(states, corpus):
         row = {"id": state["id"], "suite": state["suite"],
                "edit_kind": state["edit_kind"], "queries": len(state["queries"]),
                "oracle": groups[key]}
+        if state.get("allow_absent"):
+            # The driver scores these states' answers with absence allowed.
+            row["allow_absent"] = True
         if state["suite"] == "heldout":
             row["group"] = heldout_group(state["id"])
             row["heldout_kind"] = state["heldout_kind"]
