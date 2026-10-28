@@ -6,6 +6,10 @@
 // Rejections are reported through an injected warning sink, never as replies.
 class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 	var capacityWarning: string -> void;
+	// One bounded latch for the current pressure episode: only its first
+	// capacity rejection reaches the user, and later ones just reach the log.
+	// An accepted event that releases retained bytes rearms it.
+	private var capacityWarned: bool;
 	// Accepted events only; retained records identify the version analyzed or
 	// closed. A didChange with no content changes reports the same text at a
 	// newer version to {onVersionChange} instead of {onChange}.
@@ -81,9 +85,12 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			text = JsonValue.String.!(obj["text"]).v;
 		}
 		// Each event replaces the whole text; only the last one survives.
-		var reason = store.change(uri, version, text);
+		var before = store.usedBytes(), reason = store.change(uri, version, text);
 		ignored(n, reason);
-		if (reason == null && onChange != null) onChange(store.overlay(uri));
+		if (reason == null) {
+			rearmIfReleased(before);
+			if (onChange != null) onChange(store.overlay(uri));
+		}
 	}
 	private def didSave(n: JsonRpcMessage.Notification) {
 		var params = members(n), uri = documentUri(params);
@@ -102,15 +109,26 @@ class LspDocumentSync(store: DocumentStore, warn: string -> void) {
 			ignored(n, "invalid didClose params");
 			return;
 		}
-		var doc = store.overlay(uri), reason = store.close(uri);
+		var doc = store.overlay(uri), before = store.usedBytes(), reason = store.close(uri);
 		ignored(n, reason);
-		if (reason == null && onClose != null) onClose(doc);
+		if (reason == null) {
+			rearmIfReleased(before);
+			if (onClose != null) onClose(doc);
+		}
+	}
+	// An accepted event that made the store charge less released retained
+	// bytes, so the next capacity rejection may warn again.
+	private def rearmIfReleased(before: long) {
+		if (store.usedBytes() < before) capacityWarned = false;
 	}
 	private def ignored(n: JsonRpcMessage.Notification, reason: string) {
 		if (reason == null) return;
 		var message = Strings.format2("ignored %s: %s", n.method, reason);
 		if (warn != null) warn(message);
-		if (Strings.equal(reason, DocumentLimits.EXCEEDED) && capacityWarning != null) capacityWarning(message);
+		if (Strings.equal(reason, DocumentLimits.EXCEEDED) && capacityWarning != null && !capacityWarned) {
+			capacityWarned = true;
+			capacityWarning(message);
+		}
 	}
 	private def members(n: JsonRpcMessage.Notification) -> HashMap<string, JsonValue> {
 		return if(JsonRpcParams.ByName.?(n.params), JsonRpcParams.ByName.!(n.params).v);

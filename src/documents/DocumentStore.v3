@@ -61,6 +61,12 @@ class DocumentStore {
 
 	// Visit only documents the client has open, without copying their text.
 	def eachOpen(visit: (string, DocumentOverlay) -> void) { overlays.apply(visit); }
+	// The bytes currently charged against the aggregate capacity. Synchronization
+	// compares it before and after an accepted event to tell whether the event
+	// released retained overlay bytes.
+	def usedBytes() -> long {
+		return used;
+	}
 	def overlay(uri: string) -> DocumentOverlay {
 		return canonicalOverlay(DocumentUri.normalize(uri));
 	}
