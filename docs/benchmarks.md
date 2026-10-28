@@ -2177,6 +2177,13 @@ method, definition, hover, and references on its 2,404 uses of
 `count` and `local` match the intended program's exactly in a cold open and in
 a warm session.
 
+**Independent adversarial review.** The independent review's own generator
+made 94,692 checks over 47,622 brace sites, with 29,568 acceptances and no wrong
+readings. On accepted cases it compared every feature, cold and warm:
+definition, hover, references, diagnostics, symbols, folding, call and type
+hierarchy, semantic tokens, and inlay hints. It also reran the full tolerance
+benchmark. All 51 earlier captures reproduced exactly.
+
 **The tolerance benchmark.** Full runs of main at `e8018870`, under the driver
 at `11e69a45`, which added the rule-3 controls and the 28 held-out states, and of
 rule 3 at `2c8a90bb`, each built with probes and pinned to CPU 12 under the

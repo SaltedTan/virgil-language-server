@@ -259,6 +259,8 @@ refused. It
 was measured on held-out states and controls it wasn't built from, and on the
 reviews' stress sets, with no wrong reading
 ([brace rule 3 comparison](../benchmarks.md#brace-rule-3-comparison)).
+The maintainer decided on 2026-10-28 to ship it only if an independent
+adversarial review found no wrong answer; that review found none.
 
 ## Consequences
 
