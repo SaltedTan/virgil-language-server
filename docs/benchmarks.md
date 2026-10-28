@@ -2296,18 +2296,26 @@ Server and worker SHA-256 hashes, respectively:
 [`scripts/check-tolerance.py`](../scripts/check-tolerance.py) qualifies one
 complete capture against the phase-3a release floors. Capture and qualification
 stay separate commands: the checker only reads a `bench-tolerance.py` JSON
-capture, refuses `--smoke`, `--suite`, and `--only` runs, and checks the stable
-state, suite, group, warm/cold, oracle, and session-step inventory in
+capture, refuses `--smoke`, `--suite`, and `--only` runs whether the filter
+appears in the `capture` metadata or the `command`, and checks the stable
+state, suite, group, warm/cold, intended-text oracle group, and session-step
+inventory in
 [`test/benchmarks/tolerance-inventory.json`](../test/benchmarks/tolerance-inventory.json)
-before it trusts an aggregate. It reports availability per mode, separates exact,
-partial, missing, and wrong answers per feature, requires zero wrong answers and
-zero control-expectation mismatches, and prints a zero floor as an uncovered
-class. Captures now record a `capture` object with `smoke`, `suite`, `only`, and
-`full`; older captures are read from their `command`. Run:
+before it trusts an aggregate. An oracle must answer exactly the owning state's
+queries, and every negative control and session step must carry well-typed
+measurements and a rejected injection. It reports availability per mode,
+separates exact, partial, missing, and wrong answers per feature, requires zero
+wrong answers and zero control-expectation mismatches, and prints a zero floor
+as an uncovered class. Captures now record a `capture` object with `smoke`,
+`suite`, `only`, and `full`; older captures are read from their `command`. Run:
 
 ```sh
 python3 scripts/check-tolerance.py build/bench-results/v1-tolerance.json
 ```
+
+Regenerate the inventory after a corpus change with
+`python3 scripts/tolerance-inventory.py --write`, which needs a built server;
+its `--check` default replays the recorded parse verdicts, so it needs none.
 
 The full run on 2026-10-29 at `ced30385` (server
 `d585307457921dda3bdb19ae0177f5cdc9a0367e119d9b282a321e6edbcab88d`,

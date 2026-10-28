@@ -93,6 +93,44 @@ def _is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _check_fields(problems, where, row, fields):
+    """Report every missing or wrong-typed field; say whether all are well typed."""
+    complete = True
+    for field, kind, label in fields:
+        if field not in row:
+            _fail(problems, where + " is missing " + field)
+            complete = False
+        elif not isinstance(row[field], kind) or (kind is int and isinstance(row[field], bool)):
+            article = "an" if label[0] in "aeiou" else "a"
+            _fail(problems, where + " " + field + " is not " + article + " " + label)
+            complete = False
+    return complete
+
+
+# What bench-tolerance.py always writes for a state record. The first five
+# identify it; a record that lacks them stops at this point.
+STATE_FIELDS = (
+    ("id", str, "string"), ("suite", str, "string"), ("mode", str, "string"),
+    ("edit_kind", str, "string"), ("oracle_id", int, "integer"),
+    ("answers", dict, "object"), ("scores", dict, "object"),
+    ("samples", list, "array"), ("expectation_mismatches", list, "array"),
+    ("configuration", dict, "object"), ("texts", dict, "object"),
+    ("snapshot", dict, "object"))
+
+# What execute_session always writes for one step, in both the intended-text
+# oracle and a measured mode.
+SESSION_STEP_FIELDS = (
+    ("id", str, "string"), ("suite", str, "string"), ("mode", str, "string"),
+    ("edit_kind", str, "string"), ("actions", list, "array"),
+    ("answers", dict, "object"), ("samples", list, "array"),
+    ("queries", list, "array"), ("snapshot", dict, "object"),
+    ("measured_probes", list, "array"))
+
+# The measured steps add these; the intended-text oracle records no scores.
+SESSION_MEASURED_FIELDS = (
+    ("scores", dict, "object"), ("substitution_kinds", dict, "object"))
+
+
 def _verdict_problem(problems, where, verdict):
     if not isinstance(verdict, dict):
         _fail(problems, where + ": score is not an object")
@@ -107,11 +145,23 @@ def _verdict_problem(problems, where, verdict):
         _fail(problems, where + ": a missing answer is marked wrong")
     if verdict["partial"] and (not verdict["available"] or verdict["matches_oracle"]):
         _fail(problems, where + ": partial disagrees with availability or exactness")
+    # Only an absent answer may be correct without matching the oracle, and
+    # only the negative controls allow that.
+    if verdict["available"] and verdict["correct"] != verdict["matches_oracle"]:
+        _fail(problems, where + ": correct disagrees with exactness")
     return True
 
 
+def _answer_feature(key):
+    """The feature of an answer key, or None when it is not one."""
+    if key == "diagnostics":
+        return "diagnostics"
+    match = ANSWER_KEY.match(key) if isinstance(key, str) else None
+    return match.group(1) if match else None
+
+
 def _answer_type_problem(problems, where, key, value):
-    feature = "diagnostics" if key == "diagnostics" else key.split(":")[-1]
+    feature = _answer_feature(key)
     if feature in ("definition", "hover"):
         if value is not None and not isinstance(value, dict):
             _fail(problems, where + ": " + feature + " answer is not an object or null")
@@ -127,15 +177,38 @@ def _check_answer_values(problems, where, answers, expected_count=None):
         _fail(problems, where + ": " + str(len(answers)) + " answer keys, expected "
               + str(expected_count))
     for key, value in answers.items():
-        if key == "diagnostics":
-            feature = "diagnostics"
-        else:
-            match = ANSWER_KEY.match(key) if isinstance(key, str) else None
-            if match is None:
-                _fail(problems, where + ": unknown answer key " + repr(key))
-                continue
-            feature = match.group(1)
+        if _answer_feature(key) is None:
+            _fail(problems, where + ": unknown answer key " + repr(key))
+            continue
         _answer_type_problem(problems, where + " " + key, key, value)
+
+
+def _expected_answers(queries):
+    """The answer keys bench-tolerance.py writes for a state with {queries} queries."""
+    keys = {str(index) + ":" + feature for index in range(queries) for feature in FEATURES[:3]}
+    keys.add("diagnostics")
+    return keys
+
+
+def _check_oracle_answers(problems, where, oracle, queries):
+    """An oracle must answer exactly the queries of the state that owns it."""
+    answers = oracle.get("answers")
+    if isinstance(answers, dict):
+        expected = _expected_answers(queries)
+        if set(answers) != expected:
+            _fail(problems, where + ": answer keys differ from a " + str(queries)
+                  + "-query oracle: " + repr(sorted(answers)[:4]))
+        for key, value in answers.items():
+            if _answer_feature(key) is None:
+                continue
+            _answer_type_problem(problems, where + " " + key, key, value)
+    source_queries = oracle.get("queries")
+    if isinstance(source_queries, list) and len(source_queries) != queries:
+        _fail(problems, where + ": " + str(len(source_queries)) + " queries, expected "
+              + str(queries))
+    paths = oracle.get("diagnostic_paths")
+    if isinstance(paths, list) and not all(isinstance(path, str) for path in paths):
+        _fail(problems, where + ": diagnostic paths are not strings")
 
 
 def _check_answer_indices(problems, where, answers, queries):
@@ -173,12 +246,18 @@ def _check_answers(problems, where, answers, scores, expected_count=None, requir
     if expected_count is not None and len(scores) != expected_count:
         _fail(problems, where + ": " + str(len(scores)) + " answer keys, expected " + str(expected_count))
     for key, value in answers.items():
-        if key != "diagnostics" and (not isinstance(key, str) or ANSWER_KEY.match(key) is None):
+        if _answer_feature(key) is None:
             _fail(problems, where + ": unknown answer key " + repr(key))
             continue
         if key in scores and _verdict_problem(problems, where + " " + key, scores[key]):
             _answer_type_problem(problems, where + " " + key, key, value)
     return True
+
+
+def _filter_flags(*parts):
+    """The capture-filter flags among {parts}, as they appear on a command line."""
+    return [flag for flag in ("--smoke", "--suite", "--only")
+            if any(part == flag or part.startswith(flag + "=") for part in parts)]
 
 
 def _check_capture_kind(capture, problems):
@@ -188,13 +267,14 @@ def _check_capture_kind(capture, problems):
     if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
         _fail(problems, "command is missing or is not a string array")
         command = []
+    # The command is the only evidence of what actually ran, so a filter in it
+    # is fatal whatever the metadata says.
+    filters = _filter_flags(*command)
+    if filters:
+        _fail(problems, "not a full capture: command has " + ", ".join(filters))
     if meta is None:
         # Older captures record the filters only in the command. They remain
         # readable, but an unqualified command cannot show that it was full.
-        filtered = [flag for flag in ("--smoke", "--suite", "--only")
-                    if any(part == flag or part.startswith(flag + "=") for part in command)]
-        if filtered:
-            _fail(problems, "not a full capture: command has " + ", ".join(filtered))
         return
     if not isinstance(meta, dict):
         _fail(problems, "capture metadata is not an object")
@@ -207,6 +287,16 @@ def _check_capture_kind(capture, problems):
         _fail(problems, "not a full capture: only is " + repr(meta.get("only")))
     if meta.get("full") is not True:
         _fail(problems, "not a full capture: full is not true")
+    recorded = set()
+    if meta.get("smoke"):
+        recorded.add("--smoke")
+    if meta.get("suite") is not None:
+        recorded.add("--suite")
+    if meta.get("only") is not None:
+        recorded.add("--only")
+    if recorded != set(filters):
+        _fail(problems, "not a full capture: metadata records filters " + repr(sorted(recorded))
+              + " but the command has " + repr(filters))
 
 
 def _inventory_index(inventory, problems):
@@ -239,6 +329,8 @@ def _inventory_index(inventory, problems):
             _fail(problems, where + " has an unknown edit kind")
         if not _is_int(row.get("queries")) or row["queries"] < 1:
             _fail(problems, where + " has no positive query count")
+        if not _is_int(row.get("oracle")) or row["oracle"] < 0:
+            _fail(problems, where + " has no intended-text oracle group")
         if row.get("suite") == "heldout":
             if row.get("group") not in ("body-quarantine", "brace-317", "closer-320"):
                 _fail(problems, where + " has no held-out group")
@@ -280,7 +372,7 @@ def _inventory_index(inventory, problems):
             "sessions": len(sessions),
             "session_step_mode_records": 2 * sum(len(row["steps"]) for row in sessions.values()
                                                  if isinstance(row.get("steps"), list)),
-            "oracles": len(states),
+            "oracles": len({row.get("oracle") for row in states.values()}),
             "session_oracles": len(sessions),
         }
         for name, value in expected.items():
@@ -329,6 +421,7 @@ def _check_states(capture, states_inventory, oracles, problems):
     pairs = collections.defaultdict(list)
     seen = set()
     used_oracles = set()
+    state_oracles = collections.defaultdict(set)
     for index, row in enumerate(records):
         where = "states[" + str(index) + "]"
         if not isinstance(row, dict):
@@ -337,30 +430,19 @@ def _check_states(capture, states_inventory, oracles, problems):
         for marker in ("error", "failed_record", "transcript"):
             if marker in row:
                 _fail(problems, where + " is a failed record (" + marker + ")")
-        for field, kind, label in (
-                ("id", str, "string"), ("suite", str, "string"), ("mode", str, "string"),
-                ("edit_kind", str, "string"), ("oracle_id", int, "integer"),
-                ("answers", dict, "object"), ("scores", dict, "object"),
-                ("samples", list, "array"), ("expectation_mismatches", list, "array"),
-                ("configuration", dict, "object"), ("texts", dict, "object"),
-                ("snapshot", dict, "object")):
-            value = row.get(field)
-            wrong_type = not isinstance(value, kind) or (kind is int and isinstance(value, bool))
-            if field not in row:
-                _fail(problems, where + " is missing " + field)
-            elif wrong_type:
-                _fail(problems, where + " " + field + " is not an " + label)
-        state_id = row.get("id")
-        mode = row.get("mode")
-        if isinstance(state_id, str):
-            pairs[state_id].append(mode)
-            if (state_id, mode) in seen:
-                _fail(problems, where + " duplicates state/mode " + state_id + "/" + repr(mode))
-            seen.add((state_id, mode))
-        expected = states_inventory.get(state_id) if isinstance(state_id, str) else None
+        if not _check_fields(problems, where, row, STATE_FIELDS):
+            # A record whose identity is unreadable cannot be compared with the
+            # inventory, grouped with a mode, or used as an oracle key.
+            continue
+        state_id = row["id"]
+        mode = row["mode"]
+        pairs[state_id].append(mode)
+        if (state_id, mode) in seen:
+            _fail(problems, where + " duplicates state/mode " + state_id + "/" + repr(mode))
+        seen.add((state_id, mode))
+        expected = states_inventory.get(state_id)
         if expected is None:
-            if isinstance(state_id, str):
-                _fail(problems, where + " has unknown state ID " + state_id)
+            _fail(problems, where + " has unknown state ID " + state_id)
         else:
             if row.get("suite") != expected.get("suite"):
                 _fail(problems, where + " suite differs from the inventory")
@@ -379,11 +461,56 @@ def _check_states(capture, states_inventory, oracles, problems):
             expected_answers = 3 * expected["queries"] + 1
             _check_answer_indices(problems, where, row.get("answers"), expected["queries"])
         _check_answers(problems, where, row.get("answers"), row.get("scores"), expected_answers)
-        oracle_id = row.get("oracle_id")
-        if _is_int(oracle_id):
-            if oracle_id not in oracles:
-                _fail(problems, where + " references missing oracle " + str(oracle_id))
-            used_oracles.add(oracle_id)
+        oracle_id = row["oracle_id"]
+        if oracle_id not in oracles:
+            _fail(problems, where + " references missing oracle " + str(oracle_id))
+            continue
+        used_oracles.add(oracle_id)
+        state_oracles[state_id].add(oracle_id)
+    # Each state's two modes measure the same intended text. States whose text
+    # is identical share one oracle, so the inventory names that intended-text
+    # group: a group maps to exactly one oracle and one oracle never stands in
+    # for two groups.
+    for state_id, oracle_ids in state_oracles.items():
+        if len(oracle_ids) != 1:
+            _fail(problems, "state " + state_id + " references oracles "
+                  + repr(sorted(oracle_ids)) + ", expected one shared by both modes")
+    group_oracles = collections.defaultdict(set)
+    for state_id, oracle_ids in state_oracles.items():
+        expected = states_inventory.get(state_id) or {}
+        if _is_int(expected.get("oracle")) and len(oracle_ids) == 1:
+            group_oracles[expected["oracle"]].update(oracle_ids)
+    for group, oracle_ids in group_oracles.items():
+        if len(oracle_ids) != 1:
+            _fail(problems, "states that share intended text group " + str(group)
+                  + " reference oracles " + repr(sorted(oracle_ids)) + ", expected one")
+    oracle_groups = collections.defaultdict(set)
+    for group, oracle_ids in group_oracles.items():
+        for oracle_id in oracle_ids:
+            oracle_groups[oracle_id].add(group)
+    for oracle_id, groups in oracle_groups.items():
+        if len(groups) != 1:
+            _fail(problems, "oracle " + str(oracle_id) + " stands in for intended text groups "
+                  + repr(sorted(groups)))
+    groups = {row.get("oracle") for row in states_inventory.values() if _is_int(row.get("oracle"))}
+    if len(oracles) != len(groups):
+        _fail(problems, "capture has " + str(len(oracles)) + " oracles, expected "
+              + str(len(groups)))
+    checked_oracles = set()
+    for state_id in state_oracles:
+        oracle_ids = state_oracles[state_id]
+        if len(oracle_ids) != 1:
+            continue
+        oracle_id = next(iter(oracle_ids))
+        expected = states_inventory.get(state_id) or {}
+        if not _is_int(expected.get("queries")):
+            continue
+        checked = (oracle_id, expected["queries"])
+        if checked in checked_oracles:
+            continue
+        checked_oracles.add(checked)
+        _check_oracle_answers(problems, "oracle " + str(oracle_id) + " for state " + state_id,
+                              oracles[oracle_id], expected["queries"])
     expected_ids = set(states_inventory)
     for state_id in expected_ids:
         modes = pairs.get(state_id, [])
@@ -398,6 +525,38 @@ def _check_states(capture, states_inventory, oracles, problems):
     if set(oracles) != used_oracles:
         _fail(problems, "capture has oracles that no state uses, or used oracles that are missing")
     return records
+
+
+def _check_injection(problems, where, stale):
+    """Validate one stale-predecessor injection and say whether it was rejected.
+
+    A rejection needs a well-typed verdict on a known answer key; anything else
+    is a malformed control, not evidence that the server refused the injection.
+    """
+    if not isinstance(stale, dict):
+        _fail(problems, where + " has no stale-predecessor injection")
+        return False
+    answers, scores = stale.get("answers"), stale.get("scores")
+    if not isinstance(answers, dict) or not answers:
+        _fail(problems, where + ": injection answers is not a non-empty object")
+        return False
+    if not isinstance(scores, dict) or not scores:
+        _fail(problems, where + ": injection scores is not a non-empty object")
+        return False
+    if set(answers) != set(scores):
+        _fail(problems, where + ": injection answers and scores have different keys")
+        return False
+    rejected = False
+    valid = True
+    for key, verdict in scores.items():
+        if _answer_feature(key) is None:
+            _fail(problems, where + ": injection has unknown answer key " + repr(key))
+            valid = False
+            continue
+        if _verdict_problem(problems, where + " injection " + key, verdict):
+            rejected = rejected or verdict["wrong"]
+        _answer_type_problem(problems, where + " injection " + key, key, answers[key])
+    return rejected and valid
 
 
 def _check_negative_controls(states_inventory, oracles, records, problems):
@@ -420,15 +579,10 @@ def _check_negative_controls(states_inventory, oracles, records, problems):
         oracle = oracles.get(oracle_id)
         if oracle is None:
             continue
-        stale = oracle.get("stale_control")
-        if not isinstance(stale, dict) or not isinstance(stale.get("scores"), dict):
-            _fail(problems, "negative control " + state_id + " has no stale-predecessor injection")
-            continue
-        if not any(verdict.get("wrong") for verdict in stale["scores"].values()
-                   if isinstance(verdict, dict)):
+        if _check_injection(problems, "negative control " + state_id, oracle.get("stale_control")):
+            rejected.add(oracle_id)
+        else:
             _fail(problems, "negative control " + state_id + " did not reject its injection")
-            continue
-        rejected.add(oracle_id)
     if len(rejected) != len(negative):
         _fail(problems, "only " + str(len(rejected)) + " of " + str(len(negative))
               + " negative controls rejected an injection")
@@ -444,6 +598,31 @@ def _session_step_ids(row):
             return None
         ids.append(step["id"])
     return ids
+
+
+def _check_step(problems, where, step, fields, mode):
+    """Check one session step record, which is one measured editor state."""
+    if not isinstance(step, dict):
+        _fail(problems, where + " is not an object")
+        return False
+    complete = _check_fields(problems, where, step, fields)
+    if "state_latency_ms" not in step:
+        _fail(problems, where + " is missing state_latency_ms")
+        complete = False
+    elif not _is_number(step["state_latency_ms"]):
+        _fail(problems, where + " state_latency_ms is not a number")
+        complete = False
+    for field in ("samples", "queries"):
+        if isinstance(step.get(field), list) and not step[field]:
+            _fail(problems, where + " has no " + field)
+            complete = False
+    if step.get("edit_kind") != step.get("id"):
+        _fail(problems, where + " edit kind differs from its step ID")
+    if mode is not None and step.get("mode") != mode:
+        _fail(problems, where + " mode differs from its session")
+    if step.get("suite") != "session":
+        _fail(problems, where + " suite is not session")
+    return complete
 
 
 def _check_sessions(capture, sessions_inventory, problems):
@@ -481,16 +660,13 @@ def _check_sessions(capture, sessions_inventory, problems):
             continue
         for step, expected_step in zip(row["steps"], expected["steps"]):
             where_step = where + " step " + expected_step["id"]
+            _check_step(problems, where_step, step, SESSION_STEP_FIELDS, None)
             _check_answer_values(problems, where_step, step.get("answers"),
                                  3 * expected_step["queries"] + 1)
             _check_answer_indices(problems, where_step, step.get("answers"),
                                   expected_step["queries"])
             if expected_step.get("stale"):
-                stale = step.get("stale_control")
-                if not isinstance(stale, dict) or not isinstance(stale.get("scores"), dict):
-                    _fail(problems, where_step + " has no stale-predecessor control")
-                elif not any(verdict.get("wrong") for verdict in stale["scores"].values()
-                             if isinstance(verdict, dict)):
+                if not _check_injection(problems, where_step, step.get("stale_control")):
                     _fail(problems, where_step + " did not reject its stale predecessor")
     if set(oracles) != set(sessions_inventory):
         _fail(problems, "session oracles differ from the inventory")
@@ -527,10 +703,8 @@ def _check_sessions(capture, sessions_inventory, problems):
             for marker in ("error", "failed_record", "transcript"):
                 if marker in step:
                     _fail(problems, where_step + " is a failed record (" + marker + ")")
-            if step.get("mode") != row.get("mode"):
-                _fail(problems, where_step + " mode differs from its session")
-            if step.get("suite") != "session":
-                _fail(problems, where_step + " suite is not session")
+            _check_step(problems, where_step, step,
+                        SESSION_STEP_FIELDS + SESSION_MEASURED_FIELDS, row.get("mode"))
             oracle_step = step.get("oracle_step")
             if not _is_int(oracle_step) or oracle_step != step_index:
                 _fail(problems, where_step + " oracle step is " + repr(oracle_step))
@@ -704,8 +878,8 @@ def aggregate(capture, inventory=None):
     for oracle in capture["oracles"]:
         stale = oracle.get("stale_control")
         if isinstance(stale, dict) and isinstance(stale.get("scores"), dict):
-            if any(verdict.get("wrong") for verdict in stale["scores"].values()
-                   if isinstance(verdict, dict)):
+            if any(isinstance(verdict, dict) and verdict.get("wrong") is True
+                   for verdict in stale["scores"].values()):
                 injections += 1
     return {
         "modes": modes,
@@ -852,9 +1026,10 @@ def format_scorecard(report, capture=None):
         lines.append("  fully exact states (baseline)")
         for name, label in (("primary_all_exact", "primary"), ("heldout_all_exact", "held-out")):
             actual, total = data["baselines"].get(name, [0, 0])
-            expected = BASELINES[name][1]
+            baseline, baseline_total = BASELINES[name]
             lines.append("  " + label.ljust(31) + str(actual).rjust(3) + "/"
-                         + str(total).ljust(4) + "  baseline " + str(expected))
+                         + str(total).ljust(4) + "  baseline " + str(baseline) + "/"
+                         + str(baseline_total))
         lines.append("  wrong answers " + str(data["wrong"])
                      + "  expectation mismatches " + str(data["expectation_mismatches"])
                      + "  session wrong answers " + str(data["session_wrong"]))

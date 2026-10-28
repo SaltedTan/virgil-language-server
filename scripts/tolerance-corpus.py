@@ -163,21 +163,52 @@ def reindent(rng, lines, style):
     return result
 
 
+def oracle_key(state):
+    """Identify the intended-text oracle that a state measures.
+
+    States with the same project, overlays, queries, and diagnostic paths read
+    the same intended text, so `bench-tolerance.py` captures their oracle once;
+    replay states whose last parseable version is the same share one this way.
+    """
+    paths = {q["path"] for q in state["queries"]} | {"Observer.v3"}
+    if state["id"].startswith("fresh-type-error"):
+        paths.add("C.v3")
+    if state.get("project_change") and state["id"].endswith("2"):
+        # The third project change adds a newly discovered file.
+        paths.add("Added.v3")
+    overlays = {**state["predecessor"], **state.get("oracle", {})}
+    return (str(state["project"]["base"]), json.dumps(overlays, sort_keys=True),
+            json.dumps(state["queries"], sort_keys=True), tuple(sorted(paths)))
+
+
 class Corpus:
-    def __init__(self, exe, work):
-        self.exe, self.work = exe, work
+    def __init__(self, exe, work, parse=None):
+        # {parse} replaces the compiler's parse oracle with recorded verdicts so
+        # that the inventory check needs no built server: it maps a text to the
+        # line of its first syntax error, or to None when the text parses.
+        self.exe, self.work, self.parse = exe, work, parse
         self.parsed = {}
         self.inputs = {"test/benchmarks/tolerance-seeds.json": corpus.sha256(SEEDS.read_bytes())}
 
-    def parseable(self, text):
+    def error_line(self, text):
+        """The line of the first syntax error that the CLI parser reports in
+        {text}, counting from 1, or None if it parses."""
         digest = corpus.sha256(text.encode())
         if digest not in self.parsed:
-            path = self.work / "parse-input.v3"
-            path.write_bytes(text.encode())
-            result = subprocess.run([str(self.exe), "parse", str(path)], capture_output=True, timeout=30)
-            assert result.returncode in (0, 1), (result.returncode, result.stderr.decode())
-            self.parsed[digest] = result.returncode == 0
+            self.parsed[digest] = self.parse(text) if self.parse else self.compiler_error_line(text)
         return self.parsed[digest]
+
+    def compiler_error_line(self, text):
+        path = self.work / "parse-input.v3"
+        path.write_bytes(text.encode())
+        result = subprocess.run([str(self.exe), "parse", str(path)], capture_output=True, timeout=30)
+        assert result.returncode in (0, 1), (result.returncode, result.stderr.decode())
+        if result.returncode == 0:
+            return None
+        return int(re.search(r":(\d+):\d+: ", result.stdout.decode()).group(1))
+
+    def parseable(self, text):
+        return self.error_line(text) is None
 
     def remember(self, path):
         path = Path(path)
@@ -279,17 +310,6 @@ class Corpus:
                     previous = text
                 count += 1
         assert count == 140, ("replay inventory changed", count)
-
-    def error_line(self, text):
-        """The line of the first syntax error that the CLI parser reports in
-        {text}, counting from 1, or None if it parses."""
-        path = self.work / "parse-input.v3"
-        path.write_bytes(text.encode())
-        result = subprocess.run([str(self.exe), "parse", str(path)], capture_output=True, timeout=30)
-        assert result.returncode in (0, 1), (result.returncode, result.stderr.decode())
-        if result.returncode == 0:
-            return None
-        return int(re.search(r":(\d+):\d+: ", result.stdout.decode()).group(1))
 
     def heldout(self):
         """HELDOUT_PER_KIND states of each kind in HELDOUT_KINDS, one file each:

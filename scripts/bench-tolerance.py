@@ -516,8 +516,7 @@ def main():
                     state["new_config"] = config
                     (project["base"] / ".virgil-lsp.json").write_text(json.dumps(config))
                 overlays = {**state["predecessor"], **state.get("oracle", {})}
-                key = (str(project["base"]), json.dumps(overlays, sort_keys=True),
-                       json.dumps(state["queries"], sort_keys=True), tuple(sorted(paths)))
+                key = states.oracle_key(state)
                 if key not in cache:
                     answers, process = capture(args.exe, state, overlays, state["queries"], paths)
                     # Nonnegative corpus sites must really bind; a broken oracle
