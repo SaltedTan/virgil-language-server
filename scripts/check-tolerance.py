@@ -618,6 +618,38 @@ def _document_versions(row):
     return {entry["uri"]: entry.get("version") for entry in versions}
 
 
+def _check_snapshot_sources(problems, where, row):
+    """bench-tolerance.py checks, before it scores a record, that the snapshot
+    has one entry for each source of the current configuration, in order, in
+    one project directory; each entry must also describe the current text."""
+    try:
+        sources = row["configuration"]["current"]["projects"][0]["sources"]
+    except (KeyError, IndexError, TypeError):
+        sources = None
+    if not isinstance(sources, list) or not sources or not all(isinstance(s, str) for s in sources):
+        _fail(problems, where + " has no current configured sources")
+        return False
+    versions = row["snapshot"].get("documentVersions")
+    if not isinstance(versions, list) or len(versions) != len(sources):
+        _fail(problems, where + " snapshot does not have one document for each configured source")
+        return False
+    bases = set()
+    for entry, source in zip(versions, sources):
+        uri = entry.get("uri") if isinstance(entry, dict) else None
+        if not isinstance(uri, str) or not uri.endswith("/" + source):
+            _fail(problems, where + " snapshot document " + repr(uri) + " is not the configured source "
+                  + repr(source))
+            return False
+        if entry.get("current") is not True:
+            _fail(problems, where + " snapshot document " + uri + " is not current")
+            return False
+        bases.add(uri[:-len(source)])
+    if len(bases) != 1:
+        _fail(problems, where + " snapshot documents are not in one project directory")
+        return False
+    return True
+
+
 def _check_mode_evidence(problems, records):
     """A state's warm and cold records come from two server processes, and
     their snapshots show how each opened the edited files.
@@ -635,6 +667,8 @@ def _check_mode_evidence(problems, records):
             by_state[row["id"]].setdefault(row["mode"], row)
     for state_id, modes in by_state.items():
         for mode, row in modes.items():
+            if not _check_snapshot_sources(problems, "state " + state_id + " " + mode, row):
+                continue
             versions = _document_versions(row)
             if versions is None:
                 _fail(problems, "state " + state_id + " " + mode + " snapshot has no document versions")
@@ -678,6 +712,10 @@ def _check_injection(problems, where, stale, oracle_answers, allow_absent):
     if set(answers) != set(scores):
         _fail(problems, where + ": injection answers and scores have different keys")
         return False
+    if isinstance(oracle_answers, dict) and set(answers) != set(oracle_answers):
+        _fail(problems, where + ": injection answers " + repr(sorted(answers))
+              + " are not the oracle's " + repr(sorted(oracle_answers)))
+        return False
     rejected = False
     valid = True
     for key, verdict in scores.items():
@@ -686,6 +724,10 @@ def _check_injection(problems, where, stale, oracle_answers, allow_absent):
             valid = False
             continue
         before = len(problems)
+        # Rescoring compares whole verdicts, and 1 == True in Python.
+        if not _verdict_problem(problems, where + " injection " + key, verdict):
+            valid = False
+            continue
         _answer_type_problem(problems, where + " injection " + key, key, answers[key])
         rescored = _rescore(problems, where + " injection " + key, key, answers[key], verdict,
                             oracle_answers, allow_absent)

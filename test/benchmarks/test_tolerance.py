@@ -49,11 +49,14 @@ def scorecard_state(state_id, mode, answers=None, expectation=(), oracle_id=0,
             "oracle_id": oracle_id, "answers": answers, "scores": scored(answers, expected),
             "samples": [{"feature": "definition", "latency_ms": 1}],
             "state_latency_ms": 1.5, "worker_replacements": 0,
-            "expectation_mismatches": list(expectation), "configuration": {},
+            "expectation_mismatches": list(expectation),
+            "configuration": {"current": {"version": 1, "projects": [
+                {"name": "tolerance", "sources": ["A.v3"]}]}},
             "texts": {}, "changed": ["A.v3"], "server_pid": next(PIDS),
             # Warm changes the edited overlay once; cold opens it once.
             "snapshot": {"documentVersions": [
-                {"uri": "file:///project/A.v3", "version": 2 if mode == "warm" else 1}]}}
+                {"uri": "file:///project/A.v3", "version": 2 if mode == "warm" else 1,
+                 "current": True}]}}
 
 
 def scorecard_oracle(oracle_id, answers=None, stale=None):
@@ -556,6 +559,46 @@ class Scorecard(unittest.TestCase):
         failures = checker.validate(capture, inventory)
         self.assertTrue(any("records share a server process" in failure for failure in failures),
                         failures)
+
+    def test_refuses_snapshot_evidence_that_the_driver_would_reject(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        self.assertEqual(checker.validate(scorecard_capture(copy.deepcopy(records)), inventory), [])
+        two = {"current": {"version": 1, "projects": [{"name": "tolerance", "sources": ["A.v3", "B.v3"]}]}}
+        cases = (
+            ("no documents", "one document for each configured source",
+             lambda row: row["snapshot"].update(documentVersions=[])),
+            ("stale document", "is not current",
+             lambda row: row["snapshot"]["documentVersions"][0].update(current=False)),
+            ("other source", "is not the configured source",
+             lambda row: row["snapshot"]["documentVersions"][0].update(uri="file:///project/Other.v3")),
+            ("no configuration", "no current configured sources",
+             lambda row: row.update(configuration={})),
+            ("two directories", "not in one project directory",
+             lambda row: (row.update(configuration=two), row["snapshot"]["documentVersions"].append(
+                 {"uri": "file:///elsewhere/B.v3", "version": 1, "current": True}))))
+        for name, message, mutate in cases:
+            with self.subTest(snapshot=name):
+                capture = scorecard_capture(copy.deepcopy(records))
+                mutate(capture["states"][1])
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_refuses_an_injection_without_every_answer(self):
+        # Only the wrong definition is kept; the oracle has every answer.
+        truncated = {"0:definition": STALE_ANSWERS["0:definition"]}
+        capture, inventory = negative_capture(stale_control(truncated))
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("are not the oracle's" in failure for failure in failures), failures)
+
+    def test_refuses_injection_verdicts_written_as_numbers(self):
+        # JSON 0 and 1 compare equal to false and true in Python.
+        stale = stale_control()
+        stale["scores"] = {key: {field: int(value) for field, value in verdict.items()}
+                           for key, verdict in stale["scores"].items()}
+        capture, inventory = negative_capture(stale)
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("is not a boolean" in failure for failure in failures), failures)
 
     def test_refuses_a_measurement_that_is_not_a_finite_nonnegative_number(self):
         for value in (-1, float("nan"), float("inf"), True, "1"):

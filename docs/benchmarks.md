@@ -2302,14 +2302,19 @@ state, suite, group, warm/cold, intended-text oracle group, and session-step
 inventory in
 [`test/benchmarks/tolerance-inventory.json`](../test/benchmarks/tolerance-inventory.json)
 before it trusts an aggregate. An oracle must answer exactly the owning state's
-queries, every state and session step must carry well-typed measurements, and
-every negative control and designated session-oracle step must carry a rejected
-injection. It rescores every recorded verdict, including each injection's, from
+queries, every state and session step must carry well-typed measurements, each
+state's snapshot must hold one current document for each configured source, as
+the driver checks before it scores, and every negative control and designated
+session-oracle step must carry a rejected injection with every answer its oracle
+has. It rescores every recorded verdict, including each injection's, from
 the recorded answers with `bench-tolerance.py`'s own scoring, so it refuses any
 capture that an incomplete, filtered, interrupted, or buggy run could produce,
 or whose verdicts its answers don't support; it can't detect answers and
 verdicts that were rewritten consistently, which only rerunning the benchmark
-can. It reports availability per mode,
+can. A capture doesn't record which intended text an oracle captured, so two
+states' oracles swapped where no verdict changes, for example where both
+states' answers are missing, still pass; the scorecard's counts are then the
+same. It reports availability per mode,
 separates exact, partial, missing, and wrong answers per feature, requires zero
 wrong answers and zero control-expectation mismatches, and prints a zero floor
 as an uncovered class. Captures now record a `capture` object with `smoke`,
