@@ -311,6 +311,15 @@ Deliverables may include:
 - Cancellation checkpoints and result-version rejection.
 - Memory caps and cache eviction.
 
+Phase 3a's accepted gate is the release scorecard in
+[Semantics during syntax errors](docs/benchmarks.md#semantics-during-syntax-errors):
+in each warm and cold mode, 180 of 185 primary states and 44 of 94 held-out
+states keep definition, hover, references, and diagnostics, with no wrong
+answers. That is the bounded open-body scope that
+[No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing)
+states: rule 2 reads a missing `{` only where the file's indentation places it,
+and header and field-initializer errors and truncated files remain phase 3b.
+
 Consider a licensed, current Tree-sitter grammar as a syntax fallback, not as the semantic authority. If `tree-sitter-virgil` is adopted, first obtain an explicit license, update it to current Virgil grammar, and run it over the compiler/test corpus.
 
 Do not promise “incremental compilation” until measurements identify the bottleneck. Incremental text synchronization, incremental parsing, incremental name resolution, and incremental type checking are separate capabilities.
@@ -531,7 +540,7 @@ These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 - The configuration schema and compatibility policy are stable.
 - References, safe rename, signature help, and useful completion are shipped.
-- Incomplete syntax does not routinely destroy all language intelligence.
+- Incomplete syntax does not routinely destroy all language intelligence, within the bounded open-body scope of [No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing), where rule 2 reads a missing `{` only where the file's indentation places it: phase 3a's [release scorecard](docs/benchmarks.md#release-scorecard) holds its floors in both modes with no wrong answers, while header and field-initializer errors and truncated files remain phase 3b.
 - Performance budgets are based on published benchmark fixtures and pass in CI or scheduled runs.
 - Release artifacts cover the documented platform matrix and clean-install tests.
 - At least one release cycle has tested upgrades, rollback, and compatibility with newer Virgil revisions.

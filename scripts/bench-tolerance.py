@@ -462,7 +462,10 @@ def main():
     pinned, _ = bench.corpus.validate(strict=not args.smoke)
     affinity = bench.pin_cpu(args.cpu)
     result = {"schema": 1, "suite": "tolerance", "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "command": [sys.executable, *sys.argv], "server_revision": bench.corpus.git_revision(ROOT, "rev-parse", "HEAD"),
+              "command": [sys.executable, *sys.argv],
+              "capture": {"smoke": args.smoke, "suite": args.suite, "only": args.only,
+                          "full": not (args.smoke or args.suite or args.only)},
+              "server_revision": bench.corpus.git_revision(ROOT, "rev-parse", "HEAD"),
               "git_status": bench.corpus.git_revision(ROOT, "status", "--short"), "host": bench.host_info(affinity),
               "corpus": pinned, "corpus_sha256": bench.corpus.sha256(bench.corpus.MANIFEST.read_bytes()),
               "driver_sha256": {p.name: bench.corpus.sha256(p.read_bytes()) for p in (
@@ -493,9 +496,9 @@ def main():
                 bench.check(cases, "no states selected")
             cache = {}
             for state in cases:
-                paths = {q["path"] for q in state["queries"]} | {"Observer.v3"}
-                if state["id"].startswith("fresh-type-error"):
-                    paths.add("C.v3")
+                # The same set as the oracle key's, so states share an oracle
+                # only when their diagnostics cover the same files.
+                paths = states.diagnostic_paths(state)
                 state["diagnostic_paths"] = paths
                 project = state["project"]
                 if state.get("project_change"):
@@ -513,8 +516,7 @@ def main():
                     state["new_config"] = config
                     (project["base"] / ".virgil-lsp.json").write_text(json.dumps(config))
                 overlays = {**state["predecessor"], **state.get("oracle", {})}
-                key = (str(project["base"]), json.dumps(overlays, sort_keys=True),
-                       json.dumps(state["queries"], sort_keys=True), tuple(sorted(paths)))
+                key = states.oracle_key(state)
                 if key not in cache:
                     answers, process = capture(args.exe, state, overlays, state["queries"], paths)
                     # Nonnegative corpus sites must really bind; a broken oracle

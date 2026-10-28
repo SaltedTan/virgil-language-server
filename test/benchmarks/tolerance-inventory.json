@@ -1,0 +1,3021 @@
+{
+ "schema": 1,
+ "comment": "Stable tolerance corpus inventory for scripts/check-tolerance.py. Regenerate it with `python3 scripts/tolerance-inventory.py --write` after a corpus change, and explain why in the commit.",
+ "counts": {
+  "states": 350,
+  "state_mode_records": 700,
+  "negative_controls": 56,
+  "sessions": 10,
+  "session_step_mode_records": 72,
+  "oracles": 206,
+  "session_oracles": 10
+ },
+ "states": [
+  {
+   "id": "call-after-string-and-comment",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 0
+  },
+  {
+   "id": "call-empty-arguments",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 1
+  },
+  {
+   "id": "call-generic",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 2
+  },
+  {
+   "id": "call-nested-missing-paren",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 3
+  },
+  {
+   "id": "call-open-arguments",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 4
+  },
+  {
+   "id": "call-trailing-comma",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 5
+  },
+  {
+   "id": "else-branch",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 6
+  },
+  {
+   "id": "if-condition-open",
+   "suite": "repair",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 7
+  },
+  {
+   "id": "index-open",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 8
+  },
+  {
+   "id": "local-type",
+   "suite": "repair",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 9
+  },
+  {
+   "id": "member-end-of-statement",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 10
+  },
+  {
+   "id": "member-in-component-field",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 11
+  },
+  {
+   "id": "member-in-condition",
+   "suite": "repair",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 12
+  },
+  {
+   "id": "member-in-field-initializer",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 13
+  },
+  {
+   "id": "member-in-lambda",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 14
+  },
+  {
+   "id": "member-in-match-arm",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 15
+  },
+  {
+   "id": "member-mid-expression",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 16
+  },
+  {
+   "id": "member-of-call-result",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 17
+  },
+  {
+   "id": "member-of-this",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 18
+  },
+  {
+   "id": "member-of-type",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 19
+  },
+  {
+   "id": "member-with-prefix",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 20
+  },
+  {
+   "id": "missing-brace-end-of-method",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 21
+  },
+  {
+   "id": "missing-semicolon",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 22
+  },
+  {
+   "id": "return-expression",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 23
+  },
+  {
+   "id": "statement-keyword-prefix",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 24
+  },
+  {
+   "id": "syntax-error-after-cursor",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 25
+  },
+  {
+   "id": "syntax-error-elsewhere-in-file",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 26
+  },
+  {
+   "id": "syntax-error-in-other-file",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 27
+  },
+  {
+   "id": "type-error-elsewhere-in-file",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 28
+  },
+  {
+   "id": "type-error-in-other-file",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 29
+  },
+  {
+   "id": "var-initializer",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 30
+  },
+  {
+   "id": "aeneas-member-of-component",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-member-of-class",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-member-of-field",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-member-of-parameter",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 33
+  },
+  {
+   "id": "aeneas-member-chain",
+   "suite": "repair",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 34
+  },
+  {
+   "id": "aeneas-call-second-argument",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-call-later-argument",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-empty-arguments",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 35
+  },
+  {
+   "id": "aeneas-call-nested",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-condition",
+   "suite": "repair",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-for-header",
+   "suite": "repair",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-statement-start",
+   "suite": "repair",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-truncated-member",
+   "suite": "repair",
+   "edit_kind": "whole_file",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-truncated-call",
+   "suite": "repair",
+   "edit_kind": "whole_file",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-member-of-component/0",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-member-of-component/1",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/2",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/3",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/4",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/5",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/6",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/7",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/8",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/9",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/10",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 36
+  },
+  {
+   "id": "aeneas-member-of-component/11",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 37
+  },
+  {
+   "id": "aeneas-member-of-component/12",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 37
+  },
+  {
+   "id": "aeneas-member-of-component/13",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 37
+  },
+  {
+   "id": "aeneas-member-of-component/14",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 37
+  },
+  {
+   "id": "aeneas-member-of-component/15",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 37
+  },
+  {
+   "id": "aeneas-member-of-component/16",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 37
+  },
+  {
+   "id": "aeneas-call-nested/0",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/1",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/2",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/3",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/4",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/5",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/6",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/7",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/8",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/9",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/10",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/11",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-call-nested/12",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-condition/0",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/1",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/2",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/3",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/4",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/5",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/6",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/7",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/8",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/9",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/10",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/11",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/12",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-condition/13",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 31
+  },
+  {
+   "id": "aeneas-for-header/0",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/1",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/2",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/3",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/4",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/5",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/6",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/7",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/8",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/9",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/10",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/11",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/12",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/13",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/14",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/15",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/16",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/17",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/18",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/19",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/20",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/21",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/22",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/23",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/24",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/25",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/26",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/27",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/28",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/29",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/30",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/31",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/32",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/33",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/34",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/35",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/36",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/37",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/38",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/39",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/40",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/41",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/42",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/43",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/44",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/45",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/46",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "aeneas-for-header/47",
+   "suite": "replay",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 32
+  },
+  {
+   "id": "util-StringBuilder.v3/0",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/1",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/2",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/3",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/4",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/5",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/6",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/7",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/8",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/9",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/10",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/11",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/12",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/13",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/14",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/15",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/16",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/17",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/18",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-StringBuilder.v3/19",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 3,
+   "oracle": 38
+  },
+  {
+   "id": "util-Vector.v3/0",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 39
+  },
+  {
+   "id": "util-Vector.v3/1",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/2",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/3",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/4",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/5",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/6",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/7",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/8",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/9",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/10",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/11",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/12",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/13",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/14",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/15",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/16",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/17",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/18",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/19",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/20",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/21",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/22",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/23",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/24",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/25",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/26",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "util-Vector.v3/27",
+   "suite": "replay",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 40
+  },
+  {
+   "id": "deleted-declaration",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 41,
+   "allow_absent": true
+  },
+  {
+   "id": "changed-signature",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 42,
+   "allow_absent": true
+  },
+  {
+   "id": "shadowing-local",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 43,
+   "allow_absent": true
+  },
+  {
+   "id": "body-boundary-escape",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 44,
+   "allow_absent": true
+  },
+  {
+   "id": "excluded-error-limit",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 45,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-needs-brace",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 46,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-in-header",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 47,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-in-field-initializer",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 48,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-in-two-bodies",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 49,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-call-arity",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 50,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-unterminated-string",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 51,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-deleted-header",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 52,
+   "allow_absent": true
+  },
+  {
+   "id": "repair-missing-return-limit",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 53,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-swallow-field",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 54,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-two-closers",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 55,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-split-header",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 56,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-indentation-disagrees",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 57,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-mixed-width",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 58,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-unterminated-string",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 59,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-deeper-field",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 60,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-braceless-if-then-while",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 61,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-inner-closer",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 62,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-method-closer",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 63,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-tab-stops",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 64,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-and-blank-two-bodies",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 65,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-then-blank",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 66,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-missing-return-limit",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 67,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-missing-return-limit",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 68,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-deeper-continuation",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 69,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-deeper-def",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 70,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-deeper-method",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 71,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-deeper-constructor",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 72,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-deeper-case",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 73,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-same-line-field",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 74,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-continued-member",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 75,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-deeper-method",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 1,
+   "oracle": 76,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-local-function",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 77,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-local-function-returns",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 78,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-local-function-lines",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 79,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-local-value",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 80,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-inner-closer-local-function",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 81,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-bodiless-holder",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 82,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-holder-comment-name",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 83,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-holder-comment-def",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 84,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-holder-split-def",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 85,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-holder-split-name",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 86,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-opener-holder-private-comment",
+   "suite": "negative",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 87,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-method-closer-private",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 88,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-inner-closer-private",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 89,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-then-blank-private",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 90,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-missing-return-limit-private",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 91,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-match-case",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 92,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-lambda-if",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 93,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-match-case-missing-return-limit",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 94,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-match-case-then-blank",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 95,
+   "allow_absent": true
+  },
+  {
+   "id": "brace-closer-equivalent",
+   "suite": "negative",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 96,
+   "allow_absent": true
+  },
+  {
+   "id": "two-broken-files/0",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 97
+  },
+  {
+   "id": "fresh-type-error/0",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 98
+  },
+  {
+   "id": "utf16/0",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 99
+  },
+  {
+   "id": "closed-file-on-disk/0",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 100
+  },
+  {
+   "id": "project-file-change/0",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 101
+  },
+  {
+   "id": "two-broken-files/1",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 102
+  },
+  {
+   "id": "fresh-type-error/1",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 103
+  },
+  {
+   "id": "crlf/1",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 1,
+   "oracle": 104
+  },
+  {
+   "id": "closed-file-on-disk/1",
+   "suite": "extra",
+   "edit_kind": "whole_file",
+   "queries": 2,
+   "oracle": 105
+  },
+  {
+   "id": "project-file-change/1",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 106
+  },
+  {
+   "id": "two-broken-files/2",
+   "suite": "extra",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 107
+  },
+  {
+   "id": "fresh-type-error/2",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 108
+  },
+  {
+   "id": "utf16/2",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 109
+  },
+  {
+   "id": "closed-file-on-disk/2",
+   "suite": "extra",
+   "edit_kind": "header",
+   "queries": 2,
+   "oracle": 110
+  },
+  {
+   "id": "project-file-change/2",
+   "suite": "extra",
+   "edit_kind": "body",
+   "queries": 2,
+   "oracle": 111
+  },
+  {
+   "id": "next-line/mach/GlobalRegAlloc.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 112,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/exe/MachO.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 113,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/mach/MachDataWriter.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 114,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "next-line/vst/VarEnvironment.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 115,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/mach/Pointer.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 116,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/types/TypeUtil.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 117,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "next-line/main/CLOptions.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 118,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/os/Kernel.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 119,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/jvm/JvmClassfile.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 120,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "next-line/riscv64/RiscV64RegSet.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 121,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/types/Byte.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 122,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/util/IO.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 123,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "next-line/v3/Ref.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 124,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/x86/X86Backend.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 125,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/ir/IrOpMethodBuilder.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 126,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "next-line/ir/Ir.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 127,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/riscv64/SsaRiscV64Gen.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 128,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/core/Eval.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 129,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "next-line/mach/SimpleRegAlloc.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 130,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "next-line/core/Opcode.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 131,
+   "group": "body-quarantine",
+   "heldout_kind": "next-line"
+  },
+  {
+   "id": "body-end/ssa/SsaGraph.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 132,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "body-end/vst/ParserState.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 133,
+   "group": "body-quarantine",
+   "heldout_kind": "body-end"
+  },
+  {
+   "id": "two-bodies/mach/MachRtSrcTables.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 134,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "two-bodies/ssa/Gvn.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 135,
+   "group": "body-quarantine",
+   "heldout_kind": "two-bodies"
+  },
+  {
+   "id": "brace-tabs/if-opener/ir/PackingSolver.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 136,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/loop-opener/x86/X86MacroAssembler.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 137,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/method-opener/ssa/SsaContext.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 138,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/match-opener/main/Aeneas.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 139,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/block-closer/jvm/JvmHeap.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 140,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/method-closer/jvm/SsaJvmGen.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 141,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-spaces/if-opener/core/Operator.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 142,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/method-opener/x86-64/X86_64Linux.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 143,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/loop-opener/mach/Memory.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 144,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/match-opener/jvm/JvmGen.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 145,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/block-closer/ssa/SsaInterpreter.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 146,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/method-closer/jvm/JvmBuilder.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 147,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-mixed/if-opener/v3/V3.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 148,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/loop-opener/ssa/Ssa.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 149,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/method-opener/x86-64/X86_64Backend.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 150,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/method-closer/wasm/WasmOp.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 151,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/block-closer/mach/MoveSet.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 152,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/match-opener/debug/Dwarf.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 153,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed-width/if-opener/arm64/SsaArm64Gen.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 154,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "brace-mixed-width/method-opener/mach/MachModule.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 155,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "brace-mixed-width/method-closer/x86/DarwinModule.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 156,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "brace-mixed-width/loop-opener/ir/Packing.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 157,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "brace-mixed-width/block-closer/mach/RegState.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 158,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "brace-tabs/if-opener/ssa/SsaBlockOrder.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 159,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-mixed-width/match-opener/jvm/JvmRep.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 160,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "brace-tabs/loop-opener/ssa/SsaProfiler.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 161,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/match-opener/vst/Vst.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 162,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/method-opener/ir/Normalization.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 163,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/block-closer/x86-64/X86_64Darwin.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 164,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-tabs/method-closer/ssa/SsaMap.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 165,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "brace-spaces/if-opener/ir/PartialSpecialization.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 166,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/loop-opener/ir/ScalarPattern.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 167,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/match-opener/types/Function.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 168,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/method-opener/ir/IntNormalizer.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 169,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/block-closer/core/Program.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 170,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-spaces/method-closer/ir/VstIr.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 171,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "brace-mixed/method-opener/mach/AnyRef.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 172,
+   "group": "brace-317",
+   "heldout_kind": "method-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/if-opener/mach/MachBackend.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 173,
+   "group": "brace-317",
+   "heldout_kind": "if-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/block-closer/types/Int.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 174,
+   "group": "brace-317",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/loop-opener/ssa/SsaInstrVisitor.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 175,
+   "group": "brace-317",
+   "heldout_kind": "loop-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/method-closer/v3/SystemModule.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 176,
+   "group": "brace-317",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "brace-mixed/match-opener/vst/MethodEnv.v3",
+   "suite": "heldout",
+   "edit_kind": "header",
+   "queries": 4,
+   "oracle": 177,
+   "group": "brace-317",
+   "heldout_kind": "match-opener",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-tabs/block-closer/ssa/SsaPrinter.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 178,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-tabs/method-closer/arm64/Arm64Linux.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 179,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-spaces/block-closer/mach/CiRuntime.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 180,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-spaces/method-closer/jvm/JvmType.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 181,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-mixed/method-closer/types/Bool.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 182,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed/block-closer/types/TypeEnv.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 183,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed-width/block-closer/main/Profiler.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 184,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "closer-mixed-width/method-closer/types/Tuple.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 185,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "closer-tabs/block-closer/os/Darwin.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 186,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-tabs/method-closer/core/OpcodeVisitor.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 187,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-spaces/block-closer/jvm/JvmTarget.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 188,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-spaces/method-closer/os/Linux.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 189,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-mixed/block-closer/mach/PointerTagger.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 190,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed/method-closer/debug/DwarfConst.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 191,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed-width/block-closer/x86-64/X86_64MacroAssembler.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 192,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "closer-mixed-width/method-closer/ssa/SsaDeconstructor.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 193,
+   "group": "closer-320",
+   "heldout_kind": "method-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "closer-tabs/block-closer/wasm/WasmTarget.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 194,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-spaces/block-closer/vst/VstMatcher.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 195,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-mixed/block-closer/util/Progress.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 196,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed-width/block-closer/ir/VariantNormalizer.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 197,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "closer-tabs/block-closer/v3/V3Class.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 198,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-spaces/block-closer/jvm/JARFile.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 199,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-mixed/block-closer/wasm/WasmGcTarget.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 200,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed-width/block-closer/mach/LocalRegAlloc.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 201,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed-width"
+  },
+  {
+   "id": "closer-tabs/block-closer/ssa/SsaTracer.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 202,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "tabs"
+  },
+  {
+   "id": "closer-spaces/block-closer/wasm/WasmGcLowering.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 203,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "spaces"
+  },
+  {
+   "id": "closer-mixed/block-closer/x86-64/SsaX86_64Gen.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 204,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed"
+  },
+  {
+   "id": "closer-mixed-width/block-closer/ir/VariantSolver.v3",
+   "suite": "heldout",
+   "edit_kind": "body",
+   "queries": 4,
+   "oracle": 205,
+   "group": "closer-320",
+   "heldout_kind": "block-closer",
+   "indentation": "mixed-width"
+  }
+ ],
+ "sessions": [
+  {
+   "id": "in-turn",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "a-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "b-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "a-fixed",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "b-fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "overlapping",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "a-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "b-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "b-fixed",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "a-fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "save-close-reopen",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "saved",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "closed",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "reopened",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "new-file",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "a-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "created",
+     "queries": 4,
+     "stale": false
+    },
+    {
+     "id": "added-fixed",
+     "queries": 4,
+     "stale": false
+    },
+    {
+     "id": "all-fixed",
+     "queries": 4,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "newest-parseable",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "old-body-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "new-signature",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "other-body-broken",
+     "queries": 3,
+     "stale": true
+    },
+    {
+     "id": "fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "watched-disk",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "a-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "b-closed",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "disk-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "disk-fixed",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "all-fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "limit-fallback-visible",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "limit-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "limit-fallback-excluded",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "limit-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "limit-repair",
+   "queries": 3,
+   "steps": [
+    {
+     "id": "limit-broken",
+     "queries": 3,
+     "stale": false
+    },
+    {
+     "id": "fixed",
+     "queries": 3,
+     "stale": false
+    }
+   ]
+  },
+  {
+   "id": "cache-pressure",
+   "queries": 2,
+   "steps": [
+    {
+     "id": "first-analyzed",
+     "queries": 2,
+     "stale": false
+    },
+    {
+     "id": "second-analyzed",
+     "queries": 2,
+     "stale": false
+    },
+    {
+     "id": "evicted-broken",
+     "queries": 2,
+     "stale": false
+    },
+    {
+     "id": "retained-broken",
+     "queries": 2,
+     "stale": false
+    }
+   ]
+  }
+ ]
+}

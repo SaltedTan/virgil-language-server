@@ -2291,6 +2291,77 @@ Server and worker SHA-256 hashes, respectively:
 - `2c8a90bb`: `7d7d75f12ead3a215a02ee85101f1eed98c7ea4aa1dc35f378201025f49a5f33`,
   `478b321bcf9fcb9155df35df9210f4ce3997efd353bb50c6ce4954360c9e9288`.
 
+### Release scorecard
+
+[`scripts/check-tolerance.py`](../scripts/check-tolerance.py) qualifies one
+complete capture against the phase-3a release floors. The floors cover phase
+3a's bounded open-body scope: rule 2 reads a missing `{` only where the file's
+indentation places it, and header and field-initializer errors and truncated
+files remain phase 3b. Capture and qualification
+stay separate commands: the checker only reads a `bench-tolerance.py` JSON
+capture, refuses `--smoke`, `--suite`, and `--only` runs whether the filter
+appears in the `capture` metadata or the `command`, and checks the stable
+state, suite, group, warm/cold, intended-text oracle group, and session-step
+inventory in
+[`test/benchmarks/tolerance-inventory.json`](../test/benchmarks/tolerance-inventory.json)
+before it trusts an aggregate. An oracle must answer exactly the owning state's
+queries, and recorded measurements must be finite, nonnegative numbers, never
+booleans. Each state's snapshot must hold one current document for each
+configured source, as the driver checks before it scores. State and session
+snapshots, including session-oracle steps, must have a current project
+configuration and current documents with an explicit null or non-boolean integer
+version; session snapshots must include every queried document. Every negative
+control and designated session-oracle step must carry a rejected injection with
+every answer its oracle has.
+
+The modes must use distinct server processes. Each state's warm and cold records
+must name the same nonempty list of distinct changed paths from `texts.current`.
+Changed open sources must be at version 1 cold and version 2 warm; changed
+sources in the closed-file-on-disk states must have null versions in both modes.
+Every other open source must be at version 1 in both modes.
+
+It rescores every recorded verdict, including each injection's, from
+the recorded answers with `bench-tolerance.py`'s own scoring, so it refuses any
+capture that an incomplete, filtered, interrupted, or buggy run could produce,
+or whose verdicts its answers don't support; it can't detect answers and
+verdicts that were rewritten consistently, which only rerunning the benchmark
+can. A capture doesn't record which intended text an oracle captured, so two
+states' oracles swapped where no verdict changes, for example where both
+states' answers are missing, still pass; the scorecard's counts are then the
+same. It reports availability per mode,
+separates exact, partial, missing, and wrong answers per feature, requires zero
+wrong answers and zero control-expectation mismatches, and prints a zero floor
+as an uncovered class. Captures now record a `capture` object with `smoke`,
+`suite`, `only`, and `full`; older captures are read from their `command`. Run:
+
+```sh
+python3 scripts/check-tolerance.py build/bench-results/v1-tolerance.json
+```
+
+The command exits nonzero if capture validation or any per-mode floor fails.
+Fully exact state totals are informational baselines, not enforced floors.
+
+Regenerate the inventory after a corpus change with
+`python3 scripts/tolerance-inventory.py --write`, which needs a built server;
+its `--check` default replays the recorded parse verdicts, so it needs none.
+
+The full run on 2026-10-29 at `ced30385` (server
+`d585307457921dda3bdb19ae0177f5cdc9a0367e119d9b282a321e6edbcab88d`,
+542.08 seconds) passed every floor in both modes with zero wrong answers, zero
+expectation mismatches, all 56 negative controls in both modes, and all 56
+stale-predecessor injections rejected:
+
+| Mode | Primary all four features | Held-out | Exact definition | Exact hover | Exact references | Exact diagnostic sets | Wrong answers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Warm | 180/185 | 44/94 | 616/627 | 616/627 | 589/627 | 180/185 | 0 |
+| Cold | 180/185 | 44/94 | 616/627 | 616/627 | 589/627 | 180/185 | 0 |
+
+Fully exact states were 153 of 185 primary and 40 of 94 held-out. The held-out
+subgroups were the same in both modes: 24/24 body quarantine, 15/28 lost openers,
+2/7 seed-317 block closers, 3/20 seed-320 block closers, and 0/15 method closers.
+The last is an uncovered class, as are the two truncated files; header and
+field-initializer errors and truncated files remain phase 3b.
+
 ## Pinned Virgil revision comparison (2026-10-27)
 
 The bump from `7cf038fc` to `57318d37` ([#311](https://github.com/SaltedTan/virgil-language-server/issues/311))

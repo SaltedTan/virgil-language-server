@@ -5,6 +5,8 @@
 import copy
 import contextlib
 import importlib.util
+import itertools
+import io
 import json
 from pathlib import Path
 import sys
@@ -17,7 +19,167 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("tolerance", ROOT / "scripts/bench-tolerance.py")
 tolerance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tolerance)
+spec = importlib.util.spec_from_file_location("tolerance_check", ROOT / "scripts/check-tolerance.py")
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
 CONTROLS = json.loads(Path(__file__).with_name("tolerance-negative-oracles.json").read_text())["cases"]
+
+SCORECARD_ANSWERS = {
+    "0:definition": {"uri": "project:///Observer.v3", "range": {}},
+    "0:hover": {"contents": "bound", "range": {}},
+    "0:references": [{"uri": "project:///Observer.v3", "range": {}}],
+    "diagnostics": [{"uri": "project:///Observer.v3", "diagnostic": {"code": "TypeError"}}],
+}
+# What a server that lost every answer returns.
+MISSING_ANSWERS = {"0:definition": None, "0:hover": None, "0:references": [], "diagnostics": []}
+# A predecessor's binding, which every injection must reject.
+STALE_ANSWERS = {**SCORECARD_ANSWERS, "0:definition": {"uri": "project:///Stale.v3", "range": {}}}
+PIDS = itertools.count(1000)
+
+
+def scored(answers, expected=SCORECARD_ANSWERS, allow_absent=False):
+    """The verdicts bench-tolerance.py records for {answers}."""
+    return {key: tolerance.score(key.split(":")[-1], value, expected[key], allow_absent)
+            for key, value in answers.items()}
+
+
+def scorecard_state(state_id, mode, answers=None, expectation=(), oracle_id=0,
+                    expected=SCORECARD_ANSWERS):
+    answers = copy.deepcopy(SCORECARD_ANSWERS if answers is None else answers)
+    return {"id": state_id, "suite": "repair", "edit_kind": "body", "mode": mode,
+            "oracle_id": oracle_id, "answers": answers, "scores": scored(answers, expected),
+            "samples": [{"feature": "definition", "latency_ms": 1}],
+            "state_latency_ms": 1.5, "worker_replacements": 0,
+            "expectation_mismatches": list(expectation),
+            "configuration": {"current": {"version": 1, "projects": [
+                {"name": "tolerance", "sources": ["A.v3"]}]}},
+            "texts": {"current": {"A.v3": {"bytes": 1}}},
+            "changed": ["A.v3"], "server_pid": next(PIDS),
+            # Warm changes the edited overlay once; cold opens it once.
+            "snapshot": {"projectConfiguration": {"current": True,
+                                                    "uri": "file:///project/.virgil-lsp.json"},
+                         "documentVersions": [
+                {"uri": "file:///project/A.v3", "version": 2 if mode == "warm" else 1,
+                 "current": True}]}}
+
+
+def scorecard_oracle(oracle_id, answers=None, stale=None):
+    oracle = {"id": oracle_id, "answers": dict(SCORECARD_ANSWERS) if answers is None else answers,
+              "queries": [{}], "configuration": {}, "diagnostic_paths": []}
+    if stale is not None:
+        oracle["stale_control"] = stale
+    return oracle
+
+
+def scorecard_capture(records, *, command=None, smoke=None, oracles=None, sessions=(),
+                      session_oracles=()):
+    if oracles is None:
+        state_ids = []
+        for row in records:
+            if row["id"] not in state_ids:
+                state_ids.append(row["id"])
+        for row in records:
+            row["oracle_id"] = state_ids.index(row["id"])
+        oracles = [scorecard_oracle(index) for index in range(len(state_ids))]
+    capture = {
+        "schema": 1, "suite": "tolerance", "started_utc": "2026-10-29T00:00:00+00:00",
+        "command": command or ["python3", "scripts/bench-tolerance.py"],
+        "capture": {"smoke": False, "suite": None, "only": None, "full": True}
+        if smoke is None else smoke,
+        "server_revision": "revision", "host": {}, "corpus": {},
+        "corpus_sha256": "0" * 64, "driver_sha256": {}, "builds": [{}],
+        "input_sha256": {}, "wall_seconds": 1,
+        "oracles": oracles,
+        "states": records, "sessions": list(sessions), "session_oracles": list(session_oracles),
+        "summary": {}, "session_summary": {},
+    }
+    return capture
+
+
+def scorecard_inventory(*state_ids, heldout=(), negative=(), sessions=(), oracles=None):
+    rows = [{"id": state_id, "suite": "repair", "edit_kind": "body", "queries": 1}
+            for state_id in state_ids]
+    for state_id, group, kind in heldout:
+        rows.append({"id": state_id, "suite": "heldout", "edit_kind": "body", "queries": 1,
+                     "group": group, "heldout_kind": kind})
+    for state_id in negative:
+        rows.append({"id": state_id, "suite": "negative", "edit_kind": "body", "queries": 1,
+                     "allow_absent": True})
+    for index, row in enumerate(rows):
+        # One intended-text group per state unless a test names a sharing.
+        row["oracle"] = index if oracles is None else oracles.get(row["id"], index)
+    return {"schema": 1, "states": rows, "sessions": list(sessions)}
+
+
+def heldout_state(state_id, mode, answers=None):
+    row = scorecard_state(state_id, mode, answers)
+    row["suite"] = "heldout"
+    return row
+
+
+def session_step(step_id, mode, *, oracle=False, answers=None, actions=True):
+    answers = copy.deepcopy(SCORECARD_ANSWERS if answers is None else answers)
+    record = {"id": step_id, "suite": "session", "mode": mode, "edit_kind": step_id,
+              "answers": answers,
+              "samples": [{"feature": "hover", "latency_ms": 1}],
+              "queries": [{"path": "Observer.v3", "position": {"line": 0, "character": 0}}],
+              "snapshot": {"projectConfiguration": {"current": True,
+                                                      "uri": "file:///project/.virgil-lsp.json"},
+                           "documentVersions": [{"uri": "file:///project/Observer.v3",
+                                                 "current": True, "version": 1}]},
+              "state_latency_ms": 1.5,
+              "measured_probes": []}
+    if actions:
+        record["actions"] = [{"op": "change", "path": "A.v3", "text": "broken",
+                              "intended": "fixed"}]
+    if oracle:
+        record["stale_control"] = stale_control()
+    else:
+        record["scores"] = scored(answers)
+        record["substitution_kinds"] = {"A.v3": "repair"}
+        record["oracle_step"] = 0
+    return record
+
+
+def stale_control(answers=None, scores=None, allow_absent=True):
+    """An injection and its recorded verdicts; negative controls allow absence."""
+    answers = copy.deepcopy(STALE_ANSWERS if answers is None else answers)
+    return {"answers": answers, "scores": scored(answers, allow_absent=allow_absent) if scores is None else scores}
+
+
+def scorecard_sessions(mode):
+    """One measured session record and its intended-text oracle, both modes."""
+    step = session_step("one", mode)
+    oracle_step = session_step("one", "warm", oracle=True)
+    return ({"id": "s", "suite": "session", "mode": mode, "steps": [step],
+             "server_pid": next(PIDS), "worker_replacements": 0},
+            {"id": "s", "mode": "oracle", "steps": [oracle_step], "server_pid": next(PIDS)})
+
+
+def negative_capture(stale):
+    inventory = scorecard_inventory(negative=["control"])
+    records = [scorecard_state("control", "warm"), scorecard_state("control", "cold")]
+    for row in records:
+        row["suite"] = "negative"
+    return scorecard_capture(records, oracles=[scorecard_oracle(0, stale=stale)]), inventory
+
+
+def session_capture():
+    inventory = scorecard_inventory(sessions=[{"id": "s", "steps": [
+        {"id": "one", "queries": 1, "stale": True}]}])
+    measured, oracle = scorecard_sessions("warm")
+    cold, _ = scorecard_sessions("cold")
+    oracle["steps"][0]["stale_control"] = stale_control(allow_absent=False)
+    return scorecard_capture([], sessions=[measured, cold], session_oracles=[oracle]), inventory
+
+
+def met_floors(floors):
+    """Measurements that meet every floor exactly, for a focused floor test."""
+    return {"modes": {mode: {section: {name: [minimum, expected]
+                                       for name, (minimum, expected) in requirements.items()}
+                             for section, requirements in floors.items()}
+                      for mode in checker.MODES}}
+
 
 
 class Scoring(unittest.TestCase):
@@ -172,6 +334,633 @@ class Scoring(unittest.TestCase):
         at = text.index("A.f") + 2
         self.assertEqual(q["position"], {"line": 0, "character": at + 1})
         self.assertEqual(tolerance.states.corpus.position(text, len(text)), {"line": 1, "character": 0})
+
+
+class Scorecard(unittest.TestCase):
+    def test_refuses_missing_state_and_missing_mode(self):
+        inventory = scorecard_inventory("first", "second", "third")
+        missing_mode = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm")])
+        failures = checker.validate(missing_mode, inventory)
+        self.assertTrue(any("state second has modes" in failure for failure in failures), failures)
+        missing_state = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        failures = checker.validate(missing_state, inventory)
+        self.assertTrue(any("state third has modes []" in failure for failure in failures), failures)
+
+    def test_refuses_duplicate_replacing_a_missing_state(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "warm")])
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("duplicates state/mode second/" in failure for failure in failures),
+                        failures)
+        self.assertTrue(any("state second has modes" in failure for failure in failures), failures)
+
+    def test_refuses_false_aggregate_gain_hiding_a_subgroup_loss(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("second", "warm"),
+            scorecard_state("first", "cold"),
+            scorecard_state("second", "cold", MISSING_ANSWERS)])
+        report = checker.evaluate(capture, inventory,
+                                  {"primary": {"all_features": (2, 2)}})
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("cold: primary.all_features is 1/2" in failure
+                            for failure in report["failures"]), report["failures"])
+        self.assertEqual(report["metrics"]["modes"]["warm"]["primary"]["all_features"], [2, 2])
+        self.assertEqual(report["metrics"]["modes"]["cold"]["primary"]["all_features"], [1, 2])
+
+    def test_refuses_a_wrong_answer(self):
+        inventory = scorecard_inventory("first")
+        answers = {**SCORECARD_ANSWERS, "0:hover": {"contents": "stale", "range": {}}}
+        capture = scorecard_capture([scorecard_state("first", "warm", answers),
+                                     scorecard_state("first", "cold", answers)])
+        report = checker.evaluate(capture, inventory, {})
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("wrong answers" in failure for failure in report["failures"]),
+                        report["failures"])
+
+    def test_refuses_an_unmet_exclusion_expectation(self):
+        inventory = scorecard_inventory("first")
+        mismatch = "A.v3: 1 excluded bodies, expected 0"
+        capture = scorecard_capture([
+            scorecard_state("first", "warm", expectation=[mismatch]),
+            scorecard_state("first", "cold")])
+        report = checker.evaluate(capture, inventory, {})
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("expectation mismatches" in failure for failure in report["failures"]),
+                        report["failures"])
+
+    def test_refuses_smoke_and_filtered_captures(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        smoke = scorecard_capture(records, smoke={"smoke": True, "suite": None,
+                                                  "only": None, "full": False})
+        self.assertTrue(any("not a full capture" in failure
+                            for failure in checker.validate(smoke, inventory)))
+        for flag in ("--smoke", "--suite", "--only"):
+            with self.subTest(flag=flag):
+                old = scorecard_capture(records)
+                del old["capture"]
+                old["command"] = ["python3", "scripts/bench-tolerance.py", flag, "value"]
+                self.assertTrue(any("not a full capture" in failure
+                                    for failure in checker.validate(old, inventory)))
+
+    def test_accepts_a_complete_capture(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        floors = {"primary": {"all_features": (2, 2)},
+                  "exact": {feature: (2, 2) for feature in checker.FEATURES}}
+        report = checker.evaluate(capture, inventory, floors)
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertEqual(report["metrics"]["counts"]["state_ids"], 2)
+        self.assertEqual(report["metrics"]["counts"]["state_mode_records"], 4)
+        self.assertEqual(report["metrics"]["modes"]["warm"]["baselines"]["primary_all_exact"], [2, 2])
+        self.assertIn("Tolerance release scorecard: PASS",
+                      checker.format_scorecard(report, capture))
+
+    def test_refuses_an_oracle_reused_by_two_intended_texts(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        # Both modes of the second state reuse the first state's oracle, the
+        # orphaned oracle is removed, and its successors would be renumbered.
+        for row in capture["states"]:
+            if row["id"] == "second":
+                row["oracle_id"] = 0
+        capture["oracles"] = capture["oracles"][:1]
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("oracle 0 stands in for intended text groups [0, 1]" in failure
+                            for failure in failures), failures)
+        self.assertTrue(any("1 oracles, expected 2" in failure for failure in failures), failures)
+
+    def test_refuses_two_oracles_for_one_intended_text(self):
+        inventory = scorecard_inventory("first", "second", oracles={"second": 0})
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("share intended text group 0 reference oracles [0, 1]" in failure
+                            for failure in failures), failures)
+
+    def test_accepts_one_oracle_for_states_with_identical_text(self):
+        inventory = scorecard_inventory("first", "second", oracles={"second": 0})
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")],
+            oracles=[scorecard_oracle(0)])
+        for row in capture["states"]:
+            row["oracle_id"] = 0
+        self.assertEqual(checker.validate(capture, inventory), [])
+
+    def test_refuses_a_warm_oracle_swap(self):
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm"), scorecard_state("first", "cold"),
+            scorecard_state("second", "warm"), scorecard_state("second", "cold")])
+        capture["states"][0]["oracle_id"], capture["states"][2]["oracle_id"] = (
+            capture["states"][2]["oracle_id"], capture["states"][0]["oracle_id"])
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("state first references oracles" in failure for failure in failures), failures)
+
+    def test_refuses_an_oracle_without_the_states_answer_keys(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        capture["oracles"][0]["answers"] = {"bogus": None}
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("answer keys differ" in failure for failure in failures), failures)
+
+    def test_refuses_a_malformed_injection(self):
+        # The injected answers are rejected; only their recorded verdicts are malformed.
+        exact = scored(SCORECARD_ANSWERS)
+        impossible = {key: {"available": True, "correct": True, "partial": False, "missing": False,
+                            "wrong": True, "matches_oracle": True} for key in STALE_ANSWERS}
+        for name, scores in (("unknown key", {"bogus": {"wrong": "false"}}),
+                             ("wrong type", {**exact, "0:definition": {"wrong": "false"}}),
+                             ("exact", exact), ("impossible", impossible)):
+            with self.subTest(scores=name):
+                capture, inventory = negative_capture(stale_control(scores=scores))
+                report = checker.evaluate(capture, inventory, {})
+                self.assertFalse(report["ok"])
+                self.assertTrue(any("injection" in failure for failure in report["failures"]),
+                                report["failures"])
+        capture, inventory = negative_capture(stale_control())
+        self.assertEqual(checker.validate(capture, inventory), [])
+        self.assertEqual(checker.aggregate(capture, inventory)["counts"]["negative_injections"], 1)
+
+    def test_refuses_an_injection_that_its_oracle_accepts(self):
+        # Impossible verdicts on answers that equal the oracle's, as recorded
+        # for a negative control and a session control; and the honest verdicts.
+        impossible = {key: {"available": True, "correct": True, "partial": False, "missing": False,
+                            "wrong": True, "matches_oracle": True} for key in SCORECARD_ANSWERS}
+        for scores in (impossible, None):
+            with self.subTest(scores="impossible" if scores else "honest"):
+                capture, inventory = negative_capture(stale_control(SCORECARD_ANSWERS, scores))
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any("control did not reject its injection" in failure
+                                    for failure in failures), failures)
+                capture, inventory = session_capture()
+                self.assertEqual(checker.validate(capture, inventory), [])
+                capture["session_oracles"][0]["steps"][0]["stale_control"] = stale_control(
+                    SCORECARD_ANSWERS, scores, allow_absent=False)
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any("did not reject its stale predecessor" in failure
+                                    for failure in failures), failures)
+
+    def test_refuses_oracles_swapped_between_two_states(self):
+        other = {**SCORECARD_ANSWERS, "0:hover": {"contents": "other", "range": {}}}
+        inventory = scorecard_inventory("first", "second")
+        capture = scorecard_capture([
+            scorecard_state("first", "warm", oracle_id=0), scorecard_state("first", "cold", oracle_id=0),
+            scorecard_state("second", "warm", other, oracle_id=1, expected=other),
+            scorecard_state("second", "cold", other, oracle_id=1, expected=other)],
+            oracles=[scorecard_oracle(0), scorecard_oracle(1, other)])
+        self.assertEqual(checker.validate(capture, inventory), [])
+        # Each group still has one oracle and each oracle one group.
+        for row in capture["states"]:
+            row["oracle_id"] = 1 - row["oracle_id"]
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("(first warm) 0:hover: recorded verdict" in failure
+                            for failure in failures), failures)
+
+    def test_refuses_verdicts_that_null_answers_do_not_support(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        for key in capture["states"][0]["answers"]:
+            capture["states"][0]["answers"][key] = None
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("(first warm) 0:definition: recorded verdict" in failure
+                            and "differs from rescoring" in failure for failure in failures), failures)
+
+    def test_refuses_a_session_verdict_that_its_answer_does_not_support(self):
+        capture, inventory = session_capture()
+        capture["sessions"][0]["steps"][0]["answers"]["0:hover"] = {"contents": "stale", "range": {}}
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("step one 0:hover: recorded verdict" in failure for failure in failures),
+                        failures)
+
+    def test_refuses_one_record_filed_under_both_modes(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        self.assertEqual(checker.validate(scorecard_capture(copy.deepcopy(records)), inventory), [])
+        cases = (("process", "one server process", lambda cold, warm: cold.update(server_pid=warm["server_pid"])),
+                 ("versions", "past version 1", lambda cold, warm: cold.update(snapshot=warm["snapshot"])),
+                 ("warm versions", "not at version 2", lambda cold, warm: warm.update(snapshot=cold["snapshot"])))
+        for name, message, mutate in cases:
+            with self.subTest(evidence=name):
+                capture = scorecard_capture(copy.deepcopy(records))
+                warm, cold = capture["states"]
+                mutate(cold, warm)
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any(message in failure for failure in failures), failures)
+        capture, inventory = session_capture()
+        capture["sessions"][1]["server_pid"] = capture["sessions"][0]["server_pid"]
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("records share a server process" in failure for failure in failures),
+                        failures)
+
+    def test_refuses_snapshot_evidence_that_the_driver_would_reject(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        self.assertEqual(checker.validate(scorecard_capture(copy.deepcopy(records)), inventory), [])
+        two = {"current": {"version": 1, "projects": [{"name": "tolerance", "sources": ["A.v3", "B.v3"]}]}}
+        cases = (
+            ("no documents", "one document for each configured source",
+             lambda row: row["snapshot"].update(documentVersions=[])),
+            ("stale document", "is not current",
+             lambda row: row["snapshot"]["documentVersions"][0].update(current=False)),
+            ("other source", "is not the configured source",
+             lambda row: row["snapshot"]["documentVersions"][0].update(uri="file:///project/Other.v3")),
+            ("no configuration", "no current configured sources",
+             lambda row: row.update(configuration={})),
+            ("two directories", "not in one project directory",
+             lambda row: (row.update(configuration=two), row["snapshot"]["documentVersions"].append(
+                 {"uri": "file:///elsewhere/B.v3", "version": 1, "current": True}))))
+        for name, message, mutate in cases:
+            with self.subTest(snapshot=name):
+                capture = scorecard_capture(copy.deepcopy(records))
+                mutate(capture["states"][1])
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_refuses_missing_or_invalid_snapshot_versions(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        sessions, session_inventory = session_capture()
+        capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
+        inventory["sessions"] = session_inventory["sessions"]
+        paths = [("states", 0), ("states", 1), ("session_oracles", 0, "steps", 0),
+                 ("sessions", 0, "steps", 0), ("sessions", 1, "steps", 0)]
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for path in paths:
+            for value in ("missing", True, False, 1.0, "1", [], {}):
+                with self.subTest(path=path, version=value):
+                    broken = copy.deepcopy(capture)
+                    row = broken
+                    for part in path:
+                        row = row[part]
+                    document = row["snapshot"]["documentVersions"][0]
+                    if value == "missing":
+                        document.pop("version")
+                        message = "is missing version"
+                    else:
+                        document["version"] = value
+                        message = "version is not null or a non-boolean integer"
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any(document["uri"] in failure and message in failure
+                                        for failure in failures), failures)
+                    self.assertFalse(checker.evaluate(broken, inventory, {})["ok"])
+
+    def test_accepts_explicit_null_snapshot_versions(self):
+        inventory = scorecard_inventory("closed-file-on-disk/0")
+        capture = scorecard_capture([scorecard_state("closed-file-on-disk/0", "warm"),
+                                     scorecard_state("closed-file-on-disk/0", "cold")])
+        sessions, session_inventory = session_capture()
+        capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
+        inventory["sessions"] = session_inventory["sessions"]
+        rows = (capture["states"] + [session["steps"][0] for session in
+                                    capture["sessions"] + capture["session_oracles"]])
+        for row in rows:
+            row["snapshot"]["documentVersions"][0]["version"] = None
+        self.assertEqual(checker.validate(capture, inventory), [])
+
+    def test_requires_exact_state_edit_versions(self):
+        for state_id, disk in (("first", False), ("closed-file-on-disk/0", True)):
+            inventory = scorecard_inventory(state_id)
+            capture = scorecard_capture([scorecard_state(state_id, "warm"),
+                                         scorecard_state(state_id, "cold")])
+            if disk:
+                for row in capture["states"]:
+                    row["snapshot"]["documentVersions"][0]["version"] = None
+            self.assertEqual(checker.validate(capture, inventory), [])
+            for index in range(2):
+                for version in (None, 0, 1, 2, 3):
+                    with self.subTest(disk=disk, mode=capture["states"][index]["mode"], version=version):
+                        broken = copy.deepcopy(capture)
+                        broken["states"][index]["snapshot"]["documentVersions"][0]["version"] = version
+                        failures = checker.validate(broken, inventory)
+                        expected = None if disk else (2 if index == 0 else 1)
+                        if version == expected:
+                            self.assertEqual(failures, [])
+                        else:
+                            self.assertTrue(any("edited documents not at version" in failure
+                                                for failure in failures), failures)
+
+    def test_requires_changed_paths_and_matching_mode_lists(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        for row in capture["states"]:
+            row["configuration"]["current"]["projects"][0]["sources"].append("B.v3")
+            row["texts"]["current"]["B.v3"] = {"bytes": 1}
+            row["changed"].append("B.v3")
+            row["snapshot"]["documentVersions"].append(
+                {"uri": "file:///project/B.v3", "current": True,
+                 "version": 2 if row["mode"] == "warm" else 1})
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for index in range(2):
+            for changed in ([], ["A.v3", "A.v3"], ["Unknown.v3"], [1], [{}]):
+                with self.subTest(index=index, changed=changed):
+                    broken = copy.deepcopy(capture)
+                    broken["states"][index]["changed"] = changed
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any("changed must be nonempty distinct strings in texts.current"
+                                        in failure for failure in failures), failures)
+        for changed in (["A.v3"], ["B.v3", "A.v3"]):
+            with self.subTest(changed=changed):
+                broken = copy.deepcopy(capture)
+                broken["states"][1]["changed"] = changed
+                failures = checker.validate(broken, inventory)
+                self.assertTrue(any("different changed lists" in failure for failure in failures), failures)
+        for index in range(2):
+            broken = copy.deepcopy(capture)
+            broken["states"][index]["texts"]["current"].pop("A.v3")
+            failures = checker.validate(broken, inventory)
+            self.assertTrue(any("changed must be nonempty distinct strings in texts.current"
+                                in failure for failure in failures), failures)
+        for row in capture["states"]:
+            row["texts"]["current"]["Missing.v3"] = {"bytes": 1}
+            row["changed"].append("Missing.v3")
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("edited documents not at version" in failure and "Missing.v3" in failure
+                            for failure in failures), failures)
+
+    def test_requires_other_open_state_documents_at_version_one(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        for row in capture["states"]:
+            row["configuration"]["current"]["projects"][0]["sources"].append("Observer.v3")
+            row["snapshot"]["documentVersions"].append(
+                {"uri": "file:///project/Observer.v3", "current": True, "version": 1})
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for index in range(2):
+            for version in (None, 0, 2):
+                with self.subTest(index=index, version=version):
+                    broken = copy.deepcopy(capture)
+                    broken["states"][index]["snapshot"]["documentVersions"][1]["version"] = version
+                    failures = checker.validate(broken, inventory)
+                    if version is None:
+                        self.assertEqual(failures, [])
+                    else:
+                        self.assertTrue(any("version 1" in failure for failure in failures), failures)
+
+    def test_refuses_stale_state_configuration(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for mode in range(2):
+            for current in (False, 1, None):
+                with self.subTest(mode=mode, current=current):
+                    broken = copy.deepcopy(capture)
+                    broken["states"][mode]["snapshot"]["projectConfiguration"]["current"] = current
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any("projectConfiguration is not current" in failure
+                                        for failure in failures), failures)
+
+    def test_refuses_invalid_session_snapshots(self):
+        capture, inventory = session_capture()
+        self.assertEqual(checker.validate(capture, inventory), [])
+        cases = (
+            ("empty", {}, "projectConfiguration is not current"),
+            ("configuration", {"projectConfiguration": {"current": False}},
+             "projectConfiguration is not current"),
+            ("documents", {"documentVersions": []}, "no document versions"),
+            ("document type", {"documentVersions": [None]}, "no string uri"),
+            ("uri", {"documentVersions": [{"uri": 1, "current": True}]}, "no string uri"),
+            ("current", {"documentVersions": [{"uri": "file:///project/Observer.v3",
+                                               "current": 1}]}, "is not current"),
+            ("query", {"documentVersions": [{"uri": "file:///project/Other.v3",
+                                             "current": True}]}, "lacks queried document"),
+            ("directory", {"documentVersions": [{"uri": "file:///elsewhere/Observer.v3",
+                                                 "current": True}]}, "lacks queried document"))
+        for collection, index in (("session_oracles", 0), ("sessions", 0), ("sessions", 1)):
+            for name, replacement, message in cases:
+                with self.subTest(collection=collection, index=index, snapshot=name):
+                    broken = copy.deepcopy(capture)
+                    snapshot = broken[collection][index]["steps"][0]["snapshot"]
+                    if name == "empty":
+                        snapshot.clear()
+                    snapshot.update(replacement)
+                    failures = checker.validate(broken, inventory)
+                    self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_refuses_invalid_probe_and_cache_measurements(self):
+        capture, inventory = negative_capture(stale_control())
+        sessions, session_inventory = session_capture()
+        capture.update({key: sessions[key] for key in ("sessions", "session_oracles")})
+        inventory["sessions"] = session_inventory["sessions"]
+        capture["oracles"][0]["process"] = {}
+        capture["oracles"][0]["stale_control"]["process"] = {}
+        capture["session_oracles"][0]["steps"][0]["stale_control"]["process"] = {}
+        paths = [("states", 0), ("states", 1), ("oracles", 0, "process"),
+                 ("oracles", 0, "stale_control", "process"),
+                 ("session_oracles", 0, "steps", 0, "stale_control", "process")]
+        for collection, index in (("sessions", 0), ("sessions", 1), ("session_oracles", 0)):
+            paths.extend(((collection, index), (collection, index, "steps", 0)))
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for path in paths:
+            for field in ("probes", "measured_probes", "worker_replacements", "cache_charge"):
+                for value in (0, 1.5, -1, float("nan"), float("inf"), True, "1"):
+                    for probe_key in (("value", "analysis_id") if field.endswith("probes") else (None,)):
+                        with self.subTest(path=path, field=field, value=value, probe_key=probe_key):
+                            broken = copy.deepcopy(capture)
+                            row = broken
+                            for part in path:
+                                row = row[part]
+                            if probe_key:
+                                row[field] = [{"value": 1, "analysis_id": 0, probe_key: value}]
+                            elif field == "cache_charge":
+                                row[field] = {"first": {"bytes": value}, "second": [1]}
+                            else:
+                                row[field] = value
+                            failures = checker.validate(broken, inventory)
+                            if type(value) in (int, float) and value in (0, 1.5):
+                                self.assertEqual(failures, [])
+                            else:
+                                self.assertTrue(any(field in failure and "finite nonnegative" in failure
+                                                    for failure in failures), failures)
+
+    def test_cli_refuses_an_alternate_inventory(self):
+        with mock.patch.object(sys, "argv", ["check-tolerance.py", "capture.json",
+                                            "--inventory", "alternate.json"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as result:
+                    checker.main()
+        self.assertEqual(result.exception.code, 2)
+
+    def test_refuses_an_injection_without_every_answer(self):
+        # Only the wrong definition is kept; the oracle has every answer.
+        truncated = {"0:definition": STALE_ANSWERS["0:definition"]}
+        capture, inventory = negative_capture(stale_control(truncated))
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("are not the oracle's" in failure for failure in failures), failures)
+
+    def test_refuses_injection_verdicts_written_as_numbers(self):
+        # JSON 0 and 1 compare equal to false and true in Python.
+        stale = stale_control()
+        stale["scores"] = {key: {field: int(value) for field, value in verdict.items()}
+                           for key, verdict in stale["scores"].items()}
+        capture, inventory = negative_capture(stale)
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("is not a boolean" in failure for failure in failures), failures)
+
+    def test_refuses_a_measurement_that_is_not_a_finite_nonnegative_number(self):
+        for value in (-1, float("nan"), float("inf"), True, "1"):
+            with self.subTest(value=value):
+                inventory = scorecard_inventory("first")
+                capture = scorecard_capture([scorecard_state("first", "warm"),
+                                             scorecard_state("first", "cold")])
+                capture["states"][0]["samples"][0]["latency_ms"] = value
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any("samples[0].latency_ms is not a finite nonnegative number"
+                                    in failure for failure in failures), failures)
+                capture, inventory = session_capture()
+                capture["sessions"][0]["steps"][0]["state_latency_ms"] = value
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any("state_latency_ms is not a finite nonnegative number"
+                                    in failure for failure in failures), failures)
+
+    def test_refuses_an_incomplete_session_step(self):
+        inventory = scorecard_inventory(sessions=[{"id": "s", "steps": [{"id": "one", "queries": 1}]}])
+        measured, oracle = scorecard_sessions("warm")
+        cold, _ = scorecard_sessions("cold")
+        capture = scorecard_capture([], sessions=[measured, cold], session_oracles=[oracle])
+        self.assertEqual(checker.validate(capture, inventory), [])
+        for field in ("snapshot", "samples", "queries", "actions"):
+            with self.subTest(field=field):
+                broken = copy.deepcopy(capture)
+                broken["sessions"][0]["steps"][0].pop(field)
+                failures = checker.validate(broken, inventory)
+                self.assertTrue(any("step one is missing " + field in failure for failure in failures),
+                                failures)
+        broken = copy.deepcopy(capture)
+        broken["session_oracles"][0]["steps"][0]["snapshot"] = []
+        failures = checker.validate(broken, inventory)
+        self.assertTrue(any("step one snapshot is not an object" in failure for failure in failures),
+                        failures)
+
+    def test_refuses_a_command_that_contradicts_its_metadata(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        capture = scorecard_capture(records, command=["python3", "scripts/bench-tolerance.py", "--smoke"])
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("not a full capture: command has --smoke" in failure
+                            for failure in failures), failures)
+        capture = scorecard_capture(records, smoke={"smoke": True, "suite": None,
+                                                    "only": None, "full": False})
+        failures = checker.validate(capture, inventory)
+        self.assertTrue(any("metadata records filters ['--smoke']" in failure
+                            for failure in failures), failures)
+
+    def test_refuses_a_gain_in_one_mode_hiding_a_loss_in_the_other(self):
+        inventory = scorecard_inventory("a", "b", "c", "d")
+        records = []
+        for state_id in ("a", "b", "c", "d"):
+            for mode in ("warm", "cold"):
+                missing = mode == "cold" and state_id in ("c", "d")
+                records.append(scorecard_state(state_id, mode, MISSING_ANSWERS if missing else None))
+        report = checker.evaluate(scorecard_capture(records), inventory,
+                                  {"primary": {"all_features": (3, 4)}})
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["metrics"]["modes"]["warm"]["primary"]["all_features"], [4, 4])
+        self.assertEqual(report["metrics"]["modes"]["cold"]["primary"]["all_features"], [2, 4])
+        # Three before, three after: warm gained what cold lost, so a combined
+        # floor would pass and only the per-mode floor can see the regression.
+        self.assertEqual(4 + 2, 3 + 3)
+        self.assertTrue(any("cold: primary.all_features is 2/4" in failure
+                            for failure in report["failures"]), report["failures"])
+
+    def test_refuses_a_gain_in_one_heldout_subgroup_hiding_a_loss_in_another(self):
+        inventory = scorecard_inventory(heldout=[
+            ("body/x", "body-quarantine", "body"), ("body/y", "body-quarantine", "body"),
+            ("if/z", "brace-317", "if-opener"), ("if/w", "brace-317", "if-opener")])
+        records = []
+        for state_id in ("body/x", "body/y", "if/z", "if/w"):
+            for mode in ("warm", "cold"):
+                records.append(heldout_state(state_id, mode,
+                                             MISSING_ANSWERS if state_id == "if/w" else None))
+        floors = {"heldout": {"all_features": (3, 4), "body_quarantine": (2, 2),
+                              "lost_openers": (2, 2)}}
+        report = checker.evaluate(scorecard_capture(records), inventory, floors)
+        self.assertFalse(report["ok"])
+        heldout = report["metrics"]["modes"]["warm"]["heldout"]
+        self.assertEqual(heldout["all_features"], [3, 4])
+        self.assertEqual(heldout["body_quarantine"], [2, 2])
+        self.assertEqual(heldout["lost_openers"], [1, 2])
+        self.assertTrue(any("heldout.lost_openers is 1/2" in failure
+                            for failure in report["failures"]), report["failures"])
+
+    def test_each_heldout_subgroup_floor_gates_its_own_subgroup(self):
+        self.assertEqual(set(checker.FLOORS["heldout"]), {
+            "all_features", "body_quarantine", "lost_openers",
+            "seed_317_block_closers", "seed_320_block_closers", "method_closers"})
+        for name, (minimum, expected) in checker.FLOORS["heldout"].items():
+            if minimum == 0:
+                continue
+            with self.subTest(floor=name):
+                metrics = met_floors(checker.FLOORS)
+                metrics["modes"]["warm"]["heldout"][name] = [minimum - 1, expected]
+                failures = checker.check_floors(metrics)
+                self.assertTrue(any("warm: heldout." + name in failure for failure in failures),
+                                failures)
+
+    def test_refuses_wrong_typed_identifying_fields_without_traceback(self):
+        inventory = scorecard_inventory("first")
+        records = [scorecard_state("first", "warm"), scorecard_state("first", "cold")]
+        for field, value in (("id", 3), ("suite", []), ("mode", []),
+                             ("edit_kind", 0), ("oracle_id", "zero")):
+            with self.subTest(field=field):
+                capture = scorecard_capture(copy.deepcopy(records))
+                capture["states"][0][field] = value
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any(field + " is not " in failure for failure in failures), failures)
+                self.assertFalse(checker.evaluate(capture, inventory, {})["ok"])
+
+    def test_refuses_a_wrong_typed_answer_without_rescoring_it(self):
+        inventory = scorecard_inventory("first")
+        for where in ("answers", "oracle"):
+            with self.subTest(where=where):
+                capture = scorecard_capture([scorecard_state("first", "warm"),
+                                             scorecard_state("first", "cold")])
+                answers = (capture["states"][0]["answers"] if where == "answers"
+                           else capture["oracles"][0]["answers"])
+                answers["0:references"] = 5
+                failures = checker.validate(capture, inventory)
+                self.assertTrue(any("0:references" in failure and "type" in failure
+                                    for failure in failures), failures)
+
+    def test_scorecard_prints_the_baseline_numerators(self):
+        inventory = scorecard_inventory("first")
+        capture = scorecard_capture([scorecard_state("first", "warm"),
+                                     scorecard_state("first", "cold")])
+        report = checker.evaluate(capture, inventory, {"primary": {"all_features": (1, 1)}})
+        self.assertTrue(report["ok"], report["failures"])
+        scorecard = checker.format_scorecard(report, capture)
+        self.assertIn("baseline 153/185", scorecard)
+        self.assertIn("baseline 40/94", scorecard)
+
+
+class Inventory(unittest.TestCase):
+    def test_the_committed_inventory_matches_the_corpus_generators(self):
+        spec = importlib.util.spec_from_file_location(
+            "tolerance_inventory", ROOT / "scripts/tolerance-inventory.py")
+        inventory = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inventory)
+        # The check must replay the recorded parse verdicts, not build a server.
+        inventory.DEFAULT_EXE = ROOT / "build/no-server-was-built"
+        self.assertEqual(inventory.check(), [])
 
 
 class EditingSessions(unittest.TestCase):
