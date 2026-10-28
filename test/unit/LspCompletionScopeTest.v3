@@ -31,6 +31,7 @@ def X = [
 	T("LspCompletionScope:shutdown", test_shutdown),
 	T("LspCompletionScope:closed_while_waiting", test_closed_while_waiting),
 	T("LspCompletionScope:admission", test_admission),
+	T("LspCompletionScope:submit_refused", test_submit_refused),
 	T("LspCompletionScope:takes_turns", test_takes_turns),
 	T("LspCompletionScope:no_project", test_no_project),
 	T("LspCompletionScope:invalidated_while_running", test_invalidated_while_running),
@@ -38,6 +39,7 @@ def X = [
 	T("LspCompletionScope:stale_document_or_superseded", test_stale_document_or_superseded),
 	T("LspCompletionScope:ref_layouts", test_ref_layouts),
 	T("LspCompletionScope:unreached", test_unreached),
+	T("LspCompletionScope:other_file_unparsed", test_other_file_unparsed),
 	T("LspCompletionMembers:as_typed", test_members_as_typed),
 	T("LspCompletionMembers:items", test_members_items),
 	T("LspCompletionMembers:repairs", test_members_repairs),
@@ -126,13 +128,14 @@ def itemOf(result: JsonValue, label: string) -> JsonValue {
 	return JsonValue.Null;
 }
 // Whether the reply to {id} is the keywords alone: answered, with no
-// declarations, and complete.
-def keywordsOnly(t: Tester, s: RenameTestSession, id: int) -> bool {
+// declarations, and {incomplete}'s isIncomplete, which says whether a later
+// request may have the names.
+def keywordsOnly(t: Tester, s: RenameTestSession, id: int, incomplete: bool) -> bool {
 	var r = s.reply(id);
 	if (r == null || r.has("error")) return false;
 	var items = array(member(r["result"], "items"));
 	for (item in items) if (JsonValue.JObject.!(item).v.has("sortText")) return false;
-	return items.length > 0 && member(r["result"], "isIncomplete") == JsonValue.Bool(false);
+	return items.length > 0 && member(r["result"], "isIncomplete") == JsonValue.Bool(incomplete);
 }
 def has(v: JsonValue, key: string) -> bool {
 	return JsonValue.JObject.?(v) && JsonValue.JObject.!(v).v.has(key);
@@ -400,7 +403,7 @@ def test_unrepaired(t: Tester) {
 	var analyses = s.server.completion.analyses;
 	var marked = Strings.format1("%sdef broken( {\n", inScale("\t\t$"));
 	var id = request(t, s, marked);
-	t.assert(keywordsOnly(t, s, id), "keywords at once");
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once");
 	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
 }
@@ -446,7 +449,8 @@ def test_reuse(t: Tester) {
 }
 
 // A completion that waits is replaced by a newer one, and answered at once
-// with its keywords; the one that runs is answered in full.
+// with its keywords, marked incomplete so that a client asks again; the one
+// that runs is answered in full.
 def test_replacement(t: Tester) {
 	var s = session(t);
 	var text = inScale("\t\ttotal$ = factor;");
@@ -456,12 +460,12 @@ def test_replacement(t: Tester) {
 	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 2));
 	t.assert(s.reply(waiting) == null, "the second waits");
 	var newer = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
-	t.assert(keywordsOnly(t, s, waiting), "the replaced one gets its keywords at once");
+	t.assert(keywordsOnly(t, s, waiting, true), "the replaced one is incomplete");
 	t.assert(s.reply(newer) == null, "the newest waits");
 	s.settle();
 	for (id in [running, waiting, newer]) t.asserti(1, s.count(id));
-	t.assert(!keywordsOnly(t, s, running), "the first has declarations");
-	t.assert(!keywordsOnly(t, s, newer), "the newest has declarations");
+	t.assert(!keywordsOnly(t, s, running, false), "the first has declarations");
+	t.assert(!keywordsOnly(t, s, newer, false), "the newest has declarations");
 	t.asserti(0, s.server.rename.scheduler.jobCount());
 	s.server.close();
 }
@@ -493,13 +497,14 @@ def test_cancel(t: Tester) {
 	s.server.close();
 }
 
-// An analysis past the time limit leaves the keywords alone.
+// An analysis past the time limit leaves the keywords alone, marked
+// incomplete: a later request may get an answer.
 def test_time_limit(t: Tester) {
 	var s = session(t);
 	s.limits.timeoutMs = 0;
 	var id = request(t, s, inScale("\t\tfa$"));
 	s.settle();
-	t.assert(keywordsOnly(t, s, id), "keywords after a timeout");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a timeout");
 	t.asserti(1, s.count(id));
 	s.limits.timeoutMs = 10000;
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tf$a")), "|"), "declarations once the worker answers");
@@ -507,7 +512,8 @@ def test_time_limit(t: Tester) {
 }
 
 // A worker that ends during the completion's analysis leaves the keywords
-// alone, and the project's snapshot; the replaced worker answers the next.
+// alone, marked incomplete, and the project's snapshot; the replaced worker
+// answers the next.
 def test_worker_crash(t: Tester) {
 	var s = sessionOn(HostOs.executablePath(), t);
 	var ctx = s.server.projects.forDocument(s.uri("Main.v3")).active;
@@ -519,20 +525,20 @@ def test_worker_crash(t: Tester) {
 	t.assert(snapshot != null && snapshot.verified, "the project's analysis does not crash");
 	var id = request(t, s, marked);
 	s.settle();
-	t.assert(keywordsOnly(t, s, id), "keywords after a crash");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a crash");
 	t.assert(ctx.snapshot == snapshot, "the context keeps its snapshot");
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from the next worker");
 	t.assert(s.supervisor.workersStarted > started, "a new worker started");
 	s.server.close();
 }
 
-// A scope answer that names a declaration twice is rejected, and the reply
-// has the keywords alone.
+// A scope answer that names a declaration twice is rejected as malformed, and
+// the reply has the keywords alone, marked incomplete: the worker failed.
 def test_malformed_scope(t: Tester) {
 	var s = sessionOn(HostOs.executablePath(), t);
 	var id = request(t, s, inScale(Strings.format1("\t\t// %s\n\t\tfa$", SyntheticAnalysisWorker.SCOPE_MALFORMED)));
 	s.settle();
-	t.assert(keywordsOnly(t, s, id), "keywords after a malformed answer");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply after a malformed answer");
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tfa$")), "|"), "declarations from a well-formed answer");
 	s.server.close();
 }
@@ -547,8 +553,8 @@ def test_shutdown(t: Tester) {
 	var waiting = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
 	var shutdown = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(1), "shutdown", JsonRpcParams.ByName(Strings.newMap<JsonValue>())).encode());
 	t.assert(shutdown != null, "shutdown answered");
-	t.assert(keywordsOnly(t, s, running), "the running completion gets its keywords");
-	t.assert(keywordsOnly(t, s, waiting), "the waiting completion gets its keywords");
+	t.assert(keywordsOnly(t, s, running, false), "the running completion gets its keywords");
+	t.assert(keywordsOnly(t, s, waiting, false), "the waiting completion gets its keywords");
 	var later = s.server.handle(JsonRpcMessage.Request(JsonRpcId.Int(2), "textDocument/completion",
 		JsonRpcParams.ByName(s.params("Main.v3", p.line, p.character))).encode());
 	t.assert_string("{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32600,\"message\":\"the server is shutting down\"}}", later);
@@ -558,7 +564,7 @@ def test_shutdown(t: Tester) {
 }
 
 // A completion whose document closes or changes before its analysis starts
-// gets its keywords, without an analysis.
+// gets its keywords, marked incomplete, without an analysis.
 def test_closed_while_waiting(t: Tester) {
 	var s = session(t);
 	var text = inScale("\t\ttotal$ = factor;");
@@ -568,7 +574,7 @@ def test_closed_while_waiting(t: Tester) {
 	var analyses = s.server.completion.analyses;
 	s.closeDocument("Main.v3");
 	s.settle();
-	t.assert(keywordsOnly(t, s, waiting), "keywords for the closed document");
+	t.assert(keywordsOnly(t, s, waiting, true), "an incomplete reply for the closed document");
 	t.asserti(1, s.count(running));
 	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
@@ -576,7 +582,7 @@ def test_closed_while_waiting(t: Tester) {
 
 // The completion's result is admitted within the workspace's snapshot budget,
 // as a rename's preflight is; when it does not fit, the keywords are the
-// reply and no analysis starts.
+// reply, marked incomplete, and no analysis starts.
 def test_admission(t: Tester) {
 	var s = session(t);
 	var latest = s.supervisor.snapshot, bytes = latest.retainedBytes;
@@ -584,11 +590,26 @@ def test_admission(t: Tester) {
 	var analyses = s.server.completion.analyses;
 	var id = request(t, s, inScale("\t\tfa$"));
 	s.settle();
-	t.assert(keywordsOnly(t, s, id), "keywords when the snapshot does not fit");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply when the snapshot does not fit");
 	t.asserti(analyses, s.server.completion.analyses);
 	latest.retainedBytes = bytes;
 	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tf$a")), "|"), "declarations once it fits");
 	t.asserti(analyses + 1, s.server.completion.analyses);
+	s.server.close();
+}
+
+// A scheduler that has closed, as the server's has as it shuts down, refuses
+// the job: the reply is the keywords, complete, since no later request can
+// have the names either.
+def test_submit_refused(t: Tester) {
+	var s = session(t);
+	var analyses = s.server.completion.analyses;
+	s.server.completion.scheduler.close();
+	var id = request(t, s, inScale("\t\tfa$"));
+	t.assert(s.reply(id) != null, "answered at once");
+	t.assert(keywordsOnly(t, s, id, false), "a complete reply without a scheduler");
+	t.assert_string("| 13", render(t, s.result(t, id)));
+	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
 }
 
@@ -608,7 +629,7 @@ def test_takes_turns(t: Tester) {
 	t.assert(s.reply(rename) == null && s.reply(completion) == null, "both wait");
 	s.settle();
 	t.assert(has(s.result(t, rename), "documentChanges"), "the rename is answered");
-	t.assert(!keywordsOnly(t, s, completion), "the completion has declarations");
+	t.assert(!keywordsOnly(t, s, completion, false), "the completion has declarations");
 	t.assert(itemOf(s.result(t, completion), "unsaved") != JsonValue.Null, "from the edited text");
 	t.assert(ctx.snapshot.generation > generation, "the project was analyzed");
 	t.assert(ctx.snapshot.matchesDocument(s.server.documents, s.uri("Main.v3")), "the project's snapshot is current");
@@ -634,7 +655,7 @@ def test_no_project(t: Tester) {
 	position["character"] = JsonValue.Int(1);
 	params["position"] = JsonValue.JObject(position);
 	var id = s.send(t, "textDocument/completion", params);
-	t.assert(keywordsOnly(t, s, id), "keywords at once for an untitled document");
+	t.assert(keywordsOnly(t, s, id, false), "keywords at once for an untitled document");
 	t.asserti(analyses, s.server.completion.analyses);
 	s.server.close();
 }
@@ -689,7 +710,7 @@ def test_stale_reruns_once(t: Tester) {
 	t.assert(s.reply(id) == null, "the completion runs again");
 	s.change("Other.v3", 3, OTHER);
 	s.settle();
-	t.assert(keywordsOnly(t, s, id), "keywords when stale again");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply when stale again");
 	t.asserti(analyses + 2, s.server.completion.analyses);
 	// Nothing was cached: the next request analyzes.
 	t.assert(itemOf(s.result(t, complete0(t, s, marked)), "Other") != JsonValue.Null, "the current declarations");
@@ -714,7 +735,7 @@ def test_stale_document_or_superseded(t: Tester) {
 	var u = unmark(marked);
 	s.change("Main.v3", s.file("Main.v3").version + 1, Arrays.concat(u.0, "\n"));
 	s.settle();
-	t.assert(keywordsOnly(t, s, id), "keywords for an edited document");
+	t.assert(keywordsOnly(t, s, id, true), "an incomplete reply for an edited document");
 	t.asserti(analyses + 1, s.server.completion.analyses);
 	// Superseded: a newer completion waits when the stale one ends.
 	var stale = request(t, s, marked);
@@ -722,7 +743,7 @@ def test_stale_document_or_superseded(t: Tester) {
 	var p = PositionMap.new(u.0, PositionEncoding.UTF16).offsetToPosition(u.1);
 	var newer = s.send(t, "textDocument/completion", s.params("Main.v3", p.line, p.character - 1));
 	s.settle();
-	t.assert(keywordsOnly(t, s, stale), "keywords for the superseded one");
+	t.assert(keywordsOnly(t, s, stale, true), "an incomplete reply for the superseded one");
 	t.assert(itemOf(s.result(t, newer), "Fresh") != JsonValue.Null, "the newer one has the new class");
 	t.asserti(analyses + 3, s.server.completion.analyses);
 	s.server.close();
@@ -742,7 +763,8 @@ def test_ref_layouts(t: Tester) {
 }
 
 // Where verification stopped at the error limit before the cursor's member,
-// the reply is the keywords.
+// the reply is the keywords, complete: the analysis did complete, and a later
+// request at this text would not reach the cursor either.
 def test_unreached(t: Tester) {
 	var s = session(t);
 	var errors = StringBuilder.new().puts("component Errors {\n\tdef f() {\n");
@@ -755,6 +777,23 @@ def test_unreached(t: Tester) {
 	for (i < 16) classErrors.put1("\t\tunresolved%d;\n", i);
 	t.assert(!Strings.startsWith(complete(t, s, Arrays.concat(inScale("\t\tto$"), classErrors.puts("\t}\n}\n").toString())), "|"),
 		"declarations where verification reached");
+	s.server.close();
+}
+
+// Another file of the project that doesn't parse, here with a damaged method
+// header, leaves the analysis without names, and the reply is the keywords,
+// complete: typing more of the word doesn't change that file. A request after
+// it parses again gets the names.
+def test_other_file_unparsed(t: Tester) {
+	var s = session(t);
+	s.open("Other.v3", 1, OTHER);
+	s.settle();
+	s.change("Other.v3", 2, "component Other {\n\tdef helper(-> int { return 1; }\n}\ndef otherShared = 2;\n");
+	s.settle();
+	t.assert_string("| 13", complete(t, s, inScale("\t\tto$")));
+	s.change("Other.v3", 3, OTHER);
+	s.settle();
+	t.assert(!Strings.startsWith(complete(t, s, inScale("\t\tto$")), "|"), "the names once Other.v3 parses");
 	s.server.close();
 }
 
@@ -876,12 +915,13 @@ def test_members_unvisited_arguments(t: Tester) {
 	}
 	s.server.close();
 }
-// A malformed member answer is rejected, and the completion gets nothing.
+// A malformed member answer is rejected, and the completion gets nothing,
+// marked incomplete: the worker failed.
 def test_members_malformed(t: Tester) {
 	var s = sessionOn(HostOs.executablePath(), t);
 	var id = request(t, s, inScale(Strings.format1("\t\t// %s\n\t\tthis.$", SyntheticAnalysisWorker.SCOPE_MALFORMED)));
 	s.settle();
-	t.assert_string("| 0", render(t, s.result(t, id)));
+	t.assert_string("| 0 +", render(t, s.result(t, id)));
 	t.assert_string("area sides scale | 0", complete(t, s, inScale("\t\tthis.$")));
 	s.server.close();
 }
