@@ -60,7 +60,7 @@ Starting from scratch does not require pretending prior work is invisible. Study
 
 ### v0.1 goal
 
-The v0.1 release, shipped with `0.1.0-alpha.1` on 2026-10-20, lets a user install the server following the [build and executable placement guidance](README.md#building), open a configured Virgil project in either LazyVim or VS Code, and receive:
+A user can install the server following the [build and executable placement guidance](README.md#building), open a configured Virgil project in either LazyVim or VS Code, and receive:
 
 - `.v3` file detection;
 - parser and type-checker diagnostics for unsaved buffers;
@@ -72,11 +72,13 @@ The v0.1 release, shipped with `0.1.0-alpha.1` on 2026-10-20, lets a user instal
 - a project configuration that describes the source files Aeneas must analyze;
 - documented installation for the supported platforms: Linux x86-64 (including remote use over SSH) and Apple Silicon macOS. Windows through WSL 2 is best effort since 2026-10-20 ([ADR-0003](docs/decisions/0003-supported-platforms.md)).
 
+`0.1.0-alpha.1` met this goal on 2026-10-20, except for go-to-type-definition, which was added to the list later and shipped in `0.1.0-alpha.4`.
+
 ### Later releases
 
 The August plan named v0.2, v0.3, and v0.5 as later releases. What shipped, and what remains:
 
-- v0.2's prepare-rename and rename, and v0.3's context-aware completion and signature help, shipped in `0.1.0-alpha.2`; v0.3's better behavior on incomplete syntax shipped as M6 phase 3a in `0.1.0-alpha.4` and `0.1.0-alpha.5`. The faster reanalysis that v0.3 also named remains part of M6's evidence-driven incrementality work, and no incremental analysis has shipped.
+- v0.2's prepare-rename and rename, and v0.3's context-aware completion, shipped in `0.1.0-alpha.2`, together with signature help for calls still being typed (signature help for complete calls shipped in `0.1.0-alpha.1`); v0.3's better behavior on incomplete syntax shipped as M6 phase 3a in `0.1.0-alpha.4` and `0.1.0-alpha.5`. The faster reanalysis that v0.3 also named remains part of M6's evidence-driven incrementality work, and no incremental analysis has shipped.
 - v0.5's platform-specific VS Code packages shipped in `0.1.0-alpha.4` ([#267](https://github.com/SaltedTan/virgil-language-server/issues/267), [PR #268](https://github.com/SaltedTan/virgil-language-server/pull/268)). Compatibility tests already exist: the pinned Virgil revision is required CI and current Virgil `master` runs in scheduled advisory CI, captured VS Code and Neovim initialization messages replay in the protocol suite ([#231](https://github.com/SaltedTan/virgil-language-server/issues/231)), and a clean-install test follows the README commands ([#250](https://github.com/SaltedTan/virgil-language-server/issues/250)).
 - An upstream `nvim-lspconfig` configuration and a Mason entry have not been submitted; both wait for a stable release command, release URL, root markers, and documentation. Mason's admission rules make `nvim-lspconfig` acceptance the realistic route for a small new project.
 - The next stability preview has no agreed name or date. It will be the first release that meets the remaining v1.0 criteria.
