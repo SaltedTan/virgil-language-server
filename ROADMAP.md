@@ -304,6 +304,15 @@ M5 was completed with `0.1.0-alpha.2`.
 Deliverables may include:
 
 - Bounded last-parseable text fallback and current-text repair for contained open method-body errors. *(present; [ADR-0008](docs/decisions/0008-method-body-fallback.md) and [ADR-0009](docs/decisions/0009-current-text-repair.md), both status Accepted, keep read-only semantics outside the excluded body; since [ADR-0010](docs/decisions/0010-analyze-unrepairable-files.md) rule 1 ([#312](https://github.com/SaltedTan/virgil-language-server/issues/312)), repair empties the one or two bodies that hold the parser's errors when the file's braces balance, which covers cold opens with an expression the next line continues and with errors in two bodies; since rule 2, a brace rule under the layout check ([#317](https://github.com/SaltedTan/virgil-language-server/issues/317)), it also empties the body that layout delimits when one `{` is missing; since rule 3's redesign ([#320](https://github.com/SaltedTan/virgil-language-server/issues/320)), it empties the body that holds a lost `}` when every place that `}` could have been leaves it in the same body, before that body's own `}`, without reading the layout; phase 3a ships rules 1, 2, and 3; header and field-initializer errors and truncated files (phase 3b) still need recovery)*
+
+Phase 3a's accepted gate is the release scorecard in
+[Semantics during syntax errors](docs/benchmarks.md#semantics-during-syntax-errors):
+in each warm and cold mode, 180 of 185 primary states and 44 of 94 held-out
+states keep definition, hover, references, and diagnostics, with no wrong
+answers. That is the bounded open-body scope that
+[No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing)
+states: rule 2 reads a missing `{` only where the file's indentation places it,
+and header and field-initializer errors and truncated files remain phase 3b.
 - Optional Aeneas `EDITOR` parser mode with synchronization at top-level, member, statement, and delimiter boundaries.
 - Synthetic missing nodes/tokens where they improve completion without hiding diagnostics.
 - Per-file parse caches and dependency invalidation.
@@ -531,7 +540,7 @@ These gates were met by `0.1.0-alpha.1` on 2026-10-20.
 
 - The configuration schema and compatibility policy are stable.
 - References, safe rename, signature help, and useful completion are shipped.
-- Incomplete syntax does not routinely destroy all language intelligence.
+- Incomplete syntax does not routinely destroy all language intelligence, within the bounded open-body scope of [No error-tolerant parsing](docs/known-limitations.md#no-error-tolerant-parsing): phase 3a's [release scorecard](docs/benchmarks.md#release-scorecard) holds its floors in both modes with no wrong answers, while header and field-initializer errors and truncated files remain phase 3b.
 - Performance budgets are based on published benchmark fixtures and pass in CI or scheduled runs.
 - Release artifacts cover the documented platform matrix and clean-install tests.
 - At least one release cycle has tested upgrades, rollback, and compatibility with newer Virgil revisions.
