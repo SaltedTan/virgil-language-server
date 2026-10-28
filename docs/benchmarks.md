@@ -2305,11 +2305,22 @@ state, suite, group, warm/cold, intended-text oracle group, and session-step
 inventory in
 [`test/benchmarks/tolerance-inventory.json`](../test/benchmarks/tolerance-inventory.json)
 before it trusts an aggregate. An oracle must answer exactly the owning state's
-queries, every state and session step must carry well-typed measurements, each
-state's snapshot must hold one current document for each configured source, as
-the driver checks before it scores, and every negative control and designated
-session-oracle step must carry a rejected injection with every answer its oracle
-has. It rescores every recorded verdict, including each injection's, from
+queries, and recorded measurements must be finite, nonnegative numbers, never
+booleans. Each state's snapshot must hold one current document for each
+configured source, as the driver checks before it scores. State and session
+snapshots, including session-oracle steps, must have a current project
+configuration and current documents with an explicit null or non-boolean integer
+version; session snapshots must include every queried document. Every negative
+control and designated session-oracle step must carry a rejected injection with
+every answer its oracle has.
+
+The modes must use distinct server processes. Each state's warm and cold records
+must name the same nonempty list of distinct changed paths from `texts.current`.
+Changed open sources must be at version 1 cold and version 2 warm; changed
+sources in the closed-file-on-disk states must have null versions in both modes.
+Every other open source must be at version 1 in both modes.
+
+It rescores every recorded verdict, including each injection's, from
 the recorded answers with `bench-tolerance.py`'s own scoring, so it refuses any
 capture that an incomplete, filtered, interrupted, or buggy run could produce,
 or whose verdicts its answers don't support; it can't detect answers and
@@ -2326,6 +2337,9 @@ as an uncovered class. Captures now record a `capture` object with `smoke`,
 ```sh
 python3 scripts/check-tolerance.py build/bench-results/v1-tolerance.json
 ```
+
+The command exits nonzero if capture validation or any per-mode floor fails.
+Fully exact state totals are informational baselines, not enforced floors.
 
 Regenerate the inventory after a corpus change with
 `python3 scripts/tolerance-inventory.py --write`, which needs a built server;

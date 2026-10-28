@@ -709,11 +709,12 @@ def _check_mode_evidence(problems, records):
     """A state's warm and cold records come from two server processes, and
     their snapshots show how each opened the edited files.
 
-    bench-tolerance.py starts one server per state and mode. Cold opens every
-    document once, with the current text, so each open document is at version
+    bench-tolerance.py starts one server per state and mode. Cold opens each
+    overlay once, with the current text, so each open document is at version
     1. Warm opens the predecessor and changes each edited overlay once, so an
-    edited file that is open is at version 2. A closed file on disk has no
-    version in either mode. One record filed under both modes fails both.
+    edited file that is open is at version 2. A closed file on disk has an
+    explicit null version in either mode. One record filed under both modes
+    fails both.
     """
     by_state = collections.defaultdict(dict)
     for row in records:
