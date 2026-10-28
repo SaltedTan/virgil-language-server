@@ -163,6 +163,18 @@ def reindent(rng, lines, style):
     return result
 
 
+def diagnostic_paths(state):
+    """The files whose diagnostics a state's answers include: its queries'
+    files and Observer.v3, C.v3 for the fresh type errors, and the newly
+    discovered Added.v3 for the third project change."""
+    paths = {q["path"] for q in state["queries"]} | {"Observer.v3"}
+    if state["id"].startswith("fresh-type-error"):
+        paths.add("C.v3")
+    if state.get("project_change") and not state["id"].endswith(("0", "1")):
+        paths.add("Added.v3")
+    return paths
+
+
 def oracle_key(state):
     """Identify the intended-text oracle that a state measures.
 
@@ -170,12 +182,7 @@ def oracle_key(state):
     the same intended text, so `bench-tolerance.py` captures their oracle once;
     replay states whose last parseable version is the same share one this way.
     """
-    paths = {q["path"] for q in state["queries"]} | {"Observer.v3"}
-    if state["id"].startswith("fresh-type-error"):
-        paths.add("C.v3")
-    if state.get("project_change") and state["id"].endswith("2"):
-        # The third project change adds a newly discovered file.
-        paths.add("Added.v3")
+    paths = diagnostic_paths(state)
     overlays = {**state["predecessor"], **state.get("oracle", {})}
     return (str(state["project"]["base"]), json.dumps(overlays, sort_keys=True),
             json.dumps(state["queries"], sort_keys=True), tuple(sorted(paths)))

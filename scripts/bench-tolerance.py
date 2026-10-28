@@ -496,9 +496,9 @@ def main():
                 bench.check(cases, "no states selected")
             cache = {}
             for state in cases:
-                paths = {q["path"] for q in state["queries"]} | {"Observer.v3"}
-                if state["id"].startswith("fresh-type-error"):
-                    paths.add("C.v3")
+                # The same set as the oracle key's, so states share an oracle
+                # only when their diagnostics cover the same files.
+                paths = states.diagnostic_paths(state)
                 state["diagnostic_paths"] = paths
                 project = state["project"]
                 if state.get("project_change"):
