@@ -441,14 +441,14 @@ The live milestones on 2026-10-29 are:
 
 | Milestone | Open | Closed | State |
 | --- | ---: | ---: | --- |
-| `protocol-foundation` | 0 | 10 | Complete; the maintainer will close it. |
-| `diagnostics-slice` | 0 | 28 | Complete; the maintainer will close it. |
-| `semantic-navigation` | 0 | 13 | Complete; the maintainer will close it. |
-| `rich-language-features` | 0 | 19 | Complete; the maintainer will close it. |
+| `protocol-foundation` | 0 | 10 | Complete; closed on 2026-10-29. |
+| `diagnostics-slice` | 0 | 28 | Complete; closed on 2026-10-29. |
+| `semantic-navigation` | 0 | 13 | Complete; closed on 2026-10-29. |
+| `rich-language-features` | 0 | 19 | Complete; closed on 2026-10-29. |
 | `v0.1-alpha` | 0 | 8 | Closed; it stays as it is. |
-| `v1.0` | 18 | 0 | Open; it holds the remaining work. |
+| `v1.0` | 16 | 4 | Open; it holds the remaining work. |
 
-The maintainer performs these GitHub edits: close `protocol-foundation`, `diagnostics-slice`, `semantic-navigation`, and `rich-language-features`, keep the closed `v0.1-alpha` as it is, and keep `v1.0` open. This document doesn't change GitHub metadata.
+Only `v1.0` stays open. The maintainer makes these GitHub edits; this document doesn't change GitHub metadata.
 
 ### Labels
 
