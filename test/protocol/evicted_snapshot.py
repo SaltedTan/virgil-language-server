@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""An evicted project snapshot is analyzed again when a request needs it (#330).
+"""Two projects keep semantic answers under snapshot pressure (#330, #373).
 
 Opt-in: `make test` does not run it, since its fixture is a copy of the pinned
 Aeneas tree whose two analyses take about 13 MB each and a few seconds. Run it
@@ -11,22 +11,26 @@ by hand from the repository root after `make all`:
 
 It copies `aeneas/src/` and `apps/Demangle/` from `vendor/virgil` into a new
 directory under TMPDIR, configures them as the projects `compiler` and
-`demangle` (whose dependencies include the compiler's sources), and opens
-`aeneas/src/vst/Verifier.v3` and `apps/Demangle/Demangle.v3`. Under the 32 MiB
-snapshot budget, the automatic analyses after an edit to Verifier.v3 leave the
-compiler's snapshot evicted, so hover, definition, and semantic tokens there
-used to answer null, null, and ContentModified until the next edit. Now the
-first request analyzes the compiler again and is answered from that analysis.
-The client supports both refresh requests and answers each; the script checks
-that the analysis, which changes no open document's tokens or hints, sends
-none, and that no analysis runs afterwards.
+`demangle` (whose dependencies include the compiler's sources, so an edit to a
+compiler source schedules both), and opens `aeneas/src/vst/Verifier.v3` and
+`apps/Demangle/Demangle.v3`. Under the 32 MiB snapshot budget, the automatic
+analyses after an edit to Verifier.v3 used to leave the compiler's snapshot
+evicted, so hover, definition, and semantic tokens there answered null, null,
+and ContentModified until the next edit. #330 analyzes an evicted snapshot again
+for the first request that needs it; since #373, each analysis of the edit is
+admitted by freeing its own project's stale snapshot, so the compiler's requests
+are answered without one. The client supports both refresh requests and answers
+each; the script checks that the compiler's requests are answered after the
+edit, that no refresh arrives while they are made, since the compiler's tokens
+and hints are those the client already has, and that no analysis runs
+afterwards.
 
 Automatic analyses have no completion signal, so the script waits until the
 latest snapshot's generation (virgil-lsp/snapshot) has not changed for
 QUIET seconds (default 4, or the EVICTED_SNAPSHOT_QUIET environment variable).
 Every receive has a deadline. It prints each step's observations as JSON lines
-and exits nonzero, with the transcript tail and the server's stderr, if the
-compiler's requests are not answered after the edit.
+and exits nonzero, with the transcript tail and the server's stderr, if a check
+fails.
 """
 import json
 import os

@@ -62,7 +62,11 @@ class LspDevelopmentAnalysis(store: DocumentStore, supervisor: AnalysisSuperviso
 			var reason = inputs.substitute(store, pendingProject, projects.parseableText, parser);
 			if (reason != null) return invalid(reason);
 		}
-		if (projects != null && !projects.admitSnapshot(pendingProject, supervisor.snapshot,
+		// A busy worker would refuse the analysis after admission had freed
+		// other projects' snapshots for it. Admission keeps the project's own
+		// snapshot, since requests don't wait for this analysis.
+		if (supervisor.busy()) return workerError("an analysis is already running");
+		if (projects != null && !projects.admitKeeping(pendingProject, supervisor.snapshot,
 			long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) return invalid("retained analysis snapshots exceed the workspace budget");
 		// Explicit URIs form no project, so they use the default language options.
 		var options: Array<string> = if(pendingProject != null, pendingProject.definition.compilerArgs, []);
