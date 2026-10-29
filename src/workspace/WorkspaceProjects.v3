@@ -10,11 +10,12 @@ class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	var hintTargets = OrderedStringMap<LspHintTargetFingerprint>.new();
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
-	// Snapshot admission cleared {snapshot} to make room, and no automatic
-	// analysis of this context has started since. A request that needs the
-	// snapshot may then analyze the context again, once (see
-	// LspSemanticDiagnostics.whenAnalyzed). A context never analyzed, or
-	// whose analysis failed after the eviction, has neither.
+	// Snapshot admission cleared {snapshot} to make room for another
+	// context's analysis, and no automatic analysis of this context has
+	// started since. A request that needs the snapshot may then analyze the
+	// context again, once (see LspSemanticDiagnostics.whenAnalyzed). A
+	// context never analyzed, or whose analysis failed after the eviction,
+	// has neither.
 	var evicted: bool;
 	var lastUsed: long;
 	def contains(path: string, memberOnly: bool) -> bool {
@@ -433,17 +434,48 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		configs = live;
 	}
+	// Admits an analysis whose result replaces {active}'s snapshot, or, with a
+	// null {active}, one of explicit URIs, within snapshotBudget beside the
+	// supervisor's {latest} snapshot and a reservation of {incomingBytes}.
+	// {active}'s own snapshot is freed first and isn't marked evicted; see
+	// admit.
 	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
+		return admit(active, latest, incomingBytes, true);
+	}
+	// Admits an analysis of {active}'s sources whose result doesn't replace
+	// its snapshot, a completion's or a rename's check, which keeps it.
+	def admitTemporary(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
+		return admit(active, latest, incomingBytes, false);
+	}
+	// Counts {latest}, a rename's pinned original, and every context's
+	// snapshot once each. If they and the reservation exceed the budget, the
+	// snapshots that may be freed are, in order: {active}'s own if {replaces},
+	// then other contexts' least recently used first, but never {latest} or
+	// the pinned original, which freeing would not release. If freeing them
+	// all would not make room, admission is refused and frees nothing;
+	// otherwise it frees them in that order until the reservation fits, and
+	// marks each other context it evicts.
+	private def admit(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long, replaces: bool) -> bool {
 		if (active != null) active.lastUsed = ++nextUse;
 		var original = renameSnapshot;
-		var retained = if(latest != null, latest.retainedBytes, 0L);
+		var retained = if(latest != null, latest.retainedBytes, 0L), freeable = 0L;
 		if (original != null && original != latest) retained += original.retainedBytes;
 		for (i < configs.length) {
 			for (ctx in configs[i].contexts) {
-				if (ctx.snapshot != null && ctx.snapshot != latest && ctx.snapshot != original) retained += ctx.snapshot.retainedBytes;
+				if (ctx.snapshot == null || ctx.snapshot == latest || ctx.snapshot == original) continue;
+				retained += ctx.snapshot.retainedBytes;
+				if (ctx != active || replaces) freeable += ctx.snapshot.retainedBytes;
 			}
 		}
-		while (retained > long.view(snapshotBudget) - incomingBytes) {
+		var limit = long.view(snapshotBudget) - incomingBytes;
+		if (retained <= limit) return true;
+		if (retained - freeable > limit) return false;
+		var own = if(active != null && replaces, active.snapshot);
+		if (own != null && own != latest && own != original) {
+			retained -= own.retainedBytes;
+			active.snapshot = null;
+		}
+		while (retained > limit) {
 			var victim: ProjectContext;
 			for (i < configs.length) {
 				for (ctx in configs[i].contexts) {
@@ -451,7 +483,6 @@ class WorkspaceProjects(store: DocumentStore) {
 					if (victim == null || ctx.lastUsed < victim.lastUsed) victim = ctx;
 				}
 			}
-			if (victim == null) return false;
 			retained -= victim.snapshot.retainedBytes;
 			victim.snapshot = null;
 			victim.evicted = true;

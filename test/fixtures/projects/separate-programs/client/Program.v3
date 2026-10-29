@@ -1,0 +1,10 @@
+// The client program. Its project shares no file with the other program's,
+// so an edit to one schedules no analysis of the other.
+component Program {
+	def main() -> int {
+		var greeting = Greeting.text("client");
+		System.puts(greeting);
+		System.ln();
+		return greeting.length;
+	}
+}

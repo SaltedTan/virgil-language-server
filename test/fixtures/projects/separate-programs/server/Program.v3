@@ -1,0 +1,9 @@
+// The server program. Its project shares no file with the other program's,
+// so an edit to one schedules no analysis of the other.
+component Program {
+	def main() -> int {
+		System.puts(Greeting.text("server"));
+		System.ln();
+		return 0;
+	}
+}

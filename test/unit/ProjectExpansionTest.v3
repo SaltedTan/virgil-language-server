@@ -29,6 +29,7 @@ def X = [
 	T("WorkspaceProjects:discovery_overflow", test_discovery_overflow),
 	T("WorkspaceProjects:snapshot_budget", test_snapshot_budget),
 	T("WorkspaceProjects:rename_snapshot_budget", test_rename_snapshot_budget),
+	T("WorkspaceProjects:snapshot_admission_order", test_snapshot_admission_order),
 	T("WorkspaceProjects:watched_configurations", test_watched_configurations),
 	T("WorkspaceProjects:folder_changes", test_folder_changes),
 	T("WorkspaceProjects:affected_contexts", test_affected_contexts),
@@ -822,7 +823,7 @@ def test_snapshot_budget(t: Tester) {
 	var contexts = w.load(path).contexts, latest: AnalysisSnapshot;
 	var reserve = long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + 1024 + 128 + 4;
 	for (i < contexts.length) {
-		if (i == 6) t.assertz(true, w.admitSnapshot(contexts[0], latest, reserve));
+		if (i == 6) t.assertz(true, w.admitTemporary(contexts[0], latest, reserve));
 		t.assertz(true, w.admitSnapshot(contexts[i], latest, reserve));
 		if (i == 6) {
 			t.assert(contexts[0].snapshot != null, "recently used context survives eviction");
@@ -880,6 +881,54 @@ def test_rename_snapshot_budget(t: Tester) {
 	w.renameSnapshot = null;
 	t.assertz(true, w.admitSnapshot(contexts[0], latest, available + 1));
 	t.assert(contexts[2].snapshot == null, "a released original can be evicted");
+}
+// Admission for an analysis that replaces the active context's snapshot
+// frees that snapshot first, without marking it; an analysis that doesn't
+// keeps it and evicts the least recently used other context. One that
+// can't fit after freeing every candidate evicts nothing (#373).
+def test_snapshot_admission_order(t: Tester) {
+	var base = ProjectTestFiles.repository(ProjectFiles.join(FIXTURES, "two-programs"));
+	var store = DocumentStore.new(null, DocumentLimits.MAX_BYTES), w = WorkspaceProjects.new(store);
+	var path = ProjectFiles.join(base, "snapshot.json");
+	store.open(ProjectFiles.uri(path), "json", 1, projectDefinitions(3));
+	var c = w.load(path).contexts, latest = occurrenceSnapshot(1);
+	if (latest == null) return t.fail("snapshot fixture rejected");
+	var size = latest.retainedBytes;
+	for (i < c.length) {
+		c[i].snapshot = occurrenceSnapshot(i + 2);
+		t.assertl(size, c[i].snapshot.retainedBytes);
+	}
+	// The latest and three contexts' snapshots fill the budget; the
+	// reservation {size} needs one snapshot freed.
+	w.snapshotBudget = int.view(size * 4);
+	t.assertz(true, w.admitTemporary(c[1], latest, 0));
+	t.assertz(true, w.admitTemporary(c[2], latest, 0));
+	var own = c[0].snapshot, other = c[1].snapshot;
+	t.assertz(true, w.admitSnapshot(c[0], latest, size));
+	t.assert(c[0].snapshot == null && !c[0].evicted, "the replaced snapshot is freed first, unmarked");
+	t.assert(c[1].snapshot == other && c[2].snapshot != null, "no other context is evicted");
+	c[0].snapshot = own;
+	t.assertz(true, w.admitTemporary(c[0], latest, size));
+	t.assert(c[0].snapshot == own, "a temporary analysis keeps the active snapshot");
+	t.assert(c[1].snapshot == null && c[1].evicted, "it evicts the least recently used other context");
+	c[1].snapshot = other;
+	c[1].evicted = false;
+	// Freeing the active and other snapshots leaves the latest, which with
+	// this reservation exceeds the budget.
+	t.assertz(false, w.admitSnapshot(c[0], latest, size * 3 + 1));
+	for (ctx in c) t.assert(ctx.snapshot != null && !ctx.evicted, "a refused admission frees nothing");
+	// The latest or a rename's pinned original frees nothing.
+	c[0].snapshot = latest;
+	t.assertz(true, w.admitSnapshot(c[0], latest, size * 2));
+	t.assert(c[0].snapshot == latest, "the latest snapshot is kept");
+	t.assert(c[1].snapshot == null && c[1].evicted, "another context is evicted instead");
+	c[1].snapshot = other;
+	c[1].evicted = false;
+	c[0].snapshot = w.renameSnapshot = own;
+	t.assertz(true, w.admitSnapshot(c[0], latest, size));
+	t.assert(c[0].snapshot == own, "the pinned original is kept");
+	t.assert(c[1].snapshot == null && c[1].evicted, "another context is evicted instead");
+	w.renameSnapshot = null;
 }
 
 def test_unreadable_matches(t: Tester) {

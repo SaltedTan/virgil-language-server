@@ -201,8 +201,9 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 	}
 	// Starts {r}'s preflight: an ordinary analysis of the edited sources with
 	// occurrences and the project's language options, admitted within the
-	// snapshot budget as an automatic analysis is, which the supervisor does
-	// not keep as its latest snapshot.
+	// snapshot budget as an automatic analysis is, except that it keeps the
+	// project's snapshot, which it doesn't replace; the supervisor does not
+	// keep it as its latest snapshot either.
 	def begin(r: LspRenameRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		var p = r.plan;
 		var ctx = projects.forDocument(p.at.snapshot.documentVersions[p.at.index].uri).active;
@@ -211,7 +212,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		}
 		var sources = p.sources;
 		p.sources = null;
-		if (!projects.admitSnapshot(p.ctx, supervisor.snapshot,
+		if (!projects.admitTemporary(p.ctx, supervisor.snapshot,
 				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}

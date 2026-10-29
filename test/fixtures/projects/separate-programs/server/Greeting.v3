@@ -1,0 +1,6 @@
+// The server program's own copy of two-programs/shared/Greeting.v3.
+component Greeting {
+	def text(who: string) -> string {
+		return who;
+	}
+}

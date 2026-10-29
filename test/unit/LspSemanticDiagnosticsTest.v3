@@ -37,6 +37,9 @@ def X = [
 	T("LspSemanticDiagnostics:demand_waiters_cancel_and_shutdown", test_demand_waiters_cancel_and_shutdown),
 	T("LspSemanticDiagnostics:visible_projects_stop", test_visible_projects_stop),
 	T("LspSemanticDiagnostics:waiter_pressure_refreshes_once", test_waiter_pressure_refreshes_once),
+	T("LspSemanticDiagnostics:edit_frees_own_snapshot", test_edit_frees_own_snapshot),
+	T("LspSemanticDiagnostics:refusal_evicts_nothing", test_refusal_evicts_nothing),
+	T("LspSemanticDiagnostics:completion_keeps_own_snapshot", test_completion_keeps_own_snapshot),
 	()
 ];
 class SemanticTestSession {
@@ -975,7 +978,7 @@ def test_evicted_demand_coalesces(t: Tester) {
 def test_eviction_schedules_nothing(t: Tester) {
 	var s = EvictionSession.new("two-programs", true);
 	var server = s.context("server/Program.v3"), client = s.context("client/Program.v3"), before = s.analyses();
-	s.server.projects.admitSnapshot(server, null, long.view(s.server.projects.snapshotBudget));
+	s.server.projects.admitTemporary(server, null, long.view(s.server.projects.snapshotBudget) - server.snapshot.retainedBytes);
 	t.assert(client.snapshot == null && client.evicted, "admission evicts the other snapshot");
 	t.assert(server.snapshot != null && !server.evicted, "the active project keeps its snapshot");
 	t.assertz(false, s.server.analyzing());
@@ -1038,8 +1041,10 @@ def test_unchanged_demand_sends_no_refresh(t: Tester) {
 	s.server.close();
 }
 // The case of the review of #330: the client project's analysis after an edit
-// fails, since both snapshots are retained, and the server's analysis then
-// evicts the client's stale snapshot. The demand analysis that a hover
+// fails, and the server's analysis then evicts the client's stale snapshot.
+// Since #373 that edit's analysis may free the client's own stale snapshot,
+// so it fails here with no budget at all, and a save of the server analyzes
+// it with the budget of #330's case. The demand analysis that a hover
 // causes carries the edit, which changes the tokens and hints of Use.v3,
 // whose text the client hasn't changed: it sends one refresh of each.
 // Afterwards the client's requests analyze and refresh nothing.
@@ -1053,14 +1058,20 @@ def test_demand_refreshes_changed_documents(t: Tester) {
 	var tokens = rendered(s.result(s.tokens(use))), hints = rendered(s.result(s.hints(use)));
 	t.assert(tokenData(s.result(s.tokens(use))) > 0, "Use.v3 has tokens");
 	t.assert(contains(hints, "\"label\":\"width:\""), "Use.v3 labels area's argument");
-	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+	var budget = AnalysisWire.MAX_RESULT_ALLOCATION
 		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
 	// Shape becomes an enum, and area's parameter, declared and used, size.
 	var text = replace(s.text(program), "class Shape { }", "enum Shape { A, B }");
 	for (i < 2) text = replace(text, "width", "size");
+	s.server.projects.snapshotBudget = 0;
 	s.change(program, 2, text);
 	s.settle();
 	t.assert(s.failures > 0, "the edit's analysis of the client fails admission");
+	t.assert(client.snapshot != null && !client.evicted, "the refused analysis keeps the client's stale snapshot");
+	t.assert(s.supervisor.snapshot == server.snapshot, "the server's snapshot is still the latest");
+	s.server.projects.snapshotBudget = budget;
+	s.save(names[0]);
+	s.settle();
 	t.assert(client.snapshot == null && client.evicted, "the server's analysis evicts the client's stale snapshot");
 	t.asserti(0, s.tokenRefreshes + s.hintRefreshes);
 	var before = s.analyses(), hover = s.hover(program);
@@ -1174,48 +1185,50 @@ def visibleRound(s: EvictionSession, names: Array<string>) -> (int, int, bool) {
 }
 // Two visible programs whose snapshots don't both fit beside an incoming
 // analysis's reservation. After an edit, a client that requests every
-// visible document again after each refresh, as editors do, causes at most
-// one demand analysis per evicted project, and then no work at all.
+// visible document again after each refresh, as editors do, causes no more
+// work once the edit's analyses are done.
 def test_visible_projects_stop(t: Tester) {
 	var s = EvictionSession.new("two-programs", true), names = ["server/Program.v3", "client/Program.v3"];
 	var server = s.context(names[0]), client = s.context(names[1]);
 	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
 		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
-	// The client's analysis fails, since both snapshots are retained, and
-	// then the server's evicts the client's snapshot, as in the issue (#330).
+	// Each of the edit's analyses frees its program's own stale snapshot, so
+	// both are admitted and neither evicts the other's (#373); in #330 the
+	// client's was refused and the server's evicted the client's snapshot.
+	// The edit's new local gets a type hint, which the comparison finds: one
+	// inlay hint refresh, and none for tokens, which a document's new text
+	// never needs.
+	var failures = s.failures;
 	var text = replace(s.text(names[1]), "return greeting.length;", "var n = greeting.length;\n\t\treturn n;");
 	s.change(names[1], 2, text);
 	s.settle();
-	t.assert(client.snapshot == null && client.evicted, "the edit's analyses evict the client's snapshot");
-	// The first round analyzes the client once more. The edit's new local
-	// gets a type hint, which the comparison finds, as any analysis of the
-	// edit would: one inlay hint refresh, and none for tokens, which a
-	// document's new text never needs.
-	var work = visibleRound(s, names);
-	t.asserti(1, work.0);
+	t.asserti(failures, s.failures);
+	t.assert(client.snapshot != null && !client.evicted && server.snapshot != null && !server.evicted, "the edit's analyses evict nothing");
 	t.asserti(0, s.tokenRefreshes);
 	t.asserti(1, s.hintRefreshes);
-	t.assertz(true, work.2);
 	for (round < 3) {
-		work = visibleRound(s, names);
+		var work = visibleRound(s, names);
 		t.asserti(0, work.0);
 		t.asserti(0, work.1);
 		t.assertz(true, work.2);
 	}
-	// An edit to the shared file changes both programs' tokens and hints, so
-	// its analyses ask for a refresh of each, once. Admission refuses one
-	// program's analysis while its stale snapshot is retained; that is a
-	// failed analysis, not an eviction, so the client's next requests
-	// analyze nothing.
-	var failures = s.failures, tokens = s.tokenRefreshes, hints = s.hintRefreshes;
+	// An edit to the shared file changes both programs' tokens and hints.
+	// Both of its analyses are admitted, and each refreshes its program's
+	// tokens and hints; the second refresh of each waits for the client's
+	// answer to the first. Afterwards the client's requests analyze nothing.
+	var tokens = s.tokenRefreshes, hints = s.hintRefreshes;
 	s.open("shared/Greeting.v3");
 	s.change("shared/Greeting.v3", 2, GREETING_FIELD);
 	s.settle();
 	t.asserti(tokens + 1, s.tokenRefreshes);
 	t.asserti(hints + 1, s.hintRefreshes);
-	t.assert(s.failures > failures, "admission refuses an analysis");
+	s.acknowledge();
+	s.settle();
+	t.asserti(tokens + 2, s.tokenRefreshes);
+	t.asserti(hints + 2, s.hintRefreshes);
+	t.asserti(failures, s.failures);
 	for (round < 3) {
-		work = visibleRound(s, names);
+		var work = visibleRound(s, names);
 		t.asserti(0, work.0);
 		t.asserti(0, work.1);
 	}
@@ -1263,4 +1276,84 @@ def pressureRound(t: Tester, s: EvictionSession, names: Array<string>, refreshes
 	t.asserti(1, s.analyses() - analyses);
 	t.asserti(refreshes, s.tokenRefreshes - tokens);
 	t.asserti(0, s.hintRefreshes - hints);
+}
+// Two programs that share no files, each analyzed once, whose snapshots
+// don't both fit beside an incoming analysis's reservation, though either
+// one does (#373). An edit to the program analyzed first frees its own
+// stale snapshot, which its analysis replaces, so the edit is analyzed and
+// the other program keeps its snapshot. The next edit finds the first's
+// snapshot as the supervisor's latest, which frees nothing, so its analysis
+// evicts the other program's snapshot, and a request analyzes that program
+// again on demand. Afterwards a client that requests every visible document
+// again causes no more work.
+def test_edit_frees_own_snapshot(t: Tester) {
+	var s = EvictionSession.new("separate-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	var server = s.context(names[0]), client = s.context(names[1]);
+	t.assert(s.supervisor.snapshot == client.snapshot, "the client was analyzed last");
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
+	var kept = client.snapshot, before = s.analyses(), failures = s.failures, text = s.text(names[0]);
+	for (version = 2; version <= 3; version++) {
+		var stale = server.snapshot;
+		text = Strings.format1("%s\n", text);
+		s.change(names[0], version, text);
+		s.settle();
+		t.asserti(failures, s.failures);
+		t.assert(server.snapshot != stale && server.snapshot == s.supervisor.snapshot, "the edit is analyzed");
+		t.assertz(false, server.evicted);
+		if (version == 2) t.assert(client.snapshot == kept && !client.evicted, "the client keeps its snapshot");
+	}
+	t.asserti(before + 2, s.analyses());
+	t.assert(client.snapshot == null && client.evicted, "the second edit's analysis evicts the client's snapshot");
+	var work = visibleRound(s, names);
+	t.asserti(1, work.0);
+	t.assertz(true, work.2);
+	t.assert(server.snapshot != null && client.snapshot != null, "both programs have snapshots");
+	for (round < 3) {
+		work = visibleRound(s, names);
+		t.asserti(0, work.0);
+		t.asserti(0, work.1);
+		t.assertz(true, work.2);
+	}
+	t.asserti(failures, s.failures);
+	s.server.close();
+}
+// An analysis that can't fit even after it frees every snapshot it may free
+// is refused without evicting any (#373). The client's own snapshot is the
+// supervisor's latest, which frees nothing, and evicting the server's would
+// not make room.
+def test_refusal_evicts_nothing(t: Tester) {
+	var s = EvictionSession.new("separate-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	var server = s.context(names[0]), client = s.context(names[1]);
+	t.assert(s.supervisor.snapshot == client.snapshot, "the client was analyzed last");
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION + int.view(client.snapshot.retainedBytes) - 1;
+	var kept = server.snapshot, latest = client.snapshot, failures = s.failures, before = s.analyses();
+	s.change(names[1], 2, Strings.format1("%s\n", s.text(names[1])));
+	s.settle();
+	t.asserti(failures + 1, s.failures);
+	t.assert(server.snapshot == kept && !server.evicted, "the refused analysis evicts nothing");
+	t.assert(client.snapshot == latest && !client.evicted, "the client keeps its stale snapshot");
+	t.assert(hovered(s.result(s.hover(names[0]))), "the server's hover is answered at once");
+	t.assertz(false, s.server.analyzing());
+	t.asserti(before + 1, s.analyses());
+	s.server.close();
+}
+// A completion's analysis doesn't replace its project's snapshot, so its
+// admission never frees it: under the pressure of test_edit_frees_own_snapshot
+// it is refused, and the server keeps its snapshot.
+def test_completion_keeps_own_snapshot(t: Tester) {
+	var s = EvictionSession.new("separate-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	var server = s.context(names[0]), client = s.context(names[1]);
+	t.assert(s.supervisor.snapshot == client.snapshot, "the client was analyzed last");
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
+	var kept = server.snapshot, latest = client.snapshot, before = s.analyses();
+	var completion = s.at("textDocument/completion", names[0], 4, 16);
+	t.assert(s.reply(completion) != null, "the refused completion is answered at once");
+	t.asserti(0, s.server.completion.analyses);
+	t.assert(server.snapshot == kept && client.snapshot == latest, "both programs keep their snapshots");
+	t.assertz(false, server.evicted || client.evicted);
+	t.assertz(false, s.server.analyzing());
+	t.asserti(before, s.analyses());
+	s.server.close();
 }

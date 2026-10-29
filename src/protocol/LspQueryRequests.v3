@@ -110,7 +110,8 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 	}
 	// Starts {r}'s analysis: the project's sources as an automatic analysis
 	// captures them, with {r}'s text for its document, admitted within the
-	// snapshot budget, which the supervisor does not keep as its latest.
+	// snapshot budget, which the supervisor does not keep as its latest and
+	// which leaves the project's snapshot in place.
 	def begin(r: LspQueryRequest, supervisor: AnalysisSupervisor) -> AnalysisOutcome {
 		if (waiting == r) waiting = null;
 		if (r.answered) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, "the request was answered");
@@ -130,7 +131,7 @@ class LspQueryRequests(store: DocumentStore, projects: WorkspaceProjects, send: 
 		if (captured.1 != null) return AnalysisOutcome.Failed(AnalysisFailure.UNAVAILABLE, captured.1);
 		var inputs = captured.0;
 		inputs.sources[index] = AnalysisSource.new(inputs.sources[index].path, r.text);
-		if (!projects.admitSnapshot(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
+		if (!projects.admitTemporary(ctx, supervisor.snapshot, long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + inputs.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}
 		analyses++;
