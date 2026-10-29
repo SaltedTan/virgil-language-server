@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""Two projects whose snapshots don't fit together keep their answers (#330, #373).
+"""Two projects keep semantic answers under snapshot pressure (#330, #373).
 
 Opt-in: `make test` does not run it, since its fixture is a copy of the pinned
 Aeneas tree whose two analyses take about 13 MB each and a few seconds. Run it
