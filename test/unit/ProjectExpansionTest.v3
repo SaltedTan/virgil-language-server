@@ -823,7 +823,7 @@ def test_snapshot_budget(t: Tester) {
 	var contexts = w.load(path).contexts, latest: AnalysisSnapshot;
 	var reserve = long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + 1024 + 128 + 4;
 	for (i < contexts.length) {
-		if (i == 6) t.assertz(true, w.admitTemporary(contexts[0], latest, reserve));
+		if (i == 6) t.assertz(true, w.admitKeeping(contexts[0], latest, reserve));
 		t.assertz(true, w.admitSnapshot(contexts[i], latest, reserve));
 		if (i == 6) {
 			t.assert(contexts[0].snapshot != null, "recently used context survives eviction");
@@ -901,14 +901,14 @@ def test_snapshot_admission_order(t: Tester) {
 	// The latest and three contexts' snapshots fill the budget; the
 	// reservation {size} needs one snapshot freed.
 	w.snapshotBudget = int.view(size * 4);
-	t.assertz(true, w.admitTemporary(c[1], latest, 0));
-	t.assertz(true, w.admitTemporary(c[2], latest, 0));
+	t.assertz(true, w.admitKeeping(c[1], latest, 0));
+	t.assertz(true, w.admitKeeping(c[2], latest, 0));
 	var own = c[0].snapshot, other = c[1].snapshot;
 	t.assertz(true, w.admitSnapshot(c[0], latest, size));
 	t.assert(c[0].snapshot == null && !c[0].evicted, "the replaced snapshot is freed first, unmarked");
 	t.assert(c[1].snapshot == other && c[2].snapshot != null, "no other context is evicted");
 	c[0].snapshot = own;
-	t.assertz(true, w.admitTemporary(c[0], latest, size));
+	t.assertz(true, w.admitKeeping(c[0], latest, size));
 	t.assert(c[0].snapshot == own, "a temporary analysis keeps the active snapshot");
 	t.assert(c[1].snapshot == null && c[1].evicted, "it evicts the least recently used other context");
 	c[1].snapshot = other;

@@ -1131,10 +1131,13 @@ def test_cancelled_preflight_snapshot_budget(t: Tester) {
 	var params = Strings.newMap<JsonValue>();
 	params["uris"] = JsonValue.JArray([JsonValue.String(s.uri("c/C.v3"))]);
 	s.server.documents.withBoundedReader(ProjectFiles.load);
+	// The cancelled preflight still occupies the worker, so a development
+	// request is refused before admission and frees nothing.
 	var development = s.send(t, "virgil-lsp/analyze", params);
 	var error = s.reply(development)["error"];
-	t.asserti(JsonRpcErrorCode.INVALID_PARAMS, intAt(error, "code"));
-	t.assert_string("retained analysis snapshots exceed the workspace budget", stringAt(error, "message"));
+	t.asserti(JsonRpcErrorCode.INTERNAL_ERROR, intAt(error, "code"));
+	t.assert_string("an analysis is already running; previous snapshot kept", stringAt(error, "message"));
+	t.assert(projects.renameSnapshot == original && c.snapshot == oldC, "the busy request frees nothing");
 	snapshotBudget(t, s);
 	scheduler.schedule([c], false);
 	s.write(t, "a/.virgil-lsp.json", Arrays.concat(single("A.v3"), "\n"));

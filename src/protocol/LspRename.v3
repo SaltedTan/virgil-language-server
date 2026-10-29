@@ -212,7 +212,7 @@ class LspRename(store: DocumentStore, projects: WorkspaceProjects, requests: Lsp
 		}
 		var sources = p.sources;
 		p.sources = null;
-		if (!projects.admitTemporary(p.ctx, supervisor.snapshot,
+		if (!projects.admitKeeping(p.ctx, supervisor.snapshot,
 				long.view(AnalysisWire.MAX_RESULT_ALLOCATION) + p.snapshotBytes)) {
 			return AnalysisOutcome.Failed(AnalysisFailure.TOO_LARGE, "retained analysis snapshots exceed the workspace budget");
 		}

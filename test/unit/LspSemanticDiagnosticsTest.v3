@@ -40,6 +40,8 @@ def X = [
 	T("LspSemanticDiagnostics:edit_frees_own_snapshot", test_edit_frees_own_snapshot),
 	T("LspSemanticDiagnostics:refusal_evicts_nothing", test_refusal_evicts_nothing),
 	T("LspSemanticDiagnostics:completion_keeps_own_snapshot", test_completion_keeps_own_snapshot),
+	T("LspSemanticDiagnostics:development_keeps_own_snapshot", test_development_keeps_own_snapshot),
+	T("LspSemanticDiagnostics:busy_development_frees_nothing", test_busy_development_frees_nothing),
 	()
 ];
 class SemanticTestSession {
@@ -978,7 +980,7 @@ def test_evicted_demand_coalesces(t: Tester) {
 def test_eviction_schedules_nothing(t: Tester) {
 	var s = EvictionSession.new("two-programs", true);
 	var server = s.context("server/Program.v3"), client = s.context("client/Program.v3"), before = s.analyses();
-	s.server.projects.admitTemporary(server, null, long.view(s.server.projects.snapshotBudget) - server.snapshot.retainedBytes);
+	s.server.projects.admitKeeping(server, null, long.view(s.server.projects.snapshotBudget) - server.snapshot.retainedBytes);
 	t.assert(client.snapshot == null && client.evicted, "admission evicts the other snapshot");
 	t.assert(server.snapshot != null && !server.evicted, "the active project keeps its snapshot");
 	t.assertz(false, s.server.analyzing());
@@ -1355,5 +1357,66 @@ def test_completion_keeps_own_snapshot(t: Tester) {
 	t.assertz(false, server.evicted || client.evicted);
 	t.assertz(false, s.server.analyzing());
 	t.asserti(before, s.analyses());
+	s.server.close();
+}
+// An explicit analysis request replaces its project's snapshot only when it
+// completes, and requests don't wait for it, so its admission keeps that
+// snapshot: under the pressure of test_edit_frees_own_snapshot it is refused,
+// and a hover still answers from the snapshot.
+def test_development_keeps_own_snapshot(t: Tester) {
+	var s = EvictionSession.new("separate-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	var server = s.context(names[0]), client = s.context(names[1]);
+	t.assert(s.supervisor.snapshot == client.snapshot, "the client was analyzed last");
+	s.server.projects.snapshotBudget = AnalysisWire.MAX_RESULT_ALLOCATION
+		+ int.view(server.snapshot.retainedBytes + client.snapshot.retainedBytes) - 1;
+	var kept = server.snapshot, latest = client.snapshot, before = s.analyses();
+	s.server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":901,\"method\":\"virgil-lsp/analyze\",\"params\":{\"uri\":\"%s\"}}", s.uri(names[0])));
+	var reply = s.reply(901);
+	t.assert(reply != null && reply.has("error"), "the refused request is answered at once");
+	if (reply != null && reply.has("error")) {
+		var error = JsonValue.JObject.!(reply["error"]).v;
+		t.asserti(JsonRpcErrorCode.INVALID_PARAMS, JsonValue.Int.!(error["code"]).v);
+		t.assert_string("retained analysis snapshots exceed the workspace budget", JsonValue.String.!(error["message"]).v);
+	}
+	t.assertz(false, s.supervisor.busy());
+	t.assert(server.snapshot == kept && client.snapshot == latest, "both programs keep their snapshots");
+	t.assertz(false, server.evicted || client.evicted);
+	t.assert(s.result(s.hover(names[0])) != JsonValue.Null, "the server's hover answers from its snapshot");
+	t.asserti(before, s.analyses());
+	s.server.close();
+}
+// An explicit analysis request that finds the worker busy is refused before
+// admission, so that it frees no other project's snapshot for an analysis that
+// can't start. A completion in the client keeps the worker busy; the request
+// names all four files, so it belongs to no project, and admission would have
+// to evict the server's snapshot to fit it.
+def test_busy_development_frees_nothing(t: Tester) {
+	var s = EvictionSession.new("separate-programs", true), names = ["server/Program.v3", "client/Program.v3"];
+	var server = s.context(names[0]), client = s.context(names[1]);
+	t.assert(s.supervisor.snapshot == client.snapshot, "the client was analyzed last");
+	var keys = Array<string>.new(client.sources.length);
+	for (i < keys.length) keys[i] = client.sources[i].uri;
+	var inputs = LspAnalysisCapture.capture(s.server.documents, keys, true).0;
+	s.server.projects.snapshotBudget = int.view(long.view(AnalysisWire.MAX_RESULT_ALLOCATION)
+		+ server.snapshot.retainedBytes + client.snapshot.retainedBytes + inputs.snapshotBytes);
+	var kept = server.snapshot;
+	var completion = s.at("textDocument/completion", names[1], 4, 17);
+	t.assertz(true, s.supervisor.busy());
+	var uris = Strings.format2("\"%s\",\"%s\"", s.uri("server/Program.v3"), s.uri("server/Greeting.v3"));
+	uris = Strings.format3("%s,\"%s\",\"%s\"", uris, s.uri("client/Program.v3"), s.uri("client/Greeting.v3"));
+	s.server.documents.withBoundedReader(ProjectFiles.load);
+	s.server.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":902,\"method\":\"virgil-lsp/analyze\",\"params\":{\"uris\":[%s]}}", uris));
+	var reply = s.reply(902);
+	t.assert(reply != null && reply.has("error"), "the busy request is answered at once");
+	if (reply != null && reply.has("error")) {
+		var error = JsonValue.JObject.!(reply["error"]).v;
+		t.asserti(JsonRpcErrorCode.INTERNAL_ERROR, JsonValue.Int.!(error["code"]).v);
+		t.assert_string("an analysis is already running; previous snapshot kept", JsonValue.String.!(error["message"]).v);
+	}
+	t.assert(server.snapshot == kept, "the busy request keeps the server's snapshot");
+	t.assertz(false, server.evicted || client.evicted);
+	s.settle();
+	t.assert(s.result(completion) != JsonValue.Null, "the completion completes");
+	t.assert(s.result(s.hover(names[0])) != JsonValue.Null, "the server's hover still answers");
 	s.server.close();
 }

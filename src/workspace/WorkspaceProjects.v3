@@ -434,17 +434,19 @@ class WorkspaceProjects(store: DocumentStore) {
 		}
 		configs = live;
 	}
-	// Admits an analysis whose result replaces {active}'s snapshot, or, with a
-	// null {active}, one of explicit URIs, within snapshotBudget beside the
-	// supervisor's {latest} snapshot and a reservation of {incomingBytes}.
-	// {active}'s own snapshot is freed first and isn't marked evicted; see
-	// admit.
+	// Admits an automatic or demand analysis, whose result replaces {active}'s
+	// snapshot and which requests for that snapshot wait for, within
+	// snapshotBudget beside the supervisor's {latest} snapshot and a
+	// reservation of {incomingBytes}. {active}'s own snapshot is freed first
+	// and isn't marked evicted; see admit.
 	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
 		return admit(active, latest, incomingBytes, true);
 	}
-	// Admits an analysis of {active}'s sources whose result doesn't replace
-	// its snapshot, a completion's or a rename's check, which keeps it.
-	def admitTemporary(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
+	// Admits an analysis that keeps {active}'s snapshot, if any, until it
+	// completes: a completion's or a rename's check, whose result doesn't
+	// replace it, or an explicit analysis request, which requests don't wait
+	// for, so that freeing the snapshot would leave them without one.
+	def admitKeeping(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
 		return admit(active, latest, incomingBytes, false);
 	}
 	// Counts {latest}, a rename's pinned original, and every context's
