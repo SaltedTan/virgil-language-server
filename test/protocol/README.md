@@ -17,9 +17,14 @@ and the server's stderr on failure.
 
 `evicted_snapshot.py` repeats the case of
 [#330](https://github.com/SaltedTan/virgil-language-server/issues/330) with a
-real worker under the [snapshot admission policy](../../docs/architecture.md#analysis-snapshots-partly-present).
-With #373, the edit's automatic analyses succeed and the compiler's requests
-are answered without a demand analysis. It is opt-in, and `make test` doesn't
+real worker. Its two projects' analyses take about 13 MB each under the
+32 MiB [snapshot budget](../../docs/architecture.md#analysis-snapshots-partly-present).
+Before #330, an edit to the compiler left the compiler's snapshot evicted, and
+its requests answered null or ContentModified until the next edit; #330
+analyzes an evicted snapshot again for the first request that needs it. Since
+[#373](https://github.com/SaltedTan/virgil-language-server/issues/373), the
+edit's own analyses are admitted, by freeing each project's stale snapshot, so
+the compiler's requests are answered without a demand analysis. It is opt-in, and `make test` doesn't
 run it, since its fixture is a copy of the pinned Aeneas sources and
 `apps/Demangle`, whose two analyses take about 13 MB each. Run it by hand
 from the repository root after `make all`, with `TMPDIR` pointing at a scratch
@@ -35,7 +40,9 @@ edit to a compiler source schedules both projects. It opens
 and then requests hover, definition, and semantic tokens in both,
 printing each step's replies, their times, and the latest snapshot as JSON
 lines. It passes when the compiler's requests are answered after the edit, no
-refresh request arrives during the requests, and no analysis runs afterwards.
+refresh request arrives during the requests, since the compiler's tokens and
+hints after the edit are those the client already has, and no analysis runs
+afterwards.
 Automatic analyses have no completion signal, so it waits until the latest
 snapshot's generation hasn't changed for four seconds
 (`EVICTED_SNAPSHOT_QUIET` changes that); every receive has a deadline. On
