@@ -10,12 +10,11 @@ class ProjectContext(config: ProjectRevision, definition: ProjectDefinition) {
 	var hintTargets = OrderedStringMap<LspHintTargetFingerprint>.new();
 	var sources: Array<ProjectSource> = [];
 	var snapshot: AnalysisSnapshot;
-	// Snapshot admission cleared {snapshot} to make room for another
-	// context's analysis, and no automatic analysis of this context has
-	// started since. A request that needs the snapshot may then analyze the
-	// context again, once (see LspSemanticDiagnostics.whenAnalyzed). A
-	// context never analyzed, or whose analysis failed after the eviction,
-	// has neither.
+	// Snapshot admission evicted {snapshot} to make room, and no automatic
+	// analysis of this context has started since. A request that needs the
+	// snapshot may then analyze the context again, once (see
+	// LspSemanticDiagnostics.whenAnalyzed). A context never analyzed, or
+	// whose analysis failed after the eviction, has neither.
 	var evicted: bool;
 	var lastUsed: long;
 	def contains(path: string, memberOnly: bool) -> bool {
@@ -437,8 +436,8 @@ class WorkspaceProjects(store: DocumentStore) {
 	// Admits an automatic or demand analysis, whose result replaces {active}'s
 	// snapshot and which requests for that snapshot wait for, within
 	// snapshotBudget beside the supervisor's {latest} snapshot and a
-	// reservation of {incomingBytes}. {active}'s own snapshot is freed first
-	// and isn't marked evicted; see admit.
+	// reservation of {incomingBytes}. When room is needed, {active}'s own
+	// snapshot is the first candidate to free and isn't marked evicted; see admit.
 	def admitSnapshot(active: ProjectContext, latest: AnalysisSnapshot, incomingBytes: long) -> bool {
 		return admit(active, latest, incomingBytes, true);
 	}

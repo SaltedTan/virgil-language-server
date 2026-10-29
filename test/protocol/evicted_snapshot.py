@@ -1,32 +1,10 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Virgil Language Server Authors.
 # SPDX-License-Identifier: Apache-2.0
-"""An evicted project snapshot is analyzed again when a request needs it (#330).
+"""Snapshot-pressure reproduction for #330 and #373.
 
-Opt-in: `make test` does not run it, since its fixture is a copy of the pinned
-Aeneas tree whose two analyses take about 13 MB each and a few seconds. Run it
-by hand from the repository root after `make all`:
-
-    TMPDIR=<scratch> python3 test/protocol/evicted_snapshot.py [build/virgil-lsp]
-
-It copies `aeneas/src/` and `apps/Demangle/` from `vendor/virgil` into a new
-directory under TMPDIR, configures them as the projects `compiler` and
-`demangle` (whose dependencies include the compiler's sources), and opens
-`aeneas/src/vst/Verifier.v3` and `apps/Demangle/Demangle.v3`. Under the 32 MiB
-snapshot budget, the automatic analyses after an edit to Verifier.v3 leave the
-compiler's snapshot evicted, so hover, definition, and semantic tokens there
-used to answer null, null, and ContentModified until the next edit. Now the
-first request analyzes the compiler again and is answered from that analysis.
-The client supports both refresh requests and answers each; the script checks
-that the analysis, which changes no open document's tokens or hints, sends
-none, and that no analysis runs afterwards.
-
-Automatic analyses have no completion signal, so the script waits until the
-latest snapshot's generation (virgil-lsp/snapshot) has not changed for
-QUIET seconds (default 4, or the EVICTED_SNAPSHOT_QUIET environment variable).
-Every receive has a deadline. It prints each step's observations as JSON lines
-and exits nonzero, with the transcript tail and the server's stderr, if the
-compiler's requests are not answered after the edit.
+See test/protocol/README.md, "Evicted-snapshot reproduction", for setup, the
+scenario, and expected results.
 """
 import json
 import os
