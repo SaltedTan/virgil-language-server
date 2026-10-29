@@ -437,7 +437,7 @@ Keep this as a monorepo through v0.1 so the server, both editor integrations, fi
 
 ### Milestones
 
-The milestones on 2026-10-29, after the maintainer closed the four completed ones, are:
+The live milestones on 2026-10-29 are:
 
 | Milestone | Open | Closed | State |
 | --- | ---: | ---: | --- |
