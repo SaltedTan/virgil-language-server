@@ -29,6 +29,7 @@ def X = [
 	T("LspHover:documentation_substituted_target", test_documentation_substituted),
 	T("LspHover:documentation_plaintext", test_documentation_plaintext),
 	T("LspHover:documentation_escaping", test_documentation_escaping),
+	T("LspHover:documentation_data_type", test_documentation_data_type),
 	T("LspHover:params", test_params),
 	()
 ];
@@ -646,4 +647,15 @@ def test_documentation_escaping(t: Tester) {
 	t.assert_string("indented  \nnext\n\nparagraph", h.prose("    indented\n\tnext\n\nparagraph"));
 	t.assert_string("back\\slash \\n \\\\\\ end\\\\", h.prose("back\\slash \\n \\\\ end\\"));
 	t.assert_string("\xC3\xA9 \xF0\x9D\x84\x9E", h.prose("\xC3\xA9 \xF0\x9D\x84\x9E"));
+}
+// A data type is its own single case: a constructor use targets the case,
+// which the outline lists as the type, and shows the type's comment.
+def test_documentation_data_type(t: Tester) {
+	var s = HoverTestSession.new(t, null);
+	var text = Strings.format2("%s%s", SOURCE, "// A row.\ntype Row(x: int);\ncomponent M { def f() { var a = Row(1); } }\n");
+	s.open(1, text);
+	s.settle();
+	expectIn(t, s, text, "type Row", 5, 3, documented(["type Row(x: int)"], "A row."), false);
+	expectIn(t, s, text, "Row(1)", 0, 3, documented(["type Row(x: int)", "int -> Row"], "A row."), false);
+	s.server.close();
 }

@@ -94,6 +94,14 @@ def test_cases(t: Tester) {
 		("kind: u8", 0, AnalysisDeclKind.LAYOUT_FIELD, "Its kind."),
 		("packing Low", 8, AnalysisDeclKind.PACKING, "Low bits.")
 	]);
+	// A data type is its own single case, so a use of its constructor names
+	// the case, which the outline lists as the type, at the same name.
+	check(t, "// A row.\ntype Row(x: int);\ncomponent M { def f() { var a = Row(1); } }\n", [
+		("type Row", 5, CLASS, "A row."),
+		("type Row", 5, AnalysisDeclKind.VARIANT_CASE, "A row."),
+		("type Row", 5, METHOD, null),
+		("Row(1)", 0, AnalysisDeclKind.VARIANT_CASE, null)
+	]);
 }
 // Fields that share one declaration, and header parameters, have no comment.
 def test_shared(t: Tester) {
