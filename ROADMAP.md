@@ -457,6 +457,7 @@ Only `v1.0` stays open. The maintainer makes these GitHub edits; this document d
 - `area/docs`, `area/community`, `dependency/virgil`
 - `type/bug`, `type/feature`, `type/refactor`, `type/docs`, `type/test`
 - `good first issue`, `help wanted`, `blocked/dependency`, `breaking`, `performance`
+- `agent-ready`, `needs-decision`; [CONTRIBUTING](CONTRIBUTING.md#work-items) defines them
 
 ## Open-source and licensing plan
 
