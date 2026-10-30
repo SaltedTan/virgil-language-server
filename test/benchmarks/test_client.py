@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -246,12 +247,37 @@ class ResourceTest(unittest.TestCase):
             self.assertIsNone(bench.process_tree(1))
             self.assertIsNone(bench.resources(1))
         with mock.patch.object(bench.Path, "is_dir", return_value=False), \
-                mock.patch.object(bench, "command", return_value=" 5 1 64\n 6 5 32\n 7 1 128\n"), \
+                mock.patch.object(bench, "command", return_value=" 5 1 64 S\n 6 5 32 S+\n 7 1 128 R\n 8 1 0 Z\n"), \
                 mock.patch.object(bench, "optional_file", return_value=None):
-            # macOS shape: RSS from ps, and no HWM rather than a zero.
+            # macOS shape: RSS from ps, and no HWM rather than a zero. The
+            # exited, unreaped worker 8 is left out rather than given a peak of 0.
             self.assertEqual(bench.process_tree(1), {5: ("worker", 64 * 1024, None), 7: ("worker", 128 * 1024, None)})
             self.assertEqual(bench.resources(5), [{"role": "server", "pid": 5, "rss_bytes": 65536, "peak_rss_bytes": None},
                                                   {"role": "worker", "pid": 6, "rss_bytes": 32768, "peak_rss_bytes": None}])
+
+    def test_ps_listing_omits_an_exited_unreaped_worker(self):
+        # A worker that exits before the first sample, and that its server
+        # hasn't reaped yet, stays unobserved: its peak is unknown, not 0.
+        server = subprocess.Popen([sys.executable, "-c", "import subprocess, sys, time\n"
+                                   "worker = subprocess.Popen([sys.executable, '-c', 'pass'])\n"
+                                   "print(worker.pid, flush=True)\n"
+                                   "time.sleep(30)\n"], stdout=subprocess.PIPE, text=True)
+        try:
+            worker = int(server.stdout.readline())
+            deadline = time.monotonic() + 10
+            while not bench.command("ps", "-o", "stat=", "-p", str(worker)).startswith("Z"):
+                self.assertLess(time.monotonic(), deadline, "the worker did not exit")
+                time.sleep(0.01)
+            with mock.patch.object(bench.Path, "is_dir", return_value=False):
+                sampler = bench.ResourceSampler(server.pid)
+                sampler.sample()
+                summary = sampler.stop(worker_starts=1)
+            self.assertEqual([(p["pid"], p["role"]) for p in summary["processes"]], [(server.pid, "server")])
+            self.assertEqual(summary["unobserved_workers"], 1)
+        finally:
+            server.kill()
+            server.wait()
+            server.stdout.close()
 
     @unittest.skipUnless(Path("/proc/self/status").exists(), "Linux /proc is required")
     def test_live_sampler_reads_children_and_stops_with_the_session(self):

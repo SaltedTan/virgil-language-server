@@ -107,7 +107,8 @@ def process_tree(pid):
 
     Linux reads /proc without starting a process. Elsewhere `ps` supplies RSS and
     the OS high-water mark is None (unknown, never zero). A process that exits
-    between listing and reading is omitted. None means the listing failed.
+    between listing and reading is omitted, as is one that has exited but isn't
+    reaped yet: its RSS of 0 is not a peak. None means the listing failed.
     """
     tasks = Path(f"/proc/{pid}/task")
     if tasks.is_dir():
@@ -127,12 +128,13 @@ def process_tree(pid):
                                        int(peak[1]) * 1024 if peak else None)
             return result
     try:
-        rows = [list(map(int, row.split())) for row in command("ps", "-axo", "pid=,ppid=,rss=").splitlines()]
+        rows = [(int(process), int(parent), int(rss), state) for process, parent, rss, state
+                in (row.split() for row in command("ps", "-axo", "pid=,ppid=,rss=,stat=").splitlines())]
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
     result = {}
-    for process, parent, rss in rows:
-        if process == pid or parent == pid:
+    for process, parent, rss, state in rows:
+        if (process == pid or parent == pid) and not state.startswith("Z"):
             status = optional_file(f"/proc/{process}/status") or ""
             peak = re.search(r"^VmHWM:\s+(\d+) kB$", status, re.M)
             result[process] = ("server" if process == pid else "worker", rss * 1024,
