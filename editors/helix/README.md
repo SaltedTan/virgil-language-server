@@ -21,7 +21,7 @@ The bundled library works without an explicit root: with no client root, the ser
 config = { virgilRoot = "/home/you/virgil" }
 ```
 
-Replace the path with a Virgil checkout or installation that holds `lib/`. Unlike the [Neovim configurations](../nvim/README.md#the-virgil-root), this client does not read `VIRGIL_LOC`, so exporting `VIRGIL_LOC` alone does not configure it. The option is read when the server starts: after changing it, run `:lsp-restart`.
+Replace the path with a Virgil checkout or installation that holds `lib/`. Unlike the [Neovim configurations](../nvim/README.md#the-virgil-root), this client does not read `VIRGIL_LOC`, so exporting `VIRGIL_LOC` alone does not configure it. The option is read when the server starts, and `:lsp-restart` alone keeps the configuration Helix already loaded: after saving the change, run `:config-reload`, then `:lsp-restart`, or restart Helix. In Helix 25.07.1, `:config-reload` fails with "Failed to load config" unless a `config.toml`, even an empty one, sits beside `languages.toml`.
 
 ## What the server sees
 
