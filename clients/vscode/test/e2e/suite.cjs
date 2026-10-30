@@ -585,12 +585,14 @@ async function workspace(extension) {
 
   // Completion takes its keywords from the unsaved text alone, which no
   // longer parses: "whi" starts a statement, so the keywords of a statement
-  // are offered, and "while" replaces just the prefix. VS Code applies the
-  // item, and one undo restores the line.
+  // are offered. In the middle of the word the item inserts what was typed and
+  // replaces the whole word, so VS Code exposes distinct inserting and
+  // replacing ranges; applying the replacing range through a WorkspaceEdit
+  // accepts the item, and one undo restores the line.
   await edit(words, (builder) => builder.insert(new vscode.Position(use + 1, 0), '\t\twhi\n'));
   const typed = words.document.getText();
   const completions = await vscode.commands.executeCommand(
-    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(use + 1, 5),
+    'vscode.executeCompletionItemProvider', words.document.uri, new vscode.Position(use + 1, 4),
   );
   const keyword = completions.items.find((i) => i.label === 'while');
   assert.ok(keyword, 'while is not offered');
@@ -599,11 +601,16 @@ async function workspace(extension) {
     'break', 'continue', 'def', 'false', 'for', 'fun', 'if', 'match', 'null', 'return', 'true', 'var', 'while',
   ]);
   assert.equal(keyword.kind, vscode.CompletionItemKind.Keyword);
-  const replaced = keyword.range instanceof vscode.Range ? keyword.range : keyword.range.replacing;
-  assert.deepEqual(range({ range: replaced }), [use + 1, 2, use + 1, 5]);
+  assert.ok(!(keyword.range instanceof vscode.Range), 'a mid-word completion has two ranges');
+  const inserting = keyword.range.inserting;
+  const replacing = keyword.range.replacing;
+  assert.deepEqual(range({ range: inserting }), [use + 1, 2, use + 1, 4]);
+  assert.deepEqual(range({ range: replacing }), [use + 1, 2, use + 1, 5]);
   const insertText = typeof keyword.insertText === 'string' ? keyword.insertText : keyword.insertText.value;
   assert.equal(insertText, 'while');
-  await edit(words, (builder) => builder.replace(replaced, insertText));
+  const replacement = new vscode.WorkspaceEdit();
+  replacement.replace(words.document.uri, replacing, insertText);
+  assert.ok(await vscode.workspace.applyEdit(replacement), 'the completion replacement was not applied');
   assert.equal(words.document.lineAt(use + 1).text, '\t\twhile');
   await vscode.window.showTextDocument(words.document);
   await vscode.commands.executeCommand('undo');
@@ -729,7 +736,7 @@ async function workspace(extension) {
   await waitFor('the type error in words/Words.v3 from the new server', () => hasTypeError(words), 40000);
   assert.deepEqual(await symbols(words), [{ name: 'Words', kind: vscode.SymbolKind.Namespace }]);
   console.log('PASS: VS Code workspace activation, diagnostics publish/clear/undo, symbols, '
-    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, and member completion, '
+    + 'Virgil root, definition, type definition, inlay hints, hover, signature help, references, rename refusal, rename and undo, keyword, declaration, member, and insert-replace completion, '
     + 'signature help in unclosed calls, no completion in a comment, workspace symbols, project file edits, and restart with a clean server exit');
 
   // The scenarios that restart the server, or could disturb it, come last.

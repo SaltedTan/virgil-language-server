@@ -22,6 +22,15 @@ vim.lsp.handlers["textDocument/publishDiagnostics"] = function(err, result, ctx,
 end
 
 local client
+-- These completions are at the end of the word, so both negotiated ranges
+-- coincide. Neovim versions differ in whether they advertise this capability.
+local function completion_edit(new_text, range)
+  if client.capabilities.textDocument.completion.completionItem.insertReplaceSupport == true then
+    return { newText = new_text, insert = range, replace = range }
+  end
+  return { newText = new_text, range = range }
+end
+
 local function wait_for(description, predicate, timeout)
   assert(vim.wait(timeout or 10000, predicate, 10), "timed out waiting for " .. description)
 end
@@ -601,10 +610,12 @@ local function check()
     if i.label == "while" then item = i end
   end
   assert(list and list.isIncomplete == false and item and item.kind == vim.lsp.protocol.CompletionItemKind.Keyword
-    and vim.deep_equal(item.textEdit, {
-      newText = "while", range = { start = { line = 7, character = 2 }, ["end"] = { line = 7, character = 5 } },
-    }), "unexpected completion: " .. vim.inspect(list))
-  vim.lsp.util.apply_text_edits({ item.textEdit }, words_buf, client.offset_encoding)
+    and vim.deep_equal(item.textEdit, completion_edit("while", {
+      start = { line = 7, character = 2 }, ["end"] = { line = 7, character = 5 },
+    })), "unexpected completion: " .. vim.inspect(list))
+  vim.lsp.util.apply_text_edits({ {
+    newText = item.textEdit.newText, range = item.textEdit.replace or item.textEdit.range,
+  } }, words_buf, client.offset_encoding)
   assert(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)[1] == "\t\twhile",
     "the completion was not applied: " .. vim.inspect(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)))
   vim.o.undolevels = vim.o.undolevels
@@ -633,10 +644,12 @@ local function check()
   item = list and list.items[1]
   assert(vim.deep_equal(labels, { "line", "a", "b", "this", "join" }) and list.isIncomplete == false
     and item.kind == vim.lsp.protocol.CompletionItemKind.Variable and item.detail == "var line: int"
-    and item.sortText == "0000" and vim.deep_equal(item.textEdit, {
-      newText = "line", range = { start = { line = 7, character = 2 }, ["end"] = { line = 7, character = 4 } },
-    }), "unexpected declaration completion: " .. vim.inspect(list and { labels, item }))
-  vim.lsp.util.apply_text_edits({ item.textEdit }, words_buf, client.offset_encoding)
+    and item.sortText == "0000" and vim.deep_equal(item.textEdit, completion_edit("line", {
+      start = { line = 7, character = 2 }, ["end"] = { line = 7, character = 4 },
+    })), "unexpected declaration completion: " .. vim.inspect(list and { labels, item }))
+  vim.lsp.util.apply_text_edits({ {
+    newText = item.textEdit.newText, range = item.textEdit.replace or item.textEdit.range,
+  } }, words_buf, client.offset_encoding)
   assert(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)[1] == "\t\tline",
     "the declaration completion was not applied: " .. vim.inspect(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)))
   vim.o.undolevels = vim.o.undolevels
@@ -663,10 +676,12 @@ local function check()
   item = list and list.items[1]
   assert(list and #list.items == 1 and list.isIncomplete == false and item.label == "length"
     and item.kind == vim.lsp.protocol.CompletionItemKind.Field and item.detail == "def length: int"
-    and item.sortText == "0000" and vim.deep_equal(item.textEdit, {
-      newText = "length", range = { start = { line = 7, character = 4 }, ["end"] = { line = 7, character = 4 } },
-    }), "unexpected member completion: " .. vim.inspect(list))
-  vim.lsp.util.apply_text_edits({ item.textEdit }, words_buf, client.offset_encoding)
+    and item.sortText == "0000" and vim.deep_equal(item.textEdit, completion_edit("length", {
+      start = { line = 7, character = 4 }, ["end"] = { line = 7, character = 4 },
+    })), "unexpected member completion: " .. vim.inspect(list))
+  vim.lsp.util.apply_text_edits({ {
+    newText = item.textEdit.newText, range = item.textEdit.replace or item.textEdit.range,
+  } }, words_buf, client.offset_encoding)
   assert(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)[1] == "\t\ta.length",
     "the member completion was not applied: " .. vim.inspect(vim.api.nvim_buf_get_lines(words_buf, 7, 8, true)))
   vim.o.undolevels = vim.o.undolevels

@@ -397,7 +397,11 @@ class LspServer {
 		callHierarchy.clientKinds = documentSymbols.clientKinds;
 		var workspaceSymbol = member(member(member(params, "capabilities"), "workspace"), "symbol");
 		workspaceSymbols.clientKinds = LspSymbolKind.symbols(member(workspaceSymbol, "symbolKind"));
-		completion.clientKinds = LspSymbolKind.completions(member(member(textDocument, "completion"), "completionItemKind"));
+		var completionCapability = member(textDocument, "completion");
+		var completionItem = member(completionCapability, "completionItem");
+		completion.clientKinds = LspSymbolKind.completions(member(completionCapability, "completionItemKind"));
+		completion.insertReplace = completionItem != null
+			&& completionItem["insertReplaceSupport"] == JsonValue.Bool(true);
 		var workspaceEdit = member(member(member(params, "capabilities"), "workspace"), "workspaceEdit");
 		rename.documentChanges = workspaceEdit != null && workspaceEdit["documentChanges"] == JsonValue.Bool(true);
 		codeActions.documentChanges = rename.documentChanges;

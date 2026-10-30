@@ -263,15 +263,20 @@ component LspCompletionRepair {
 
 // One textDocument/completion request whose candidates need an analysis:
 // its keywords, which are its reply without the analysis's answer, and the
-// range that each item's edit replaces, the prefix. The reply is incomplete
+// ranges that each item's edit replaces, the prefix and, for a client with
+// insertReplaceSupport, the rest of the identifier. The reply is incomplete
 // when a later request may have the names there, and complete where typing
 // more of the word can't add them.
 class LspCompletionRequest extends LspQueryRequest {
 	def completion: LspCompletion;
 	def keywords: Array<JsonValue>;
+	// The prefix, as the insertion range of every item's edit.
 	def range: JsonValue;
+	// The identifier containing the cursor, as the replacement range, or
+	// Null for a client without textDocument.completion.completionItem.insertReplaceSupport.
+	def replaceRange: JsonValue;
 
-	new(completion, id: JsonRpcId, keywords, range) super(completion, id) { }
+	new(completion, id: JsonRpcId, keywords, range, replaceRange) super(completion, id) { }
 	// The keywords, marked incomplete when a later request may have the
 	// names: the analysis failed, was replaced, or was stale and could not
 	// rerun.
@@ -307,6 +312,11 @@ class LspCompletion extends LspQueryRequests {
 	def MODULE_KIND = 9;	// CompletionItemKind.Module, for System
 	// The client's textDocument.completion.completionItemKind.
 	var clientKinds = LspSymbolKind.completions(null);
+	// Whether the client sets
+	// textDocument.completion.completionItem.insertReplaceSupport to JSON true,
+	// so that an item's edit has the insertion range and the replacement range,
+	// which also replaces the identifier's bytes after the cursor.
+	var insertReplace = false;
 
 	new(store: DocumentStore, projects: WorkspaceProjects, send: Array<byte> -> void) super(store, projects, send, "completion") { }
 
@@ -332,8 +342,10 @@ class LspCompletion extends LspQueryRequests {
 		var range = Strings.newMap<JsonValue>();
 		range["start"] = encodePosition(map.offsetToPosition(ctx.prefixStart));
 		range["end"] = encodePosition(map.offsetToPosition(ctx.cursor));
-		var r = LspCompletionRequest.new(this, request.id, Array<JsonValue>.new(words.length), JsonValue.JObject(range));
-		for (i < words.length) r.keywords[i] = item(words[i], KEYWORD_KIND, null, null, r.range);
+		var replaceRange = if(insertReplace, replacement(map, ctx, overlay.text), JsonValue.Null);
+		var r = LspCompletionRequest.new(this, request.id, Array<JsonValue>.new(words.length), JsonValue.JObject(range),
+			replaceRange);
+		for (i < words.length) r.keywords[i] = item(words[i], KEYWORD_KIND, null, null, r.range, r.replaceRange);
 		var kinds = LspCompletionRepair.kinds(ctx), project = mapping.active;
 		var path = DocumentUri.filePath(overlay.uri);
 		// Keywords alone, complete, where no name can go, and without a
@@ -402,7 +414,7 @@ class LspCompletion extends LspQueryRequests {
 		var items = Array<JsonValue>.new(order.length + r.keywords.length);
 		for (k < order.length) {
 			var i = order[k];
-			items[k] = item(labels[i], kinds[i], details[i], rank(k), r.range);
+			items[k] = item(labels[i], kinds[i], details[i], rank(k), r.range, r.replaceRange);
 		}
 		for (k < r.keywords.length) items[order.length + k] = r.keywords[k];
 		return list(items, scope.truncated);
@@ -417,7 +429,7 @@ class LspCompletion extends LspQueryRequests {
 		for (i < items.length) {
 			var detail = m.details[i], d = m.declarations[i];
 			if (detail == null && d >= 0) detail = snapshot.declarations[d].signature;
-			items[i] = item(m.names[i], LspSymbolKind.completion(m.kinds[i]), detail, rank(i), r.range);
+			items[i] = item(m.names[i], LspSymbolKind.completion(m.kinds[i]), detail, rank(i), r.range, r.replaceRange);
 		}
 		return list(items, m.truncated);
 	}
@@ -437,11 +449,18 @@ class LspCompletion extends LspQueryRequests {
 	def keywordList(r: LspCompletionRequest, incomplete: bool) -> JsonRpcReply {
 		return JsonRpcReply.Result(list(r.keywords, incomplete));
 	}
-	// An item whose edit replaces {range}, the prefix, with {label}.
-	private def item(label: string, kind: int, detail: string, sortText: string, range: JsonValue) -> JsonValue {
+	// An item whose edit inserts {label} in place of {insert}, the prefix, or,
+	// when {replace} is not null, lets the client replace {replace} instead:
+	// the whole identifier that the cursor is in or just past.
+	private def item(label: string, kind: int, detail: string, sortText: string, insert: JsonValue, replace: JsonValue) -> JsonValue {
 		var edit = Strings.newMap<JsonValue>(), item = Strings.newMap<JsonValue>();
-		edit["range"] = range;
 		edit["newText"] = JsonValue.String(label);
+		if (replace != JsonValue.Null) {
+			edit["insert"] = insert;
+			edit["replace"] = replace;
+		} else {
+			edit["range"] = insert;
+		}
 		item["label"] = JsonValue.String(label);
 		item["kind"] = JsonValue.Int(clientKinds.send(kind));
 		if (detail != null) item["detail"] = JsonValue.String(detail);
@@ -465,6 +484,26 @@ class LspCompletion extends LspQueryRequests {
 		obj["line"] = JsonValue.Int(p.line);
 		obj["character"] = JsonValue.Int(p.character);
 		return JsonValue.JObject(obj);
+	}
+	// The range that a client with insertReplaceSupport can use when it
+	// accepts an item in replace mode: the prefix's start and the end of the
+	// identifier that the cursor is in or just past, so that a completion in
+	// the middle of "wh|ile" replaces all of the word. The identifier continues
+	// over ASCII letters, digits, and underscores, as an Aeneas identifier
+	// does, and nothing else: a ".", whitespace, a delimiter, a quote, or a
+	// comment starts a different token. It is computed once per request from
+	// the open text, not per item, and at an identifier's end it is the prefix's
+	// range.
+	private def replacement(map: PositionMap, ctx: LspCursorContext, text: Array<byte>) -> JsonValue {
+		var end = ctx.cursor;
+		while (end < text.length && isIdentifierByte(text[end])) end++;
+		var range = Strings.newMap<JsonValue>();
+		range["start"] = encodePosition(map.offsetToPosition(ctx.prefixStart));
+		range["end"] = encodePosition(map.offsetToPosition(end));
+		return JsonValue.JObject(range);
+	}
+	private def isIdentifierByte(c: byte) -> bool {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 	}
 	private def objectMember(obj: HashMap<string, JsonValue>, key: string) -> HashMap<string, JsonValue> {
 		if (obj == null || !obj.has(key) || !JsonValue.JObject.?(obj[key])) return null;

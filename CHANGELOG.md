@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - The performance benchmark can time [first semantic diagnostics](docs/benchmarks.md#first-semantic-diagnostics) with `--first-semantic`: each sample launches a fresh server and worker, opens the unsaved project configuration and an edited source in either order, and stops only at the exact expected diagnostic, recording launch, `didOpen`, and `initialize` latency. Summaries now add p50 and p95, and first-semantic and `--error-result` runs keep [per-process memory summaries](docs/benchmarks.md#phases-allocation-and-output) for every observed server and worker, without inventing a peak for a process that exited unobserved ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338)).
+- [Completion](docs/architecture.md#completion) now lets capable editors replace a whole identifier when accepting a suggestion in its middle ([#353](https://github.com/SaltedTan/virgil-language-server/issues/353)).
 
 ### Fixed
 
