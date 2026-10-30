@@ -47,14 +47,14 @@ component Main {
 }
 ```
 
-## Open the folder
+## Open the folder and the file
 
-- **VS Code:** open `first-project` as a folder. The extension runs only in [trusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust), so trust the folder if VS Code asks.
+- **VS Code:** open `first-project` as a folder, then open `Main.v3`. The extension runs only in [trusted workspaces](https://code.visualstudio.com/docs/editor/workspace-trust), so trust the folder if VS Code asks.
 - **LazyVim:** start `nvim` in the folder, then open `Main.v3`.
 
 ## What to expect, and when
 
-Syntax diagnostics appear for any open `.v3` file, with no project file needed. Semantic diagnostics, hover, and go-to-definition need the `.virgil-lsp.json` project file, and they arrive when the first analysis finishes, a moment after the folder opens.
+Syntax diagnostics appear for any open `.v3` file, with no project file needed. Semantic diagnostics, hover, and go-to-definition need the `.virgil-lsp.json` project file, and they arrive when the first analysis finishes, a moment after you open `Main.v3`.
 
 1. **The type error.** `Main.v3` declares `greeting` as `int`, but `Greeter.message()` returns a `string`. The server publishes one semantic diagnostic, an error, on that line:
 
