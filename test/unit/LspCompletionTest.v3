@@ -40,6 +40,8 @@ def X = [
 	T("LspCompletion:parse_failure", test_parse_failure),
 	T("LspCompletion:nothing_offered", test_nothing_offered),
 	T("LspCompletion:text_edits", test_text_edits),
+	T("LspCompletion:insert_replace", test_insert_replace),
+	T("LspCompletion:insert_replace_capability", test_insert_replace_capability),
 	T("LspCompletion:keyword_only_complete", test_keyword_only_complete),
 	T("LspCompletion:utf16_ranges", test_utf16_ranges),
 	T("LspCompletion:positions_out_of_range", test_positions_out_of_range),
@@ -1272,6 +1274,12 @@ def server(t: Tester) -> LspServer {
 	t.assert(s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}") != null, "initialize reply");
 	return s;
 }
+// A server initialized for a client whose capabilities are {capabilities}.
+def serverWith(t: Tester, capabilities: string) -> LspServer {
+	var s = LspServer.new(DocumentLimits.MAX_BYTES);
+	t.assert(s.handle(Strings.format1("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":%s}}", capabilities)) != null, "initialize reply");
+	return s;
+}
 def request(uri: string, line: int, character: int) -> string {
 	return Strings.format3("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/completion\",\"params\":{\"textDocument\":{\"uri\":\"%s\"},\"position\":{\"line\":%d,\"character\":%d}}}",
 		uri, line, character);
@@ -1383,6 +1391,117 @@ def test_text_edits(t: Tester) {
 	s.documents.change(URI, 2, "class A {\n\tdef f() {\n\t\treturn\n\t}\n}\n");
 	items = JsonValue.JArray.!(complete(t, s, URI, 2, 8)["items"]).v;
 	checkRange(t, items[9], 2, 2, 8, "return");
+}
+
+// The item labelled {label} in {result}, or Null.
+def itemOf(result: HashMap<string, JsonValue>, label: string) -> JsonValue {
+	for (item in JsonValue.JArray.!(result["items"]).v) {
+		if (Strings.equal(label, JsonValue.String.!(JsonValue.JObject.!(item).v["label"]).v)) return item;
+	}
+	return JsonValue.Null;
+}
+// Checks that {range} is {line}'s bytes {start} to {end} in UTF-16 positions.
+def checkPositions(t: Tester, range: HashMap<string, JsonValue>, line: int, start: int, end: int) {
+	var s = JsonValue.JObject.!(range["start"]).v, e = JsonValue.JObject.!(range["end"]).v;
+	t.asserti(line, JsonValue.Int.!(s["line"]).v);
+	t.asserti(start, JsonValue.Int.!(s["character"]).v);
+	t.asserti(line, JsonValue.Int.!(e["line"]).v);
+	t.asserti(end, JsonValue.Int.!(e["character"]).v);
+}
+// Checks that {item} is labelled {label} and has an InsertReplaceEdit whose
+// insertion range is the prefix and whose replacement range ends at the
+// identifier's end.
+def checkInsertReplace(t: Tester, item: JsonValue, label: string, line: int, insertStart: int, insertEnd: int,
+		replaceStart: int, replaceEnd: int) {
+	var obj = JsonValue.JObject.!(item).v;
+	t.assert_string(label, JsonValue.String.!(obj["label"]).v);
+	var edit = JsonValue.JObject.!(obj["textEdit"]).v;
+	t.assert_string(label, JsonValue.String.!(edit["newText"]).v);
+	t.assert(!edit.has("range"), "an InsertReplaceEdit has no plain range");
+	t.assert(insertStart == replaceStart, "both ranges start at the prefix");
+	t.assert(insertEnd <= replaceEnd, "the insertion range is a prefix of the replacement range");
+	checkPositions(t, JsonValue.JObject.!(edit["insert"]).v, line, insertStart, insertEnd);
+	checkPositions(t, JsonValue.JObject.!(edit["replace"]).v, line, replaceStart, replaceEnd);
+}
+// Opens {text} as URI at {version} and requests completion just before the
+// "$", which is removed first, and returns the reply's items.
+def itemsAt(t: Tester, s: LspServer, version: int, marked: string) -> Array<JsonValue> {
+	var cursor = 0;
+	while (marked[cursor] != '$') cursor++;
+	var text = Arrays.concat(Arrays.range(marked, 0, cursor), Arrays.range(marked, cursor + 1, marked.length));
+	s.documents.change(URI, version, text);
+	var p = PositionMap.new(text, PositionEncoding.UTF16).offsetToPosition(cursor);
+	return JsonValue.JArray.!(complete(t, s, URI, p.line, p.character)["items"]).v;
+}
+def test_insert_replace(t: Tester) {
+	var s = serverWith(t, "{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":true}}}}");
+	s.documents.open(URI, "virgil", 1, "class A {\n\tdef f() {\n\t\twhi\n\t}\n}\n");
+	// In the middle of "whi", the replacement covers "whi" and the insertion
+	// covers the prefix "wh" alone. Every item has both ranges.
+	var items = JsonValue.JArray.!(complete(t, s, URI, 2, 4)["items"]).v;
+	t.asserti(13, items.length);
+	for (item in items) {
+		var edit = JsonValue.JObject.!(JsonValue.JObject.!(item).v["textEdit"]).v;
+		t.assert(!edit.has("range"), "every item has both ranges");
+		var insert = JsonValue.JObject.!(edit["insert"]).v, replace = JsonValue.JObject.!(edit["replace"]).v;
+		checkPositions(t, insert, 2, 2, 4);
+		checkPositions(t, replace, 2, 2, 5);
+	}
+	checkInsertReplace(t, itemOf(complete(t, s, URI, 2, 4), "while"), "while", 2, 2, 4, 2, 5);
+	// At the identifier's start, the insertion range is empty, and at its end
+	// both ranges coincide.
+	checkInsertReplace(t, itemOf(complete(t, s, URI, 2, 2), "while"), "while", 2, 2, 2, 2, 5);
+	checkInsertReplace(t, itemOf(complete(t, s, URI, 2, 5), "while"), "while", 2, 2, 5, 2, 5);
+	// The replacement stops at punctuation, whitespace, a quote, or a
+	// comment, and continues over digits and underscores.
+	var version = 1;
+	for (c in [("class A {\n\tdef f() {\n\t\twh$i;\n\t}\n}\n", 5),
+			("class A {\n\tdef f() {\n\t\twh$i.\n\t}\n}\n", 5),
+			("class A {\n\tdef f() {\n\t\twh$i other\n\t}\n}\n", 5),
+			("class A {\n\tdef f() {\n\t\twh$i,\n\t}\n}\n", 5),
+			("class A {\n\tdef f() {\n\t\twh$i// comment\n\t}\n}\n", 5),
+			("class A {\n\tdef f() {\n\t\twh$i\"text\"\n\t}\n}\n", 5),
+			("class A {\n\tdef f() {\n\t\twh$i9le_\n\t}\n}\n", 9)]) {
+		version = version + 1;
+		var item = itemOfFrom(itemsAt(t, s, version, c.0), "while");
+		t.assert(item != JsonValue.Null, "while");
+		checkInsertReplace(t, item, "while", 2, 2, 4, 2, c.1);
+	}
+	// Positions are UTF-16 code units, after two characters that take one
+	// and two of them.
+	var unicode = "class A {\n\tdef f() {\n\t\t/*\xC3\xA9\xF0\x9D\x84\x9E*/ wh$i\n\t}\n}\n";
+	version = version + 1;
+	checkInsertReplace(t, itemOfFrom(itemsAt(t, s, version, unicode), "while"), "while", 2, 10, 12, 10, 13);
+}
+// The item labelled {label} in {items}, or Null.
+def itemOfFrom(items: Array<JsonValue>, label: string) -> JsonValue {
+	for (item in items) {
+		if (Strings.equal(label, JsonValue.String.!(JsonValue.JObject.!(item).v["label"]).v)) return item;
+	}
+	return JsonValue.Null;
+}
+def test_insert_replace_capability(t: Tester) {
+	// Only a JSON true turns the shape on: absent, false, another value, or a
+	// capability elsewhere keeps the plain TextEdit.
+	for (capabilities in ["{}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":false}}}}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":\"yes\"}}}}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":1}}}}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":null}}}}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":[true]}}}}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":{\"value\":true}}}}}",
+			"{\"textDocument\":{\"completion\":{\"insertReplaceSupport\":true}}}",
+			"{\"textDocument\":{\"completion\":{\"completionItem\":true}}}"]) {
+		var s = serverWith(t, capabilities);
+		s.documents.open(URI, "virgil", 1, "class A {\n\tdef f() {\n\t\twhi\n\t}\n}\n");
+		var item = itemOf(complete(t, s, URI, 2, 4), "while");
+		checkRange(t, item, 2, 2, 4, "while");
+		var edit = JsonValue.JObject.!(JsonValue.JObject.!(item).v["textEdit"]).v;
+		t.assert(!edit.has("insert") && !edit.has("replace"), "a plain TextEdit without support");
+	}
+	var s = serverWith(t, "{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertReplaceSupport\":true}}}}");
+	s.documents.open(URI, "virgil", 1, "class A {\n\tdef f() {\n\t\twhi\n\t}\n}\n");
+	checkInsertReplace(t, itemOf(complete(t, s, URI, 2, 4), "while"), "while", 2, 2, 4, 2, 5);
 }
 
 // A keyword-only reply is complete where no analysis can add names to it:

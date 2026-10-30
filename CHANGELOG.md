@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - The performance benchmark can time [first semantic diagnostics](docs/benchmarks.md#first-semantic-diagnostics) with `--first-semantic`: each sample launches a fresh server and worker, opens the unsaved project configuration and an edited source in either order, and stops only at the exact expected diagnostic, recording launch, `didOpen`, and `initialize` latency. Summaries now add p50 and p95, and first-semantic and `--error-result` runs keep [per-process memory summaries](docs/benchmarks.md#phases-allocation-and-output) for every observed server and worker, without inventing a peak for a process that exited unobserved ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338)).
+- [Completion](docs/architecture.md#completion) items now carry an `InsertReplaceEdit` for a client that declares `textDocument.completion.completionItem.insertReplaceSupport`: the edit's `insert` range is the prefix the cursor is in, and its `replace` range is the whole identifier, so a client can replace the word it is typing, as in `wh|ile` to `while`. A client in insert mode, VS Code's default `editor.suggest.insertMode`, keeps today's behavior and replaces only the prefix, and a client without the capability gets one range, the prefix ([#353](https://github.com/SaltedTan/virgil-language-server/issues/353)).
 
 ### Fixed
 

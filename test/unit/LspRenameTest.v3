@@ -157,6 +157,8 @@ class RenameTestSession {
 	def notifications = Vector<HashMap<string, JsonValue>>.new();
 	var nextId = 100;
 	var initializeReply: Array<byte>;
+	// Whether the client declares workspace.workspaceEdit.documentChanges.
+	var documentChangesCapability = false;
 
 	// Writes {sources}, the project file among them, and initializes the
 	// server, with the documentChanges capability if {documentChanges} and
@@ -164,19 +166,36 @@ class RenameTestSession {
 	// real one if it is null.
 	new(fixture: string, sources: Array<(string, string)>, documentChanges: bool, worker: string, t: Tester) {
 		supervisor = AnalysisSupervisor.new(if(worker != null, worker, WorkerProcesses.defaultPath()), limits);
-		server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
 		base = fixtureDirectory(fixture);
 		for (source in sources) write(t, source.0, source.1);
+		this.documentChangesCapability = documentChanges;
+		initialize(t, false);
+	}
+	// Replaces the server with one initialized for a client that also
+	// declares textDocument.completion.completionItem.insertReplaceSupport.
+	// Call it before opening a document.
+	def withInsertReplace(t: Tester) -> RenameTestSession {
+		initialize(t, true);
+		return this;
+	}
+	private def initialize(t: Tester, insertReplace: bool) {
+		server = LspServer.new(DocumentLimits.MAX_BYTES).withAnalysis(supervisor);
 		HostOs.ignoreSigpipe();
 		server.sendNotification = receive;
 		var edit = Strings.newMap<JsonValue>(), workspace = Strings.newMap<JsonValue>();
 		var rename = Strings.newMap<JsonValue>(), textDocument = Strings.newMap<JsonValue>();
 		var capabilities = Strings.newMap<JsonValue>(), params = Strings.newMap<JsonValue>();
-		if (documentChanges) edit["documentChanges"] = JsonValue.Bool(true);
+		if (documentChangesCapability) edit["documentChanges"] = JsonValue.Bool(true);
 		workspace["workspaceEdit"] = JsonValue.JObject(edit);
 		rename["prepareSupport"] = JsonValue.Bool(true);
 		textDocument["rename"] = JsonValue.JObject(rename);
-		textDocument["completion"] = JsonRpcJsonParser.new("{\"completionItemKind\":{\"valueSet\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]}}").parseDocument();
+		var completion = JsonValue.JObject.!(JsonRpcJsonParser.new("{\"completionItemKind\":{\"valueSet\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]}}").parseDocument()).v;
+		if (insertReplace) {
+			var item = Strings.newMap<JsonValue>();
+			item["insertReplaceSupport"] = JsonValue.Bool(true);
+			completion["completionItem"] = JsonValue.JObject(item);
+		}
+		textDocument["completion"] = JsonValue.JObject(completion);
 		capabilities["workspace"] = JsonValue.JObject(workspace);
 		capabilities["textDocument"] = JsonValue.JObject(textDocument);
 		params["capabilities"] = JsonValue.JObject(capabilities);

@@ -11,6 +11,7 @@ def T = UnitTests.register;
 def X = [
 	T("LspCompletionScope:as_typed", test_as_typed),
 	T("LspCompletionScope:items", test_items),
+	T("LspCompletionScope:insert_replace", test_insert_replace),
 	T("LspCompletionScope:hidden_bindings", test_hidden_bindings),
 	T("LspCompletionScope:shadowed_this", test_shadowed_this),
 	T("LspCompletionScope:repairs", test_repairs),
@@ -42,6 +43,7 @@ def X = [
 	T("LspCompletionScope:other_file_unparsed", test_other_file_unparsed),
 	T("LspCompletionMembers:as_typed", test_members_as_typed),
 	T("LspCompletionMembers:items", test_members_items),
+	T("LspCompletionMembers:insert_replace", test_members_insert_replace),
 	T("LspCompletionMembers:repairs", test_members_repairs),
 	T("LspCompletionMembers:no_analysis", test_members_no_analysis),
 	T("LspCompletionMembers:receivers", test_members_receivers),
@@ -62,6 +64,15 @@ def session(t: Tester) -> RenameTestSession {
 // A session on the worker at {worker}, with Main.v3 open as it is on disk.
 def sessionOn(worker: string, t: Tester) -> RenameTestSession {
 	var s = RenameTestSession.new("completion", [(".virgil-lsp.json", CONFIG), ("Main.v3", MAIN), ("Other.v3", OTHER)], true, worker, t);
+	s.open("Main.v3", 1, MAIN);
+	s.settle();
+	return s;
+}
+// As session, for a client that also declares
+// textDocument.completion.completionItem.insertReplaceSupport.
+def sessionWithInsertReplace(t: Tester) -> RenameTestSession {
+	var s = RenameTestSession.new("completion", [(".virgil-lsp.json", CONFIG), ("Main.v3", MAIN), ("Other.v3", OTHER)], true, null, t);
+	s.withInsertReplace(t);
 	s.open("Main.v3", 1, MAIN);
 	s.settle();
 	return s;
@@ -126,6 +137,23 @@ def render(t: Tester, result: JsonValue) -> string {
 def itemOf(result: JsonValue, label: string) -> JsonValue {
 	for (item in array(member(result, "items"))) if (Strings.equal(label, stringAt(item, "label"))) return item;
 	return JsonValue.Null;
+}
+// Checks that {item} has an InsertReplaceEdit on {line} whose insertion range
+// is {insertStart} to {insertEnd} and whose replacement range is
+// {replaceStart} to {replaceEnd}.
+def checkRanges(t: Tester, item: JsonValue, line: int, insertStart: int, insertEnd: int, replaceStart: int,
+		replaceEnd: int) {
+	var edit = member(item, "textEdit");
+	t.assert(!has(edit, "range"), "an InsertReplaceEdit has no plain range");
+	var insert = member(edit, "insert"), replace = member(edit, "replace");
+	t.asserti(line, intAt(member(insert, "start"), "line"));
+	t.asserti(insertStart, intAt(member(insert, "start"), "character"));
+	t.asserti(line, intAt(member(insert, "end"), "line"));
+	t.asserti(insertEnd, intAt(member(insert, "end"), "character"));
+	t.asserti(line, intAt(member(replace, "start"), "line"));
+	t.asserti(replaceStart, intAt(member(replace, "start"), "character"));
+	t.asserti(line, intAt(member(replace, "end"), "line"));
+	t.asserti(replaceEnd, intAt(member(replace, "end"), "character"));
 }
 // Whether the reply to {id} is the keywords alone: answered, with no
 // declarations, and {incomplete}'s isIncomplete, which says whether a later
@@ -227,6 +255,36 @@ def test_items(t: Tester) {
 	t.assert(!has(keyword, "detail"), "a keyword has no detail");
 	t.assert(!has(keyword, "sortText"), "a keyword has no sortText");
 	s.server.close();
+}
+
+// For a client with insertReplaceSupport, every item's edit has the prefix as
+// its insertion range and the whole identifier as its replacement range. At
+// the identifier's end the two coincide. Without the capability the same item
+// keeps the plain prefix range.
+def test_insert_replace(t: Tester) {
+	var s = sessionWithInsertReplace(t);
+	var id = request(t, s, inScale("\t\tvar q = tot$al;"));
+	s.settle();
+	var result = s.result(t, id);
+	// A declaration in scope and a keyword each carry both ranges.
+	checkRanges(t, itemOf(result, "total"), 4, 10, 13, 10, 15);
+	checkRanges(t, itemOf(result, "true"), 4, 10, 13, 10, 15);
+	// At the identifier's end, the insertion and replacement ranges coincide.
+	id = request(t, s, inScale("\t\tvar q = total$;"));
+	s.settle();
+	checkRanges(t, itemOf(s.result(t, id), "total"), 4, 10, 15, 10, 15);
+	s.server.close();
+	var plain = session(t);
+	id = request(t, plain, inScale("\t\tvar q = tot$al;"));
+	plain.settle();
+	var edit = member(itemOf(plain.result(t, id), "total"), "textEdit");
+	t.assert(!has(edit, "insert") && !has(edit, "replace"), "a plain TextEdit without support");
+	var range = member(edit, "range");
+	t.asserti(4, intAt(member(range, "start"), "line"));
+	t.asserti(10, intAt(member(range, "start"), "character"));
+	t.asserti(4, intAt(member(range, "end"), "line"));
+	t.asserti(13, intAt(member(range, "end"), "character"));
+	plain.server.close();
 }
 
 def test_hidden_bindings(t: Tester) {
@@ -845,6 +903,32 @@ def test_members_items(t: Tester) {
 	result = s.result(t, complete0(t, s, inScale("\t\tvar c = Color.$RED;")));
 	t.asserti(20, intAt(itemOf(result, "RED"), "kind"));
 	s.server.close();
+}
+// For a client with insertReplaceSupport, a member item in the middle of the
+// word replaces the whole member name, after the ".", while its insertion
+// range is only the prefix. At the member's end the two coincide.
+def test_members_insert_replace(t: Tester) {
+	var s = sessionWithInsertReplace(t);
+	var id = request(t, s, inScale("\t\tvar q = Square.new();\n\t\tq.gr$ow();"));
+	s.settle();
+	var result = s.result(t, id);
+	t.assert(member(result, "isIncomplete") == JsonValue.Bool(false), "a complete list");
+	checkRanges(t, itemOf(result, "grow"), 5, 4, 6, 4, 8);
+	id = request(t, s, inScale("\t\tvar q = Square.new();\n\t\tq.grow$();"));
+	s.settle();
+	checkRanges(t, itemOf(s.result(t, id), "grow"), 5, 4, 8, 4, 8);
+	s.server.close();
+	var plain = session(t);
+	id = request(t, plain, inScale("\t\tvar q = Square.new();\n\t\tq.gr$ow();"));
+	plain.settle();
+	var edit = member(itemOf(plain.result(t, id), "grow"), "textEdit");
+	t.assert(!has(edit, "insert") && !has(edit, "replace"), "a plain TextEdit without support");
+	var range = member(edit, "range");
+	t.asserti(5, intAt(member(range, "start"), "line"));
+	t.asserti(4, intAt(member(range, "start"), "character"));
+	t.asserti(5, intAt(member(range, "end"), "line"));
+	t.asserti(6, intAt(member(range, "end"), "character"));
+	plain.server.close();
 }
 // A text that does not parse is repaired after the ".", as a scope query's
 // is: at the end of a statement, in a call's arguments, in an if's
