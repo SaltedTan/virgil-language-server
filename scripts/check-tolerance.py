@@ -171,6 +171,16 @@ def _verdict_problem(problems, where, verdict):
     return True
 
 
+def _expected(oracle_answers, row, queries):
+    """The answers that {row} is scored against, as bench-tolerance.py derives
+    them from its oracle's: without the documentation of a hover whose target
+    is in a file that the row's snapshot substituted."""
+    if not isinstance(oracle_answers, dict) or not isinstance(row, dict):
+        return oracle_answers
+    return driver.expected_answers(oracle_answers, row.get("snapshot"),
+                                   queries if isinstance(queries, list) else [])
+
+
 def _rescore(problems, where, key, answer, verdict, expected, allow_absent):
     """Score one recorded answer against its oracle answer as bench-tolerance.py
     does, report a recorded verdict that differs, and return the new verdict."""
@@ -567,7 +577,8 @@ def _check_states(capture, states_inventory, oracles, problems):
         oracle = oracles.get(oracle_id)
         _check_answers(problems, where + " (" + state_id + " " + mode + ")", row.get("answers"),
                        row.get("scores"), expected_answers,
-                       oracle.get("answers") if oracle is not None else None,
+                       _expected(oracle.get("answers") if oracle is not None else None, row,
+                                 oracle.get("queries") if oracle is not None else None),
                        (expected or {}).get("allow_absent", False))
         if oracle is None:
             _fail(problems, where + " references missing oracle " + str(oracle_id))
@@ -984,7 +995,8 @@ def _check_sessions(capture, sessions_inventory, problems):
                 _fail(problems, where_step + " oracle step is " + repr(oracle_step))
             intended = _session_oracle_answers(oracles.get(session_id), step_index)
             _check_answers(problems, where_step, step.get("answers"), step.get("scores"),
-                           3 * expected_step["queries"] + 1, intended)
+                           3 * expected_step["queries"] + 1,
+                           _expected(intended, step, step.get("queries") if isinstance(step, dict) else None))
             if intended is None:
                 _fail(problems, where_step + " has no intended-text oracle step to rescore against")
             _check_answer_indices(problems, where_step, step.get("answers"),

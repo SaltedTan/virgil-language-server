@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import time
+from urllib.parse import quote
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,6 +71,53 @@ def score(feature, actual, expected, allow_absent=False):
     return {"available": available, "correct": equal or (allow_absent and empty),
             "partial": partial, "missing": not available,
             "wrong": available and not equal and not partial, "matches_oracle": equal}
+
+
+def substituted_files(snapshot):
+    """The project-relative URIs of the files that {snapshot} substituted,
+    relative to the directory of its project file, or none if it doesn't
+    have that shape."""
+    try:
+        base = snapshot["projectConfiguration"]["uri"].rsplit("/", 1)[0] + "/"
+        return {v["uri"].removeprefix(base) for v in snapshot["documentVersions"] if "substitution" in v}
+    except (KeyError, TypeError, AttributeError):
+        return set()
+
+
+def without_documentation(hover):
+    """{hover} without the documentation that follows its signature blocks
+    after their first empty line."""
+    value = hover.get("contents", {}).get("value") if isinstance(hover, dict) else None
+    if not isinstance(value, str) or "\n\n" not in value:
+        return hover
+    return {**hover, "contents": {**hover["contents"], "value": value.split("\n\n", 1)[0]}}
+
+
+def expected_answers(oracle, snapshot, queries):
+    """The answers a record of {snapshot} must match: the oracle's, except
+    that a hover whose target declaration is in a file that the snapshot
+    substituted has no documentation, as the server omits it there (#357).
+    The target's file is the oracle's definition's, or, where there is none,
+    as at a declaration's own name, the queried file. Everywhere else the
+    oracle's hover, with its documentation, is expected exactly."""
+    substituted = substituted_files(snapshot)
+    if not substituted:
+        return oracle
+    expected = dict(oracle)
+    for key, hover in oracle.items():
+        index, _, feature = key.rpartition(":")
+        if feature != "hover" or not hover:
+            continue
+        found = oracle.get(index + ":definition")
+        found = found if isinstance(found, list) else [found] if found else []
+        files = {str(d.get("uri") or d.get("targetUri")).removeprefix("project:///")
+                 for d in found if isinstance(d, dict)}
+        query = queries[int(index)] if index.isdigit() and int(index) < len(queries) else None
+        if not files and isinstance(query, dict) and isinstance(query.get("path"), str):
+            files = {quote(query["path"])}
+        if files & substituted:
+            expected[key] = without_documentation(hover)
+    return expected
 
 
 def portable(value, base):
@@ -269,9 +317,10 @@ def execute(exe, state, mode, oracle):
             (project["base"] / path).as_uri() for path in expected_paths], row["snapshot"])
         row["excluded_bodies"] = excluded_bodies(row["snapshot"], project["base"])
         row["expectation_mismatches"] = mismatches(state, row["excluded_bodies"], row["snapshot"], actual)
+        expected = expected_answers(oracle["answers"], row["snapshot"], state["queries"])
         row.update({"state_latency_ms": elapsed, "answers": actual,
                     "samples": samples, "scores": {
-                        key: score(key.split(":")[-1], value, oracle["answers"][key], state.get("allow_absent", False))
+                        key: score(key.split(":")[-1], value, expected[key], state.get("allow_absent", False))
                         for key, value in actual.items()}, "measured_probes": bench.probes(bench.logs(run.s, offset))})
         # A live worker's RSS is sampled before shutting down the owned process.
         row["resources"] = bench.resources(run.s.proc.pid)
@@ -401,7 +450,7 @@ def execute_session(exe, case, mode, oracle=None):
                     bench.check(any(s["wrong"] for s in scores.values()), "session stale control was not rejected")
                     record["stale_control"] = {"answers": stale, "scores": scores}
             else:
-                expected = oracle["steps"][index]["answers"]
+                expected = expected_answers(oracle["steps"][index]["answers"], record["snapshot"], queries)
                 record["scores"] = {k: score(k.split(":")[-1], v, expected[k]) for k, v in actual.items()}
                 record["oracle_step"] = index
                 bench.check(not any(v["wrong"] for v in record["scores"].values()), (case["id"], st["id"], "wrong session answer"))

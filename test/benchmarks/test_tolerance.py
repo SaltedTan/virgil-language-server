@@ -35,6 +35,12 @@ MISSING_ANSWERS = {"0:definition": None, "0:hover": None, "0:references": [], "d
 # A predecessor's binding, which every injection must reject.
 STALE_ANSWERS = {**SCORECARD_ANSWERS, "0:definition": {"uri": "project:///Stale.v3", "range": {}}}
 PIDS = itertools.count(1000)
+# An oracle whose hover shows its target's documentation (#357), and that hover
+# without it, as the server answers for a target in a substituted file.
+DOCUMENTED = {**SCORECARD_ANSWERS, "0:definition": {"uri": "project:///A.v3", "range": {}},
+              "0:hover": {"contents": {"kind": "plaintext", "value": "class C\n\nThe class.\n\nMore."},
+                          "range": {}}}
+UNDOCUMENTED = {**DOCUMENTED, "0:hover": {"contents": {"kind": "plaintext", "value": "class C"}, "range": {}}}
 
 
 def scored(answers, expected=SCORECARD_ANSWERS, allow_absent=False):
@@ -289,6 +295,31 @@ class Scoring(unittest.TestCase):
                 actual["contents"][change] += " different"
             self.assertTrue(tolerance.score("hover", actual, hover)["wrong"])
 
+    def test_substituted_hover_target_expects_no_documentation(self):
+        def snapshot(substituted):
+            entry = {"uri": "file:///project/A.v3", "current": True, "version": 1}
+            if substituted:
+                entry["substitution"] = {"effectiveEnd": 10, "currentEnd": 10}
+            return {"projectConfiguration": {"current": True, "uri": "file:///project/.virgil-lsp.json"},
+                    "documentVersions": [entry, {"uri": "file:///project/Observer.v3", "current": True,
+                                                 "version": 1, "substitution": {}}]}
+        queries = [{"path": "Observer.v3"}]
+        # The target's file is substituted: only the hover without documentation is correct.
+        expected = tolerance.expected_answers(DOCUMENTED, snapshot(True), queries)
+        self.assertEqual(expected["0:hover"], UNDOCUMENTED["0:hover"])
+        self.assertEqual(expected["0:definition"], DOCUMENTED["0:definition"])
+        self.assertTrue(tolerance.score("hover", UNDOCUMENTED["0:hover"], expected["0:hover"])["correct"])
+        self.assertTrue(tolerance.score("hover", DOCUMENTED["0:hover"], expected["0:hover"])["wrong"])
+        # Only the queried file is substituted: the documentation is still expected.
+        expected = tolerance.expected_answers(DOCUMENTED, snapshot(False), queries)
+        self.assertEqual(expected, DOCUMENTED)
+        self.assertTrue(tolerance.score("hover", UNDOCUMENTED["0:hover"], expected["0:hover"])["wrong"])
+        # Without a definition, the target is the queried file.
+        nameless = {**DOCUMENTED, "0:definition": None}
+        self.assertEqual(tolerance.expected_answers(nameless, snapshot(False), [{"path": "Observer.v3"}])["0:hover"],
+                         UNDOCUMENTED["0:hover"])
+        self.assertEqual(tolerance.expected_answers(nameless, snapshot(False), [{"path": "A.v3"}]), nameless)
+
     def test_reference_and_diagnostic_items_compare_exactly(self):
         case = CONTROLS["changed-signature"]
         for feature, key in (("references", "0:references"), ("diagnostics", "diagnostics")):
@@ -383,6 +414,34 @@ class Scorecard(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(any("wrong answers" in failure for failure in report["failures"]),
                         report["failures"])
+
+    def test_rescores_a_substituted_hover_target_without_documentation(self):
+        for substituted in (True, False):
+            with self.subTest(substituted=substituted):
+                inventory = scorecard_inventory("first")
+                records = []
+                for mode in ("warm", "cold"):
+                    row = scorecard_state("first", mode, UNDOCUMENTED)
+                    if substituted:
+                        row["snapshot"]["documentVersions"][0]["substitution"] = {}
+                    expected = tolerance.expected_answers(DOCUMENTED, row["snapshot"], [{}])
+                    row["scores"] = scored(UNDOCUMENTED, expected)
+                    records.append(row)
+                capture = scorecard_capture(records, oracles=[scorecard_oracle(0, dict(DOCUMENTED))])
+                floors = {"primary": {"all_features": (1, 1)},
+                          "exact": {feature: (1, 1) for feature in checker.FEATURES}}
+                report = checker.evaluate(capture, inventory, floors)
+                if substituted:
+                    self.assertTrue(report["ok"], report["failures"])
+                else:
+                    self.assertFalse(report["ok"])
+                    self.assertTrue(any("wrong answers" in failure for failure in report["failures"]),
+                                    report["failures"])
+                # Verdicts written against the plain oracle don't survive rescoring.
+                for row in records:
+                    row["scores"] = scored(UNDOCUMENTED, DOCUMENTED)
+                failures = checker.validate(capture, inventory)
+                self.assertEqual(substituted, any("0:hover: recorded verdict" in f for f in failures), failures)
 
     def test_refuses_an_unmet_exclusion_expectation(self):
         inventory = scorecard_inventory("first")
