@@ -11,6 +11,7 @@ def X = [
 	T("DeclarationComments:shared_and_parameters", test_shared),
 	T("DeclarationComments:non_ascii_and_indentation", test_non_ascii),
 	T("DeclarationComments:blank_lines_and_detached", test_blank_lines),
+	T("DeclarationComments:license_headers", test_license_headers),
 	T("DeclarationComments:literals_and_trailing", test_literals),
 	T("DeclarationComments:block_comments", test_block_comments),
 	T("DeclarationComments:over_limit", test_over_limit),
@@ -137,6 +138,23 @@ def test_blank_lines(t: Tester) {
 		("def empty", 4, METHOD, null)
 	]);
 	check(t, "// Copyright 2026 Someone.\n\n// The class.\nclass C { }\n", [("class C", 6, CLASS, "The class.")]);
+}
+// A run from the file's first line is its license header, not documentation,
+// if its first line starts with "Copyright" or any line holds an SPDX
+// identifier, even directly above the first declaration. Elsewhere, and in
+// any other first-line run, those words are prose.
+def test_license_headers(t: Tester) {
+	check(t, "// Copyright 2026 Someone.\n// SPDX-License-Identifier: Apache-2.0\nclass C { }\n", [("class C", 6, CLASS, null)]);
+	check(t, "// Copyright 2010 Google Inc. All rights reserved.\n// See LICENSE for details of Apache 2.0 license.\ncomponent UID { }\n",
+		[("component UID", 10, AnalysisDeclKind.COMPONENT, null)]);
+	check(t, "//Copyright 2026 Someone.\ndef f() { }\n", [("def f", 4, METHOD, null)]);
+	check(t, "// The parser.\n//\n// SPDX-License-Identifier: MIT\ndef g() { }\n", [("def g", 4, METHOD, null)]);
+	check(t, "// Parses Copyright notices.\nclass NoticeParser { }\n", [("class NoticeParser", 6, CLASS, "Parses Copyright notices.")]);
+	check(t, "// `Header` represents an HTTP Request header.\n// Multiple values for a single key are not deduped.\nclass Header { }\n",
+		[("class Header", 6, CLASS, "`Header` represents an HTTP Request header.\nMultiple values for a single key are not deduped.")]);
+	check(t, "class A { }\n// Copyright notices.\n// SPDX-License-Identifier is a tag.\nclass B { }\n", [
+		("class B", 6, CLASS, "Copyright notices.\nSPDX-License-Identifier is a tag.")
+	]);
 }
 // Comment markers in literals are not comments, and a comment after code on
 // its line is that code's, not the next declaration's.

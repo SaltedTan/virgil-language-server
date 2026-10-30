@@ -89,10 +89,11 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 	// The text of the comment lines directly above the line of {start}, all
 	// after {gap}, the end of the previous token. Null if the line of {start}
 	// holds anything before it, if there are no such lines, if the first of
-	// them is more than MAX_SCAN bytes back, or if any has a "*/". Each line
-	// holds a line comment unless a block comment opened above it is still
-	// open; that comment would have to close before {start}, and only a "*/"
-	// on one of the lines could close it.
+	// them is more than MAX_SCAN bytes back, if any has a "*/", or if they
+	// are the file's header (see header). Each line holds a line comment
+	// unless a block comment opened above it is still open; that comment
+	// would have to close before {start}, and only a "*/" on one of the lines
+	// could close it.
 	def comment(gap: int, start: int) -> string {
 		var floor = start - DeclarationComments.MAX_SCAN;
 		if (floor < gap) floor = gap;
@@ -110,7 +111,27 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 			}
 			top = above;
 		}
-		return if(top < line, render(top, line));
+		if (top == line || (top == 0 && header(line))) return null;
+		return render(top, line);
+	}
+	// Whether the comment lines from the file's start to {end} are its
+	// license header, not documentation: whether the first line's text,
+	// after "//" and one space, starts with "Copyright", or whether any line
+	// holds "SPDX-License-Identifier".
+	private def header(end: int) -> bool {
+		var text = skipBlank(0, end) + 2;
+		if (text < end && input[text] == ' ') text++;
+		if (holds(text, "Copyright")) return true;
+		for (i = text; i < end; i++) {
+			if (input[i] == 'S' && holds(i, "SPDX-License-Identifier")) return true;
+		}
+		return false;
+	}
+	// Whether the bytes at {i} are {s}.
+	private def holds(i: int, s: string) -> bool {
+		if (i + s.length > input.length) return false;
+		for (k < s.length) if (input[i + k] != s[k]) return false;
+		return true;
 	}
 	// The start of the line that ends at {end}, scanning back no further than
 	// {floor}: -1 if the previous token, which ends at {gap}, is on it, and -2
