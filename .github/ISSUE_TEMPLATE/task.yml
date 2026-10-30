@@ -62,6 +62,11 @@ body:
       description: |
         When Merge says a maintainer decision is needed, state the concrete question and the options you see here.
         Leave it empty otherwise.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: The approach, risks, and sources, such as upstream Virgil code or links to the LSP specification.
   - type: dropdown
     id: size
     attributes:
