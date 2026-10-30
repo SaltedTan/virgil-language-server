@@ -215,6 +215,7 @@ class ProgramAnalysis {
 	private var packings: AnalysisPackings;
 	// For each file's collector in turn.
 	private def callEnds = AnalysisCallEnds.new();
+	private def buffers = AnalysisCollectorBuffers.new();
 	// The names that the program's files declare, for each file's collector.
 	private var names: AnalysisDeclaredNames;
 
@@ -225,7 +226,7 @@ class ProgramAnalysis {
 			for (i < prog.files.length) sources.add(prog.files[i], prog.inputs[i]);
 			for (f in prog.vst.files) {
 				// Preserve the first file's bindings if an input path is repeated.
-				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings, callEnds, names);
+				if (f != null && !files.has(f.fileName)) files[f.fileName] = AnalysisFileIndex.new(f, sources, display, packings, callEnds, names, buffers);
 			}
 		}
 	}
@@ -379,7 +380,8 @@ class ProgramAnalysis {
 		if (program == null) return null;
 		for (f in program.vst.files) {
 			if (f == null || !Strings.equal(f.fileName, path)) continue;
-			var collector = OccurrenceCollector.new(sources, display, packings, AnalysisCallEnds.new(), names);
+			var collector = OccurrenceCollector.new(sources, display, packings, AnalysisCallEnds.new(), names,
+				AnalysisCollectorBuffers.new());
 			var answer = AnalysisScopeFinder.new(sources, display, program, f, syntax).findCall(offset, collector);
 			if (answer != null) answer.paths = program.files;
 			return answer;
@@ -439,7 +441,7 @@ class AnalysisScopedProgram extends ProgramAnalysis {
 // Snapshot-local lazy index: no walk for diagnostics-only analyses, and no
 // repeated walk, allocation, or sort for subsequent binding queries.
 class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: AnalysisDisplay, packings: AnalysisPackings,
-		callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames) {
+		callEnds: AnalysisCallEnds, names: AnalysisDeclaredNames, buffers: AnalysisCollectorBuffers) {
 	private var uses: Array<AnalysisOccurrence>;
 	def var skipped: int;
 	def var located: int;
@@ -451,7 +453,7 @@ class AnalysisFileIndex(file: VstFile, sources: AnalysisSourceMaps, display: Ana
 
 	def occurrences() -> Array<AnalysisOccurrence> {
 		if (uses == null) {
-			var collector = OccurrenceCollector.new(sources, display, packings, callEnds, names);
+			var collector = OccurrenceCollector.new(sources, display, packings, callEnds, names, buffers);
 			uses = collector.collect(file);
 			skipped = collector.skipped;
 			located = collector.located;
