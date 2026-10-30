@@ -75,6 +75,10 @@ The shipped configurations start `virgil-lsp --stdio` from the `PATH` that Neovi
 
 LazyVim's configuration sets `mason = false`, because the server isn't in mason.nvim: install it from a release archive yourself.
 
+### Helix doesn't find `virgil-lsp`
+
+The [Helix configuration](../editors/helix/README.md) starts `virgil-lsp --stdio` from the `PATH` that Helix sees. If it isn't there, no client attaches and Helix shows no error when a `.v3` file opens; `hx --health virgil` then reports the server as not found. Check that `virgil-lsp --version` works in the terminal that starts Helix, and that a directory the install added to `PATH`, such as `~/.local/bin`, is in the shell's startup file for new terminals ([Editor setup](../README.md#editor-setup)). Alternatively, edit `command` in the configuration to give the server's absolute path.
+
 ## No diagnostics or navigation in a file
 
 Syntax errors and the outline work in any open `.v3` file. Type errors, definition, type definition, hover, references, document highlights, signature help, rename, workspace symbols, and the names in completion need a whole-program analysis, and the causes below stop it.
