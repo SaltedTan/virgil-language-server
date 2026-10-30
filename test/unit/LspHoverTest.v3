@@ -648,6 +648,10 @@ def test_documentation_escaping(t: Tester) {
 	t.assert_string("indented  \nnext\n\nparagraph", h.prose("    indented\n\tnext\n\nparagraph"));
 	t.assert_string("back\\slash \\n \\\\\\ end\\\\", h.prose("back\\slash \\n \\\\ end\\"));
 	t.assert_string("\xC3\xA9 \xF0\x9D\x84\x9E", h.prose("\xC3\xA9 \xF0\x9D\x84\x9E"));
+	// GitHub-flavored Markdown autolinks bare http(s) URLs and email
+	// addresses, but no other scheme, so a bare command: URI is text, and
+	// one in angle brackets, a CommonMark autolink, is escaped.
+	t.assert_string("Run command:editor.action.x or \\<command:y?z>.", h.prose("Run command:editor.action.x or <command:y?z>."));
 }
 // A data type is its own single case: a constructor use targets the case,
 // which the outline lists as the type, and shows the type's comment.

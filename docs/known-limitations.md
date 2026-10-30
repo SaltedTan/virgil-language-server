@@ -187,12 +187,12 @@ Only the uses that the [occurrence index](architecture.md#compiler-adapter) reco
 Virgil has no doc-comment syntax. Hover shows, as documentation, the run of full-line `//` comments directly above a declaration, which is only this server's convention ([Hover](architecture.md#hover)). In particular:
 
 - Block comments, `/* ... */`, are never shown, and a run of line comments that holds `*/` anywhere isn't either, since the server doesn't read further back to tell it from the end of a block comment.
-- A comment after code on the same line, or one separated from the declaration by an empty line, documents nothing. A comment directly above a declaration documents it even when it is a file's license header with no empty line after it.
+- A comment after code on the same line, or one separated from the declaration by an empty line, documents nothing. A file's license header, the comments from its first line when the first starts with `Copyright` or one holds `SPDX-License-Identifier`, documents nothing either, even directly above the first declaration. Any other license block directly above a declaration documents it.
 - Locals, method parameters, type parameters, and the parameters in a class's or a variant case's header show no documentation, and neither do fields declared together, as in `var a, b;`.
 - A file that method-body fallback or current-text repair substituted shows its signatures but no documentation, from any of its declarations, until it parses again.
 - A target file larger than 256 KiB, or one that doesn't parse on its own with its project's options, shows no documentation; nor does a run of comments that starts more than 64 KiB before its declaration.
-- Documentation over 4 KiB is cut, at a character, and ends with an ellipsis.
-- The comment is shown as plain prose: Markdown, HTML, and links in it show as their text, and tags such as `@param` mean nothing. In Markdown, each line keeps its line break but loses its indentation.
+- Documentation over 4 KiB is cut, at a character, and ends with an ellipsis. Each byte that isn't valid UTF-8 shows as U+FFFD and counts as its three bytes.
+- The comment is shown as plain prose: Markdown, HTML, and links in it show as their text, and tags such as `@param` mean nothing. A bare `http` or `https` URL or an email address may still show as a link, as GitHub-flavored Markdown makes them. In Markdown, each line keeps its line break but loses its indentation.
 - Completion doesn't show documentation yet ([#358](https://github.com/SaltedTan/virgil-language-server/issues/358)).
 
 ## Signature help
