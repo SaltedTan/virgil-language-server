@@ -8,11 +8,13 @@ import importlib.util
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -112,6 +114,165 @@ class ValidationTest(unittest.TestCase):
     def test_raw_probe_records_do_not_merge_server_and_worker(self):
         parsed = bench.probes("BENCH server 7 gc_count 1\nBENCH worker 7 gc_count 0\n")
         self.assertEqual([(p["process"], p["value"]) for p in parsed], [("server", 1), ("worker", 0)])
+
+    def publications(self, *params):
+        # A fake session: receive() replays publications, then times out as Session does.
+        queue = [{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": p} for p in params]
+        def receive(deadline):
+            assert queue, "timed out waiting for a protocol reply"
+            return queue.pop(0)
+        self.block.s = mock.Mock(receive=receive)
+        return self.block.first_publication(0, 0)
+
+    def test_first_semantic_publication_ignores_parser_clear_wrong_version_and_uri(self):
+        expected = self.project["edits"]["semantic"]["expected"]
+        good = {"uri": self.block.uri, "version": 1, "diagnostics": [expected]}
+        earlier = ({**good, "diagnostics": []}, {**good, "version": 2}, {**good, "version": None},
+                   {**good, "uri": self.block.uris[1]},
+                   {**good, "diagnostics": [self.project["edits"]["syntax"]["expected"]]},
+                   {**good, "diagnostics": [{**expected, "range": self.project["query"]["range"]}]},
+                   {**good, "diagnostics": [expected, expected]})
+        _, seen = self.publications(*earlier, good)
+        self.assertEqual([(p["uri"], p["version"], p["codes"]) for p in seen],
+                         [(p["uri"], p["version"], [d["code"] for d in p["diagnostics"]]) for p in earlier])
+        for bad in earlier:
+            with self.subTest(bad=bad), self.assertRaisesRegex(AssertionError, "timed out"):
+                self.publications(bad)
+
+    def test_first_semantic_publication_rejects_server_requests(self):
+        self.block.s = mock.Mock(receive=lambda deadline: {"jsonrpc": "2.0", "id": 1, "method": "workspace/configuration"})
+        with self.assertRaisesRegex(AssertionError, "unexpected pending request"):
+            self.block.first_publication(0, 0)
+
+
+class SummaryTest(unittest.TestCase):
+    def test_quantiles_interpolate_raw_samples_without_trimming(self):
+        row = bench.summarize([10, 1, 4, 3, 2, 9, 5, 8, 7, 6])
+        self.assertEqual((row["n"], row["min"], row["max"]), (10, 1, 10))
+        self.assertAlmostEqual(row["p10"], 1.9)
+        self.assertAlmostEqual(row["p50"], 5.5)
+        self.assertEqual(row["p50"], row["median"])
+        self.assertAlmostEqual(row["p90"], 9.1)
+        self.assertAlmostEqual(row["p95"], 9.55)
+        self.assertEqual(row["mad"], 2.5)
+        single = bench.summarize([7])
+        self.assertEqual([single[k] for k in ("p10", "p50", "p90", "p95", "mad")], [7, 7, 7, 7, 0])
+        self.assertAlmostEqual(bench.summarize([0, 100])["p95"], 95)
+
+    def test_first_semantic_metrics_exclude_warmups_and_unknown_hwm(self):
+        def sample(warmup, latency):
+            return {"scenario": "first_semantic_source_first", "warmup": warmup, "latency_ms": latency,
+                    "open_latency_ms": latency - 1, "config_open_latency_ms": latency - 2,
+                    "initialize_ms": 0.1, "discarded_analyses": 0, "probes": []}
+        def process(phase, worker_hwm):
+            return {"resource_summary": {"processes": [
+                {"role": "server", "phases": {phase: {"max_rss_bytes": 10, "hwm_bytes": 11}}},
+                {"role": "worker", "phases": {phase: {"max_rss_bytes": 20, "hwm_bytes": worker_hwm}}}]}}
+        blocks = [{"build": 0, "project": "small", "samples": [sample(True, 99), sample(False, 5), sample(False, 7)],
+                   "processes": [process("warmup", 99), process("first_semantic_source_first", 21),
+                                 process("first_semantic_source_first", None), {"resources": None}]}]
+        rows = {row["metric"]: row for row in bench.summaries(blocks)}
+        self.assertEqual(rows["latency_ms"]["n"], 2)
+        self.assertEqual(rows["latency_ms"]["p50"], 6)
+        self.assertEqual(rows["open_latency_ms"]["max"], 6)
+        self.assertEqual((rows["server.max_rss_bytes"]["n"], rows["worker.max_rss_bytes"]["n"]), (2, 2))
+        # Only the known HWM is summarized; the unknown one is neither zero nor invented.
+        self.assertEqual((rows["worker.hwm_bytes"]["n"], rows["worker.hwm_bytes"]["min"]), (1, 21))
+        self.assertFalse(any("total" in metric for metric in rows))
+
+    def test_default_samples_keep_their_summary_metrics(self):
+        blocks = [{"build": 0, "project": "small", "processes": [{"resources": []}], "samples": [
+            {"scenario": "definition", "warmup": False, "latency_ms": 1.5, "probes": []}]}]
+        self.assertEqual([row["metric"] for row in bench.summaries(blocks)], ["latency_ms"])
+
+    def test_first_semantic_cannot_be_combined_with_other_workloads(self):
+        for flag in ("--error-result", "--typing-burst", "--inlay-refresh"):
+            result = subprocess.run([sys.executable, ROOT / "scripts/bench-lsp.py", "--first-semantic", flag,
+                                     "--output", "/dev/null"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("--first-semantic runs alone", result.stderr)
+
+
+class ResourceTest(unittest.TestCase):
+    def sampler(self, *passes):
+        reads = list(passes)
+        clock = iter(range(100))
+        return bench.ResourceSampler(1, read=lambda: reads.pop(0), clock=lambda: next(clock))
+
+    def test_replacement_keeps_each_pid_and_never_sums_separate_maxima(self):
+        sampler = self.sampler({1: ("server", 30, 31), 2: ("worker", 200, 210)},
+                               {1: ("server", 40, 41), 2: ("worker", 100, 210)},
+                               {1: ("server", 35, 41), 3: ("worker", 150, 160)},
+                               {1: ("server", 35, 41), 3: ("worker", 120, 160)})
+        self.assertTrue(sampler.sample())  # Both PIDs are new.
+        self.assertFalse(sampler.sample())
+        sampler.mark("error_analysis")
+        self.assertFalse(sampler.sample())
+        summary = sampler.stop(worker_starts=2)
+        server, old, new = summary["processes"]
+        self.assertEqual([(p["pid"], p["role"]) for p in summary["processes"]], [(1, "server"), (2, "worker"), (3, "worker")])
+        self.assertEqual((server["max_rss_bytes"], server["hwm_bytes"], server["samples"]), (40, 41, 4))
+        self.assertEqual((old["max_rss_bytes"], old["hwm_bytes"], old["seen_at_stop"]), (200, 210, False))
+        self.assertEqual((new["max_rss_bytes"], new["hwm_bytes"], new["seen_at_stop"]), (150, 160, True))
+        self.assertEqual(old["phases"], {"session": {"samples": 2, "max_rss_bytes": 200, "hwm_bytes": 210}})
+        self.assertEqual(new["phases"], {"error_analysis": {"samples": 2, "max_rss_bytes": 150, "hwm_bytes": 160}})
+        # Simultaneous total comes from one pass only, not 40 + 200 + 150.
+        self.assertEqual(summary["max_sampled_total_rss_bytes"], 230)
+        self.assertEqual(summary["unobserved_workers"], 0)
+
+    def test_pid_transition_is_reported(self):
+        sampler = self.sampler({1: ("server", 1, 1)}, {1: ("server", 2, 2)},
+                               {1: ("server", 1, 2), 2: ("worker", 1, 1)}, {1: ("server", 1, 2)})
+        self.assertEqual([sampler.sample() for _ in range(4)], [True, False, True, True])
+
+    def test_unobserved_and_unknown_resources_stay_unknown(self):
+        sampler = self.sampler(None, {1: ("server", 30, None), 2: ("worker", 200, None)})
+        sampler.sample()
+        sampler.sample()
+        summary = sampler.stop(worker_starts=3)
+        self.assertEqual((summary["passes"], summary["failed_passes"]), (1, 1))
+        self.assertFalse(summary["hwm_available"])
+        self.assertEqual([p["hwm_bytes"] for p in summary["processes"]], [None, None])
+        self.assertEqual(summary["unobserved_workers"], 2)
+        self.assertIsNone(self.sampler().stop()["unobserved_workers"])
+        empty = self.sampler(None).stop(worker_starts=1)
+        self.assertEqual((empty["processes"], empty["max_sampled_total_rss_bytes"], empty["hwm_available"]),
+                         ([], None, False))
+        self.assertEqual(empty["unobserved_workers"], 1)
+
+    def test_missing_process_listing_is_none(self):
+        with mock.patch.object(bench.Path, "is_dir", return_value=False), \
+                mock.patch.object(bench, "command", side_effect=OSError("no ps")):
+            self.assertIsNone(bench.process_tree(1))
+            self.assertIsNone(bench.resources(1))
+        with mock.patch.object(bench.Path, "is_dir", return_value=False), \
+                mock.patch.object(bench, "command", return_value=" 5 1 64\n 6 5 32\n 7 1 128\n"), \
+                mock.patch.object(bench, "optional_file", return_value=None):
+            # macOS shape: RSS from ps, and no HWM rather than a zero.
+            self.assertEqual(bench.process_tree(1), {5: ("worker", 64 * 1024, None), 7: ("worker", 128 * 1024, None)})
+            self.assertEqual(bench.resources(5), [{"role": "server", "pid": 5, "rss_bytes": 65536, "peak_rss_bytes": None},
+                                                  {"role": "worker", "pid": 6, "rss_bytes": 32768, "peak_rss_bytes": None}])
+
+    @unittest.skipUnless(Path("/proc/self/status").exists(), "Linux /proc is required")
+    def test_live_sampler_reads_children_and_stops_with_the_session(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            tree = bench.process_tree(os.getpid())
+            self.assertEqual(tree[os.getpid()][0], "server")
+            self.assertEqual(tree[child.pid][0], "worker")
+            self.assertTrue(all(rss > 0 and hwm >= rss for _, rss, hwm in tree.values()))
+            sampler = bench.ResourceSampler(os.getpid()).start()
+            child.kill()
+            child.wait()
+            summary = sampler.stop()
+        finally:
+            child.kill()
+            child.wait()
+        self.assertIsNone(sampler.thread)
+        self.assertFalse(any(t.name == "resource-sampler" for t in threading.enumerate()))
+        worker = next(p for p in summary["processes"] if p["pid"] == child.pid)
+        self.assertFalse(worker["seen_at_stop"])
+        self.assertTrue(summary["hwm_available"])
 
 
 class CorpusPinTest(unittest.TestCase):
