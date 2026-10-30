@@ -52,7 +52,8 @@ the checkout differs from a matching gitlink (the advisory Virgil-master
 workflow), or there is no Git metadata, they print one notice and skip vendor
 corpus projects while checking the small fixture. Strict benchmarks always
 require matching pins and hashes.
-Outside the [typing-burst scenario](#cancelled-completion-typing-burst),
+Outside the [typing-burst](#cancelled-completion-typing-burst) and
+[first-semantic](#first-semantic-diagnostics) scenarios,
 `--require-probes` requires one complete phase transaction for each
 analysis, completion miss, rename preflight, and semantic publication, and no
 worker transaction for a cache hit, current navigation, or syntax publication.
@@ -158,6 +159,15 @@ an empty parser publication cannot satisfy the diagnostic check. Every request
 must reply once; earlier replies may finish before cancellation, and the last
 reply must contain the expected semantic item and detail.
 
+The `typing_burst` sample's `latency_ms` runs from the final completion's send to
+its reply. `diagnostic_latency_ms` runs from that same send to publication of the
+exact semantic diagnostic at the final version. `worker_replacements` counts
+informational reclaims, and `worker_starts` counts completed spawn-to-handshake
+probes. The sample retains every emitted probe, including incomplete cancelled
+transactions; `--require-probes` requires the final useful query and automatic
+analysis to finish. These metrics describe a fixed burst followed by a pause,
+not continuous typing or a general cancellation latency budget.
+
 ### First semantic diagnostics
 
 With `--first-semantic`, each block runs fresh launches instead of the scenarios
@@ -175,9 +185,12 @@ Timing ends at the first publication for the query file at version 1 whose
 diagnostics are exactly the expected one (code, message, range, severity, and
 source). The configuration's publication, the parser's empty publication, other
 versions, and other diagnostics are kept in `earlier_publications` and never end
-the interval; only a 60-second deadline does. An untimed `virgil-lsp/snapshot`
-must then hold exactly that diagnostic, with current sources. No interval
-contains a sleep or a polling request.
+the interval. A 60-second deadline fails the sample if the expected publication
+never arrives. An untimed `virgil-lsp/snapshot` must then hold exactly that
+diagnostic, with current sources. No interval contains a sleep or a polling
+request. With `--require-probes`, each sample must include the worker and server
+transaction metrics, source capture, and worker startup; a discarded or
+single-file analysis may contribute additional transactions.
 
 | Sample metric | Timed interval |
 | --- | --- |
@@ -223,15 +236,6 @@ observed, and every one had a high-water mark. The Aeneas worker's high-water
 mark was 206,307,328 bytes (p50) config first and 200,235,008 source first; the
 server's was 67,807,232 and 35,872,768.
 
-The `typing_burst` sample's `latency_ms` runs from the final completion's send to
-its reply. `diagnostic_latency_ms` runs from that same send to publication of the
-exact semantic diagnostic at the final version. `worker_replacements` counts
-informational reclaims, and `worker_starts` counts completed spawn-to-handshake
-probes. The sample retains every emitted probe, including incomplete cancelled
-transactions; `--require-probes` requires the final useful query and automatic
-analysis to finish. These metrics describe a fixed burst followed by a pause,
-not continuous typing or a general cancellation latency budget.
-
 ## Phases, allocation, and output
 
 `BENCH=1` sets `BenchProbe.enabled` and `RiGc.stats` with one `-redef-field` option.
@@ -272,10 +276,11 @@ JSON includes raw samples grouped by build, project, and process block; summarie
 report sample count, median, p10, p50, p90, and p95, min/max, and median absolute
 deviation (MAD), with no trimming. Each percentile interpolates linearly between
 the order statistics around position (*n* − 1) × *q* of the sorted samples, so
-p50 equals the median. Summaries pool measured operations;
-use raw block IDs when comparing correlated samples. Process records include
-current RSS, and Linux adds process peak RSS when readable; macOS uses `ps` and
-leaves peak RSS null.
+p50 equals the median. The additive fields keep the JSON schema at 1;
+`scripts/bench-report.py` accepts results with or without them. Summaries pool
+measured operations; use raw block IDs when comparing correlated samples.
+Process records include current RSS, and Linux adds process peak RSS when
+readable; macOS uses `ps` and leaves peak RSS null.
 
 [First-semantic](#first-semantic-diagnostics) sessions and every session of an
 `--error-result` run also keep a `resource_summary`; the default run isn't
@@ -294,13 +299,14 @@ error-result workload has its own `error_analysis` rows.
 
 `max_sampled_total_rss_bytes` is the largest sum of RSS within one sampling pass.
 Adding the server's and worker's separate maxima doesn't give a simultaneous
-peak, and no summary does. A process that exits between passes is never observed:
-when probes count completed worker starts, `unobserved_workers` counts such
-workers, and their peaks are unknown. `seen_at_stop: false` marks a PID that was
-gone before the last pass, whose peak may exceed its last sample. On macOS, `ps`
-supplies RSS, `hwm_bytes` is null, and `hwm_available` is false: a missing
-high-water mark is never recorded as zero. The sampler stops and its thread
-exits before the session shuts down.
+peak, and no summary does. A worker that starts and exits between passes is
+never observed, including one that has exited but hasn't been reaped when `ps`
+is the source. When probes count completed worker starts, `unobserved_workers`
+counts such workers, and their peaks are unknown. `seen_at_stop: false` marks a
+PID that was gone before the last pass, whose peak may exceed its last sample.
+On macOS, `ps` supplies RSS, `hwm_bytes` is null, and `hwm_available` is false:
+a missing high-water mark is never recorded as zero. The sampler stops and its
+thread exits before the session shuts down.
 
 Metadata includes the corpus, both revisions, generated
 BuildInfo, compiler and binary hashes, compilation commands/source hashes, heap
