@@ -1,0 +1,192 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+// The bounds of a declaration's leading comment (AeneasAdapter.declarationComment).
+// Virgil has no doc-comment syntax; this is the server's convention. See
+// docs/architecture.md#hover.
+component DeclarationComments {
+	// The most bytes of text returned, including the ellipsis that marks a cut.
+	def MAX_BYTES = 4096;
+	// The most bytes before a declaration's first token that the backward
+	// scan reads. A run of comment lines that starts further back documents
+	// nothing, since its first line is not in reach.
+	def MAX_SCAN = 65536;
+	// The largest file whose outline is parsed for a comment, more than twice
+	// the largest source in the pinned Virgil checkout. The densest text of
+	// this size, such as "var a,a,a,...;", keeps its parse well inside the
+	// server's heap (issue #372).
+	def MAX_INPUT = 256 * 1024;
+	// U+2026, which ends a cut comment.
+	def ELLIPSIS = "\xE2\x80\xA6";
+	// U+FFFD, which replaces each byte that is not part of valid UTF-8.
+	def REPLACEMENT = "\xEF\xBF\xBD";
+
+	// Whether a declaration of {kind} can be documented: whether the outline
+	// lists it. Locals, parameters, and type parameters are not listed.
+	def documents(kind: AnalysisDeclKind) -> bool {
+		match (kind) {
+			LOCAL, PARAMETER, TYPE_PARAM => return false;
+			_ => return true;
+		}
+	}
+}
+
+// Finds the leading comment of a declaration in the outline of a file that
+// parsed: the run of full-line "//" comments that ends on the line before the
+// declaration's first token, with no blank line, code, or other comment
+// between them. The outline selects the declaration by its name and kind,
+// never by the nearest identifier, and its first token comes before any
+// modifiers, as "private" does in "private def". The parser's consumed spans
+// ({tokens}) show that the bytes between the previous token and that one hold
+// only whitespace and comments, so no string or character literal is read as
+// a comment.
+class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxToken>) {
+	// The comment of the symbol of {kind} in {symbols} whose name is the
+	// bytes {begin} to {end}, or null: if there is no such symbol (see
+	// named), if another starts at the same token, as the fields of
+	// "var a, b;" do, if it is a header parameter, as in "class C(x: int)",
+	// or if it has no comment.
+	def find(symbols: Array<AnalysisDocumentSymbol>, kind: AnalysisDeclKind, begin: int, end: int) -> string {
+		var sym = named(symbols, kind, begin, end);
+		if (sym == null || starting(symbols, sym.begin) != 1) return null;
+		var i = tokenAt(sym.begin);
+		if (i < 0) return null;
+		if (kind == AnalysisDeclKind.FIELD && i > 0 && (ch(i - 1) == '(' || ch(i - 1) == ',')) return null;
+		return comment(if(i > 0, tokens[i - 1].end, 0), sym.begin);
+	}
+	// A data type, such as "type Row(x: int);", is its own single case: a use
+	// of its constructor names the case, which the outline lists as the type,
+	// with the same name bytes.
+	private def named(list: Array<AnalysisDocumentSymbol>, kind: AnalysisDeclKind, begin: int, end: int) -> AnalysisDocumentSymbol {
+		for (sym in list) {
+			var same = sym.kind == kind || (kind == AnalysisDeclKind.VARIANT_CASE && sym.kind == AnalysisDeclKind.CLASS);
+			if (same && sym.nameBegin == begin && sym.nameEnd == end) return sym;
+			var inner = named(sym.children, kind, begin, end);
+			if (inner != null) return inner;
+		}
+		return null;
+	}
+	// The number of symbols in {list} and their children that start at {begin}.
+	private def starting(list: Array<AnalysisDocumentSymbol>, begin: int) -> int {
+		var n = 0;
+		for (sym in list) n += if(sym.begin == begin, 1, 0) + starting(sym.children, begin);
+		return n;
+	}
+	// The index of the span that starts at {offset}, or -1.
+	private def tokenAt(offset: int) -> int {
+		var lo = 0, hi = tokens.length;
+		while (lo < hi) {
+			var mid = lo + (hi - lo) / 2;
+			if (tokens[mid].begin < offset) lo = mid + 1;
+			else hi = mid;
+		}
+		return if(lo < tokens.length && tokens[lo].begin == offset, lo, -1);
+	}
+	private def ch(i: int) -> byte {
+		var t = tokens[i];
+		return if(t.end - t.begin == 1, input[t.begin], 0);
+	}
+	// The text of the comment lines directly above the line of {start}, all
+	// after {gap}, the end of the previous token. Null if the line of {start}
+	// holds anything before it, if there are no such lines, if the first of
+	// them is more than MAX_SCAN bytes back, if any has a "*/", or if they
+	// are the file's header (see header). Each line holds a line comment
+	// unless a block comment opened above it is still open; that comment
+	// would have to close before {start}, and only a "*/" on one of the lines
+	// could close it.
+	def comment(gap: int, start: int) -> string {
+		var floor = start - DeclarationComments.MAX_SCAN;
+		if (floor < gap) floor = gap;
+		var line = lineStart(start, gap, floor);
+		if (line < 0 || !blank(line, start)) return null;
+		var top = line;
+		while (top > 0) {
+			var above = lineStart(top - 1, gap, floor);
+			if (above == -2) return null;
+			if (above < 0) break;
+			var m = skipBlank(above, top - 1);
+			if (m + 1 >= top - 1 || input[m] != '/' || input[m + 1] != '/') break;
+			for (j = m + 2; j + 1 < top - 1; j++) {
+				if (input[j] == '*' && input[j + 1] == '/') return null;
+			}
+			top = above;
+		}
+		if (top == line || (top == 0 && header(line))) return null;
+		return render(top, line);
+	}
+	// Whether the comment lines from the file's start to {end} are its
+	// license header, not documentation: whether the first line's text,
+	// after "//" and one space, starts with "Copyright", or whether any line
+	// holds "SPDX-License-Identifier".
+	private def header(end: int) -> bool {
+		var text = skipBlank(0, end) + 2;
+		if (text < end && input[text] == ' ') text++;
+		if (holds(text, "Copyright")) return true;
+		for (i = text; i < end; i++) {
+			if (input[i] == 'S' && holds(i, "SPDX-License-Identifier")) return true;
+		}
+		return false;
+	}
+	// Whether the bytes at {i} are {s}.
+	private def holds(i: int, s: string) -> bool {
+		if (i + s.length > input.length) return false;
+		for (k < s.length) if (input[i + k] != s[k]) return false;
+		return true;
+	}
+	// The start of the line that ends at {end}, scanning back no further than
+	// {floor}: -1 if the previous token, which ends at {gap}, is on it, and -2
+	// if the line starts before {floor}, which is after {gap}.
+	private def lineStart(end: int, gap: int, floor: int) -> int {
+		for (j = end - 1; j >= floor; j--) {
+			if (input[j] == '\n') return j + 1;
+		}
+		if (floor > gap) return -2;
+		return if(gap == 0, 0, -1);
+	}
+	private def skipBlank(i: int, end: int) -> int {
+		while (i < end && (input[i] == ' ' || input[i] == '\t')) i++;
+		return i;
+	}
+	private def blank(begin: int, end: int) -> bool {
+		return skipBlank(begin, end) == end;
+	}
+	// The comment lines from {top} to {end}, each without its indentation,
+	// its "//", one space after that, and trailing whitespace. Empty lines
+	// before the first text and after the last are dropped; those between
+	// are kept. Each byte that is not part of valid UTF-8 becomes U+FFFD, as
+	// a JSON reply would show it, so its three bytes count against the
+	// bound. Text past MAX_BYTES is cut at a code point and ends with an
+	// ellipsis; no more is read once that many bytes are collected.
+	private def render(top: int, end: int) -> string {
+		var max = DeclarationComments.MAX_BYTES, buf = StringBuilder.new(), blanks = 0;
+		var at = top;
+		while (at < end && buf.length <= max) {
+			var lineEnd = at;
+			while (input[lineEnd] != '\n') lineEnd++;
+			var text = skipBlank(at, lineEnd) + 2;
+			if (text < lineEnd && input[text] == ' ') text++;
+			var last = lineEnd;
+			while (last > text && (input[last - 1] == ' ' || input[last - 1] == '\t')) last--;
+			if (last == text) {
+				if (buf.length > 0) blanks++;
+			} else {
+				if (buf.length > 0) for (i < blanks + 1) buf.putc('\n');
+				blanks = 0;
+				// Collect past the bound, so that a cut shows.
+				for (i = text; i < last && buf.length <= max; ) {
+					var n = if(input[i] < 0x80, 1, Utf8.decode1(input[i ... last]).0);
+					if (n > 0) buf.putk(input, i, i + n);
+					else buf.puts(DeclarationComments.REPLACEMENT);
+					i += if(n > 0, n, 1);
+				}
+			}
+			at = lineEnd + 1;
+		}
+		if (buf.length == 0) return null;
+		if (buf.length <= max) return buf.toString();
+		var cut = max - DeclarationComments.ELLIPSIS.length;
+		while (cut > 0 && (buf.buf[cut] & 0xC0) == 0x80) cut--;
+		buf.resize(cut);
+		return buf.puts(DeclarationComments.ELLIPSIS).toString();
+	}
+}

@@ -442,9 +442,29 @@ async function workspace(extension) {
   assert.deepEqual(await semanticTokens(inlay.document.uri), INLAY_TOKENS);
   console.log('PASS: vscode.semantic-tokens.response');
   words = await vscode.window.showTextDocument(words.document);
-  // Hover over the same use shows the class's signature in a Virgil code block.
+  // Hover over the same use shows the class's signature in a Virgil code block,
+  // then the comment above the class in the closed library file, as Markdown
+  // prose: indentation goes, each line ends with a hard break, and * is escaped.
   assert.deepEqual(await hovers(words, use, column), [
-    [['```virgil\nclass StringBuilder\n```'], [use, column, use, column + 'StringBuilder'.length]],
+    [[[
+      '```virgil\nclass StringBuilder\n```',
+      '',
+      'Utility for building and formatting strings, including the ability to render  ',
+      'integers, characters, strings, etc according to printf-like format  ',
+      'specifiers.',
+      '',
+      'These format specifiers are supported:',
+      '',
+      '%d - render an integer as a decimal  ',
+      '%c - render an integer as an 8-bit ASCII character  ',
+      '%s - inline a string argument  ',
+      '%x - render an integer as a hexadecimal  ',
+      '%z - render a boolean as "true" or "false"  ',
+      '%q - call a closure of type StringBuilder -> StringBuilder',
+      '',
+      'Additionally, a number of explicit {put\\*} methods provide explicit one-by-one  ',
+      'appending capabilities.',
+    ].join('\n')], [use, column, use, column + 'StringBuilder'.length]],
   ]);
   // Signature help just after the ( of .puts(a) on the same line shows the
   // method's label with its one parameter as label offsets, which the client
