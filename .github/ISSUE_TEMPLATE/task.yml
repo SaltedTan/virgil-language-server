@@ -9,6 +9,18 @@ body:
     validations:
       required: true
   - type: textarea
+    id: current-state
+    attributes:
+      label: Current state
+      description: |
+        What exists today, with the files, commands, or output that show it.
+        Write "none" when the work is new.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: What this item changes, and what it deliberately leaves alone.
+  - type: textarea
     id: acceptance
     attributes:
       label: Acceptance criteria
@@ -18,7 +30,62 @@ body:
     validations:
       required: true
   - type: textarea
-    id: notes
+    id: verification
     attributes:
-      label: Notes and dependencies
-      description: Related issues, ADRs, upstream Virgil code, or links to the LSP specification.
+      label: Verification
+      description: |
+        The commands to run and the observable result that shows each criterion is met.
+        Give the expected output or exit status, not only the command.
+      placeholder: |
+        - `make test-unit ARGS='Thing:*'` exits 0.
+        - `build/virgil-lsp ...` prints ...
+    validations:
+      required: true
+  - type: textarea
+    id: affected-docs
+    attributes:
+      label: Affected docs
+      description: |
+        The documentation this change must update, in this repository or upstream.
+        Write "none" when it needs no documentation.
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: |
+        Related issues, ADRs, or upstream Virgil changes that must land first.
+        Say whether each is open or closed, and write "none" when there are none.
+  - type: textarea
+    id: open-question
+    attributes:
+      label: Open question for the maintainer
+      description: |
+        When Merge says a maintainer decision is needed, state the concrete question and the options you see here.
+        Leave it empty otherwise.
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      description: |
+        S is up to half a day and M is one or two days of work for one person or agent.
+        Split anything larger before starting instead of calling it M.
+      options:
+        - S (up to half a day)
+        - M (one or two days)
+        - Needs splitting (larger than M)
+    validations:
+      required: true
+  - type: dropdown
+    id: merge
+    attributes:
+      label: Merge
+      description: |
+        Normal review follows the [pull request rules](https://github.com/SaltedTan/virgil-language-server/blob/main/CONTRIBUTING.md#pull-requests).
+        A human merge is needed for changes under `.github/workflows/`, dependencies (including the `vendor/virgil` pin and npm dependencies), and suite-wide test settings (timeouts, retries, which tests run, or test-runner behavior).
+        When a maintainer decision is needed, GitHub can't make another field required by this choice, so state the concrete question under **Open question for the maintainer**.
+      options:
+        - Normal review
+        - Human merge (workflows, dependencies, or suite-wide test settings)
+        - Maintainer decision needed
+    validations:
+      required: true
