@@ -13,6 +13,22 @@ This is an unofficial, independently maintained project. By participating you ag
 
 Please comment on an issue before starting substantial work, so that effort isn't duplicated and the design can be agreed first.
 
+## Work items
+
+The [work item form](.github/ISSUE_TEMPLATE/task.yml) asks for enough that a coding agent can start with the issue as its only context:
+
+- **Goal** and **Acceptance criteria** say what changes and when it is done.
+- **Current state** and **Scope and non-goals** say what exists today and what the item deliberately leaves alone.
+- **Verification** gives the commands to run and the observable result that shows each criterion is met.
+- **Affected docs** and **Dependencies** name the documentation to update and anything that must land first.
+- **Open question for the maintainer** holds the concrete question when the item needs a decision.
+
+The required **Size** field is S for up to half a day, M for one or two days, or needs splitting for anything larger. Split larger work before it starts; don't stretch it into M. Size guides review and how far one agent session goes, and the project doesn't add labels for it.
+
+The required **Merge** field records who merges. Normal review follows the pull-request rules below. Human merge is for changes under `.github/workflows/`, dependencies (including the `vendor/virgil` pin and npm dependencies), and suite-wide test settings (timeouts, retries, which tests run, or test-runner behavior). Maintainer decision needed names the open question, which the maintainer answers before work starts.
+
+Labels are a maintainer-owned queue signal, so an unreviewed issue isn't ready just because it has one. `blocked/dependency` marks work that waits on another issue or upstream; `good first issue` and `help wanted` mark approachable work; the `area/*` and `type/*` labels say where the work lives. `agent-ready` marks a reviewed, self-contained S or M item with required verification, no open dependency, no open maintainer decision, and a stated merge owner, so a new agent can start now. `needs-decision` marks an item that waits on the maintainer question named in its Merge line.
+
 ## Development setup
 
 ```sh
@@ -28,6 +44,7 @@ make test
 - Keep pull requests small and focused on one change. Include tests that exercise it.
 - `make test` and all required CI checks must pass before merge. See the [development guide](docs/development.md#tests) for the server suites and VS Code client checks.
 - Update documentation and `CHANGELOG.md` (under *Unreleased*) for user-visible changes.
+- Changes under `.github/workflows/`, dependencies (including the `vendor/virgil` pin and npm dependencies), and suite-wide test settings (timeouts, retries, which tests run, or test-runner behavior) need the maintainer's own merge. Other files under `.github/` don't.
 - Never advertise an LSP capability that isn't fully implemented and tested.
 - Keep standard output protocol-only. All logging goes to standard error through `Log`.
 - Only code under `src/analysis/` may reference Aeneas compiler types ([ADR-0002](docs/decisions/0002-pinned-virgil-adapter-boundary.md)).
