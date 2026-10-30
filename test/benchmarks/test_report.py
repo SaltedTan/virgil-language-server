@@ -28,6 +28,7 @@ def load(name):
 
 report = load("bench-report")
 compare = load("bench-compare")
+bench = load("bench-lsp")
 FIXTURE = Path(__file__).with_name("linux-reference.json")
 
 
@@ -87,6 +88,45 @@ class ReportTest(unittest.TestCase):
         self.result["summary"].pop()
         with self.assertRaises(KeyError):
             report.baseline(self.result, 1)
+
+    def test_added_quantiles_leave_default_reports_unchanged(self):
+        before = (report.baseline(self.result, 1), report.comparison(self.result))
+        for row in self.result["summary"]:
+            row.update(p50=row["median"], p95=row["p90"])
+        self.assertEqual((report.baseline(self.result, 1), report.comparison(self.result)), before)
+
+    def test_first_semantic_results_compare_each_open_order(self):
+        def sample(build, order, warmup, latency):
+            return {"scenario": "first_semantic_" + order, "warmup": warmup, "latency_ms": latency,
+                    "open_latency_ms": latency - 1, "config_open_latency_ms": latency - 1,
+                    "initialize_ms": 0.1, "discarded_analyses": int(order == "config_first"),
+                    "probes": [{"process": "worker", "metric": "gc_count", "value": build + 1}]}
+        def process(order, worker_hwm):
+            # A replacement worker and a worker without a known HWM.
+            phase = "first_semantic_" + order
+            return {"resource_summary": {"processes": [
+                {"role": "server", "phases": {phase: {"max_rss_bytes": 30, "hwm_bytes": 31}}},
+                {"role": "worker", "phases": {phase: {"max_rss_bytes": 200, "hwm_bytes": worker_hwm}}},
+                {"role": "worker", "phases": {phase: {"max_rss_bytes": 150, "hwm_bytes": 160}}}]}}
+        self.result["blocks"] = [
+            {"build": build, "project": "aeneas",
+             "samples": [sample(build, order, True, 1000)] +
+                        [sample(build, order, False, latency + 10 * build) for latency in (600, 700)],
+             "processes": [process(order, None), process(order, 210)]}
+            for build in (0, 1) for order in ("config_first", "source_first")]
+        self.result["summary"] = bench.summaries(self.result["blocks"])
+        text, warnings = report.comparison(self.result)
+        rows = [line for line in text.splitlines() if line.startswith("| aeneas /")]
+        self.assertEqual([row.split("|")[1].strip() for row in rows],
+                         ["aeneas / `first_semantic_config_first`", "aeneas / `first_semantic_source_first`"])
+        self.assertIn("| 650.000 (610.000–690.000) | 660.000 (620.000–700.000) | +1.5% | —/2 | —/4 |", rows[0])
+        self.assertEqual(warnings, [])
+        indexed = report.rows(self.result)
+        self.assertEqual(indexed[(0, "aeneas", "first_semantic_source_first", "latency_ms")]["p95"], 695)
+        hwm = indexed[(0, "aeneas", "first_semantic_source_first", "worker.hwm_bytes")]
+        self.assertEqual((hwm["n"], hwm["min"]), (3, 160))  # The unknown HWM is not a zero.
+        with self.assertRaises(KeyError):
+            report.baseline(self.result, 1)  # The reference table needs the default scenarios.
 
     def test_cli_flags_warn_without_nonzero_exit_and_escape_percent(self):
         result = subprocess.run([sys.executable, ROOT / "scripts/bench-report.py", FIXTURE, "--annotations"],

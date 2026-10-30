@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The performance benchmark can time [first semantic diagnostics](docs/benchmarks.md#first-semantic-diagnostics) with `--first-semantic`: each sample launches a fresh server and worker, opens the unsaved project configuration and an edited source in either order, and stops only at the exact expected diagnostic, recording launch, `didOpen`, and `initialize` latency. Summaries now add p50 and p95, and first-semantic and `--error-result` runs keep [per-process memory summaries](docs/benchmarks.md#phases-allocation-and-output) for every observed server and worker, without inventing a peak for a process that exited unobserved ([#338](https://github.com/SaltedTan/virgil-language-server/issues/338)).
+
 ### Fixed
 
 - With two large projects open whose analyses don't fit together within their 32 MiB budget, an edit to one of them no longer leaves its files without hover, definition, references, semantic tokens, and the other semantic answers until the other project is analyzed again. A project's analysis now frees that project's own out-of-date analysis, which it replaces, before it drops another project's; one that can't fit even then is refused without dropping any other project's analysis. While such an analysis runs, and after it fails until the next edit, save, close, configuration change, or file event, workspace symbols omit that project's declarations ([snapshot admission](docs/architecture.md#analysis-snapshots-partly-present), [#373](https://github.com/SaltedTan/virgil-language-server/issues/373)).

@@ -52,7 +52,8 @@ the checkout differs from a matching gitlink (the advisory Virgil-master
 workflow), or there is no Git metadata, they print one notice and skip vendor
 corpus projects while checking the small fixture. Strict benchmarks always
 require matching pins and hashes.
-Outside the [typing-burst scenario](#cancelled-completion-typing-burst),
+Outside the [typing-burst](#cancelled-completion-typing-burst) and
+[first-semantic](#first-semantic-diagnostics) scenarios,
 `--require-probes` requires one complete phase transaction for each
 analysis, completion miss, rename preflight, and semantic publication, and no
 worker transaction for a cache hit, current navigation, or syntax publication.
@@ -167,6 +168,74 @@ transactions; `--require-probes` requires the final useful query and automatic
 analysis to finish. These metrics describe a fixed burst followed by a pause,
 not continuous typing or a general cancellation latency budget.
 
+### First semantic diagnostics
+
+With `--first-semantic`, each block runs fresh launches instead of the scenarios
+above; the option can't be combined with `--error-result`, `--typing-burst`, or
+`--inlay-refresh`. Every sample, warmups included, starts a new server with no
+extra options, and that server starts its own worker. After `initialize` and
+`initialized`, the client opens the project's unsaved configuration and the
+query file with the pinned unresolved-name edit already appended, at version 1.
+`first_semantic_config_first` opens the configuration first, and
+`first_semantic_source_first` opens the source first, so the server starts it in
+single-file mode until the configuration arrives. Iterations alternate which
+order runs first, and warmups are retained with `warmup: true`.
+
+Timing ends at the first publication for the query file at version 1 whose
+diagnostics are exactly the expected one (code, message, range, severity, and
+source). The configuration's publication, the parser's empty publication, other
+versions, and other diagnostics are kept in `earlier_publications` and never end
+the interval. A 60-second deadline fails the sample if the expected publication
+never arrives. An untimed `virgil-lsp/snapshot` must then hold exactly that
+diagnostic, with current sources. No interval contains a sleep or a polling
+request. With `--require-probes`, each sample must include the worker and server
+transaction metrics, source capture, and worker startup; a discarded or
+single-file analysis may contribute additional transactions.
+
+| Sample metric | Timed interval |
+| --- | --- |
+| `latency_ms` | Process launch, just before the server starts, to that publication: process start, `initialize`, configuration discovery, worker startup, and the full analysis. |
+| `open_latency_ms` | The source's `didOpen` send to the publication. It includes configuration discovery and worker startup in both orders; in config-first order, the configuration was opened just before. |
+| `config_open_latency_ms` | The configuration's `didOpen` send to the publication. |
+| `initialize_ms` | The `initialize` request to its reply. |
+| `discarded_analyses` | Analyses the server discarded because an open document changed after their sources were captured. |
+
+In config-first order, the configuration's open starts a project analysis before
+the edited source arrives, so the server discards it and analyzes again. Full
+editor launch, from starting the editor to the client's first request, isn't
+measured here; it is a separate product boundary. File caches may already be
+warm.
+
+Measured on 2026-10-31 at `b5d28d3c` (server `v0.1.0-alpha.5-10-gbf50f3ea027c`,
+Virgil `57318d37`), on the i7-14700KF host of the [reference baseline](#reference-baseline),
+pinned to CPU 12 (governor `powersave`), with the `make bench-build` executables
+and a 384 MiB worker heap. SHA-256 hashes: server
+`1707d1747bbe5a8529f197fdae8b762af96da009fc30b9c38d09fb9a815cc9a6`, worker
+`5eab9c087dce8472a1e0ce0fde2d1f8e8eaeef0ee6c017b7ff6b3869fe0d67d2`, and corpus
+manifest `79ff4b89d9b18251202dadefd53cef96f2089c7949c59d52400495113e001c15`:
+
+```sh
+python3 scripts/bench-lsp.py --exe build/bench/virgil-lsp --first-semantic \
+  --blocks 6 --operations 5 --warmups 2 --cpu 12 --require-probes \
+  --output build/bench-results/first-semantic.json
+```
+
+Each cell is **p50 / p95, in milliseconds**, over 30 measured launches, using the
+percentile definition [below](#phases-allocation-and-output). Every config-first
+sample discarded one analysis, and no source-first sample discarded any.
+`initialize_ms` was about 0.1 ms in every case.
+
+| Project | Config first, launch | Config first, `didOpen` | Source first, launch | Source first, `didOpen` |
+| --- | ---: | ---: | ---: | ---: |
+| small | 1.084 / 1.168 | 0.684 / 0.754 | 0.980 / 1.032 | 0.633 / 0.669 |
+| util | 29.986 / 32.260 | 29.537 / 31.839 | 16.174 / 16.986 | 15.813 / 16.604 |
+| Aeneas | 689.942 / 712.432 | 689.025 / 711.939 | 365.066 / 381.941 | 364.606 / 381.479 |
+
+Each of the 252 sessions, warmups included, had one worker, every PID was
+observed, and every one had a high-water mark. The Aeneas worker's high-water
+mark was 206,307,328 bytes (p50) config first and 200,235,008 source first; the
+server's was 67,807,232 and 35,872,768.
+
 ## Phases, allocation, and output
 
 `BENCH=1` sets `BenchProbe.enabled` and `RiGc.stats` with one `-redef-field` option.
@@ -204,11 +273,42 @@ end-to-end overhead despite allocating nothing. Prefer normal builds for the
 most precise external latency comparison and instrumented builds for attribution.
 
 JSON includes raw samples grouped by build, project, and process block; summaries
-report sample count, median, linearly interpolated p10/p90, min/max, and median
-absolute deviation (MAD), with no trimming. Summaries pool measured operations;
-use raw block IDs when comparing correlated samples. Process records include
-current RSS, and Linux adds process peak RSS when readable; macOS uses `ps` and
-leaves peak RSS null. Metadata includes the corpus, both revisions, generated
+report sample count, median, p10, p50, p90, and p95, min/max, and median absolute
+deviation (MAD), with no trimming. Each percentile interpolates linearly between
+the order statistics around position (*n* − 1) × *q* of the sorted samples, so
+p50 equals the median. The additive fields keep the JSON schema at 1;
+`scripts/bench-report.py` accepts results with or without them. Summaries pool
+measured operations; use raw block IDs when comparing correlated samples.
+Process records include current RSS, and Linux adds process peak RSS when
+readable; macOS uses `ps` and leaves peak RSS null.
+
+[First-semantic](#first-semantic-diagnostics) sessions and every session of an
+`--error-result` run also keep a `resource_summary`; the default run isn't
+sampled. A sampler thread reads the server and its child processes every 50 ms,
+when the session starts and stops, when the scenario changes, and again at once
+when it sees the set of processes change. On Linux it reads `/proc` without
+starting a process, about 33 µs per pass on the reference host, and that time
+falls inside any timed interval that a pass overlaps. Each observed PID keeps its
+own largest sampled RSS (`max_rss_bytes`) and OS high-water mark (`hwm_bytes`,
+Linux `VmHWM`), overall and for each phase, also after a worker is replaced.
+Phases are scenario names, and warmups share the `warmup` phase. The high-water
+mark covers the process's life up to the phase's last sample. The summary rows
+`server.max_rss_bytes`, `worker.max_rss_bytes`, `server.hwm_bytes`, and
+`worker.hwm_bytes` hold one value per PID and measured phase, so the
+error-result workload has its own `error_analysis` rows.
+
+`max_sampled_total_rss_bytes` is the largest sum of RSS within one sampling pass.
+Adding the server's and worker's separate maxima doesn't give a simultaneous
+peak, and no summary does. A worker that starts and exits between passes is
+never observed, including one that has exited but hasn't been reaped when `ps`
+is the source. When probes count completed worker starts, `unobserved_workers`
+counts such workers, and their peaks are unknown. `seen_at_stop: false` marks a
+PID that was gone before the last pass, whose peak may exceed its last sample.
+On macOS, `ps` supplies RSS, `hwm_bytes` is null, and `hwm_available` is false:
+a missing high-water mark is never recorded as zero. The sampler stops and its
+thread exits before the session shuts down.
+
+Metadata includes the corpus, both revisions, generated
 BuildInfo, compiler and binary hashes, compilation commands/source hashes, heap
 settings, host CPU, logical cores, kernel, Python, load, affinity, governors when
 readable, and all server command lines. Missing build metadata fails with a request
