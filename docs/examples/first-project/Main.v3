@@ -1,0 +1,7 @@
+// Copyright 2026 The Virgil Language Server Authors.
+// SPDX-License-Identifier: Apache-2.0
+component Main {
+	def run() {
+		var greeting: int = Greeter.message();
+	}
+}

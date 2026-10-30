@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "first-project",
+      "sources": ["Greeter.v3", "Main.v3"]
+    }
+  ]
+}

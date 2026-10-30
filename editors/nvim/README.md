@@ -2,7 +2,7 @@
 
 > **Development setup.** See the [project status](../../README.md) for current server features. The plain Neovim configuration is smoke-tested headlessly in CI. A [scripted LazyVim test](../../test/e2e/lazyvim/README.md) runs the LazyVim configuration locally and in [CI](../../test/e2e/lazyvim/README.md#ci), and the [results](../../docs/manual-testing.md#results) record its runs.
 
-Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on PATH](../../README.md#editor-setup). LazyVim additionally requires an existing [LazyVim starter installation](https://www.lazyvim.org/installation) and its prerequisites (including Git and a C compiler for parsers). No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`.
+Requires an installed Neovim 0.11 or later, `curl`, and the [installed server on PATH](../../README.md#editor-setup). LazyVim additionally requires an existing [LazyVim starter installation](https://www.lazyvim.org/installation) and its prerequisites (including Git and a C compiler for parsers). No editor plugin is needed: Neovim's built-in client talks to `virgil-lsp`. Once the server is installed, [walk through your first project](../../docs/first-project.md): a small example with a deliberate type error, its one-word fix, and a hover and go-to-definition to check.
 
 With a `0.1.0-alpha.5` or later server, [folding ranges](../../docs/architecture.md#folding-ranges) come from brace blocks and multiline comments in the current buffer. Neovim can use them with `:setlocal foldmethod=expr foldexpr=v:lua.vim.lsp.foldexpr()`.
 
