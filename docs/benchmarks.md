@@ -2563,7 +2563,7 @@ On main, the 900-function `error_analysis` collected once during every handled r
 | `prepareRename` | 32.960 (17.571–49.785) | 32.930 (17.826–55.249) | — |
 | `completion_hit` | 6.139 (5.549–44.802) | 5.783 (3.601–45.013) | — |
 
-`error_analysis` block medians were 477, 557, 481, 489, 483, and 480 ms on main and 316, 305, 316, 338, 320, and 318 ms with the change, which puts it with `reused_analysis`, the same work without the error. Parse, verify, and collection medians moved by at most 4.4 ms, in both directions. Navigation, hover, references, and syntax diagnostics are unchanged.
+`error_analysis` block medians were 477, 557, 481, 489, 483, and 480 ms on main and 316, 305, 316, 338, 320, and 318 ms with the change, which puts its latency alongside `reused_analysis`, despite the error and 900 extra functions. Parse, verify, and collection medians moved by at most 4.4 ms, in both directions. Navigation, hover, references, and syntax diagnostics are unchanged.
 
 Worker memory at the end of handling is the median, in bytes, which varied by at most 22 KB across samples. Room is what the 201,326,592-byte semispace has left, before the explicit collection that follows. Main's `error_analysis` collected, so its heap after handling, 130,755,152 bytes, is after that collection; a 1 GiB control build of main, run once with the same command and `--blocks 1`, put its end without one at 201,717,344 bytes, 390,752 over the boundary.
 
