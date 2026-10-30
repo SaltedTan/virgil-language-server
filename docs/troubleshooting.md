@@ -79,6 +79,10 @@ LazyVim's configuration sets `mason = false`, because the server isn't in mason.
 
 The [Helix configuration](../editors/helix/README.md) starts `virgil-lsp --stdio` from the `PATH` that Helix sees. If it isn't there, no client attaches and Helix shows no error when a `.v3` file opens; `hx --health virgil` then reports the server as not found. Check that `virgil-lsp --version` works in the terminal that starts Helix, and that a directory the install added to `PATH`, such as `~/.local/bin`, is in the shell's startup file for new terminals ([Editor setup](../README.md#editor-setup)). Alternatively, edit `command` in the configuration to give the server's absolute path.
 
+### Emacs doesn't find `virgil-lsp`
+
+The [Emacs configuration](../editors/emacs/README.md), a best-effort sample, starts `virgil-lsp --stdio` from the `PATH` that Emacs sees, its `exec-path`. If it isn't there, in Emacs 30.2, `M-x eglot` in a `.v3` buffer says that it can't find `virgil-lsp` in `PATH` and asks for a program to run, and `eglot-ensure` warns "Searching for program: No such file or directory, virgil-lsp". Check that `virgil-lsp --version` works in the terminal that starts Emacs, and that `M-: (executable-find "virgil-lsp")` finds it in Emacs: Emacs started from a desktop launcher may not see the shell's `PATH`. Alternatively, give the server's absolute path in your own `eglot-server-programs` entry.
+
 ## No diagnostics or navigation in a file
 
 Syntax errors and the outline work in any open `.v3` file. Type errors, definition, type definition, hover, references, document highlights, signature help, rename, workspace symbols, and the names in completion need a whole-program analysis, and the causes below stop it.
@@ -175,6 +179,13 @@ Run **Virgil: Restart Language Server** from the Command Palette to restart the 
 - `:LspInfo` (with nvim-lspconfig on Neovim 0.11) or `:lua =vim.lsp.get_clients()` lists the running clients.
 
 To restart the server, run `:LspRestart` with nvim-lspconfig, as in LazyVim, or `:lsp restart` on Neovim 0.12 and later, where nvim-lspconfig no longer defines `:LspRestart`. In plain Neovim 0.11, run `:lua vim.lsp.stop_client(vim.lsp.get_clients({ name = "virgil_lsp" }))`, then `:edit`, or restart Neovim. If the server exits with a nonzero status, Neovim warns "Client virgil_lsp quit with exit code …" ([Collecting logs](manual-testing.md#collecting-logs)).
+
+### Emacs
+
+- `M-x eglot-events-buffer` shows the messages between Eglot and the server, and the server's standard error in lines marked `[stderr]`; `M-x eglot-stderr-buffer` shows the standard error alone. `M-x eglot-shutdown` kills both buffers unless you give it a prefix argument, `C-u M-x eglot-shutdown`.
+- `M-x eglot-list-connections` lists the running servers.
+
+To restart the server with changed options, run `M-x eglot` again in a Virgil buffer and answer `y`, or run `M-x eglot-shutdown` and then `M-x eglot`. `M-x eglot-reconnect` restarts it with the options it started with ([Emacs setup](../editors/emacs/README.md#using-it)).
 
 ## Reporting a bug
 
