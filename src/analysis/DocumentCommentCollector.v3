@@ -18,6 +18,8 @@ component DeclarationComments {
 	def MAX_INPUT = 256 * 1024;
 	// U+2026, which ends a cut comment.
 	def ELLIPSIS = "\xE2\x80\xA6";
+	// U+FFFD, which replaces each byte that is not part of valid UTF-8.
+	def REPLACEMENT = "\xEF\xBF\xBD";
 
 	// Whether a declaration of {kind} can be documented: whether the outline
 	// lists it. Locals, parameters, and type parameters are not listed.
@@ -130,8 +132,10 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 	// The comment lines from {top} to {end}, each without its indentation,
 	// its "//", one space after that, and trailing whitespace. Empty lines
 	// before the first text and after the last are dropped; those between
-	// are kept. Text past MAX_BYTES is cut at a code point and ends with an
-	// ellipsis; no more lines are read once that many bytes are collected.
+	// are kept. Each byte that is not part of valid UTF-8 becomes U+FFFD, as
+	// a JSON reply would show it, so its three bytes count against the
+	// bound. Text past MAX_BYTES is cut at a code point and ends with an
+	// ellipsis; no more is read once that many bytes are collected.
 	private def render(top: int, end: int) -> string {
 		var max = DeclarationComments.MAX_BYTES, buf = StringBuilder.new(), blanks = 0;
 		var at = top;
@@ -147,9 +151,13 @@ class DocumentCommentCollector(input: Array<byte>, tokens: Vector<SymbolSyntaxTo
 			} else {
 				if (buf.length > 0) for (i < blanks + 1) buf.putc('\n');
 				blanks = 0;
-				// Collect one byte past the bound, so that a cut shows.
-				if (last - text > max + 1 - buf.length) last = text + max + 1 - buf.length;
-				if (last > text) buf.putk(input, text, last);
+				// Collect past the bound, so that a cut shows.
+				for (i = text; i < last && buf.length <= max; ) {
+					var n = if(input[i] < 0x80, 1, Utf8.decode1(input[i ... last]).0);
+					if (n > 0) buf.putk(input, i, i + n);
+					else buf.puts(DeclarationComments.REPLACEMENT);
+					i += if(n > 0, n, 1);
+				}
 			}
 			at = lineEnd + 1;
 		}

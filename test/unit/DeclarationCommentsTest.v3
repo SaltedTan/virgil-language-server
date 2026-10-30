@@ -202,6 +202,14 @@ def test_over_limit(t: Tester) {
 		if (extra == 1) expect(t, null, got, "a run beyond the scan");
 		else t.assert(got != null && got.length == max, "a run within the scan");
 	}
+	// Each byte that is not valid UTF-8 becomes U+FFFD, whose three bytes
+	// count against the bound, and a cut keeps whole replacements.
+	buf = StringBuilder.new().puts("// \xC3\xA9\xE2\x82 \xF0\x9D\x84\x9E \xC0\xAF\n// ");
+	for (i < max) buf.putc(0xFF);
+	got = comment(t, buf.puts("\ndef u() { }\n").toString(), "def u", 4, METHOD);
+	var want = StringBuilder.new().puts("\xC3\xA9\xEF\xBF\xBD\xEF\xBF\xBD \xF0\x9D\x84\x9E \xEF\xBF\xBD\xEF\xBF\xBD\n");
+	while (want.length + 3 <= max - ellipsis.length) want.puts("\xEF\xBF\xBD");
+	expect(t, want.puts(ellipsis).toString(), got, "invalid UTF-8");
 	buf = StringBuilder.new().puts("// ");
 	for (i < DeclarationComments.MAX_SCAN) buf.putc('x');
 	expect(t, null, comment(t, buf.puts("\ndef k() { }\n").toString(), "def k", 4, METHOD), "a line beyond the scan");
