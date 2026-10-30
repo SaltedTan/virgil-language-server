@@ -12,4 +12,4 @@ language-id = "virgil"
 scope = "source.virgil"
 file-types = ["v3"]
 language-servers = ["virgil-lsp"]
-roots = [".virgil-lsp.json", "DEPS", ".git", "virgil-lsp"]
+roots = [".virgil-lsp.json", "DEPS", ".git"]
